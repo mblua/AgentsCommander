@@ -88,7 +88,8 @@ async fn output_task(
                     Some(data) => {
                         let stripped = strip_ansi_escapes::strip(&data);
                         let text = String::from_utf8_lossy(&stripped);
-                        buffer.push_str(&text);
+                        let cleaned = clean_terminal_output(&text);
+                        buffer.push_str(&cleaned);
                         deadline = tokio::time::Instant::now() + flush_timeout;
 
                         if buffer.contains('\n') || buffer.len() > 2000 {
@@ -108,6 +109,74 @@ async fn output_task(
     }
 }
 
+/// Clean terminal output for Telegram consumption.
+/// Handles carriage returns (inline overwrites), filters noise patterns
+/// from coding agents (thinking indicators, progress bars, spinners).
+fn clean_terminal_output(raw: &str) -> String {
+    let mut result = Vec::new();
+
+    for line in raw.split('\n') {
+        // Simulate carriage return: keep only content after last \r
+        // Terminal uses \r to overwrite the current line (spinners, progress)
+        let line = if let Some(pos) = line.rfind('\r') {
+            &line[pos + 1..]
+        } else {
+            line
+        };
+
+        let trimmed = line.trim();
+
+        // Skip empty lines
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Skip thinking indicator noise from Claude/AI agents
+        if trimmed.contains("(thinking)") || trimmed.contains("⟡ thinking") {
+            continue;
+        }
+
+        // Skip garnishing/processing status lines
+        if trimmed.starts_with("*Garnishing")
+            || trimmed.starts_with("⠋")
+            || trimmed.starts_with("⠙")
+            || trimmed.starts_with("⠹")
+            || trimmed.starts_with("⠸")
+            || trimmed.starts_with("⠼")
+            || trimmed.starts_with("⠴")
+            || trimmed.starts_with("⠦")
+            || trimmed.starts_with("⠧")
+            || trimmed.starts_with("⠇")
+            || trimmed.starts_with("⠏")
+        {
+            continue;
+        }
+
+        // Skip lines that are mostly box-drawing / progress bar chars
+        // (less than 25% alphanumeric content)
+        let total: usize = trimmed.chars().count();
+        if total > 3 {
+            let alnum: usize = trimmed
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == ' ')
+                .count();
+            if (alnum as f32 / total as f32) < 0.25 {
+                continue;
+            }
+        }
+
+        result.push(line.to_string());
+    }
+
+    if result.is_empty() {
+        String::new()
+    } else {
+        let mut out = result.join("\n");
+        out.push('\n');
+        out
+    }
+}
+
 async fn flush_buffer(
     buffer: &mut String,
     client: &reqwest::Client,
@@ -117,6 +186,18 @@ async fn flush_buffer(
     app: &tauri::AppHandle,
 ) {
     let text = std::mem::take(buffer);
+    // Deduplicate consecutive identical lines
+    let mut lines: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if lines.last().map(|l: &&str| l.trim()) != Some(trimmed) {
+            lines.push(line);
+        }
+    }
+    let text = lines.join("\n");
     let text = text.trim().to_string();
     if text.is_empty() {
         return;
