@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::io::Write as IoWrite;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::Emitter;
@@ -418,6 +419,7 @@ pub fn spawn_bridge(
     info: BridgeInfo,
     pty_mgr: Arc<Mutex<PtyManager>>,
     app_handle: tauri::AppHandle,
+    typing_flag: Arc<AtomicBool>,
 ) -> BridgeHandle {
     let cancel = CancellationToken::new();
     let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
@@ -432,6 +434,7 @@ pub fn spawn_bridge(
         session_id_str.clone(),
         cancel.clone(),
         app_handle.clone(),
+        typing_flag,
     ));
 
     // Poll task: Telegram getUpdates -> write to PTY stdin
@@ -475,6 +478,7 @@ async fn output_task(
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle,
+    typing_flag: Arc<AtomicBool>,
 ) {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -500,6 +504,11 @@ async fn output_task(
     let mut tick = tokio::time::interval(Duration::from_millis(TICK_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Typing suppression: when the terminal user is typing, suppress output
+    // until they press Enter. Auto-clears after TYPING_TIMEOUT_MS as safety net.
+    const TYPING_TIMEOUT_MS: u64 = 5000;
+    let mut typing_since: Option<Instant> = None;
+
     logger.log("INIT", &session_id, &format!(
         "output_task started: filter={} stabilization={}ms tick={}ms",
         filter.name(), STABILIZATION_MS, TICK_MS,
@@ -511,6 +520,27 @@ async fn output_task(
 
             // Periodic tick: harvest stabilized rows, flush buffer if ready
             _ = tick.tick() => {
+                // Check typing suppression
+                let is_typing = typing_flag.load(Ordering::Relaxed);
+                if is_typing {
+                    if let Some(since) = typing_since {
+                        // Auto-clear after timeout (safety net)
+                        if since.elapsed() > Duration::from_millis(TYPING_TIMEOUT_MS) {
+                            typing_flag.store(false, Ordering::Relaxed);
+                            typing_since = None;
+                            logger.log("TYPING", &session_id, "auto-cleared after timeout");
+                        } else {
+                            // Still typing - skip harvest but keep updating tracker
+                            continue;
+                        }
+                    } else {
+                        typing_since = Some(Instant::now());
+                        continue;
+                    }
+                } else {
+                    typing_since = None;
+                }
+
                 let stable_lines = tracker.harvest_stable(filter.as_ref());
 
                 if !stable_lines.is_empty() {

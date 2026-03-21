@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
@@ -14,20 +15,26 @@ use crate::telegram::types::{BridgeInfo, BridgeStatus, TelegramBotConfig};
 pub type OutputSenderMap =
     Arc<Mutex<HashMap<Uuid, tokio::sync::mpsc::Sender<Vec<u8>>>>>;
 
+/// Shared map of session_id → typing flag. When true, the user is actively
+/// typing in the terminal and bridge output should be suppressed until Enter.
+pub type TypingFlagMap = Arc<Mutex<HashMap<Uuid, Arc<AtomicBool>>>>;
+
 pub struct TelegramBridgeManager {
     bridges: HashMap<Uuid, BridgeHandle>,
     bot_assignments: HashMap<String, Uuid>,
     output_senders: OutputSenderMap,
+    typing_flags: TypingFlagMap,
 }
 
 pub type TelegramBridgeState = Arc<tokio::sync::Mutex<TelegramBridgeManager>>;
 
 impl TelegramBridgeManager {
-    pub fn new(output_senders: OutputSenderMap) -> Self {
+    pub fn new(output_senders: OutputSenderMap, typing_flags: TypingFlagMap) -> Self {
         Self {
             bridges: HashMap::new(),
             bot_assignments: HashMap::new(),
             output_senders,
+            typing_flags,
         }
     }
 
@@ -62,6 +69,8 @@ impl TelegramBridgeManager {
             color: bot.color.clone(),
         };
 
+        let typing_flag = Arc::new(AtomicBool::new(false));
+
         let handle = bridge::spawn_bridge(
             bot.token.clone(),
             bot.chat_id,
@@ -69,11 +78,17 @@ impl TelegramBridgeManager {
             info.clone(),
             pty_mgr,
             app_handle,
+            typing_flag.clone(),
         );
 
         // Register output sender so PTY read loop feeds it
         if let Ok(mut senders) = self.output_senders.lock() {
             senders.insert(session_id, handle.output_sender.clone());
+        }
+
+        // Register typing flag so pty_write can signal typing state
+        if let Ok(mut flags) = self.typing_flags.lock() {
+            flags.insert(session_id, typing_flag);
         }
 
         self.bot_assignments.insert(bot.id.clone(), session_id);
@@ -94,6 +109,10 @@ impl TelegramBridgeManager {
 
         if let Ok(mut senders) = self.output_senders.lock() {
             senders.remove(&session_id);
+        }
+
+        if let Ok(mut flags) = self.typing_flags.lock() {
+            flags.remove(&session_id);
         }
 
         self.bot_assignments.retain(|_, sid| *sid != session_id);

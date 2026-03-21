@@ -12,7 +12,7 @@ use config::settings::SettingsState;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
 use session::manager::SessionManager;
-use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
+use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState, TypingFlagMap};
 
 /// Tracks which sessions are currently detached into their own windows.
 pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
@@ -22,6 +22,7 @@ pub fn run() {
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
 
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+    let typing_flags: TypingFlagMap = Arc::new(Mutex::new(HashMap::new()));
 
     // Idle detector: emits session_idle / session_busy events.
     // Callbacks run on native threads (watcher + PTY read loop).
@@ -46,7 +47,7 @@ pub fn run() {
 
     let pty_mgr = Arc::new(Mutex::new(PtyManager::new(output_senders.clone(), Arc::clone(&idle_detector))));
     let tg_mgr: TelegramBridgeState =
-        Arc::new(tokio::sync::Mutex::new(TelegramBridgeManager::new(output_senders)));
+        Arc::new(tokio::sync::Mutex::new(TelegramBridgeManager::new(output_senders, typing_flags.clone())));
 
     let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(config::settings::load_settings()));
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -55,6 +56,7 @@ pub fn run() {
         .manage(session_mgr)
         .manage(pty_mgr)
         .manage(tg_mgr)
+        .manage(typing_flags)
         .manage(settings)
         .manage(detached_sessions.clone())
         .setup(move |app| {
