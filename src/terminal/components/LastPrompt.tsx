@@ -1,4 +1,5 @@
-import { Component, createSignal, onMount, onCleanup } from "solid-js";
+import { Component, createMemo, onMount, onCleanup } from "solid-js";
+import { createStore } from "solid-js/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { terminalStore } from "../stores/terminal";
 
@@ -7,18 +8,21 @@ interface LastPromptProps {
 }
 
 const LastPrompt: Component<LastPromptProps> = (props) => {
-  const [lastPrompt, setLastPrompt] = createSignal("");
+  const [prompts, setPrompts] = createStore<Record<string, string>>({});
   let unlisten: UnlistenFn | null = null;
 
   const getSessionId = () => props.sessionId ?? terminalStore.activeSessionId;
+
+  const currentPrompt = createMemo(() => {
+    const id = getSessionId();
+    return id ? prompts[id] ?? "" : "";
+  });
 
   onMount(async () => {
     unlisten = await listen<{ text: string; sessionId: string }>(
       "last_prompt",
       (event) => {
-        if (event.payload.sessionId === getSessionId()) {
-          setLastPrompt(event.payload.text);
-        }
+        setPrompts(event.payload.sessionId, event.payload.text);
       }
     );
   });
@@ -30,7 +34,7 @@ const LastPrompt: Component<LastPromptProps> = (props) => {
   return (
     <div class="last-prompt-panel">
       <div class="last-prompt-label">LAST PROMPT</div>
-      <div class="last-prompt-text">{lastPrompt() || "..."}</div>
+      <div class="last-prompt-text">{currentPrompt() || "..."}</div>
     </div>
   );
 };
