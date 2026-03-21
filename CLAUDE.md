@@ -254,3 +254,20 @@ npx tsc --noEmit               # TypeScript check
 - **SolidJS reactivity**: don't destructure props (kills reactivity). Access `props.value` directly in JSX
 - **Tauri IPC serialization**: Rust uses snake_case, JS uses camelCase. Configure serde with `#[serde(rename_all = "camelCase")]`
 - **Custom titlebar**: the drag region must use `data-tauri-drag-region` attribute. Buttons inside the titlebar need to stop propagation to prevent drag conflicts
+
+---
+
+<!-- rtk-instructions -->
+## RTK (Token Optimizer)
+
+`rtk` is a CLI proxy installed on this machine that compresses command outputs to reduce tokens.
+
+**Rule:** ALWAYS prefix Bash commands with `rtk`. If RTK has a filter for that command, it compresses the output. If not, it passes through unchanged. It is always safe to use.
+
+In command chains with &&, prefix each command:
+rtk git add . && rtk git commit -m "msg" && rtk git push
+
+Applies to: git, gh, cargo, npm, pnpm, npx, tsc, vitest, playwright, pytest, docker, kubectl, ls, grep, find, curl, and any other command.
+
+Meta: `rtk gain` to view token savings statistics, `rtk discover` to find missed RTK usage opportunities.
+<!-- /rtk-instructions -->
