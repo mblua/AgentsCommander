@@ -1,5 +1,6 @@
 import { Component, onMount, onCleanup, Show } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   SessionAPI,
   onSessionSwitched,
@@ -14,11 +15,30 @@ import TerminalView from "./components/TerminalView";
 import StatusBar from "./components/StatusBar";
 import "./styles/terminal.css";
 
-const TerminalApp: Component = () => {
+interface TerminalAppProps {
+  lockedSessionId?: string;
+  detached?: boolean;
+}
+
+const TerminalApp: Component<TerminalAppProps> = (props) => {
   const unlisteners: UnlistenFn[] = [];
   let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
 
   const loadActiveSession = async () => {
+    if (props.lockedSessionId) {
+      // Detached mode: lock to specific session
+      const sessions = await SessionAPI.list();
+      const session = sessions.find((s) => s.id === props.lockedSessionId);
+      if (session) {
+        terminalStore.setActiveSession(session.id, session.name, session.shell);
+      } else {
+        // Session no longer exists, close this window
+        terminalStore.setActiveSession(null, "", "");
+      }
+      return;
+    }
+
+    // Normal mode: follow active session
     const activeId = await SessionAPI.getActive();
     if (activeId) {
       const sessions = await SessionAPI.list();
@@ -35,32 +55,46 @@ const TerminalApp: Component = () => {
     shortcutHandler = registerShortcuts();
     await loadActiveSession();
 
-    unlisteners.push(
-      await onSessionSwitched(async ({ id }) => {
-        const sessions = await SessionAPI.list();
-        const session = sessions.find((s) => s.id === id);
-        if (session) {
-          terminalStore.setActiveSession(session.id, session.name, session.shell);
-        }
-      })
-    );
+    if (!props.lockedSessionId) {
+      // Normal mode: respond to session switches
+      unlisteners.push(
+        await onSessionSwitched(async ({ id }) => {
+          const sessions = await SessionAPI.list();
+          const session = sessions.find((s) => s.id === id);
+          if (session) {
+            terminalStore.setActiveSession(
+              session.id,
+              session.name,
+              session.shell
+            );
+          }
+        })
+      );
+
+      unlisteners.push(
+        await onSessionCreated((session) => {
+          if (!terminalStore.activeSessionId) {
+            terminalStore.setActiveSession(
+              session.id,
+              session.name,
+              session.shell
+            );
+          }
+        })
+      );
+    }
 
     unlisteners.push(
-      await onSessionCreated((session) => {
-        // If no active session, activate this one
-        if (!terminalStore.activeSessionId) {
-          terminalStore.setActiveSession(
-            session.id,
-            session.name,
-            session.shell
-          );
+      await onSessionDestroyed(async ({ id }) => {
+        if (props.lockedSessionId && id === props.lockedSessionId) {
+          // Our locked session was destroyed, close this detached window
+          const appWindow = getCurrentWindow();
+          appWindow.close();
+          return;
         }
-      })
-    );
-
-    unlisteners.push(
-      await onSessionDestroyed(async () => {
-        await loadActiveSession();
+        if (!props.lockedSessionId) {
+          await loadActiveSession();
+        }
       })
     );
 
@@ -80,24 +114,30 @@ const TerminalApp: Component = () => {
 
   return (
     <div class="terminal-layout">
-      <Titlebar />
+      <Titlebar detached={props.detached} />
       <Show
         when={terminalStore.activeSessionId}
         fallback={
           <div class="terminal-empty">
-            <span>No active session</span>
-            <button
-              class="terminal-empty-btn"
-              onClick={() => SessionAPI.create()}
-            >
-              + New Session
-            </button>
+            <span>
+              {props.detached
+                ? "Session closed"
+                : "No active session"}
+            </span>
+            <Show when={!props.detached}>
+              <button
+                class="terminal-empty-btn"
+                onClick={() => SessionAPI.create()}
+              >
+                + New Session
+              </button>
+            </Show>
           </div>
         }
       >
         <TerminalView />
       </Show>
-      <StatusBar />
+      <StatusBar detached={props.detached} />
     </div>
   );
 };

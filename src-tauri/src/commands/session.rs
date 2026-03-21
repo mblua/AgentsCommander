@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
@@ -129,6 +129,12 @@ pub async fn destroy_session(
         .map_err(|e| e.to_string())?;
 
     let _ = app.emit("session_destroyed", serde_json::json!({ "id": id }));
+
+    // Close any detached terminal window for this session
+    let detached_label = format!("terminal-{}", id.replace('-', ""));
+    if let Some(detached_win) = app.get_webview_window(&detached_label) {
+        let _ = detached_win.close();
+    }
 
     // If a new session was auto-activated, emit switch event
     if let Some(new_id) = new_active {

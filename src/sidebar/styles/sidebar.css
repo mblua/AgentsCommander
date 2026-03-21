@@ -59,6 +59,19 @@ html, body, #root {
   letter-spacing: 0.3px;
 }
 
+.titlebar-dev-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  margin-left: 6px;
+  background: rgba(0, 180, 255, 0.15);
+  color: #00b4ff;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
 .titlebar-controls {
   display: flex;
   gap: 0;
@@ -644,6 +657,32 @@ html, body, #root {
 .settings-checkbox {
   accent-color: var(--sidebar-accent);
   cursor: pointer;
+}
+
+/* Detach button on session item */
+.session-item-detach {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.session-item:hover .session-item-detach {
+  display: flex;
+}
+
+.session-item-detach:hover {
+  background: rgba(0, 212, 255, 0.15);
+  color: var(--sidebar-accent);
 }
 
 /* Bridge indicator dot on session item */

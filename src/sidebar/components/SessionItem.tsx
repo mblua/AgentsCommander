@@ -1,6 +1,6 @@
 import { Component, createSignal, Show, For } from "solid-js";
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
-import { SessionAPI, TelegramAPI, SettingsAPI } from "../../shared/ipc";
+import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI } from "../../shared/ipc";
 import { bridgesStore } from "../stores/bridges";
 
 function statusClass(status: SessionStatus): string {
@@ -83,6 +83,11 @@ const SessionItem: Component<{
     }
   };
 
+  const handleDetach = (e: MouseEvent) => {
+    e.stopPropagation();
+    WindowAPI.detach(props.session.id);
+  };
+
   const handleClose = (e: MouseEvent) => {
     e.stopPropagation();
     SessionAPI.destroy(props.session.id);
@@ -118,6 +123,13 @@ const SessionItem: Component<{
         </Show>
         <div class="session-item-shell">{props.session.shell}</div>
       </div>
+      <button
+        class="session-item-detach"
+        onClick={handleDetach}
+        title="Detach to own window"
+      >
+        &#x29C9;
+      </button>
       <Show when={bridge()}>
         <div
           class="session-item-bridge-dot"

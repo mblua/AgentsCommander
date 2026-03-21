@@ -87,6 +87,15 @@ export function onSessionRenamed(
   );
 }
 
+// Window API
+export const WindowAPI = {
+  detach: (sessionId: string) =>
+    invoke<string>("detach_terminal", { sessionId }),
+
+  closeDetached: (sessionId: string) =>
+    invoke<void>("close_detached_terminal", { sessionId }),
+};
+
 // Telegram Bridge API
 export const TelegramAPI = {
   attach: (sessionId: string, botId: string) =>

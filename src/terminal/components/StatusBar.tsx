@@ -1,9 +1,14 @@
 import { Component, Show } from "solid-js";
 import { terminalStore } from "../stores/terminal";
 
-const StatusBar: Component = () => {
+const StatusBar: Component<{ detached?: boolean }> = (props) => {
   return (
     <div class="status-bar">
+      <Show when={props.detached}>
+        <div class="status-bar-item">
+          <span class="status-bar-detached">DETACHED</span>
+        </div>
+      </Show>
       <Show when={terminalStore.activeShell}>
         <div class="status-bar-item">
           <span class="status-bar-accent">{terminalStore.activeShell}</span>

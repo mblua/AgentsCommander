@@ -9,7 +9,14 @@ const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");
 
 if (windowType === "terminal") {
-  render(() => <TerminalApp />, root);
+  const lockedSessionId = params.get("sessionId") || undefined;
+  const isDetached = params.get("detached") === "true";
+  render(
+    () => (
+      <TerminalApp lockedSessionId={lockedSessionId} detached={isDetached} />
+    ),
+    root
+  );
 } else {
   render(() => <SidebarApp />, root);
 }

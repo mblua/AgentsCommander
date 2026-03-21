@@ -83,6 +83,8 @@ pub fn run() {
             commands::telegram::telegram_list_bridges,
             commands::telegram::telegram_get_bridge,
             commands::telegram::telegram_send_test,
+            commands::window::detach_terminal,
+            commands::window::close_detached_terminal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

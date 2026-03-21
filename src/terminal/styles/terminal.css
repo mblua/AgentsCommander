@@ -50,6 +50,32 @@ html, body, #root {
   opacity: 1;
 }
 
+.titlebar-dev-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  margin-right: 6px;
+  background: rgba(0, 180, 255, 0.15);
+  color: #00b4ff;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+.titlebar-detached-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  margin-right: 6px;
+  background: rgba(255, 170, 0, 0.15);
+  color: #ffaa00;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
 .titlebar-controls {
   display: flex;
   gap: 0;
@@ -114,6 +140,12 @@ html, body, #root {
 
 .status-bar-accent {
   color: var(--statusbar-accent);
+}
+
+.status-bar-detached {
+  color: #ffaa00;
+  font-weight: 600;
+  letter-spacing: 0.3px;
 }
 
 /* Empty terminal state */
