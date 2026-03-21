@@ -1,5 +1,8 @@
 import { Component } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import iconUrl from "../../assets/icon-16.png";
+
+const APP_VERSION = "0.2.0";
 
 const Titlebar: Component = () => {
   const appWindow = getCurrentWindow();
@@ -9,9 +12,15 @@ const Titlebar: Component = () => {
 
   return (
     <div class="titlebar" data-tauri-drag-region>
-      <span class="titlebar-title" data-tauri-drag-region>
-        summongate
-      </span>
+      <div class="titlebar-brand" data-tauri-drag-region>
+        <img src={iconUrl} class="titlebar-icon" alt="" draggable={false} />
+        <span class="titlebar-title" data-tauri-drag-region>
+          summongate
+        </span>
+        <span class="titlebar-version" data-tauri-drag-region>
+          v{APP_VERSION}
+        </span>
+      </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn" onClick={handleMinimize} title="Minimize">
           &#x2014;

@@ -182,6 +182,13 @@ Config export/import, session history, notifications, snippets, cross-platform.
 - Font UI: "Geist", "Outfit", or "General Sans" — NOT Inter, Roboto, Arial
 - Font terminal: "Cascadia Code" with fallback to "JetBrains Mono"
 
+### Versioning
+- Version is defined in three places — keep them in sync on every build:
+  1. `src-tauri/tauri.conf.json` → `"version"`
+  2. `src-tauri/Cargo.toml` → `version`
+  3. `src/sidebar/components/Titlebar.tsx` → `APP_VERSION`
+- Bump at minimum the patch version on every compilable change set
+
 ### General
 - No over-engineering. No premature abstractions
 - Test Rust modules in isolation before wiring to frontend
