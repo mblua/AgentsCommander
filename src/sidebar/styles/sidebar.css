@@ -625,6 +625,122 @@ html, body, #root {
   cursor: pointer;
 }
 
+/* Bridge indicator dot on session item */
+.session-item-bridge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 4px currentColor;
+}
+
+/* Telegram attach/detach button on session item */
+.session-item-telegram {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.session-item:hover .session-item-telegram {
+  display: flex;
+}
+
+.session-item-telegram.active {
+  display: flex;
+}
+
+.session-item-telegram:hover {
+  background: rgba(0, 136, 204, 0.15);
+  color: #0088cc;
+}
+
+/* Bot selection dropdown on session item */
+.session-item-bot-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  background: #0e0e18;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-xs) 0;
+  min-width: 120px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.session-item-bot-option {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  width: 100%;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.session-item-bot-option:hover {
+  background: rgba(0, 212, 255, 0.08);
+}
+
+/* Settings: Test button for Telegram bots */
+.settings-bot-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+}
+
+.settings-test-btn {
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 1px solid var(--sidebar-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.settings-test-btn:hover:not(:disabled) {
+  border-color: var(--sidebar-accent);
+  background: rgba(0, 212, 255, 0.06);
+}
+
+.settings-test-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.settings-test-result {
+  font-size: var(--font-size-sm);
+}
+
+.settings-test-result.ok {
+  color: var(--status-running);
+}
+
+.settings-test-result.fail {
+  color: var(--status-exited);
+}
+
 /* Empty state */
 .empty-state {
   display: flex;

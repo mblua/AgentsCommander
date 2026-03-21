@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::telegram::types::TelegramBotConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
@@ -24,6 +26,9 @@ pub struct AppSettings {
     pub repo_paths: Vec<String>,
     /// Available coding agents
     pub agents: Vec<AgentConfig>,
+    /// Configured Telegram bots for bridge
+    #[serde(default)]
+    pub telegram_bots: Vec<TelegramBotConfig>,
 }
 
 impl Default for AppSettings {
@@ -36,6 +41,7 @@ impl Default for AppSettings {
                 r"C:\Users\maria\0_repos_phi".to_string(),
             ],
             agents: vec![],
+            telegram_bots: vec![],
         }
     }
 }

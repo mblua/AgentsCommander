@@ -1,6 +1,6 @@
 import { Component, createSignal, For, Show, onMount } from "solid-js";
-import type { AppSettings, AgentConfig } from "../../shared/types";
-import { SettingsAPI } from "../../shared/ipc";
+import type { AppSettings, AgentConfig, TelegramBotConfig } from "../../shared/types";
+import { SettingsAPI, TelegramAPI } from "../../shared/ipc";
 
 const AGENT_PRESETS: Record<string, Omit<AgentConfig, "id">> = {
   claude: {
@@ -27,6 +27,8 @@ function newId(): string {
 const SettingsModal: Component<{ onClose: () => void }> = (props) => {
   const [settings, setSettings] = createSignal<AppSettings | null>(null);
   const [saving, setSaving] = createSignal(false);
+  const [testingBot, setTestingBot] = createSignal<string | null>(null);
+  const [testResult, setTestResult] = createSignal<{ id: string; ok: boolean; msg?: string } | null>(null);
 
   onMount(async () => {
     const s = await SettingsAPI.get();
@@ -99,6 +101,53 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
       "agents",
       s.agents.filter((_, i) => i !== index)
     );
+  };
+
+  // Telegram Bots
+  const updateBot = (
+    index: number,
+    field: keyof TelegramBotConfig,
+    value: string | number
+  ) => {
+    const s = settings();
+    if (!s) return;
+    const bots = [...(s.telegramBots || [])];
+    bots[index] = { ...bots[index], [field]: value };
+    updateField("telegramBots", bots);
+  };
+
+  const addBot = () => {
+    const s = settings();
+    if (!s) return;
+    const bot: TelegramBotConfig = {
+      id: newId(),
+      label: "",
+      token: "",
+      chatId: 0,
+      color: "#0088cc",
+    };
+    updateField("telegramBots", [...(s.telegramBots || []), bot]);
+  };
+
+  const removeBot = (index: number) => {
+    const s = settings();
+    if (!s) return;
+    updateField(
+      "telegramBots",
+      (s.telegramBots || []).filter((_, i) => i !== index)
+    );
+  };
+
+  const handleTestBot = async (bot: TelegramBotConfig) => {
+    setTestingBot(bot.id);
+    setTestResult(null);
+    try {
+      await TelegramAPI.sendTest(bot.token, bot.chatId);
+      setTestResult({ id: bot.id, ok: true });
+    } catch (e: any) {
+      setTestResult({ id: bot.id, ok: false, msg: e?.toString() });
+    }
+    setTestingBot(null);
   };
 
   const hasAgentByCommand = (command: string): boolean => {
@@ -321,6 +370,113 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
                   + Custom Agent
                 </button>
               </div>
+            </div>
+
+            {/* Telegram Bots */}
+            <div class="settings-section">
+              <div class="settings-section-title">Telegram Bots</div>
+
+              <For each={settings()!.telegramBots || []}>
+                {(bot, i) => (
+                  <div class="settings-button-card">
+                    <div class="settings-button-card-header">
+                      <div
+                        class="settings-color-dot"
+                        style={{ background: bot.color }}
+                      />
+                      <span>{bot.label || "New Bot"}</span>
+                      <button
+                        class="settings-agent-remove"
+                        onClick={() => removeBot(i())}
+                        title="Remove bot"
+                      >
+                        &#x2715;
+                      </button>
+                    </div>
+                    <label class="settings-field">
+                      <span class="settings-label">Label</span>
+                      <input
+                        class="settings-input"
+                        value={bot.label}
+                        onInput={(e) =>
+                          updateBot(i(), "label", e.currentTarget.value)
+                        }
+                        placeholder="My Bot"
+                      />
+                    </label>
+                    <label class="settings-field">
+                      <span class="settings-label">Bot Token</span>
+                      <input
+                        class="settings-input"
+                        type="password"
+                        value={bot.token}
+                        onInput={(e) =>
+                          updateBot(i(), "token", e.currentTarget.value)
+                        }
+                        placeholder="123456:ABC-DEF..."
+                      />
+                    </label>
+                    <label class="settings-field">
+                      <span class="settings-label">Chat ID</span>
+                      <input
+                        class="settings-input"
+                        type="number"
+                        value={bot.chatId}
+                        onInput={(e) =>
+                          updateBot(
+                            i(),
+                            "chatId",
+                            parseInt(e.currentTarget.value) || 0
+                          )
+                        }
+                        placeholder="123456789"
+                      />
+                    </label>
+                    <label class="settings-field">
+                      <span class="settings-label">Color</span>
+                      <div class="settings-color-row">
+                        <input
+                          type="color"
+                          class="settings-color-picker"
+                          value={bot.color}
+                          onInput={(e) =>
+                            updateBot(i(), "color", e.currentTarget.value)
+                          }
+                        />
+                        <input
+                          class="settings-input settings-input-sm"
+                          value={bot.color}
+                          onInput={(e) =>
+                            updateBot(i(), "color", e.currentTarget.value)
+                          }
+                        />
+                      </div>
+                    </label>
+                    <div class="settings-bot-actions">
+                      <button
+                        class="settings-test-btn"
+                        onClick={() => handleTestBot(bot)}
+                        disabled={testingBot() === bot.id || !bot.token || !bot.chatId}
+                      >
+                        {testingBot() === bot.id ? "Testing..." : "Test"}
+                      </button>
+                      <Show when={testResult()?.id === bot.id}>
+                        <span
+                          class={`settings-test-result ${testResult()!.ok ? "ok" : "fail"}`}
+                        >
+                          {testResult()!.ok
+                            ? "Connected"
+                            : testResult()!.msg || "Failed"}
+                        </span>
+                      </Show>
+                    </div>
+                  </div>
+                )}
+              </For>
+
+              <button class="settings-add-btn" onClick={addBot}>
+                + Add Telegram Bot
+              </button>
             </div>
           </div>
         )}

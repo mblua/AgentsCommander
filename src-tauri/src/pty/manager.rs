@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 use crate::errors::AppError;
+use crate::telegram::manager::OutputSenderMap;
 
 struct PtyInstance {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -16,6 +17,7 @@ struct PtyInstance {
 
 pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
+    output_senders: OutputSenderMap,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -26,9 +28,10 @@ struct PtyOutputPayload {
 }
 
 impl PtyManager {
-    pub fn new() -> Self {
+    pub fn new(output_senders: OutputSenderMap) -> Self {
         Self {
             ptys: Arc::new(Mutex::new(HashMap::new())),
+            output_senders,
         }
     }
 
@@ -107,17 +110,28 @@ impl PtyManager {
 
         self.ptys.lock().unwrap().insert(id, instance);
 
-        // Spawn async read loop that emits PTY output to the frontend
+        // Spawn read loop that emits PTY output to the frontend
+        // and feeds active Telegram bridges via the output sender map
         let session_id_str = id.to_string();
+        let output_senders = self.output_senders.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break, // EOF
                     Ok(n) => {
+                        let data = buf[..n].to_vec();
+
+                        // Feed Telegram bridge if active (non-blocking)
+                        if let Ok(senders) = output_senders.lock() {
+                            if let Some(tx) = senders.get(&id) {
+                                let _ = tx.try_send(data.clone());
+                            }
+                        }
+
                         let payload = PtyOutputPayload {
                             session_id: session_id_str.clone(),
-                            data: buf[..n].to_vec(),
+                            data,
                         };
                         let _ = app_handle.emit("pty_output", payload);
                     }

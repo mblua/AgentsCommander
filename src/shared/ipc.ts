@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Session, PtyOutputEvent, AppSettings, RepoMatch } from "./types";
+import type { Session, PtyOutputEvent, AppSettings, RepoMatch, BridgeInfo } from "./types";
 
 export interface CreateSessionOptions {
   shell?: string;
@@ -84,5 +84,56 @@ export function onSessionRenamed(
 ): Promise<UnlistenFn> {
   return listen<{ id: string; name: string }>("session_renamed", (e) =>
     callback(e.payload)
+  );
+}
+
+// Telegram Bridge API
+export const TelegramAPI = {
+  attach: (sessionId: string, botId: string) =>
+    invoke<BridgeInfo>("telegram_attach", { sessionId, botId }),
+
+  detach: (sessionId: string) =>
+    invoke<void>("telegram_detach", { sessionId }),
+
+  listBridges: () => invoke<BridgeInfo[]>("telegram_list_bridges"),
+
+  getBridge: (sessionId: string) =>
+    invoke<BridgeInfo | null>("telegram_get_bridge", { sessionId }),
+
+  sendTest: (token: string, chatId: number) =>
+    invoke<void>("telegram_send_test", { token, chatId }),
+};
+
+export function onTelegramBridgeAttached(
+  callback: (data: BridgeInfo) => void
+): Promise<UnlistenFn> {
+  return listen<BridgeInfo>("telegram_bridge_attached", (e) =>
+    callback(e.payload)
+  );
+}
+
+export function onTelegramBridgeDetached(
+  callback: (data: { sessionId: string }) => void
+): Promise<UnlistenFn> {
+  return listen<{ sessionId: string }>("telegram_bridge_detached", (e) =>
+    callback(e.payload)
+  );
+}
+
+export function onTelegramBridgeError(
+  callback: (data: { sessionId: string; error: string }) => void
+): Promise<UnlistenFn> {
+  return listen<{ sessionId: string; error: string }>(
+    "telegram_bridge_error",
+    (e) => callback(e.payload)
+  );
+}
+
+export function onTelegramIncoming(
+  callback: (data: { sessionId: string; text: string; from: string }) => void
+): Promise<UnlistenFn> {
+  return listen<{ sessionId: string; text: string; from: string }>(
+    "telegram_incoming",
+    (e) => callback(e.payload)
   );
 }

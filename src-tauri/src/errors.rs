@@ -14,6 +14,9 @@ pub enum AppError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Telegram error: {0}")]
+    Telegram(String),
+
     #[error("{0}")]
     Other(String),
 }

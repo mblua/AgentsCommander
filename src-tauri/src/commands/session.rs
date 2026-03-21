@@ -7,6 +7,8 @@ use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
+use crate::telegram::manager::TelegramBridgeState;
+use crate::telegram::types::RepoConfig;
 
 /// Create a new session. Optionally override shell/args/cwd/name (for action buttons).
 /// Falls back to settings defaults when not provided.
@@ -15,6 +17,7 @@ pub async fn create_session(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    tg_mgr: State<'_, TelegramBridgeState>,
     settings: State<'_, SettingsState>,
     shell: Option<String>,
     shell_args: Option<Vec<String>>,
@@ -61,6 +64,32 @@ pub async fn create_session(
     // Emit session_created event
     let _ = app.emit("session_created", info.clone());
 
+    // Auto-attach Telegram bot if repo has .summongate/config.json
+    let config_path = std::path::Path::new(&cwd)
+        .join(".summongate")
+        .join("config.json");
+    if let Ok(contents) = tokio::fs::read_to_string(&config_path).await {
+        if let Ok(repo_config) = serde_json::from_str::<RepoConfig>(&contents) {
+            if let Some(bot_label) = repo_config.telegram_bot {
+                let cfg = settings.read().await;
+                let bot = cfg
+                    .telegram_bots
+                    .iter()
+                    .find(|b| b.label == bot_label)
+                    .cloned();
+                drop(cfg);
+
+                if let Some(bot) = bot {
+                    let pty_arc = pty_mgr.inner().clone();
+                    let mut tg = tg_mgr.lock().await;
+                    if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone()) {
+                        let _ = app.emit("telegram_bridge_attached", bridge_info);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(info)
 }
 
@@ -69,9 +98,22 @@ pub async fn destroy_session(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    tg_mgr: State<'_, TelegramBridgeState>,
     id: String,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    // Auto-detach Telegram bridge if active
+    {
+        let mut tg = tg_mgr.lock().await;
+        if tg.has_bridge(uuid) {
+            let _ = tg.detach(uuid);
+            let _ = app.emit(
+                "telegram_bridge_detached",
+                serde_json::json!({ "sessionId": id }),
+            );
+        }
+    }
 
     // Kill the PTY first
     pty_mgr

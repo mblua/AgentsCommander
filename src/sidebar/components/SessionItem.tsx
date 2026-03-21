@@ -1,6 +1,7 @@
-import { Component, createSignal, Show } from "solid-js";
-import type { Session, SessionStatus } from "../../shared/types";
-import { SessionAPI } from "../../shared/ipc";
+import { Component, createSignal, Show, For } from "solid-js";
+import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
+import { SessionAPI, TelegramAPI, SettingsAPI } from "../../shared/ipc";
+import { bridgesStore } from "../stores/bridges";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -13,7 +14,35 @@ const SessionItem: Component<{
 }> = (props) => {
   const [editing, setEditing] = createSignal(false);
   const [editValue, setEditValue] = createSignal("");
+  const [showBotMenu, setShowBotMenu] = createSignal(false);
+  const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
   let inputRef!: HTMLInputElement;
+
+  const bridge = () => bridgesStore.getBridge(props.session.id);
+
+  const handleTelegramClick = async (e: MouseEvent) => {
+    e.stopPropagation();
+    const b = bridge();
+    if (b) {
+      // Detach existing bridge
+      await TelegramAPI.detach(props.session.id);
+    } else {
+      // Load bots and show menu (or auto-attach if only one)
+      const settings = await SettingsAPI.get();
+      const bots = settings.telegramBots || [];
+      if (bots.length === 1) {
+        await TelegramAPI.attach(props.session.id, bots[0].id);
+      } else if (bots.length > 1) {
+        setAvailableBots(bots);
+        setShowBotMenu(true);
+      }
+    }
+  };
+
+  const handleBotSelect = async (botId: string) => {
+    setShowBotMenu(false);
+    await TelegramAPI.attach(props.session.id, botId);
+  };
 
   const handleClick = () => {
     if (!editing()) {
@@ -89,6 +118,36 @@ const SessionItem: Component<{
         </Show>
         <div class="session-item-shell">{props.session.shell}</div>
       </div>
+      <Show when={bridge()}>
+        <div
+          class="session-item-bridge-dot"
+          style={{ background: bridge()!.color }}
+          title={`Telegram: ${bridge()!.botLabel}`}
+        />
+      </Show>
+      <button
+        class={`session-item-telegram ${bridge() ? "active" : ""}`}
+        onClick={handleTelegramClick}
+        title={bridge() ? "Detach Telegram" : "Attach Telegram"}
+        style={bridge() ? { color: bridge()!.color } : {}}
+      >
+        T
+      </button>
+      <Show when={showBotMenu()}>
+        <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
+          <For each={availableBots()}>
+            {(bot) => (
+              <button
+                class="session-item-bot-option"
+                onClick={() => handleBotSelect(bot.id)}
+              >
+                <span class="settings-color-dot" style={{ background: bot.color }} />
+                {bot.label}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
       <button class="session-item-close" onClick={handleClose} title="Close session">
         &#x2715;
       </button>

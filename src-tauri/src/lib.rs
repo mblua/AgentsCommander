@@ -3,22 +3,31 @@ pub mod config;
 pub mod errors;
 pub mod pty;
 pub mod session;
+pub mod telegram;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use config::settings::SettingsState;
 use pty::manager::PtyManager;
 use session::manager::SessionManager;
+use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::new()));
+
+    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+    let pty_mgr = Arc::new(Mutex::new(PtyManager::new(output_senders.clone())));
+    let tg_mgr: TelegramBridgeState =
+        Arc::new(tokio::sync::Mutex::new(TelegramBridgeManager::new(output_senders)));
+
     let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(config::settings::load_settings()));
 
     tauri::Builder::default()
         .manage(session_mgr)
         .manage(pty_mgr)
+        .manage(tg_mgr)
         .manage(settings)
         .setup(|app| {
             use tauri::WebviewWindowBuilder;
@@ -63,6 +72,11 @@ pub fn run() {
             commands::config::get_settings,
             commands::config::update_settings,
             commands::repos::search_repos,
+            commands::telegram::telegram_attach,
+            commands::telegram::telegram_detach,
+            commands::telegram::telegram_list_bridges,
+            commands::telegram::telegram_get_bridge,
+            commands::telegram::telegram_send_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");
