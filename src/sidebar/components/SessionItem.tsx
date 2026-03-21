@@ -1,6 +1,7 @@
 import { Component, createSignal, Show, For } from "solid-js";
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
 import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI } from "../../shared/ipc";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { bridgesStore } from "../stores/bridges";
 
 function statusClass(status: SessionStatus): string {
@@ -44,9 +45,10 @@ const SessionItem: Component<{
     await TelegramAPI.attach(props.session.id, botId);
   };
 
-  const handleClick = () => {
+  const handleClick = async () => {
     if (!editing()) {
       SessionAPI.switch(props.session.id);
+      (await WebviewWindow.getByLabel("terminal"))?.setFocus();
     }
   };
 
