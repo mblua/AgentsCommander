@@ -7,6 +7,7 @@ export interface Session {
   workingDirectory: string;
   status: SessionStatus;
   waitingForInput: boolean;
+  lastPrompt: string | null;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };

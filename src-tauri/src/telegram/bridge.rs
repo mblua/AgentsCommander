@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::io::Write as IoWrite;
 use std::sync::{Arc, Mutex};
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -722,10 +722,19 @@ async fn poll_task(
                                 }),
                             );
 
+                            // Persist last prompt in backend + emit to all windows
+                            let tg_prompt = format!("[TG] {}", update.text);
+                            {
+                                let mgr_state = app.state::<std::sync::Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+                                let mgr = mgr_state.read().await;
+                                if let Ok(uuid) = uuid::Uuid::parse_str(&session_id_str) {
+                                    mgr.set_last_prompt(uuid, tg_prompt.clone()).await;
+                                }
+                            }
                             let _ = app.emit(
                                 "last_prompt",
                                 serde_json::json!({
-                                    "text": format!("[TG] {}", update.text),
+                                    "text": tg_prompt,
                                     "sessionId": session_id_str,
                                 }),
                             );

@@ -2,10 +2,9 @@ import { Component, onMount, onCleanup, createEffect } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
-import { PtyAPI, onPtyOutput } from "../../shared/ipc";
+import { PtyAPI, SessionAPI, onPtyOutput } from "../../shared/ipc";
 import { terminalStore } from "../stores/terminal";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { emit } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 
 const TerminalView: Component = () => {
@@ -80,7 +79,7 @@ const TerminalView: Component = () => {
       if (data === "\r") {
         const trimmed = inputBuffer.trim();
         if (trimmed && sessionId) {
-          emit("last_prompt", { text: trimmed, sessionId });
+          SessionAPI.setLastPrompt(sessionId, trimmed);
         }
         inputBuffer = "";
       } else if (data === "\x7f") {

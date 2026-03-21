@@ -13,6 +13,7 @@ pub struct Session {
     pub working_directory: String,
     pub status: SessionStatus,
     pub waiting_for_input: bool,
+    pub last_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -36,6 +37,7 @@ pub struct SessionInfo {
     pub working_directory: String,
     pub status: SessionStatus,
     pub waiting_for_input: bool,
+    pub last_prompt: Option<String>,
 }
 
 impl From<&Session> for SessionInfo {
@@ -49,6 +51,7 @@ impl From<&Session> for SessionInfo {
             working_directory: s.working_directory.clone(),
             status: s.status.clone(),
             waiting_for_input: s.waiting_for_input,
+            last_prompt: s.last_prompt.clone(),
         }
     }
 }

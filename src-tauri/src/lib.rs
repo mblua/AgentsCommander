@@ -129,6 +129,7 @@ pub fn run() {
             commands::session::destroy_session,
             commands::session::switch_session,
             commands::session::rename_session,
+            commands::session::set_last_prompt,
             commands::session::list_sessions,
             commands::session::get_active_session,
             commands::pty::pty_write,

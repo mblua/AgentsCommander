@@ -28,6 +28,9 @@ export const SessionAPI = {
   list: () => invoke<Session[]>("list_sessions"),
 
   getActive: () => invoke<string | null>("get_active_session"),
+
+  setLastPrompt: (id: string, text: string) =>
+    invoke<void>("set_last_prompt", { id, text }),
 };
 
 export const PtyAPI = {

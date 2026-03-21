@@ -1,6 +1,7 @@
 import { Component, createMemo, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { SessionAPI } from "../../shared/ipc";
 import { terminalStore } from "../stores/terminal";
 
 interface LastPromptProps {
@@ -19,6 +20,14 @@ const LastPrompt: Component<LastPromptProps> = (props) => {
   });
 
   onMount(async () => {
+    // Load persisted last prompts from backend
+    const sessions = await SessionAPI.list();
+    for (const s of sessions) {
+      if (s.lastPrompt) {
+        setPrompts(s.id, s.lastPrompt);
+      }
+    }
+
     unlisten = await listen<{ text: string; sessionId: string }>(
       "last_prompt",
       (event) => {

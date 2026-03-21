@@ -217,6 +217,23 @@ pub async fn list_sessions(
 }
 
 #[tauri::command]
+pub async fn set_last_prompt(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let mgr = session_mgr.read().await;
+    mgr.set_last_prompt(uuid, text.clone()).await;
+    let _ = app.emit(
+        "last_prompt",
+        serde_json::json!({ "sessionId": id, "text": text }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_active_session(
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
 ) -> Result<Option<String>, String> {
