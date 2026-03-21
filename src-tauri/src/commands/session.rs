@@ -9,6 +9,7 @@ use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::telegram::manager::TelegramBridgeState;
 use crate::telegram::types::RepoConfig;
+use crate::DetachedSessionsState;
 
 /// Create a new session. Optionally override shell/args/cwd/name (for action buttons).
 /// Falls back to settings defaults when not provided.
@@ -99,9 +100,16 @@ pub async fn destroy_session(
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
     tg_mgr: State<'_, TelegramBridgeState>,
+    detached: State<'_, DetachedSessionsState>,
     id: String,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    // Remove from detached set
+    {
+        let mut detached_set = detached.lock().unwrap();
+        detached_set.remove(&uuid);
+    }
 
     // Auto-detach Telegram bridge if active
     {
@@ -151,9 +159,22 @@ pub async fn destroy_session(
 pub async fn switch_session(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    detached: State<'_, DetachedSessionsState>,
     id: String,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    // If this session is detached, focus its window instead of switching the main terminal
+    {
+        let detached_set = detached.lock().unwrap();
+        if detached_set.contains(&uuid) {
+            let label = format!("terminal-{}", id.replace('-', ""));
+            if let Some(win) = app.get_webview_window(&label) {
+                let _ = win.set_focus();
+            }
+            return Ok(());
+        }
+    }
 
     let mgr = session_mgr.read().await;
     mgr.switch_session(uuid)

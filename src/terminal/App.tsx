@@ -59,6 +59,10 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       // Normal mode: respond to session switches
       unlisteners.push(
         await onSessionSwitched(async ({ id }) => {
+          if (!id) {
+            terminalStore.setActiveSession(null, "", "");
+            return;
+          }
           const sessions = await SessionAPI.list();
           const session = sessions.find((s) => s.id === id);
           if (session) {
