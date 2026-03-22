@@ -73,7 +73,7 @@ pub fn run() {
                 "sidebar",
                 WebviewUrl::App("index.html?window=sidebar".into()),
             )
-            .title("agentscommander")
+            .title("Agents Commander")
             .icon(icon.clone())
             .expect("Failed to set sidebar icon")
             .inner_size(280.0, 600.0)

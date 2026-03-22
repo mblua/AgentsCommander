@@ -1,4 +1,4 @@
-# AgentsCommander
+# Agents Commander
 
 A standalone Windows terminal session manager with decoupled tabs. Two synchronized windows work together: a narrow **Sidebar** for managing sessions, and a full **Terminal** window rendering the active PTY via xterm.js.
 

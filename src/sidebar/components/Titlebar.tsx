@@ -15,7 +15,7 @@ const Titlebar: Component = () => {
       <div class="titlebar-brand" data-tauri-drag-region>
         <img src={iconUrl} class="titlebar-icon" alt="" draggable={false} />
         <span class="titlebar-title" data-tauri-drag-region>
-          agentscommander
+          agents commander
         </span>
         <span class="titlebar-version" data-tauri-drag-region>
           v{APP_VERSION}
