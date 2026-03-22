@@ -153,4 +153,4 @@ Version is kept in sync across three files:
 
 ## License
 
-Private project.
+[MIT](LICENSE)
