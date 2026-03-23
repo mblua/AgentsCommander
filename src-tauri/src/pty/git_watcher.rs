@@ -88,11 +88,17 @@ impl GitWatcher {
     }
 
     async fn detect_branch(working_dir: &str) -> Option<String> {
-        let output = tokio::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(working_dir)
-            .output()
-            .await;
+        #[cfg(windows)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(working_dir);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd.output().await;
 
         match output {
             Ok(out) if out.status.success() => {
