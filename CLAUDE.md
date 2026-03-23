@@ -1,4 +1,4 @@
-# CLAUDE.md — agentscommander
+# CLAUDE.md — summongate
 
 ## Role Prompt
 
@@ -18,14 +18,14 @@ You write code that is **correct first, fast second, elegant third**. You do not
 
 ## Project Overview
 
-**agentscommander** is a standalone Windows desktop app — an external terminal session manager with decoupled tabs. Two synchronized windows:
+**summongate** is a standalone Windows desktop app — an external terminal session manager with decoupled tabs. Two synchronized windows:
 
 - **Sidebar Window**: Narrow, always-visible list of terminal sessions (create, rename, reorder, group, delete)
 - **Terminal Window**: Full xterm.js rendering of the active session's PTY output
 
 Built with **Tauri 2.x (Rust backend) + SolidJS + TypeScript (frontend) + xterm.js (terminal emulation)**.
 
-The full spec lives in `agentscommander-prompt.md` — read it before any significant work.
+The full spec lives in `summongate-prompt.md` — read it before any significant work.
 
 ---
 
@@ -39,7 +39,7 @@ The full spec lives in `agentscommander-prompt.md` — read it before any signif
 | Terminal | xterm.js (WebGL addon) |
 | PTY | portable-pty crate |
 | Styles | CSS vanilla + CSS variables |
-| Config | serde + TOML files in `~/.agentscommander/` |
+| Config | serde + TOML files in `~/.summongate/` |
 | IPC | Tauri Commands + Events |
 
 ---
@@ -73,14 +73,14 @@ PTY stdout produces output
 - Backend: `SessionManager` holds all session state behind `Arc<RwLock<>>`
 - Frontend Sidebar: SolidJS `createStore` for sessions, config, UI state
 - Frontend Terminal: SolidJS store for active terminal state
-- Persistence: TOML files in `~/.agentscommander/` (config.toml, sessions.toml, themes/*.toml)
+- Persistence: TOML files in `~/.summongate/` (config.toml, sessions.toml, themes/*.toml)
 
 ---
 
 ## Project Structure
 
 ```
-agentscommander/
+summongate/
 ├── src-tauri/                    # Rust backend
 │   ├── src/
 │   │   ├── main.rs              # Tauri setup, multi-window creation
@@ -127,7 +127,7 @@ agentscommander/
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts
-└── agentscommander-prompt.md      # Full project specification
+└── summongate-prompt.md      # Full project specification
 ```
 
 ---
@@ -201,20 +201,13 @@ Config export/import, session history, notifications, snippets, cross-platform.
 - Test Rust modules in isolation before wiring to frontend
 - Every IPC type must have matching Rust struct + TS interface
 - xterm.js must use WebGL addon, canvas renderer as fallback only
-- Config persisted to `~/.agentscommander/*.toml` — no localStorage, no databases
+- Config persisted to `~/.summongate/*.toml` — no localStorage, no databases
 
 ---
 
 ## CRITICAL — Running the App
 
-**Before running `npm run tauri dev` or `npm run tauri build`:**
-
-1. **Sync with main**: If on a feature branch, ALWAYS fetch origin and merge `main` into the current branch if main is ahead. This prevents working with stale code and avoids missing renames, config changes, or fixes already merged to main.
-   ```bash
-   git fetch origin
-   git merge origin/main
-   ```
-2. **Kill previous dev instances** using ONLY the safe script:
+**Before running `npm run tauri dev` or `npm run tauri build`, kill previous dev instances using ONLY the safe script:**
 
 ```bash
 npm run kill-dev
@@ -226,7 +219,7 @@ This script (`scripts/kill-dev.ps1`) **only** kills `target\debug` instances. It
 - Unknown paths — NEVER
 
 **ABSOLUTE RULES:**
-1. **NEVER use `taskkill`, `Stop-Process`, `kill`, or ANY direct process-killing command on agentscommander.exe.** The ONLY allowed way is `npm run kill-dev`.
+1. **NEVER use `taskkill`, `Stop-Process`, `kill`, or ANY direct process-killing command on summongate.exe.** The ONLY allowed way is `npm run kill-dev`.
 2. **NEVER kill, stop, or interfere with a PROD instance (Program Files) under any circumstance.**
 3. **BEFORE launching `npm run tauri dev`**, ALWAYS check if port 1420 is in use (`netstat -ano | findstr :1420` or equivalent). If the port is occupied, **DO NOT launch another instance**. Inform the user and ask how to proceed.
 4. When in doubt, **ask the user**.
@@ -292,20 +285,3 @@ npx tsc --noEmit               # TypeScript check
 - Never assume a fix works without testing it
 - Log negative results too (what did NOT work and why)
 - Each test entry should have: **what was changed**, **how it was tested**, **result**
-
----
-
-<!-- rtk-instructions -->
-## RTK (Token Optimizer)
-
-`rtk` is a CLI proxy installed on this machine that compresses command outputs to reduce tokens.
-
-**Rule:** ALWAYS prefix Bash commands with `rtk`. If RTK has a filter for that command, it compresses the output. If not, it passes through unchanged. It is always safe to use.
-
-In command chains with &&, prefix each command:
-rtk git add . && rtk git commit -m "msg" && rtk git push
-
-Applies to: git, gh, cargo, npm, pnpm, npx, tsc, vitest, playwright, pytest, docker, kubectl, ls, grep, find, curl, and any other command.
-
-Meta: `rtk gain` to view token savings statistics, `rtk discover` to find missed RTK usage opportunities.
-<!-- /rtk-instructions -->

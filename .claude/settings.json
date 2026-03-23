@@ -1,15 +1,1 @@
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node -e \"const s=JSON.parse(require('fs').readFileSync(0,'utf8'));const c=s?.tool_input?.command;if(!c){process.exit(0)}if(/^rtk\\s/.test(c)||/&&\\s*rtk\\s/.test(c)){process.exit(0)}const skip=/^(cd |mkdir |echo |cat <<|source |export |\\.|set )/.test(c);if(skip){process.exit(0)}const parts=c.split(/\\s*(&&|\\|\\||;)\\s*/);const out=parts.map((p,i)=>{if(i%2===1)return p;if(/^rtk\\s/.test(p))return p;return 'rtk '+p}).join(' ');if(out!==c){console.log(JSON.stringify({decision:'modify',tool_input:{...s.tool_input,command:out}}))}else{process.exit(0)}\""
-          }
-        ]
-      }
-    ]
-  }
-}
+{}

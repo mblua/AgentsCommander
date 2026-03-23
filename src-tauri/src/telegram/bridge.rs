@@ -192,14 +192,17 @@ impl RowTracker {
 
             row.emitted = true;
 
-            // Skip if we already emitted this exact content (scroll dedup)
-            if self.emitted_content.contains(&row.content) {
+            // Skip if we already emitted this content (scroll dedup).
+            // Normalize whitespace so re-rendered content with different spacing
+            // from the 220-col vt100 screen still matches.
+            let normalized = normalize_whitespace(&row.content);
+            if self.emitted_content.contains(&normalized) {
                 continue;
             }
 
             // Apply agent-specific filter
             if filter.keep_line(&row.content) {
-                self.emitted_content.insert(row.content.clone());
+                self.emitted_content.insert(normalized);
                 result.push(row.content.clone());
             }
         }
@@ -214,7 +217,7 @@ impl RowTracker {
 
     /// Mark content as already emitted (e.g., user input captured on Enter)
     fn mark_emitted(&mut self, content: &str) {
-        self.emitted_content.insert(content.to_string());
+        self.emitted_content.insert(normalize_whitespace(content));
     }
 
     /// Returns true if any row is unstable (changed recently, not yet emitted)
@@ -223,6 +226,27 @@ impl RowTracker {
             .iter()
             .any(|r| !r.emitted && !r.content.is_empty())
     }
+}
+
+/// Normalize interior whitespace: collapse 2+ spaces/tabs into a single space.
+/// The vt100 220-col screen causes extra spaces when content wraps within the
+/// wide virtual terminal (e.g. "un        híbrido" instead of "un híbrido").
+/// Used for dedup comparison so re-rendered content with different spacing matches.
+fn normalize_whitespace(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.trim().chars() {
+        if c.is_whitespace() {
+            if !prev_space {
+                result.push(' ');
+            }
+            prev_space = true;
+        } else {
+            result.push(c);
+            prev_space = false;
+        }
+    }
+    result
 }
 
 /// Strip trailing box-drawing characters and whitespace from a vt100 row.
@@ -322,6 +346,14 @@ const CLAUDE_CHROME_PATTERNS: &[&str] = &[
     // Status bar header: "[Model (context) | Plan] │ branch"
     // The "] │" pattern catches this without matching conversation content
     "] \u{2502}",
+    // Interrupt/cancel hints
+    "esc to interrupt",
+    "esc to cancel",
+    // Auto-compact notifications
+    "auto-compact",
+    "compacted conversation",
+    // Memory updates
+    "memory updated",
 ];
 
 /// Claude Code spinner characters (defense in depth - stabilization is primary)
@@ -343,27 +375,37 @@ impl AgentFilter for ClaudeCodeFilter {
             }
         }
 
-        // Tool execution progress: ⎿  Running…, ⎿  Running… (3s)
-        if trimmed.starts_with("\u{23BF}") && trimmed.contains("Running") {
-            return false;
+        // Tool execution chrome: ⎿  Running…, ⎿  Running… (3s), ⎿  (no content)
+        // Also filter bare ⎿ (visual bracket with no content)
+        // Note: ⎿ followed by actual tool output (file contents, command results) should pass.
+        if trimmed.starts_with("\u{23BF}") {
+            if trimmed == "\u{23BF}"
+                || trimmed.contains("Running")
+                || trimmed.contains("(no content)")
+            {
+                return false;
+            }
         }
 
-        // Tool headers: ●─Bash(...), ●─Read(...), etc.
-        // Also catch ─Bash(...) when ● is on a separate vt100 row.
-        if trimmed.starts_with("\u{25CF}\u{2500}")
-            || trimmed.starts_with("\u{2500}Bash(")
-            || trimmed.starts_with("\u{2500}Read(")
-            || trimmed.starts_with("\u{2500}Edit(")
-            || trimmed.starts_with("\u{2500}Write(")
-            || trimmed.starts_with("\u{2500}Grep(")
-            || trimmed.starts_with("\u{2500}Glob(")
-            || trimmed.starts_with("\u{2500}Agent(")
-        {
+        // Tool headers: ●─Bash(...), ●─Read(...), ●─Skill(...), etc.
+        // ●─ prefix always means tool header.
+        if trimmed.starts_with("\u{25CF}\u{2500}") {
             return false;
         }
+        // When ● is on a separate vt100 row, tool header starts with ─
+        // followed by uppercase letter + parenthesis: ─Bash(, ─Read(, ─Agent(
+        // Require ( to avoid false positives on CLI output like "─ Build failed"
+        if trimmed.starts_with('\u{2500}') {
+            let after = &trimmed['\u{2500}'.len_utf8()..];
+            if after.starts_with(|c: char| c.is_ascii_uppercase()) && after.contains('(') {
+                return false;
+            }
+        }
+
+        // Collect non-space chars once for box-drawing and alphanumeric checks
+        let non_space: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
 
         // Box-drawing lines (separators)
-        let non_space: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
         if non_space.len() > 5
             && non_space
                 .chars()
@@ -393,7 +435,6 @@ impl AgentFilter for ClaudeCodeFilter {
         // Low alphanumeric ratio (progress bars, decorative lines, garbled rows)
         // Do NOT count spaces - garbled rows like "────────❯          ue─bajar."
         // have many spaces that inflate the ratio.
-        let non_space: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
         let total_ns: usize = non_space.chars().count();
         if total_ns > 5 {
             let alnum: usize = non_space
@@ -447,23 +488,32 @@ fn is_thinking_line(s: &str) -> bool {
         return true;
     }
 
-    let check = if let Some(first) = s.chars().next() {
-        if CLAUDE_SPINNERS.contains(&first) {
-            s[first.len_utf8()..].trim()
-        } else {
-            s
-        }
+    let had_spinner_prefix = s.chars().next().map(|c| CLAUDE_SPINNERS.contains(&c)).unwrap_or(false);
+
+    let check = if had_spinner_prefix {
+        s[s.chars().next().unwrap().len_utf8()..].trim()
     } else {
-        return false;
+        s
     };
 
     if check.ends_with('\u{2026}') || check.ends_with("...") {
         let word_part = check.trim_end_matches('\u{2026}').trim_end_matches("...");
-        // Any short text starting with a spinner char and ending with ellipsis
-        // is a Claude Code thinking/processing animation (e.g. "Topsy-turvying…",
-        // "Gallivanting…", "Ttokens.rvying…"). Limit to 50 chars to avoid
-        // false positives with real content.
-        if !word_part.is_empty() && word_part.len() < 50 {
+        if word_part.is_empty() || word_part.len() >= 50 || word_part.contains(' ') {
+            return false;
+        }
+        // Without a spinner prefix (e.g. bare "Gallivanting…"), a single word
+        // ending in ellipsis is always a spinner animation - safe to filter.
+        if !had_spinner_prefix {
+            return true;
+        }
+        // With a spinner prefix (e.g. "● Brewing…"), we must be careful:
+        // ● is also the Claude response indicator. Short single-word responses
+        // like "● Confirmed…" or "● Done…" are real content.
+        // Claude's spinner verbs are invented/unusual words (Brewing, Gallivanting,
+        // Pontificating). We filter only if the word starts with uppercase
+        // (spinner verbs always do) and contains no common short-word pattern.
+        // This is defense-in-depth: stabilization is the primary mechanism.
+        if word_part.starts_with(|c: char| c.is_uppercase()) {
             return true;
         }
     }
