@@ -20,8 +20,7 @@ struct BridgeLogger {
 
 impl BridgeLogger {
     fn new(session_id: &str) -> Self {
-        let file = dirs::home_dir()
-            .map(|h| h.join(".agentscommander"))
+        let file = crate::config::config_dir()
             .and_then(|dir| {
                 std::fs::create_dir_all(&dir).ok()?;
                 let path = dir.join("telegram-bridge.log");
@@ -71,7 +70,7 @@ struct DiagLogger {
 
 impl DiagLogger {
     fn new() -> Self {
-        let dir = dirs::home_dir().map(|h| h.join(".agentscommander"));
+        let dir = crate::config::config_dir();
 
         let open = |name: &str| -> Option<std::fs::File> {
             let dir = dir.as_ref()?;
@@ -89,7 +88,7 @@ impl DiagLogger {
         let sent_file = open("diag-sent.log");
 
         if raw_file.is_some() && sent_file.is_some() {
-            log::info!("Diagnostic logger active: ~/.agentscommander/diag-raw.log + diag-sent.log");
+            log::info!("Diagnostic logger active: diag-raw.log + diag-sent.log");
         }
 
         Self { raw_file, sent_file }

@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
+use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -10,6 +11,44 @@ use crate::session::session::SessionInfo;
 use crate::telegram::manager::TelegramBridgeState;
 use crate::telegram::types::RepoConfig;
 use crate::DetachedSessionsState;
+
+/// Core session creation logic shared by the Tauri command and the restore path.
+/// Creates a session record, spawns a PTY, and emits the session_created event.
+pub async fn create_session_inner(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    session_name: Option<String>,
+) -> Result<SessionInfo, String> {
+    let mgr = session_mgr.read().await;
+    let mut session = mgr
+        .create_session(shell.clone(), shell_args.clone(), cwd.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(name) = session_name {
+        mgr.rename_session(session.id, name.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        session.name = name;
+    }
+
+    let id = session.id;
+
+    pty_mgr
+        .lock()
+        .unwrap()
+        .spawn(id, &shell, &shell_args, &cwd, 120, 30, app.clone())
+        .map_err(|e| e.to_string())?;
+
+    let info = SessionInfo::from(&session);
+    let _ = app.emit("session_created", info.clone());
+
+    Ok(info)
+}
 
 /// Create a new session. Optionally override shell/args/cwd/name (for action buttons).
 /// Falls back to settings defaults when not provided.
@@ -35,37 +74,27 @@ pub async fn create_session(
             .unwrap_or_else(|| "C:\\".to_string())
     });
 
-    drop(cfg); // release lock before acquiring session manager
+    drop(cfg);
 
-    let mgr = session_mgr.read().await;
-    let mut session = mgr
-        .create_session(shell.clone(), shell_args.clone(), cwd.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    let info = create_session_inner(
+        &app,
+        session_mgr.inner(),
+        pty_mgr.inner(),
+        shell,
+        shell_args,
+        cwd.clone(),
+        session_name,
+    )
+    .await?;
 
-    // Override name if provided
-    if let Some(name) = session_name {
-        mgr.rename_session(session.id, name.clone())
-            .await
-            .map_err(|e| e.to_string())?;
-        session.name = name;
+    // Persist after creation
+    {
+        let mgr = session_mgr.read().await;
+        persist_current_state(&mgr).await;
     }
 
-    let id = session.id;
-
-    // Spawn PTY
-    pty_mgr
-        .lock()
-        .unwrap()
-        .spawn(id, &shell, &shell_args, &cwd, 120, 30, app.clone())
-        .map_err(|e| e.to_string())?;
-
-    let info = SessionInfo::from(&session);
-
-    // Emit session_created event
-    let _ = app.emit("session_created", info.clone());
-
     // Auto-attach Telegram bot if repo has .agentscommander/config.json
+    let id = Uuid::parse_str(&info.id).unwrap();
     let config_path = std::path::Path::new(&cwd)
         .join(".agentscommander")
         .join("config.json");
@@ -136,6 +165,9 @@ pub async fn destroy_session(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Persist after destruction
+    persist_current_state(&mgr).await;
+
     let _ = app.emit("session_destroyed", serde_json::json!({ "id": id }));
 
     // Close any detached terminal window for this session
@@ -181,6 +213,9 @@ pub async fn switch_session(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Persist after switch (updates was_active)
+    persist_current_state(&mgr).await;
+
     let _ = app.emit("session_switched", serde_json::json!({ "id": id }));
 
     Ok(())
@@ -199,6 +234,9 @@ pub async fn rename_session(
     mgr.rename_session(uuid, name.clone())
         .await
         .map_err(|e| e.to_string())?;
+
+    // Persist after rename
+    persist_current_state(&mgr).await;
 
     let _ = app.emit(
         "session_renamed",
