@@ -9,6 +9,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agentscommander"
+version = "0.4.2"
+dependencies = [
+ "chrono",
+ "dirs",
+ "env_logger",
+ "log",
+ "portable-pty",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "strip-ansi-escapes",
+ "tauri",
+ "tauri-build",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "vt100",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3789,28 +3811,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "summongate"
-version = "0.4.1"
-dependencies = [
- "chrono",
- "dirs",
- "env_logger",
- "log",
- "portable-pty",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "strip-ansi-escapes",
- "tauri",
- "tauri-build",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "uuid",
- "vt100",
-]
 
 [[package]]
 name = "swift-rs"

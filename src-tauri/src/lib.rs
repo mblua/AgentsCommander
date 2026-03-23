@@ -8,8 +8,8 @@ pub mod telegram;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use config::sessions_persistence;
 use tauri::Manager;
-
 use config::settings::SettingsState;
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
@@ -111,6 +111,61 @@ pub fn run() {
             .min_inner_size(400.0, 300.0)
             .decorations(false)
             .build()?;
+
+            // Restore sessions from last run
+            let persisted = sessions_persistence::load_sessions();
+            if !persisted.is_empty() {
+                use tauri::Manager;
+                let session_mgr_clone = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>().inner().clone();
+                let pty_mgr_clone = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+                let app_handle = app.handle().clone();
+
+                tauri::async_runtime::spawn(async move {
+                    let mut active_id = None;
+                    for ps in &persisted {
+                        // Skip sessions whose CWD no longer exists
+                        if !std::path::Path::new(&ps.working_directory).exists() {
+                            log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
+                            continue;
+                        }
+
+                        match commands::session::create_session_inner(
+                            &app_handle,
+                            &session_mgr_clone,
+                            &pty_mgr_clone,
+                            ps.shell.clone(),
+                            ps.shell_args.clone(),
+                            ps.working_directory.clone(),
+                            Some(ps.name.clone()),
+                        ).await {
+                            Ok(info) => {
+                                if ps.was_active {
+                                    active_id = Some(info.id);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to restore session '{}': {}", ps.name, e);
+                            }
+                        }
+                    }
+
+                    // Switch to the session that was active when the app closed
+                    if let Some(id) = active_id {
+                        if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
+                            let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> = session_mgr_clone.read().await;
+                            let _ = mgr.switch_session(uuid).await;
+                            let _ = tauri::Emitter::emit(&app_handle, "session_switched", serde_json::json!({ "id": id }));
+                            drop(mgr);
+                        }
+                    }
+
+                    // Persist the restored state (new UUIDs)
+                    let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> = session_mgr_clone.read().await;
+                    sessions_persistence::persist_current_state(&mgr).await;
+
+                    log::info!("Session restore complete");
+                });
+            }
 
             Ok(())
         })

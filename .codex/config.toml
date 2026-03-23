@@ -1,0 +1,2 @@
+# Codex compatibility: read CLAUDE.md as project instructions
+project_doc_fallback_filenames = ["CLAUDE.md"]
