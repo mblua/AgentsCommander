@@ -57,8 +57,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'agentscommander ${{ github.ref_name }}'
-          releaseBody: 'See the assets below to download and install agentscommander.'
+          releaseName: 'Agents Commander ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install Agents Commander.'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
