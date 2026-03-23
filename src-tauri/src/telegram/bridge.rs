@@ -226,6 +226,17 @@ impl RowTracker {
             .iter()
             .any(|r| !r.emitted && !r.content.is_empty())
     }
+
+    /// Returns true if any non-empty row changed within the given threshold.
+    /// Used to detect whether the screen is still actively being written to.
+    /// While the screen is settling, we hold the buffer to avoid sending
+    /// partial responses before the full content arrives.
+    fn has_recently_changed_rows(&self, threshold: Duration) -> bool {
+        let now = Instant::now();
+        self.rows.iter().any(|r| {
+            !r.content.is_empty() && now.duration_since(r.last_changed) < threshold
+        })
+    }
 }
 
 /// Normalize interior whitespace: collapse 2+ spaces/tabs into a single space.
@@ -328,9 +339,12 @@ struct ClaudeCodeFilter;
 /// conversation content when Claude mentions its own model. Use status-bar-
 /// specific patterns instead (e.g. "] │" which only appears in the header).
 const CLAUDE_CHROME_PATTERNS: &[&str] = &[
+    // Permission toggle (matches garbled "ebypassnpermissions:on" too)
+    "permissions:on",
+    "permissions:off",
     "bypass permissions",
-    "shift+tab to cycle",
-    "shift+tab to change",
+    // Keyboard hints (short form to match garbled "shift+tab-to cycle")
+    "shift+tab",
     "ctrl+b to run in background",
     "/doctor for",
     "settings issue",
@@ -346,6 +360,8 @@ const CLAUDE_CHROME_PATTERNS: &[&str] = &[
     // Status bar header: "[Model (context) | Plan] │ branch"
     // The "] │" pattern catches this without matching conversation content
     "] \u{2502}",
+    // Thinking duration indicator: ✻ Architecting... (thought for 1s)
+    "(thought for",
     // Interrupt/cancel hints
     "esc to interrupt",
     "esc to cancel",
@@ -354,6 +370,8 @@ const CLAUDE_CHROME_PATTERNS: &[&str] = &[
     "compacted conversation",
     // Memory updates
     "memory updated",
+    // Checking for updates notification
+    "Checking for updates",
 ];
 
 /// Claude Code spinner characters (defense in depth - stabilization is primary)
@@ -400,6 +418,11 @@ impl AgentFilter for ClaudeCodeFilter {
             if after.starts_with(|c: char| c.is_ascii_uppercase()) && after.contains('(') {
                 return false;
             }
+        }
+
+        // TUI menu indicators: ⏵ (U+23F5) only appears in Claude Code menus
+        if trimmed.contains('\u{23F5}') {
+            return false;
         }
 
         // Collect non-space chars once for box-drawing and alphanumeric checks
@@ -587,6 +610,14 @@ const VT_COLS: u16 = 220;
 const STABILIZATION_MS: u64 = 800;
 const TICK_MS: u64 = 200;
 const FLUSH_DELAY_MS: u64 = 500;
+/// How long after the last screen change before we consider the screen "settled".
+/// While rows are still changing, we hold the buffer to avoid sending partial
+/// responses. Set to 2x stabilization so rows have time to stabilize and be
+/// harvested before we flush.
+const SCREEN_SETTLE_MS: u64 = 1600;
+/// Safety net: maximum time to hold the buffer before force-flushing.
+/// Prevents content from being held forever during long spinner sessions.
+const MAX_FLUSH_WAIT_MS: u64 = 15000;
 
 async fn output_task(
     mut rx: mpsc::Receiver<Vec<u8>>,
@@ -606,6 +637,7 @@ async fn output_task(
     let mut diag = DiagLogger::new();
     let mut buffer = String::new();
     let mut last_buffer_add = Instant::now();
+    let mut buffer_first_add: Option<Instant> = None;
     let flush_delay = Duration::from_millis(FLUSH_DELAY_MS);
 
     // Phase 2: Virtual terminal parser
@@ -682,6 +714,9 @@ async fn output_task(
                                     tracker.mark_emitted(&cleaned);
                                     buffer.push_str(&msg);
                                     buffer.push('\n');
+                                    if buffer_first_add.is_none() {
+                                        buffer_first_add = Some(Instant::now());
+                                    }
                                     last_buffer_add = Instant::now();
                                 }
                                 break;
@@ -702,18 +737,35 @@ async fn output_task(
                         buffer.push_str(line);
                         buffer.push('\n');
                     }
+                    if buffer_first_add.is_none() {
+                        buffer_first_add = Some(Instant::now());
+                    }
                     last_buffer_add = Instant::now();
                 }
 
-                // Flush buffer if enough time has passed since last addition
+                // Flush buffer: hold while screen is still actively being written to.
+                // This prevents sending partial responses before the full content arrives.
+                // The screen is "settling" if any row changed within SCREEN_SETTLE_MS.
                 if !buffer.is_empty() {
                     let since_last = last_buffer_add.elapsed();
-                    let buf_len = buffer.trim().len();
-                    if since_last >= flush_delay || buf_len > 2000 {
+                    let since_first = buffer_first_add
+                        .map(|t| t.elapsed())
+                        .unwrap_or_default();
+                    let screen_settling = tracker.has_recently_changed_rows(
+                        Duration::from_millis(SCREEN_SETTLE_MS),
+                    );
+                    // Normal flush: screen has settled AND buffer waited long enough
+                    // Force flush: buffer held too long since first content (safety net)
+                    // Size flush: buffer very large (bound memory and latency)
+                    if (!screen_settling && since_last >= flush_delay)
+                        || since_first >= Duration::from_millis(MAX_FLUSH_WAIT_MS)
+                        || buffer.len() > 8000
+                    {
                         flush_buffer(
                             &mut buffer, &client, &token, chat_id,
                             &session_id, &app, &mut logger, &mut diag,
                         ).await;
+                        buffer_first_add = None;
                     }
                 }
             }

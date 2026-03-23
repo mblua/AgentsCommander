@@ -138,7 +138,86 @@ When Claude writes a response, middle rows stabilize before the first row (still
 
 **Result:** cargo check OK.
 
-**Pending:** Rebuild and test.
+#### Test 3: Live bridge test (3:45 AM) - after (no content) fix
+
+**Improvements confirmed:**
+- `⎿  (no content)` gone - Fix 5 working
+- Full response delivered (including first `●` line and complete paragraph)
+- No content duplication
+- Response to "Repetilo" correctly deduplicated
+
+**New problems observed:**
+1. `more` - unexplained leaked content (needs diag log investigation)
+2. `✻ Architecting... (thought for 1s)` + `4` - thinking duration indicator leaked
+
+**Root cause for problem 2:** `is_thinking_line` expects ellipsis (`…`/`...`) at end of line, but `✻ Architecting... (thought for 1s)` ends with `)`. The `(thought for Ns)` is a Claude Code specific thinking duration display.
+
+#### Fix 6: Filter `(thought for` thinking duration pattern
+
+**Change:** Added `"(thought for"` to `CLAUDE_CHROME_PATTERNS`. Uses `contains()` matching, gated behind the per-line chrome check.
+
+**Review (feature-dev:code-reviewer):** Approved. The opening parenthesis makes false positives extremely unlikely in real prose. Narrower than several already-accepted patterns.
+
+**Result:** cargo check OK.
+
+#### Test 4: Live bridge test (4:01 AM) - after (thought for) fix
+
+**Regression observed:** Garbled TUI chrome leaking heavily. The vt100 captures Claude Code's slash commands menu during startup/redraw. Text gets concatenated without spaces, so exact-match patterns fail.
+
+**Evidence from diag-sent.log:**
+```
+⏵⏵ebypassnpermissions:on (shift+tab-to cycle)ewureleaseanotesent) Update CLAUDE.md with learnings from th…
+❯                                                          otesent) Update CLAUDE.md with learnings from th…
+```
+
+**Root cause:** Existing patterns `"bypass permissions"` and `"shift+tab to cycle"` require specific spacing that garbled text breaks. The `⏵` (U+23F5) character is a dead giveaway for TUI menus but wasn't filtered.
+
+#### Fix 7: Strengthen chrome patterns for garbled TUI content
+
+**Changes:**
+1. Added `"permissions:on"` and `"permissions:off"` (catches garbled `ebypassnpermissions:on`)
+2. Shortened `"shift+tab to cycle"` / `"shift+tab to change"` to just `"shift+tab"` (catches garbled hyphenated versions)
+3. Added `⏵` (U+23F5) character filter (only appears in TUI menus, never in real content)
+4. Added `"Checking for updates"` notification pattern
+
+**Removed after review:** `"with learnings from th"` - redundant (already caught by patterns above) and false-positive risk in real Claude output.
+
+**Review (feature-dev:code-reviewer):** Approved after removing redundant pattern. `⏵` filter rated 95% confidence safe. `"shift+tab"` accepted tradeoff (low-frequency in genuine output).
+
+**Result:** cargo check OK.
+
+#### Test 5: Live bridge test (4:09 AM) - after garbled chrome fix
+
+**Improvements confirmed:**
+- NO garbled TUI chrome (Fix 7 working)
+- NO `⎿ (no content)` (Fix 5 working)
+- NO `(thought for)` indicators (Fix 6 working)
+- Response to "Qué modelo sos?" correct
+- `❯ Y vos quién sos?` once only
+
+**Remaining problems:**
+1. Partial-then-full duplication BACK: partial at 07:10:24, full at 07:10:34 (10s gap)
+2. normalize_whitespace dedup can not help here - the strings are genuinely different (partial ends at "launch", full continues with "strategy, competitive...")
+
+#### Fix 8: Screen-settling flush logic (anti-partial)
+
+**Problem:** Flush delay of 500ms is too short. Middle rows stabilize 10+ seconds before the first line (`●`). Buffer flushes partial, then full arrives as duplicate.
+
+**Solution:** Don't flush while the screen is still actively being written to.
+- Added `has_recently_changed_rows(threshold)` to RowTracker
+- While any non-empty row changed within 1600ms (2x stabilization), hold the buffer
+- Safety net: force flush after 15s from FIRST buffer addition (not last, per reviewer)
+- Size guard: flush at 8000 chars to bound memory/latency
+
+**Key insight from review:** During pure thinking (spinner only), no rows are harvested so buffer is empty - the settling check doesn't block anything. It only holds back when content IS in the buffer AND more rows are still changing.
+
+**Review (feature-dev:code-reviewer):** Two issues caught and fixed:
+1. Safety net measured from last harvest (resets continuously) - fixed to measure from first buffer add
+2. `buf_len > 2000` removed without replacement - reinstated at 8000
+
+**Result:** cargo check OK.
+
+**Pending:** Test.
 
 ---
 
