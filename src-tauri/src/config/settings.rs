@@ -42,10 +42,24 @@ fn default_true() -> bool {
 
 impl Default for AppSettings {
     fn default() -> Self {
+        let (default_shell, default_shell_args, repo_paths) = if cfg!(target_os = "windows") {
+            (
+                "powershell.exe".to_string(),
+                vec!["-NoLogo".to_string()],
+                vec![],
+            )
+        } else {
+            (
+                "/bin/bash".to_string(),
+                vec![],
+                vec![format!("{}/repos", dirs::home_dir().unwrap_or_default().display())],
+            )
+        };
+
         Self {
-            default_shell: "powershell.exe".to_string(),
-            default_shell_args: vec!["-NoLogo".to_string()],
-            repo_paths: vec![],
+            default_shell,
+            default_shell_args,
+            repo_paths,
             agents: vec![],
             telegram_bots: vec![],
             sidebar_always_on_top: false,
