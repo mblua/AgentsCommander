@@ -18,6 +18,8 @@ import {
   onTelegramBridgeError,
 } from "../shared/ipc";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
+import { initZoom } from "../shared/zoom";
+import { initWindowGeometry } from "../shared/window-geometry";
 import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
 import { settingsStore } from "../shared/stores/settings";
@@ -30,6 +32,8 @@ import "./styles/sidebar.css";
 const SidebarApp: Component = () => {
   const unlisteners: UnlistenFn[] = [];
   let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
+  let cleanupZoom: (() => void) | null = null;
+  let cleanupGeometry: (() => void) | null = null;
   let raiseTerminalEnabled = true;
   let lastRaiseTime = 0;
 
@@ -52,6 +56,8 @@ const SidebarApp: Component = () => {
 
   onMount(async () => {
     shortcutHandler = registerShortcuts();
+    cleanupZoom = await initZoom("sidebar");
+    cleanupGeometry = await initWindowGeometry("sidebar");
 
     // Apply window settings
     const appSettings = await SettingsAPI.get();
@@ -151,6 +157,8 @@ const SidebarApp: Component = () => {
   onCleanup(() => {
     unlisteners.forEach((unlisten) => unlisten());
     if (shortcutHandler) unregisterShortcuts(shortcutHandler);
+    if (cleanupZoom) cleanupZoom();
+    if (cleanupGeometry) cleanupGeometry();
     document.removeEventListener("mousedown", handleRaiseTerminal);
   });
 

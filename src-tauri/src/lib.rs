@@ -85,8 +85,11 @@ pub fn run() {
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .expect("Failed to load app icon");
 
+            // Load saved window geometry
+            let saved_settings = config::settings::load_settings();
+
             // Create Sidebar window
-            let sidebar = WebviewWindowBuilder::new(
+            let mut sidebar_builder = WebviewWindowBuilder::new(
                 app,
                 "sidebar",
                 WebviewUrl::App("index.html?window=sidebar".into()),
@@ -94,13 +97,21 @@ pub fn run() {
             .title("Agents Commander")
             .icon(icon.clone())
             .expect("Failed to set sidebar icon")
-            .inner_size(280.0, 600.0)
             .min_inner_size(200.0, 400.0)
             .decorations(false)
-            .build()?;
+            .zoom_hotkeys_enabled(true);
+
+            if let Some(geo) = &saved_settings.sidebar_geometry {
+                sidebar_builder = sidebar_builder
+                    .inner_size(geo.width, geo.height)
+                    .position(geo.x, geo.y);
+            } else {
+                sidebar_builder = sidebar_builder.inner_size(280.0, 600.0);
+            }
+            let sidebar = sidebar_builder.build()?;
 
             // Create Terminal window
-            let terminal = WebviewWindowBuilder::new(
+            let mut terminal_builder = WebviewWindowBuilder::new(
                 app,
                 "terminal",
                 WebviewUrl::App("index.html?window=terminal".into()),
@@ -108,10 +119,18 @@ pub fn run() {
             .title("Terminal")
             .icon(icon)
             .expect("Failed to set terminal icon")
-            .inner_size(900.0, 600.0)
             .min_inner_size(400.0, 300.0)
             .decorations(false)
-            .build()?;
+            .zoom_hotkeys_enabled(true);
+
+            if let Some(geo) = &saved_settings.terminal_geometry {
+                terminal_builder = terminal_builder
+                    .inner_size(geo.width, geo.height)
+                    .position(geo.x, geo.y);
+            } else {
+                terminal_builder = terminal_builder.inner_size(900.0, 600.0);
+            }
+            let terminal = terminal_builder.build()?;
 
             // Suppress unused variable warnings
             let _ = &sidebar;

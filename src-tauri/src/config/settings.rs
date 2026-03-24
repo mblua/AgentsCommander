@@ -18,6 +18,15 @@ pub struct AgentConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WindowGeometry {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub default_shell: String,
     pub default_shell_args: Vec<String>,
@@ -49,6 +58,18 @@ pub struct AppSettings {
     /// Delay in seconds before auto-executing after transcription
     #[serde(default = "default_voice_delay")]
     pub voice_auto_execute_delay: u32,
+    /// Zoom level for the sidebar window (1.0 = 100%)
+    #[serde(default = "default_zoom")]
+    pub sidebar_zoom: f64,
+    /// Zoom level for the terminal window (1.0 = 100%)
+    #[serde(default = "default_zoom")]
+    pub terminal_zoom: f64,
+    /// Saved geometry for the sidebar window
+    #[serde(default)]
+    pub sidebar_geometry: Option<WindowGeometry>,
+    /// Saved geometry for the terminal window
+    #[serde(default)]
+    pub terminal_geometry: Option<WindowGeometry>,
 }
 
 fn default_true() -> bool {
@@ -61,6 +82,10 @@ fn default_gemini_model() -> String {
 
 fn default_voice_delay() -> u32 {
     15
+}
+
+fn default_zoom() -> f64 {
+    1.0
 }
 
 impl Default for AppSettings {
@@ -92,6 +117,10 @@ impl Default for AppSettings {
             gemini_model: default_gemini_model(),
             voice_auto_execute: true,
             voice_auto_execute_delay: default_voice_delay(),
+            sidebar_zoom: default_zoom(),
+            terminal_zoom: default_zoom(),
+            sidebar_geometry: None,
+            terminal_geometry: None,
         }
     }
 }

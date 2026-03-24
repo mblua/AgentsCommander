@@ -46,6 +46,7 @@ pub async fn detach_terminal(
         .inner_size(900.0, 600.0)
         .min_inner_size(400.0, 300.0)
         .decorations(false)
+        .zoom_hotkeys_enabled(true)
         .build()
         .map_err(|e| e.to_string())?;
 

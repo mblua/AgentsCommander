@@ -100,6 +100,13 @@ export interface BridgeInfo {
 
 export type BridgeStatus = "active" | { error: string } | "detaching";
 
+export interface WindowGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface AppSettings {
   defaultShell: string;
   defaultShellArgs: string[];
@@ -113,6 +120,10 @@ export interface AppSettings {
   geminiModel: string;
   voiceAutoExecute: boolean;
   voiceAutoExecuteDelay: number;
+  sidebarZoom: number;
+  terminalZoom: number;
+  sidebarGeometry: WindowGeometry | null;
+  terminalGeometry: WindowGeometry | null;
 }
 
 // Dark Factory types

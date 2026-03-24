@@ -9,6 +9,8 @@ import {
   onSessionRenamed,
 } from "../shared/ipc";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
+import { initZoom } from "../shared/zoom";
+import { initWindowGeometry } from "../shared/window-geometry";
 import { settingsStore } from "../shared/stores/settings";
 import { terminalStore } from "./stores/terminal";
 import Titlebar from "./components/Titlebar";
@@ -25,6 +27,8 @@ interface TerminalAppProps {
 const TerminalApp: Component<TerminalAppProps> = (props) => {
   const unlisteners: UnlistenFn[] = [];
   let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
+  let cleanupZoom: (() => void) | null = null;
+  let cleanupGeometry: (() => void) | null = null;
 
   const loadActiveSession = async () => {
     if (props.lockedSessionId) {
@@ -55,6 +59,8 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
 
   onMount(async () => {
     shortcutHandler = registerShortcuts();
+    cleanupZoom = await initZoom("terminal");
+    cleanupGeometry = await initWindowGeometry("terminal");
     settingsStore.load();
     await loadActiveSession();
 
@@ -117,6 +123,8 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
   onCleanup(() => {
     unlisteners.forEach((u) => u());
     if (shortcutHandler) unregisterShortcuts(shortcutHandler);
+    if (cleanupZoom) cleanupZoom();
+    if (cleanupGeometry) cleanupGeometry();
   });
 
   return (
