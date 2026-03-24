@@ -43,6 +43,12 @@ pub struct AppSettings {
     /// Gemini model for voice transcription
     #[serde(default = "default_gemini_model")]
     pub gemini_model: String,
+    /// Auto-execute (send Enter) after voice transcription
+    #[serde(default = "default_true")]
+    pub voice_auto_execute: bool,
+    /// Delay in seconds before auto-executing after transcription
+    #[serde(default = "default_voice_delay")]
+    pub voice_auto_execute_delay: u32,
 }
 
 fn default_true() -> bool {
@@ -51,6 +57,10 @@ fn default_true() -> bool {
 
 fn default_gemini_model() -> String {
     "gemini-2.5-flash".to_string()
+}
+
+fn default_voice_delay() -> u32 {
+    15
 }
 
 impl Default for AppSettings {
@@ -80,6 +90,8 @@ impl Default for AppSettings {
             voice_to_text_enabled: false,
             gemini_api_key: String::new(),
             gemini_model: default_gemini_model(),
+            voice_auto_execute: true,
+            voice_auto_execute_delay: default_voice_delay(),
         }
     }
 }

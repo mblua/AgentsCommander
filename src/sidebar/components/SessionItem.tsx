@@ -24,10 +24,21 @@ const SessionItem: Component<{
   const bridge = () => bridgesStore.getBridge(props.session.id);
   const isRecording = () => voiceRecorder.recordingSessionId() === props.session.id;
   const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
+  const isAutoExecuting = () => voiceRecorder.autoExecuteSessionId() === props.session.id;
 
   const handleMicClick = (e: MouseEvent) => {
     e.stopPropagation();
     voiceRecorder.toggle(props.session.id);
+  };
+
+  const handleCancelRecording = (e: MouseEvent) => {
+    e.stopPropagation();
+    voiceRecorder.cancel();
+  };
+
+  const handleCancelAutoExecute = (e: MouseEvent) => {
+    e.stopPropagation();
+    voiceRecorder.cancelAutoExecute();
   };
 
   const handleTelegramClick = async (e: MouseEvent) => {
@@ -155,13 +166,21 @@ const SessionItem: Component<{
           </div>
         </Show>
 
+        <Show when={isAutoExecuting()}>
+          <div class="session-item-voice-indicator auto-execute">
+            <span class="voice-countdown">{voiceRecorder.autoExecuteCountdown()}s</span>
+            <span class="voice-execute-text">Auto-execute</span>
+            <button class="voice-cancel-execute" onClick={handleCancelAutoExecute}>Cancel</button>
+          </div>
+        </Show>
+
         <Show when={voiceRecorder.micError()}>
           <div class="session-item-voice-indicator error">
             <span class="voice-error-text">{voiceRecorder.micError()}</span>
           </div>
         </Show>
 
-        <Show when={!isRecording() && !isProcessing() && !voiceRecorder.micError()}>
+        <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !voiceRecorder.micError()}>
           <Show when={props.session.gitBranch}>
             <div class="session-item-branch" title={props.session.gitBranch!}>
               {props.session.gitBranch}
@@ -171,6 +190,15 @@ const SessionItem: Component<{
         </Show>
       </div>
       <Show when={settingsStore.voiceEnabled}>
+        <Show when={isRecording()}>
+          <button
+            class="session-item-mic-cancel"
+            onClick={handleCancelRecording}
+            title="Cancel recording"
+          >
+            &#x2715;
+          </button>
+        </Show>
         <button
           class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""}`}
           onClick={handleMicClick}

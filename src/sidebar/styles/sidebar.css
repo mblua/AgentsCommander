@@ -807,6 +807,61 @@ html, body, #root {
   color: var(--sidebar-accent);
 }
 
+/* Auto-execute countdown state */
+.session-item-voice-indicator.auto-execute {
+  gap: 5px;
+}
+
+.session-item-voice-indicator .voice-countdown {
+  font-size: 11px;
+  font-weight: 600;
+  color: #22d3ee;
+  font-variant-numeric: tabular-nums;
+  min-width: 20px;
+}
+
+.session-item-voice-indicator .voice-execute-text {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.session-item-voice-indicator .voice-cancel-execute {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.session-item-voice-indicator .voice-cancel-execute:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+/* Cancel recording button */
+.session-item-mic-cancel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+}
+
+.session-item-mic-cancel:hover {
+  background: rgba(239, 68, 68, 0.3);
+}
+
 /* Error state */
 .session-item-voice-indicator.error .voice-error-text {
   font-size: 10px;

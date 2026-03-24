@@ -111,6 +111,8 @@ export interface AppSettings {
   voiceToTextEnabled: boolean;
   geminiApiKey: string;
   geminiModel: string;
+  voiceAutoExecute: boolean;
+  voiceAutoExecuteDelay: number;
 }
 
 // Dark Factory types
