@@ -33,8 +33,11 @@ const SidebarApp: Component = () => {
   let raiseTerminalEnabled = true;
   let lastRaiseTime = 0;
 
-  const handleRaiseTerminal = async () => {
+  const handleRaiseTerminal = async (e: MouseEvent) => {
     if (!raiseTerminalEnabled) return;
+    // Don't steal focus from interactive elements
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON") return;
     const now = Date.now();
     if (now - lastRaiseTime < 500) return;
     lastRaiseTime = now;

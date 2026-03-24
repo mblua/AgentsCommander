@@ -1,4 +1,5 @@
 import { Component, createSignal, For, Show, onMount } from "solid-js";
+import { createStore, produce } from "solid-js/store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   AppSettings,
@@ -50,7 +51,7 @@ const TABS: { key: SettingsTab; label: string }[] = [
 ];
 
 const SettingsModal: Component<{ onClose: () => void }> = (props) => {
-  const [settings, setSettings] = createSignal<AppSettings | null>(null);
+  const [settings, setSettings] = createStore<{ data: AppSettings | null }>({ data: null });
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
   const [testResult, setTestResult] = createSignal<{
@@ -61,7 +62,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
   const [activeTab, setActiveTab] = createSignal<SettingsTab>("general");
 
   // Dark Factory state (separate from AppSettings)
-  const [dfConfig, setDfConfig] = createSignal<DarkFactoryConfig>({ teams: [] });
+  const [dfConfig, setDfConfig] = createStore<DarkFactoryConfig>({ teams: [] });
   const [repoResults, setRepoResults] = createSignal<RepoMatch[]>([]);
   const [repoQuery, setRepoQuery] = createSignal("");
   const [searchingRepos, setSearchingRepos] = createSignal(false);
@@ -69,9 +70,11 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
   const [newTeamName, setNewTeamName] = createSignal("");
   const [teamNameError, setTeamNameError] = createSignal("");
 
+  const s = () => settings.data;
+
   onMount(async () => {
-    const [s, df] = await Promise.all([SettingsAPI.get(), DarkFactoryAPI.get()]);
-    setSettings(s);
+    const [loaded, df] = await Promise.all([SettingsAPI.get(), DarkFactoryAPI.get()]);
+    setSettings("data", loaded);
     setDfConfig(df);
   });
 
@@ -80,30 +83,24 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     key: K,
     value: AppSettings[K]
   ) => {
-    const s = settings();
-    if (s) setSettings({ ...s, [key]: value });
+    if (!settings.data) return;
+    setSettings("data", key as any, value as any);
   };
 
   // ── Repo paths ──
   const updateRepoPath = (index: number, value: string) => {
-    const s = settings();
-    if (!s) return;
-    const paths = [...s.repoPaths];
-    paths[index] = value;
-    updateField("repoPaths", paths);
+    if (!settings.data) return;
+    setSettings("data", "repoPaths", index, value);
   };
 
   const addRepoPath = () => {
-    const s = settings();
-    if (!s) return;
-    updateField("repoPaths", [...s.repoPaths, ""]);
+    if (!settings.data) return;
+    setSettings("data", "repoPaths", (prev) => [...prev, ""]);
   };
 
   const removeRepoPath = (index: number) => {
-    const s = settings();
-    if (!s) return;
-    const paths = s.repoPaths.filter((_, i) => i !== index);
-    updateField("repoPaths", paths);
+    if (!settings.data) return;
+    setSettings("data", "repoPaths", (prev) => prev.filter((_, i) => i !== index));
   };
 
   // ── Agents ──
@@ -112,16 +109,12 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     field: keyof AgentConfig,
     value: string | boolean | string[]
   ) => {
-    const s = settings();
-    if (!s) return;
-    const agents = [...s.agents];
-    agents[index] = { ...agents[index], [field]: value };
-    updateField("agents", agents);
+    if (!settings.data) return;
+    setSettings("data", "agents", index, field as any, value as any);
   };
 
   const addAgent = (preset?: Omit<AgentConfig, "id">) => {
-    const s = settings();
-    if (!s) return;
+    if (!settings.data) return;
     const agent: AgentConfig = preset
       ? { id: newId(), ...preset }
       : {
@@ -131,16 +124,12 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           color: "#6366f1",
           gitPullBefore: false,
         };
-    updateField("agents", [...s.agents, agent]);
+    setSettings("data", "agents", (prev) => [...prev, agent]);
   };
 
   const removeAgent = (index: number) => {
-    const s = settings();
-    if (!s) return;
-    updateField(
-      "agents",
-      s.agents.filter((_, i) => i !== index)
-    );
+    if (!settings.data) return;
+    setSettings("data", "agents", (prev) => prev.filter((_, i) => i !== index));
   };
 
   // ── Telegram Bots ──
@@ -149,16 +138,12 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     field: keyof TelegramBotConfig,
     value: string | number
   ) => {
-    const s = settings();
-    if (!s) return;
-    const bots = [...(s.telegramBots || [])];
-    bots[index] = { ...bots[index], [field]: value };
-    updateField("telegramBots", bots);
+    if (!settings.data) return;
+    setSettings("data", "telegramBots", index, field as any, value as any);
   };
 
   const addBot = () => {
-    const s = settings();
-    if (!s) return;
+    if (!settings.data) return;
     const bot: TelegramBotConfig = {
       id: newId(),
       label: "",
@@ -166,16 +151,12 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
       chatId: 0,
       color: "#0088cc",
     };
-    updateField("telegramBots", [...(s.telegramBots || []), bot]);
+    setSettings("data", "telegramBots", (prev) => [...(prev || []), bot]);
   };
 
   const removeBot = (index: number) => {
-    const s = settings();
-    if (!s) return;
-    updateField(
-      "telegramBots",
-      (s.telegramBots || []).filter((_, i) => i !== index)
-    );
+    if (!settings.data) return;
+    setSettings("data", "telegramBots", (prev) => (prev || []).filter((_, i) => i !== index));
   };
 
   const handleTestBot = async (bot: TelegramBotConfig, index: number) => {
@@ -192,9 +173,8 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
   };
 
   const hasAgentByCommand = (command: string): boolean => {
-    const s = settings();
-    if (!s) return false;
-    return s.agents.some((a) => a.command === command);
+    if (!settings.data) return false;
+    return settings.data.agents.some((a) => a.command === command);
   };
 
   // ── Dark Factory: Teams ──
@@ -204,8 +184,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
       setTeamNameError("Name cannot be empty");
       return;
     }
-    const df = dfConfig();
-    if (df.teams.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
+    if (dfConfig.teams.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
       setTeamNameError("Team name already exists");
       return;
     }
@@ -215,62 +194,51 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
       name,
       members: [],
     };
-    setDfConfig({ teams: [...df.teams, team] });
+    setDfConfig("teams", (prev) => [...prev, team]);
     setNewTeamName("");
   };
 
   const removeTeam = (teamId: string) => {
-    const df = dfConfig();
-    setDfConfig({ teams: df.teams.filter((t) => t.id !== teamId) });
+    setDfConfig("teams", (prev) => prev.filter((t) => t.id !== teamId));
   };
 
   const updateTeamName = (teamId: string, name: string) => {
-    const df = dfConfig();
-    setDfConfig({
-      teams: df.teams.map((t) => (t.id === teamId ? { ...t, name } : t)),
-    });
+    setDfConfig("teams", (t) => t.id === teamId, "name", name);
   };
 
   const addMemberToTeam = (teamId: string, repo: RepoMatch) => {
-    const df = dfConfig();
-    setDfConfig({
-      teams: df.teams.map((t) => {
-        if (t.id !== teamId) return t;
-        // Prevent duplicates
-        if (t.members.some((m) => m.path === repo.path)) return t;
-        const member: TeamMember = { name: repo.name, path: repo.path };
-        return { ...t, members: [...t.members, member] };
-      }),
-    });
+    setDfConfig(
+      "teams",
+      (t) => t.id === teamId,
+      "members",
+      (prev) => {
+        if (prev.some((m) => m.path === repo.path)) return prev;
+        return [...prev, { name: repo.name, path: repo.path }];
+      }
+    );
     setAddingMemberToTeam(null);
     setRepoQuery("");
     setRepoResults([]);
   };
 
   const removeMember = (teamId: string, memberPath: string) => {
-    const df = dfConfig();
-    setDfConfig({
-      teams: df.teams.map((t) => {
-        if (t.id !== teamId) return t;
-        const members = t.members.filter((m) => m.path !== memberPath);
-        // Clear coordinator if removed
-        const coordCleared =
-          t.coordinatorName &&
-          !members.some((m) => m.name === t.coordinatorName)
-            ? undefined
-            : t.coordinatorName;
-        return { ...t, members, coordinatorName: coordCleared };
-      }),
-    });
+    setDfConfig(
+      "teams",
+      (t) => t.id === teamId,
+      produce((team: Team) => {
+        team.members = team.members.filter((m) => m.path !== memberPath);
+        if (
+          team.coordinatorName &&
+          !team.members.some((m) => m.name === team.coordinatorName)
+        ) {
+          team.coordinatorName = undefined;
+        }
+      })
+    );
   };
 
   const setCoordinator = (teamId: string, memberName: string | undefined) => {
-    const df = dfConfig();
-    setDfConfig({
-      teams: df.teams.map((t) =>
-        t.id === teamId ? { ...t, coordinatorName: memberName } : t
-      ),
-    });
+    setDfConfig("teams", (t) => t.id === teamId, "coordinatorName", memberName);
   };
 
   const handleRepoSearch = async (query: string) => {
@@ -291,14 +259,13 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
 
   // ── Save ──
   const handleSave = async () => {
-    const s = settings();
-    if (!s) return;
+    if (!settings.data) return;
     setSaving(true);
     await Promise.all([
-      SettingsAPI.update(s),
-      DarkFactoryAPI.save(dfConfig()),
+      SettingsAPI.update(settings.data),
+      DarkFactoryAPI.save({ teams: [...dfConfig.teams] }),
     ]);
-    await getCurrentWindow().setAlwaysOnTop(s.sidebarAlwaysOnTop);
+    await getCurrentWindow().setAlwaysOnTop(settings.data.sidebarAlwaysOnTop);
     // Refresh settings store so mic button visibility updates
     settingsStore.refresh();
     setSaving(false);
@@ -321,7 +288,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           <span class="settings-label">Default Shell</span>
           <input
             class="settings-input"
-            value={settings()!.defaultShell}
+            value={settings.data!.defaultShell}
             onInput={(e) => updateField("defaultShell", e.currentTarget.value)}
           />
         </label>
@@ -329,7 +296,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           <span class="settings-label">Shell Arguments</span>
           <input
             class="settings-input"
-            value={settings()!.defaultShellArgs.join(" ")}
+            value={settings.data!.defaultShellArgs.join(" ")}
             onInput={(e) =>
               updateField(
                 "defaultShellArgs",
@@ -346,7 +313,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           <input
             type="checkbox"
             class="settings-checkbox"
-            checked={settings()!.sidebarAlwaysOnTop}
+            checked={settings.data!.sidebarAlwaysOnTop}
             onChange={(e) =>
               updateField("sidebarAlwaysOnTop", e.currentTarget.checked)
             }
@@ -357,7 +324,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           <input
             type="checkbox"
             class="settings-checkbox"
-            checked={settings()!.raiseTerminalOnClick}
+            checked={settings.data!.raiseTerminalOnClick}
             onChange={(e) =>
               updateField("raiseTerminalOnClick", e.currentTarget.checked)
             }
@@ -368,7 +335,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
 
       <div class="settings-section">
         <div class="settings-section-title">Repo Scan Paths</div>
-        <For each={settings()!.repoPaths}>
+        <For each={settings.data!.repoPaths}>
           {(path, i) => (
             <div class="settings-path-row">
               <input
@@ -398,7 +365,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     <div class="settings-section">
       <div class="settings-section-title">Coding Agents</div>
 
-      <For each={settings()!.agents}>
+      <For each={settings.data!.agents}>
         {(agent, i) => (
           <div class="settings-button-card">
             <div class="settings-button-card-header">
@@ -513,20 +480,20 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           <input
             type="checkbox"
             class="settings-checkbox"
-            checked={settings()!.voiceToTextEnabled}
+            checked={settings.data!.voiceToTextEnabled}
             onChange={(e) =>
               updateField("voiceToTextEnabled", e.currentTarget.checked)
             }
           />
           <span>Enable microphone button on sessions</span>
         </label>
-        <Show when={settings()!.voiceToTextEnabled}>
+        <Show when={settings.data!.voiceToTextEnabled}>
           <label class="settings-field">
             <span class="settings-label">Gemini API Key</span>
             <input
               class="settings-input"
               type="password"
-              value={settings()!.geminiApiKey}
+              value={settings.data!.geminiApiKey}
               onInput={(e) =>
                 updateField("geminiApiKey", e.currentTarget.value)
               }
@@ -537,7 +504,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
             <span class="settings-label">Gemini Model</span>
             <select
               class="settings-input"
-              value={settings()!.geminiModel}
+              value={settings.data!.geminiModel}
               onChange={(e) =>
                 updateField("geminiModel", e.currentTarget.value)
               }
@@ -556,7 +523,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
       <div class="settings-section">
         <div class="settings-section-title">Telegram Bots</div>
 
-      <For each={settings()!.telegramBots || []}>
+      <For each={settings.data!.telegramBots || []}>
         {(bot, i) => (
           <div class="settings-button-card">
             <div class="settings-button-card-header">
@@ -661,7 +628,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           them.
         </p>
 
-        <For each={dfConfig().teams}>
+        <For each={dfConfig.teams}>
           {(team) => (
             <div class="settings-button-card df-team-card">
               <div class="settings-button-card-header">
@@ -836,7 +803,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           </For>
         </div>
 
-        {settings() && (
+        {settings.data && (
           <div class="modal-body">
             <Show when={activeTab() === "general"}>{renderGeneralTab()}</Show>
             <Show when={activeTab() === "agents"}>{renderAgentsTab()}</Show>
