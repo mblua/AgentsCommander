@@ -8,11 +8,10 @@ declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
 const Titlebar: Component = () => {
-  const appWindow = getCurrentWindow();
   const [copied, setCopied] = createSignal(false);
 
-  const handleMinimize = () => appWindow.minimize();
-  const handleClose = () => appWindow.close();
+  const handleMinimize = () => getCurrentWindow().minimize();
+  const handleClose = () => getCurrentWindow().close();
 
   const handleCopyLogs = async (e: MouseEvent) => {
     e.stopPropagation();
