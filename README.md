@@ -26,6 +26,8 @@ These are deliberate choices that shape the project. They are not accidents.
 
 - **Files over databases.** All state and communication is persisted to plain files (JSON, TOML). This makes every change visible via `git diff`, trivial to inspect, and easy to debug. Databases will be introduced later for performance-critical paths once the data model is mature - not before.
 
+- **One agent = one directory.** An agent is defined by a `CLAUDE.md` file (or equivalent role prompt file) inside its own directory. A directory can optionally include a `.agentscommander/` config folder to specify a custom role prompt file path (e.g., if it is not named `CLAUDE.md`), but the file must still live within the root of that directory. Multiple role prompts within the same directory or its subdirectories are strictly forbidden. Why? Most coding agents assume that the entire contents of their working directory are relevant context and may read files freely. If multiple role prompts coexisted in one directory tree, an agent could inadvertently read another agent's role - leaking context, confusing behavior, and wasting tokens. To run multiple agents from a single repository, structure it so each agent has its own subdirectory with its own `CLAUDE.md` inside.
+
 ## Tech Stack
 
 | Layer | Tech |

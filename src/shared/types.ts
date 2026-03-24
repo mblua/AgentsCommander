@@ -109,3 +109,47 @@ export interface AppSettings {
   sidebarAlwaysOnTop: boolean;
   raiseTerminalOnClick: boolean;
 }
+
+// Dark Factory types
+
+export interface TeamMember {
+  name: string;
+  path: string;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  members: TeamMember[];
+  coordinatorName?: string;
+}
+
+export interface DarkFactoryConfig {
+  teams: Team[];
+}
+
+// Phone communication types
+
+export interface PhoneMessage {
+  id: string;
+  from: string;
+  to: string;
+  team: string;
+  content: string;
+  timestamp: string;
+  status: "pending" | "delivered" | "error";
+}
+
+export interface PhoneConversation {
+  id: string;
+  participants: string[];
+  createdAt: string;
+  messages: PhoneMessage[];
+}
+
+export interface AgentInfo {
+  name: string;
+  path: string;
+  teams: string[];
+  isCoordinatorOf: string[];
+}

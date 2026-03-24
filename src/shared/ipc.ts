@@ -1,6 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Session, PtyOutputEvent, AppSettings, RepoMatch, BridgeInfo } from "./types";
+import type {
+  Session,
+  PtyOutputEvent,
+  AppSettings,
+  RepoMatch,
+  BridgeInfo,
+  DarkFactoryConfig,
+  PhoneMessage,
+  AgentInfo,
+} from "./types";
 
 export interface CreateSessionOptions {
   shell?: string;
@@ -152,6 +161,24 @@ export function onTelegramBridgeError(
     (e) => callback(e.payload)
   );
 }
+
+// Dark Factory API
+export const DarkFactoryAPI = {
+  get: () => invoke<DarkFactoryConfig>("get_dark_factory"),
+  save: (config: DarkFactoryConfig) =>
+    invoke<void>("save_dark_factory", { config }),
+};
+
+// Phone API
+export const PhoneAPI = {
+  sendMessage: (from: string, to: string, body: string, team: string) =>
+    invoke<string>("phone_send_message", { from, to, body, team }),
+  getInbox: (agentName: string) =>
+    invoke<PhoneMessage[]>("phone_get_inbox", { agentName }),
+  listAgents: () => invoke<AgentInfo[]>("phone_list_agents"),
+  ackMessages: (agentName: string, messageIds: string[]) =>
+    invoke<void>("phone_ack_messages", { agentName, messageIds }),
+};
 
 export function onTelegramIncoming(
   callback: (data: { sessionId: string; text: string; from: string }) => void

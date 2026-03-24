@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod config;
 pub mod errors;
+pub mod phone;
 pub mod pty;
 pub mod session;
 pub mod telegram;
@@ -144,6 +145,12 @@ pub fn run() {
             commands::telegram::telegram_send_test,
             commands::window::detach_terminal,
             commands::window::close_detached_terminal,
+            commands::dark_factory::get_dark_factory,
+            commands::dark_factory::save_dark_factory,
+            commands::phone::phone_send_message,
+            commands::phone::phone_get_inbox,
+            commands::phone::phone_list_agents,
+            commands::phone::phone_ack_messages,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

@@ -809,6 +809,210 @@ html, body, #root {
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
 }
 
+/* Larger modal for tabbed settings */
+.modal-container-lg {
+  width: 96%;
+  max-width: 520px;
+  max-height: 90vh;
+}
+
+/* Tab bar */
+.settings-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 var(--spacing-lg);
+  border-bottom: 1px solid var(--sidebar-border);
+  flex-shrink: 0;
+}
+
+.settings-tab {
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--sidebar-fg-dim);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+  white-space: nowrap;
+}
+
+.settings-tab:hover {
+  color: var(--sidebar-fg);
+}
+
+.settings-tab.active {
+  color: #ffffff;
+  border-bottom-color: var(--sidebar-accent);
+}
+
+/* Settings select */
+.settings-select {
+  appearance: none;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  outline: none;
+  height: 28px;
+  cursor: pointer;
+}
+
+.settings-select:focus {
+  border-color: var(--sidebar-accent);
+}
+
+.settings-select option {
+  background: #0e0e18;
+  color: var(--sidebar-fg);
+}
+
+/* Settings hint text */
+.settings-hint {
+  font-size: 11px;
+  color: var(--sidebar-fg-dim);
+  line-height: 1.4;
+  margin: 0 0 var(--spacing-sm) 0;
+}
+
+/* Dark Factory styles */
+.df-team-card {
+  gap: var(--spacing-sm);
+}
+
+.df-team-name {
+  font-weight: 600;
+  flex: 1;
+}
+
+.df-team-count {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.df-members {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.df-member-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 3px var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.df-member-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.df-member-name {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--sidebar-fg);
+  white-space: nowrap;
+}
+
+.df-member-path {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+}
+
+.df-coord-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #e94560;
+  background: rgba(233, 69, 96, 0.15);
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}
+
+.df-add-member-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.df-repo-results {
+  display: flex;
+  flex-direction: column;
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.df-repo-result-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.df-repo-result-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.df-repo-result-item:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.df-repo-name {
+  font-weight: 500;
+}
+
+.df-repo-agents {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.df-searching {
+  font-size: 11px;
+  color: var(--sidebar-fg-dim);
+  padding: var(--spacing-xs);
+}
+
+.df-new-team-row {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+}
+
+.df-new-team-input {
+  flex: 1;
+}
+
+.df-team-error {
+  font-size: 11px;
+  color: var(--status-exited);
+}
+
 /* Empty state */
 .empty-state {
   display: flex;
