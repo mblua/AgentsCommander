@@ -119,9 +119,20 @@ html, body, #root {
 
 /* Team Filter */
 .team-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
   padding: var(--spacing-xs) var(--spacing-sm);
   background: var(--sidebar-bg);
   border-bottom: 1px solid var(--sidebar-border);
+  flex-shrink: 0;
+}
+
+.team-filter .team-filter-wrapper {
+  flex: 1;
+}
+
+.team-filter .toolbar-gear-btn {
   flex-shrink: 0;
 }
 
