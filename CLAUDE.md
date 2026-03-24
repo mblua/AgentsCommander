@@ -195,6 +195,7 @@ Config export/import, session history, notifications, snippets, cross-platform.
   - `fix/` — correccion de bug
   - `bug/` — investigacion/fix de bug
 - Merge a `main` solo via PR o merge explícito del usuario
+- **SIEMPRE hacer `git fetch origin` antes de cualquier operación contra `main`**. Nunca operar contra un `main` local que puede estar desactualizado. Esto aplica a: merge, rebase, diff, log comparativo, o cualquier referencia a main. Usar `origin/main` después del fetch.
 
 ### General
 - No over-engineering. No premature abstractions
