@@ -520,14 +520,14 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
             <input
               type="checkbox"
               class="settings-checkbox"
-              checked={settings()!.voiceAutoExecute}
+              checked={settings.data!.voiceAutoExecute}
               onChange={(e) =>
                 updateField("voiceAutoExecute", e.currentTarget.checked)
               }
             />
             <span>Auto-execute after transcription</span>
           </label>
-          <Show when={settings()!.voiceAutoExecute}>
+          <Show when={settings.data!.voiceAutoExecute}>
             <label class="settings-field">
               <span class="settings-label">Auto-execute delay (seconds)</span>
               <input
@@ -535,7 +535,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
                 type="number"
                 min="1"
                 max="120"
-                value={settings()!.voiceAutoExecuteDelay}
+                value={settings.data!.voiceAutoExecuteDelay}
                 onInput={(e) => {
                   const v = parseInt(e.currentTarget.value, 10);
                   if (!isNaN(v)) updateField("voiceAutoExecuteDelay", Math.max(1, Math.min(120, v)));
