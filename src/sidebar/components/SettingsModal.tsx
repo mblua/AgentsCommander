@@ -12,6 +12,7 @@ import type {
 } from "../../shared/types";
 import { SettingsAPI, TelegramAPI, DarkFactoryAPI, ReposAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
+import { sessionsStore } from "../stores/sessions";
 
 const GEMINI_MODELS = [
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (recommended)" },
@@ -268,6 +269,8 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     await getCurrentWindow().setAlwaysOnTop(settings.data.sidebarAlwaysOnTop);
     // Refresh settings store so mic button visibility updates
     settingsStore.refresh();
+    // Refresh teams in sidebar dropdown immediately
+    sessionsStore.setTeams([...dfConfig.teams]);
     setSaving(false);
     props.onClose();
   };
