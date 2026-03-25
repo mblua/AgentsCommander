@@ -28,29 +28,14 @@ const TerminalView: Component = () => {
 
   const terminals = new Map<string, SessionTerminal>();
 
-  const getCoreViewport = (terminal: Terminal) =>
-    (terminal as Terminal & {
-      _core?: {
-        viewport?: {
-          reset(): void;
-          syncScrollArea(immediate?: boolean): void;
-        };
-      };
-    })._core?.viewport;
-
-  const updateSize = (terminal: Terminal) => {
-    terminalStore.setTermSize(terminal.cols, terminal.rows);
-  };
-
-  const syncViewport = (sessionId: string, immediate = false) => {
+  const syncViewport = (sessionId: string) => {
     const entry = terminals.get(sessionId);
     if (!entry) {
       return;
     }
 
     entry.fitAddon.fit();
-    getCoreViewport(entry.terminal)?.syncScrollArea(immediate);
-    updateSize(entry.terminal);
+    terminalStore.setTermSize(entry.terminal.cols, entry.terminal.rows);
     void PtyAPI.resize(sessionId, entry.terminal.cols, entry.terminal.rows);
   };
 
@@ -60,11 +45,11 @@ const TerminalView: Component = () => {
         return;
       }
 
-      syncViewport(sessionId, true);
+      syncViewport(sessionId);
 
       requestAnimationFrame(() => {
         if (sessionId === activeSessionId) {
-          syncViewport(sessionId, true);
+          syncViewport(sessionId);
         }
       });
     });
@@ -200,7 +185,6 @@ const TerminalView: Component = () => {
     activeSessionId = sessionId;
     next.terminal.focus();
     next.terminal.scrollToBottom();
-    getCoreViewport(next.terminal)?.reset();
     scheduleViewportSync(sessionId);
   };
 
@@ -224,7 +208,7 @@ const TerminalView: Component = () => {
 
       entry.terminal.write(new Uint8Array(data), () => {
         if (sessionId === activeSessionId) {
-          getCoreViewport(entry.terminal)?.syncScrollArea(true);
+          entry.terminal.scrollToBottom();
         }
       });
     });
