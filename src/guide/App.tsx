@@ -3,16 +3,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { initZoom } from "../shared/zoom";
 import HintsTab from "./components/HintsTab";
 import TutorialTab from "./components/TutorialTab";
-import CatalystTab from "./components/CatalystTab";
 import iconUrl from "../assets/icon-16.png";
 import "./styles/guide.css";
 
-type Tab = "hints" | "tutorial" | "catalyst";
+type Tab = "hints" | "tutorial";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "hints", label: "Hints" },
   { id: "tutorial", label: "Tutorial" },
-  { id: "catalyst", label: "Dark Factory Catalyst" },
 ];
 
 const GuideApp: Component = () => {
@@ -62,7 +60,6 @@ const GuideApp: Component = () => {
       <div class="guide-content">
         {activeTab() === "hints" && <HintsTab />}
         {activeTab() === "tutorial" && <TutorialTab />}
-        {activeTab() === "catalyst" && <CatalystTab />}
       </div>
     </div>
   );

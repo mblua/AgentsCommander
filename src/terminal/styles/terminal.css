@@ -67,10 +67,22 @@ html, body, #root {
   opacity: 1;
 }
 
+.titlebar-version {
+  display: inline-block;
+  padding: 1px 5px;
+  background: rgba(0, 180, 255, 0.15);
+  color: #00b4ff;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
 .titlebar-dev-badge {
   display: inline-block;
   padding: 1px 5px;
-  margin-right: 6px;
+  margin-left: 6px;
   background: rgba(0, 180, 255, 0.15);
   color: #00b4ff;
   font-size: 8px;

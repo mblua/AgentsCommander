@@ -193,6 +193,7 @@ html, body, #root {
   color: var(--terminal-fg);
   line-height: 1.65;
   opacity: 0.8;
+  white-space: pre-wrap;
 }
 
 .guide-card-link {
@@ -208,4 +209,22 @@ html, body, #root {
 .guide-card-link:hover {
   opacity: 1;
   text-decoration: underline;
+}
+
+/* Hint sections */
+.guide-section {
+}
+
+.guide-section-title {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-bottom: 12px;
+  background: rgba(0, 180, 255, 0.15);
+  color: #00b4ff;
+  font-family: var(--font-terminal);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  border-radius: 3px;
 }

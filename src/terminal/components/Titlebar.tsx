@@ -24,6 +24,12 @@ const Titlebar: Component<{ detached?: boolean }> = (props) => {
         <span class="titlebar-title" data-tauri-drag-region>
           agents commander
         </span>
+        <span class="titlebar-version" data-tauri-drag-region>
+          v{APP_VERSION}
+        </span>
+        {import.meta.env.DEV && (
+          <span class="titlebar-dev-badge" data-tauri-drag-region>DEV</span>
+        )}
         <Show when={props.detached}>
           <span class="titlebar-detached-badge">DETACHED</span>
         </Show>
@@ -38,11 +44,6 @@ const Titlebar: Component<{ detached?: boolean }> = (props) => {
             <span> ({terminalStore.activeShell})</span>
           </Show>
         </Show>
-        {import.meta.env.DEV && (
-          <span class="titlebar-dev-badge" data-tauri-drag-region>
-            DEV {APP_VERSION}
-          </span>
-        )}
       </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn" onClick={handleMinimize} title="Minimize">
