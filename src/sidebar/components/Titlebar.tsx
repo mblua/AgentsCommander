@@ -68,13 +68,13 @@ const Titlebar: Component = () => {
           </button>
           {layoutOpen() && (
             <div class="layout-dropdown">
-              <button class="layout-option" onClick={() => handleLayout("left")}>
-                <span class="layout-option-icon">&#x25E7;</span>
-                Sidebar Left
-              </button>
               <button class="layout-option" onClick={() => handleLayout("right")}>
                 <span class="layout-option-icon">&#x25E8;</span>
                 Sidebar Right
+              </button>
+              <button class="layout-option" onClick={() => handleLayout("left")}>
+                <span class="layout-option-icon">&#x25E7;</span>
+                Sidebar Left
               </button>
             </div>
           )}
