@@ -15,6 +15,8 @@ pub struct Session {
     pub waiting_for_input: bool,
     pub last_prompt: Option<String>,
     pub git_branch: Option<String>,
+    /// Unique token for CLI authentication. Passed to agents via init prompt.
+    pub token: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -40,6 +42,7 @@ pub struct SessionInfo {
     pub waiting_for_input: bool,
     pub last_prompt: Option<String>,
     pub git_branch: Option<String>,
+    pub token: String,
 }
 
 impl From<&Session> for SessionInfo {
@@ -55,6 +58,7 @@ impl From<&Session> for SessionInfo {
             waiting_for_input: s.waiting_for_input,
             last_prompt: s.last_prompt.clone(),
             git_branch: s.git_branch.clone(),
+            token: s.token.to_string(),
         }
     }
 }

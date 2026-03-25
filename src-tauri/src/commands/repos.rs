@@ -9,6 +9,7 @@ use crate::config::settings::SettingsState;
 const AGENT_DETECTORS: &[(&str, &[&str])] = &[
     ("Claude", &[".claude", "CLAUDE.md"]),
     ("Codex", &[".codex"]),
+    ("OpenCode", &[".opencode", "opencode.json"]),
     ("Cursor", &[".cursor", ".cursorrules"]),
 ];
 
@@ -30,6 +31,17 @@ fn detect_agents(repo_path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Derive extended repo name as "parent/repo" from an absolute path.
+/// Always uses forward slash as separator regardless of OS.
+pub fn derive_repo_name(path: &Path) -> Option<String> {
+    let file_name = path.file_name().and_then(|n| n.to_str())?;
+    let name = match path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+        Some(parent) => format!("{}/{}", parent, file_name),
+        None => file_name.to_string(),
+    };
+    Some(name)
+}
+
 /// Add a repo to results if it matches the query and hasn't been seen yet
 fn try_add_repo(
     path: &Path,
@@ -37,15 +49,20 @@ fn try_add_repo(
     seen_paths: &mut std::collections::HashSet<String>,
     results: &mut Vec<RepoMatch>,
 ) {
-    let name = match path.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n.to_string(),
+    let file_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
         None => return,
     };
 
-    // Skip DEPRECATED
-    if name.to_uppercase().starts_with("DEPRECATED") {
+    // Skip DEPRECATED (check on repo dir name only, not extended name)
+    if file_name.to_uppercase().starts_with("DEPRECATED") {
         return;
     }
+
+    let name = match derive_repo_name(path) {
+        Some(n) => n,
+        None => return,
+    };
 
     if !query_lower.is_empty() && !name.to_lowercase().contains(query_lower) {
         return;

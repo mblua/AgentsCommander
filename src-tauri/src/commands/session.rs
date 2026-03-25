@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
+use crate::config::dark_factory;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
@@ -14,6 +15,8 @@ use crate::DetachedSessionsState;
 
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
+/// After spawn, schedules a delayed injection of the session token + CLI instructions.
+/// If `agent_id` is provided, saves it as lastCodingAgent in the repo's config.
 pub async fn create_session_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -22,6 +25,7 @@ pub async fn create_session_inner(
     shell_args: Vec<String>,
     cwd: String,
     session_name: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<SessionInfo, String> {
     let mgr = session_mgr.read().await;
     let mut session = mgr
@@ -37,6 +41,7 @@ pub async fn create_session_inner(
     }
 
     let id = session.id;
+    let token = session.token;
 
     pty_mgr
         .lock()
@@ -46,6 +51,70 @@ pub async fn create_session_inner(
 
     let info = SessionInfo::from(&session);
     let _ = app.emit("session_created", info.clone());
+
+    // Save lastCodingAgent if an agent_id was provided
+    if let Some(ref aid) = agent_id {
+        if let Err(e) = dark_factory::set_last_coding_agent(&cwd, aid) {
+            log::warn!("Failed to save lastCodingAgent: {}", e);
+        }
+    }
+
+    // Only inject init prompt if this repo belongs to a team (has messaging peers)
+    let cwd_for_init = cwd.clone();
+    let pty_mgr_clone = Arc::clone(pty_mgr);
+    tauri::async_runtime::spawn(async move {
+        // Check if repo has teams configured
+        let config_path = std::path::Path::new(&cwd_for_init)
+            .join(".agentscommander")
+            .join("config.json");
+        let has_teams = if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
+            serde_json::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|v| v.get("teams")?.as_array().map(|a| !a.is_empty()))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if !has_teams {
+            return;
+        }
+
+        // Wait for the agent CLI to boot (3s covers most agents)
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        let binary_path = std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "agentscommander".to_string());
+
+        let init_prompt = format!(
+            concat!(
+                "\n",
+                "# === AgentsCommander Session Init ===\n",
+                "# Your session token: {token}\n",
+                "#\n",
+                "# Send a message to another agent (fire-and-forget, do NOT use --get-output):\n",
+                "#   \"{bin}\" send --token {token} --to \"<agent_name>\" --message \"...\" --mode wake\n",
+                "#\n",
+                "# The other agent will reply back via your console as a new message.\n",
+                "# Do NOT use --get-output — it blocks and is only for non-interactive sessions.\n",
+                "# After sending, you can stay idle and wait for the reply to arrive.\n",
+                "#\n",
+                "# List available peers:\n",
+                "#   \"{bin}\" list-peers --token {token}\n",
+                "# === End Session Init ===\n",
+                "\r",
+            ),
+            token = token,
+            bin = binary_path,
+        );
+
+        if let Ok(mgr) = pty_mgr_clone.lock() {
+            if let Err(e) = mgr.write(id, init_prompt.as_bytes()) {
+                log::warn!("Failed to inject init prompt for session {}: {}", id, e);
+            }
+        }
+    });
 
     Ok(info)
 }
@@ -63,6 +132,7 @@ pub async fn create_session(
     shell_args: Option<Vec<String>>,
     cwd: Option<String>,
     session_name: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
 
@@ -84,6 +154,7 @@ pub async fn create_session(
         shell_args,
         cwd.clone(),
         session_name,
+        agent_id,
     )
     .await?;
 

@@ -35,6 +35,13 @@ const TeamFilter: Component = () => {
         </Show>
         <div class="team-filter-actions">
           <button
+            class={`toolbar-gear-btn show-inactive-btn ${sessionsStore.showInactive ? "active" : ""}`}
+            onClick={() => sessionsStore.toggleShowInactive()}
+            title={sessionsStore.showInactive ? "Hide inactive agents" : "Show inactive agents"}
+          >
+            &#x1F441;
+          </button>
+          <button
             class="toolbar-gear-btn"
             onClick={() => GuideAPI.open()}
             title="Hints"

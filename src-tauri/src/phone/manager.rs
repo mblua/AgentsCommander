@@ -9,6 +9,8 @@ fn conversations_dir() -> Option<PathBuf> {
 }
 
 /// Check if two agents can communicate based on team routing rules
+/// Check if two agents can communicate. Only agents in the same team can talk.
+/// Within a team with a coordinator, only the coordinator can talk to members and vice versa.
 pub fn can_communicate(from: &str, to: &str, config: &DarkFactoryConfig) -> bool {
     // Find all teams where both are members
     let shared_teams: Vec<&Team> = config
@@ -21,10 +23,15 @@ pub fn can_communicate(from: &str, to: &str, config: &DarkFactoryConfig) -> bool
         })
         .collect();
 
+    // Must share at least one team — no cross-team communication
+    if shared_teams.is_empty() {
+        return false;
+    }
+
     // If any shared team allows it
     for team in &shared_teams {
         match &team.coordinator_name {
-            None => return true, // No coordinator = free communication
+            None => return true, // No coordinator = free communication within team
             Some(coord) => {
                 // Allow if either party is the coordinator
                 if coord == from || coord == to {
@@ -32,22 +39,6 @@ pub fn can_communicate(from: &str, to: &str, config: &DarkFactoryConfig) -> bool
                 }
                 // Otherwise blocked in this team, check others
             }
-        }
-    }
-
-    // If no shared team: check coordinator-to-coordinator across teams
-    if shared_teams.is_empty() {
-        let from_is_coord = config
-            .teams
-            .iter()
-            .any(|t| t.coordinator_name.as_deref() == Some(from) && t.members.iter().any(|m| m.name == from));
-        let to_is_coord = config
-            .teams
-            .iter()
-            .any(|t| t.coordinator_name.as_deref() == Some(to) && t.members.iter().any(|m| m.name == to));
-
-        if from_is_coord && to_is_coord {
-            return true;
         }
     }
 

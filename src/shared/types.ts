@@ -9,6 +9,7 @@ export interface Session {
   waitingForInput: boolean;
   lastPrompt: string | null;
   gitBranch: string | null;
+  token: string;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
@@ -150,6 +151,8 @@ export interface SessionsState {
   activeId: string | null;
   teams: Team[];
   teamFilter: string | null;
+  showInactive: boolean;
+  repos: RepoMatch[];
 }
 
 // Phone communication types

@@ -2,11 +2,11 @@ import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } 
 import type { AgentConfig, RepoMatch } from "../../shared/types";
 import { ReposAPI, SessionAPI, SettingsAPI } from "../../shared/ipc";
 
-const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
+const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }> = (props) => {
   const [query, setQuery] = createSignal("");
   const [repos, setRepos] = createSignal<RepoMatch[]>([]);
   const [agents, setAgents] = createSignal<AgentConfig[]>([]);
-  const [selectedRepo, setSelectedRepo] = createSignal<RepoMatch | null>(null);
+  const [selectedRepo, setSelectedRepo] = createSignal<RepoMatch | null>(props.initialRepo ?? null);
   const [highlightIndex, setHighlightIndex] = createSignal(0);
   const [loading, setLoading] = createSignal(false);
   let inputRef!: HTMLInputElement;
@@ -15,10 +15,12 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
   onMount(async () => {
     const settings = await SettingsAPI.get();
     setAgents(settings.agents);
-    // Load initial list (empty query = show all)
-    const results = await ReposAPI.search("");
-    setRepos(results);
-    inputRef?.focus();
+    if (!props.initialRepo) {
+      // Load initial list (empty query = show all)
+      const results = await ReposAPI.search("");
+      setRepos(results);
+      inputRef?.focus();
+    }
   });
 
   onCleanup(() => {
@@ -42,8 +44,8 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
     const repo = selectedRepo();
 
     if (e.key === "Escape") {
-      if (repo) {
-        // Go back to repo list
+      if (repo && !props.initialRepo) {
+        // Go back to repo list (only if we navigated there ourselves)
         setSelectedRepo(null);
         setHighlightIndex(0);
         requestAnimationFrame(() => inputRef?.focus());
@@ -106,6 +108,7 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
       shellArgs,
       cwd: repo.path,
       sessionName: repo.name,
+      agentId: agent.id,
     });
 
     props.onClose();
@@ -125,18 +128,27 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
           when={!selectedRepo()}
           fallback={
             <div class="agent-modal-header">
-              <button
-                class="agent-back-btn"
-                onClick={() => {
-                  setSelectedRepo(null);
-                  setHighlightIndex(0);
-                  requestAnimationFrame(() => inputRef?.focus());
-                }}
-              >
-                &#x2190;
-              </button>
+              <Show when={!props.initialRepo}>
+                <button
+                  class="agent-back-btn"
+                  onClick={() => {
+                    setSelectedRepo(null);
+                    setHighlightIndex(0);
+                    requestAnimationFrame(() => inputRef?.focus());
+                  }}
+                >
+                  &#x2190;
+                </button>
+              </Show>
               <span class="agent-modal-title">
-                Select agent for <strong>{selectedRepo()!.name}</strong>
+                Select agent for <strong>
+                  {selectedRepo()!.name.includes("/") ? (
+                    <>
+                      <span class="name-prefix">{selectedRepo()!.name.slice(0, selectedRepo()!.name.lastIndexOf("/") + 1)}</span>
+                      {selectedRepo()!.name.slice(selectedRepo()!.name.lastIndexOf("/") + 1)}
+                    </>
+                  ) : selectedRepo()!.name}
+                </strong>
               </span>
             </div>
           }
@@ -200,7 +212,14 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
                   >
                     <div class="agent-modal-item-icon">&#x1F4C1;</div>
                     <div class="agent-modal-item-info">
-                      <div class="agent-modal-item-name">{repo.name}</div>
+                      <div class="agent-modal-item-name">
+                        {repo.name.includes("/") ? (
+                          <>
+                            <span class="name-prefix">{repo.name.slice(0, repo.name.lastIndexOf("/") + 1)}</span>
+                            {repo.name.slice(repo.name.lastIndexOf("/") + 1)}
+                          </>
+                        ) : repo.name}
+                      </div>
                       <div class="agent-modal-item-badges">
                         <For each={repo.agents}>
                           {(agent) => (
@@ -225,7 +244,7 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
         <div class="agent-modal-footer">
           <span>&#x2191;&#x2193; navigate</span>
           <span>&#x23CE; select</span>
-          <span>esc {selectedRepo() ? "back" : "close"}</span>
+          <span>esc {selectedRepo() && !props.initialRepo ? "back" : "close"}</span>
         </div>
       </div>
     </div>

@@ -12,27 +12,27 @@ $killed = 0
 
 foreach ($p in $procs) {
     $path = $p.ExecutablePath
-    $pid  = $p.ProcessId
+    $procId = $p.ProcessId
 
     if ($path -like "*Program Files*") {
-        Write-Host "[kill-dev] SKIPPING PID $pid - PROD instance ($path)" -ForegroundColor Yellow
+        Write-Host "[kill-dev] SKIPPING PID $procId - PROD instance ($path)" -ForegroundColor Yellow
         continue
     }
 
     if ($path -like "*target\release*") {
-        Write-Host "[kill-dev] SKIPPING PID $pid - release build ($path)" -ForegroundColor Yellow
+        Write-Host "[kill-dev] SKIPPING PID $procId - release build ($path)" -ForegroundColor Yellow
         continue
     }
 
     if ($path -like "*target\debug*") {
-        Write-Host "[kill-dev] Killing PID $pid - dev instance ($path)" -ForegroundColor Cyan
-        Stop-Process -Id $pid -Force
+        Write-Host "[kill-dev] Killing PID $procId - dev instance ($path)" -ForegroundColor Cyan
+        Stop-Process -Id $procId -Force
         $killed++
         continue
     }
 
     # Unknown path - do not touch
-    Write-Host "[kill-dev] SKIPPING PID $pid - unknown path ($path)" -ForegroundColor Red
+    Write-Host "[kill-dev] SKIPPING PID $procId - unknown path ($path)" -ForegroundColor Red
 }
 
 if ($killed -eq 0) {

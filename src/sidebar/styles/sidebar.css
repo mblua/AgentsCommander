@@ -310,6 +310,12 @@ html, body, #root {
   color: #ffffff;
 }
 
+/* Extended name: dim the parent/prefix, highlight the repo name */
+.name-prefix {
+  opacity: 0.4;
+  font-weight: 400;
+}
+
 /* Inline rename input */
 .session-item-rename-input {
   width: 100%;
@@ -357,8 +363,53 @@ html, body, #root {
 .session-item-status.running { background: var(--status-running); }
 .session-item-status.idle { background: var(--status-idle); }
 .session-item-status.exited { background: var(--status-exited); }
+.session-item-status.offline { background: #555; }
 /* .waiting must override all other status colors (active, running, idle, exited) */
 .session-item .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
+
+/* Inactive team member (no active session) */
+.session-item.inactive-member {
+  opacity: 0.5;
+  cursor: default;
+}
+.session-item.inactive-member:hover {
+  background: transparent;
+}
+
+/* Agent badges on inactive entries */
+.session-item-agent-badges {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+.agent-badge {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--sidebar-fg-dim);
+  opacity: 0.4;
+}
+.agent-badge.running {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--sidebar-fg);
+}
+
+/* Show inactive toggle */
+.show-inactive-btn {
+  font-size: 14px;
+  opacity: 0.4;
+  transition: opacity 150ms ease-out;
+}
+.show-inactive-btn:hover {
+  opacity: 0.7;
+}
+.show-inactive-btn.active {
+  opacity: 1;
+}
 
 /* Close button on session item */
 .session-item-close {
@@ -1592,31 +1643,16 @@ html, body, #root {
   flex-wrap: wrap;
 }
 
-.agent-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--sidebar-fg-dim);
-}
-
-.agent-badge[data-agent="Claude"] {
-  background: rgba(217, 119, 6, 0.15);
-  color: #d97706;
-}
-
-.agent-badge[data-agent="Codex"] {
-  background: rgba(16, 185, 129, 0.15);
-  color: #10b981;
-}
-
-.agent-badge[data-agent="Cursor"] {
-  background: rgba(139, 92, 246, 0.15);
-  color: #8b5cf6;
-}
+/* Agent-specific badge colors (non-running only) */
+.agent-badge:not(.running)[data-agent="Claude"] { background: rgba(217, 119, 6, 0.15); color: #d97706; }
+.agent-badge:not(.running)[data-agent="Codex"] { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.agent-badge:not(.running)[data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.agent-badge:not(.running)[data-agent="Cursor"] { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
+/* Running badge: brighter version of agent color */
+.agent-badge.running[data-agent="Claude"] { background: rgba(217, 119, 6, 0.3); color: #fbbf24; }
+.agent-badge.running[data-agent="Codex"] { background: rgba(16, 185, 129, 0.3); color: #34d399; }
+.agent-badge.running[data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.3); color: #60a5fa; }
+.agent-badge.running[data-agent="Cursor"] { background: rgba(139, 92, 246, 0.3); color: #a78bfa; }
 
 /* Agent choice (after repo selected) */
 .agent-choice {

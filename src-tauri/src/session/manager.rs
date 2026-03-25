@@ -46,6 +46,7 @@ impl SessionManager {
             waiting_for_input: false,
             last_prompt: None,
             git_branch: None,
+            token: Uuid::new_v4(),
         };
 
         self.sessions.write().await.insert(id, session.clone());
@@ -181,5 +182,14 @@ impl SessionManager {
             .iter()
             .map(|(id, s)| (*id, s.working_directory.clone()))
             .collect()
+    }
+
+    /// Find a session by its authentication token. Linear scan — fine for 10-20 sessions.
+    pub async fn find_by_token(&self, token: Uuid) -> Option<SessionInfo> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .values()
+            .find(|s| s.token == token)
+            .map(SessionInfo::from)
     }
 }

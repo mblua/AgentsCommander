@@ -6,6 +6,7 @@ import {
   SettingsAPI,
   TelegramAPI,
   DarkFactoryAPI,
+  ReposAPI,
   onSessionCreated,
   onSessionDestroyed,
   onSessionSwitched,
@@ -77,6 +78,12 @@ const SidebarApp: Component = () => {
 
     // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
+
+    // Load all repos for inactive agent display
+    try {
+      const allRepos = await ReposAPI.search("");
+      sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
+    } catch {}
 
     // Load teams for filter
     try {

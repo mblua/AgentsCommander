@@ -1,27 +1,53 @@
 import { Component, createSignal, Show, For } from "solid-js";
-import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
+import type { Session, SessionStatus, TelegramBotConfig, RepoMatch } from "../../shared/types";
 import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI } from "../../shared/ipc";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { bridgesStore } from "../stores/bridges";
+import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
+import OpenAgentModal from "./OpenAgentModal";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
   return "exited";
 }
 
+const AGENT_BADGES: Record<string, string> = {
+  Claude: "CC",
+  Codex: "CX",
+  OpenCode: "OC",
+  Cursor: "CU",
+};
+
+/** Match a shell command to a detected agent name */
+function shellMatchesAgent(shell: string, agent: string): boolean {
+  const s = shell.toLowerCase();
+  switch (agent) {
+    case "Claude": return s.includes("claude");
+    case "Codex": return s.includes("codex");
+    case "OpenCode": return s.includes("opencode");
+    case "Cursor": return s.includes("cursor");
+    default: return false;
+  }
+}
+
 const SessionItem: Component<{
   session: Session;
   isActive: boolean;
 }> = (props) => {
-  const [editing, setEditing] = createSignal(false);
-  const [editValue, setEditValue] = createSignal("");
   const [showBotMenu, setShowBotMenu] = createSignal(false);
+  const [showAgentModal, setShowAgentModal] = createSignal(false);
   const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
-  let inputRef!: HTMLInputElement;
 
   const bridge = () => bridgesStore.getBridge(props.session.id);
+  const agentBadges = () => {
+    const np = props.session.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+    const repo = sessionsStore.repos.find((r) =>
+      r.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") === np
+    );
+    return repo?.agents ?? [];
+  };
   const isRecording = () => voiceRecorder.recordingSessionId() === props.session.id;
   const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
   const isAutoExecuting = () => voiceRecorder.autoExecuteSessionId() === props.session.id;
@@ -65,46 +91,25 @@ const SessionItem: Component<{
   };
 
   const handleClick = async () => {
-    if (!editing()) {
-      await SessionAPI.switch(props.session.id);
-      const detachedLabel = `terminal-${props.session.id.replace(/-/g, "")}`;
-      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-      if (!detachedWin) {
-        (await WebviewWindow.getByLabel("terminal"))?.setFocus();
-      }
+    await SessionAPI.switch(props.session.id);
+    const detachedLabel = `terminal-${props.session.id.replace(/-/g, "")}`;
+    const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
+    if (!detachedWin) {
+      (await WebviewWindow.getByLabel("terminal"))?.setFocus();
     }
   };
 
   const handleDoubleClick = (e: MouseEvent) => {
     e.stopPropagation();
-    setEditValue(props.session.name);
-    setEditing(true);
-    requestAnimationFrame(() => {
-      inputRef?.focus();
-      inputRef?.select();
-    });
+    setShowAgentModal(true);
   };
 
-  const confirmRename = () => {
-    const val = editValue().trim();
-    if (val && val !== props.session.name) {
-      SessionAPI.rename(props.session.id, val);
-    }
-    setEditing(false);
-  };
-
-  const cancelRename = () => {
-    setEditing(false);
-  };
-
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      confirmRename();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      cancelRename();
-    }
+  const repoForModal = (): RepoMatch => {
+    const np = props.session.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+    const repo = sessionsStore.repos.find((r) =>
+      r.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") === np
+    );
+    return repo ?? { name: props.session.name, path: props.session.workingDirectory, agents: [] };
   };
 
   const handleOpenExplorer = async (e: MouseEvent) => {
@@ -127,34 +132,25 @@ const SessionItem: Component<{
   };
 
 
+  const isInactive = () => props.session.id.startsWith("inactive-");
+
   return (
     <div
-      class={`session-item session-item-enter ${props.isActive ? "active" : ""}`}
-      onClick={handleClick}
+      class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
+      onClick={isInactive() ? undefined : handleClick}
     >
       <div
-        class={`session-item-status ${props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
+        class={`session-item-status ${isInactive() ? "offline" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
       />
       <div class="session-item-info">
-        <Show
-          when={editing()}
-          fallback={
-            <div class="session-item-name" onDblClick={handleDoubleClick}>
-              {props.session.name}
-            </div>
-          }
-        >
-          <input
-            ref={inputRef!}
-            class="session-item-rename-input"
-            value={editValue()}
-            onInput={(e) => setEditValue(e.currentTarget.value)}
-            onKeyDown={handleKeyDown}
-            onBlur={confirmRename}
-            maxLength={50}
-            onClick={(e) => e.stopPropagation()}
-          />
-        </Show>
+        <div class="session-item-name" onDblClick={handleDoubleClick}>
+          {props.session.name.includes("/") ? (
+            <>
+              <span class="name-prefix">{props.session.name.slice(0, props.session.name.lastIndexOf("/") + 1)}</span>
+              {props.session.name.slice(props.session.name.lastIndexOf("/") + 1)}
+            </>
+          ) : props.session.name}
+        </div>
 
         <Show when={isRecording()}>
           <div class="session-item-voice-indicator recording">
@@ -197,79 +193,102 @@ const SessionItem: Component<{
         </Show>
 
         <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
-          <Show when={props.session.gitBranch}>
-            <div class="session-item-branch" title={props.session.gitBranch!}>
-              {props.session.gitBranch}
+          <Show when={agentBadges().length > 0}>
+            <div class="session-item-agent-badges">
+              <For each={agentBadges()}>
+                {(agent) => {
+                  const isRunning = !isInactive() && shellMatchesAgent(props.session.shell, agent);
+                  return (
+                    <span class={`agent-badge ${isRunning ? "running" : ""}`} data-agent={agent}>
+                      {isRunning ? agent.toUpperCase() : (AGENT_BADGES[agent] || agent)}
+                    </span>
+                  );
+                }}
+              </For>
             </div>
           </Show>
-          <div class="session-item-shell">{props.session.shell}</div>
+          <Show when={!isInactive()}>
+            <Show when={props.session.gitBranch}>
+              <div class="session-item-branch" title={props.session.gitBranch!}>
+                {props.session.gitBranch}
+              </div>
+            </Show>
+          </Show>
         </Show>
       </div>
-      <Show when={settingsStore.voiceEnabled}>
-        <Show when={isRecording()}>
+      <Show when={!isInactive()}>
+        <Show when={settingsStore.voiceEnabled}>
+          <Show when={isRecording()}>
+            <button
+              class="session-item-mic-cancel"
+              onClick={handleCancelRecording}
+              title="Cancel recording"
+            >
+              &#x2715;
+            </button>
+          </Show>
           <button
-            class="session-item-mic-cancel"
-            onClick={handleCancelRecording}
-            title="Cancel recording"
+            class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""}`}
+            onClick={handleMicClick}
+            title={isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
           >
-            &#x2715;
+            &#x1F399;
           </button>
         </Show>
         <button
-          class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""}`}
-          onClick={handleMicClick}
-          title={isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
+          class="session-item-explorer"
+          onClick={handleOpenExplorer}
+          title="Open folder in explorer"
         >
-          &#x1F399;
+          &#x1F4C2;
+        </button>
+        <button
+          class="session-item-detach"
+          onClick={handleDetach}
+          title="Detach to own window"
+        >
+          &#x29C9;
+        </button>
+        <Show when={bridge()}>
+          <div
+            class="session-item-bridge-dot"
+            style={{ background: bridge()!.color }}
+            title={`Telegram: ${bridge()!.botLabel}`}
+          />
+        </Show>
+        <button
+          class={`session-item-telegram ${bridge() ? "active" : ""}`}
+          onClick={handleTelegramClick}
+          title={bridge() ? "Detach Telegram" : "Attach Telegram"}
+          style={bridge() ? { color: bridge()!.color } : {}}
+        >
+          T
+        </button>
+        <Show when={showBotMenu()}>
+          <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
+            <For each={availableBots()}>
+              {(bot) => (
+                <button
+                  class="session-item-bot-option"
+                  onClick={() => handleBotSelect(bot.id)}
+                >
+                  <span class="settings-color-dot" style={{ background: bot.color }} />
+                  {bot.label}
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
+        <button class="session-item-close" onClick={handleClose} title="Close session">
+          &#x2715;
         </button>
       </Show>
-      <button
-        class="session-item-explorer"
-        onClick={handleOpenExplorer}
-        title="Open folder in explorer"
-      >
-        &#x1F4C2;
-      </button>
-      <button
-        class="session-item-detach"
-        onClick={handleDetach}
-        title="Detach to own window"
-      >
-        &#x29C9;
-      </button>
-      <Show when={bridge()}>
-        <div
-          class="session-item-bridge-dot"
-          style={{ background: bridge()!.color }}
-          title={`Telegram: ${bridge()!.botLabel}`}
+      {showAgentModal() && (
+        <OpenAgentModal
+          initialRepo={repoForModal()}
+          onClose={() => setShowAgentModal(false)}
         />
-      </Show>
-      <button
-        class={`session-item-telegram ${bridge() ? "active" : ""}`}
-        onClick={handleTelegramClick}
-        title={bridge() ? "Detach Telegram" : "Attach Telegram"}
-        style={bridge() ? { color: bridge()!.color } : {}}
-      >
-        T
-      </button>
-      <Show when={showBotMenu()}>
-        <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
-          <For each={availableBots()}>
-            {(bot) => (
-              <button
-                class="session-item-bot-option"
-                onClick={() => handleBotSelect(bot.id)}
-              >
-                <span class="settings-color-dot" style={{ background: bot.color }} />
-                {bot.label}
-              </button>
-            )}
-          </For>
-        </div>
-      </Show>
-      <button class="session-item-close" onClick={handleClose} title="Close session">
-        &#x2715;
-      </button>
+      )}
     </div>
   );
 };
