@@ -20,6 +20,7 @@ import {
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
 import { initZoom } from "../shared/zoom";
 import { initWindowGeometry } from "../shared/window-geometry";
+import { applyWindowLayout } from "../shared/window-layout";
 import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
 import { settingsStore } from "../shared/stores/settings";
@@ -66,6 +67,13 @@ const SidebarApp: Component = () => {
       await getCurrentWindow().setAlwaysOnTop(true);
     }
     document.addEventListener("mousedown", handleRaiseTerminal);
+
+    // Default layout: sidebar right when no saved geometry
+    if (!appSettings.sidebarGeometry && !appSettings.terminalGeometry) {
+      try {
+        await applyWindowLayout("right");
+      } catch {}
+    }
 
     // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();

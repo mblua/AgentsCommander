@@ -1,14 +1,16 @@
-import { Component, createSignal } from "solid-js";
+import { Component, createSignal, onMount, onCleanup } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import iconUrl from "../../assets/icon-16.png";
 import { getConsoleText } from "../../shared/console-capture";
 import { DebugAPI } from "../../shared/ipc";
+import { applyWindowLayout } from "../../shared/window-layout";
 
 declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
 const Titlebar: Component = () => {
   const [copied, setCopied] = createSignal(false);
+  const [layoutOpen, setLayoutOpen] = createSignal(false);
 
   const handleMinimize = () => getCurrentWindow().minimize();
   const handleClose = () => getCurrentWindow().close();
@@ -20,6 +22,26 @@ const Titlebar: Component = () => {
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+
+  const handleLayout = async (side: "left" | "right") => {
+    setLayoutOpen(false);
+    try {
+      await applyWindowLayout(side);
+    } catch (err) {
+      console.error("applyLayout failed:", err);
+    }
+  };
+
+  const handleClickOutside = (e: MouseEvent) => {
+    if (layoutOpen() && !(e.target as HTMLElement).closest(".layout-dropdown-wrapper")) {
+      setLayoutOpen(false);
+    }
+  };
+
+  onMount(() => {
+    document.addEventListener("click", handleClickOutside);
+    onCleanup(() => document.removeEventListener("click", handleClickOutside));
+  });
 
   return (
     <div class="titlebar" data-tauri-drag-region>
@@ -33,6 +55,27 @@ const Titlebar: Component = () => {
         )}
       </div>
       <div class="titlebar-controls">
+        <div class="layout-dropdown-wrapper">
+          <button
+            class={`titlebar-btn titlebar-btn-layout ${layoutOpen() ? "open" : ""}`}
+            onClick={(e) => { e.stopPropagation(); setLayoutOpen(!layoutOpen()); }}
+            title="Layout"
+          >
+            &#x2637;
+          </button>
+          {layoutOpen() && (
+            <div class="layout-dropdown">
+              <button class="layout-option" onClick={() => handleLayout("left")}>
+                <span class="layout-option-icon">&#x25E7;</span>
+                Sidebar Left
+              </button>
+              <button class="layout-option" onClick={() => handleLayout("right")}>
+                <span class="layout-option-icon">&#x25E8;</span>
+                Sidebar Right
+              </button>
+            </div>
+          )}
+        </div>
         {import.meta.env.DEV && (
           <button
             class={`titlebar-btn titlebar-btn-logs ${copied() ? "copied" : ""}`}
