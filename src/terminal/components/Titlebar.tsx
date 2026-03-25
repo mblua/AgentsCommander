@@ -6,17 +6,16 @@ declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
 const Titlebar: Component<{ detached?: boolean }> = (props) => {
-  const appWindow = getCurrentWindow();
-
-  const handleMinimize = () => appWindow.minimize();
+  const handleMinimize = () => getCurrentWindow().minimize();
   const handleMaximize = async () => {
-    if (await appWindow.isMaximized()) {
-      appWindow.unmaximize();
+    const win = getCurrentWindow();
+    if (await win.isMaximized()) {
+      win.unmaximize();
     } else {
-      appWindow.maximize();
+      win.maximize();
     }
   };
-  const handleClose = () => appWindow.close();
+  const handleClose = () => getCurrentWindow().close();
 
   return (
     <div class="titlebar" data-tauri-drag-region>

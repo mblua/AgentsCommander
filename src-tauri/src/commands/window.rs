@@ -91,6 +91,17 @@ pub async fn detach_terminal(
     Ok(label)
 }
 
+/// Open a path in the system file explorer (Explorer, Finder, xdg-open).
+#[tauri::command]
+pub fn open_in_explorer(path: String) -> Result<(), String> {
+    let canonical = std::fs::canonicalize(&path)
+        .map_err(|_| format!("Path does not exist or is inaccessible: {}", path))?;
+    if !canonical.is_dir() {
+        return Err(format!("Path is not a directory: {}", path));
+    }
+    open::that_detached(canonical).map_err(|e| format!("Failed to open explorer: {}", e))
+}
+
 /// Open the guide window (Hints, Tutorial, Dark Factory Catalyst).
 /// If already open, just focus it.
 #[tauri::command]

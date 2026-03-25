@@ -240,6 +240,7 @@ pub fn run() {
             commands::telegram::telegram_send_test,
             commands::window::detach_terminal,
             commands::window::close_detached_terminal,
+            commands::window::open_in_explorer,
             commands::window::open_guide_window,
             commands::dark_factory::get_dark_factory,
             commands::dark_factory::save_dark_factory,

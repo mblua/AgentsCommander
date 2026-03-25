@@ -134,6 +134,7 @@ html, body, #root {
 
 .team-filter .toolbar-gear-btn {
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .team-filter-wrapper {
@@ -928,6 +929,31 @@ html, body, #root {
 .session-item-voice-indicator.error .voice-error-text {
   font-size: 10px;
   color: #f59e0b;
+}
+
+.session-item-explorer {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.session-item:hover .session-item-explorer {
+  display: flex;
+}
+
+.session-item-explorer:hover {
+  background: rgba(255, 196, 0, 0.15);
+  color: #ffc400;
 }
 
 .session-item-detach {

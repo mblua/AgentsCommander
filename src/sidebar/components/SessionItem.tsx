@@ -106,6 +106,15 @@ const SessionItem: Component<{
     }
   };
 
+  const handleOpenExplorer = async (e: MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await WindowAPI.openInExplorer(props.session.workingDirectory);
+    } catch (err) {
+      console.error("Failed to open explorer:", err);
+    }
+  };
+
   const handleDetach = (e: MouseEvent) => {
     e.stopPropagation();
     WindowAPI.detach(props.session.id);
@@ -207,6 +216,13 @@ const SessionItem: Component<{
           &#x1F399;
         </button>
       </Show>
+      <button
+        class="session-item-explorer"
+        onClick={handleOpenExplorer}
+        title="Open folder in explorer"
+      >
+        &#x1F4C2;
+      </button>
       <button
         class="session-item-detach"
         onClick={handleDetach}

@@ -118,6 +118,9 @@ export const WindowAPI = {
 
   closeDetached: (sessionId: string) =>
     invoke<void>("close_detached_terminal", { sessionId }),
+
+  openInExplorer: (path: string) =>
+    invoke<void>("open_in_explorer", { path }),
 };
 
 // Telegram Bridge API
