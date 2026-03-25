@@ -339,6 +339,7 @@ impl MailboxPoller {
     }
 
     /// Inject a message into a session's PTY stdin.
+    /// If get_output is true, registers a response watcher on the PTY output stream.
     async fn inject_into_pty(
         &self,
         app: &tauri::AppHandle,
@@ -359,6 +360,21 @@ impl MailboxPoller {
         } else {
             format!("\n[Message from {}] {}\n", msg.from, msg.body)
         };
+
+        // Register response watcher before injecting, so we don't miss fast responses
+        if msg.get_output {
+            if let Some(ref rid) = msg.request_id {
+                // Response file goes to the SENDER's .agentscommander/responses/
+                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
+                    let response_dir = std::path::PathBuf::from(sender_path)
+                        .join(".agentscommander")
+                        .join("responses");
+                    let mgr = pty_mgr.lock().map_err(|e| format!("PTY lock failed: {}", e))?;
+                    mgr.register_response_watcher(session_id, rid.clone(), response_dir);
+                    drop(mgr);
+                }
+            }
+        }
 
         let mgr = pty_mgr.lock().map_err(|e| format!("PTY lock failed: {}", e))?;
         mgr.write(session_id, payload.as_bytes())
