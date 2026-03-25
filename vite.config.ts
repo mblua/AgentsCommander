@@ -15,7 +15,7 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
-    minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
+    minify: !process.env.TAURI_DEBUG,
     sourcemap: !!process.env.TAURI_DEBUG,
   },
 });
