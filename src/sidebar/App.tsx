@@ -78,6 +78,12 @@ const SidebarApp: Component = () => {
     // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
 
+    // Load repo paths for inactive agent display
+    try {
+      const appSettings2 = await SettingsAPI.get();
+      sessionsStore.setRepoPaths(appSettings2.repoPaths || []);
+    } catch {}
+
     // Load teams for filter
     try {
       const dfConfig = await DarkFactoryAPI.get();
