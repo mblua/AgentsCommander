@@ -148,113 +148,68 @@ pub fn execute(args: ListPeersArgs) -> i32 {
 
     let mut peers: Vec<PeerInfo> = Vec::new();
 
-    if !my_config.teams.is_empty() {
-        // Strategy 1: Show all members of our teams
-        if let Some(teams_json) = load_teams_config() {
-            if let Some(teams) = teams_json.get("teams").and_then(|t| t.as_array()) {
-                for team in teams {
-                    let team_name = team.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    if !my_config.teams.contains(&team_name.to_string()) {
-                        continue;
-                    }
+    if my_config.teams.is_empty() {
+        // No teams → no peers. Only team members can communicate.
+        println!("[]");
+        return 0;
+    }
 
-                    if let Some(members) = team.get("members").and_then(|m| m.as_array()) {
-                        for member in members {
-                            let _member_name = member.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                            let member_path = member.get("path").and_then(|p| p.as_str()).unwrap_or("");
-
-                            // Skip ourselves
-                            let peer_name = agent_name_from_path(member_path);
-                            if peer_name == my_name {
-                                continue;
-                            }
-
-                            // Skip duplicates
-                            if peers.iter().any(|p| p.name == peer_name) {
-                                // Add team to existing peer
-                                if let Some(existing) = peers.iter_mut().find(|p| p.name == peer_name) {
-                                    if !existing.teams.contains(&team_name.to_string()) {
-                                        existing.teams.push(team_name.to_string());
-                                    }
-                                }
-                                continue;
-                            }
-
-                            // Check if peer has an active session (look for a lock or indicator)
-                            let peer_ac = Path::new(member_path).join(".agentscommander");
-                            let status = if peer_ac.join("active").exists() {
-                                "active"
-                            } else {
-                                "unknown"
-                            };
-
-                            // Read peer's local config
-                            let peer_config: AgentLocalConfig = peer_ac
-                                .join("config.json")
-                                .to_str()
-                                .and_then(|p| std::fs::read_to_string(p).ok())
-                                .and_then(|c| serde_json::from_str(&c).ok())
-                                .unwrap_or(AgentLocalConfig {
-                                    teams: vec![],
-                                    is_coordinator_of: vec![],
-                                    last_coding_agent: None,
-                                });
-
-                            peers.push(PeerInfo {
-                                name: peer_name,
-                                path: member_path.to_string(),
-                                status: status.to_string(),
-                                role: read_role(member_path),
-                                teams: vec![team_name.to_string()],
-                                last_coding_agent: peer_config.last_coding_agent,
-                            });
-                        }
-                    }
+    // Show all members of our teams
+    if let Some(teams_json) = load_teams_config() {
+        if let Some(teams) = teams_json.get("teams").and_then(|t| t.as_array()) {
+            for team in teams {
+                let team_name = team.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                if !my_config.teams.contains(&team_name.to_string()) {
+                    continue;
                 }
-            }
-        }
-    } else {
-        // Strategy 2: Show all agents in the same parent directory
-        if let Some(parent) = my_repo_path.parent() {
-            if let Ok(entries) = std::fs::read_dir(parent) {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
 
-                    // Skip ourselves
-                    if path == my_repo_path {
-                        continue;
-                    }
+                if let Some(members) = team.get("members").and_then(|m| m.as_array()) {
+                    for member in members {
+                        let member_path = member.get("path").and_then(|p| p.as_str()).unwrap_or("");
 
-                    // Check if it has .agentscommander/
-                    let peer_ac = path.join(".agentscommander");
-                    if !peer_ac.is_dir() {
-                        continue;
-                    }
+                        // Skip ourselves
+                        let peer_name = agent_name_from_path(member_path);
+                        if peer_name == my_name {
+                            continue;
+                        }
 
-                    let peer_name = agent_name_from_path(&path.to_string_lossy());
+                        // Skip duplicates — add team to existing peer
+                        if peers.iter().any(|p| p.name == peer_name) {
+                            if let Some(existing) = peers.iter_mut().find(|p| p.name == peer_name) {
+                                if !existing.teams.contains(&team_name.to_string()) {
+                                    existing.teams.push(team_name.to_string());
+                                }
+                            }
+                            continue;
+                        }
 
-                    let peer_config: AgentLocalConfig = peer_ac
-                        .join("config.json")
-                        .to_str()
-                        .and_then(|p| std::fs::read_to_string(p).ok())
-                        .and_then(|c| serde_json::from_str(&c).ok())
-                        .unwrap_or(AgentLocalConfig {
-                            teams: vec![],
-                            is_coordinator_of: vec![],
-                            last_coding_agent: None,
+                        let peer_ac = Path::new(member_path).join(".agentscommander");
+                        let status = if peer_ac.join("active").exists() {
+                            "active"
+                        } else {
+                            "unknown"
+                        };
+
+                        let peer_config: AgentLocalConfig = peer_ac
+                            .join("config.json")
+                            .to_str()
+                            .and_then(|p| std::fs::read_to_string(p).ok())
+                            .and_then(|c| serde_json::from_str(&c).ok())
+                            .unwrap_or(AgentLocalConfig {
+                                teams: vec![],
+                                is_coordinator_of: vec![],
+                                last_coding_agent: None,
+                            });
+
+                        peers.push(PeerInfo {
+                            name: peer_name,
+                            path: member_path.to_string(),
+                            status: status.to_string(),
+                            role: read_role(member_path),
+                            teams: vec![team_name.to_string()],
+                            last_coding_agent: peer_config.last_coding_agent,
                         });
-
-                    peers.push(PeerInfo {
-                        name: peer_name,
-                        path: path.to_string_lossy().to_string(),
-                        status: "unknown".to_string(),
-                        role: read_role(&path.to_string_lossy()),
-                        teams: peer_config.teams,
-                        last_coding_agent: peer_config.last_coding_agent,
-                    });
+                    }
                 }
             }
         }

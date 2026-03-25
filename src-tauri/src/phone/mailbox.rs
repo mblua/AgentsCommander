@@ -507,14 +507,13 @@ impl MailboxPoller {
         None
     }
 
-    /// Check if sender can reach destination via teams or shared parent directory.
+    /// Check if sender can reach destination via team membership.
+    /// Only agents in the same team can communicate — no parent directory fallback.
     fn can_reach(&self, from: &str, to: &str, config: &DarkFactoryConfig) -> bool {
-        // If teams config exists, check team membership
-        if !config.teams.is_empty() {
-            return crate::phone::manager::can_communicate(from, to, config);
+        if config.teams.is_empty() {
+            return false; // No teams configured → no communication
         }
-        // No teams config → allow all (parent dir matching done elsewhere)
-        true
+        crate::phone::manager::can_communicate(from, to, config)
     }
 
     /// Resolve which agent CLI to use for wake-and-sleep mode.

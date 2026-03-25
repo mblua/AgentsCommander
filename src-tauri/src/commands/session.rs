@@ -59,9 +59,25 @@ pub async fn create_session_inner(
         }
     }
 
-    // Schedule delayed injection of session token + CLI instructions into PTY
+    // Only inject init prompt if this repo belongs to a team (has messaging peers)
+    let cwd_for_init = cwd.clone();
     let pty_mgr_clone = Arc::clone(pty_mgr);
     tauri::async_runtime::spawn(async move {
+        // Check if repo has teams configured
+        let config_path = std::path::Path::new(&cwd_for_init)
+            .join(".agentscommander")
+            .join("config.json");
+        let has_teams = config_path
+            .to_str()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|v| v.get("teams")?.as_array().map(|a| !a.is_empty()))
+            .unwrap_or(false);
+
+        if !has_teams {
+            return;
+        }
+
         // Wait for the agent CLI to boot (3s covers most agents)
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
