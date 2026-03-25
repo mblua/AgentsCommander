@@ -1,24 +1,29 @@
 # Agents Commander
 
-A standalone terminal session manager with decoupled tabs. Two synchronized windows work together: a narrow **Sidebar** for managing sessions, and a full **Terminal** window rendering the active PTY via xterm.js.
+The command center for AI coding agents.
+
+- Run Claude Code, Codex, and OpenCode in parallel
+- Instant idle detection - know which agent needs you
+- Dictate prompts by voice
+- Detach sessions into independent windows
+- Built-in tips to improve your coding agent workflow
 
 Built with **Tauri 2.x** (Rust) + **SolidJS** (TypeScript) + **xterm.js** (WebGL).
 
 ## Features
 
+- **Agent launcher** - Run Claude Code, Codex, OpenCode, and other CLI agents from a single dashboard
+- **Idle detection** - Visual indicator (green dot) when an agent is done and waiting for you
+- **Voice-to-text** - Dictate prompts via Gemini transcription (push-to-talk in terminal, toggle in sidebar) with auto-execute and cancel support
+- **Detached windows** - Pop any session out into its own dedicated terminal window
+- **Best practices hints** - Contextual tips to sharpen your coding agent workflow
 - **Decoupled multi-window** - Sidebar and Terminal are independent windows, not tabs in a single frame
 - **Full PTY emulation** - Real terminal via ConPTY (portable-pty), not a command runner
 - **xterm.js with WebGL** - Hardware-accelerated rendering with canvas fallback
 - **Session management** - Create, rename, switch, destroy sessions from the sidebar
-- **Detached windows** - Pop a session out into its own dedicated terminal window
-- **Idle detection** - Visual indicator (green dot) when a session is idle vs busy
-- **Agent launcher** - Open pre-configured CLI agents (Claude Code, etc.) from the toolbar
-- **Voice-to-text** - Dictate into any session via Gemini transcription (push-to-talk in terminal, toggle in sidebar) with configurable auto-execute and cancel recording support
-- **Clear agent input** - One-click button to clear the coding agent's input line (Ctrl+U)
 - **Team filter** - Filter sessions by team in the sidebar dropdown
 - **Telegram bridge** - Attach a Telegram bot to a session for remote monitoring
 - **Settings UI** - Tabbed settings modal (General, Coding Agents, Integrations, Dark Factory) accessible from the top bar
-- **Custom titlebar** - Frameless windows with draggable titlebar, no native decorations
 - **Zoom support** - Ctrl+Scroll, Ctrl++/-, Ctrl+0 on any window, with per-window zoom level persistence
 - **Window geometry persistence** - Windows reopen at the same position and size as when you last closed the app
 - **Keyboard shortcuts** - New session, close, switch, voice toggle (Ctrl+Shift+R)
