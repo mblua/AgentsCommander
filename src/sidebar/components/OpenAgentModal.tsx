@@ -106,6 +106,7 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
       shellArgs,
       cwd: repo.path,
       sessionName: repo.name,
+      agentId: agent.id,
     });
 
     props.onClose();

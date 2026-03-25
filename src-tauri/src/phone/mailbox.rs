@@ -258,6 +258,7 @@ impl MailboxPoller {
                 shell_args,
                 cwd,
                 Some(format!("[temp] {}", msg.to)),
+                None, // Temp session — don't update lastCodingAgent
             )
             .await
             {

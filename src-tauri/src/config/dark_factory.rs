@@ -32,6 +32,47 @@ pub struct AgentLocalConfig {
     pub teams: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub is_coordinator_of: Vec<String>,
+    /// Last coding agent CLI used in this repo (e.g., "claude", "codex").
+    /// Used as fallback for --agent auto in wake-and-sleep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_coding_agent: Option<String>,
+}
+
+/// Update lastCodingAgent in a repo's .agentscommander/config.json.
+/// Reads existing config, merges the field, writes back.
+pub fn set_last_coding_agent(repo_path: &str, agent_id: &str) -> Result<(), String> {
+    let config_dir = std::path::Path::new(repo_path).join(".agentscommander");
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create .agentscommander dir: {}", e))?;
+
+    let config_path = config_dir.join("config.json");
+
+    // Read existing or create default
+    let mut config: AgentLocalConfig = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        serde_json::from_str(&content).unwrap_or(AgentLocalConfig {
+            teams: vec![],
+            is_coordinator_of: vec![],
+            last_coding_agent: None,
+        })
+    } else {
+        AgentLocalConfig {
+            teams: vec![],
+            is_coordinator_of: vec![],
+            last_coding_agent: None,
+        }
+    };
+
+    config.last_coding_agent = Some(agent_id.to_string());
+
+    let json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    std::fs::write(&config_path, json)
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+
+    log::info!("Updated lastCodingAgent to '{}' in {:?}", agent_id, config_path);
+    Ok(())
 }
 
 /// Returns the app config dir (delegates to config::config_dir)
@@ -113,12 +154,21 @@ pub fn sync_agent_configs(config: &DarkFactoryConfig) -> Result<(), String> {
     }
 
     for (agent_path, (teams, coordinator_of)) in &agent_map {
+        let config_dir = Path::new(agent_path).join(".agentscommander");
+
+        // Preserve existing lastCodingAgent if present
+        let existing_last_agent = config_dir
+            .join("config.json")
+            .to_str()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|c| serde_json::from_str::<AgentLocalConfig>(&c).ok())
+            .and_then(|c| c.last_coding_agent);
+
         let agent_config = AgentLocalConfig {
             teams: teams.clone(),
             is_coordinator_of: coordinator_of.clone(),
+            last_coding_agent: existing_last_agent,
         };
-
-        let config_dir = Path::new(agent_path).join(".agentscommander");
         if let Err(e) = std::fs::create_dir_all(&config_dir) {
             log::warn!(
                 "Failed to create .agentscommander dir at {:?}: {}",

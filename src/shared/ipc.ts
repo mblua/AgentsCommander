@@ -16,6 +16,7 @@ export interface CreateSessionOptions {
   shellArgs?: string[];
   cwd?: string;
   sessionName?: string;
+  agentId?: string;
 }
 
 export const SessionAPI = {
@@ -25,6 +26,7 @@ export const SessionAPI = {
       shellArgs: opts?.shellArgs ?? null,
       cwd: opts?.cwd ?? null,
       sessionName: opts?.sessionName ?? null,
+      agentId: opts?.agentId ?? null,
     }),
 
   destroy: (id: string) => invoke<void>("destroy_session", { id }),

@@ -166,6 +166,7 @@ pub fn run() {
                             ps.shell_args.clone(),
                             ps.working_directory.clone(),
                             Some(ps.name.clone()),
+                            None, // No agent_id on restore
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {

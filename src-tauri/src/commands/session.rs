@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
+use crate::config::dark_factory;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
@@ -15,6 +16,7 @@ use crate::DetachedSessionsState;
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
 /// After spawn, schedules a delayed injection of the session token + CLI instructions.
+/// If `agent_id` is provided, saves it as lastCodingAgent in the repo's config.
 pub async fn create_session_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -23,6 +25,7 @@ pub async fn create_session_inner(
     shell_args: Vec<String>,
     cwd: String,
     session_name: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<SessionInfo, String> {
     let mgr = session_mgr.read().await;
     let mut session = mgr
@@ -48,6 +51,13 @@ pub async fn create_session_inner(
 
     let info = SessionInfo::from(&session);
     let _ = app.emit("session_created", info.clone());
+
+    // Save lastCodingAgent if an agent_id was provided
+    if let Some(ref aid) = agent_id {
+        if let Err(e) = dark_factory::set_last_coding_agent(&cwd, aid) {
+            log::warn!("Failed to save lastCodingAgent: {}", e);
+        }
+    }
 
     // Schedule delayed injection of session token + CLI instructions into PTY
     let pty_mgr_clone = Arc::clone(pty_mgr);
@@ -104,6 +114,7 @@ pub async fn create_session(
     shell_args: Option<Vec<String>>,
     cwd: Option<String>,
     session_name: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
 
@@ -125,6 +136,7 @@ pub async fn create_session(
         shell_args,
         cwd.clone(),
         session_name,
+        agent_id,
     )
     .await?;
 
