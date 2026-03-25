@@ -205,7 +205,7 @@ impl MailboxPoller {
                 );
                 // Only deliver if session is active/running and NOT waiting for input
                 if !s.waiting_for_input && matches!(s.status, SessionStatus::Active | SessionStatus::Running) {
-                    return self.inject_into_pty(app, session_id, msg).await;
+                    return self.inject_into_pty(app, session_id, msg, true).await;
                 }
                 log::info!("[mailbox] active-only: conditions not met, falling back to queue");
             }
@@ -228,7 +228,7 @@ impl MailboxPoller {
                     session_id, s.status, s.waiting_for_input
                 );
                 if s.waiting_for_input {
-                    return self.inject_into_pty(app, session_id, msg).await;
+                    return self.inject_into_pty(app, session_id, msg, true).await;
                 }
                 log::info!("[mailbox] wake: session not idle, falling back to queue");
             } else {
@@ -250,7 +250,8 @@ impl MailboxPoller {
 
             if let Some(s) = session {
                 if s.waiting_for_input {
-                    return self.inject_into_pty(app, session_id, msg).await;
+                    // Existing session is interactive — no response markers
+                    return self.inject_into_pty(app, session_id, msg, true).await;
                 }
             }
             // Session exists but is busy — queue instead
@@ -287,8 +288,8 @@ impl MailboxPoller {
                     // Wait for agent boot (3s matches init prompt delay)
                     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
-                    // Inject the message
-                    self.inject_into_pty(app, session_id, msg).await?;
+                    // Inject the message — non-interactive one-shot, use markers if get_output
+                    self.inject_into_pty(app, session_id, msg, false).await?;
 
                     // Schedule cleanup: wait for idle then destroy session
                     let app_clone = app.clone();
@@ -358,16 +359,23 @@ impl MailboxPoller {
     }
 
     /// Inject a message into a session's PTY stdin.
-    /// If get_output is true, registers a response watcher on the PTY output stream.
+    /// `interactive` = true means the session is a live interactive agent (wake/active-only).
+    ///   → plain message only, no response markers, no watcher.
+    /// `interactive` = false means it's a non-interactive one-shot (wake-and-sleep).
+    ///   → if get_output, include response marker instructions and register watcher.
     async fn inject_into_pty(
         &self,
         app: &tauri::AppHandle,
         session_id: Uuid,
         msg: &OutboxMessage,
+        interactive: bool,
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
-        let payload = if msg.get_output {
+        // Only use response markers for non-interactive sessions
+        let use_markers = msg.get_output && !interactive;
+
+        let payload = if use_markers {
             if let Some(ref rid) = msg.request_id {
                 format!(
                     "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n\r",
@@ -380,8 +388,8 @@ impl MailboxPoller {
             format!("\n[Message from {}] {}\n\r", msg.from, msg.body)
         };
 
-        // Register response watcher before injecting, so we don't miss fast responses
-        if msg.get_output {
+        // Register response watcher only for non-interactive sessions
+        if use_markers {
             if let Some(ref rid) = msg.request_id {
                 // Response file goes to the SENDER's .agentscommander/responses/
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
