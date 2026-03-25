@@ -151,6 +151,7 @@ export interface SessionsState {
   activeId: string | null;
   teams: Team[];
   teamFilter: string | null;
+  showInactive: boolean;
 }
 
 // Phone communication types

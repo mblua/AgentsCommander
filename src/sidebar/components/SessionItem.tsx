@@ -126,13 +126,15 @@ const SessionItem: Component<{
   };
 
 
+  const isInactive = () => props.session.id.startsWith("inactive-");
+
   return (
     <div
-      class={`session-item session-item-enter ${props.isActive ? "active" : ""}`}
-      onClick={handleClick}
+      class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
+      onClick={isInactive() ? undefined : handleClick}
     >
       <div
-        class={`session-item-status ${props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
+        class={`session-item-status ${isInactive() ? "offline" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
       />
       <div class="session-item-info">
         <Show
@@ -203,71 +205,73 @@ const SessionItem: Component<{
           <div class="session-item-shell">{props.session.shell}</div>
         </Show>
       </div>
-      <Show when={settingsStore.voiceEnabled}>
-        <Show when={isRecording()}>
+      <Show when={!isInactive()}>
+        <Show when={settingsStore.voiceEnabled}>
+          <Show when={isRecording()}>
+            <button
+              class="session-item-mic-cancel"
+              onClick={handleCancelRecording}
+              title="Cancel recording"
+            >
+              &#x2715;
+            </button>
+          </Show>
           <button
-            class="session-item-mic-cancel"
-            onClick={handleCancelRecording}
-            title="Cancel recording"
+            class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""}`}
+            onClick={handleMicClick}
+            title={isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
           >
-            &#x2715;
+            &#x1F399;
           </button>
         </Show>
         <button
-          class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""}`}
-          onClick={handleMicClick}
-          title={isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
+          class="session-item-explorer"
+          onClick={handleOpenExplorer}
+          title="Open folder in explorer"
         >
-          &#x1F399;
+          &#x1F4C2;
+        </button>
+        <button
+          class="session-item-detach"
+          onClick={handleDetach}
+          title="Detach to own window"
+        >
+          &#x29C9;
+        </button>
+        <Show when={bridge()}>
+          <div
+            class="session-item-bridge-dot"
+            style={{ background: bridge()!.color }}
+            title={`Telegram: ${bridge()!.botLabel}`}
+          />
+        </Show>
+        <button
+          class={`session-item-telegram ${bridge() ? "active" : ""}`}
+          onClick={handleTelegramClick}
+          title={bridge() ? "Detach Telegram" : "Attach Telegram"}
+          style={bridge() ? { color: bridge()!.color } : {}}
+        >
+          T
+        </button>
+        <Show when={showBotMenu()}>
+          <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
+            <For each={availableBots()}>
+              {(bot) => (
+                <button
+                  class="session-item-bot-option"
+                  onClick={() => handleBotSelect(bot.id)}
+                >
+                  <span class="settings-color-dot" style={{ background: bot.color }} />
+                  {bot.label}
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
+        <button class="session-item-close" onClick={handleClose} title="Close session">
+          &#x2715;
         </button>
       </Show>
-      <button
-        class="session-item-explorer"
-        onClick={handleOpenExplorer}
-        title="Open folder in explorer"
-      >
-        &#x1F4C2;
-      </button>
-      <button
-        class="session-item-detach"
-        onClick={handleDetach}
-        title="Detach to own window"
-      >
-        &#x29C9;
-      </button>
-      <Show when={bridge()}>
-        <div
-          class="session-item-bridge-dot"
-          style={{ background: bridge()!.color }}
-          title={`Telegram: ${bridge()!.botLabel}`}
-        />
-      </Show>
-      <button
-        class={`session-item-telegram ${bridge() ? "active" : ""}`}
-        onClick={handleTelegramClick}
-        title={bridge() ? "Detach Telegram" : "Attach Telegram"}
-        style={bridge() ? { color: bridge()!.color } : {}}
-      >
-        T
-      </button>
-      <Show when={showBotMenu()}>
-        <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
-          <For each={availableBots()}>
-            {(bot) => (
-              <button
-                class="session-item-bot-option"
-                onClick={() => handleBotSelect(bot.id)}
-              >
-                <span class="settings-color-dot" style={{ background: bot.color }} />
-                {bot.label}
-              </button>
-            )}
-          </For>
-        </div>
-      </Show>
-      <button class="session-item-close" onClick={handleClose} title="Close session">
-        &#x2715;
-      </button>
     </div>
   );
 };

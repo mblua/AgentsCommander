@@ -355,8 +355,31 @@ html, body, #root {
 .session-item-status.running { background: var(--status-running); }
 .session-item-status.idle { background: var(--status-idle); }
 .session-item-status.exited { background: var(--status-exited); }
+.session-item-status.offline { background: #555; }
 /* .waiting must override all other status colors (active, running, idle, exited) */
 .session-item .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
+
+/* Inactive team member (no active session) */
+.session-item.inactive-member {
+  opacity: 0.5;
+  cursor: default;
+}
+.session-item.inactive-member:hover {
+  background: transparent;
+}
+
+/* Show inactive toggle */
+.show-inactive-btn {
+  font-size: 14px;
+  opacity: 0.4;
+  transition: opacity 150ms ease-out;
+}
+.show-inactive-btn:hover {
+  opacity: 0.7;
+}
+.show-inactive-btn.active {
+  opacity: 1;
+}
 
 /* Close button on session item */
 .session-item-close {

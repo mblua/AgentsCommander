@@ -8,6 +8,7 @@ const [state, setState] = createStore<SessionsState>({
   activeId: null,
   teams: [],
   teamFilter: null,
+  showInactive: false,
 });
 
 function normalizePath(p: string): string {
@@ -21,25 +22,80 @@ const allTeamPathsMemo = createMemo(() => {
   return paths;
 });
 
+/** Build a placeholder Session for an inactive team member */
+function makeInactiveEntry(name: string, path: string): Session {
+  return {
+    id: `inactive-${normalizePath(path)}`,
+    name,
+    shell: "",
+    shellArgs: [],
+    createdAt: "",
+    workingDirectory: path,
+    status: "idle",
+    waitingForInput: false,
+    lastPrompt: null,
+    gitBranch: null,
+    token: "",
+  };
+}
+
 const filteredSessionsMemo = createMemo(() => {
-  if (!state.teamFilter) return state.sessions;
+  const activeSessions = (() => {
+    if (!state.teamFilter) return state.sessions;
 
-  let matches: (normalizedPath: string) => boolean;
+    let matches: (normalizedPath: string) => boolean;
 
-  if (state.teamFilter === NO_TEAM) {
-    const allPaths = allTeamPathsMemo();
-    matches = (p) => !allPaths.has(p);
+    if (state.teamFilter === NO_TEAM) {
+      const allPaths = allTeamPathsMemo();
+      matches = (p) => !allPaths.has(p);
+    } else {
+      const team = state.teams.find((t) => t.id === state.teamFilter);
+      if (!team) return state.sessions;
+      const paths = new Set(team.members.map((m) => normalizePath(m.path)));
+      matches = (p) => paths.has(p);
+    }
+
+    return state.sessions.filter((s) => {
+      if (!s.workingDirectory) return state.teamFilter === NO_TEAM;
+      return matches(normalizePath(s.workingDirectory));
+    });
+  })();
+
+  if (!state.showInactive) return activeSessions;
+
+  // Add inactive team members that don't have active sessions
+  const activePathSet = new Set(
+    state.sessions.map((s) => normalizePath(s.workingDirectory))
+  );
+
+  const inactiveEntries: Session[] = [];
+
+  if (!state.teamFilter || state.teamFilter === NO_TEAM) {
+    // "All" or "No team" — show inactive from all teams
+    if (state.teamFilter !== NO_TEAM) {
+      for (const team of state.teams) {
+        for (const m of team.members) {
+          const np = normalizePath(m.path);
+          if (!activePathSet.has(np) && !inactiveEntries.some((e) => normalizePath(e.workingDirectory) === np)) {
+            inactiveEntries.push(makeInactiveEntry(m.name, m.path));
+          }
+        }
+      }
+    }
   } else {
+    // Specific team
     const team = state.teams.find((t) => t.id === state.teamFilter);
-    if (!team) return state.sessions;
-    const paths = new Set(team.members.map((m) => normalizePath(m.path)));
-    matches = (p) => paths.has(p);
+    if (team) {
+      for (const m of team.members) {
+        const np = normalizePath(m.path);
+        if (!activePathSet.has(np) && !inactiveEntries.some((e) => normalizePath(e.workingDirectory) === np)) {
+          inactiveEntries.push(makeInactiveEntry(m.name, m.path));
+        }
+      }
+    }
   }
 
-  return state.sessions.filter((s) => {
-    if (!s.workingDirectory) return state.teamFilter === NO_TEAM;
-    return matches(normalizePath(s.workingDirectory));
-  });
+  return [...activeSessions, ...inactiveEntries];
 });
 
 export const sessionsStore = {
@@ -54,6 +110,9 @@ export const sessionsStore = {
   },
   get teamFilter() {
     return state.teamFilter;
+  },
+  get showInactive() {
+    return state.showInactive;
   },
   get filteredSessions() {
     return filteredSessionsMemo();
@@ -110,5 +169,9 @@ export const sessionsStore = {
 
   setTeamFilter(teamId: string | null) {
     setState("teamFilter", teamId);
+  },
+
+  toggleShowInactive() {
+    setState("showInactive", !state.showInactive);
   },
 };
