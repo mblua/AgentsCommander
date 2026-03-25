@@ -370,14 +370,14 @@ impl MailboxPoller {
         let payload = if msg.get_output {
             if let Some(ref rid) = msg.request_id {
                 format!(
-                    "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n",
+                    "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n\r",
                     msg.from, msg.body, rid, rid
                 )
             } else {
-                format!("\n[Message from {}] {}\n", msg.from, msg.body)
+                format!("\n[Message from {}] {}\n\r", msg.from, msg.body)
             }
         } else {
-            format!("\n[Message from {}] {}\n", msg.from, msg.body)
+            format!("\n[Message from {}] {}\n\r", msg.from, msg.body)
         };
 
         // Register response watcher before injecting, so we don't miss fast responses

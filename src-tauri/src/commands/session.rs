@@ -86,6 +86,7 @@ pub async fn create_session_inner(
                 "#   <your response>\n",
                 "#   %%AC_RESPONSE::<requestId>::END%%\n",
                 "# === End Session Init ===\n",
+                "\r",
             ),
             token = token,
             bin = binary_path,
