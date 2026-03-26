@@ -36,6 +36,11 @@ pub struct SendArgs {
     /// Agent root directory (required)
     #[arg(long)]
     pub root: Option<String>,
+
+    /// Write message to a specific outbox directory (e.g., app-outbox path)
+    /// instead of <root>/.agentscommander/outbox/
+    #[arg(long)]
+    pub outbox: Option<String>,
 }
 
 /// Outbox message written to .agentscommander/outbox/<uuid>.json
@@ -122,8 +127,12 @@ pub fn execute(args: SendArgs) -> i32 {
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
 
-    // Write to .agentscommander/outbox/
-    let outbox_dir = ac_dir.join("outbox");
+    // Write to --outbox if specified, otherwise <root>/.agentscommander/outbox/
+    let outbox_dir = if let Some(ref outbox_path) = args.outbox {
+        PathBuf::from(outbox_path)
+    } else {
+        ac_dir.join("outbox")
+    };
     if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
         eprintln!("Error: failed to create outbox directory: {}", e);
         return 1;

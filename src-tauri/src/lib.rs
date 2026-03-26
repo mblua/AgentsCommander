@@ -50,6 +50,20 @@ impl MasterToken {
     }
 }
 
+/// Instance-private outbox directory. Only this app instance polls it.
+/// Created at startup, path printed to stdout alongside master token.
+pub struct AppOutbox(String);
+
+impl AppOutbox {
+    pub fn new(path: String) -> Self {
+        Self(path)
+    }
+
+    pub fn path(&self) -> &str {
+        &self.0
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging — RUST_LOG defaults to info for our crate
@@ -59,8 +73,21 @@ pub fn run() {
 
     // Generate master token — printed once to stdout, never persisted
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
+
+    // Create instance-private outbox directory
+    let instance_id = uuid::Uuid::new_v4().to_string();
+    let app_outbox_path = config::config_dir()
+        .expect("Cannot determine home directory")
+        .join("instances")
+        .join(&instance_id)
+        .join("outbox");
+    std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
+    let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
+
     println!("[master-token] {}", master_token.value());
+    println!("[app-outbox] {}", app_outbox.path());
     log::info!("[master-token] Generated (see stdout)");
+    log::info!("[app-outbox] {} (see stdout)", app_outbox.path());
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
 
@@ -112,6 +139,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(master_token)
+        .manage(app_outbox)
         .manage(session_mgr)
         .manage(tg_mgr)
         .manage(voice_tracking)

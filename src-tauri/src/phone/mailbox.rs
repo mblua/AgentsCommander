@@ -10,7 +10,7 @@ use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
-use crate::MasterToken;
+use crate::{AppOutbox, MasterToken};
 
 /// Message format in outbox files. All new fields are Option/default for backwards compat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,13 +84,23 @@ impl MailboxPoller {
             }
         }
 
-        for repo_path in &all_paths {
-            let outbox_dir = Path::new(repo_path).join(".agentscommander").join("outbox");
+        // Include the instance-private app outbox
+        let app_outbox = app.state::<AppOutbox>();
+        let app_outbox_path = app_outbox.path().to_string();
+
+        // Collect all outbox directories to scan
+        let mut outbox_dirs: Vec<PathBuf> = all_paths
+            .iter()
+            .map(|p| Path::new(p).join(".agentscommander").join("outbox"))
+            .collect();
+        outbox_dirs.push(PathBuf::from(&app_outbox_path));
+
+        for outbox_dir in &outbox_dirs {
             if !outbox_dir.is_dir() {
                 continue;
             }
 
-            let entries: Vec<PathBuf> = match std::fs::read_dir(&outbox_dir) {
+            let entries: Vec<PathBuf> = match std::fs::read_dir(outbox_dir) {
                 Ok(rd) => rd
                     .filter_map(|e| e.ok())
                     .map(|e| e.path())
