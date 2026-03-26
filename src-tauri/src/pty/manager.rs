@@ -193,6 +193,9 @@ impl PtyManager {
     }
 
     pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {
+        // Tell idle detector to ignore PTY output caused by this resize
+        self.idle_detector.record_resize(id);
+
         let ptys = self.ptys.lock().unwrap();
         let instance = ptys
             .get(&id)

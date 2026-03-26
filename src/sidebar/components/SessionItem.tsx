@@ -141,7 +141,7 @@ const SessionItem: Component<{
       onClick={isInactive() ? undefined : handleClick}
     >
       <div
-        class={`session-item-status ${isInactive() ? "offline" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
+        class={`session-item-status ${isInactive() ? "offline" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
       />
       <div class="session-item-info">
         <div class="session-item-name" onDblClick={handleDoubleClick}>

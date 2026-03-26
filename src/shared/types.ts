@@ -7,6 +7,7 @@ export interface Session {
   workingDirectory: string;
   status: SessionStatus;
   waitingForInput: boolean;
+  pendingReview: boolean;
   lastPrompt: string | null;
   gitBranch: string | null;
   token: string;

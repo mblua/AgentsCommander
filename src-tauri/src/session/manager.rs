@@ -44,6 +44,7 @@ impl SessionManager {
             working_directory,
             status: SessionStatus::Running,
             waiting_for_input: false,
+            pending_review: false,
             last_prompt: None,
             git_branch: None,
             token: Uuid::new_v4(),
