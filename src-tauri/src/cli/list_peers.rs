@@ -8,7 +8,7 @@ pub struct ListPeersArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory — overrides CWD-based resolution
+    /// Agent root directory (required)
     #[arg(long)]
     pub root: Option<String>,
 }
@@ -33,21 +33,6 @@ struct PeerInfo {
     role: String,
     teams: Vec<String>,
     last_coding_agent: Option<String>,
-}
-
-/// Resolve the current repo's .agentscommander directory (walks up from cwd).
-fn find_ac_dir() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
-    loop {
-        let ac = dir.join(".agentscommander");
-        if ac.is_dir() {
-            return Some(ac);
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    None
 }
 
 /// Get the agent name (parent/repo) from a path.
@@ -128,22 +113,15 @@ fn load_teams_config() -> Option<serde_json::Value> {
 }
 
 pub fn execute(args: ListPeersArgs) -> i32 {
-    let (ac_dir, my_name) = if let Some(ref root) = args.root {
-        let ac = PathBuf::from(root).join(".agentscommander");
-        let name = agent_name_from_path(root);
-        (ac, name)
-    } else {
-        let ac = match find_ac_dir() {
-            Some(d) => d,
-            None => {
-                eprintln!("Error: no .agentscommander directory found. Use --root <path> or run from your repo root.");
-                return 1;
-            }
-        };
-        let repo = ac.parent().unwrap_or(Path::new("."));
-        let name = agent_name_from_path(&repo.to_string_lossy());
-        (ac, name)
+    let root = match args.root {
+        Some(ref r) => r.clone(),
+        None => {
+            eprintln!("Error: --root is required. Specify your agent's root directory.");
+            return 1;
+        }
     };
+    let ac_dir = PathBuf::from(&root).join(".agentscommander");
+    let my_name = agent_name_from_path(&root);
 
     // Read our own config
     let config_path = ac_dir.join("config.json");

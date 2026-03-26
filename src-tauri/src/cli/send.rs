@@ -33,7 +33,7 @@ pub struct SendArgs {
     #[arg(long, default_value = "300")]
     pub timeout: u64,
 
-    /// Agent root directory — overrides CWD-based resolution
+    /// Agent root directory (required)
     #[arg(long)]
     pub root: Option<String>,
 }
@@ -78,46 +78,16 @@ fn agent_name_from_root(root: &str) -> String {
     }
 }
 
-/// Resolve the current repo identity from cwd.
-/// Fallback for manual CLI usage without --root.
-fn resolve_sender_name() -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    agent_name_from_root(&cwd.to_string_lossy())
-}
-
-/// Find the .agentscommander directory by walking up from cwd.
-/// Fallback for manual CLI usage without --root.
-fn find_ac_dir() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
-    loop {
-        let ac = dir.join(".agentscommander");
-        if ac.is_dir() {
-            return Some(ac);
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    None
-}
-
 pub fn execute(args: SendArgs) -> i32 {
-    // Resolve sender name and .agentscommander dir
-    let (sender, ac_dir) = if let Some(ref root) = args.root {
-        let name = agent_name_from_root(root);
-        let ac = PathBuf::from(root).join(".agentscommander");
-        (name, ac)
-    } else {
-        let name = resolve_sender_name();
-        let ac = match find_ac_dir() {
-            Some(d) => d,
-            None => {
-                eprintln!("Error: no .agentscommander directory found. Use --root <path> or run from your repo root.");
-                return 1;
-            }
-        };
-        (name, ac)
+    let root = match args.root {
+        Some(ref r) => r.clone(),
+        None => {
+            eprintln!("Error: --root is required. Specify your agent's root directory.");
+            return 1;
+        }
     };
+    let sender = agent_name_from_root(&root);
+    let ac_dir = PathBuf::from(&root).join(".agentscommander");
 
     // Validate mode
     let valid_modes = ["queue", "active-only", "wake", "wake-and-sleep"];
