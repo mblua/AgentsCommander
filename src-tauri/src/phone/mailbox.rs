@@ -129,7 +129,7 @@ impl MailboxPoller {
         // Check if token is the master token (bypasses anti-spoofing + team validation)
         let is_master = if let Some(ref token_str) = msg.token {
             let master = app.state::<MasterToken>();
-            token_str == &master.0
+            master.matches(token_str)
         } else {
             false
         };

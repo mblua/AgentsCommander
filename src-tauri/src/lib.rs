@@ -26,7 +26,29 @@ pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
 /// Master token generated at app startup. Allows bypassing team validation (can_reach).
 /// Ephemeral: lives only in memory, never persisted to disk.
-pub struct MasterToken(pub String);
+/// Field is private — use `matches()` for constant-time comparison.
+pub struct MasterToken(String);
+
+impl MasterToken {
+    pub fn new(token: String) -> Self {
+        Self(token)
+    }
+
+    /// Constant-time comparison to prevent timing oracle attacks.
+    pub fn matches(&self, candidate: &str) -> bool {
+        let a = self.0.as_bytes();
+        let b = candidate.as_bytes();
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    }
+
+    /// Display value (for printing to stdout at startup only).
+    pub fn value(&self) -> &str {
+        &self.0
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,8 +58,8 @@ pub fn run() {
     ).init();
 
     // Generate master token — printed once to stdout, never persisted
-    let master_token = MasterToken(uuid::Uuid::new_v4().to_string());
-    println!("[master-token] {}", master_token.0);
+    let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
+    println!("[master-token] {}", master_token.value());
     log::info!("[master-token] Generated (see stdout)");
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
