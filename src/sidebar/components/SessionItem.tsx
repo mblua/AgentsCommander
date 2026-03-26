@@ -21,9 +21,9 @@ const AGENT_BADGES: Record<string, string> = {
   Cursor: "CU",
 };
 
-/** Match a shell command to a detected agent name */
-function shellMatchesAgent(shell: string, agent: string): boolean {
-  const s = shell.toLowerCase();
+/** Match a shell command (+ args) to a detected agent name */
+function shellMatchesAgent(shell: string, shellArgs: string[], agent: string): boolean {
+  const s = `${shell} ${shellArgs.join(" ")}`.toLowerCase();
   switch (agent) {
     case "Claude": return s.includes("claude");
     case "Codex": return s.includes("codex");
@@ -198,7 +198,7 @@ const SessionItem: Component<{
             <div class="session-item-agent-badges">
               <For each={agentBadges()}>
                 {(agent) => {
-                  const isRunning = !isInactive() && shellMatchesAgent(props.session.shell, agent);
+                  const isRunning = !isInactive() && shellMatchesAgent(props.session.shell, props.session.shellArgs, agent);
                   return (
                     <span class={`agent-badge ${isRunning ? "running" : ""}`} data-agent={agent}>
                       {isRunning ? agent.toUpperCase() : (AGENT_BADGES[agent] || agent)}
