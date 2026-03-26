@@ -364,6 +364,8 @@ html, body, #root {
 .session-item-status.idle { background: var(--status-idle); }
 .session-item-status.exited { background: var(--status-exited); }
 .session-item-status.offline { background: #555; }
+/* .pending = agent finished but user hasn't focused yet (yellow) */
+.session-item .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
 /* .waiting must override all other status colors (active, running, idle, exited) */
 .session-item .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
 

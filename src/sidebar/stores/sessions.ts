@@ -34,6 +34,7 @@ function makeInactiveEntry(name: string, path: string): Session {
     workingDirectory: path,
     status: "idle",
     waitingForInput: false,
+    pendingReview: false,
     lastPrompt: null,
     gitBranch: null,
     token: "",
@@ -151,8 +152,11 @@ export const sessionsStore = {
   },
 
   setActiveId(id: string | null) {
+    const prev = state.activeId;
+    console.log(`[idle-fe] setActiveId: ${id?.slice(0,8)} (prev: ${prev?.slice(0,8)})`);
     setState("activeId", id);
     setState("sessions", (s) => s.id === id, "status", "active");
+    setState("sessions", (s) => s.id === id, "pendingReview", false);
     setState(
       "sessions",
       (s) => s.id !== id && s.status === "active",
@@ -166,7 +170,19 @@ export const sessionsStore = {
   },
 
   setSessionWaiting(id: string, waiting: boolean) {
+    const session = state.sessions.find((s) => s.id === id);
+    const wasAlreadyWaiting = session?.waitingForInput ?? false;
+    const isActive = id === state.activeId;
+    console.log(`[idle-fe] setSessionWaiting: ${id.slice(0,8)} waiting=${waiting} wasAlreadyWaiting=${wasAlreadyWaiting} isActive=${isActive} pendingReview=${session?.pendingReview}`);
     setState("sessions", (s) => s.id === id, "waitingForInput", waiting);
+    // Only set pendingReview on a real busy→idle transition, not re-detection
+    if (waiting && !wasAlreadyWaiting && !isActive) {
+      console.log(`[idle-fe] >>> SETTING pendingReview=true for ${id.slice(0,8)}`);
+      setState("sessions", (s) => s.id === id, "pendingReview", true);
+    }
+    if (!waiting) {
+      setState("sessions", (s) => s.id === id, "pendingReview", false);
+    }
   },
 
   setGitBranch(sessionId: string, branch: string | null) {

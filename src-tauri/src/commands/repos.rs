@@ -79,12 +79,12 @@ fn try_add_repo(
     }
 }
 
-/// Scan configured repo_paths for directories matching the query.
-/// Each repo_path is treated as either:
-/// - A repo itself (if it contains .git), or
-/// - A parent directory whose children are repos
+/// Scan configured paths for potential agents.
+/// Each configured path is treated as both:
+/// - A potential agent folder itself, AND
+/// - A parent folder whose children are also potential agents
 ///
-/// For each repo found, detects agent tooling (.claude, .codex, .cursor).
+/// For each folder found, detects agent tooling (.claude, .codex, .cursor).
 #[tauri::command]
 pub async fn search_repos(
     settings: State<'_, SettingsState>,
@@ -101,13 +101,10 @@ pub async fn search_repos(
             continue;
         }
 
-        // If this base_path is itself a repo (has .git), add it directly
-        if base.join(".git").is_dir() {
-            try_add_repo(base, &query_lower, &mut seen_paths, &mut results);
-            continue;
-        }
+        // The folder itself is a potential agent
+        try_add_repo(base, &query_lower, &mut seen_paths, &mut results);
 
-        // Otherwise scan children as repos
+        // Its children are also potential agents
         let entries = match std::fs::read_dir(base) {
             Ok(e) => e,
             Err(_) => continue,

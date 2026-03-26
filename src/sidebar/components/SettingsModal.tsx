@@ -342,7 +342,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
       </div>
 
       <div class="settings-section">
-        <div class="settings-section-title">Repo Scan Paths</div>
+        <div class="settings-section-title">Agents Folders and Parent Folders</div>
         <For each={settings.data!.repoPaths}>
           {(path, i) => (
             <div class="settings-path-row">

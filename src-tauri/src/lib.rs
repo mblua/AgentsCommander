@@ -44,9 +44,9 @@ pub fn run() {
     let handle_for_busy = Arc::clone(&app_handle_lock);
     let idle_detector = IdleDetector::new(
         move |id| {
+            log::info!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_idle.get() {
                 let _ = tauri::Emitter::emit(app, "session_idle", serde_json::json!({ "id": id.to_string() }));
-                // Update SessionManager.waiting_for_input for mailbox delivery
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 tauri::async_runtime::spawn(async move {
@@ -55,9 +55,9 @@ pub fn run() {
             }
         },
         move |id| {
+            log::info!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_busy.get() {
                 let _ = tauri::Emitter::emit(app, "session_busy", serde_json::json!({ "id": id.to_string() }));
-                // Update SessionManager.waiting_for_input for mailbox delivery
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 tauri::async_runtime::spawn(async move {

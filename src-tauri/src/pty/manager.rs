@@ -147,7 +147,7 @@ impl PtyManager {
                         let data = buf[..n].to_vec();
 
                         // Record PTY activity for idle detection
-                        idle_detector.record_activity(id);
+                        idle_detector.record_activity_with_bytes(id, n);
 
                         // Scan for response markers
                         if let Ok(text) = std::str::from_utf8(&data) {
@@ -193,6 +193,9 @@ impl PtyManager {
     }
 
     pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {
+        // Tell idle detector to ignore PTY output caused by this resize
+        self.idle_detector.record_resize(id);
+
         let ptys = self.ptys.lock().unwrap();
         let instance = ptys
             .get(&id)
