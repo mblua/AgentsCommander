@@ -30,7 +30,7 @@ pub struct WindowGeometry {
 pub struct AppSettings {
     pub default_shell: String,
     pub default_shell_args: Vec<String>,
-    /// Base directories to scan for repos
+    /// Agent folders and parent folders to scan for potential agents
     pub repo_paths: Vec<String>,
     /// Available coding agents
     pub agents: Vec<AgentConfig>,
