@@ -135,6 +135,18 @@ const TerminalView: Component = () => {
       inputBuffer: "",
     };
 
+    // Shift+Enter → send LF (soft newline) instead of CR (submit)
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.key === "Enter" && event.shiftKey) {
+        if (event.type === "keydown" && activeSessionId === sessionId) {
+          const encoder = new TextEncoder();
+          void PtyAPI.write(sessionId, encoder.encode("\n"));
+        }
+        return false; // suppress both keydown and keyup
+      }
+      return true;
+    });
+
     terminal.onData((data) => {
       if (activeSessionId !== sessionId) {
         return;
