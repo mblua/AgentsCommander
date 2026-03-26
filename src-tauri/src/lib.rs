@@ -24,12 +24,21 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 /// Tracks which sessions are currently detached into their own windows.
 pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
+/// Master token generated at app startup. Allows bypassing team validation (can_reach).
+/// Ephemeral: lives only in memory, never persisted to disk.
+pub struct MasterToken(pub String);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging — RUST_LOG defaults to info for our crate
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("agentscommander=info")
     ).init();
+
+    // Generate master token — printed once to stdout, never persisted
+    let master_token = MasterToken(uuid::Uuid::new_v4().to_string());
+    println!("[master-token] {}", master_token.0);
+    log::info!("[master-token] Generated (see stdout)");
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
 
@@ -80,6 +89,7 @@ pub fn run() {
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
 
     tauri::Builder::default()
+        .manage(master_token)
         .manage(session_mgr)
         .manage(tg_mgr)
         .manage(voice_tracking)

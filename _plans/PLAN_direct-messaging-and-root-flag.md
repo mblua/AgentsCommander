@@ -1,4 +1,4 @@
-# PLAN: Direct Messaging + --root Flag
+# PLAN: Direct Messaging + --root Flag + Master Token
 
 ## Status: IN PROGRESS (branch: fix/mailbox-delivery-to-shipper)
 
@@ -36,35 +36,41 @@
 
 ## What Needs To Be Done
 
-### 5. `--direct` flag for team-bypass messaging
-**Goal:** Allow sending a message to ANY session by name, without team membership validation.
+### 5. Master Token — bypass `can_reach()` sin flags extra
 
-**Why:** Currently, agents not in the same team can't communicate. The `--direct` flag tells the mailbox to skip `can_reach()` and deliver by matching the session's working directory directly.
+**Goal:** Whoever launches the app (mode app) gets a one-time master token printed to stdout. Using this token with the CLI `send` command bypasses team validation (`can_reach()`), allowing messages to any agent by exact name.
+
+**Why:** The previous `--direct` flag approach was unnecessary complexity. The token itself IS the authorization. If you have the master token, you can talk to anyone. No new CLI flags needed — the existing `--token` param is sufficient.
+
+**Design:**
+
+1. **Generation**: On app startup (`lib.rs` → `run()`), generate a UUID v4 as the master token
+2. **Storage**: In-memory only — stored as Tauri managed state (`MasterToken` struct). **Never persisted to disk.** Ephemeral: dies when the app closes, regenerated on next launch.
+3. **Exposure**: Printed to stdout at startup. Only the person who launched the app sees it.
+4. **Validation in mailbox** (`mailbox.rs` → `process_message()`):
+   - Parse the message token
+   - Check if it matches the master token → if yes:
+     - Skip anti-spoofing (no session to validate against)
+     - Skip `can_reach()` (bypass team membership)
+     - Go directly to delivery (using standard mode logic)
+   - If not master token → existing session token validation (anti-spoofing + `can_reach()`)
 
 **Files to change:**
 
-#### `src-tauri/src/cli/send.rs`
-- Add `--direct` boolean flag to `SendArgs`
-- Add `direct: bool` field to `OutboxMessage` (with `#[serde(default)]`)
-- Pass it through to the outbox JSON
+#### `src-tauri/src/lib.rs`
+- Add `pub struct MasterToken(pub String);`
+- In `run()`: generate UUID, wrap in `MasterToken`, `.manage()` it, print to stdout
 
 #### `src-tauri/src/phone/mailbox.rs`
-- Add `direct: bool` field to the mailbox's `OutboxMessage` struct (with `#[serde(default)]`)
-- In `process_message()`, after token validation but BEFORE `can_reach()`:
-  ```
-  if msg.direct {
-      // Find session by matching msg.to against session working directories
-      // Use existing find_active_session() which already does name→session matching
-      // Deliver using the standard mode logic (wake/queue/active-only)
-      // Skip can_reach() entirely
-  }
-  ```
-- The delivery logic for direct messages should reuse the existing mode-based delivery (`deliver_wake`, `deliver_queue`, etc.) — not a separate path
+- In `process_message()`, before the existing token validation block:
+  - `app.state::<MasterToken>()` to get the master token
+  - If `msg.token == Some(master_token)` → skip everything, jump to delivery
+- No changes to `OutboxMessage` struct
+- No changes to `can_reach()` itself
 
-#### `src-tauri/src/commands/session.rs`
-- Update init prompt to include `--direct` in the send command template
-- The init prompt should always be injected (not gated on `has_teams`), since `--direct` works without teams
-- Template: `"<bin>" send --token {token} --root "{root}" --to "<agent_name>" --message "..." --mode wake --direct`
+#### No changes to `src-tauri/src/cli/send.rs`
+- `--token` already exists and is sufficient
+- No `--direct` flag needed
 
 ---
 
@@ -73,61 +79,52 @@
 ### Prerequisites
 - Branch: `fix/mailbox-delivery-to-shipper`
 - Dev app running: `npm run tauri dev`
-- Two test agents visible in sidebar: `_test_dark_factory/AGENT1` and `_test_dark_factory/AGENT2`
+- Copy the master token from the stdout output at startup
+- At least one session open in the sidebar
 
-### Test 1: Send direct message from CLI to AGENT1
+### Test 1: Send message with master token (bypasses teams)
 ```bash
-# Use the dev binary with --direct to bypass teams
 "./src-tauri/target/debug/agentscommander.exe" send \
+  --token "<MASTER_TOKEN>" \
   --root "C:/Users/maria/0_repos/agentscommander_2" \
-  --to "_test_dark_factory/AGENT1" \
-  --message "Qué hora es?" \
-  --mode wake \
-  --direct
-```
-- Verify: message appears in AGENT1's terminal
-- Verify: NOT rejected (check outbox/rejected/ is empty for this message)
-
-### Test 2: AGENT1 sends to AGENT2
-- AGENT1 should have received its token and root in the init prompt
-- Ask AGENT1 to send a message to AGENT2 using the command from its init prompt with `--direct`:
-```bash
-"<bin>" send --token <AGENT1_TOKEN> --root "<AGENT1_ROOT>" \
-  --to "_test_dark_factory/AGENT2" \
-  --message "Hola AGENT2, te escribo desde AGENT1" \
-  --mode wake --direct
-```
-- Verify: message appears in AGENT2's terminal
-
-### Test 3: Anti-spoofing still works
-```bash
-# Try to send with AGENT1's token but claiming to be from a different root
-"./src-tauri/target/debug/agentscommander.exe" send \
-  --token <AGENT1_TOKEN> \
-  --root "C:/Users/maria/0_repos/some_other_repo" \
-  --to "_test_dark_factory/AGENT2" \
-  --message "spoofed" \
-  --mode wake \
-  --direct
-```
-- Verify: rejected with "Token-root mismatch"
-
-### Test 4: Team-based messaging still works
-```bash
-# From PROD binary to a PROD team member (no --direct)
-"/c/Users/maria/AppData/Local/Agents Commander/agentscommander.exe" send \
-  --root "C:/Users/maria/0_repos/agentscommander_2" \
-  --to "Agents/Shipper" \
-  --message "test" \
+  --to "<session_agent_name>" \
+  --message "Hello via master token" \
   --mode wake
 ```
-- Verify: delivered via normal team routing
+- Verify: message delivered, NOT rejected
+- Verify: no `can_reach()` check in logs
+
+### Test 2: Send with invalid token (should be rejected)
+```bash
+"./src-tauri/target/debug/agentscommander.exe" send \
+  --token "00000000-0000-0000-0000-000000000000" \
+  --root "C:/Users/maria/0_repos/agentscommander_2" \
+  --to "<session_agent_name>" \
+  --message "Should fail" \
+  --mode wake
+```
+- Verify: rejected (invalid session token, not master token)
+
+### Test 3: Send without token (team-based, existing flow)
+```bash
+"./src-tauri/target/debug/agentscommander.exe" send \
+  --root "C:/Users/maria/0_repos/agentscommander_2" \
+  --to "Agents/Shipper" \
+  --message "team test" \
+  --mode wake
+```
+- Verify: goes through `can_reach()` as before
+
+### Test 4: Session tokens still work with anti-spoofing
+- An agent with a session token can still send, but is validated for token-root match
+- Master token is the only way to bypass teams
 
 ---
 
 ## Architecture Notes
 
-- `--direct` and `--to` (team-based) are not mutually exclusive — `--direct` just skips the team check
-- `--root` is always required for CLI sends (no more walk-up for agent-initiated sends)
-- Token validation + anti-spoofing runs regardless of `--direct`
-- The mailbox uses `find_active_session()` which matches by working directory suffix — same logic for both direct and team-based delivery
+- **Master token replaces `--direct`** — no new CLI flags
+- `--root` is still required for CLI sends (determines `from`)
+- `--token` is dual-purpose: can be a session token (anti-spoofing + teams) or the master token (bypass all)
+- The master token is ephemeral — only lives in process memory, never on disk
+- Team-based routing via `can_reach()` is unchanged for non-master-token messages

@@ -10,6 +10,7 @@ use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
+use crate::MasterToken;
 
 /// Message format in outbox files. All new fields are Option/default for backwards compat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,45 +126,57 @@ impl MailboxPoller {
             msg.id, msg.from, msg.to, msg.mode
         );
 
-        // Validate token if present
-        if let Some(ref token_str) = msg.token {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
+        // Check if token is the master token (bypasses anti-spoofing + team validation)
+        let is_master = if let Some(ref token_str) = msg.token {
+            let master = app.state::<MasterToken>();
+            token_str == &master.0
+        } else {
+            false
+        };
 
-            if let Ok(token_uuid) = Uuid::parse_str(token_str) {
-                match mgr.find_by_token(token_uuid).await {
-                    None => {
-                        return self.reject_message(path, &msg, "Invalid session token").await;
-                    }
-                    Some(session) => {
-                        // Anti-spoofing: verify msg.from matches the token's session working_directory
-                        let session_name = self.agent_name_from_path(&session.working_directory);
-                        if session_name != msg.from {
-                            log::warn!(
-                                "[mailbox] Token-root mismatch: token session='{}' but from='{}'",
-                                session_name, msg.from
-                            );
-                            return self.reject_message(
-                                path,
-                                &msg,
-                                &format!(
-                                    "Token-root mismatch: session is '{}' but message claims '{}'",
+        if is_master {
+            log::info!("[mailbox] Master token used — bypassing team validation for {} → {}", msg.from, msg.to);
+        } else {
+            // Validate session token if present (anti-spoofing)
+            if let Some(ref token_str) = msg.token {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+
+                if let Ok(token_uuid) = Uuid::parse_str(token_str) {
+                    match mgr.find_by_token(token_uuid).await {
+                        None => {
+                            return self.reject_message(path, &msg, "Invalid session token").await;
+                        }
+                        Some(session) => {
+                            // Anti-spoofing: verify msg.from matches the token's session working_directory
+                            let session_name = self.agent_name_from_path(&session.working_directory);
+                            if session_name != msg.from {
+                                log::warn!(
+                                    "[mailbox] Token-root mismatch: token session='{}' but from='{}'",
                                     session_name, msg.from
-                                ),
-                            )
-                            .await;
+                                );
+                                return self.reject_message(
+                                    path,
+                                    &msg,
+                                    &format!(
+                                        "Token-root mismatch: session is '{}' but message claims '{}'",
+                                        session_name, msg.from
+                                    ),
+                                )
+                                .await;
+                            }
                         }
                     }
+                } else {
+                    return self.reject_message(path, &msg, "Malformed token").await;
                 }
-            } else {
-                return self.reject_message(path, &msg, "Malformed token").await;
             }
-        }
 
-        // Validate peer visibility
-        let dark_factory = dark_factory::load_dark_factory();
-        if !self.can_reach(&msg.from, &msg.to, &dark_factory) {
-            return self.reject_message(path, &msg, "Sender cannot reach destination").await;
+            // Validate peer visibility (team membership) — skipped for master token
+            let dark_factory = dark_factory::load_dark_factory();
+            if !self.can_reach(&msg.from, &msg.to, &dark_factory) {
+                return self.reject_message(path, &msg, "Sender cannot reach destination").await;
+            }
         }
 
         // Deliver based on mode
