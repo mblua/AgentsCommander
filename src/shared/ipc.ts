@@ -127,6 +127,9 @@ export const WindowAPI = {
 
   openInExplorer: (path: string) =>
     invoke<void>("open_in_explorer", { path }),
+
+  ensureTerminal: () =>
+    invoke<void>("ensure_terminal_window"),
 };
 
 // Telegram Bridge API

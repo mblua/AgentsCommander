@@ -102,6 +102,49 @@ pub fn open_in_explorer(path: String) -> Result<(), String> {
     open::that_detached(canonical).map_err(|e| format!("Failed to open explorer: {}", e))
 }
 
+/// Ensure the main terminal window exists. Recreates it if it was closed.
+#[tauri::command]
+pub async fn ensure_terminal_window(app: AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    // Already exists — just focus it
+    if let Some(win) = app.get_webview_window("terminal") {
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Recreate with saved geometry or defaults
+    let saved = crate::config::settings::load_settings();
+
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
+        .expect("Failed to load app icon");
+
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        "terminal",
+        WebviewUrl::App("index.html?window=terminal".into()),
+    )
+    .title("Terminal")
+    .icon(icon)
+    .map_err(|e| e.to_string())?
+    .min_inner_size(400.0, 300.0)
+    .decorations(false)
+    .zoom_hotkeys_enabled(true);
+
+    if let Some(geo) = &saved.terminal_geometry {
+        builder = builder
+            .inner_size(geo.width, geo.height)
+            .position(geo.x, geo.y);
+    } else {
+        builder = builder.inner_size(900.0, 600.0);
+    }
+
+    let win = builder.build().map_err(|e| e.to_string())?;
+    win.set_focus().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Open the guide window (Hints, Tutorial, Dark Factory Catalyst).
 /// If already open, just focus it.
 #[tauri::command]

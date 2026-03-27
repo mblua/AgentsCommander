@@ -7,6 +7,7 @@ import {
   TelegramAPI,
   DarkFactoryAPI,
   ReposAPI,
+  WindowAPI,
   onSessionCreated,
   onSessionDestroyed,
   onSessionSwitched,
@@ -48,11 +49,8 @@ const SidebarApp: Component = () => {
     if (now - lastRaiseTime < 500) return;
     lastRaiseTime = now;
     try {
-      const terminal = await Window.getByLabel("terminal");
-      if (terminal) {
-        await terminal.setFocus();
-        await getCurrentWindow().setFocus();
-      }
+      await WindowAPI.ensureTerminal();
+      await getCurrentWindow().setFocus();
     } catch {}
   };
 
