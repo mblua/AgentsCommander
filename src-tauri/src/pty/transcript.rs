@@ -4,23 +4,12 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Utc};
-use serde::Serialize;
+use chrono::Utc;
 use uuid::Uuid;
 
-// ── Entry schema ────────────────────────────────────────────────────
+// ── Types (kept for caller API) ─────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Speaker {
-    UserKeyboard,
-    SystemInject,
-    AgentOutput,
-    Marker,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum InjectReason {
     InitPrompt,
     TokenRefresh,
@@ -29,39 +18,22 @@ pub enum InjectReason {
     EnterKeystroke,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
+impl InjectReason {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::InitPrompt => "init_prompt",
+            Self::TokenRefresh => "token_refresh",
+            Self::MessageDelivery => "message_delivery",
+            Self::TelegramInput => "telegram_input",
+            Self::EnterKeystroke => "enter",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum MarkerKind {
     Busy,
     Idle,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct InjectMeta {
-    pub reason: InjectReason,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sender: Option<String>,
-    pub submit: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct MarkerMeta {
-    pub kind: MarkerKind,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TranscriptEntry {
-    pub ts: DateTime<Utc>,
-    pub session_id: Uuid,
-    pub speaker: Speaker,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub byte_count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inject: Option<InjectMeta>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub marker: Option<MarkerMeta>,
 }
 
 // ── TranscriptWriter ────────────────────────────────────────────────
@@ -82,9 +54,8 @@ impl TranscriptWriter {
         }
     }
 
-    /// Register a session's CWD so transcripts go to
-    /// `{cwd}/.agentscommander/transcripts/YYYYMMDD_HHMMSS.jsonl`.
-    /// Must be called once per session (typically from PtyManager::spawn).
+    /// Register a session. Writes a header then records all I/O to
+    /// `{cwd}/.agentscommander/transcripts/YYYYMMDD_HHMMSS.log`.
     pub fn register_session(&self, session_id: Uuid, cwd: &str) {
         let dir = PathBuf::from(cwd)
             .join(".agentscommander")
@@ -93,11 +64,17 @@ impl TranscriptWriter {
             log::warn!("[transcript] Failed to create transcripts dir for {}: {}", session_id, e);
             return;
         }
-        let filename = Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let path = dir.join(format!("{}.jsonl", filename));
+        let now = Utc::now();
+        let filename = now.format("%Y%m%d_%H%M%S").to_string();
+        let path = dir.join(format!("{}.log", filename));
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => {
-                let writer = BufWriter::with_capacity(8192, file);
+                let mut writer = BufWriter::with_capacity(8192, file);
+                // Write header with one-time metadata
+                let _ = writeln!(writer, "# Transcript — {}", now.format("%Y-%m-%d %H:%M:%S UTC"));
+                let _ = writeln!(writer, "# session: {}", session_id);
+                let _ = writeln!(writer, "# cwd: {}", cwd);
+                let _ = writeln!(writer, "#");
                 self.inner.lock().unwrap().insert(session_id, SessionTranscript { writer });
                 log::info!("[transcript] Recording session {} to {}", &session_id.to_string()[..8], path.display());
             }
@@ -107,16 +84,15 @@ impl TranscriptWriter {
         }
     }
 
-    fn write_entry(&self, entry: &TranscriptEntry) {
+    fn write_line(&self, session_id: Uuid, line: &str) {
         let mut map = self.inner.lock().unwrap();
-        if let Some(session) = map.get_mut(&entry.session_id) {
-            match serde_json::to_string(entry) {
-                Ok(json) => {
-                    let _ = writeln!(session.writer, "{}", json);
-                }
-                Err(e) => log::warn!("[transcript] Serialize error: {}", e),
-            }
+        if let Some(session) = map.get_mut(&session_id) {
+            let _ = writeln!(session.writer, "{}", line);
         }
+    }
+
+    fn ts() -> String {
+        Utc::now().format("%H:%M:%S").to_string()
     }
 
     pub fn flush_session(&self, session_id: Uuid) {
@@ -135,20 +111,9 @@ impl TranscriptWriter {
 
     // ── Public recording API ────────────────────────────────────────
 
-    fn to_text(data: &[u8]) -> String {
-        String::from_utf8_lossy(data).into_owned()
-    }
-
     pub fn record_keyboard(&self, session_id: Uuid, data: &[u8]) {
-        self.write_entry(&TranscriptEntry {
-            ts: Utc::now(),
-            session_id,
-            speaker: Speaker::UserKeyboard,
-            text: Some(Self::to_text(data)),
-            byte_count: Some(data.len()),
-            inject: None,
-            marker: None,
-        });
+        let text = String::from_utf8_lossy(data);
+        self.write_line(session_id, &format!("[{}] USER: {}", Self::ts(), text));
     }
 
     pub fn record_inject(
@@ -157,41 +122,27 @@ impl TranscriptWriter {
         data: &[u8],
         reason: InjectReason,
         sender: Option<String>,
-        submit: bool,
+        _submit: bool,
     ) {
-        self.write_entry(&TranscriptEntry {
-            ts: Utc::now(),
-            session_id,
-            speaker: Speaker::SystemInject,
-            text: Some(Self::to_text(data)),
-            byte_count: Some(data.len()),
-            inject: Some(InjectMeta { reason, sender, submit }),
-            marker: None,
-        });
+        let text = String::from_utf8_lossy(data);
+        let tag = match &sender {
+            Some(s) => format!("INJECT({}, from=\"{}\")", reason.label(), s),
+            None => format!("INJECT({})", reason.label()),
+        };
+        self.write_line(session_id, &format!("[{}] {}: {}", Self::ts(), tag, text));
     }
 
     pub fn record_output(&self, session_id: Uuid, data: &[u8]) {
-        self.write_entry(&TranscriptEntry {
-            ts: Utc::now(),
-            session_id,
-            speaker: Speaker::AgentOutput,
-            text: Some(Self::to_text(data)),
-            byte_count: Some(data.len()),
-            inject: None,
-            marker: None,
-        });
+        let text = String::from_utf8_lossy(data);
+        self.write_line(session_id, &format!("[{}] AGENT: {}", Self::ts(), text));
     }
 
     pub fn record_marker(&self, session_id: Uuid, kind: MarkerKind) {
-        self.write_entry(&TranscriptEntry {
-            ts: Utc::now(),
-            session_id,
-            speaker: Speaker::Marker,
-            text: None,
-            byte_count: None,
-            inject: None,
-            marker: Some(MarkerMeta { kind }),
-        });
+        let label = match kind {
+            MarkerKind::Busy => "busy",
+            MarkerKind::Idle => "idle",
+        };
+        self.write_line(session_id, &format!("[{}] -- {} --", Self::ts(), label));
         self.flush_session(session_id);
     }
 }
