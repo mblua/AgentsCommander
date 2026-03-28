@@ -237,6 +237,9 @@ fn claude_pty_filter(speaker: &Speaker, raw_line: &str) -> Option<String> {
             if is_spinner_line(trimmed) {
                 return None;
             }
+            if is_tui_chrome(trimmed) {
+                return None;
+            }
             Some(trimmed.to_string())
         }
         _ => Some(trimmed.to_string()),
@@ -245,28 +248,22 @@ fn claude_pty_filter(speaker: &Speaker, raw_line: &str) -> Option<String> {
 
 /// Detect spinner/animation lines from Claude Code TUI.
 /// These are short status indicators that cycle rapidly and carry no reasoned content.
+///
+/// Instead of hardcoding spinner words (Claude Code uses random/creative ones like
+/// "Noodling", "Smooshing", "Blanching", "Actioning"), we detect the PATTERN:
+/// - Optional spinner char + capitalized word + "…"
+/// - Optional suffix like "(thinking with high effort)" or "(running stop hook)"
 fn is_spinner_line(line: &str) -> bool {
-    // Spinner characters used by Claude Code
     const SPINNER_CHARS: &[char] = &['✻', '✶', '✽', '✢', '·', '*', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-    // Spinner action words (always end with …)
-    const SPINNER_WORDS: &[&str] = &[
-        "Noodling", "Percolating", "Thinking", "Pondering", "Reasoning",
-        "Analyzing", "Processing", "Working", "Loading", "Generating",
-        "Compiling", "Building", "Running", "Searching", "Reading",
-        "Writing", "Editing", "Planning", "Reviewing", "Checking",
-    ];
 
     let trimmed = line.trim();
 
     // Single spinner character
-    if trimmed.len() <= 4 && trimmed.chars().count() == 1 {
-        if SPINNER_CHARS.contains(&trimmed.chars().next().unwrap()) {
-            return true;
-        }
+    if trimmed.chars().count() == 1 && SPINNER_CHARS.contains(&trimmed.chars().next().unwrap()) {
+        return true;
     }
 
-    // Very short fragments (1-3 chars) — typically broken spinner animation frames
+    // Very short fragments (1-3 chars) that aren't alphanumeric — broken animation frames
     if trimmed.chars().count() <= 3 && !trimmed.chars().any(|c| c.is_alphanumeric()) {
         return true;
     }
@@ -274,15 +271,89 @@ fn is_spinner_line(line: &str) -> bool {
     // Strip leading spinner char if present
     let text = trimmed.trim_start_matches(SPINNER_CHARS).trim();
 
-    // "Noodling…" or "Percolating…" etc (with or without leading spinner)
-    for word in SPINNER_WORDS {
-        if text == format!("{}…", word) || text == format!("{}...", word) {
+    // Empty after stripping spinner char
+    if text.is_empty() {
+        return true;
+    }
+
+    // Pattern: "Word…" or "Word… (some parenthetical)"
+    // Claude Code spinners are always: CapitalizedWord + "…" + optional suffix
+    if let Some(ellipsis_pos) = text.find('…') {
+        let word = &text[..ellipsis_pos];
+        // Must be a single capitalized word (no spaces, starts uppercase, rest lowercase-ish)
+        if !word.is_empty()
+            && !word.contains(' ')
+            && word.chars().next().map_or(false, |c| c.is_uppercase())
+            && word.chars().skip(1).all(|c| c.is_lowercase())
+        {
             return true;
         }
     }
 
-    // Just a spinner word fragment without ellipsis (from partial animation frames)
-    if text.is_empty() {
+    // Same with "..." variant
+    if let Some(dots_pos) = text.find("...") {
+        let word = &text[..dots_pos];
+        if !word.is_empty()
+            && !word.contains(' ')
+            && word.chars().next().map_or(false, |c| c.is_uppercase())
+            && word.chars().skip(1).all(|c| c.is_lowercase())
+        {
+            return true;
+        }
+    }
+
+    // Parenthetical status only: "(thinking with high effort)", "(running stop hook)"
+    if text.starts_with('(') && text.ends_with(')') && text.len() < 60 {
+        return true;
+    }
+
+    false
+}
+
+/// Detect TUI chrome: box-drawing borders, separator lines, and status bars.
+fn is_tui_chrome(line: &str) -> bool {
+    let trimmed = line.trim();
+
+    // Box-drawing borders: lines made entirely of ─╭╮╰╯│┌┐└┘├┤┬┴┼ and spaces
+    if !trimmed.is_empty() && trimmed.chars().all(|c| "─━╭╮╰╯│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬ ".contains(c)) {
+        return true;
+    }
+
+    // Lines that START with box chars (╭───, ╰───, │) — TUI frame boundaries
+    if trimmed.starts_with('╭') || trimmed.starts_with('╰') {
+        return true;
+    }
+
+    // Lines that are mostly box-drawing (>70% box chars) — partial borders with embedded text
+    if trimmed.len() > 20 {
+        let box_chars = trimmed.chars().filter(|c| "─━│║╭╮╰╯".contains(*c)).count();
+        let total = trimmed.chars().count();
+        if box_chars > 0 && box_chars * 100 / total > 70 {
+            return true;
+        }
+    }
+
+    // Status bar patterns from Claude Code
+    if trimmed.contains("░░░░") || trimmed.contains("███") {
+        return true;
+    }
+    if trimmed.starts_with("[Opus") || trimmed.starts_with("Context ░") {
+        return true;
+    }
+    if trimmed.starts_with("⏵⏵ bypass permissions") {
+        return true;
+    }
+
+    // "● high · /effort" and similar mode indicators
+    if trimmed.contains("· /effort") || trimmed.contains("shift+tab to cycle") {
+        return true;
+    }
+
+    // Settings/doctor notices
+    if trimmed.starts_with("Found ") && trimmed.contains("settings issue") {
+        return true;
+    }
+    if trimmed.starts_with("Claude in Chrome") {
         return true;
     }
 
