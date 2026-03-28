@@ -21,24 +21,10 @@ use session::manager::SessionManager;
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
 
-/// Returns just the exe filename when running from an installed location (in PATH),
-/// or the full path when running in dev mode (target/debug or target/release).
+/// Returns the full path to the current executable.
 pub fn resolve_bin_label() -> String {
     std::env::current_exe()
-        .map(|p| {
-            let s = p.to_string_lossy();
-            // Dev builds live under target/debug or target/release — not in PATH
-            if s.contains("target\\debug") || s.contains("target\\release")
-                || s.contains("target/debug") || s.contains("target/release")
-            {
-                s.to_string()
-            } else {
-                // Installed build — installer adds INSTDIR to PATH
-                p.file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| s.to_string())
-            }
-        })
+        .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "agentscommander.exe".to_string())
 }
 
