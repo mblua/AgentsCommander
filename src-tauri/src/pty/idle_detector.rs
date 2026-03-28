@@ -4,11 +4,13 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-const IDLE_THRESHOLD: Duration = Duration::from_millis(700);
-const CHECK_INTERVAL: Duration = Duration::from_millis(200);
+const IDLE_THRESHOLD: Duration = Duration::from_millis(2500);
+const CHECK_INTERVAL: Duration = Duration::from_millis(500);
 /// Grace period after a resize: PTY output during this window is prompt
 /// repaint noise, not real agent activity. Suppresses false busy→idle cycles.
-const RESIZE_GRACE: Duration = Duration::from_millis(500);
+/// Must be >= IDLE_THRESHOLD to prevent resize repaint from triggering a
+/// false busy→idle transition that sets pendingReview.
+const RESIZE_GRACE: Duration = Duration::from_millis(3000);
 
 type Callback = Arc<dyn Fn(Uuid) + Send + Sync>;
 

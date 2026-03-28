@@ -21,24 +21,10 @@ use session::manager::SessionManager;
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
 
-/// Returns just the exe filename when running from an installed location (in PATH),
-/// or the full path when running in dev mode (target/debug or target/release).
+/// Returns the full path to the current executable.
 pub fn resolve_bin_label() -> String {
     std::env::current_exe()
-        .map(|p| {
-            let s = p.to_string_lossy();
-            // Dev builds live under target/debug or target/release — not in PATH
-            if s.contains("target\\debug") || s.contains("target\\release")
-                || s.contains("target/debug") || s.contains("target/release")
-            {
-                s.to_string()
-            } else {
-                // Installed build — installer adds INSTDIR to PATH
-                p.file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| s.to_string())
-            }
-        })
+        .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "agentscommander.exe".to_string())
 }
 
@@ -249,6 +235,13 @@ pub fn run() {
             // Suppress unused variable warnings
             let _ = &sidebar;
             let _ = &terminal;
+
+            // Sync per-agent configs from teams.json so local config.json
+            // files stay up to date (team membership, coordinator roles).
+            let teams_config = config::dark_factory::load_dark_factory();
+            if let Err(e) = config::dark_factory::sync_agent_configs(&teams_config) {
+                log::warn!("Failed to sync agent configs on startup: {}", e);
+            }
 
             // Restore sessions from last run
             let persisted = sessions_persistence::load_sessions();
