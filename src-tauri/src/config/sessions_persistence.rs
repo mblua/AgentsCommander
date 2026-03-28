@@ -65,8 +65,13 @@ pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(sessions)
         .map_err(|e| format!("Failed to serialize sessions: {}", e))?;
 
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write sessions file: {}", e))?;
+    // Atomic write: write to .tmp then rename, so a crash mid-write
+    // cannot corrupt the existing sessions.json.
+    let tmp_path = dir.join("sessions.json.tmp");
+    std::fs::write(&tmp_path, &json)
+        .map_err(|e| format!("Failed to write temp sessions file: {}", e))?;
+    std::fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("Failed to rename sessions file: {}", e))?;
 
     log::info!("Saved {} sessions to {:?}", sessions.len(), path);
     Ok(())
@@ -87,6 +92,19 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             was_active: active_id.as_deref() == Some(&s.id),
         })
         .collect()
+}
+
+/// Persist live sessions merged with entries that failed to restore.
+/// Failed entries are appended so they survive for the next startup attempt.
+pub async fn persist_merging_failed(
+    mgr: &SessionManager,
+    failed: &[PersistedSession],
+) {
+    let mut snapshot = snapshot_sessions(mgr).await;
+    snapshot.extend(failed.iter().cloned());
+    if let Err(e) = save_sessions(&snapshot) {
+        log::error!("Failed to persist sessions (with merge): {}", e);
+    }
 }
 
 /// Convenience: snapshot and save in one call. Logs errors but never fails.

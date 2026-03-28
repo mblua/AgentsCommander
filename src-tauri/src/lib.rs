@@ -141,6 +141,7 @@ pub fn run() {
     idle_detector.start();
 
     let session_mgr_for_git = Arc::clone(&session_mgr);
+    let session_mgr_for_exit = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
     let idle_detector_for_pty = Arc::clone(&idle_detector);
 
@@ -253,8 +254,10 @@ pub fn run() {
 
                 tauri::async_runtime::spawn(async move {
                     let mut active_id = None;
+                    let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
+
                     for ps in &persisted {
-                        // Skip sessions whose CWD no longer exists
+                        // Skip sessions whose CWD no longer exists (permanent failure)
                         if !std::path::Path::new(&ps.working_directory).exists() {
                             log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
                             continue;
@@ -277,6 +280,8 @@ pub fn run() {
                             }
                             Err(e) => {
                                 log::error!("Failed to restore session '{}': {}", ps.name, e);
+                                // Preserve for next startup attempt (CWD exists, transient failure)
+                                failed_recoverable.push(ps.clone());
                             }
                         }
                     }
@@ -291,42 +296,22 @@ pub fn run() {
                         }
                     }
 
-                    // Persist the restored state (new UUIDs)
+                    // Persist restored sessions + failed-but-recoverable entries
                     let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> = session_mgr_clone.read().await;
-                    sessions_persistence::persist_current_state(&mgr).await;
+                    sessions_persistence::persist_merging_failed(&mgr, &failed_recoverable).await;
 
+                    if !failed_recoverable.is_empty() {
+                        log::warn!(
+                            "Session restore: {} sessions failed (preserved for next attempt): {:?}",
+                            failed_recoverable.len(),
+                            failed_recoverable.iter().map(|s| &s.name).collect::<Vec<_>>()
+                        );
+                    }
                     log::info!("Session restore complete");
                 });
             }
 
             Ok(())
-        })
-        .on_window_event({
-            let detached_set = detached_sessions.clone();
-            move |window, event| {
-                if let tauri::WindowEvent::Destroyed = event {
-                    let label = window.label();
-                    if label.starts_with("terminal-") {
-                        // Extract session id from label: "terminal-<uuid_no_dashes>"
-                        let id_no_dashes = &label["terminal-".len()..];
-                        // Try to reconstruct UUID from dashless form
-                        if id_no_dashes.len() == 32 {
-                            let formatted = format!(
-                                "{}-{}-{}-{}-{}",
-                                &id_no_dashes[0..8],
-                                &id_no_dashes[8..12],
-                                &id_no_dashes[12..16],
-                                &id_no_dashes[16..20],
-                                &id_no_dashes[20..32],
-                            );
-                            if let Ok(uuid) = uuid::Uuid::parse_str(&formatted) {
-                                let mut set = detached_set.lock().unwrap();
-                                set.remove(&uuid);
-                            }
-                        }
-                    }
-                }
-            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::session::create_session,
@@ -363,6 +348,44 @@ pub fn run() {
             commands::voice::voice_had_typing,
             commands::config::save_debug_logs,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running application");
+        .build(tauri::generate_context!())
+        .expect("error while building application")
+        .run({
+            let detached_set = detached_sessions.clone();
+            move |_app_handle, event| match event {
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Destroyed,
+                    ..
+                } => {
+                    // Cleanup detached terminal tracking
+                    if let Some(id_no_dashes) = label.strip_prefix("terminal-") {
+                        if id_no_dashes.len() == 32 {
+                            let formatted = format!(
+                                "{}-{}-{}-{}-{}",
+                                &id_no_dashes[0..8],
+                                &id_no_dashes[8..12],
+                                &id_no_dashes[12..16],
+                                &id_no_dashes[16..20],
+                                &id_no_dashes[20..32],
+                            );
+                            if let Ok(uuid) = uuid::Uuid::parse_str(&formatted) {
+                                let mut set = detached_set.lock().unwrap();
+                                set.remove(&uuid);
+                            }
+                        }
+                    }
+                }
+                tauri::RunEvent::Exit => {
+                    log::info!("[shutdown] Persisting session state...");
+                    let mgr_clone = session_mgr_for_exit.clone();
+                    tauri::async_runtime::block_on(async move {
+                        let mgr = mgr_clone.read().await;
+                        sessions_persistence::persist_current_state(&mgr).await;
+                    });
+                    log::info!("[shutdown] Session state persisted");
+                }
+                _ => {}
+            }
+        });
 }
