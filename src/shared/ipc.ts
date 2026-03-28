@@ -218,6 +218,11 @@ export const GuideAPI = {
   open: () => invoke<void>("open_guide_window"),
 };
 
+// Dark Factory window
+export const DarkFactoryWindowAPI = {
+  open: () => invoke<void>("open_darkfactory_window"),
+};
+
 export function onTelegramIncoming(
   callback: (data: { sessionId: string; text: string; from: string }) => void
 ): Promise<UnlistenFn> {

@@ -124,6 +124,8 @@ export interface AppSettings {
   voiceAutoExecuteDelay: number;
   sidebarZoom: number;
   terminalZoom: number;
+  guideZoom: number;
+  darkfactoryZoom: number;
   sidebarGeometry: WindowGeometry | null;
   terminalGeometry: WindowGeometry | null;
 }

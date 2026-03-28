@@ -1,0 +1,333 @@
+@import "../../terminal/styles/variables.css";
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-md);
+  color: var(--terminal-fg);
+  background: var(--terminal-bg);
+}
+
+/* Layout */
+.df-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+}
+
+/* Titlebar — same pattern as guide/terminal */
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--spacing-sm);
+  background: var(--titlebar-bg);
+  color: var(--titlebar-fg);
+  font-size: var(--font-size-sm);
+  -webkit-app-region: drag;
+  flex-shrink: 0;
+}
+
+.titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  -webkit-app-region: drag;
+}
+
+.titlebar-icon {
+  width: 14px;
+  height: 14px;
+  -webkit-app-region: no-drag;
+  pointer-events: none;
+}
+
+.titlebar-title {
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.titlebar-controls {
+  display: flex;
+  gap: 0;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--titlebar-fg);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background var(--transition-fast);
+}
+
+.titlebar-btn:hover {
+  background: var(--titlebar-btn-hover);
+}
+
+.titlebar-btn-close:hover {
+  background: var(--titlebar-btn-close-hover);
+  color: white;
+}
+
+/* Main content area */
+.df-content {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+.df-content::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.df-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}
+
+/* Empty state CTA */
+.df-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: var(--spacing-md);
+  color: var(--statusbar-fg);
+  font-size: var(--font-size-md);
+  text-align: center;
+  padding: 40px;
+}
+
+.df-empty-icon {
+  font-size: 48px;
+  opacity: 0.3;
+}
+
+.df-empty-title {
+  font-family: var(--font-terminal);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--terminal-fg);
+  opacity: 0.5;
+}
+
+.df-empty-text {
+  font-size: var(--font-size-sm);
+  opacity: 0.6;
+  max-width: 320px;
+  line-height: 1.6;
+}
+
+/* OrgChart grid */
+.df-orgchart {
+  display: flex;
+  gap: 0;
+  min-height: 100%;
+  padding: var(--spacing-md);
+  position: relative;
+}
+
+.df-orgchart-wrapper {
+  position: relative;
+  min-height: 100%;
+  width: 100%;
+}
+
+/* Layer column */
+.df-layer {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+}
+
+.df-layer:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.df-layer:nth-child(even) {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.df-layer-header {
+  font-family: var(--font-terminal);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--statusbar-accent);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: rgba(0, 212, 255, 0.06);
+  border-radius: 3px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.df-layer-teams {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  flex: 1;
+  align-items: center;
+  padding-top: var(--spacing-sm);
+}
+
+/* Team node card */
+.df-team-node {
+  width: 180px;
+  min-height: 72px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 3px solid var(--statusbar-accent);
+  border-radius: 4px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  cursor: default;
+  transition: border-color var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast);
+  opacity: 0;
+  animation: df-fade-in 150ms ease-out forwards;
+}
+
+.df-team-node:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+  border-left-color: var(--statusbar-accent);
+}
+
+.df-team-node.highlighted {
+  border-color: rgba(0, 212, 255, 0.3);
+  border-left-color: var(--statusbar-accent);
+  background: rgba(0, 212, 255, 0.04);
+}
+
+.df-team-node.dimmed {
+  opacity: 0.5;
+}
+
+.df-team-node.no-members {
+  opacity: 0.5;
+}
+
+.df-team-coordinator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--statusbar-accent);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-team-coordinator-star {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.df-team-separator {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 4px 0;
+}
+
+.df-team-name {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--terminal-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-team-members {
+  font-size: 10px;
+  color: var(--statusbar-fg);
+  margin-top: 2px;
+}
+
+/* Connection lines SVG */
+.df-connections {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 1;
+}
+
+.df-connection-path {
+  fill: none;
+  stroke: var(--statusbar-fg);
+  stroke-width: 1.5;
+  transition: stroke var(--transition-fast), stroke-width var(--transition-fast);
+}
+
+.df-connection-path.highlighted {
+  stroke: var(--statusbar-accent);
+  stroke-width: 2.5;
+}
+
+/* Fade-in animation */
+@keyframes df-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Staggered delays for team nodes */
+.df-team-node:nth-child(1) { animation-delay: 0ms; }
+.df-team-node:nth-child(2) { animation-delay: 50ms; }
+.df-team-node:nth-child(3) { animation-delay: 100ms; }
+.df-team-node:nth-child(4) { animation-delay: 150ms; }
+.df-team-node:nth-child(5) { animation-delay: 200ms; }
+.df-team-node:nth-child(6) { animation-delay: 250ms; }
+.df-team-node:nth-child(7) { animation-delay: 300ms; }
+.df-team-node:nth-child(8) { animation-delay: 350ms; }
+
+/* No-members dimming */
+.df-team-node.no-members .df-team-name {
+  opacity: 0.6;
+}
+
+/* Responsive: shrink nodes in small windows */
+@media (max-width: 700px) {
+  .df-team-node {
+    width: 140px;
+    min-height: 60px;
+    padding: var(--spacing-xs) var(--spacing-sm);
+  }
+
+  .df-layer {
+    min-width: 160px;
+  }
+}

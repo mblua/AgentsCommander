@@ -177,6 +177,38 @@ pub async fn open_guide_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the Dark Factory organigrama window.
+/// If already open, just focus it.
+#[tauri::command]
+pub async fn open_darkfactory_window(app: AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    if let Some(existing) = app.get_webview_window("darkfactory") {
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
+        .expect("Failed to load app icon");
+
+    WebviewWindowBuilder::new(
+        &app,
+        "darkfactory",
+        WebviewUrl::App("index.html?window=darkfactory".into()),
+    )
+    .title("Dark Factory — Agents Commander")
+    .icon(icon)
+    .map_err(|e| e.to_string())?
+    .inner_size(960.0, 640.0)
+    .min_inner_size(640.0, 400.0)
+    .decorations(false)
+    .zoom_hotkeys_enabled(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Close a detached terminal window and return the session to the main terminal.
 #[tauri::command]
 pub async fn close_detached_terminal(

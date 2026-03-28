@@ -9,7 +9,14 @@ const ZOOM_MAX = 3.0;
 let currentZoom = 1.0;
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
-type WindowType = "sidebar" | "terminal" | "guide";
+type WindowType = "sidebar" | "terminal" | "guide" | "darkfactory";
+
+const zoomKeyMap: Record<WindowType, keyof AppSettings> = {
+  sidebar: "sidebarZoom",
+  terminal: "terminalZoom",
+  guide: "guideZoom",
+  darkfactory: "darkfactoryZoom",
+};
 
 function clampZoom(value: number): number {
   return Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, value)) * 100) / 100;
@@ -25,8 +32,7 @@ function debouncedSave(windowType: WindowType) {
   saveTimeout = setTimeout(async () => {
     try {
       const settings = await SettingsAPI.get();
-      const key: keyof AppSettings =
-        windowType === "sidebar" ? "sidebarZoom" : "terminalZoom";
+      const key = zoomKeyMap[windowType];
       if (settings[key] !== currentZoom) {
         await SettingsAPI.update({ ...settings, [key]: currentZoom });
       }
@@ -70,8 +76,7 @@ export async function initZoom(windowType: WindowType): Promise<() => void> {
   // Restore saved zoom
   try {
     const settings = await SettingsAPI.get();
-    const saved =
-      windowType === "sidebar" ? settings.sidebarZoom : settings.terminalZoom;
+    const saved = settings[zoomKeyMap[windowType]] as number;
     if (saved && saved !== 1.0) {
       await applyZoom(saved);
     }
