@@ -97,7 +97,6 @@ pub async fn create_session_inner(
                 "# List available peers:\n",
                 "#   \"{bin}\" list-peers --token {token} --root \"{root}\"\n",
                 "# === End Session Init ===\n",
-                "\r",
             ),
             token = token,
             bin = binary_path,

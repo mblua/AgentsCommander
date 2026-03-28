@@ -9,18 +9,27 @@ use crate::session::manager::SessionManager;
 /// to submit pasted input. Coding agents (Claude, Codex, etc.) all need explicit
 /// Enter after a text block paste. Plain shells (bash, powershell) don't go through
 /// this path — they're filtered out before reaching inject_text_into_session.
+///
+/// The shell may be a bare name ("claude") or a full path
+/// ("C:\Users\...\.claude\local\claude.exe"), so we extract the filename stem
+/// before matching.
 fn needs_explicit_enter(shell: &str) -> bool {
-    let s = shell.trim_start();
-    s.starts_with("codex") || s.starts_with("claude")
+    let stem = std::path::Path::new(shell.trim())
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(shell.trim())
+        .to_lowercase();
+    stem.starts_with("codex") || stem.starts_with("claude")
 }
 
 /// Inject a text block into a session's PTY stdin.
 ///
-/// - `submit = false` → passive injection (init prompt, token refresh).
+/// - `submit = false` → passive injection (token refresh).
 ///   Text is written as-is. No Enter is ever sent, regardless of agent type.
-/// - `submit = true` → active injection (message delivery, Telegram input).
-///   For agents that require explicit Enter (Codex), a `\r` is sent as a
-///   separate write after a 500 ms delay — mirrors the voice auto-execute pattern.
+/// - `submit = true` → active injection (init prompt, message delivery, Telegram input).
+///   For agents that require explicit Enter (Claude, Codex), a `\r` is sent
+///   as a separate write after a 1500 ms delay to let the agent finish
+///   processing the pasted text block.
 ///
 /// This is the ONLY function that should be used for text-block injection.
 /// Direct keystrokes from xterm.js (single chars, Ctrl sequences) bypass this
@@ -41,6 +50,7 @@ pub async fn inject_text_into_session(
     };
 
     let send_enter = submit && shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
+    log::info!("[inject] session={} submit={} shell={:?} send_enter={}", session_id, submit, shell, send_enter);
 
     // Write the text block
     {
@@ -52,9 +62,12 @@ pub async fn inject_text_into_session(
             .map_err(|e| format!("PTY write failed: {}", e))?;
     }
 
-    // Codex: send Enter as a separate write after 500 ms
+    // Agent CLIs (Claude, Codex): send Enter as a separate write after a delay.
+    // The delay must be long enough for the agent to finish processing the pasted
+    // text block and exit any internal "paste detection" mode.
     if send_enter {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        log::info!("[inject] sending Enter for session {}", session_id);
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
         pty_mgr
             .lock()
