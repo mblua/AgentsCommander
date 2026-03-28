@@ -4,7 +4,6 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
@@ -56,7 +55,7 @@ pub struct TranscriptEntry {
     pub session_id: Uuid,
     pub speaker: Speaker,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data_b64: Option<String>,
+    pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub byte_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,7 +82,8 @@ impl TranscriptWriter {
         }
     }
 
-    /// Register a session's CWD so transcripts go to `{cwd}/.agentscommander/transcripts/{id}.jsonl`.
+    /// Register a session's CWD so transcripts go to
+    /// `{cwd}/.agentscommander/transcripts/YYYYMMDD_HHMMSS.jsonl`.
     /// Must be called once per session (typically from PtyManager::spawn).
     pub fn register_session(&self, session_id: Uuid, cwd: &str) {
         let dir = PathBuf::from(cwd)
@@ -93,7 +93,8 @@ impl TranscriptWriter {
             log::warn!("[transcript] Failed to create transcripts dir for {}: {}", session_id, e);
             return;
         }
-        let path = dir.join(format!("{}.jsonl", session_id));
+        let filename = Utc::now().format("%Y%m%d_%H%M%S").to_string();
+        let path = dir.join(format!("{}.jsonl", filename));
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => {
                 let writer = BufWriter::with_capacity(8192, file);
@@ -134,8 +135,8 @@ impl TranscriptWriter {
 
     // ── Public recording API ────────────────────────────────────────
 
-    fn encode_b64(data: &[u8]) -> String {
-        base64::engine::general_purpose::STANDARD.encode(data)
+    fn to_text(data: &[u8]) -> String {
+        String::from_utf8_lossy(data).into_owned()
     }
 
     pub fn record_keyboard(&self, session_id: Uuid, data: &[u8]) {
@@ -143,7 +144,7 @@ impl TranscriptWriter {
             ts: Utc::now(),
             session_id,
             speaker: Speaker::UserKeyboard,
-            data_b64: Some(Self::encode_b64(data)),
+            text: Some(Self::to_text(data)),
             byte_count: Some(data.len()),
             inject: None,
             marker: None,
@@ -162,7 +163,7 @@ impl TranscriptWriter {
             ts: Utc::now(),
             session_id,
             speaker: Speaker::SystemInject,
-            data_b64: Some(Self::encode_b64(data)),
+            text: Some(Self::to_text(data)),
             byte_count: Some(data.len()),
             inject: Some(InjectMeta { reason, sender, submit }),
             marker: None,
@@ -174,7 +175,7 @@ impl TranscriptWriter {
             ts: Utc::now(),
             session_id,
             speaker: Speaker::AgentOutput,
-            data_b64: Some(Self::encode_b64(data)),
+            text: Some(Self::to_text(data)),
             byte_count: Some(data.len()),
             inject: None,
             marker: None,
@@ -186,7 +187,7 @@ impl TranscriptWriter {
             ts: Utc::now(),
             session_id,
             speaker: Speaker::Marker,
-            data_b64: None,
+            text: None,
             byte_count: None,
             inject: None,
             marker: Some(MarkerMeta { kind }),
