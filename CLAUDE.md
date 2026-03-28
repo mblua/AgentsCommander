@@ -36,13 +36,15 @@ You always run inside an AgentsCommander PTY session, even if no init prompt is 
 
 ### Sending messages to other agents
 
+**MANDATORY: Before sending any message, you MUST resolve the exact agent name.** Never guess or assume agent names. Run `list-peers` or read `~/.agentscommander/teams.json` (PROD) / `~/.agentscommander-dev/teams.json` (DEV) to get the correct `name` field. Agent names are path-based (e.g. `"Agents/Shipper"`, `"0_repos/agentscommander_3"`) — not display labels.
+
 ```bash
 agentscommander.exe send --token <TOKEN> --root "<CWD>" --to "<agent_name>" --message "..." --mode wake
 ```
 
 - `--token`: your session token (provided in the Session Init block injected into your console)
 - `--root`: your working directory
-- `--to`: target agent name (e.g. `"Shipper"`)
+- `--to`: target agent name — **must be verified first** via `list-peers` or `teams.json`
 - `--mode wake`: fire-and-forget, do NOT use `--get-output` (blocks interactive sessions)
 
 ### Listing available peers
