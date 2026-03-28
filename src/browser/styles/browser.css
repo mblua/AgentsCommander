@@ -1,0 +1,51 @@
+/* Browser split layout: sidebar 30% | terminal 70% */
+.browser-layout {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.browser-sidebar {
+  width: 30%;
+  min-width: 240px;
+  max-width: 400px;
+  height: 100%;
+  overflow: hidden;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.browser-sidebar .sidebar-layout {
+  height: 100%;
+}
+
+.browser-terminal {
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+}
+
+.browser-terminal .terminal-layout {
+  height: 100%;
+}
+
+/* Mobile: stack vertically */
+@media (max-width: 600px) {
+  .browser-layout {
+    flex-direction: column;
+  }
+
+  .browser-sidebar {
+    width: 100%;
+    max-width: none;
+    height: 40%;
+    min-height: 200px;
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .browser-terminal {
+    height: 60%;
+  }
+}

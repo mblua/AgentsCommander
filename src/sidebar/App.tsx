@@ -41,7 +41,7 @@ const SidebarApp: Component = () => {
   let lastRaiseTime = 0;
 
   const handleRaiseTerminal = async (e: MouseEvent) => {
-    if (!raiseTerminalEnabled) return;
+    if (!isTauri || !raiseTerminalEnabled) return;
     // Don't steal focus from interactive elements
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON") return;
@@ -50,10 +50,8 @@ const SidebarApp: Component = () => {
     lastRaiseTime = now;
     try {
       await WindowAPI.ensureTerminal();
-      if (isTauri) {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        await getCurrentWindow().setFocus();
-      }
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().setFocus();
     } catch {}
   };
 
