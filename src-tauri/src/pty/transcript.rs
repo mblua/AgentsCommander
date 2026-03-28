@@ -240,10 +240,6 @@ fn claude_pty_filter(speaker: &Speaker, raw_line: &str) -> Option<String> {
             if is_tui_chrome(trimmed) {
                 return None;
             }
-            // Agent echoing the init prompt paste — already captured as INJECT
-            if trimmed.starts_with('#') && (trimmed.contains("agentscommander") || trimmed.contains("Session Init") || trimmed.contains("session token") || trimmed.contains("agent root")) {
-                return None;
-            }
             Some(trimmed.to_string())
         }
         _ => Some(trimmed.to_string()),
@@ -400,13 +396,23 @@ fn is_tui_chrome(line: &str) -> bool {
         return true;
     }
 
-    // "thought for Ns" / "ought for Ns" — thinking duration fragments
-    if trimmed.contains("thought for ") || trimmed.starts_with("ought for ") {
+    // "thought for Ns" / "Cogitated for Ns" — Claude Code thinking duration reports
+    if trimmed.contains("thought for ") || trimmed.contains("Cogitated for ") {
+        return true;
+    }
+
+    // "thinking with high effort" / "thinking with" — status fragments (with or without parens)
+    if trimmed.contains("thinking with") {
         return true;
     }
 
     // "running stop hook" fragments
     if trimmed.contains("running stop hook") {
+        return true;
+    }
+
+    // "N tokens" counter fragments
+    if trimmed.ends_with("tokens") || trimmed.contains("tokens ·") {
         return true;
     }
 
@@ -436,8 +442,8 @@ fn is_tui_chrome(line: &str) -> bool {
         return true;
     }
 
-    // "skills that work in any project" and similar menu/tip text
-    if trimmed.contains("skills that") || trimmed.contains("Tip: ") {
+    // Tip lines from Claude Code
+    if trimmed.contains("Tip: ") {
         return true;
     }
 
