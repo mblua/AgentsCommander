@@ -213,6 +213,15 @@ export const PhoneAPI = {
     invoke<void>("phone_ack_messages", { agentName, messageIds }),
 };
 
+// Agent Creator API
+export const AgentCreatorAPI = {
+  pickFolder: (defaultPath?: string) =>
+    invoke<string | null>("pick_folder", { defaultPath: defaultPath ?? null }),
+
+  createFolder: (parentPath: string, agentName: string) =>
+    invoke<string>("create_agent_folder", { parentPath, agentName }),
+};
+
 // Guide window
 export const GuideAPI = {
   open: () => invoke<void>("open_guide_window"),

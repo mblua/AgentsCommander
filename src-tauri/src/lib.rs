@@ -347,6 +347,8 @@ pub fn run() {
             commands::voice::voice_mark_recording,
             commands::voice::voice_had_typing,
             commands::config::save_debug_logs,
+            commands::agent_creator::pick_folder,
+            commands::agent_creator::create_agent_folder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building application")
