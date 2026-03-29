@@ -281,8 +281,9 @@ pub fn run() {
                             ps.shell_args.clone(),
                             ps.working_directory.clone(),
                             Some(ps.name.clone()),
-                            None, // No agent_id on restore
-                            None, // No agent label on restore
+                            None, // No agent_id on restore (auto-detected from shell)
+                            None, // No agent label on restore (auto-detected from shell)
+                            false, // Persist tooling on restore
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {

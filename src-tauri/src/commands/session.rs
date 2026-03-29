@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::config::dark_factory::{self, AgentLocalConfig};
 use crate::config::sessions_persistence::persist_current_state;
-use crate::config::settings::SettingsState;
+use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
@@ -14,8 +14,8 @@ use crate::DetachedSessionsState;
 
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
-/// After spawn, schedules a delayed injection of the session token + CLI instructions.
-/// If `agent_id` is provided, saves it as lastCodingAgent and upserts codingAgents in the repo's config.
+/// Auto-detects agent from shell command if not provided, and auto-injects --continue for Claude.
+/// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
 pub async fn create_session_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -26,6 +26,7 @@ pub async fn create_session_inner(
     session_name: Option<String>,
     agent_id: Option<String>,
     agent_label: Option<String>,
+    skip_tooling_save: bool,
 ) -> Result<SessionInfo, String> {
     let mgr = session_mgr.read().await;
     let mut session = mgr
@@ -43,6 +44,50 @@ pub async fn create_session_inner(
     let id = session.id;
     let token = session.token;
 
+    // Auto-detect agent from shell command if not explicitly provided
+    let (agent_id, agent_label) = if agent_id.is_some() {
+        (agent_id, agent_label)
+    } else {
+        let settings_state = app.state::<SettingsState>();
+        let cfg = settings_state.read().await;
+        resolve_agent_from_shell(&shell, &shell_args, &cfg)
+    };
+
+    // Auto-inject --continue for Claude agents with prior sessions in this repo
+    let mut shell_args = shell_args;
+    if let Some(ref aid) = agent_id {
+        let full_cmd = format!("{} {}", shell, shell_args.join(" "));
+        let cmd_basenames: Vec<String> = full_cmd.split_whitespace().map(|t| executable_basename(t)).collect();
+        let is_claude = cmd_basenames.iter().any(|b| b == "claude");
+        let already_has_continue = full_cmd.split_whitespace().any(|t| {
+            let lower = t.to_lowercase();
+            lower == "--continue" || lower == "-c"
+        });
+        if is_claude && !already_has_continue {
+            let config_path = std::path::Path::new(&cwd)
+                .join(".agentscommander")
+                .join("config.json");
+            let has_prior_session = tokio::fs::read_to_string(&config_path).await
+                .ok()
+                .and_then(|c| serde_json::from_str::<AgentLocalConfig>(&c).ok())
+                .map(|cfg| cfg.tooling.coding_agents.contains_key(aid))
+                .unwrap_or(false);
+            if has_prior_session {
+                if executable_basename(&shell) == "cmd" {
+                    if let Some(last) = shell_args.last_mut() {
+                        if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
+                            *last = format!("{} --continue", last);
+                            log::info!("Auto-injected --continue for agent '{}' (prior session, cmd path)", aid);
+                        }
+                    }
+                } else {
+                    shell_args.push("--continue".to_string());
+                    log::info!("Auto-injected --continue for agent '{}' (prior session found)", aid);
+                }
+            }
+        }
+    }
+
     pty_mgr
         .lock()
         .unwrap()
@@ -52,12 +97,14 @@ pub async fn create_session_inner(
     let info = SessionInfo::from(&session);
     let _ = app.emit("session_created", info.clone());
 
-    // Save lastCodingAgent + codingAgents if an agent_id was provided
-    if let Some(ref aid) = agent_id {
-        let label = agent_label.as_deref().unwrap_or("Unknown");
-        let session_id_str = id.to_string();
-        if let Err(e) = dark_factory::set_last_coding_agent(&cwd, aid, label, Some(&session_id_str)) {
-            log::warn!("Failed to save lastCodingAgent: {}", e);
+    // Save lastCodingAgent + codingAgents (skip for temp sessions)
+    if !skip_tooling_save {
+        if let Some(ref aid) = agent_id {
+            let label = agent_label.as_deref().unwrap_or("Unknown");
+            let session_id_str = id.to_string();
+            if let Err(e) = dark_factory::set_last_coding_agent(&cwd, aid, label, Some(&session_id_str)) {
+                log::warn!("Failed to save lastCodingAgent: {}", e);
+            }
         }
     }
 
@@ -155,6 +202,7 @@ pub async fn create_session(
         session_name,
         agent_id,
         agent_label,
+        false, // persist tooling
     )
     .await?;
 
@@ -340,6 +388,40 @@ pub async fn set_last_prompt(
         serde_json::json!({ "sessionId": id, "text": text }),
     );
     Ok(())
+}
+
+/// Extract the basename (without extension) from a path or command token.
+fn executable_basename(s: &str) -> String {
+    std::path::Path::new(s)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(s)
+        .to_lowercase()
+}
+
+/// Try to match the shell command against configured agents in settings.
+/// Returns (Some(agent_id), Some(label)) if a match is found, (None, None) otherwise.
+fn resolve_agent_from_shell(
+    shell: &str,
+    shell_args: &[String],
+    settings: &AppSettings,
+) -> (Option<String>, Option<String>) {
+    // Collect all tokens from shell + args, extract basenames for comparison
+    let full_cmd = format!("{} {}", shell, shell_args.join(" "));
+    let cmd_basenames: Vec<String> = full_cmd
+        .split_whitespace()
+        .map(|t| executable_basename(t))
+        .collect();
+
+    for agent in &settings.agents {
+        let agent_exec = agent.command.split_whitespace().next().unwrap_or("");
+        let agent_basename = executable_basename(agent_exec);
+        if !agent_basename.is_empty() && cmd_basenames.iter().any(|b| *b == agent_basename) {
+            log::info!("Auto-detected agent '{}' ({}) from shell command", agent.id, agent.label);
+            return (Some(agent.id.clone()), Some(agent.label.clone()));
+        }
+    }
+    (None, None)
 }
 
 #[tauri::command]
