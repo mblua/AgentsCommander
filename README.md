@@ -145,6 +145,58 @@ On Windows the default shell is `powershell.exe`; on Linux/macOS it is `/bin/bas
 }
 ```
 
+## CLI
+
+The `agentscommander` binary doubles as a CLI for agent-to-agent operations. Available subcommands:
+
+### `send` — Send a message to another agent
+
+```bash
+agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message "..." --mode wake
+```
+
+### `list-peers` — List available peers
+
+```bash
+agentscommander list-peers --token <TOKEN> --root <CWD>
+```
+
+### `create-agent` — Create a new agent
+
+Creates a folder with a `CLAUDE.md` role prompt. Optionally launches it with a coding agent.
+
+```bash
+# Create only
+agentscommander create-agent --parent "C:\path\to\folder" --name "MyAgent"
+
+# Create and launch with Claude Code
+agentscommander create-agent --parent "C:\path\to\folder" --name "MyAgent" --launch claude
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--parent` | Yes | Parent directory where the agent folder will be created |
+| `--name` | Yes | Agent name (becomes a subfolder inside `--parent`) |
+| `--launch` | No | Coding agent id to launch after creation (e.g., `claude`, `codex`) |
+| `--root` | No | Caller's root directory (for context) |
+| `--token` | No | Session token (for auth context) |
+
+**What it does:**
+1. Creates `<parent>/<name>/` directory
+2. Writes `CLAUDE.md` with content: `You are the agent <parentFolder>/<name>`
+3. If `--launch` is provided, writes a session request that the running app picks up and launches automatically (~3s)
+
+**Output** (stdout, JSON):
+```json
+{
+  "agentPath": "C:\\path\\to\\folder\\MyAgent",
+  "agentName": "folder/MyAgent",
+  "claudeMd": "You are the agent folder/MyAgent",
+  "launched": true,
+  "launchAgent": "claude"
+}
+```
+
 ## Architecture
 
 ```

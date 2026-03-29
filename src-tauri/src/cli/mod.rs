@@ -1,3 +1,4 @@
+pub mod create_agent;
 pub mod send;
 pub mod list_peers;
 
@@ -17,6 +18,8 @@ pub enum Commands {
     Send(send::SendArgs),
     /// List available peers for messaging
     ListPeers(list_peers::ListPeersArgs),
+    /// Create a new agent: folder + CLAUDE.md, optionally launch it
+    CreateAgent(create_agent::CreateAgentArgs),
 }
 
 /// Attach to parent console on Windows release builds so CLI output is visible.
@@ -40,5 +43,6 @@ pub fn handle_cli(cmd: Commands) -> i32 {
     match cmd {
         Commands::Send(args) => send::execute(args),
         Commands::ListPeers(args) => list_peers::execute(args),
+        Commands::CreateAgent(args) => create_agent::execute(args),
     }
 }
