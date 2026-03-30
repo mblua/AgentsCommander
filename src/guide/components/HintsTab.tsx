@@ -47,6 +47,10 @@ const sections: HintSection[] = [
           url: "https://www.rtk-ai.app/",
         },
       },
+      {
+        title: "Exclude global CLAUDE.md (Windows)",
+        body: "By default, Claude Code loads ~/.claude/CLAUDE.md into every conversation. To prevent this, add the following to your settings.json or settings.local.json:\n\n{\n  \"claudeMdExcludes\": [\n    \"C:/Users/<your user name>/.claude/CLAUDE.md\"\n  ]\n}",
+      },
     ],
   },
   {
