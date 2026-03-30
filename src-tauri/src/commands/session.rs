@@ -53,40 +53,72 @@ pub async fn create_session_inner(
         resolve_agent_from_shell(&shell, &shell_args, &cfg)
     };
 
-    // Auto-inject --continue for Claude agents with prior sessions in this repo
+    // Detect if this is a Claude session (shared flag for --continue and --append-system-prompt-file)
     let mut shell_args = shell_args;
-    if let Some(ref aid) = agent_id {
-        let full_cmd = format!("{} {}", shell, shell_args.join(" "));
-        let cmd_basenames: Vec<String> = full_cmd.split_whitespace().map(|t| executable_basename(t)).collect();
-        let is_claude = cmd_basenames.iter().any(|b| b == "claude");
-        let already_has_continue = full_cmd.split_whitespace().any(|t| {
-            let lower = t.to_lowercase();
-            lower == "--continue" || lower == "-c"
-        });
-        if is_claude && !already_has_continue {
-            let config_path = std::path::Path::new(&cwd)
-                .join(".agentscommander")
-                .join("config.json");
-            let has_prior_session = tokio::fs::read_to_string(&config_path).await
-                .ok()
-                .and_then(|c| serde_json::from_str::<AgentLocalConfig>(&c).ok())
-                .map(|cfg| cfg.tooling.coding_agents.contains_key(aid))
-                .unwrap_or(false);
-            if has_prior_session {
-                if executable_basename(&shell) == "cmd" {
-                    if let Some(last) = shell_args.last_mut() {
-                        if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
-                            *last = format!("{} --continue", last);
-                            log::info!("Auto-injected --continue for agent '{}' (prior session, cmd path)", aid);
+    let full_cmd = format!("{} {}", shell, shell_args.join(" "));
+    let cmd_basenames: Vec<String> = full_cmd.split_whitespace().map(|t| executable_basename(t)).collect();
+    let is_claude = cmd_basenames.iter().any(|b| b == "claude");
+
+    // Auto-inject --continue for Claude agents with prior sessions in this repo
+    if is_claude {
+        if let Some(ref aid) = agent_id {
+            let already_has_continue = full_cmd.split_whitespace().any(|t| {
+                let lower = t.to_lowercase();
+                lower == "--continue" || lower == "-c"
+            });
+            if !already_has_continue {
+                let config_path = std::path::Path::new(&cwd)
+                    .join(".agentscommander")
+                    .join("config.json");
+                let has_prior_session = tokio::fs::read_to_string(&config_path).await
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<AgentLocalConfig>(&c).ok())
+                    .map(|cfg| cfg.tooling.coding_agents.contains_key(aid))
+                    .unwrap_or(false);
+                if has_prior_session {
+                    if executable_basename(&shell) == "cmd" {
+                        if let Some(last) = shell_args.last_mut() {
+                            if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
+                                *last = format!("{} --continue", last);
+                                log::info!("Auto-injected --continue for agent '{}' (prior session, cmd path)", aid);
+                            }
                         }
+                    } else {
+                        shell_args.push("--continue".to_string());
+                        log::info!("Auto-injected --continue for agent '{}' (prior session found)", aid);
                     }
-                } else {
-                    shell_args.push("--continue".to_string());
-                    log::info!("Auto-injected --continue for agent '{}' (prior session found)", aid);
                 }
             }
         }
     }
+
+    // Auto-inject --append-system-prompt-file for Claude sessions
+    let context_file_injected = if is_claude {
+        let binary_path = crate::resolve_bin_label();
+        match crate::config::session_context::write_session_context(&cwd, &token.to_string(), &binary_path) {
+            Ok(rel_path) => {
+                if executable_basename(&shell) == "cmd" {
+                    if let Some(last) = shell_args.last_mut() {
+                        if last.to_lowercase().contains("claude") {
+                            *last = format!("{} --append-system-prompt-file {}", last, rel_path);
+                            log::info!("Injected --append-system-prompt-file for Claude (cmd path)");
+                        }
+                    }
+                } else {
+                    shell_args.push("--append-system-prompt-file".to_string());
+                    shell_args.push(rel_path);
+                    log::info!("Injected --append-system-prompt-file for Claude session");
+                }
+                true
+            }
+            Err(e) => {
+                log::warn!("Failed to write AgentsCommanderContext.md: {}. Falling back to PTY injection.", e);
+                false
+            }
+        }
+    } else {
+        false
+    };
 
     pty_mgr
         .lock()
@@ -109,19 +141,22 @@ pub async fn create_session_inner(
     }
 
     // Inject init prompt for agent sessions so they know their token.
-    // Skip for plain interactive shells (powershell, cmd, bash, etc.)
+    // Skip for plain interactive shells and Claude sessions with context file.
     let shell_lower = shell.to_lowercase();
     let is_interactive_shell = ["powershell", "pwsh", "cmd", "bash", "zsh", "sh", "wsl", "nu"]
         .iter()
         .any(|s| shell_lower == *s || shell_lower.ends_with(&format!("/{}", s)) || shell_lower.ends_with(&format!("\\{}", s)));
 
+    let skip_init_prompt = is_interactive_shell || context_file_injected;
     let cwd_for_init = cwd.clone();
     let app_clone = app.clone();
     if is_interactive_shell {
         log::debug!("Skipping init prompt for interactive shell '{}'", shell);
+    } else if context_file_injected {
+        log::debug!("Skipping init prompt for Claude (using --append-system-prompt-file)");
     }
     tauri::async_runtime::spawn(async move {
-        if is_interactive_shell {
+        if skip_init_prompt {
             return;
         }
         // Wait for the agent CLI to boot (3s covers most agents)
