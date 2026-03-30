@@ -8,6 +8,10 @@ use clap::{Parser, Subcommand};
 #[command(name = "agentscommander")]
 #[command(about = "Agent terminal session manager with inter-agent messaging")]
 pub struct Cli {
+    /// Launch the GUI application
+    #[arg(long)]
+    pub app: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -25,9 +29,11 @@ pub enum Commands {
 /// Attach to parent console on Windows release builds so CLI output is visible.
 #[cfg(target_os = "windows")]
 pub fn attach_parent_console() {
-    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    use windows_sys::Win32::System::Console::{AttachConsole, AllocConsole, ATTACH_PARENT_PROCESS};
     unsafe {
-        AttachConsole(ATTACH_PARENT_PROCESS);
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            AllocConsole();
+        }
     }
 }
 
