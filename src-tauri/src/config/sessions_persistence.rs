@@ -108,6 +108,7 @@ pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
 }
 
 /// Snapshot current live sessions into the persisted format.
+/// Strips auto-injected flags (--continue) so they are re-evaluated on next restore.
 pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
     let sessions = mgr.list_sessions().await;
     let active_id = mgr.get_active().await.map(|id| id.to_string());
@@ -117,13 +118,45 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
         .map(|s| PersistedSession {
             name: s.name.clone(),
             shell: s.shell.clone(),
-            shell_args: s.shell_args.clone(),
+            shell_args: strip_auto_injected_continue(&s.shell, &s.shell_args),
             working_directory: s.working_directory.clone(),
             was_active: active_id.as_deref() == Some(&s.id),
         })
         .collect();
 
     deduplicate(all)
+}
+
+/// Strip `--continue` from Claude agent shell args before persisting.
+/// This flag is auto-injected at session creation time (see commands/session.rs)
+/// and must not be baked into the saved "recipe" — otherwise it self-perpetuates
+/// across app restarts even when the conditions for injection no longer apply.
+fn strip_auto_injected_continue(shell: &str, args: &[String]) -> Vec<String> {
+    let is_claude = std::iter::once(shell)
+        .chain(args.iter().map(|s| s.as_str()))
+        .any(|t| {
+            std::path::Path::new(t)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(t)
+                .eq_ignore_ascii_case("claude")
+        });
+
+    if !is_claude {
+        return args.to_vec();
+    }
+
+    // Strip standalone "--continue" args and " --continue" suffix (cmd wrapper path)
+    args.iter()
+        .filter(|a| !a.eq_ignore_ascii_case("--continue"))
+        .map(|a| {
+            if a.to_lowercase().ends_with(" --continue") {
+                a[..a.len() - " --continue".len()].to_string()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
 }
 
 /// Persist live sessions merged with entries that failed to restore.
