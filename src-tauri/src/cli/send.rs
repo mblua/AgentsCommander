@@ -16,8 +16,8 @@ pub struct SendArgs {
     #[arg(long)]
     pub to: String,
 
-    /// Message body
-    #[arg(long)]
+    /// Message body (required unless --command is used)
+    #[arg(long, default_value = "")]
     pub message: String,
 
     /// Delivery mode: active-only, wake, wake-and-sleep
@@ -125,6 +125,12 @@ pub fn execute(args: SendArgs) -> i32 {
              Check team membership and coordinator rules.",
             sender, args.to
         );
+        return 1;
+    }
+
+    // Require at least --message or --command
+    if args.message.is_empty() && args.command.is_none() {
+        eprintln!("Error: --message or --command is required");
         return 1;
     }
 

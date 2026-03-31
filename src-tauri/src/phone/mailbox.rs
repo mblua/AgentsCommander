@@ -525,18 +525,24 @@ impl MailboxPoller {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr = session_mgr.read().await;
                 let sessions = mgr.list_sessions().await;
-                let session = sessions.iter().find(|s| s.id == session_id.to_string());
-                if let Some(s) = session {
-                    if !s.waiting_for_input {
-                        return Err(format!(
-                            "Cannot execute remote command '{}': agent is busy (not idle)",
-                            command
-                        ));
-                    }
+                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    None => return Err(format!(
+                        "Session {} not found — cannot execute remote command '{}'",
+                        session_id, command
+                    )),
+                    Some(s) if !s.waiting_for_input => return Err(format!(
+                        "Cannot execute remote command '{}': agent is busy (not idle)",
+                        command
+                    )),
+                    _ => {} // idle — proceed
                 }
             }
 
-            // Atomic write: /<command>\r directly to PTY stdin
+            // Write /<command>\r directly to PTY stdin.
+            // Note: there is a small race window between the idle check above and
+            // this write — the agent could become busy on a separate task. This is
+            // inherent to a polling-based idle model and is acceptable for /clear
+            // and /compact which Claude Code processes even if mid-prompt.
             let cmd_bytes = format!("/{}\r", command);
             {
                 let mgr = pty_mgr.lock().map_err(|e| format!("PTY lock failed: {}", e))?;
@@ -561,11 +567,6 @@ impl MailboxPoller {
                 command, session_id, msg.from
             );
 
-            // If body is also present, wait for agent to become idle again, then inject follow-up
-            if !msg.body.is_empty() {
-                self.inject_followup_after_idle(app, session_id, msg).await?;
-            }
-
             let _ = tauri::Emitter::emit(
                 app,
                 "message_delivered",
@@ -578,6 +579,19 @@ impl MailboxPoller {
                     "injected": true
                 }),
             );
+
+            // If body is also present, spawn follow-up as background task.
+            // Command delivery is already complete — don't block the delivery pipeline.
+            if !msg.body.is_empty() {
+                let app_clone = app.clone();
+                let msg_clone = msg.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = Self::inject_followup_after_idle_static(&app_clone, session_id, &msg_clone).await {
+                        log::warn!("Follow-up injection after remote command failed: {}", e);
+                    }
+                });
+            }
+
             return Ok(());
         }
 
@@ -642,8 +656,8 @@ impl MailboxPoller {
     }
 
     /// Wait for agent to become idle after a remote command, then inject body as follow-up.
-    async fn inject_followup_after_idle(
-        &self,
+    /// Static method — can be spawned as a detached task without borrowing self.
+    async fn inject_followup_after_idle_static(
         app: &tauri::AppHandle,
         session_id: Uuid,
         msg: &OutboxMessage,
