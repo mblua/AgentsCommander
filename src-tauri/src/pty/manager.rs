@@ -438,6 +438,7 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
             "# Token: {token}\n",
             "# Root: {root}\n",
             "# === End Credentials ===\n",
+            "\r",
         ),
         token = session.token,
         root = session.working_directory,
