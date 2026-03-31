@@ -1,7 +1,7 @@
-import { createMemo } from "solid-js";
+import { createMemo, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
-import type { RepoMatch, Session, SessionsState, Team } from "../../shared/types";
+import type { RepoMatch, Session, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
 
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
@@ -114,6 +114,71 @@ const filteredSessionsMemo = createMemo(() => {
   );
 });
 
+const [collapsedTeams, setCollapsedTeams] = createSignal<Record<string, boolean>>({});
+
+const groupedSessionsMemo = createMemo((): { groups: TeamSessionGroup[]; ungrouped: Session[] } => {
+  const sessions = filteredSessionsMemo();
+  const teams = state.teams;
+
+  if (teams.length === 0) return { groups: [], ungrouped: sessions };
+
+  const groups: TeamSessionGroup[] = [];
+  const assignedPaths = new Set<string>();
+
+  for (const team of teams) {
+    const memberPaths = new Set(team.members.map((m) => normalizePath(m.path)));
+
+    // Find sessions belonging to this team
+    const teamSessions = sessions.filter((s) =>
+      s.workingDirectory && memberPaths.has(normalizePath(s.workingDirectory))
+    );
+
+    if (teamSessions.length === 0 && !state.showInactive) continue;
+
+    // Identify coordinator session
+    let coordinator: Session | null = null;
+    const members: Session[] = [];
+
+    for (const s of teamSessions) {
+      const np = normalizePath(s.workingDirectory);
+      const member = team.members.find((m) => normalizePath(m.path) === np);
+      if (member && team.coordinatorName && member.name === team.coordinatorName) {
+        coordinator = s;
+      } else {
+        members.push(s);
+      }
+      assignedPaths.add(np);
+    }
+
+    // When showInactive, add inactive placeholders for missing team members
+    if (state.showInactive) {
+      const activePathSet = new Set(teamSessions.map((s) => normalizePath(s.workingDirectory)));
+      for (const m of team.members) {
+        const np = normalizePath(m.path);
+        if (!activePathSet.has(np)) {
+          const inactive = makeInactiveEntry(m.name, m.path);
+          if (team.coordinatorName && m.name === team.coordinatorName) {
+            coordinator = inactive;
+          } else {
+            members.push(inactive);
+          }
+          assignedPaths.add(np);
+        }
+      }
+    }
+
+    groups.push({ team, coordinator, members });
+  }
+
+  // Sessions not in any team
+  const ungrouped = sessions.filter((s) => {
+    if (!s.workingDirectory) return true;
+    return !assignedPaths.has(normalizePath(s.workingDirectory));
+  });
+
+  return { groups, ungrouped };
+});
+
 export const sessionsStore = {
   get sessions() {
     return state.sessions;
@@ -135,6 +200,12 @@ export const sessionsStore = {
   },
   get filteredSessions() {
     return filteredSessionsMemo();
+  },
+  get groupedSessions() {
+    return groupedSessionsMemo();
+  },
+  get collapsedTeams() {
+    return collapsedTeams();
   },
 
   setSessions(sessions: Session[]) {
@@ -210,5 +281,9 @@ export const sessionsStore = {
 
   toggleShowInactive() {
     setState("showInactive", !state.showInactive);
+  },
+
+  toggleTeamCollapsed(teamId: string) {
+    setCollapsedTeams((prev) => ({ ...prev, [teamId]: !prev[teamId] }));
   },
 };

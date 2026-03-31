@@ -131,6 +131,13 @@ export interface AppSettings {
   terminalGeometry: WindowGeometry | null;
 }
 
+// Team grouping for sidebar
+export interface TeamSessionGroup {
+  team: Team;
+  coordinator: Session | null;
+  members: Session[];
+}
+
 // Dark Factory types
 
 export interface TeamMember {
