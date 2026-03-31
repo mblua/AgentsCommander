@@ -16,6 +16,7 @@ pub enum InjectReason {
     MessageDelivery,
     TelegramInput,
     EnterKeystroke,
+    RemoteCommand,
 }
 
 impl InjectReason {
@@ -26,6 +27,7 @@ impl InjectReason {
             Self::MessageDelivery => "message_delivery",
             Self::TelegramInput => "telegram_input",
             Self::EnterKeystroke => "enter",
+            Self::RemoteCommand => "remote_command",
         }
     }
 }

@@ -28,6 +28,10 @@ pub struct SendArgs {
     #[arg(long)]
     pub get_output: bool,
 
+    /// Remote command to execute on the agent's PTY (e.g., "clear", "compact")
+    #[arg(long)]
+    pub command: Option<String>,
+
     /// Agent CLI to use for wake-and-sleep (default: auto)
     #[arg(long, default_value = "auto")]
     pub agent: String,
@@ -69,6 +73,9 @@ pub struct OutboxMessage {
     #[serde(default)]
     pub priority: String,
     pub timestamp: String,
+    /// Remote command to execute on agent's PTY (e.g., "clear", "compact")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 /// Derive agent name from a path: last two components → "parent/folder"
@@ -121,6 +128,19 @@ pub fn execute(args: SendArgs) -> i32 {
         return 1;
     }
 
+    // Validate --command if present
+    const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
+    if let Some(ref cmd) = args.command {
+        if !ALLOWED_COMMANDS.contains(&cmd.as_str()) {
+            eprintln!(
+                "Error: unsupported command '{}'. Allowed: {}",
+                cmd,
+                ALLOWED_COMMANDS.join(", ")
+            );
+            return 1;
+        }
+    }
+
     let msg_id = Uuid::new_v4().to_string();
     let request_id = if args.get_output {
         Some(Uuid::new_v4().to_string())
@@ -141,6 +161,7 @@ pub fn execute(args: SendArgs) -> i32 {
         preferred_agent: args.agent,
         priority: "normal".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
+        command: args.command,
     };
 
     // Write to --outbox if specified, otherwise <root>/.agentscommander/outbox/

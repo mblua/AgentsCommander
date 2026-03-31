@@ -36,6 +36,9 @@ pub struct OutboxMessage {
     #[serde(default)]
     pub priority: String,
     pub timestamp: String,
+    /// Remote command to execute on agent's PTY (e.g., "clear", "compact")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 /// Tracks delivery attempts for a single outbox message.
@@ -510,6 +513,75 @@ impl MailboxPoller {
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
+        // ── Remote command path: write /<command>\r directly, no framing ──
+        if let Some(ref command) = msg.command {
+            const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
+            if !ALLOWED_COMMANDS.contains(&command.as_str()) {
+                return Err(format!("Unsupported remote command '{}'", command));
+            }
+
+            // Precondition: agent must be idle (waiting_for_input)
+            {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                let sessions = mgr.list_sessions().await;
+                let session = sessions.iter().find(|s| s.id == session_id.to_string());
+                if let Some(s) = session {
+                    if !s.waiting_for_input {
+                        return Err(format!(
+                            "Cannot execute remote command '{}': agent is busy (not idle)",
+                            command
+                        ));
+                    }
+                }
+            }
+
+            // Atomic write: /<command>\r directly to PTY stdin
+            let cmd_bytes = format!("/{}\r", command);
+            {
+                let mgr = pty_mgr.lock().map_err(|e| format!("PTY lock failed: {}", e))?;
+                mgr.write(session_id, cmd_bytes.as_bytes())
+                    .map_err(|e| format!("PTY write failed for remote command: {}", e))?;
+            }
+
+            // Record in transcript
+            {
+                let transcript = app.state::<crate::pty::transcript::TranscriptWriter>();
+                transcript.record_inject(
+                    session_id,
+                    cmd_bytes.as_bytes(),
+                    crate::pty::transcript::InjectReason::RemoteCommand,
+                    Some(msg.from.clone()),
+                    true,
+                );
+            }
+
+            log::info!(
+                "Executed remote command '{}' on session {} (from: {})",
+                command, session_id, msg.from
+            );
+
+            // If body is also present, wait for agent to become idle again, then inject follow-up
+            if !msg.body.is_empty() {
+                self.inject_followup_after_idle(app, session_id, msg).await?;
+            }
+
+            let _ = tauri::Emitter::emit(
+                app,
+                "message_delivered",
+                serde_json::json!({
+                    "id": msg.id,
+                    "from": msg.from,
+                    "to": msg.to,
+                    "mode": msg.mode,
+                    "command": command,
+                    "injected": true
+                }),
+            );
+            return Ok(());
+        }
+
+        // ── Standard message path ──
         // Only use response markers for non-interactive sessions
         let use_markers = msg.get_output && !interactive;
 
@@ -567,6 +639,58 @@ impl MailboxPoller {
             }),
         );
         Ok(())
+    }
+
+    /// Wait for agent to become idle after a remote command, then inject body as follow-up.
+    async fn inject_followup_after_idle(
+        &self,
+        app: &tauri::AppHandle,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+    ) -> Result<(), String> {
+        let max_wait = std::time::Duration::from_secs(30);
+        let poll = std::time::Duration::from_millis(500);
+        let start = std::time::Instant::now();
+
+        // Wait for idle (waiting_for_input = true)
+        loop {
+            if start.elapsed() >= max_wait {
+                return Err(format!(
+                    "Timeout waiting for agent to become idle after remote command ({}s)",
+                    max_wait.as_secs()
+                ));
+            }
+            tokio::time::sleep(poll).await;
+
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            let sessions = mgr.list_sessions().await;
+            if let Some(s) = sessions.iter().find(|s| s.id == session_id.to_string()) {
+                if s.waiting_for_input {
+                    break;
+                }
+            }
+        }
+
+        // Inject the follow-up body as a standard interactive message
+        let bin_path = crate::resolve_bin_label();
+        let payload = format!(
+            concat!(
+                "\n[Message from {from}] {body}\n",
+                "(To reply, run: \"{bin}\" send --token <your_token> --to \"{from}\" --message \"your reply\" --mode wake)\n\r",
+            ),
+            from = msg.from,
+            body = msg.body,
+            bin = bin_path,
+        );
+        crate::pty::inject::inject_text_into_session(
+            app,
+            session_id,
+            &payload,
+            true,
+            crate::pty::transcript::InjectReason::MessageDelivery,
+            Some(msg.from.clone()),
+        ).await
     }
 
     /// Find an active session for a given agent name (matches by working directory).
