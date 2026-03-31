@@ -679,14 +679,19 @@ impl MailboxPoller {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
             let sessions = mgr.list_sessions().await;
-            if let Some(s) = sessions.iter().find(|s| s.id == session_id.to_string()) {
-                if s.waiting_for_input {
-                    break;
-                }
+            match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                Some(s) if s.waiting_for_input => break,
+                Some(_) => {} // busy — keep polling
+                None => return Err(format!(
+                    "Session {} destroyed before follow-up could be injected",
+                    session_id
+                )),
             }
         }
 
-        // Inject the follow-up body as a standard interactive message
+        // Inject the follow-up body as a standard interactive message.
+        // Note: same TOCTOU race as the command path — agent could become busy
+        // between the idle check above and this write. Acceptable for this use case.
         let bin_path = crate::resolve_bin_label();
         let payload = format!(
             concat!(
