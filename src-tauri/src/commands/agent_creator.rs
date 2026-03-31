@@ -47,3 +47,10 @@ pub async fn create_agent_folder(parent_path: String, agent_name: String) -> Res
 
     Ok(agent_dir.to_string_lossy().to_string())
 }
+
+/// Creates or updates .claude/settings.local.json with claudeMdExcludes in the given directory.
+/// Works on any directory — both new agent folders and existing repos.
+#[tauri::command]
+pub async fn write_claude_settings_local(agent_path: String) -> Result<(), String> {
+    crate::config::claude_settings::ensure_claude_md_excludes(&PathBuf::from(&agent_path))
+}

@@ -30,12 +30,14 @@ const AGENT_PRESETS: Record<string, Omit<AgentConfig, "id">> = {
     command: "claude --enable-auto-mode",
     color: "#d97706",
     gitPullBefore: true,
+    excludeGlobalClaudeMd: true,
   },
   codex: {
     label: "Codex",
     command: "codex",
     color: "#10b981",
     gitPullBefore: true,
+    excludeGlobalClaudeMd: false,
   },
 };
 
@@ -131,6 +133,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           command: "",
           color: "#6366f1",
           gitPullBefore: false,
+          excludeGlobalClaudeMd: true,
         };
     setSettings("data", "agents", (prev) => [...prev, agent]);
   };
@@ -558,6 +561,17 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
                 }
               />
               <span>Run git pull before launch</span>
+            </label>
+            <label class="settings-checkbox-field">
+              <input
+                type="checkbox"
+                class="settings-checkbox"
+                checked={agent.excludeGlobalClaudeMd}
+                onChange={(e) =>
+                  updateAgent(i(), "excludeGlobalClaudeMd", e.currentTarget.checked)
+                }
+              />
+              <span>Exclude global CLAUDE.md on agent creation</span>
             </label>
           </div>
         )}

@@ -63,7 +63,16 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
     }
   };
 
-  const handleLaunch = (agent: AgentConfig) => {
+  const handleLaunch = async (agent: AgentConfig) => {
+    // Auto-generate .claude/settings.local.json if the agent has the flag
+    if (agent.excludeGlobalClaudeMd && createdPath()) {
+      try {
+        await AgentCreatorAPI.writeClaudeSettingsLocal(createdPath());
+      } catch (e) {
+        console.warn("Failed to write .claude/settings.local.json:", e);
+      }
+    }
+
     const parts = agent.command.trim().split(/\s+/);
     const executable = parts[0];
     const cmdArgs = parts.slice(1);

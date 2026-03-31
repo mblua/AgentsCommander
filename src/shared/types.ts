@@ -76,6 +76,7 @@ export interface AgentConfig {
   command: string;
   color: string;
   gitPullBefore: boolean;
+  excludeGlobalClaudeMd: boolean;
 }
 
 export interface RepoMatch {

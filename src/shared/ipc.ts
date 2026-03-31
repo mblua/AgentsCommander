@@ -220,6 +220,9 @@ export const AgentCreatorAPI = {
 
   createFolder: (parentPath: string, agentName: string) =>
     invoke<string>("create_agent_folder", { parentPath, agentName }),
+
+  writeClaudeSettingsLocal: (agentPath: string) =>
+    invoke<void>("write_claude_settings_local", { agentPath }),
 };
 
 // Guide window

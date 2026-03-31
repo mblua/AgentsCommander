@@ -99,6 +99,9 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
         return 1;
     }
 
+    // Write .claude/settings.local.json if the launched agent has exclude_global_claude_md
+    // (checked later when we resolve the agent config)
+
     let agent_path_str = agent_dir.to_string_lossy().to_string();
     let mut launched = false;
     let mut launch_agent_id: Option<String> = None;
@@ -107,13 +110,23 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
     if let Some(ref agent_id) = args.launch {
         let settings = config::settings::load_settings();
 
+        let agent_id_lower = agent_id.to_lowercase();
         let agent_config = settings.agents.iter().find(|a| {
             a.id.eq_ignore_ascii_case(agent_id)
                 || a.label.eq_ignore_ascii_case(agent_id)
+                || a.label.to_lowercase().contains(&agent_id_lower)
+                || a.command.to_lowercase().starts_with(&agent_id_lower)
         });
 
         match agent_config {
             Some(agent) => {
+                // Auto-generate .claude/settings.local.json if the agent has the flag
+                if agent.exclude_global_claude_md {
+                    if let Err(e) = config::claude_settings::ensure_claude_md_excludes(&agent_dir) {
+                        eprintln!("Warning: failed to write claude settings: {}", e);
+                    }
+                }
+
                 let parts: Vec<&str> = agent.command.trim().split_whitespace().collect();
                 let (shell, shell_args) = if agent.git_pull_before {
                     (

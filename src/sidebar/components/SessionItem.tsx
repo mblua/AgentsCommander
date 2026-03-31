@@ -1,7 +1,7 @@
-import { Component, createSignal, Show, For } from "solid-js";
+import { Component, createSignal, Show, For, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { Session, SessionStatus, TelegramBotConfig, RepoMatch } from "../../shared/types";
-import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI } from "../../shared/ipc";
+import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI, AgentCreatorAPI } from "../../shared/ipc";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { bridgesStore } from "../stores/bridges";
 import { sessionsStore } from "../stores/sessions";
@@ -40,6 +40,8 @@ const SessionItem: Component<{
   const [showBotMenu, setShowBotMenu] = createSignal(false);
   const [showAgentModal, setShowAgentModal] = createSignal(false);
   const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
+  const [showContextMenu, setShowContextMenu] = createSignal(false);
+  const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
 
   const bridge = () => bridgesStore.getBridge(props.session.id);
   const agentBadges = () => {
@@ -132,6 +134,53 @@ const SessionItem: Component<{
     SessionAPI.destroy(props.session.id);
   };
 
+  /** True if any configured coding agent is Claude-based */
+  const hasClaude = () =>
+    (settingsStore.current?.agents ?? []).some((a) =>
+      a.command.toLowerCase().includes("claude")
+    );
+
+  let dismissContextMenu: (() => void) | null = null;
+
+  const cleanupContextMenu = () => {
+    if (dismissContextMenu) {
+      window.removeEventListener("click", dismissContextMenu);
+      window.removeEventListener("contextmenu", dismissContextMenu);
+      window.removeEventListener("keydown", dismissContextMenu as any);
+      dismissContextMenu = null;
+    }
+  };
+
+  onCleanup(cleanupContextMenu);
+
+  const handleContextMenu = (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    cleanupContextMenu();
+    setContextMenuPos({ x: e.clientX, y: e.clientY });
+    setShowContextMenu(true);
+    const dismiss = (ev?: Event) => {
+      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+      setShowContextMenu(false);
+      cleanupContextMenu();
+    };
+    dismissContextMenu = dismiss;
+    setTimeout(() => {
+      window.addEventListener("click", dismiss);
+      window.addEventListener("contextmenu", dismiss);
+      window.addEventListener("keydown", dismiss as any);
+    });
+  };
+
+  const handleExcludeClaudeMd = async (e: MouseEvent) => {
+    e.stopPropagation();
+    setShowContextMenu(false);
+    try {
+      await AgentCreatorAPI.writeClaudeSettingsLocal(props.session.workingDirectory);
+    } catch (err) {
+      console.error("Failed to write claude settings:", err);
+    }
+  };
 
   const isInactive = () => props.session.id.startsWith("inactive-");
 
@@ -139,6 +188,7 @@ const SessionItem: Component<{
     <div
       class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
       onClick={isInactive() ? undefined : handleClick}
+      onContextMenu={isInactive() ? undefined : handleContextMenu}
     >
       <div
         class={`session-item-status ${isInactive() ? "offline" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
@@ -290,6 +340,19 @@ const SessionItem: Component<{
             initialRepo={repoForModal()}
             onClose={() => setShowAgentModal(false)}
           />
+        </Portal>
+      )}
+      {showContextMenu() && hasClaude() && (
+        <Portal>
+          <div
+            class="session-context-menu"
+            style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button class="session-context-option" onClick={handleExcludeClaudeMd}>
+              Exclude global CLAUDE.md
+            </button>
+          </div>
         </Portal>
       )}
     </div>

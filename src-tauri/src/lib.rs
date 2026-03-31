@@ -361,6 +361,7 @@ pub fn run() {
             commands::config::save_debug_logs,
             commands::agent_creator::pick_folder,
             commands::agent_creator::create_agent_folder,
+            commands::agent_creator::write_claude_settings_local,
         ])
         .build(tauri::generate_context!())
         .expect("error while building application")
