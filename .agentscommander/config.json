@@ -1,6 +1,17 @@
 {
-  "teams": [
-    "AGENTS COMMANDER"
-  ],
-  "lastCodingAgent": "agent_1774071095037_0"
+  "tooling": {
+    "lastCodingAgent": "agent_1774071095037_0",
+    "codingAgents": {
+      "agent_1774071095037_0": {
+        "app": "Claude Code",
+        "acSessionId": "bdd4ab49-1b71-45a2-8c33-44c2c8862a6f",
+        "lastUsed": "2026-03-31T03:38:11.311710700+00:00"
+      }
+    }
+  },
+  "darkFactory": {
+    "teams": [
+      "AC-DEVS"
+    ]
+  }
 }
