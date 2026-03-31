@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::config::dark_factory;
+use crate::phone::manager::can_communicate;
+
 #[derive(Args)]
 pub struct SendArgs {
     /// Session token for authentication
@@ -17,8 +20,8 @@ pub struct SendArgs {
     #[arg(long)]
     pub message: String,
 
-    /// Delivery mode: queue, active-only, wake, wake-and-sleep
-    #[arg(long, default_value = "queue")]
+    /// Delivery mode: active-only, wake, wake-and-sleep
+    #[arg(long, default_value = "wake")]
     pub mode: String,
 
     /// Wait for and return the agent's response
@@ -94,13 +97,26 @@ pub fn execute(args: SendArgs) -> i32 {
     let sender = agent_name_from_root(&root);
     let ac_dir = PathBuf::from(&root).join(".agentscommander");
 
-    // Validate mode
-    let valid_modes = ["queue", "active-only", "wake", "wake-and-sleep"];
+    // Validate mode — "queue" is no longer supported
+    let valid_modes = ["active-only", "wake", "wake-and-sleep"];
     if !valid_modes.contains(&args.mode.as_str()) {
         eprintln!(
             "Error: invalid mode '{}'. Valid: {}",
             args.mode,
             valid_modes.join(", ")
+        );
+        return 1;
+    }
+
+    // ── Pre-validate routing ──────────────────────────────────────────────
+    // Load teams config and check if sender can reach destination BEFORE
+    // writing to outbox. Fail immediately with a clear error if not.
+    let config = dark_factory::load_dark_factory();
+    if config.teams.is_empty() || !can_communicate(&sender, &args.to, &config) {
+        eprintln!(
+            "Error: routing rejected — '{}' cannot reach '{}'. \
+             Check team membership and coordinator rules.",
+            sender, args.to
         );
         return 1;
     }
@@ -152,20 +168,49 @@ pub fn execute(args: SendArgs) -> i32 {
         return 1;
     }
 
-    println!("Message queued: {}", msg_id);
+    // ── Poll for delivery confirmation ────────────────────────────────────
+    // The MailboxPoller will pick up the file and move it to delivered/ or
+    // rejected/. Wait until we know the outcome.
+    let delivered_path = outbox_dir.join("delivered").join(format!("{}.json", msg_id));
+    let rejected_reason_path = outbox_dir.join("rejected").join(format!("{}.reason.txt", msg_id));
 
-    // If --get-output, enter polling loop for response
+    let confirm_timeout = std::time::Duration::from_secs(30);
+    let confirm_poll = std::time::Duration::from_millis(250);
+    let start = std::time::Instant::now();
+
+    loop {
+        if delivered_path.exists() {
+            println!("Message delivered: {}", msg_id);
+            break;
+        }
+        if rejected_reason_path.exists() {
+            let reason = std::fs::read_to_string(&rejected_reason_path)
+                .unwrap_or_else(|_| "unknown reason".to_string());
+            eprintln!("Error: message rejected — {}", reason.trim());
+            return 1;
+        }
+        if start.elapsed() >= confirm_timeout {
+            eprintln!(
+                "Error: delivery confirmation timeout after 30s (message {} may still be pending)",
+                msg_id
+            );
+            return 1;
+        }
+        std::thread::sleep(confirm_poll);
+    }
+
+    // ── If --get-output, wait for response after confirmed delivery ───────
     if let Some(rid) = request_id {
         let responses_dir = ac_dir.join("responses");
         let response_path = responses_dir.join(format!("{}.json", rid));
         let timeout = std::time::Duration::from_secs(args.timeout);
         let poll_interval = std::time::Duration::from_secs(2);
-        let start = std::time::Instant::now();
+        let resp_start = std::time::Instant::now();
 
         println!("Waiting for response (timeout: {}s)...", args.timeout);
 
         loop {
-            if start.elapsed() >= timeout {
+            if resp_start.elapsed() >= timeout {
                 eprintln!("Error: timeout waiting for response after {}s", args.timeout);
                 return 1;
             }

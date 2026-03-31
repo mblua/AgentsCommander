@@ -309,16 +309,18 @@ impl MailboxPoller {
             }
         }
 
-        // Deliver based on mode
-        let mode = if msg.mode.is_empty() { "queue" } else { msg.mode.as_str() };
+        // Deliver based on mode — all modes require immediate delivery or rejection
+        let mode = if msg.mode.is_empty() { "wake" } else { msg.mode.as_str() };
         match mode {
-            "queue" => self.deliver_queue(app, &msg).await?,
             "active-only" => self.deliver_active_only(app, &msg).await?,
             "wake" => self.deliver_wake(app, &msg).await?,
             "wake-and-sleep" => self.deliver_wake_and_sleep(app, &msg).await?,
             _ => {
-                log::warn!("Unknown delivery mode '{}', falling back to queue", mode);
-                self.deliver_queue(app, &msg).await?;
+                return self.reject_message(
+                    path,
+                    &msg,
+                    &format!("Unsupported delivery mode '{}'. Valid: active-only, wake, wake-and-sleep", mode),
+                ).await;
             }
         }
 
@@ -326,34 +328,7 @@ impl MailboxPoller {
         self.move_to_delivered(path, &msg).await
     }
 
-    /// Deliver mode: queue — write to destination's inbox directory.
-    async fn deliver_queue(&self, app: &tauri::AppHandle, msg: &OutboxMessage) -> Result<(), String> {
-        log::info!("[mailbox] Delivering {} via QUEUE to {}", msg.id, msg.to);
-        let dest_inbox = self.resolve_inbox_dir(&msg.to, app).await?;
-        std::fs::create_dir_all(&dest_inbox)
-            .map_err(|e| format!("Failed to create inbox dir: {}", e))?;
-
-        let inbox_path = dest_inbox.join(format!("{}.json", msg.id));
-        let json = serde_json::to_string_pretty(msg)
-            .map_err(|e| format!("Failed to serialize message: {}", e))?;
-        std::fs::write(&inbox_path, json)
-            .map_err(|e| format!("Failed to write inbox message: {}", e))?;
-
-        log::info!("Delivered message {} to {} (queue)", msg.id, msg.to);
-        let _ = tauri::Emitter::emit(
-            app,
-            "message_delivered",
-            serde_json::json!({
-                "id": msg.id,
-                "from": msg.from,
-                "to": msg.to,
-                "mode": "queue"
-            }),
-        );
-        Ok(())
-    }
-
-    /// Deliver mode: active-only — inject into PTY if agent is active and not idle, else queue.
+    /// Deliver mode: active-only — inject into PTY if agent is active and not idle, else reject.
     async fn deliver_active_only(&self, app: &tauri::AppHandle, msg: &OutboxMessage) -> Result<(), String> {
         if let Some(session_id) = self.find_active_session(app, &msg.to).await {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -370,11 +345,11 @@ impl MailboxPoller {
                 if !s.waiting_for_input && matches!(s.status, SessionStatus::Active | SessionStatus::Running) {
                     return self.inject_into_pty(app, session_id, msg, true).await;
                 }
-                log::info!("[mailbox] active-only: conditions not met, falling back to queue");
+                log::info!("[mailbox] active-only: conditions not met, rejecting");
+                return Err("Destination agent session is not active or is waiting for input".to_string());
             }
         }
-        // Fallback to queue
-        self.deliver_queue(app, msg).await
+        Err("No active session found for destination agent".to_string())
     }
 
     /// Deliver mode: wake — inject into PTY if agent is idle (waiting for input), else queue.
@@ -393,13 +368,13 @@ impl MailboxPoller {
                 if s.waiting_for_input {
                     return self.inject_into_pty(app, session_id, msg, true).await;
                 }
-                log::info!("[mailbox] wake: session not idle, falling back to queue");
+                log::info!("[mailbox] wake: session not idle, rejecting");
+                return Err("Destination agent session is active but not idle (waiting for input)".to_string());
             } else {
                 log::warn!("[mailbox] wake: session {} not in list_sessions", session_id);
             }
         }
-        // Fallback to queue
-        self.deliver_queue(app, msg).await
+        Err("No active session found for destination agent".to_string())
     }
 
     /// Deliver mode: wake-and-sleep — spawn temporary session if needed, inject, wait for idle, kill.
@@ -417,8 +392,8 @@ impl MailboxPoller {
                     return self.inject_into_pty(app, session_id, msg, true).await;
                 }
             }
-            // Session exists but is busy — queue instead
-            return self.deliver_queue(app, msg).await;
+            // Session exists but is busy — reject
+            return Err("Destination agent session exists but is busy (not idle)".to_string());
         }
 
         // No active session — need to spawn a temporary one.
@@ -512,14 +487,12 @@ impl MailboxPoller {
                 }
                 Err(e) => {
                     log::warn!("wake-and-sleep: failed to spawn temp session: {}", e);
-                    // Fallback to queue
-                    self.deliver_queue(app, msg).await
+                    Err(format!("Failed to spawn temporary session for delivery: {}", e))
                 }
             }
         } else {
-            // No agent command resolved — queue
-            log::warn!("wake-and-sleep: no agent command found for {}, falling back to queue", msg.to);
-            self.deliver_queue(app, msg).await
+            log::warn!("wake-and-sleep: no agent command found for {}", msg.to);
+            Err(format!("No agent command resolved for '{}' — cannot spawn temporary session", msg.to))
         }
     }
 
@@ -620,14 +593,6 @@ impl MailboxPoller {
         }
         log::warn!("[mailbox] No session matched for '{}'", agent_name);
         None
-    }
-
-    /// Resolve the inbox directory for a destination agent.
-    async fn resolve_inbox_dir(&self, agent_name: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
-        if let Some(path) = self.resolve_repo_path(agent_name, app).await {
-            return Ok(PathBuf::from(path).join(".agentscommander").join("inbox"));
-        }
-        Err(format!("{} '{}'", ERR_UNRESOLVABLE_AGENT, agent_name))
     }
 
     /// Resolve the full filesystem path for an agent name.
@@ -770,7 +735,12 @@ impl MailboxPoller {
         std::fs::create_dir_all(&rejected_dir)
             .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
 
-        // Strip token
+        // Write reason file FIRST — the CLI polls for this file to detect rejection
+        let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
+        std::fs::write(&reason_path, reason)
+            .map_err(|_| "Failed to write reason file".to_string())?;
+
+        // Then write the stripped message JSON
         let mut stripped = msg.clone();
         stripped.token = None;
 
@@ -779,11 +749,6 @@ impl MailboxPoller {
             .map_err(|e| format!("Failed to serialize: {}", e))?;
         std::fs::write(&dest, json)
             .map_err(|e| format!("Failed to write rejected file: {}", e))?;
-
-        // Write reason
-        let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
-        std::fs::write(&reason_path, reason)
-            .map_err(|_| "Failed to write reason file".to_string())?;
 
         // Remove original
         std::fs::remove_file(path)
