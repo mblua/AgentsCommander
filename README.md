@@ -155,6 +155,27 @@ The `agentscommander` binary doubles as a CLI for agent-to-agent operations. Ava
 agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message "..." --mode wake
 ```
 
+All messages are delivered synchronously — the CLI validates routing, delivers, and confirms before exiting. There is no background queue.
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--token` | No | Session token for authentication |
+| `--root` | Yes | Sender's root directory (used to derive agent name) |
+| `--to` | Yes | Destination agent name (e.g., `"0_repos/project_x"`) |
+| `--message` | Yes | Message body |
+| `--mode` | No | Delivery mode: `wake` (default), `active-only`, `wake-and-sleep` |
+| `--get-output` | No | Wait for and return the agent's response |
+| `--timeout` | No | Timeout in seconds for `--get-output` (default: 300) |
+
+**Delivery modes:**
+- `wake` — Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.
+- `active-only` — Inject into PTY if the destination agent is actively running (not idle). Reject otherwise.
+- `wake-and-sleep` — Spawn a temporary session for the destination agent, inject the message, and destroy the session when done. Reject if the agent cannot be spawned.
+
+**Exit codes:** `0` = message delivered and confirmed, `1` = routing rejected, delivery failed, or timeout.
+
+**Pre-validation:** Before delivery, the CLI validates that the sender can reach the destination based on team membership and coordinator rules (`teams.json`). If routing would reject the message, the CLI fails immediately without writing to the outbox.
+
 ### `list-peers` — List available peers
 
 ```bash
