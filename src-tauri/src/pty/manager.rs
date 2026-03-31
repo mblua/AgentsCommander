@@ -52,6 +52,33 @@ struct PtyOutputPayload {
     data: Vec<u8>,
 }
 
+/// Strip ANSI CSI escape sequences (ESC [ ... final_byte) so that
+/// marker detection is not fooled by terminal color/cursor codes.
+fn strip_ansi_csi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next(); // skip '['
+                // Skip parameter/intermediate bytes until final byte (0x40..=0x7E)
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            } else {
+                // Non-CSI two-byte escape (e.g. ESC c, ESC M): consume argument byte
+                chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 impl PtyManager {
     pub fn new(output_senders: OutputSenderMap, idle_detector: Arc<IdleDetector>, git_watcher: Arc<GitWatcher>, transcript: TranscriptWriter) -> Self {
         Self {
@@ -179,7 +206,7 @@ impl PtyManager {
                             let scan_text = format!("{}{}", acrc_tail, text);
                             let has_standalone_marker = scan_text
                                 .lines()
-                                .any(|line| line.trim() == "%%ACRC%%");
+                                .any(|line| strip_ansi_csi(line).trim() == "%%ACRC%%");
                             if has_standalone_marker {
                                 let already_pending = acrc_pending.lock()
                                     .map(|mut set| !set.insert(id))
@@ -203,7 +230,13 @@ impl PtyManager {
                                 None => {
                                     let combined = format!("{}{}", acrc_tail, text);
                                     if combined.len() > 512 {
-                                        combined[combined.len() - 512..].to_string()
+                                        // Find nearest valid char boundary to avoid
+                                        // panicking on multi-byte UTF-8 sequences.
+                                        let target = combined.len() - 512;
+                                        let start = (target..combined.len())
+                                            .find(|&i| combined.is_char_boundary(i))
+                                            .unwrap_or(0);
+                                        combined[start..].to_string()
                                     } else {
                                         combined
                                     }
