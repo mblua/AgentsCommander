@@ -58,6 +58,7 @@ pub async fn create_session_inner(
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
     let cmd_basenames: Vec<String> = full_cmd.split_whitespace().map(|t| executable_basename(t)).collect();
     let is_claude = cmd_basenames.iter().any(|b| b == "claude");
+    let is_codex = cmd_basenames.iter().any(|b| b == "codex");
 
     // Auto-inject --continue for Claude agents with prior sessions in this repo
     if is_claude {
@@ -112,6 +113,17 @@ pub async fn create_session_inner(
             }
             Err(e) => {
                 log::warn!("Failed to ensure AgentsCommanderContext.md: {}. Falling back to PTY injection.", e);
+                false
+            }
+        }
+    } else if is_codex {
+        match crate::config::session_context::ensure_codex_context() {
+            Ok(()) => {
+                log::info!("Injected developer_instructions into ~/.codex/config.toml for Codex session");
+                true
+            }
+            Err(e) => {
+                log::warn!("Failed to inject Codex context: {}. Falling back to PTY injection.", e);
                 false
             }
         }
