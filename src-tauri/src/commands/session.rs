@@ -42,7 +42,6 @@ pub async fn create_session_inner(
     }
 
     let id = session.id;
-    let token = session.token;
 
     // Auto-detect agent from shell command if not explicitly provided
     let (agent_id, agent_label) = if agent_id.is_some() {
@@ -94,7 +93,7 @@ pub async fn create_session_inner(
     }
 
     // Auto-inject --append-system-prompt-file for Claude sessions (global static file)
-    let context_file_injected = if is_claude {
+    if is_claude {
         match crate::config::session_context::ensure_global_context() {
             Ok(context_path) => {
                 if executable_basename(&shell) == "cmd" {
@@ -109,27 +108,24 @@ pub async fn create_session_inner(
                     shell_args.push(context_path);
                     log::info!("Injected --append-system-prompt-file for Claude session");
                 }
-                true
             }
             Err(e) => {
-                log::warn!("Failed to ensure AgentsCommanderContext.md: {}. Falling back to PTY injection.", e);
-                false
+                log::warn!("Failed to ensure AgentsCommanderContext.md: {}", e);
             }
         }
-    } else if is_codex {
+    }
+
+    // Auto-inject developer_instructions for Codex sessions (global user config)
+    if is_codex {
         match crate::config::session_context::ensure_codex_context() {
             Ok(()) => {
                 log::info!("Injected developer_instructions into ~/.codex/config.toml for Codex session");
-                true
             }
             Err(e) => {
-                log::warn!("Failed to inject Codex context: {}. Falling back to PTY injection.", e);
-                false
+                log::warn!("Failed to inject Codex context: {}", e);
             }
         }
-    } else {
-        false
-    };
+    }
 
     pty_mgr
         .lock()
@@ -151,57 +147,10 @@ pub async fn create_session_inner(
         }
     }
 
-    // Inject init prompt for agent sessions so they know their token.
-    // Skip for plain interactive shells and Claude sessions with context file.
-    let shell_lower = shell.to_lowercase();
-    let is_interactive_shell = ["powershell", "pwsh", "cmd", "bash", "zsh", "sh", "wsl", "nu"]
-        .iter()
-        .any(|s| shell_lower == *s || shell_lower.ends_with(&format!("/{}", s)) || shell_lower.ends_with(&format!("\\{}", s)));
-
-    let skip_init_prompt = is_interactive_shell || context_file_injected;
-    let cwd_for_init = cwd.clone();
-    let app_clone = app.clone();
-    if is_interactive_shell {
-        log::debug!("Skipping init prompt for interactive shell '{}'", shell);
-    } else if context_file_injected {
-        log::debug!("Skipping init prompt for Claude (using --append-system-prompt-file)");
-    }
-    tauri::async_runtime::spawn(async move {
-        if skip_init_prompt {
-            return;
-        }
-        // Wait for the agent CLI to boot (3s covers most agents)
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        let binary_path = crate::resolve_bin_label();
-
-        let init_prompt = format!(
-            concat!(
-                "\n",
-                "# === AgentsCommander Session Init ===\n",
-                "# Your session token: {token}\n",
-                "# Your agent root: {root}\n",
-                "#\n",
-                "# Send a message to another agent (fire-and-forget, do NOT use --get-output):\n",
-                "#   \"{bin}\" send --token {token} --root \"{root}\" --to \"<agent_name>\" --message \"...\" --mode wake\n",
-                "#\n",
-                "# The other agent will reply back via your console as a new message.\n",
-                "# Do NOT use --get-output — it blocks and is only for non-interactive sessions.\n",
-                "# After sending, you can stay idle and wait for the reply to arrive.\n",
-                "#\n",
-                "# List available peers:\n",
-                "#   \"{bin}\" list-peers --token {token} --root \"{root}\"\n",
-                "# === End Session Init ===\n",
-            ),
-            token = token,
-            bin = binary_path,
-            root = cwd_for_init,
-        );
-
-        if let Err(e) = crate::pty::inject::inject_text_into_session(&app_clone, id, &init_prompt, true, crate::pty::transcript::InjectReason::InitPrompt, None).await {
-            log::warn!("Failed to inject init prompt for session {}: {}", id, e);
-        }
-    });
+    // Init prompt via PTY injection is deprecated — agent context is now delivered via:
+    // - Claude: --append-system-prompt-file (AgentsCommanderContext.md)
+    // - Codex: developer_instructions in ~/.codex/config.toml
+    // Agents request their session token on demand via the %%ACRC%% marker.
 
     Ok(info)
 }
