@@ -6,12 +6,21 @@ use std::path::{Path, PathBuf};
 use crate::config::dark_factory::{AgentLocalConfig, CodingAgentEntry};
 
 #[derive(Args)]
+#[command(after_help = "\
+OUTPUT: JSON array of reachable peers. Each entry contains:\n  \
+  name              Agent name to use with `send --to` (e.g., \"repos/my-project\")\n  \
+  path              Full filesystem path to the agent's root directory\n  \
+  status            \"active\" if the agent has a running session, \"unknown\" otherwise\n  \
+  role              Summary extracted from the agent's CLAUDE.md\n  \
+  teams             List of shared team names\n  \
+  lastCodingAgent   Last coding CLI used (e.g., \"claude\", \"codex\"), if known\n\n\
+Only agents that share a team with you are listed. If you have no teams, the result is an empty array.")]
 pub struct ListPeersArgs {
-    /// Session token for authentication
+    /// Session token for authentication (from '# === Session Credentials ===' block)
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory (required)
+    /// Agent root directory (required). Your working directory — used to identify you and your teams
     #[arg(long)]
     pub root: Option<String>,
 }

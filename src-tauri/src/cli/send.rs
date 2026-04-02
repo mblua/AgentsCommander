@@ -7,45 +7,62 @@ use crate::config::dark_factory;
 use crate::phone::manager::can_communicate;
 
 #[derive(Args)]
+#[command(after_help = "\
+DELIVERY MODES:\n  \
+  wake            Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.\n  \
+  active-only     Inject into PTY if the destination agent is actively running (not idle). Reject otherwise.\n  \
+  wake-and-sleep  Spawn a temporary session for the destination agent, inject the message, destroy when done.\n\n\
+ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
+membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
+DISCOVERY: Use `list-peers` to get valid agent names for --to. The \"name\" field in the JSON output \
+is the value to use.\n\n\
+QUOTING: If your message contains quotes, special characters, or spans multiple lines, use --message-file \
+instead of --message. Write the message to a temporary file and pass its path. This avoids shell parsing \
+issues, especially in PowerShell.")]
 pub struct SendArgs {
-    /// Session token for authentication
+    /// Session token for authentication (from '# === Session Credentials ===' block)
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Destination agent name (e.g., "0_repos/project_x")
+    /// Destination agent name (e.g., "repos/my-project"). Use `list-peers` to discover valid names
     #[arg(long)]
     pub to: String,
 
-    /// Message body (required unless --command is used)
+    /// Message body. Required unless --command or --message-file is used
     #[arg(long, default_value = "")]
     pub message: String,
 
-    /// Delivery mode: active-only, wake, wake-and-sleep
+    /// Path to a file containing the message body. Shell-safe alternative to --message:
+    /// avoids quoting issues in PowerShell and other shells. Takes priority over --message
+    #[arg(long)]
+    pub message_file: Option<String>,
+
+    /// Delivery mode (see DELIVERY MODES below)
     #[arg(long, default_value = "wake")]
     pub mode: String,
 
-    /// Wait for and return the agent's response
+    /// Wait for and return the agent's response (blocks until reply or --timeout)
     #[arg(long)]
     pub get_output: bool,
 
-    /// Remote command to execute on the agent's PTY (e.g., "clear", "compact")
+    /// Remote command to execute on the agent's PTY [possible values: clear, compact].
+    /// The agent must be idle. Cannot be combined with --message
     #[arg(long)]
     pub command: Option<String>,
 
-    /// Agent CLI to use for wake-and-sleep (default: auto)
+    /// Agent CLI to use for wake-and-sleep mode
     #[arg(long, default_value = "auto")]
     pub agent: String,
 
-    /// Timeout in seconds for --get-output (default: 300)
+    /// Timeout in seconds for --get-output
     #[arg(long, default_value = "300")]
     pub timeout: u64,
 
-    /// Agent root directory (required)
+    /// Agent root directory (required). Your working directory — used to derive your agent name
     #[arg(long)]
     pub root: Option<String>,
 
-    /// Write message to a specific outbox directory (e.g., app-outbox path)
-    /// instead of <root>/.agentscommander/outbox/
+    /// Write message to a specific outbox directory instead of <root>/.agentscommander/outbox/
     #[arg(long)]
     pub outbox: Option<String>,
 }
@@ -128,9 +145,22 @@ pub fn execute(args: SendArgs) -> i32 {
         return 1;
     }
 
-    // Require at least --message or --command
-    if args.message.is_empty() && args.command.is_none() {
-        eprintln!("Error: --message or --command is required");
+    // Resolve message body: --message-file takes priority over --message
+    let message_body = if let Some(ref file_path) = args.message_file {
+        match std::fs::read_to_string(file_path) {
+            Ok(content) => content.trim_end().to_string(),
+            Err(e) => {
+                eprintln!("Error: failed to read message file '{}': {}", file_path, e);
+                return 1;
+            }
+        }
+    } else {
+        args.message.clone()
+    };
+
+    // Require at least --message/--message-file or --command
+    if message_body.is_empty() && args.command.is_none() {
+        eprintln!("Error: --message, --message-file, or --command is required");
         return 1;
     }
 
@@ -159,7 +189,7 @@ pub fn execute(args: SendArgs) -> i32 {
         token: args.token,
         from: sender.clone(),
         to: args.to.clone(),
-        body: args.message,
+        body: message_body,
         mode: args.mode,
         get_output: args.get_output,
         request_id: request_id.clone(),

@@ -7,6 +7,12 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "agentscommander")]
 #[command(about = "Agent terminal session manager with inter-agent messaging")]
+#[command(after_help = "\
+TOKEN: Your session token is injected into your console as a '# === Session Credentials ===' block \
+when your session starts. If it expires, any failed `send` triggers an automatic token refresh.\n\n\
+EXIT CODES: All subcommands return 0 on success, 1 on error.\n\n\
+AGENT NAMES: Agents are identified by their path-based name (e.g., \"repos/my-project\"). \
+Use `list-peers` to discover valid agent names before sending messages.")]
 pub struct Cli {
     /// Launch the GUI application
     #[arg(long)]
@@ -20,7 +26,7 @@ pub struct Cli {
 pub enum Commands {
     /// Send a message to another agent
     Send(send::SendArgs),
-    /// List available peers for messaging
+    /// List reachable peers (returns JSON array with name, status, role, teams)
     ListPeers(list_peers::ListPeersArgs),
     /// Create a new agent: folder + CLAUDE.md, optionally launch it
     CreateAgent(create_agent::CreateAgentArgs),

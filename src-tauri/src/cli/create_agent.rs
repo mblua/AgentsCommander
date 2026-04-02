@@ -5,17 +5,25 @@ use std::path::PathBuf;
 use crate::config;
 
 #[derive(Args)]
+#[command(after_help = "\
+WHAT IT DOES:\n  \
+  1. Creates <parent>/<name>/ directory\n  \
+  2. Writes CLAUDE.md with: \"You are the agent <parentFolder>/<name>\"\n  \
+  3. If --launch is given, writes a session request that the running app picks up (~3s)\n\n\
+OUTPUT: JSON object with fields: agentPath, agentName, claudeMd, launched, launchAgent.\n\n\
+The agent name is derived as \"<last component of parent>/<name>\" (e.g., parent=\"C:\\repos\" + \
+name=\"MyBot\" → \"repos/MyBot\"). This is the name other agents will use with `send --to`.")]
 pub struct CreateAgentArgs {
     /// Parent directory where the agent folder will be created
     #[arg(long)]
     pub parent: String,
 
-    /// Name of the agent (will become a folder inside --parent)
+    /// Name of the agent (becomes a subfolder inside --parent, and part of the agent name)
     #[arg(long)]
     pub name: String,
 
     /// Coding agent to launch after creation (e.g., "claude", "codex").
-    /// If omitted, the folder is created but no session is started.
+    /// Must match an agent id or label from settings.json. If omitted, the folder is created but no session is started
     #[arg(long)]
     pub launch: Option<String>,
 

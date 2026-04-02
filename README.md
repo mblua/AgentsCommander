@@ -155,6 +155,9 @@ The `agentscommander` binary doubles as a CLI for agent-to-agent operations. Ava
 # Send a message
 agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message "..." --mode wake
 
+# Send a message from file (avoids shell quoting issues — recommended for PowerShell)
+agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message-file /path/to/msg.txt --mode wake
+
 # Send a remote command (clear or compact)
 agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --command clear --mode wake
 ```
@@ -165,14 +168,17 @@ All messages are delivered synchronously — the CLI validates routing, delivers
 |------|----------|-------------|
 | `--token` | No | Session token for authentication |
 | `--root` | Yes | Sender's root directory (used to derive agent name) |
-| `--to` | Yes | Destination agent name (e.g., `"0_repos/project_x"`) |
+| `--to` | Yes | Destination agent name (e.g., `"repos/my-project"`) |
 | `--message` | No* | Message body |
+| `--message-file` | No* | Path to a file containing the message body (avoids shell quoting issues) |
 | `--command` | No* | Remote command to execute (whitelist: `clear`, `compact`) |
 | `--mode` | No | Delivery mode: `wake` (default), `active-only`, `wake-and-sleep` |
 | `--get-output` | No | Wait for and return the agent's response |
 | `--timeout` | No | Timeout in seconds for `--get-output` (default: 300) |
 
-*Either `--message` or `--command` is required (mutually exclusive).
+*At least one of `--message`, `--message-file`, or `--command` is required.
+
+**`--message-file`** is the recommended alternative to `--message` when the message body contains quotes, apostrophes, special characters, or spans multiple lines. It reads the message from a file, bypassing shell quoting entirely. This is especially useful for agents running under PowerShell (e.g., Codex CLI), where `--message` strings with quotes break argument parsing. If both `--message` and `--message-file` are provided, `--message-file` takes priority.
 
 **Remote commands** (`--command`) inject a slash command (e.g. `/clear`) directly into the agent's PTY. The destination agent must be idle (green circle in the sidebar) — the command is rejected otherwise.
 

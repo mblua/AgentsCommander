@@ -136,6 +136,20 @@ You are running inside an AgentsCommander session — a terminal session manager
 "$LOCALAPPDATA/Agents Commander/agentscommander.exe"
 ```
 
+## Self-discovery via --help
+
+The CLI `--help` output is the **primary and authoritative reference** for learning how to use AgentsCommander. Before guessing flags, modes, or behavior, always consult it:
+
+```
+agentscommander.exe --help                  # List all subcommands
+agentscommander.exe send --help             # Full docs for sending messages
+agentscommander.exe list-peers --help       # Full docs for discovering peers
+```
+
+The `--help` text documents every flag, its purpose, accepted values, priority rules, delivery modes, and discovery flows. It is designed to be self-contained — you should not need README, CLAUDE.md, or external docs to use any command correctly.
+
+**RULE:** When in doubt about how a command works, run `--help` first. The examples below are a quick-start — `--help` is the complete reference.
+
 ## Session credentials
 
 Your session token and agent root are provided on demand. To request them, output the marker:
