@@ -6,7 +6,6 @@ import {
   PtyAPI,
   SessionAPI,
   onPtyOutput,
-  onPtyResized,
   onSessionDestroyed,
 } from "../../shared/ipc";
 import { isBrowser } from "../../shared/platform";
@@ -26,7 +25,6 @@ const TerminalView: Component = () => {
   let activeSessionId: string | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let unlistenPtyOutput: UnlistenFn | null = null;
-  let unlistenPtyResized: UnlistenFn | null = null;
   let unlistenSessionDestroyed: UnlistenFn | null = null;
 
   const terminals = new Map<string, SessionTerminal>();
@@ -45,9 +43,6 @@ const TerminalView: Component = () => {
   };
 
   const scheduleViewportSync = (sessionId: string) => {
-    // Browser mode doesn't use fitAddon — dimensions are locked to PTY size
-    if (isBrowser) return;
-
     requestAnimationFrame(() => {
       if (sessionId !== activeSessionId) {
         return;
@@ -184,10 +179,7 @@ const TerminalView: Component = () => {
       }
 
       terminalStore.setTermSize(cols, rows);
-      // Browser is a read-only mirror — never resize the actual PTY
-      if (!isBrowser) {
-        void PtyAPI.resize(sessionId, cols, rows);
-      }
+      void PtyAPI.resize(sessionId, cols, rows);
     });
 
     terminals.set(sessionId, entry);
@@ -209,14 +201,14 @@ const TerminalView: Component = () => {
     next.terminal.focus();
 
     if (isBrowser) {
-      // Browser mode: subscribe to get the snapshot + PTY dimensions,
-      // then resize xterm to match PTY exactly. Content fills the
-      // terminal with zero black space because dimensions match.
+      // Browser mode: fit xterm to fill the container, resize the PTY
+      // to match. Claude Code redraws for the new size — content fills
+      // the terminal naturally with zero black space.
       requestAnimationFrame(() => {
-        if (sessionId !== activeSessionId) return;
-        PtyAPI.subscribe(sessionId).then((size) => {
-          if (sessionId !== activeSessionId || !size) return;
-          next.terminal.resize(size.cols, size.rows);
+        syncViewport(sessionId);
+        requestAnimationFrame(() => {
+          if (sessionId !== activeSessionId) return;
+          PtyAPI.subscribe(sessionId);
         });
       });
     } else {
@@ -244,7 +236,7 @@ const TerminalView: Component = () => {
       }
 
       entry.terminal.write(new Uint8Array(data), () => {
-        if (sessionId === activeSessionId && !isBrowser) {
+        if (sessionId === activeSessionId) {
           entry.terminal.scrollToBottom();
         }
       });
@@ -253,15 +245,6 @@ const TerminalView: Component = () => {
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {
       disposeSessionTerminal(id);
     });
-
-    if (isBrowser) {
-      unlistenPtyResized = await onPtyResized(({ sessionId, rows, cols }) => {
-        const entry = terminals.get(sessionId);
-        if (entry) {
-          entry.terminal.resize(cols, rows);
-        }
-      });
-    }
   });
 
   createEffect(() => {
@@ -283,7 +266,6 @@ const TerminalView: Component = () => {
 
   onCleanup(() => {
     unlistenPtyOutput?.();
-    unlistenPtyResized?.();
     unlistenSessionDestroyed?.();
     resizeObserver?.disconnect();
 
