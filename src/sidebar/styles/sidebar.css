@@ -56,7 +56,7 @@ html, body, #root {
   display: inline-block;
   padding: 1px 5px;
   background: rgba(0, 180, 255, 0.15);
-  color: #00b4ff;
+  color: var(--sidebar-accent);
   font-size: 8px;
   font-weight: 700;
   letter-spacing: 0.5px;
@@ -69,7 +69,7 @@ html, body, #root {
   padding: 1px 5px;
   margin-left: 6px;
   background: rgba(0, 180, 255, 0.15);
-  color: #00b4ff;
+  color: var(--sidebar-accent);
   font-size: 8px;
   font-weight: 700;
   letter-spacing: 0.5px;
@@ -266,7 +266,7 @@ html, body, #root {
 }
 
 .session-list-container::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--sidebar-border);
   border-radius: 2px;
 }
 
@@ -282,13 +282,13 @@ html, body, #root {
   padding: 6px var(--spacing-md);
   cursor: pointer;
   user-select: none;
-  background: rgba(255, 255, 255, 0.02);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  background: var(--sidebar-hover);
+  border-bottom: 1px solid var(--sidebar-border);
   transition: background var(--transition-fast);
 }
 
 .team-group-header:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--sidebar-active);
 }
 
 .team-group-chevron {
@@ -348,7 +348,7 @@ html, body, #root {
 
 .team-group-ungrouped {
   margin-top: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-top: 1px solid var(--sidebar-border);
   padding-top: 4px;
 }
 
@@ -389,7 +389,7 @@ html, body, #root {
 }
 
 .session-item.active .session-item-name {
-  color: #ffffff;
+  color: var(--sidebar-fg);
 }
 
 /* Extended name: dim the parent/prefix, highlight the repo name */
@@ -401,10 +401,10 @@ html, body, #root {
 /* Inline rename input */
 .session-item-rename-input {
   width: 100%;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--sidebar-hover);
   border: 1px solid var(--sidebar-accent);
   border-radius: var(--radius-sm);
-  color: #ffffff;
+  color: var(--sidebar-fg);
   font-family: var(--font-ui);
   font-size: var(--font-size-md);
   font-weight: 500;
@@ -472,13 +472,13 @@ html, body, #root {
   letter-spacing: 0.5px;
   padding: 1px 4px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--sidebar-border);
   color: var(--sidebar-fg-dim);
   opacity: 0.4;
 }
 .agent-badge.running {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--sidebar-hover);
   color: var(--sidebar-fg);
 }
 
@@ -603,7 +603,7 @@ html, body, #root {
 }
 
 .toolbar-gear-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--sidebar-hover);
   color: var(--sidebar-fg);
 }
 
@@ -660,7 +660,7 @@ html, body, #root {
 }
 
 .modal-close:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--sidebar-hover);
   color: var(--sidebar-fg);
 }
 
@@ -678,7 +678,7 @@ html, body, #root {
 }
 
 .modal-body::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--sidebar-border);
   border-radius: 2px;
 }
 
@@ -715,7 +715,7 @@ html, body, #root {
 }
 
 .modal-btn-cancel:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--sidebar-hover);
 }
 
 .modal-btn-save {
@@ -940,7 +940,7 @@ html, body, #root {
   gap: 5px;
   padding: var(--spacing-xs) var(--spacing-sm);
   border: 1px solid var(--sidebar-border);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--sidebar-hover);
   color: var(--sidebar-fg);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
@@ -1107,13 +1107,13 @@ html, body, #root {
 
 .session-item-voice-indicator .voice-execute-text {
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--sidebar-fg-dim);
 }
 
 .session-item-voice-indicator .voice-cancel-execute {
   font-size: 9px;
-  color: rgba(255, 255, 255, 0.5);
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--sidebar-fg-dim);
+  background: var(--sidebar-hover);
   border: none;
   border-radius: var(--radius-sm);
   padding: 1px 5px;
@@ -1260,7 +1260,7 @@ html, body, #root {
   position: absolute;
   right: 0;
   top: 100%;
-  background: #0e0e18;
+  background: var(--sidebar-surface);
   border: 1px solid var(--sidebar-border);
   border-radius: var(--radius-md);
   padding: var(--spacing-xs) 0;
@@ -1291,7 +1291,7 @@ html, body, #root {
 /* Context menu on session item (right-click) */
 .session-context-menu {
   position: fixed;
-  background: #0e0e18;
+  background: var(--sidebar-surface);
   border: 1px solid var(--sidebar-border);
   border-radius: var(--radius-md);
   padding: var(--spacing-xs) 0;
@@ -1332,7 +1332,7 @@ html, body, #root {
 .settings-test-btn {
   padding: var(--spacing-xs) var(--spacing-md);
   border: 1px solid var(--sidebar-border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--sidebar-hover);
   color: var(--sidebar-fg);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
@@ -1431,7 +1431,7 @@ html, body, #root {
 }
 
 .settings-select option {
-  background: #0e0e18;
+  background: var(--sidebar-surface);
   color: var(--sidebar-fg);
 }
 
@@ -1456,7 +1456,7 @@ html, body, #root {
 .df-team-count {
   font-size: 10px;
   color: var(--sidebar-fg-dim);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--sidebar-hover);
   padding: 1px 6px;
   border-radius: 8px;
 }
@@ -1473,11 +1473,11 @@ html, body, #root {
   gap: var(--spacing-sm);
   padding: 3px var(--spacing-sm);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--sidebar-hover);
 }
 
 .df-member-row:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--sidebar-active);
 }
 
 .df-member-name {
@@ -1538,7 +1538,7 @@ html, body, #root {
 }
 
 .df-repo-result-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--sidebar-hover);
 }
 
 .df-repo-result-item:disabled {
@@ -1582,7 +1582,7 @@ html, body, #root {
   gap: 8px;
   padding: 6px 8px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--sidebar-hover);
   margin-bottom: 4px;
 }
 
@@ -1619,7 +1619,7 @@ html, body, #root {
 
 .df-layer-btn:hover:not(:disabled) {
   color: var(--sidebar-fg);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--sidebar-hover);
 }
 
 .df-layer-btn:disabled {
@@ -1661,7 +1661,7 @@ html, body, #root {
 
 /* ===== Open Agent Modal ===== */
 .agent-modal {
-  background: #0c0c16;
+  background: var(--sidebar-surface);
   border: 1px solid rgba(0, 212, 255, 0.15);
   border-radius: 10px;
   width: 94%;
@@ -1686,7 +1686,7 @@ html, body, #root {
 }
 
 .agent-modal-title strong {
-  color: #ffffff;
+  color: var(--sidebar-fg);
 }
 
 .agent-back-btn {
@@ -1717,10 +1717,10 @@ html, body, #root {
 
 .agent-search-input {
   width: 100%;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--sidebar-hover);
   border: 1px solid rgba(0, 212, 255, 0.2);
   border-radius: var(--radius-md);
-  color: #ffffff;
+  color: var(--sidebar-fg);
   font-family: var(--font-ui);
   font-size: var(--font-size-md);
   padding: var(--spacing-sm) var(--spacing-md);
@@ -1766,7 +1766,7 @@ html, body, #root {
 }
 
 .agent-modal-list::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--sidebar-border);
   border-radius: 2px;
 }
 
@@ -1811,7 +1811,7 @@ html, body, #root {
 }
 
 .agent-modal-item.highlighted .agent-modal-item-name {
-  color: #ffffff;
+  color: var(--sidebar-fg);
 }
 
 .agent-modal-item-detail {
@@ -1927,7 +1927,7 @@ html, body, #root {
 .new-agent-name-row {
   display: flex;
   align-items: center;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--sidebar-hover);
   border: 1px solid rgba(0, 212, 255, 0.2);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -1988,7 +1988,7 @@ html, body, #root {
 }
 
 .new-agent-cancel-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--sidebar-hover);
   color: var(--sidebar-fg);
 }
 
