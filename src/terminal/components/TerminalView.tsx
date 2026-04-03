@@ -195,7 +195,10 @@ const TerminalView: Component = () => {
       }
 
       terminalStore.setTermSize(cols, rows);
-      void PtyAPI.resize(sessionId, cols, rows);
+      // Browser is a read-only mirror — never resize the actual PTY
+      if (!isBrowser) {
+        void PtyAPI.resize(sessionId, cols, rows);
+      }
     });
 
     terminals.set(sessionId, entry);
@@ -245,14 +248,15 @@ const TerminalView: Component = () => {
     next.terminal.focus();
 
     if (isBrowser) {
-      // Browser mode: dimension-locked mirror. Lock xterm to exact PTY
-      // dimensions so all absolute cursor positioning works correctly.
-      // Font size is scaled to fill the container visually.
+      // Browser mode: dimension-locked mirror. Get PTY size and lock
+      // xterm dimensions BEFORE subscribing, so the snapshot renders
+      // at the correct size (the broadcast arrives before the response).
       requestAnimationFrame(() => {
         if (sessionId !== activeSessionId) return;
-        PtyAPI.subscribe(sessionId).then((size) => {
+        PtyAPI.getPtySize(sessionId).then((size) => {
           if (sessionId !== activeSessionId || !size) return;
           lockToPtyDimensions(next, size.rows, size.cols);
+          PtyAPI.subscribe(sessionId);
         });
       });
     } else {
@@ -280,7 +284,9 @@ const TerminalView: Component = () => {
       }
 
       entry.terminal.write(new Uint8Array(data), () => {
-        if (sessionId === activeSessionId) {
+        // Browser mode: dimension-locked mirror has no scrollback to manage.
+        // scrollToBottom would push content off-screen if called before resize.
+        if (sessionId === activeSessionId && !isBrowser) {
           entry.terminal.scrollToBottom();
         }
       });

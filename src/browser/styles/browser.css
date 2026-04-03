@@ -87,6 +87,16 @@
    so the gap falls below the terminal, not above. */
 .browser-terminal .terminal-instance .xterm {
   height: auto !important;
+  padding: 2px 0 0 4px;
+}
+
+/* xterm.js requires content-box for correct cell measurements.
+   The global `* { box-sizing: border-box }` in terminal.css breaks this.
+   The existing override targets .terminal-container which doesn't exist
+   in the browser DOM path (terminal-host > terminal-instance > xterm). */
+.browser-terminal .xterm,
+.browser-terminal .xterm * {
+  box-sizing: content-box;
 }
 
 /* Mobile: stack vertically with horizontal divider */
