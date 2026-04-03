@@ -2262,6 +2262,29 @@ html, body, #root {
   background: var(--toolbar-btn-hover);
 }
 
+/* ===== Toast ===== */
+
+.toast-error {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(220, 50, 50, 0.92);
+  color: #fff;
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  z-index: 2000;
+  pointer-events: none;
+  animation: toast-fade 3s ease-out forwards;
+}
+
+@keyframes toast-fade {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* ===== Toolbar Project Button ===== */
 
 .toolbar-btn-project {

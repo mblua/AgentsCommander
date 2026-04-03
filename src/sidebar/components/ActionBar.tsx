@@ -1,7 +1,8 @@
 import { Component, createSignal, createEffect, onCleanup, Show } from "solid-js";
+import { open } from "@tauri-apps/plugin-dialog";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import { GuideAPI, DarkFactoryWindowAPI } from "../../shared/ipc";
+import { ProjectAPI, GuideAPI, DarkFactoryWindowAPI } from "../../shared/ipc";
 import OpenAgentModal from "./OpenAgentModal";
 import NewAgentModal from "./NewAgentModal";
 import SettingsModal from "./SettingsModal";
@@ -12,6 +13,7 @@ const ActionBar: Component = () => {
   const [showNewAgent, setShowNewAgent] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
   const [confirmPath, setConfirmPath] = createSignal<string | null>(null);
+  const [toastMsg, setToastMsg] = createSignal<string | null>(null);
   const [isLight, setIsLight] = createSignal(true);
   let dropdownRef: HTMLDivElement | undefined;
 
@@ -41,12 +43,20 @@ const ActionBar: Component = () => {
     }
   };
 
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3000);
+  };
+
   const handleOpenProject = async () => {
     setShowDropdown(false);
-    const { picked, hasAcNew } = await projectStore.pickAndCheck();
+    const picked = await open({ directory: true, title: "Select AC Project Folder" });
     if (!picked) return;
-    if (!hasAcNew) {
-      setConfirmPath(picked);
+    const hasAcNew = await ProjectAPI.checkPath(picked);
+    if (hasAcNew) {
+      await projectStore.loadProject(picked);
+    } else {
+      showToast("No AC project found in this folder (.ac-new/ not found)");
     }
   };
 
@@ -142,6 +152,9 @@ const ActionBar: Component = () => {
             </div>
           </div>
         </div>
+      </Show>
+      <Show when={toastMsg()}>
+        <div class="toast-error">{toastMsg()}</div>
       </Show>
     </>
   );

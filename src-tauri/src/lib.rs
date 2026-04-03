@@ -185,6 +185,7 @@ pub fn run() {
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(master_token)
         .manage(app_outbox)
         .manage(session_mgr)

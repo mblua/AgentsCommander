@@ -22,6 +22,8 @@
     "core:event:default",
     "core:event:allow-emit",
     "core:event:allow-listen",
-    "core:webview:allow-set-webview-zoom"
+    "core:webview:allow-set-webview-zoom",
+    "dialog:default",
+    "dialog:allow-open"
   ]
 }
