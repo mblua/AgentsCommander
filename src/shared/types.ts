@@ -229,6 +229,8 @@ export interface AcAgentReplica {
   path: string;
   identityPath?: string;
   preferredAgentId?: string;
+  repoPaths: string[];
+  repoBranch?: string;
 }
 
 export interface AcWorkgroup {

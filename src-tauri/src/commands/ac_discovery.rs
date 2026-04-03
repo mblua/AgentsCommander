@@ -39,6 +39,10 @@ pub struct AcAgentReplica {
     pub identity_path: Option<String>,
     /// Preferred coding agent ID inherited from the identity matrix
     pub preferred_agent_id: Option<String>,
+    /// Absolute paths to repos this replica works on (resolved from config.json "repos")
+    pub repo_paths: Vec<String>,
+    /// Git branch of the first repo (if exactly one repo), for sidebar display
+    pub repo_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +85,34 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
         .trim_start_matches("../")
         .trim_start_matches("./");
     agent_display_name(project_folder, dir_name)
+}
+
+/// Detect git branch synchronously for a given directory path.
+fn detect_git_branch_sync(dir: &str) -> Option<String> {
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(dir);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if branch.is_empty() || branch == "HEAD" {
+                None
+            } else {
+                Some(branch)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Discover AC-new agent matrices from .ac-new/ directories within configured repo paths.
@@ -222,11 +254,37 @@ pub async fn discover_ac_agents(
                                         .and_then(|v| v.get("tooling")?.get("lastCodingAgent")?.as_str().map(String::from))
                                 });
 
+                                // Extract repos from config.json and resolve to absolute paths
+                                let repo_paths: Vec<String> = replica_config.as_ref()
+                                    .and_then(|v| v.get("repos")?.as_array().cloned())
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .filter_map(|r| r.as_str())
+                                    .filter_map(|rel| {
+                                        let resolved = wg_path.join(rel);
+                                        std::fs::canonicalize(&resolved).ok()
+                                            .map(|p| {
+                                                let s = p.to_string_lossy();
+                                                // Strip \\?\ UNC prefix that canonicalize adds on Windows
+                                                s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+                                            })
+                                    })
+                                    .collect();
+
+                                // Detect git branch for single-repo replicas
+                                let repo_branch = if repo_paths.len() == 1 {
+                                    detect_git_branch_sync(&repo_paths[0])
+                                } else {
+                                    None
+                                };
+
                                 wg_agents.push(AcAgentReplica {
                                     name: replica_name,
                                     path: wg_path.to_string_lossy().to_string(),
                                     identity_path,
                                     preferred_agent_id,
+                                    repo_paths,
+                                    repo_branch,
                                 });
                             }
                         }

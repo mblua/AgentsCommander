@@ -31,8 +31,13 @@ const AcDiscoveryPanel: Component = () => {
   };
 
   const handleReplicaClick = (replica: AcAgentReplica, wg: AcWorkgroup) => {
+    // Use the repo path as CWD when exactly 1 repo is assigned,
+    // so the agent launches directly in its working repo
+    const cwd = replica.repoPaths.length === 1
+      ? replica.repoPaths[0]
+      : replica.path;
     SessionAPI.create({
-      cwd: replica.path,
+      cwd,
       sessionName: `${wg.name}/${replica.name}`,
       agentId: replica.preferredAgentId,
     });
@@ -126,20 +131,31 @@ const AcDiscoveryPanel: Component = () => {
                       </Show>
                     </div>
                     <For each={wg.agents}>
-                      {(replica) => (
-                        <div
-                          class="ac-discovery-item"
-                          onClick={() => handleReplicaClick(replica, wg)}
-                          title={replica.path}
-                        >
-                          <div class="ac-discovery-item-info">
-                            <span class="ac-discovery-item-name">{replica.name}</span>
-                            <div class="ac-discovery-badges">
-                              <span class="ac-discovery-badge team">replica</span>
+                      {(replica) => {
+                        const repoCount = () => replica.repoPaths.length;
+                        const branchLabel = () => {
+                          if (repoCount() === 1) return replica.repoBranch ?? "1 repo";
+                          if (repoCount() > 1) return "multi-repo";
+                          return null;
+                        };
+                        return (
+                          <div
+                            class="ac-discovery-item"
+                            onClick={() => handleReplicaClick(replica, wg)}
+                            title={replica.path}
+                          >
+                            <div class="ac-discovery-item-info">
+                              <span class="ac-discovery-item-name">{replica.name}</span>
+                              <div class="ac-discovery-badges">
+                                <Show when={branchLabel()}>
+                                  <span class="ac-discovery-badge branch">{branchLabel()}</span>
+                                </Show>
+                                <span class="ac-discovery-badge team">replica</span>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      )}
+                        );
+                      }}
                     </For>
                   </div>
                 )}

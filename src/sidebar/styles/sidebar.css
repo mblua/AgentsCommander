@@ -2130,6 +2130,12 @@ html, body, #root {
   color: var(--status-exited);
 }
 
+.ac-discovery-badge.branch {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  text-transform: none;
+}
+
 /* Workgroup styles */
 .ac-wg-group {
   margin-bottom: 2px;
