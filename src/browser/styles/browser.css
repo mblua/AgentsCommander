@@ -82,6 +82,13 @@
   min-height: 0;
 }
 
+/* Dimension-locked mirror: xterm canvas may be shorter than the container
+   due to aspect ratio constraints. Let it size to content (top-aligned),
+   so the gap falls below the terminal, not above. */
+.browser-terminal .terminal-instance .xterm {
+  height: auto !important;
+}
+
 /* Mobile: stack vertically with horizontal divider */
 @media (max-width: 600px) {
   .browser-layout {
