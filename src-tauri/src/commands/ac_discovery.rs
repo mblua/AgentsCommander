@@ -345,3 +345,223 @@ pub async fn discover_ac_agents(
 
     Ok(AcDiscoveryResult { agents, teams, workgroups })
 }
+
+/// Check if a folder has a .ac-new/ subdirectory.
+#[tauri::command]
+pub async fn check_project_path(path: String) -> Result<bool, String> {
+    let ac_new = Path::new(&path).join(".ac-new");
+    Ok(ac_new.is_dir())
+}
+
+/// Create a .ac-new/ directory inside the given path.
+#[tauri::command]
+pub async fn create_ac_project(path: String) -> Result<(), String> {
+    let ac_new = Path::new(&path).join(".ac-new");
+    std::fs::create_dir_all(&ac_new)
+        .map_err(|e| format!("Failed to create .ac-new directory: {}", e))?;
+    Ok(())
+}
+
+/// Discover AC agents/workgroups from a single project path.
+/// Unlike discover_ac_agents which scans repo_paths from settings,
+/// this targets a specific folder.
+#[tauri::command]
+pub async fn discover_project(path: String) -> Result<AcDiscoveryResult, String> {
+    let base = Path::new(&path);
+    if !base.is_dir() {
+        return Err(format!("Path is not a directory: {}", path));
+    }
+
+    let ac_new_dir = base.join(".ac-new");
+    if !ac_new_dir.is_dir() {
+        return Ok(AcDiscoveryResult {
+            agents: vec![],
+            teams: vec![],
+            workgroups: vec![],
+        });
+    }
+
+    let project_folder = base
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let mut agents: Vec<AcAgentMatrix> = Vec::new();
+    let mut teams: Vec<AcTeam> = Vec::new();
+    let mut workgroups: Vec<AcWorkgroup> = Vec::new();
+
+    let entries = match std::fs::read_dir(&ac_new_dir) {
+        Ok(e) => e,
+        Err(e) => return Err(format!("Failed to read .ac-new directory: {}", e)),
+    };
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        if !entry_path.is_dir() {
+            continue;
+        }
+
+        let dir_name = match entry_path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Agent matrices: _agent_*
+        if dir_name.starts_with("_agent_") {
+            let display_name = agent_display_name(&project_folder, &dir_name);
+            let role_exists = entry_path.join("Role.md").exists();
+
+            let preferred_agent_id = entry_path.join("config.json")
+                .exists()
+                .then(|| std::fs::read_to_string(entry_path.join("config.json")).ok())
+                .flatten()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                .and_then(|v| v.get("tooling")?.get("lastCodingAgent")?.as_str().map(String::from));
+
+            agents.push(AcAgentMatrix {
+                name: display_name,
+                path: entry_path.to_string_lossy().to_string(),
+                role_exists,
+                preferred_agent_id,
+            });
+        }
+
+        // Workgroups: wg-*
+        if dir_name.starts_with("wg-") {
+            let brief = entry_path.join("BRIEF.md")
+                .exists()
+                .then(|| std::fs::read_to_string(entry_path.join("BRIEF.md")).ok())
+                .flatten()
+                .and_then(|content| content.lines().next().map(|l| l.trim_start_matches("# ").to_string()));
+
+            let repo_path = std::fs::read_dir(&entry_path)
+                .ok()
+                .and_then(|entries| {
+                    entries.flatten().find(|e| {
+                        let n = e.file_name();
+                        let name = n.to_string_lossy();
+                        name.starts_with("repo-") && e.path().is_dir()
+                    })
+                })
+                .map(|e| e.path().to_string_lossy().to_string());
+
+            let mut wg_agents: Vec<AcAgentReplica> = Vec::new();
+            if let Ok(wg_entries) = std::fs::read_dir(&entry_path) {
+                for wg_entry in wg_entries.flatten() {
+                    let wg_path = wg_entry.path();
+                    if !wg_path.is_dir() {
+                        continue;
+                    }
+                    let wg_dir_name = match wg_path.file_name().and_then(|n| n.to_str()) {
+                        Some(n) => n.to_string(),
+                        None => continue,
+                    };
+                    if wg_dir_name.starts_with("__agent_") {
+                        let replica_name = wg_dir_name
+                            .strip_prefix("__agent_")
+                            .unwrap_or(&wg_dir_name)
+                            .to_string();
+
+                        let replica_config = wg_path.join("config.json")
+                            .exists()
+                            .then(|| std::fs::read_to_string(wg_path.join("config.json")).ok())
+                            .flatten()
+                            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+
+                        let identity_path = replica_config.as_ref()
+                            .and_then(|v| v.get("identity")?.as_str().map(String::from));
+
+                        let preferred_agent_id = identity_path.as_ref().and_then(|rel| {
+                            let matrix_dir = wg_path.join(rel);
+                            let matrix_config = matrix_dir.join("config.json");
+                            std::fs::read_to_string(&matrix_config).ok()
+                                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                                .and_then(|v| v.get("tooling")?.get("lastCodingAgent")?.as_str().map(String::from))
+                        });
+
+                        let repo_paths: Vec<String> = replica_config.as_ref()
+                            .and_then(|v| v.get("repos")?.as_array().cloned())
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|r| r.as_str())
+                            .filter_map(|rel| {
+                                let resolved = wg_path.join(rel);
+                                std::fs::canonicalize(&resolved).ok()
+                                    .map(|p| {
+                                        let s = p.to_string_lossy();
+                                        s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+                                    })
+                            })
+                            .collect();
+
+                        let repo_branch = if repo_paths.len() == 1 {
+                            detect_git_branch_sync(&repo_paths[0])
+                        } else {
+                            None
+                        };
+
+                        wg_agents.push(AcAgentReplica {
+                            name: replica_name,
+                            path: wg_path.to_string_lossy().to_string(),
+                            identity_path,
+                            preferred_agent_id,
+                            repo_paths,
+                            repo_branch,
+                        });
+                    }
+                }
+            }
+            wg_agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+            workgroups.push(AcWorkgroup {
+                name: dir_name.clone(),
+                path: entry_path.to_string_lossy().to_string(),
+                brief,
+                agents: wg_agents,
+                repo_path,
+            });
+        }
+
+        // Teams: _team_*
+        if dir_name.starts_with("_team_") {
+            let team_name = dir_name
+                .strip_prefix("_team_")
+                .unwrap_or(&dir_name)
+                .to_string();
+
+            let config_path = entry_path.join("config.json");
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let team_agents = parsed
+                        .get("agents")
+                        .and_then(|a| a.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|r| resolve_agent_ref(&project_folder, r))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+
+                    let coordinator = parsed
+                        .get("coordinator")
+                        .and_then(|c| c.as_str())
+                        .map(|r| resolve_agent_ref(&project_folder, r));
+
+                    teams.push(AcTeam {
+                        name: team_name,
+                        agents: team_agents,
+                        coordinator,
+                    });
+                }
+            }
+        }
+    }
+
+    agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    workgroups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    Ok(AcDiscoveryResult { agents, teams, workgroups })
+}

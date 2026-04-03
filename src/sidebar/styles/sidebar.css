@@ -251,8 +251,6 @@ html, body, #root {
 
 /* Session List */
 .session-list-container {
-  flex: 1;
-  overflow-y: auto;
   overflow-x: hidden;
   padding: var(--spacing-xs) 0;
 }
@@ -1649,6 +1647,36 @@ html, body, #root {
   width: 100%;
 }
 
+.sidebar-scrollable {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sidebar-scrollable::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-scrollable::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scrollable::-webkit-scrollbar-thumb {
+  background: var(--sidebar-border);
+  border-radius: 2px;
+}
+
+.sidebar-section-header {
+  padding: 6px var(--spacing-md);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--sidebar-fg-dim);
+  border-top: 1px solid var(--sidebar-border);
+  margin-top: var(--spacing-xs);
+}
+
 /* New session animation */
 @keyframes slide-in {
   from { opacity: 0; transform: translateY(-8px); }
@@ -2016,6 +2044,130 @@ html, body, #root {
 }
 
 /* AC Discovery Panel */
+/* ===== Project Panel ===== */
+
+.project-panel {
+  padding-bottom: var(--spacing-xs);
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px var(--spacing-md);
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+  text-align: left;
+}
+
+.project-header:hover {
+  color: var(--sidebar-accent);
+}
+
+.project-title {
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  font-size: 11px;
+}
+
+.project-content {
+  padding: 0 0 var(--spacing-xs) 0;
+}
+
+/* ===== Confirmation Dialog ===== */
+
+.confirm-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.confirm-dialog {
+  background: var(--sidebar-surface);
+  border: 1px solid rgba(0, 212, 255, 0.15);
+  border-radius: 10px;
+  padding: var(--spacing-lg);
+  width: 90%;
+  max-width: 340px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.confirm-text {
+  font-size: var(--font-size-md);
+  color: var(--sidebar-fg);
+  margin: 0 0 var(--spacing-sm) 0;
+  line-height: 1.4;
+}
+
+.confirm-path {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  margin: 0 0 var(--spacing-lg) 0;
+  word-break: break-all;
+  font-family: var(--font-mono);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.confirm-btn {
+  flex: 1;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: none;
+  border-radius: var(--radius-md);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.confirm-btn-yes {
+  background: var(--sidebar-accent);
+  color: #000;
+}
+
+.confirm-btn-yes:hover {
+  filter: brightness(1.15);
+}
+
+.confirm-btn-no {
+  background: var(--toolbar-btn-bg);
+  color: var(--toolbar-btn-fg);
+}
+
+.confirm-btn-no:hover {
+  background: var(--toolbar-btn-hover);
+}
+
+/* ===== Toolbar Project Button ===== */
+
+.toolbar-btn-project {
+  background: rgba(0, 212, 255, 0.08);
+  border: 1px solid rgba(0, 212, 255, 0.15);
+}
+
+.toolbar-btn-project:hover {
+  background: rgba(0, 212, 255, 0.15);
+}
+
+/* ===== AC Discovery Panel ===== */
+
 .ac-discovery-panel {
   border-top: 1px solid var(--sidebar-border);
   margin-top: var(--spacing-xs);

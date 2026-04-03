@@ -25,12 +25,14 @@ import { initWindowGeometry } from "../shared/window-geometry";
 import { applyWindowLayout } from "../shared/window-layout";
 import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
+import { projectStore } from "./stores/project";
 import { settingsStore } from "../shared/stores/settings";
 import Titlebar from "./components/Titlebar";
+import Toolbar from "./components/Toolbar";
+import ProjectPanel from "./components/ProjectPanel";
 import TeamFilter from "./components/TeamFilter";
 import SessionList from "./components/SessionList";
 import AcDiscoveryPanel from "./components/AcDiscoveryPanel";
-import Toolbar from "./components/Toolbar";
 import "./styles/sidebar.css";
 
 const SidebarApp: Component = () => {
@@ -80,6 +82,9 @@ const SidebarApp: Component = () => {
 
     // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
+
+    // Load saved project if any
+    await projectStore.initFromSettings(appSettings.projectPath ?? null);
 
     // Load all repos for inactive agent display
     try {
@@ -182,10 +187,14 @@ const SidebarApp: Component = () => {
   return (
     <div class="sidebar-layout">
       <Titlebar />
-      <TeamFilter />
-      <SessionList />
-      <AcDiscoveryPanel />
       <Toolbar />
+      <div class="sidebar-scrollable">
+        <ProjectPanel />
+        <div class="sidebar-section-header">Sesiones de Agentes</div>
+        <TeamFilter />
+        <SessionList />
+        <AcDiscoveryPanel />
+      </div>
     </div>
   );
 };

@@ -253,6 +253,16 @@ export const AcDiscoveryAPI = {
   discover: () => transport.invoke<AcDiscoveryResult>("discover_ac_agents"),
 };
 
+// Project API
+export const ProjectAPI = {
+  checkPath: (path: string) =>
+    transport.invoke<boolean>("check_project_path", { path }),
+  createAcProject: (path: string) =>
+    transport.invoke<void>("create_ac_project", { path }),
+  discover: (path: string) =>
+    transport.invoke<AcDiscoveryResult>("discover_project", { path }),
+};
+
 // Agent Creator API
 export const AgentCreatorAPI = {
   pickFolder: (defaultPath?: string) =>

@@ -88,6 +88,9 @@ pub struct AppSettings {
     /// Bind address: "127.0.0.1" (local only) or "0.0.0.0" (all interfaces)
     #[serde(default = "default_web_bind")]
     pub web_server_bind: String,
+    /// Currently loaded project path (persisted across restarts)
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -152,6 +155,7 @@ impl Default for AppSettings {
             web_server_enabled: false,
             web_server_port: default_web_port(),
             web_server_bind: default_web_bind(),
+            project_path: None,
         }
     }
 }
