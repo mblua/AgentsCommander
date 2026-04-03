@@ -1,12 +1,50 @@
 import { Component, For, Show, createSignal } from "solid-js";
-import type { AcWorkgroup, AcAgentReplica } from "../../shared/types";
-import { SessionAPI } from "../../shared/ipc";
+import type { AcWorkgroup, AcAgentReplica, Session } from "../../shared/types";
+import { SessionAPI, WindowAPI } from "../../shared/ipc";
+import { isTauri } from "../../shared/platform";
 import { projectStore } from "../stores/project";
+import { sessionsStore } from "../stores/sessions";
+
+/** Build the session name used to link a replica to its session */
+function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
+  return `${wg.name}/${replica.name}`;
+}
+
+/** Find existing session for a replica, if any */
+function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | undefined {
+  return sessionsStore.findSessionByName(replicaSessionName(wg, replica));
+}
+
+/** Compute CSS class for replica status dot */
+function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): string {
+  const session = replicaSession(wg, replica);
+  if (!session) return "offline";
+  if (session.pendingReview) return "pending";
+  if (session.waitingForInput) return "waiting";
+  if (typeof session.status === "string") return session.status;
+  return "exited";
+}
 
 const ProjectPanel: Component = () => {
   const [collapsed, setCollapsed] = createSignal(false);
 
-  const handleReplicaClick = (replica: AcAgentReplica, wg: AcWorkgroup) => {
+  const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
+    const existing = replicaSession(wg, replica);
+    if (existing) {
+      // Already instantiated — just switch to it
+      await SessionAPI.switch(existing.id);
+      if (isTauri) {
+        const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const detachedLabel = `terminal-${existing.id.replace(/-/g, "")}`;
+        const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
+        if (!detachedWin) {
+          await WindowAPI.ensureTerminal();
+        }
+      }
+      return;
+    }
+
+    // Not instantiated — create session in-place
     const repoPaths = replica.repoPaths ?? [];
     let gitBranchSource: string | undefined;
     let gitBranchPrefix: string | undefined;
@@ -21,7 +59,7 @@ const ProjectPanel: Component = () => {
 
     SessionAPI.create({
       cwd: replica.path,
-      sessionName: `${wg.name}/${replica.name}`,
+      sessionName: replicaSessionName(wg, replica),
       agentId: replica.preferredAgentId,
       gitBranchSource,
       gitBranchPrefix,
@@ -81,12 +119,14 @@ const ProjectPanel: Component = () => {
                               if (repoCount() > 1) return "multi-repo";
                               return null;
                             };
+                            const dotClass = () => replicaDotClass(wg, replica);
                             return (
                               <div
                                 class="ac-discovery-item"
                                 onClick={() => handleReplicaClick(replica, wg)}
                                 title={replica.path}
                               >
+                                <div class={`session-item-status ${dotClass()}`} />
                                 <div class="ac-discovery-item-info">
                                   <span class="ac-discovery-item-name">{replica.name}</span>
                                   <div class="ac-discovery-badges">

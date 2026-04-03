@@ -445,9 +445,11 @@ html, body, #root {
 .session-item-status.exited { background: var(--status-exited); }
 .session-item-status.offline { background: #555; }
 /* .pending = agent finished but user hasn't focused yet (yellow) */
-.session-item .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
+.session-item .session-item-status.pending,
+.ac-discovery-item .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
 /* .waiting must override all other status colors (active, running, idle, exited) */
-.session-item .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
+.session-item .session-item-status.waiting,
+.ac-discovery-item .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
 
 /* Inactive team member (no active session) */
 .session-item.inactive-member {
@@ -2360,6 +2362,10 @@ html, body, #root {
 
 .ac-discovery-item:hover {
   background: var(--sidebar-hover);
+}
+
+.ac-discovery-item > .session-item-status {
+  margin-right: 8px;
 }
 
 .ac-discovery-item-info {

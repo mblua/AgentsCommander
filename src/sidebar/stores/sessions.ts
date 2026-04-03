@@ -2,6 +2,7 @@ import { createMemo, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
 import type { RepoMatch, Session, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
+import { projectStore } from "./project";
 
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
@@ -45,6 +46,22 @@ function makeInactiveEntry(name: string, path: string): Session {
   };
 }
 
+/** Names and paths owned by WG replicas — used to hide them from Agent Sessions */
+const wgReplicaMemo = createMemo(() => {
+  const names = new Set<string>();
+  const paths = new Set<string>();
+  const proj = projectStore.current;
+  if (proj) {
+    for (const wg of proj.workgroups) {
+      for (const replica of wg.agents) {
+        names.add(`${wg.name}/${replica.name}`);
+        paths.add(normalizePath(replica.path));
+      }
+    }
+  }
+  return { names, paths };
+});
+
 const filteredSessionsMemo = createMemo(() => {
   const activeSessions = (() => {
     if (!state.teamFilter) return state.sessions;
@@ -67,11 +84,17 @@ const filteredSessionsMemo = createMemo(() => {
     });
   })();
 
+  // Hide sessions owned by WG replicas — they display in ProjectPanel instead
+  const wg = wgReplicaMemo();
+  const visibleSessions = wg.names.size > 0
+    ? activeSessions.filter((s) => !wg.names.has(s.name))
+    : activeSessions;
+
   const sortKey = (s: Session) => {
     const i = s.name.lastIndexOf("/");
     return i >= 0 ? s.name.slice(i + 1) : s.name;
   };
-  if (!state.showInactive) return [...activeSessions].sort((a, b) => sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true }));
+  if (!state.showInactive) return [...visibleSessions].sort((a, b) => sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true }));
 
   // Add inactive repos/members that don't have active sessions
   const activePathSet = new Set(
@@ -113,7 +136,12 @@ const filteredSessionsMemo = createMemo(() => {
     }
   }
 
-  return [...activeSessions, ...inactiveEntries].sort((a, b) =>
+  // Also filter inactive entries whose paths belong to WG replicas
+  const filteredInactive = wg.paths.size > 0
+    ? inactiveEntries.filter((e) => !wg.paths.has(normalizePath(e.workingDirectory)))
+    : inactiveEntries;
+
+  return [...visibleSessions, ...filteredInactive].sort((a, b) =>
     sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true })
   );
 });
@@ -292,4 +320,10 @@ export const sessionsStore = {
   toggleTeamCollapsed(teamId: string) {
     setCollapsedTeams((prev) => ({ ...prev, [teamId]: !prev[teamId] }));
   },
+
+  /** Find a session whose name exactly matches the given string */
+  findSessionByName(name: string): Session | undefined {
+    return state.sessions.find((s) => s.name === name);
+  },
+
 };
