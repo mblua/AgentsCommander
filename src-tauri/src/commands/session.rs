@@ -172,18 +172,35 @@ pub async fn create_session(
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
 
-    let shell = shell.unwrap_or_else(|| cfg.default_shell.clone());
-    let shell_args = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
     let cwd = cwd.unwrap_or_else(|| {
         dirs::home_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "C:\\".to_string())
     });
 
-    // Resolve agent label before dropping cfg
-    let agent_label = agent_id.as_ref().and_then(|aid| {
-        cfg.agents.iter().find(|a| a.id == *aid).map(|a| a.label.clone())
-    });
+    // If agentId provided and shell not explicitly set, use that agent's command
+    let (shell, shell_args, agent_label) = match (&shell, &agent_id) {
+        (None, Some(aid)) => {
+            if let Some(agent) = cfg.agents.iter().find(|a| a.id == *aid) {
+                let parts: Vec<String> = agent.command.split_whitespace().map(|s| s.to_string()).collect();
+                if let Some((cmd, args)) = parts.split_first() {
+                    (cmd.clone(), args.to_vec(), Some(agent.label.clone()))
+                } else {
+                    (cfg.default_shell.clone(), cfg.default_shell_args.clone(), Some(agent.label.clone()))
+                }
+            } else {
+                (cfg.default_shell.clone(), cfg.default_shell_args.clone(), None)
+            }
+        }
+        _ => {
+            let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
+            let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
+            let al = agent_id.as_ref().and_then(|aid| {
+                cfg.agents.iter().find(|a| a.id == *aid).map(|a| a.label.clone())
+            });
+            (s, sa, al)
+        }
+    };
 
     drop(cfg);
 
