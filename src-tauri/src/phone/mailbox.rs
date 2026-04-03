@@ -420,7 +420,8 @@ impl MailboxPoller {
                 Some(format!("[temp] {}", msg.to)),
                 None, // Temp session — don't update lastCodingAgent
                 None, // No agent label for temp sessions
-                true, // Skip tooling save for temp sessions
+                true,  // Skip tooling save for temp sessions
+                false, // not a restore
             )
             .await
             {
@@ -991,6 +992,7 @@ impl MailboxPoller {
                 Some(request.agent_id.clone()),
                 None,  // No agent label — auto-detected from shell
                 false, // Persist tooling
+                false, // not a restore
             )
             .await
             {

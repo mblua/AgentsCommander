@@ -336,6 +336,7 @@ pub fn run() {
                             None, // No agent_id on restore (auto-detected from shell)
                             None, // No agent label on restore (auto-detected from shell)
                             false, // Persist tooling on restore
+                            true,  // This IS a restore
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {

@@ -16,6 +16,7 @@ use crate::DetachedSessionsState;
 /// Creates a session record, spawns a PTY, and emits the session_created event.
 /// Auto-detects agent from shell command if not provided, and auto-injects --continue for Claude.
 /// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
+/// If `is_restore` is true, this is a session restore (app restart) and --continue may be injected.
 pub async fn create_session_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -27,6 +28,7 @@ pub async fn create_session_inner(
     agent_id: Option<String>,
     agent_label: Option<String>,
     skip_tooling_save: bool,
+    is_restore: bool,
 ) -> Result<SessionInfo, String> {
     let mgr = session_mgr.read().await;
     let mut session = mgr
@@ -59,29 +61,24 @@ pub async fn create_session_inner(
     let is_claude = cmd_basenames.iter().any(|b| b == "claude");
     let is_codex = cmd_basenames.iter().any(|b| b == "codex");
 
-    // Auto-inject --continue for Claude agents with prior sessions in this repo
-    if is_claude {
+    // Auto-inject --continue for Claude agents only on session restore (app restart)
+    if is_claude && is_restore {
         if let Some(ref aid) = agent_id {
             let already_has_continue = full_cmd.split_whitespace().any(|t| {
                 let lower = t.to_lowercase();
                 lower == "--continue" || lower == "-c"
             });
             if !already_has_continue {
-                // Check the app's own session persistence for a prior session with this CWD
-                let persisted = crate::config::sessions_persistence::load_sessions();
-                let has_prior_app_session = persisted.iter().any(|s| s.working_directory == cwd);
-                if has_prior_app_session {
-                    if executable_basename(&shell) == "cmd" {
-                        if let Some(last) = shell_args.last_mut() {
-                            if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
-                                *last = format!("{} --continue", last);
-                                log::info!("Auto-injected --continue for agent '{}' (prior session, cmd path)", aid);
-                            }
+                if executable_basename(&shell) == "cmd" {
+                    if let Some(last) = shell_args.last_mut() {
+                        if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
+                            *last = format!("{} --continue", last);
+                            log::info!("Auto-injected --continue for agent '{}' (restore, cmd path)", aid);
                         }
-                    } else {
-                        shell_args.push("--continue".to_string());
-                        log::info!("Auto-injected --continue for agent '{}' (prior session found)", aid);
                     }
+                } else {
+                    shell_args.push("--continue".to_string());
+                    log::info!("Auto-injected --continue for agent '{}' (restore)", aid);
                 }
             }
         }
@@ -216,6 +213,7 @@ pub async fn create_session(
         agent_id,
         agent_label,
         false, // persist tooling
+        false, // not a restore
     )
     .await?;
 
