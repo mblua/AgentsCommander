@@ -243,7 +243,7 @@ const TerminalView: Component = () => {
       }
 
       entry.terminal.write(new Uint8Array(data), () => {
-        if (sessionId === activeSessionId) {
+        if (sessionId === activeSessionId && !isBrowser) {
           entry.terminal.scrollToBottom();
         }
       });
