@@ -215,6 +215,7 @@ export interface AcAgentMatrix {
   name: string;
   path: string;
   roleExists: boolean;
+  preferredAgentId?: string;
 }
 
 export interface AcTeam {

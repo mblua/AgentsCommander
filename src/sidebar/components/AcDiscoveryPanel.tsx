@@ -24,6 +24,7 @@ const AcDiscoveryPanel: Component = () => {
     SessionAPI.create({
       cwd: agent.path,
       sessionName: agent.name,
+      agentId: agent.preferredAgentId,
     });
   };
 

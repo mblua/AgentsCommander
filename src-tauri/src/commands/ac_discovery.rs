@@ -13,6 +13,8 @@ pub struct AcAgentMatrix {
     pub path: String,
     /// Whether Role.md exists in the agent directory
     pub role_exists: bool,
+    /// Preferred coding agent ID from config.json tooling.lastCodingAgent
+    pub preferred_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,10 +119,18 @@ pub async fn discover_ac_agents(
                     let display_name = agent_display_name(&project_folder, &dir_name);
                     let role_exists = path.join("Role.md").exists();
 
+                    let preferred_agent_id = path.join("config.json")
+                        .exists()
+                        .then(|| std::fs::read_to_string(path.join("config.json")).ok())
+                        .flatten()
+                        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                        .and_then(|v| v.get("tooling")?.get("lastCodingAgent")?.as_str().map(String::from));
+
                     agents.push(AcAgentMatrix {
                         name: display_name,
                         path: path.to_string_lossy().to_string(),
                         role_exists,
+                        preferred_agent_id,
                     });
                 }
 
