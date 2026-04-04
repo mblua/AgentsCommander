@@ -124,6 +124,114 @@ fn replace_ac_block(existing: &str, new_block: &str) -> String {
     }
 }
 
+/// Build a combined context file for a replica session.
+/// Reads config.json from `cwd`, looks for `context[]` array.
+/// If present: validates all files exist, then concatenates global context + each context file.
+/// Returns Ok(Some(path)) with the combined temp file, Ok(None) if no context[] field,
+/// or Err with details about missing files.
+pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
+    let cwd_path = std::path::Path::new(cwd);
+    let config_path = cwd_path.join("config.json");
+
+    // No config.json → no replica context, fall back to default behavior
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let config_content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+
+    let config: serde_json::Value = serde_json::from_str(&config_content)
+        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+
+    // No "context" field → no replica context
+    let context_array = match config.get("context").and_then(|v| v.as_array()) {
+        Some(arr) if !arr.is_empty() => arr,
+        _ => return Ok(None),
+    };
+
+    // Resolve and validate all paths
+    let mut resolved_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+
+    for entry in context_array {
+        let rel = match entry.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        let abs = cwd_path.join(rel);
+        if abs.exists() {
+            resolved_paths.push(abs);
+        } else {
+            missing.push(rel.to_string());
+        }
+    }
+
+    if !missing.is_empty() {
+        let replica_name = cwd_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        return Err(format!(
+            "Replica '{}' has missing context files:\n{}",
+            replica_name,
+            missing.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n")
+        ));
+    }
+
+    // Build combined content: global context first, then each context file
+    let mut combined = String::new();
+
+    // 1. Global AgentsCommanderContext.md
+    let global_path = ensure_global_context()?;
+    let global_content = std::fs::read_to_string(&global_path)
+        .map_err(|e| format!("Failed to read AgentsCommanderContext.md: {}", e))?;
+    combined.push_str(&global_content);
+
+    // 2. Each context file, separated by headers
+    for path in &resolved_paths {
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
+        combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", file_name));
+        combined.push_str(&content);
+    }
+
+    // Write to a temp file in the app config dir
+    let config_dir = super::config_dir()
+        .ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    let context_dir = config_dir.join("context-cache");
+    std::fs::create_dir_all(&context_dir)
+        .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
+
+    // Use a deterministic filename based on the cwd to avoid temp file accumulation
+    let hash = simple_hash(cwd);
+    let file_path = context_dir.join(format!("replica-context-{}.md", hash));
+    std::fs::write(&file_path, &combined)
+        .map_err(|e| format!("Failed to write combined context file: {}", e))?;
+
+    log::info!(
+        "Built replica context for {} ({} context files) → {}",
+        cwd,
+        resolved_paths.len(),
+        file_path.display()
+    );
+
+    Ok(Some(file_path.to_string_lossy().to_string()))
+}
+
+/// Simple deterministic hash for a string (for temp file naming).
+fn simple_hash(s: &str) -> u64 {
+    let mut hash: u64 = 5381;
+    for byte in s.bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
+    }
+    hash
+}
+
 const DEFAULT_CONTEXT: &str = r#"# AgentsCommander Context
 
 You are running inside an AgentsCommander session — a terminal session manager that coordinates multiple AI agents.

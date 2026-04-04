@@ -565,3 +565,64 @@ pub async fn discover_project(path: String) -> Result<AcDiscoveryResult, String>
 
     Ok(AcDiscoveryResult { agents, teams, workgroups })
 }
+
+/// Read the `context` array from a replica's config.json.
+/// Returns an empty vec if the field is absent or the file doesn't exist.
+#[tauri::command]
+pub async fn get_replica_context_files(path: String) -> Result<Vec<String>, String> {
+    let config_path = Path::new(&path).join("config.json");
+    if !config_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config.json: {}", e))?;
+    let parsed: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
+
+    let files = parsed
+        .get("context")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(files)
+}
+
+/// Write the `context` array to a replica's config.json.
+/// Preserves all other fields in the config.
+#[tauri::command]
+pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Result<(), String> {
+    let config_path = Path::new(&path).join("config.json");
+
+    // Read existing config or start fresh
+    let mut config: serde_json::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config.json: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse config.json: {}", e))?
+    } else {
+        serde_json::json!({})
+    };
+
+    // Update context field
+    if files.is_empty() {
+        if let Some(obj) = config.as_object_mut() {
+            obj.remove("context");
+        }
+    } else {
+        config["context"] = serde_json::json!(files);
+    }
+
+    let serialized = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
+    std::fs::write(&config_path, &serialized)
+        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+
+    log::info!("Updated context files for replica at {}: {:?}", path, files);
+    Ok(())
+}

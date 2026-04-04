@@ -426,6 +426,8 @@ pub fn run() {
             commands::ac_discovery::check_project_path,
             commands::ac_discovery::create_ac_project,
             commands::ac_discovery::discover_project,
+            commands::ac_discovery::get_replica_context_files,
+            commands::ac_discovery::set_replica_context_files,
         ])
         .build(tauri::generate_context!())
         .expect("error while building application")

@@ -1,4 +1,5 @@
-import { Component, createSignal, For, Show, onMount } from "solid-js";
+import { Component, createSignal, For, Show, onMount, onCleanup } from "solid-js";
+import { Portal } from "solid-js/web";
 import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../shared/types";
 import { AcDiscoveryAPI, SessionAPI } from "../../shared/ipc";
 
@@ -51,6 +52,101 @@ const AcDiscoveryPanel: Component = () => {
       gitBranchSource,
       gitBranchPrefix,
     });
+  };
+
+  // --- Context menu state for replicas ---
+  const [ctxMenuPos, setCtxMenuPos] = createSignal({ x: 0, y: 0 });
+  const [ctxMenuReplica, setCtxMenuReplica] = createSignal<AcAgentReplica | null>(null);
+
+  // --- Context files panel state ---
+  const [ctxFilesReplica, setCtxFilesReplica] = createSignal<AcAgentReplica | null>(null);
+  const [ctxFiles, setCtxFiles] = createSignal<string[]>([]);
+  const [ctxFilesLoading, setCtxFilesLoading] = createSignal(false);
+  const [newCtxPath, setNewCtxPath] = createSignal("");
+
+  let dismissCtxMenu: (() => void) | null = null;
+
+  const cleanupCtxMenu = () => {
+    if (dismissCtxMenu) {
+      window.removeEventListener("click", dismissCtxMenu);
+      window.removeEventListener("contextmenu", dismissCtxMenu);
+      window.removeEventListener("keydown", dismissCtxMenu as any);
+      dismissCtxMenu = null;
+    }
+  };
+
+  onCleanup(cleanupCtxMenu);
+
+  const handleReplicaContextMenu = (e: MouseEvent, replica: AcAgentReplica) => {
+    e.preventDefault();
+    e.stopPropagation();
+    cleanupCtxMenu();
+    setCtxMenuPos({ x: e.clientX, y: e.clientY });
+    setCtxMenuReplica(replica);
+    const dismiss = (ev?: Event) => {
+      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+      setCtxMenuReplica(null);
+      cleanupCtxMenu();
+    };
+    dismissCtxMenu = dismiss;
+    setTimeout(() => {
+      window.addEventListener("click", dismiss);
+      window.addEventListener("contextmenu", dismiss);
+      window.addEventListener("keydown", dismiss as any);
+    });
+  };
+
+  const openContextFilesPanel = async (replica: AcAgentReplica) => {
+    setCtxMenuReplica(null);
+    cleanupCtxMenu();
+    setCtxFilesReplica(replica);
+    setCtxFilesLoading(true);
+    try {
+      const files = await AcDiscoveryAPI.getReplicaContextFiles(replica.path);
+      setCtxFiles(files);
+    } catch (e) {
+      console.error("Failed to load context files:", e);
+      setCtxFiles([]);
+    } finally {
+      setCtxFilesLoading(false);
+    }
+  };
+
+  const handleRemoveCtxFile = async (index: number) => {
+    const replica = ctxFilesReplica();
+    if (!replica) return;
+    const prev = ctxFiles();
+    const updated = prev.filter((_, i) => i !== index);
+    setCtxFiles(updated);
+    try {
+      await AcDiscoveryAPI.setReplicaContextFiles(replica.path, updated);
+    } catch (e) {
+      console.error("Failed to save context files:", e);
+      setCtxFiles(prev);
+    }
+  };
+
+  const handleAddCtxFile = async () => {
+    const replica = ctxFilesReplica();
+    const path = newCtxPath().trim();
+    if (!replica || !path) return;
+    const prev = ctxFiles();
+    const updated = [...prev, path];
+    setCtxFiles(updated);
+    setNewCtxPath("");
+    try {
+      await AcDiscoveryAPI.setReplicaContextFiles(replica.path, updated);
+    } catch (e) {
+      console.error("Failed to save context files:", e);
+      setCtxFiles(prev);
+      setNewCtxPath(path);
+    }
+  };
+
+  const closeContextFilesPanel = () => {
+    setCtxFilesReplica(null);
+    setCtxFiles([]);
+    setNewCtxPath("");
   };
 
   onMount(async () => {
@@ -152,6 +248,7 @@ const AcDiscoveryPanel: Component = () => {
                           <div
                             class="ac-discovery-item"
                             onClick={() => handleReplicaClick(replica, wg)}
+                            onContextMenu={(e) => handleReplicaContextMenu(e, replica)}
                             title={replica.path}
                           >
                             <div class="ac-discovery-item-info">
@@ -174,6 +271,81 @@ const AcDiscoveryPanel: Component = () => {
           </Show>
         </Show>
       </div>
+
+      {/* Replica context menu */}
+      {ctxMenuReplica() && (
+        <Portal>
+          <div
+            class="session-context-menu"
+            style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              class="session-context-option"
+              onClick={() => openContextFilesPanel(ctxMenuReplica()!)}
+            >
+              Context Files
+            </button>
+          </div>
+        </Portal>
+      )}
+
+      {/* Context files panel */}
+      {ctxFilesReplica() && (
+        <Portal>
+          <div class="ctx-files-overlay" onClick={closeContextFilesPanel}>
+            <div class="ctx-files-panel" onClick={(e) => e.stopPropagation()}>
+              <div class="ctx-files-header">
+                <span class="ctx-files-title">
+                  Context Files — {ctxFilesReplica()!.name}
+                </span>
+                <button class="ctx-files-close" onClick={closeContextFilesPanel}>
+                  &times;
+                </button>
+              </div>
+              <Show when={!ctxFilesLoading()} fallback={<div class="ctx-files-loading">Loading...</div>}>
+                <div class="ctx-files-list">
+                  <Show when={ctxFiles().length === 0}>
+                    <div class="ctx-files-empty">No context files configured</div>
+                  </Show>
+                  <For each={ctxFiles()}>
+                    {(file, i) => (
+                      <div class="ctx-files-item">
+                        <span class="ctx-files-path" title={file}>{file}</span>
+                        <button
+                          class="ctx-files-remove"
+                          onClick={() => handleRemoveCtxFile(i())}
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    )}
+                  </For>
+                </div>
+                <div class="ctx-files-add">
+                  <input
+                    class="ctx-files-input"
+                    type="text"
+                    placeholder="Relative path (e.g. ../../_agent_foo/Role.md)"
+                    value={newCtxPath()}
+                    onInput={(e) => setNewCtxPath(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAddCtxFile();
+                    }}
+                  />
+                  <button
+                    class="ctx-files-add-btn"
+                    onClick={handleAddCtxFile}
+                    disabled={!newCtxPath().trim()}
+                  >
+                    Add
+                  </button>
+                </div>
+              </Show>
+            </div>
+          </div>
+        </Portal>
+      )}
     </Show>
   );
 };

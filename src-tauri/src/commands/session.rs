@@ -88,25 +88,58 @@ pub async fn create_session_inner(
         }
     }
 
-    // Auto-inject --append-system-prompt-file for Claude sessions (global static file)
+    // Auto-inject --append-system-prompt-file for Claude sessions.
+    // Replica context (config.json context[]) takes priority over global-only context.
     if is_claude {
-        match crate::config::session_context::ensure_global_context() {
-            Ok(context_path) => {
-                if executable_basename(&shell) == "cmd" {
-                    if let Some(last) = shell_args.last_mut() {
-                        if last.to_lowercase().contains("claude") {
-                            *last = format!("{} --append-system-prompt-file \"{}\"", last, context_path);
-                            log::info!("Injected --append-system-prompt-file for Claude (cmd path)");
-                        }
+        let context_path = match crate::config::session_context::build_replica_context(&cwd) {
+            Ok(Some(combined_path)) => {
+                log::info!("Using replica combined context for Claude session: {}", combined_path);
+                Some(combined_path)
+            }
+            Ok(None) => {
+                // No replica context[] — use global context only
+                match crate::config::session_context::ensure_global_context() {
+                    Ok(path) => Some(path),
+                    Err(e) => {
+                        log::warn!("Failed to ensure AgentsCommanderContext.md: {}", e);
+                        None
                     }
-                } else {
-                    shell_args.push("--append-system-prompt-file".to_string());
-                    shell_args.push(context_path);
-                    log::info!("Injected --append-system-prompt-file for Claude session");
                 }
             }
             Err(e) => {
-                log::warn!("Failed to ensure AgentsCommanderContext.md: {}", e);
+                // Missing context files — show error dialog and abort launch
+                log::error!("Replica context validation failed: {}", e);
+                use tauri_plugin_dialog::DialogExt;
+                let dialog_msg = format!("Cannot launch session — context files missing:\n\n{}", e);
+                // Use non-blocking show() — blocking_show() panics in async context
+                app.dialog()
+                    .message(&dialog_msg)
+                    .title("Context File Error")
+                    .show(|_| {});
+                // Abort: destroy the session we just created and emit switch if auto-activated
+                let mgr2 = session_mgr.read().await;
+                if let Ok(Some(new_id)) = mgr2.destroy_session(id).await {
+                    let _ = app.emit(
+                        "session_switched",
+                        serde_json::json!({ "id": new_id.to_string() }),
+                    );
+                }
+                return Err(e);
+            }
+        };
+
+        if let Some(context_path) = context_path {
+            if executable_basename(&shell) == "cmd" {
+                if let Some(last) = shell_args.last_mut() {
+                    if last.to_lowercase().contains("claude") {
+                        *last = format!("{} --append-system-prompt-file \"{}\"", last, context_path);
+                        log::info!("Injected --append-system-prompt-file for Claude (cmd path)");
+                    }
+                }
+            } else {
+                shell_args.push("--append-system-prompt-file".to_string());
+                shell_args.push(context_path);
+                log::info!("Injected --append-system-prompt-file for Claude session");
             }
         }
     }

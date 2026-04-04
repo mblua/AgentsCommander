@@ -251,6 +251,12 @@ export const PhoneAPI = {
 // AC Discovery API
 export const AcDiscoveryAPI = {
   discover: () => transport.invoke<AcDiscoveryResult>("discover_ac_agents"),
+
+  getReplicaContextFiles: (path: string) =>
+    transport.invoke<string[]>("get_replica_context_files", { path }),
+
+  setReplicaContextFiles: (path: string, files: string[]) =>
+    transport.invoke<void>("set_replica_context_files", { path, files }),
 };
 
 // Project API

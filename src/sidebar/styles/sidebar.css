@@ -2472,3 +2472,153 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Context files panel (replica right-click → Context Files) */
+
+.ctx-files-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ctx-files-panel {
+  background: var(--sidebar-surface);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  width: 360px;
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+}
+
+.ctx-files-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+.ctx-files-title {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--sidebar-fg);
+}
+
+.ctx-files-close {
+  background: none;
+  border: none;
+  color: var(--sidebar-fg-dim);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.ctx-files-close:hover {
+  color: var(--sidebar-fg);
+}
+
+.ctx-files-loading,
+.ctx-files-empty {
+  padding: var(--spacing-md);
+  text-align: center;
+  color: var(--sidebar-fg-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+}
+
+.ctx-files-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-xs) 0;
+}
+
+.ctx-files-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-md);
+}
+
+.ctx-files-path {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--sidebar-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctx-files-remove {
+  background: none;
+  border: none;
+  color: var(--sidebar-fg-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.ctx-files-remove:hover {
+  color: var(--status-exited);
+}
+
+.ctx-files-add {
+  display: flex;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-top: 1px solid var(--sidebar-border);
+}
+
+.ctx-files-input {
+  flex: 1;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  color: var(--sidebar-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.ctx-files-input::placeholder {
+  color: var(--sidebar-fg-dim);
+  opacity: 0.5;
+}
+
+.ctx-files-input:focus {
+  outline: none;
+  border-color: var(--sidebar-accent);
+}
+
+.ctx-files-add-btn {
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 1px solid var(--sidebar-border);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.ctx-files-add-btn:hover:not(:disabled) {
+  border-color: var(--sidebar-accent);
+  background: rgba(0, 212, 255, 0.06);
+}
+
+.ctx-files-add-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
