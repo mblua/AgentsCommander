@@ -31,15 +31,38 @@ const NewTeamModal: Component<{
   const [loadingAgents, setLoadingAgents] = createSignal(false);
   let nameRef!: HTMLInputElement;
 
-  // Group agents by project
+  const [agentFilter, setAgentFilter] = createSignal("");
+
+  // Derive current project's folder name from props.projectPath
+  const currentProjectName = createMemo(() => {
+    const p = props.projectPath.replace(/[\\/]+$/, "");
+    const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+    return idx >= 0 ? p.slice(idx + 1) : p;
+  });
+
+  // Group agents by project, current project first, with search filter
   const agentsByProject = createMemo(() => {
+    const filter = agentFilter().toLowerCase();
+    const filtered = filter
+      ? allAgents().filter((a) => a.name.toLowerCase().includes(filter))
+      : allAgents();
+
     const map = new Map<string, AgentEntry[]>();
-    for (const a of allAgents()) {
+    for (const a of filtered) {
       const list = map.get(a.projectName) ?? [];
       list.push(a);
       map.set(a.projectName, list);
     }
-    return map;
+
+    // Sort: current project first, rest alphabetical
+    const cur = currentProjectName();
+    const entries = Array.from(map.entries());
+    entries.sort((a, b) => {
+      if (a[0] === cur) return -1;
+      if (b[0] === cur) return 1;
+      return a[0].localeCompare(b[0]);
+    });
+    return new Map(entries);
   });
 
   const selectedAgentList = createMemo(() =>
@@ -216,6 +239,18 @@ const NewTeamModal: Component<{
               <div class="wizard-empty">No agents found in any project.</div>
             </Show>
             <Show when={!loadingAgents() && allAgents().length > 0}>
+              <div class="wizard-search-row">
+                <svg class="wizard-search-icon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="6.5" cy="6.5" r="5" />
+                  <line x1="10" y1="10" x2="14.5" y2="14.5" />
+                </svg>
+                <input
+                  class="wizard-search-input"
+                  value={agentFilter()}
+                  onInput={(e) => setAgentFilter(e.currentTarget.value)}
+                  placeholder="Filter agents..."
+                />
+              </div>
               <For each={Array.from(agentsByProject().entries())}>
                 {([projectName, agents]) => (
                   <div class="wizard-agent-group">
