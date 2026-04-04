@@ -32,7 +32,6 @@ import ActionBar from "./components/ActionBar";
 import ProjectPanel from "./components/ProjectPanel";
 import TeamFilter from "./components/TeamFilter";
 import SessionList from "./components/SessionList";
-import AcDiscoveryPanel from "./components/AcDiscoveryPanel";
 import CollapsibleSection from "./components/CollapsibleSection";
 import "./styles/sidebar.css";
 
@@ -196,7 +195,6 @@ const SidebarApp: Component = () => {
           <TeamFilter />
           <SessionList />
         </CollapsibleSection>
-        <AcDiscoveryPanel />
       </div>
     </div>
   );
