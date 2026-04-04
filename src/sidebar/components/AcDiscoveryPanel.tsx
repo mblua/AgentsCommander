@@ -169,6 +169,7 @@ const AcDiscoveryPanel: Component = () => {
 
     // Listen for replica branch updates from the backend poller
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
+      console.log("[DiscoveryBranchWatcher] event received:", data.replicaPath, "->", data.branch);
       setWorkgroups((wgs) =>
         wgs.map((wg) => ({
           ...wg,

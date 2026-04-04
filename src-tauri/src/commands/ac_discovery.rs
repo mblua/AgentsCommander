@@ -167,6 +167,19 @@ impl DiscoveryBranchWatcher {
             }
         }
 
+        log::info!(
+            "[DiscoveryBranchWatcher] update_replicas: {} single-repo replicas registered",
+            entries.len()
+        );
+        for e in &entries {
+            log::info!(
+                "[DiscoveryBranchWatcher]   replica={}, repo={}, discovery_branch={:?}",
+                e.replica_path,
+                e.repo_path,
+                known_branches.get(&e.replica_path)
+            );
+        }
+
         // Prune stale entries and pre-seed new ones (preserve live-polled values)
         let valid_paths: std::collections::HashSet<&str> =
             entries.iter().map(|e| e.replica_path.as_str()).collect();
@@ -184,6 +197,7 @@ impl DiscoveryBranchWatcher {
     pub fn start(self: &Arc<Self>) {
         let watcher = Arc::clone(self);
         std::thread::spawn(move || {
+            log::info!("[DiscoveryBranchWatcher] thread started, polling every {}s", BRANCH_POLL_INTERVAL.as_secs());
             let rt = tokio::runtime::Runtime::new()
                 .expect("Failed to create tokio runtime for DiscoveryBranchWatcher");
             rt.block_on(async move {
@@ -201,13 +215,23 @@ impl DiscoveryBranchWatcher {
             return;
         }
 
+        log::info!("[DiscoveryBranchWatcher] poll: checking {} replicas", entries.len());
+
         for entry in &entries {
             let branch = Self::detect_branch(&entry.repo_path).await;
 
             // Single lock acquisition: check + update atomically
             let changed = {
                 let mut cache = self.cache.lock().unwrap();
-                if cache.get(&entry.replica_path) != Some(&branch) {
+                let cached = cache.get(&entry.replica_path).cloned();
+                log::info!(
+                    "[DiscoveryBranchWatcher]   replica={}, repo={}, detected={:?}, cached={:?}",
+                    entry.replica_path,
+                    entry.repo_path,
+                    branch,
+                    cached
+                );
+                if cached.as_ref() != Some(&branch) {
                     cache.insert(entry.replica_path.clone(), branch.clone());
                     true
                 } else {
@@ -216,18 +240,21 @@ impl DiscoveryBranchWatcher {
             };
 
             if changed {
-                log::debug!(
-                    "[DiscoveryBranchWatcher] branch changed for {}: {:?}",
+                log::info!(
+                    "[DiscoveryBranchWatcher] CHANGED -> emitting event for {}: {:?}",
                     entry.replica_path,
                     branch
                 );
-                let _ = self.app_handle.emit(
+                let emit_result = self.app_handle.emit(
                     "ac_discovery_branch_updated",
                     DiscoveryBranchPayload {
                         replica_path: entry.replica_path.clone(),
                         branch: branch.clone(),
                     },
                 );
+                if let Err(e) = emit_result {
+                    log::error!("[DiscoveryBranchWatcher] emit failed: {:?}", e);
+                }
             }
         }
     }
