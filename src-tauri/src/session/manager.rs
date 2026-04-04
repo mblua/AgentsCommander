@@ -193,6 +193,14 @@ impl SessionManager {
             .collect()
     }
 
+    /// Find a session by its display name. Returns its UUID if found.
+    pub async fn find_by_name(&self, name: &str) -> Option<Uuid> {
+        let sessions = self.sessions.read().await;
+        sessions.iter()
+            .find(|(_, s)| s.name == name)
+            .map(|(id, _)| *id)
+    }
+
     /// Find a session by its authentication token. Linear scan — fine for 10-20 sessions.
     pub async fn find_by_token(&self, token: Uuid) -> Option<SessionInfo> {
         let sessions = self.sessions.read().await;

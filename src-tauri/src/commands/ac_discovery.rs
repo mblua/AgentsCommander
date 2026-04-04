@@ -6,6 +6,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::config::settings::SettingsState;
+use crate::session::manager::SessionManager;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +127,10 @@ const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
 struct ReplicaBranchEntry {
     replica_path: String,
     repo_path: String,
+    /// Session name format: "wg_name/replica_name"
+    session_name: String,
+    /// Repo dir name with "repo-" prefix stripped, for formatting git branch display
+    git_branch_prefix: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -135,16 +140,28 @@ struct DiscoveryBranchPayload {
     branch: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionGitBranchPayload {
+    session_id: String,
+    branch: Option<String>,
+}
+
 pub struct DiscoveryBranchWatcher {
     app_handle: AppHandle,
+    session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     replicas: Mutex<Vec<ReplicaBranchEntry>>,
     cache: Mutex<HashMap<String, Option<String>>>,
 }
 
 impl DiscoveryBranchWatcher {
-    pub fn new(app_handle: AppHandle) -> Arc<Self> {
+    pub fn new(
+        app_handle: AppHandle,
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             app_handle,
+            session_manager,
             replicas: Mutex::new(Vec::new()),
             cache: Mutex::new(HashMap::new()),
         })
@@ -158,9 +175,24 @@ impl DiscoveryBranchWatcher {
         for wg in workgroups {
             for agent in &wg.agents {
                 if agent.repo_paths.len() == 1 {
+                    // Derive git_branch_prefix from repo dir name (strip "repo-" prefix)
+                    let repo_dir = agent.repo_paths[0]
+                        .replace('\\', "/")
+                        .split('/')
+                        .last()
+                        .unwrap_or("")
+                        .to_string();
+                    let prefix = if repo_dir.starts_with("repo-") {
+                        repo_dir[5..].to_string()
+                    } else {
+                        repo_dir.clone()
+                    };
+
                     entries.push(ReplicaBranchEntry {
                         replica_path: agent.path.clone(),
                         repo_path: agent.repo_paths[0].clone(),
+                        session_name: format!("{}/{}", wg.name, agent.name),
+                        git_branch_prefix: prefix,
                     });
                     known_branches.insert(agent.path.clone(), agent.repo_branch.clone());
                 }
@@ -245,6 +277,8 @@ impl DiscoveryBranchWatcher {
                     entry.replica_path,
                     branch
                 );
+
+                // 1. Emit discovery branch event (for non-instanced replica display)
                 let emit_result = self.app_handle.emit(
                     "ac_discovery_branch_updated",
                     DiscoveryBranchPayload {
@@ -254,6 +288,27 @@ impl DiscoveryBranchWatcher {
                 );
                 if let Err(e) = emit_result {
                     log::error!("[DiscoveryBranchWatcher] emit failed: {:?}", e);
+                }
+
+                // 2. Update active session's gitBranch if one exists for this replica
+                let formatted_branch = branch.as_ref()
+                    .map(|b| format!("{}/{}", entry.git_branch_prefix, b));
+
+                let mgr = self.session_manager.read().await;
+                if let Some(session_id) = mgr.find_by_name(&entry.session_name).await {
+                    mgr.set_git_branch(session_id, formatted_branch.clone()).await;
+                    let _ = self.app_handle.emit(
+                        "session_git_branch",
+                        SessionGitBranchPayload {
+                            session_id: session_id.to_string(),
+                            branch: formatted_branch,
+                        },
+                    );
+                    log::info!(
+                        "[DiscoveryBranchWatcher] session {} ({}) gitBranch updated",
+                        entry.session_name,
+                        session_id
+                    );
                 }
             }
         }

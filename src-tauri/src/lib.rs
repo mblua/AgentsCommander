@@ -168,6 +168,7 @@ pub fn run() {
     idle_detector.start();
 
     let session_mgr_for_git = Arc::clone(&session_mgr);
+    let session_mgr_for_discovery = Arc::clone(&session_mgr);
     let session_mgr_for_web = Arc::clone(&session_mgr);
     let session_mgr_for_exit = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
@@ -210,7 +211,10 @@ pub fn run() {
             git_watcher.start();
 
             // Discovery branch watcher: polls git branch for discovered replicas every 15s
-            let discovery_branch_watcher = DiscoveryBranchWatcher::new(app.handle().clone());
+            let discovery_branch_watcher = DiscoveryBranchWatcher::new(
+                app.handle().clone(),
+                session_mgr_for_discovery,
+            );
             discovery_branch_watcher.start();
             app.manage(discovery_branch_watcher);
 
