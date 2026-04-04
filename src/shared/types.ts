@@ -135,6 +135,7 @@ export interface AppSettings {
   webServerPort: number;
   webServerBind: string;
   projectPath: string | null;
+  sidebarStyle: string;
 }
 
 // Team grouping for sidebar

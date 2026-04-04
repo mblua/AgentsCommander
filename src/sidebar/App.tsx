@@ -30,9 +30,6 @@ import { settingsStore } from "../shared/stores/settings";
 import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
 import ProjectPanel from "./components/ProjectPanel";
-import TeamFilter from "./components/TeamFilter";
-import SessionList from "./components/SessionList";
-import CollapsibleSection from "./components/CollapsibleSection";
 import "./styles/sidebar.css";
 
 const SidebarApp: Component = () => {
@@ -67,6 +64,10 @@ const SidebarApp: Component = () => {
     // Apply window settings
     const appSettings = await SettingsAPI.get();
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
+    // Apply sidebar style from settings
+    if (appSettings.sidebarStyle && appSettings.sidebarStyle !== "classic") {
+      document.documentElement.dataset.sidebarStyle = appSettings.sidebarStyle;
+    }
     if (appSettings.sidebarAlwaysOnTop && isTauri) {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().setAlwaysOnTop(true);
@@ -190,11 +191,6 @@ const SidebarApp: Component = () => {
       <ActionBar />
       <div class="sidebar-scrollable">
         <ProjectPanel />
-        <CollapsibleSection title="Projects" />
-        <CollapsibleSection title="Agent Sessions">
-          <TeamFilter />
-          <SessionList />
-        </CollapsibleSection>
       </div>
     </div>
   );

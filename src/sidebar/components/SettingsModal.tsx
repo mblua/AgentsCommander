@@ -445,6 +445,22 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
 
       <div class="settings-section">
         <div class="settings-section-title">Window</div>
+        <label class="settings-field">
+          <span class="settings-label">Sidebar Style</span>
+          <select
+            class="settings-input"
+            value={settings.data!.sidebarStyle ?? "classic"}
+            onChange={(e) => {
+              updateField("sidebarStyle", e.currentTarget.value);
+              document.documentElement.dataset.sidebarStyle = e.currentTarget.value;
+            }}
+          >
+            <option value="classic">Classic</option>
+            <option value="noir-minimal">Noir Minimal</option>
+            <option value="card-sections">Card Sections</option>
+            <option value="command-center">Command Center</option>
+          </select>
+        </label>
         <label class="settings-checkbox-field">
           <input
             type="checkbox"

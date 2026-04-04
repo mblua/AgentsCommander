@@ -2635,3 +2635,178 @@ html, body, #root {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* =============================================================================
+   SIDEBAR STYLE: Noir Minimal
+   - Tree-like hierarchy with left-border accents and indentation
+   ============================================================================= */
+
+[data-sidebar-style="noir-minimal"] .project-header {
+  padding: 8px 12px;
+  background: var(--sidebar-surface);
+  border-left: 3px solid var(--sidebar-accent);
+}
+
+[data-sidebar-style="noir-minimal"] .project-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+[data-sidebar-style="noir-minimal"] .project-content {
+  padding-left: 4px;
+}
+
+[data-sidebar-style="noir-minimal"] .ac-wg-group {
+  margin-left: 12px;
+  border-top: 1px solid var(--sidebar-border);
+  padding-top: 4px;
+}
+
+[data-sidebar-style="noir-minimal"] .ac-wg-group:last-child {
+  border-top-style: dashed;
+  border-top-color: var(--sidebar-fg-dim);
+}
+
+[data-sidebar-style="noir-minimal"] .ac-wg-name {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+[data-sidebar-style="noir-minimal"] .ac-discovery-item {
+  padding-left: calc(var(--spacing-md) + 16px);
+  border-left: 2px solid transparent;
+  transition: border-color 150ms, background 150ms;
+}
+
+[data-sidebar-style="noir-minimal"] .ac-discovery-item:hover {
+  border-left-color: var(--sidebar-accent);
+}
+
+[data-sidebar-style="noir-minimal"] .project-content .session-item {
+  padding-left: calc(var(--spacing-md) + 20px);
+}
+
+/* =============================================================================
+   SIDEBAR STYLE: Card Sections
+   - Boxed groups with surface elevation and rounded containers
+   ============================================================================= */
+
+[data-sidebar-style="card-sections"] .project-panel {
+  margin: 8px;
+}
+
+[data-sidebar-style="card-sections"] .project-header {
+  background: var(--sidebar-surface);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 6px 6px 0 0;
+  padding: 10px 12px;
+}
+
+[data-sidebar-style="card-sections"] .project-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+[data-sidebar-style="card-sections"] .project-content {
+  background: var(--sidebar-surface);
+  border: 1px solid var(--sidebar-border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  padding: 6px 8px var(--spacing-sm) 8px;
+}
+
+[data-sidebar-style="card-sections"] .ac-wg-group {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 4px;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+html.light-theme[data-sidebar-style="card-sections"] .ac-wg-group {
+  background: rgba(0, 0, 0, 0.02);
+  border-color: rgba(0, 0, 0, 0.04);
+}
+
+[data-sidebar-style="card-sections"] .ac-wg-group:last-child {
+  background: rgba(234, 179, 8, 0.04);
+  border-color: rgba(234, 179, 8, 0.08);
+}
+
+html.light-theme[data-sidebar-style="card-sections"] .ac-wg-group:last-child {
+  background: rgba(234, 179, 8, 0.06);
+  border-color: rgba(234, 179, 8, 0.12);
+}
+
+[data-sidebar-style="card-sections"] .ac-wg-header--collapsible {
+  padding: 4px 6px;
+}
+
+[data-sidebar-style="card-sections"] .ac-discovery-item {
+  padding-left: calc(var(--spacing-sm) + 8px);
+  border-radius: 3px;
+}
+
+[data-sidebar-style="card-sections"] .project-content .session-item {
+  border-radius: 3px;
+  margin: 1px 0;
+}
+
+/* =============================================================================
+   SIDEBAR STYLE: Command Center
+   - Dense, status-forward with colored left strips
+   ============================================================================= */
+
+[data-sidebar-style="command-center"] .project-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--sidebar-accent);
+}
+
+[data-sidebar-style="command-center"] .project-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--sidebar-fg);
+}
+
+[data-sidebar-style="command-center"] .ac-wg-group {
+  border-left: 4px solid var(--status-idle);
+  margin: 2px 0;
+  padding-left: 8px;
+}
+
+[data-sidebar-style="command-center"] .ac-wg-group:last-child {
+  border-left-color: var(--status-pending);
+}
+
+[data-sidebar-style="command-center"] .ac-wg-name {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+[data-sidebar-style="command-center"] .ac-wg-brief {
+  font-style: italic;
+}
+
+[data-sidebar-style="command-center"] .ac-discovery-item {
+  padding: 3px 8px 3px 12px;
+  gap: 6px;
+}
+
+[data-sidebar-style="command-center"] .ac-discovery-item-name {
+  font-size: 11px;
+}
+
+[data-sidebar-style="command-center"] .project-content .session-item {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+[data-sidebar-style="command-center"] .ac-wg-header--collapsible {
+  padding: 3px var(--spacing-md) 3px 0;
+}

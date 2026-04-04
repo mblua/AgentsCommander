@@ -91,6 +91,9 @@ pub struct AppSettings {
     /// Currently loaded project path (persisted across restarts)
     #[serde(default)]
     pub project_path: Option<String>,
+    /// Sidebar visual style: "classic", "noir-minimal", "card-sections", "command-center"
+    #[serde(default = "default_sidebar_style")]
+    pub sidebar_style: String,
 }
 
 fn default_true() -> bool {
@@ -115,6 +118,10 @@ fn default_web_port() -> u16 {
 
 fn default_web_bind() -> String {
     "127.0.0.1".to_string()
+}
+
+fn default_sidebar_style() -> String {
+    "classic".to_string()
 }
 
 impl Default for AppSettings {
@@ -156,6 +163,7 @@ impl Default for AppSettings {
             web_server_port: default_web_port(),
             web_server_bind: default_web_bind(),
             project_path: None,
+            sidebar_style: default_sidebar_style(),
         }
     }
 }
