@@ -187,6 +187,20 @@ const SessionItem: Component<{
 
   const isInactive = () => props.session.id.startsWith("inactive-");
 
+  /** Derive short "parentFolder/name" from workingDirectory for display */
+  const displayName = () => {
+    const wd = props.session.workingDirectory;
+    if (wd) {
+      const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
+      const parts = normalized.split("/");
+      if (parts.length >= 2) {
+        return parts.slice(-2).join("/");
+      }
+      return parts[parts.length - 1] || props.session.name;
+    }
+    return props.session.name;
+  };
+
   return (
     <div
       class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
@@ -197,13 +211,13 @@ const SessionItem: Component<{
         class={`session-item-status ${isInactive() ? "offline" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
       />
       <div class="session-item-info">
-        <div class="session-item-name" onDblClick={handleDoubleClick}>
-          {props.session.name.includes("/") ? (
+        <div class="session-item-name" onDblClick={handleDoubleClick} title={props.session.workingDirectory}>
+          {displayName().includes("/") ? (
             <>
-              <span class="name-prefix">{props.session.name.slice(0, props.session.name.lastIndexOf("/") + 1)}</span>
-              {props.session.name.slice(props.session.name.lastIndexOf("/") + 1)}
+              <span class="name-prefix">{displayName().slice(0, displayName().lastIndexOf("/") + 1)}</span>
+              {displayName().slice(displayName().lastIndexOf("/") + 1)}
             </>
-          ) : props.session.name}
+          ) : displayName()}
         </div>
 
         <Show when={isRecording()}>

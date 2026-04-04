@@ -262,8 +262,126 @@ pub fn run() {
             // Load saved window geometry
             let saved_settings = config::settings::load_settings();
 
+            // Collect available monitor bounds for geometry validation
+            let monitors: Vec<(f64, f64, f64, f64)> = app
+                .available_monitors()
+                .unwrap_or_default()
+                .iter()
+                .map(|m| {
+                    let pos = m.position();
+                    let size = m.size();
+                    // All physical pixels — matches outerPosition()/outerSize() used for saved geometry
+                    (
+                        pos.x as f64,
+                        pos.y as f64,
+                        pos.x as f64 + size.width as f64,
+                        pos.y as f64 + size.height as f64,
+                    )
+                })
+                .collect();
+
+            log::info!("[window-setup] {} monitors detected", monitors.len());
+            for (i, (mx, my, mx2, my2)) in monitors.iter().enumerate() {
+                log::info!("[window-setup]   monitor {}: ({}, {}) -> ({}, {})", i, mx, my, mx2, my2);
+            }
+
+            /// Check if at least 50px of a window is visible on any monitor
+            fn is_visible_on_monitors(
+                geo: &config::settings::WindowGeometry,
+                monitors: &[(f64, f64, f64, f64)],
+            ) -> bool {
+                if monitors.is_empty() {
+                    return true; // Can't validate, assume OK
+                }
+                let margin = 50.0;
+                monitors.iter().any(|(mx, my, mx2, my2)| {
+                    geo.x + geo.width > mx + margin
+                        && geo.x < mx2 - margin
+                        && geo.y + geo.height > my + margin
+                        && geo.y < my2 - margin
+                })
+            }
+
+            // Determine primary monitor size for fallback "SideBar Right" layout
+            let primary = app.primary_monitor().ok().flatten();
+            // Physical pixels — consistent with monitor bounds and saved geometry
+            let (screen_w, screen_h) = primary
+                .as_ref()
+                .map(|m| {
+                    let s = m.size();
+                    (s.width as f64, s.height as f64)
+                })
+                .unwrap_or((1920.0, 1080.0));
+            let primary_x = primary
+                .as_ref()
+                .map(|m| m.position().x as f64)
+                .unwrap_or(0.0);
+            let primary_y = primary
+                .as_ref()
+                .map(|m| m.position().y as f64)
+                .unwrap_or(0.0);
+
+            // "SideBar Right" defaults: sidebar on right edge, terminal fills the rest
+            let sidebar_w = 280.0_f64;
+            let default_sidebar = config::settings::WindowGeometry {
+                x: primary_x + screen_w - sidebar_w,
+                y: primary_y,
+                width: sidebar_w,
+                height: screen_h,
+            };
+            let default_terminal = config::settings::WindowGeometry {
+                x: primary_x,
+                y: primary_y,
+                width: screen_w - sidebar_w,
+                height: screen_h,
+            };
+
+            // Resolve sidebar geometry: saved → validate → fallback
+            let sidebar_geo = match &saved_settings.sidebar_geometry {
+                Some(geo) if is_visible_on_monitors(geo, &monitors) => {
+                    log::info!(
+                        "[window-setup] sidebar: using saved geometry ({}, {}) {}x{}",
+                        geo.x, geo.y, geo.width, geo.height
+                    );
+                    geo.clone()
+                }
+                Some(geo) => {
+                    log::warn!(
+                        "[window-setup] sidebar: saved geometry ({}, {}) {}x{} is OFF-SCREEN, falling back to SideBar Right",
+                        geo.x, geo.y, geo.width, geo.height
+                    );
+                    default_sidebar.clone()
+                }
+                None => {
+                    log::info!("[window-setup] sidebar: no saved geometry, using SideBar Right default");
+                    default_sidebar.clone()
+                }
+            };
+
+            // Resolve terminal geometry: saved → validate → fallback
+            let terminal_geo = match &saved_settings.terminal_geometry {
+                Some(geo) if is_visible_on_monitors(geo, &monitors) => {
+                    log::info!(
+                        "[window-setup] terminal: using saved geometry ({}, {}) {}x{}",
+                        geo.x, geo.y, geo.width, geo.height
+                    );
+                    geo.clone()
+                }
+                Some(geo) => {
+                    log::warn!(
+                        "[window-setup] terminal: saved geometry ({}, {}) {}x{} is OFF-SCREEN, falling back to SideBar Right",
+                        geo.x, geo.y, geo.width, geo.height
+                    );
+                    default_terminal.clone()
+                }
+                None => {
+                    log::info!("[window-setup] terminal: no saved geometry, using SideBar Right default");
+                    default_terminal.clone()
+                }
+            };
+
             // Create Sidebar window
-            let mut sidebar_builder = WebviewWindowBuilder::new(
+            let sidebar = WebviewWindowBuilder::new(
                 app,
                 "sidebar",
                 WebviewUrl::App("index.html?window=sidebar".into()),
@@ -273,19 +391,13 @@ pub fn run() {
             .expect("Failed to set sidebar icon")
             .min_inner_size(200.0, 400.0)
             .decorations(false)
-            .zoom_hotkeys_enabled(true);
-
-            if let Some(geo) = &saved_settings.sidebar_geometry {
-                sidebar_builder = sidebar_builder
-                    .inner_size(geo.width, geo.height)
-                    .position(geo.x, geo.y);
-            } else {
-                sidebar_builder = sidebar_builder.inner_size(280.0, 600.0);
-            }
-            let sidebar = sidebar_builder.build()?;
+            .zoom_hotkeys_enabled(true)
+            .inner_size(sidebar_geo.width, sidebar_geo.height)
+            .position(sidebar_geo.x, sidebar_geo.y)
+            .build()?;
 
             // Create Terminal window
-            let mut terminal_builder = WebviewWindowBuilder::new(
+            let terminal = WebviewWindowBuilder::new(
                 app,
                 "terminal",
                 WebviewUrl::App("index.html?window=terminal".into()),
@@ -295,16 +407,10 @@ pub fn run() {
             .expect("Failed to set terminal icon")
             .min_inner_size(400.0, 300.0)
             .decorations(false)
-            .zoom_hotkeys_enabled(true);
-
-            if let Some(geo) = &saved_settings.terminal_geometry {
-                terminal_builder = terminal_builder
-                    .inner_size(geo.width, geo.height)
-                    .position(geo.x, geo.y);
-            } else {
-                terminal_builder = terminal_builder.inner_size(900.0, 600.0);
-            }
-            let terminal = terminal_builder.build()?;
+            .zoom_hotkeys_enabled(true)
+            .inner_size(terminal_geo.width, terminal_geo.height)
+            .position(terminal_geo.x, terminal_geo.y)
+            .build()?;
 
             // Suppress unused variable warnings
             let _ = &sidebar;
