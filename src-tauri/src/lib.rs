@@ -262,44 +262,66 @@ pub fn run() {
             // Load saved window geometry
             let saved_settings = config::settings::load_settings();
 
-            // Collect available monitor bounds for geometry validation
-            let monitors: Vec<(f64, f64, f64, f64)> = app
+            // Collect available monitor bounds (physical) + scale factor for geometry validation
+            // Tuple: (x, y, x2, y2, scale_factor) — all positions/sizes in physical pixels
+            let monitors: Vec<(f64, f64, f64, f64, f64)> = app
                 .available_monitors()
                 .unwrap_or_default()
                 .iter()
                 .map(|m| {
                     let pos = m.position();
                     let size = m.size();
-                    // All physical pixels — matches outerPosition()/outerSize() used for saved geometry
                     (
                         pos.x as f64,
                         pos.y as f64,
                         pos.x as f64 + size.width as f64,
                         pos.y as f64 + size.height as f64,
+                        m.scale_factor(),
                     )
                 })
                 .collect();
 
             log::info!("[window-setup] {} monitors detected", monitors.len());
-            for (i, (mx, my, mx2, my2)) in monitors.iter().enumerate() {
-                log::info!("[window-setup]   monitor {}: ({}, {}) -> ({}, {})", i, mx, my, mx2, my2);
+            for (i, (mx, my, mx2, my2, scale)) in monitors.iter().enumerate() {
+                log::info!("[window-setup]   monitor {}: ({}, {}) -> ({}, {}) scale={}", i, mx, my, mx2, my2, scale);
             }
 
-            /// Check if at least 50px of a window is visible on any monitor
+            /// Check if at least 50px of a window (physical coords) is visible on any monitor
             fn is_visible_on_monitors(
                 geo: &config::settings::WindowGeometry,
-                monitors: &[(f64, f64, f64, f64)],
+                monitors: &[(f64, f64, f64, f64, f64)],
             ) -> bool {
                 if monitors.is_empty() {
                     return true; // Can't validate, assume OK
                 }
                 let margin = 50.0;
-                monitors.iter().any(|(mx, my, mx2, my2)| {
+                monitors.iter().any(|(mx, my, mx2, my2, _)| {
                     geo.x + geo.width > mx + margin
                         && geo.x < mx2 - margin
                         && geo.y + geo.height > my + margin
                         && geo.y < my2 - margin
                 })
+            }
+
+            /// Convert saved geometry (physical pixels) to logical pixels for the builder.
+            /// Finds which monitor the geometry center falls on and divides by that scale.
+            fn physical_to_logical(
+                geo: &config::settings::WindowGeometry,
+                monitors: &[(f64, f64, f64, f64, f64)],
+            ) -> config::settings::WindowGeometry {
+                let cx = geo.x + geo.width / 2.0;
+                let cy = geo.y + geo.height / 2.0;
+                let scale = monitors
+                    .iter()
+                    .find(|(mx, my, mx2, my2, _)| cx >= *mx && cx < *mx2 && cy >= *my && cy < *my2)
+                    .map(|(_, _, _, _, s)| *s)
+                    .unwrap_or(1.0);
+                config::settings::WindowGeometry {
+                    x: geo.x / scale,
+                    y: geo.y / scale,
+                    width: geo.width / scale,
+                    height: geo.height / scale,
+                }
             }
 
             // Determine primary monitor size for fallback "SideBar Right" layout
@@ -338,14 +360,16 @@ pub fn run() {
                 height: screen_h,
             };
 
-            // Resolve sidebar geometry: saved → validate → fallback
+            // Resolve sidebar geometry: saved (physical) → validate → convert to logical → fallback
             let sidebar_geo = match &saved_settings.sidebar_geometry {
                 Some(geo) if is_visible_on_monitors(geo, &monitors) => {
+                    let logical = physical_to_logical(geo, &monitors);
                     log::info!(
-                        "[window-setup] sidebar: using saved geometry ({}, {}) {}x{}",
-                        geo.x, geo.y, geo.width, geo.height
+                        "[window-setup] sidebar: saved physical ({}, {}) {}x{} → logical ({}, {}) {}x{}",
+                        geo.x, geo.y, geo.width, geo.height,
+                        logical.x, logical.y, logical.width, logical.height
                     );
-                    geo.clone()
+                    logical
                 }
                 Some(geo) => {
                     log::warn!(
@@ -360,14 +384,16 @@ pub fn run() {
                 }
             };
 
-            // Resolve terminal geometry: saved → validate → fallback
+            // Resolve terminal geometry: saved (physical) → validate → convert to logical → fallback
             let terminal_geo = match &saved_settings.terminal_geometry {
                 Some(geo) if is_visible_on_monitors(geo, &monitors) => {
+                    let logical = physical_to_logical(geo, &monitors);
                     log::info!(
-                        "[window-setup] terminal: using saved geometry ({}, {}) {}x{}",
-                        geo.x, geo.y, geo.width, geo.height
+                        "[window-setup] terminal: saved physical ({}, {}) {}x{} → logical ({}, {}) {}x{}",
+                        geo.x, geo.y, geo.width, geo.height,
+                        logical.x, logical.y, logical.width, logical.height
                     );
-                    geo.clone()
+                    logical
                 }
                 Some(geo) => {
                     log::warn!(
