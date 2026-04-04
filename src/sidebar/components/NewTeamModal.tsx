@@ -60,12 +60,11 @@ const NewTeamModal: Component<{
     try {
       const paths = projectStore.projects.map((p) => p.path);
       const result = await EntityAPI.listAllAgents(paths);
-      const entries: AgentEntry[] = [];
-      for (const proj of result) {
-        for (const agent of proj.agents) {
-          entries.push({ name: agent.name, path: agent.path, projectName: proj.projectName });
-        }
-      }
+      const entries: AgentEntry[] = result.map((a) => ({
+        name: a.name,
+        path: a.path,
+        projectName: a.projectName,
+      }));
       setAllAgents(entries);
     } catch (e) {
       console.error("list_all_agents failed:", e);

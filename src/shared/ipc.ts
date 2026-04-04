@@ -284,7 +284,7 @@ export const EntityAPI = {
     transport.invoke<void>("create_agent_matrix", { projectPath, name, description }),
 
   listAllAgents: (projectPaths: string[]) =>
-    transport.invoke<{ projectPath: string; projectName: string; agents: { name: string; path: string }[] }[]>(
+    transport.invoke<{ name: string; description: string; path: string; projectName: string }[]>(
       "list_all_agents",
       { projectPaths }
     ),
