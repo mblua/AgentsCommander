@@ -1,6 +1,6 @@
 import { isTauri } from "./platform";
 
-const SIDEBAR_WIDTH_RATIO = 0.35;
+const SIDEBAR_WIDTH_RATIO = 0.4;
 
 export type LayoutSide = "left" | "right";
 
