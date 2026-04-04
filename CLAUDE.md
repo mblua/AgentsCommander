@@ -279,6 +279,18 @@ Config export/import, session history, notifications, snippets, cross-platform.
 - Merge a `main` solo via PR o merge explícito del usuario
 - **SIEMPRE hacer `git fetch origin` antes de cualquier operación contra `main`**. Nunca operar contra un `main` local que puede estar desactualizado. Esto aplica a: merge, rebase, diff, log comparativo, o cualquier referencia a main. Usar `origin/main` después del fetch.
 
+### Always Pull Before New Work — MANDATORY
+- **Before starting ANY new task** (feature, fix, chore, or any code change), ALWAYS run:
+  ```bash
+  git fetch origin
+  git pull origin main   # if on main
+  # OR
+  git merge origin/main  # if on a feature branch
+  ```
+- This ensures you never start work on stale code that is missing recent merges, renames, config changes, or fixes.
+- **This applies to every new conversation, every new task, every branch creation.** No exceptions.
+- If `git pull` reveals conflicts, resolve them BEFORE starting new work.
+
 ### General
 - No over-engineering. No premature abstractions
 - Test Rust modules in isolation before wiring to frontend
