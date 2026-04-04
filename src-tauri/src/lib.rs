@@ -303,22 +303,24 @@ pub fn run() {
             }
 
             // Determine primary monitor size for fallback "SideBar Right" layout
+            // Convert to logical pixels (physical / scale) since WebviewWindowBuilder
+            // ::inner_size() and ::position() expect logical coordinates
             let primary = app.primary_monitor().ok().flatten();
-            // Physical pixels — consistent with monitor bounds and saved geometry
+            let primary_scale = primary.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
             let (screen_w, screen_h) = primary
                 .as_ref()
                 .map(|m| {
                     let s = m.size();
-                    (s.width as f64, s.height as f64)
+                    (s.width as f64 / primary_scale, s.height as f64 / primary_scale)
                 })
                 .unwrap_or((1920.0, 1080.0));
             let primary_x = primary
                 .as_ref()
-                .map(|m| m.position().x as f64)
+                .map(|m| m.position().x as f64 / primary_scale)
                 .unwrap_or(0.0);
             let primary_y = primary
                 .as_ref()
-                .map(|m| m.position().y as f64)
+                .map(|m| m.position().y as f64 / primary_scale)
                 .unwrap_or(0.0);
 
             // "SideBar Right" defaults: sidebar on right edge, terminal fills the rest
