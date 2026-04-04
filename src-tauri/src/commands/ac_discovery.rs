@@ -85,19 +85,25 @@ fn agent_display_name(project_folder: &str, dir_name: &str) -> String {
 
 /// Resolve an agent ref to a display name. Handles both relative refs
 /// (e.g. "../_agent_tech-lead") and absolute paths.
+/// For relative refs, uses project_folder as origin. For absolute paths,
+/// extracts the origin project from the folder before ".ac-new".
 fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
-    // Normalize to forward slashes and strip relative prefixes
     let normalized = agent_ref.replace('\\', "/");
     let trimmed = normalized
         .trim_start_matches("../")
         .trim_start_matches("./");
-    // If still looks like an absolute path, extract just the last segment
-    let dir_name = if trimmed.contains(':') || trimmed.starts_with('/') {
-        trimmed.rsplit('/').next().unwrap_or(trimmed)
+    if trimmed.contains(':') || trimmed.starts_with('/') {
+        // Absolute path: extract origin project from folder before .ac-new
+        let parts: Vec<&str> = trimmed.split('/').collect();
+        let origin = parts.iter()
+            .position(|p| *p == ".ac-new")
+            .and_then(|i| if i > 0 { Some(parts[i - 1]) } else { None })
+            .unwrap_or(project_folder);
+        let dir_name = parts.last().unwrap_or(&trimmed);
+        agent_display_name(origin, dir_name)
     } else {
-        trimmed
-    };
-    agent_display_name(project_folder, dir_name)
+        agent_display_name(project_folder, trimmed)
+    }
 }
 
 /// Detect git branch synchronously for a given directory path.
