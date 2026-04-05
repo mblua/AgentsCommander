@@ -41,6 +41,10 @@ pub type AcrcCooldownMap = Arc<Mutex<HashMap<Uuid, std::time::Instant>>>;
 /// Minimum interval between consecutive ACRC injections for the same session.
 const ACRC_COOLDOWN_SECS: u64 = 10;
 
+/// Short cooldown after a failed injection to prevent retry storms
+/// when an agent emits %%ACRC%% in a tight loop but injection keeps failing.
+const ACRC_FAILURE_COOLDOWN_SECS: u64 = 3;
+
 pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     output_senders: OutputSenderMap,
@@ -267,9 +271,20 @@ impl PtyManager {
                         // Record PTY activity for idle detection
                         idle_detector.record_activity_with_bytes(id, n);
 
-                        // Scan for response markers and credential requests
-                        if let Ok(text) = std::str::from_utf8(&data) {
-                            scan_response_markers(id, text, &response_watchers);
+                        // Scan for response markers and credential requests.
+                        // Use from_utf8_lossy to prevent silent detection skips
+                        // when a multi-byte UTF-8 character is split at the 4096-byte
+                        // read boundary. The ACRC marker and response markers are pure
+                        // ASCII, so replacement chars (U+FFFD) don't affect detection.
+                        let text = String::from_utf8_lossy(&data);
+                        if text.contains('\u{FFFD}') {
+                            log::debug!(
+                                "[PTY] session {} chunk had invalid UTF-8 at buffer boundary ({} bytes, {} replacement chars)",
+                                id, n, text.matches('\u{FFFD}').count()
+                            );
+                        }
+                        {
+                            scan_response_markers(id, &text, &response_watchers);
 
                             // Detect %%ACRC%% with cross-buffer support and debounce.
                             // Use line-based matching: only trigger when %%ACRC%% is a
@@ -305,10 +320,9 @@ impl PtyManager {
                                             .map(|mut set| !set.insert(id))
                                             .unwrap_or(false);
                                         if !already_pending {
-                                            // Set cooldown immediately after passing both checks
-                                            if let Ok(mut map) = acrc_cooldowns.lock() {
-                                                map.insert(id, std::time::Instant::now());
-                                            }
+                                            // Cooldown is set AFTER successful injection
+                                            // (inside the async task) so that failed
+                                            // injections don't block retries.
                                             true
                                         } else {
                                             log::info!("[ACRC] already pending for session {}, skipping", id);
@@ -320,11 +334,28 @@ impl PtyManager {
                                     log::info!("[ACRC] injecting credentials for session {}", id);
                                     let app = app_handle.clone();
                                     let pending = Arc::clone(&acrc_pending);
+                                    let cooldowns = Arc::clone(&acrc_cooldowns);
                                     tauri::async_runtime::spawn(async move {
-                                        inject_credentials(&app, id).await;
+                                        let success = inject_credentials(&app, id).await;
+                                        // Set cooldown: full duration on success, short on
+                                        // failure to prevent retry storms while still
+                                        // allowing prompt retries for transient errors.
+                                        if let Ok(mut map) = cooldowns.lock() {
+                                            if success {
+                                                map.insert(id, std::time::Instant::now());
+                                            } else {
+                                                // Use failure cooldown offset so the elapsed
+                                                // check against ACRC_COOLDOWN_SECS expires
+                                                // after ACRC_FAILURE_COOLDOWN_SECS instead.
+                                                let offset = std::time::Duration::from_secs(
+                                                    ACRC_COOLDOWN_SECS - ACRC_FAILURE_COOLDOWN_SECS
+                                                );
+                                                map.insert(id, std::time::Instant::now() - offset);
+                                            }
+                                        }
                                         if let Ok(mut set) = pending.lock() {
                                             set.remove(&id);
-                                            log::debug!("[ACRC] pending flag cleared for session {}", id);
+                                            log::debug!("[ACRC] pending flag cleared for session {} (success={})", id, success);
                                         }
                                     });
                                 }
@@ -622,7 +653,8 @@ fn scan_response_markers(session_id: Uuid, text: &str, watchers: &ResponseWatche
 }
 
 /// Inject session credentials into a PTY in response to a %%ACRC%% marker.
-async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
+/// Returns `true` if injection succeeded, `false` on any failure.
+async fn inject_credentials(app: &AppHandle, session_id: Uuid) -> bool {
     log::debug!("[ACRC] inject_credentials START for session {}", session_id);
     let session_mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
     let mgr = session_mgr.read().await;
@@ -634,8 +666,8 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
             s
         }
         None => {
-            log::warn!("[ACRC] session {} not found", session_id);
-            return;
+            log::warn!("[ACRC] session {} not found — will allow immediate retry", session_id);
+            return false;
         }
     };
 
@@ -683,11 +715,13 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
     .await
     {
         log::warn!(
-            "[ACRC] failed to inject credentials for session {}: {}",
+            "[ACRC] failed to inject credentials for session {} — will allow immediate retry: {}",
             session_id,
             e
         );
-    } else {
-        log::info!("[ACRC] credentials injected for session {}", session_id);
+        return false;
     }
+
+    log::info!("[ACRC] credentials injected for session {}", session_id);
+    true
 }
