@@ -35,6 +35,15 @@ function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | und
   return sessionsStore.findSessionByName(replicaSessionName(wg, replica));
 }
 
+/** Check if a replica is the coordinator of its workgroup's team */
+function isReplicaCoordinator(replica: AcAgentReplica, projectFolder: string, teams: AcTeam[], teamName?: string): boolean {
+  const project = replica.originProject || projectFolder;
+  const fullRef = `${project}/${replica.name}`;
+  if (!teamName) return false;
+  const team = teams.find((t) => t.name === teamName);
+  return team ? team.coordinator === fullRef : false;
+}
+
 /** Compute CSS class for replica status dot */
 function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): string {
   const session = replicaSession(wg, replica);
@@ -367,6 +376,7 @@ const ProjectPanel: Component = () => {
                                                   if (!name) return null;
                                                   return replica.repoBranch ? `${name}/${replica.repoBranch}` : name;
                                                 };
+                                                const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName);
                                                 return (
                                                   <div
                                                     class="ac-discovery-item"
@@ -377,6 +387,9 @@ const ProjectPanel: Component = () => {
                                                     <div class="ac-discovery-item-info">
                                                       <span class="ac-discovery-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                                                       <div class="ac-discovery-badges">
+                                                        <Show when={isCoord()}>
+                                                          <span class="ac-discovery-badge coord">coordinator</span>
+                                                        </Show>
                                                         <Show when={branchLabel()}>
                                                           <span class="ac-discovery-badge branch">{branchLabel()}</span>
                                                         </Show>

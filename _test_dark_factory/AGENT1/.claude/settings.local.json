@@ -1,0 +1,10 @@
+{
+  "claudeMdExcludes": [
+    "C:/Users/maria/.claude/CLAUDE.md"
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(\"C:/Users/maria/0_repos/agentscommander_2/src-tauri/target/debug/agentscommander.exe\" send:*)"
+    ]
+  }
+}

@@ -64,6 +64,8 @@ pub struct AcWorkgroup {
     pub agents: Vec<AcAgentReplica>,
     /// Absolute path to the first repo-* directory found (for CWD)
     pub repo_path: Option<String>,
+    /// Team this workgroup belongs to (matched by replica membership)
+    pub team_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -561,6 +563,7 @@ pub async fn discover_ac_agents(
                         brief,
                         agents: wg_agents,
                         repo_path,
+                        team_name: None,
                     });
                 }
 
@@ -606,6 +609,20 @@ pub async fn discover_ac_agents(
     agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     workgroups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    // Associate each workgroup with its team by matching replica membership
+    for wg in &mut workgroups {
+        wg.team_name = teams.iter().find(|t| {
+            wg.agents.iter().any(|agent| {
+                let full_ref = format!(
+                    "{}/{}",
+                    agent.origin_project.as_deref().unwrap_or("unknown"),
+                    agent.name
+                );
+                t.agents.contains(&full_ref)
+            })
+        }).map(|t| t.name.clone());
+    }
 
     // Update the branch watcher with discovered replicas
     branch_watcher.update_replicas(&workgroups);
@@ -799,6 +816,7 @@ pub async fn discover_project(
                 brief,
                 agents: wg_agents,
                 repo_path,
+                team_name: None,
             });
         }
 
@@ -841,6 +859,20 @@ pub async fn discover_project(
     agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     workgroups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    // Associate each workgroup with its team by matching replica membership
+    for wg in &mut workgroups {
+        wg.team_name = teams.iter().find(|t| {
+            wg.agents.iter().any(|agent| {
+                let full_ref = format!(
+                    "{}/{}",
+                    agent.origin_project.as_deref().unwrap_or("unknown"),
+                    agent.name
+                );
+                t.agents.contains(&full_ref)
+            })
+        }).map(|t| t.name.clone());
+    }
 
     // Update the branch watcher with discovered replicas
     branch_watcher.update_replicas(&workgroups);

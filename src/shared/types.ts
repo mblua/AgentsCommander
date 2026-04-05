@@ -228,6 +228,7 @@ export interface AcWorkgroup {
   brief?: string;
   agents: AcAgentReplica[];
   repoPath?: string;
+  teamName?: string;
 }
 
 export interface AcDiscoveryResult {
