@@ -268,9 +268,6 @@ impl PtyManager {
                         // Record transcript (agent output)
                         transcript.record_output(id, &data);
 
-                        // Record PTY activity for idle detection
-                        idle_detector.record_activity_with_bytes(id, n);
-
                         // Scan for response markers and credential requests.
                         // Use from_utf8_lossy to prevent silent detection skips
                         // when a multi-byte UTF-8 character is split at the 4096-byte
@@ -282,6 +279,32 @@ impl PtyManager {
                                 "[PTY] session {} chunk had invalid UTF-8 at buffer boundary ({} bytes, {} replacement chars)",
                                 id, n, text.matches('\u{FFFD}').count()
                             );
+                        }
+
+                        // Record PTY activity for idle detection — but only if the
+                        // output contains meaningful visible content. Terminal escape
+                        // sequences (cursor moves, title updates, color resets, prompt
+                        // redraws) are NOT user/agent activity and must not flip the
+                        // session to busy. Strip ANSI escapes and check for printable
+                        // characters above ASCII space.
+                        {
+                            // Fast path: if no escape sequences, skip the strip
+                            // allocation and check text directly.
+                            let has_printable = if text.contains('\x1b') {
+                                strip_ansi_csi(&text)
+                                    .chars()
+                                    .any(|c| c > ' ' && c != '\u{FFFD}')
+                            } else {
+                                text.chars().any(|c| c > ' ' && c != '\u{FFFD}')
+                            };
+                            if has_printable {
+                                idle_detector.record_activity_with_bytes(id, n);
+                            } else {
+                                log::trace!(
+                                    "[idle] SKIPPED activity for {} ({} bytes, escape-only output)",
+                                    &id.to_string()[..8], n
+                                );
+                            }
                         }
                         {
                             scan_response_markers(id, &text, &response_watchers);
