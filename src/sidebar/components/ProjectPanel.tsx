@@ -174,6 +174,7 @@ const ProjectPanel: Component = () => {
         const [editingTeam, setEditingTeam] = createSignal<AcTeam | null>(null);
         const [deletingTeam, setDeletingTeam] = createSignal<AcTeam | null>(null);
         const [deleteError, setDeleteError] = createSignal("");
+        const [deleteInProgress, setDeleteInProgress] = createSignal(false);
 
         let dismissCtx: (() => void) | null = null;
 
@@ -655,7 +656,10 @@ const ProjectPanel: Component = () => {
                       <button
                         class="new-agent-create-btn"
                         style={{ "background": "var(--danger, #c0392b)" }}
+                        disabled={deleteInProgress()}
                         onClick={async () => {
+                          if (deleteInProgress()) return;
+                          setDeleteInProgress(true);
                           const team = deletingTeam()!;
                           try {
                             await EntityAPI.deleteTeam(proj.path, team.name);
@@ -663,13 +667,15 @@ const ProjectPanel: Component = () => {
                           } catch (e: any) {
                             console.error("delete_team failed:", e);
                             setDeleteError(typeof e === "string" ? e : e?.message ?? "Failed to delete team");
+                            setDeleteInProgress(false);
                             return;
                           }
                           setDeleteError("");
+                          setDeleteInProgress(false);
                           setDeletingTeam(null);
                         }}
                       >
-                        Delete
+                        {deleteInProgress() ? "Deleting..." : "Delete"}
                       </button>
                     </div>
                   </div>

@@ -29,11 +29,14 @@ pub struct RepoAssignment {
     pub agents: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamConfigResult {
+    #[serde(default)]
     pub agents: Vec<String>,
+    #[serde(default)]
     pub coordinator: String,
+    #[serde(default)]
     pub repos: Vec<RepoAssignment>,
 }
 
@@ -83,8 +86,8 @@ fn validate_existing_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("Team name cannot be empty".into());
     }
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err("Invalid team name".into());
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("Invalid team name: only alphanumeric characters and hyphens are allowed".into());
     }
     Ok(())
 }
@@ -558,44 +561,10 @@ pub async fn get_team_config(
 
     let content = std::fs::read_to_string(&config_path)
         .map_err(|e| format!("Failed to read config.json: {}", e))?;
-    let val: serde_json::Value = serde_json::from_str(&content)
+    let result: TeamConfigResult = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse config.json: {}", e))?;
 
-    let agents: Vec<String> = val
-        .get("agents")
-        .and_then(|a| a.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-
-    let coordinator = val
-        .get("coordinator")
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let repos: Vec<RepoAssignment> = val
-        .get("repos")
-        .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| {
-                    let url = v.get("url")?.as_str()?.to_string();
-                    let agents = v
-                        .get("agents")
-                        .and_then(|a| a.as_array())
-                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-                        .unwrap_or_default();
-                    Some(RepoAssignment { url, agents })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Ok(TeamConfigResult {
-        agents,
-        coordinator,
-        repos,
-    })
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------

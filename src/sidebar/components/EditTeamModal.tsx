@@ -1,31 +1,18 @@
 import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
 import { EntityAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
-import type { AcTeam } from "../../shared/types";
-
-interface AgentEntry {
-  name: string;
-  path: string;
-  projectName: string;
-}
-
-interface RepoEntry {
-  url: string;
-  agents: Set<string>;
-}
-
-type Step = 1 | 2 | 3;
+import type { AcTeam, TeamWizardAgentEntry, TeamWizardRepoEntry, TeamWizardStep } from "../../shared/types";
 
 const EditTeamModal: Component<{
   projectPath: string;
   team: AcTeam;
   onClose: () => void;
 }> = (props) => {
-  const [step, setStep] = createSignal<Step>(1);
-  const [allAgents, setAllAgents] = createSignal<AgentEntry[]>([]);
+  const [step, setStep] = createSignal<TeamWizardStep>(1);
+  const [allAgents, setAllAgents] = createSignal<TeamWizardAgentEntry[]>([]);
   const [selectedAgents, setSelectedAgents] = createSignal<Set<string>>(new Set());
   const [coordinator, setCoordinator] = createSignal<string>("");
-  const [repos, setRepos] = createSignal<RepoEntry[]>([]);
+  const [repos, setRepos] = createSignal<TeamWizardRepoEntry[]>([]);
   const [repoInput, setRepoInput] = createSignal("");
   const [error, setError] = createSignal("");
   const [saving, setSaving] = createSignal(false);
@@ -45,7 +32,7 @@ const EditTeamModal: Component<{
       ? allAgents().filter((a) => a.name.toLowerCase().includes(filter))
       : allAgents();
 
-    const map = new Map<string, AgentEntry[]>();
+    const map = new Map<string, TeamWizardAgentEntry[]>();
     for (const a of filtered) {
       const list = map.get(a.projectName) ?? [];
       list.push(a);
@@ -79,18 +66,20 @@ const EditTeamModal: Component<{
         EntityAPI.getTeamConfig(props.projectPath, props.team.name),
       ]);
 
-      const entries: AgentEntry[] = agentList.map((a) => ({
+      const entries: TeamWizardAgentEntry[] = agentList.map((a) => ({
         name: a.name,
         path: a.path,
         projectName: a.projectName,
       }));
       setAllAgents(entries);
 
-      // Pre-select agents by matching raw config paths to listAllAgents paths
-      const configAgentPaths = new Set(teamConfig.agents);
+      // Pre-select agents by matching raw config paths to listAllAgents paths.
+      // Normalize paths for case/separator differences on Windows.
+      const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+      const configAgentNorm = new Set(teamConfig.agents.map(norm));
       const matched = new Set<string>();
       for (const entry of entries) {
-        if (configAgentPaths.has(entry.path)) {
+        if (configAgentNorm.has(norm(entry.path))) {
           matched.add(entry.path);
         }
       }
@@ -98,7 +87,8 @@ const EditTeamModal: Component<{
 
       // Pre-select coordinator
       if (teamConfig.coordinator) {
-        const coordEntry = entries.find((e) => e.path === teamConfig.coordinator);
+        const coordNorm = norm(teamConfig.coordinator);
+        const coordEntry = entries.find((e) => norm(e.path) === coordNorm);
         if (coordEntry) {
           setCoordinator(coordEntry.path);
         }

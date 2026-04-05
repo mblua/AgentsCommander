@@ -237,3 +237,24 @@ export interface AcDiscoveryResult {
   workgroups: AcWorkgroup[];
 }
 
+// Team wizard shared types (used by NewTeamModal and EditTeamModal)
+
+export interface TeamWizardAgentEntry {
+  name: string;
+  path: string;
+  projectName: string;
+}
+
+export interface TeamWizardRepoEntry {
+  url: string;
+  agents: Set<string>;
+}
+
+export type TeamWizardStep = 1 | 2 | 3;
+
+export interface TeamConfigResult {
+  agents: string[];
+  coordinator: string;
+  repos: { url: string; agents: string[] }[];
+}
+

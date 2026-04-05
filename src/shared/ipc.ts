@@ -11,6 +11,7 @@ import type {
   PhoneMessage,
   AgentInfo,
   AcDiscoveryResult,
+  TeamConfigResult,
 } from "./types";
 
 // Select transport based on runtime environment
@@ -303,11 +304,7 @@ export const EntityAPI = {
     transport.invoke<void>("update_team", { projectPath, teamName, agents, coordinator, repos }),
 
   getTeamConfig: (projectPath: string, teamName: string) =>
-    transport.invoke<{
-      agents: string[];
-      coordinator: string;
-      repos: { url: string; agents: string[] }[];
-    }>("get_team_config", { projectPath, teamName }),
+    transport.invoke<TeamConfigResult>("get_team_config", { projectPath, teamName }),
 
   createWorkgroup: (projectPath: string, teamName: string, brief?: string) =>
     transport.invoke<void>("create_workgroup", {
