@@ -2452,6 +2452,11 @@ html, body, #root {
   margin-bottom: 2px;
 }
 
+.ac-wg-subgroup {
+  padding-left: 8px;
+  margin-bottom: 1px;
+}
+
 .ac-empty-hint {
   padding: 4px 12px 4px 24px;
   font-size: 11px;
@@ -2737,6 +2742,12 @@ html, body, #root {
   border-top-color: var(--sidebar-fg-dim);
 }
 
+[data-sidebar-style="noir-minimal"] .ac-wg-subgroup {
+  margin-left: 8px;
+  border-top: 1px solid var(--sidebar-border);
+  padding-top: 3px;
+}
+
 [data-sidebar-style="noir-minimal"] .ac-wg-name {
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -2810,6 +2821,17 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-group:last-child {
   border-color: rgba(234, 179, 8, 0.12);
 }
 
+[data-sidebar-style="card-sections"] .ac-wg-subgroup {
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: 3px;
+  margin: 2px 0;
+  padding: 4px 6px;
+}
+
+html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
+  background: rgba(0, 0, 0, 0.015);
+}
+
 [data-sidebar-style="card-sections"] .ac-wg-header--collapsible {
   padding: 4px 6px;
 }
@@ -2851,6 +2873,12 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-group:last-child {
 
 [data-sidebar-style="command-center"] .ac-wg-group:last-child {
   border-left-color: var(--status-pending);
+}
+
+[data-sidebar-style="command-center"] .ac-wg-subgroup {
+  border-left: 2px solid var(--status-idle);
+  margin: 1px 0;
+  padding-left: 6px;
 }
 
 [data-sidebar-style="command-center"] .ac-wg-name {
