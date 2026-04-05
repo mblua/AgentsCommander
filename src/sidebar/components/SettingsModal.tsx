@@ -34,6 +34,13 @@ const AGENT_PRESETS: Record<string, Omit<AgentConfig, "id">> = {
     gitPullBefore: false,
     excludeGlobalClaudeMd: false,
   },
+  gemini: {
+    label: "Gemini CLI",
+    command: "gemini --approval-mode=yolo -m gemini-3-pro-preview",
+    color: "#4285f4",
+    gitPullBefore: false,
+    excludeGlobalClaudeMd: false,
+  },
 };
 
 let idCounter = 0;
@@ -171,7 +178,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
 
   const hasAgentByCommand = (command: string): boolean => {
     if (!settings.data) return false;
-    return settings.data.agents.some((a) => a.command === command);
+    return settings.data.agents.some((a) => a.command.startsWith(command));
   };
 
   // ── Validation ──
@@ -485,6 +492,18 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
               style={{ background: AGENT_PRESETS.codex.color }}
             />
             + Codex
+          </button>
+        </Show>
+        <Show when={!hasAgentByCommand("gemini")}>
+          <button
+            class="settings-preset-btn"
+            onClick={() => addAgent(AGENT_PRESETS.gemini)}
+          >
+            <span
+              class="settings-color-dot"
+              style={{ background: AGENT_PRESETS.gemini.color }}
+            />
+            + Gemini CLI
           </button>
         </Show>
         <button class="settings-add-btn" onClick={() => addAgent()}>
