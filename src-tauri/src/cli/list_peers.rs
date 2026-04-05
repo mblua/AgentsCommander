@@ -388,6 +388,13 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
 }
 
 pub fn execute(args: ListPeersArgs) -> i32 {
+    // Validate token before any discovery
+    if let Err(msg) = crate::cli::validate_cli_token(&args.token) {
+        eprintln!("{}", msg);
+        return 1;
+    }
+
+
     let root = match args.root {
         Some(ref r) => r.clone(),
         None => {
@@ -572,7 +579,6 @@ pub fn execute(args: ListPeersArgs) -> i32 {
     match serde_json::to_string_pretty(&peers) {
         Ok(json) => {
             println!("{}", json);
-            let _ = args; // token validated if needed
             0
         }
         Err(e) => {

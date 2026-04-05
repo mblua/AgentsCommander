@@ -123,6 +123,15 @@ pub fn execute(args: SendArgs) -> i32 {
             return 1;
         }
     };
+    // Validate token before proceeding
+    let is_root = match crate::cli::validate_cli_token(&args.token) {
+        Ok((_token, root)) => root,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return 1;
+        }
+    };
+
     let sender = agent_name_from_root(&root);
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
@@ -138,11 +147,6 @@ pub fn execute(args: SendArgs) -> i32 {
     }
 
     // ── Pre-validate routing ──────────────────────────────────────────────
-    // Root token bypasses all routing checks. Only load settings if a token is present.
-    let is_root = args.token.as_deref().is_some_and(|t| {
-        let settings = crate::config::settings::load_settings();
-        settings.root_token.as_deref().is_some_and(|rt| rt == t)
-    });
 
     if !is_root {
         // Load discovered teams and check if sender can reach destination BEFORE
