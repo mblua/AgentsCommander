@@ -148,7 +148,9 @@ pub fn run() {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 tauri::async_runtime::spawn(async move {
-                    mgr_clone.read().await.mark_idle(id).await;
+                    let mgr = mgr_clone.read().await;
+                    mgr.mark_idle(id).await;
+                    crate::config::sessions_persistence::persist_current_state(&mgr).await;
                 });
             }
         },
@@ -160,7 +162,9 @@ pub fn run() {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 tauri::async_runtime::spawn(async move {
-                    mgr_clone.read().await.mark_busy(id).await;
+                    let mgr = mgr_clone.read().await;
+                    mgr.mark_busy(id).await;
+                    crate::config::sessions_persistence::persist_current_state(&mgr).await;
                 });
             }
         },

@@ -3,10 +3,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::session::manager::SessionManager;
-use crate::session::session::TEMP_SESSION_PREFIX;
+use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
 /// Minimal session data needed to restore a session on next app start.
 /// No UUID, no status - just the "recipe" to re-create it.
+///
+/// The optional runtime fields (id, status, waiting_for_input, created_at) are
+/// populated during live snapshots so the CLI can read session state from the
+/// file without requiring an HTTP request. They are ignored on restore.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSession {
@@ -23,6 +27,21 @@ pub struct PersistedSession {
     /// Prefix prepended to the detected branch (e.g., "agentscommander" → "agentscommander/main")
     #[serde(default)]
     pub git_branch_prefix: Option<String>,
+
+    // ── Runtime fields (populated during live snapshots, ignored on restore) ──
+
+    /// Session UUID (only present in live snapshots)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Current session status (only present in live snapshots)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<SessionStatus>,
+    /// Whether the session is waiting for user input (only present in live snapshots)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for_input: Option<bool>,
+    /// ISO 8601 creation timestamp (only present in live snapshots)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
 }
 
 fn sessions_path() -> Option<PathBuf> {
@@ -82,6 +101,22 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
     }
 
     result
+}
+
+/// Load sessions from disk without deduplication or temp-session filtering.
+/// Used by the CLI to read the live snapshot as-is.
+pub fn load_sessions_raw() -> Vec<PersistedSession> {
+    let path = match sessions_path() {
+        Some(p) => p,
+        None => return vec![],
+    };
+    if !path.exists() {
+        return vec![];
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Err(_) => vec![],
+    }
 }
 
 /// Load persisted sessions from the app config directory (see config_dir()).
@@ -181,6 +216,11 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             was_active: active_id.as_deref() == Some(&s.id),
             git_branch_source: s.git_branch_source.clone(),
             git_branch_prefix: s.git_branch_prefix.clone(),
+            // Runtime fields for CLI consumption
+            id: Some(s.id.clone()),
+            status: Some(s.status.clone()),
+            waiting_for_input: Some(s.waiting_for_input),
+            created_at: Some(s.created_at.clone()),
         })
         .collect();
 

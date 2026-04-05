@@ -161,6 +161,9 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
             s.waiting_for_input = true;
+            if matches!(s.status, SessionStatus::Running) {
+                s.status = SessionStatus::Idle;
+            }
         }
     }
 
@@ -168,6 +171,9 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
             s.waiting_for_input = false;
+            if matches!(s.status, SessionStatus::Idle) {
+                s.status = SessionStatus::Running;
+            }
         }
     }
 

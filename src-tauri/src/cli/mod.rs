@@ -50,6 +50,41 @@ pub fn attach_parent_console() {
     // No-op on non-Windows
 }
 
+/// Validate CLI token: must be provided and must be either the root_token or a valid UUID.
+/// Returns `Ok((token_string, is_root))` on success, or an error message on failure.
+/// `is_root` is true when the token matches the persisted root_token in settings.
+pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), String> {
+    let token = match token {
+        Some(t) if !t.is_empty() => t.clone(),
+        _ => {
+            return Err(
+                "Error: --token is required. Your session token is in the \
+                 '# === Session Credentials ===' block.\n\
+                 If you don't have one, output %%ACRC%% to request fresh credentials."
+                    .to_string(),
+            );
+        }
+    };
+
+    // Accept root_token from settings
+    let settings = crate::config::settings::load_settings();
+    if settings.root_token.as_deref() == Some(&token) {
+        return Ok((token, true));
+    }
+
+    // Otherwise must be a valid UUID (all session tokens are UUIDs)
+    if uuid::Uuid::parse_str(&token).is_err() {
+        let display = if token.len() > 8 { &token[..8] } else { &token };
+        return Err(format!(
+            "Error: invalid token '{}...'. Expected a valid session token (UUID) or root token.\n\
+             Output %%ACRC%% to request fresh credentials.",
+            display
+        ));
+    }
+
+    Ok((token, false))
+}
+
 /// Dispatch CLI subcommands. Returns exit code.
 pub fn handle_cli(cmd: Commands) -> i32 {
     attach_parent_console();
