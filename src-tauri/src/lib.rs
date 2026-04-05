@@ -81,10 +81,49 @@ impl AppOutbox {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize logging — RUST_LOG defaults to info for our crate
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("agentscommander=info")
-    ).init();
+    // Initialize logging — stderr + file at config_dir()/app.log
+    {
+        use std::io::Write;
+
+        // Resolve log file path: <config_dir>/app.log
+        let log_file: Option<std::sync::Mutex<std::fs::File>> = config::config_dir()
+            .and_then(|dir| {
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join("app.log");
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .ok()
+                    .map(|f| {
+                        eprintln!("[log] file logging to {}", path.display());
+                        std::sync::Mutex::new(f)
+                    })
+            });
+        let log_file = std::sync::Arc::new(log_file);
+
+        env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("agentscommander=info")
+        )
+        .format({
+            let log_file = std::sync::Arc::clone(&log_file);
+            move |buf, record| {
+                let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                let line = format!("{} [{}] {} — {}\n",
+                    ts, record.level(), record.target(), record.args());
+                // Write to stderr (via env_logger's buf)
+                buf.write_all(line.as_bytes())?;
+                // Tee to file
+                if let Some(ref file_mtx) = *log_file {
+                    if let Ok(mut f) = file_mtx.lock() {
+                        let _ = f.write_all(line.as_bytes());
+                    }
+                }
+                Ok(())
+            }
+        })
+        .init();
+    }
 
     // Generate master token — printed once to stdout, never persisted
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());

@@ -384,9 +384,11 @@ The `--help` text documents every flag, its purpose, accepted values, priority r
 
 ## Session credentials
 
-Your session token and agent root are provided on demand. To request them, output the marker:
+Your session token and agent root are provided on demand. To request them, output the marker three times on separate lines:
 
 ```
+%%ACRC%%
+%%ACRC%%
 %%ACRC%%
 ```
 

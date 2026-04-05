@@ -66,7 +66,7 @@ pub async fn inject_text_into_session(
                 log::error!("[inject] PTY write FAILED session={}: {}", session_id, e);
                 format!("PTY write failed: {}", e)
             })?;
-        log::debug!("[inject] PTY write OK session={} bytes={}", session_id, text.len());
+        log::info!("[inject] PTY write OK session={} bytes={}", session_id, text.len());
     }
 
     // Record transcript

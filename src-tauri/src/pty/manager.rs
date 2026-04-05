@@ -41,6 +41,10 @@ pub type AcrcCooldownMap = Arc<Mutex<HashMap<Uuid, std::time::Instant>>>;
 /// Minimum interval between consecutive ACRC injections for the same session.
 const ACRC_COOLDOWN_SECS: u64 = 10;
 
+/// Short cooldown after a failed injection to prevent retry storms
+/// when an agent emits %%ACRC%% in a tight loop but injection keeps failing.
+const ACRC_FAILURE_COOLDOWN_SECS: u64 = 3;
+
 pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     output_senders: OutputSenderMap,
@@ -267,9 +271,20 @@ impl PtyManager {
                         // Record PTY activity for idle detection
                         idle_detector.record_activity_with_bytes(id, n);
 
-                        // Scan for response markers and credential requests
-                        if let Ok(text) = std::str::from_utf8(&data) {
-                            scan_response_markers(id, text, &response_watchers);
+                        // Scan for response markers and credential requests.
+                        // Use from_utf8_lossy to prevent silent detection skips
+                        // when a multi-byte UTF-8 character is split at the 4096-byte
+                        // read boundary. The ACRC marker and response markers are pure
+                        // ASCII, so replacement chars (U+FFFD) don't affect detection.
+                        let text = String::from_utf8_lossy(&data);
+                        if text.contains('\u{FFFD}') {
+                            log::debug!(
+                                "[PTY] session {} chunk had invalid UTF-8 at buffer boundary ({} bytes, {} replacement chars)",
+                                id, n, text.matches('\u{FFFD}').count()
+                            );
+                        }
+                        {
+                            scan_response_markers(id, &text, &response_watchers);
 
                             // Detect %%ACRC%% with cross-buffer support and debounce.
                             // Use line-based matching: only trigger when %%ACRC%% is a
@@ -305,10 +320,9 @@ impl PtyManager {
                                             .map(|mut set| !set.insert(id))
                                             .unwrap_or(false);
                                         if !already_pending {
-                                            // Set cooldown immediately after passing both checks
-                                            if let Ok(mut map) = acrc_cooldowns.lock() {
-                                                map.insert(id, std::time::Instant::now());
-                                            }
+                                            // Cooldown is set AFTER successful injection
+                                            // (inside the async task) so that failed
+                                            // injections don't block retries.
                                             true
                                         } else {
                                             log::info!("[ACRC] already pending for session {}, skipping", id);
@@ -317,14 +331,50 @@ impl PtyManager {
                                     }
                                 };
                                 if should_inject {
-                                    log::info!("[ACRC] injecting credentials for session {}", id);
+                                    log::info!("[ACRC] spawning inject task for session {}", id);
                                     let app = app_handle.clone();
                                     let pending = Arc::clone(&acrc_pending);
+                                    let cooldowns = Arc::clone(&acrc_cooldowns);
                                     tauri::async_runtime::spawn(async move {
-                                        inject_credentials(&app, id).await;
+                                        // Guard: always clear pending flag, even on panic.
+                                        // Without this, a panic in inject_credentials would
+                                        // permanently lock out this session from future ACRC.
+                                        struct PendingGuard {
+                                            pending: AcrcPendingSet,
+                                            id: Uuid,
+                                        }
+                                        impl Drop for PendingGuard {
+                                            fn drop(&mut self) {
+                                                if let Ok(mut set) = self.pending.lock() {
+                                                    set.remove(&self.id);
+                                                }
+                                            }
+                                        }
+                                        let _guard = PendingGuard {
+                                            pending: Arc::clone(&pending),
+                                            id,
+                                        };
+
+                                        let success = inject_credentials(&app, id).await;
+                                        log::info!("[ACRC] inject task completed for session {} success={}", id, success);
+                                        // Set cooldown: full duration on success, short on
+                                        // failure to prevent retry storms while still
+                                        // allowing prompt retries for transient errors.
+                                        if let Ok(mut map) = cooldowns.lock() {
+                                            if success {
+                                                map.insert(id, std::time::Instant::now());
+                                            } else {
+                                                let offset = std::time::Duration::from_secs(
+                                                    ACRC_COOLDOWN_SECS - ACRC_FAILURE_COOLDOWN_SECS
+                                                );
+                                                map.insert(id, std::time::Instant::now() - offset);
+                                            }
+                                        }
+                                        // PendingGuard clears pending on drop, but do it
+                                        // explicitly here for the log message.
                                         if let Ok(mut set) = pending.lock() {
                                             set.remove(&id);
-                                            log::debug!("[ACRC] pending flag cleared for session {}", id);
+                                            log::info!("[ACRC] pending flag cleared for session {} (success={})", id, success);
                                         }
                                     });
                                 }
@@ -622,23 +672,35 @@ fn scan_response_markers(session_id: Uuid, text: &str, watchers: &ResponseWatche
 }
 
 /// Inject session credentials into a PTY in response to a %%ACRC%% marker.
-async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
-    log::debug!("[ACRC] inject_credentials START for session {}", session_id);
+/// Returns `true` if injection succeeded, `false` on any failure.
+async fn inject_credentials(app: &AppHandle, session_id: Uuid) -> bool {
+    log::info!("[ACRC] inject_credentials START for session {}", session_id);
+
+    // Step 1: Acquire SessionManager read lock
+    log::info!("[ACRC] step 1: acquiring SessionManager lock for {}", session_id);
     let session_mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
     let mgr = session_mgr.read().await;
+    log::info!("[ACRC] step 1: lock acquired for {}", session_id);
+
+    // Step 2: List sessions and find ours
     let sessions: Vec<crate::session::session::SessionInfo> = mgr.list_sessions().await;
+    log::info!("[ACRC] step 2: listed {} sessions, looking for {}", sessions.len(), session_id);
 
     let session = match sessions.iter().find(|s| s.id == session_id.to_string()) {
         Some(s) => {
-            log::debug!("[ACRC] session {} found, preparing credentials", session_id);
+            log::info!("[ACRC] step 2: session {} found (name={:?}, cwd={:?})",
+                session_id, s.name, s.working_directory);
             s
         }
         None => {
-            log::warn!("[ACRC] session {} not found", session_id);
-            return;
+            let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+            log::warn!("[ACRC] session {} NOT FOUND in {} sessions: {:?} — will retry",
+                session_id, sessions.len(), ids);
+            return false;
         }
     };
 
+    // Step 3: Resolve binary info from current_exe()
     let exe_path = std::env::current_exe().ok();
     let binary_name = exe_path.as_ref()
         .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
@@ -650,7 +712,9 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
         raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
     };
     let local_dir = format!(".{}", &binary_name);
+    log::info!("[ACRC] step 3: binary={}, path={}, localDir={}", binary_name, binary_path, local_dir);
 
+    // Step 4: Format credential block
     let cred_block = format!(
         concat!(
             "\n",
@@ -661,7 +725,6 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
             "# BinaryPath: {binary_path}\n",
             "# LocalDir: {local_dir}\n",
             "# === End Credentials ===\n",
-            "\r",
         ),
         token = session.token,
         root = session.working_directory,
@@ -669,25 +732,30 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
         binary_path = binary_path,
         local_dir = local_dir,
     );
+    log::info!("[ACRC] step 4: credential block formatted ({} bytes) for session {}", cred_block.len(), session_id);
 
     drop(mgr);
 
+    // Step 5: Write credential block into PTY
+    log::info!("[ACRC] step 5: calling inject_text_into_session for {}", session_id);
     if let Err(e) = crate::pty::inject::inject_text_into_session(
         app,
         session_id,
         &cred_block,
-        false,
+        true, // Claude Code needs explicit Enter (submit=true) to process the injected text
         crate::pty::transcript::InjectReason::TokenRefresh,
         None,
     )
     .await
     {
         log::warn!(
-            "[ACRC] failed to inject credentials for session {}: {}",
+            "[ACRC] step 5 FAILED: inject into PTY for session {} — will retry: {}",
             session_id,
             e
         );
-    } else {
-        log::info!("[ACRC] credentials injected for session {}", session_id);
+        return false;
     }
+
+    log::info!("[ACRC] credentials injected for session {}", session_id);
+    true
 }
