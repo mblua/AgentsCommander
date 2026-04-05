@@ -19,10 +19,18 @@ pub fn agent_local_dir_name() -> String {
     format!(".{}", exe)
 }
 
-/// Returns the app config directory based on build profile.
-/// DEV: `~/.agentscommander-new-dev`
-/// PROD/STAGE/others: `~/.agentscommander-new` (shared)
+/// Returns the app config directory — portable, next to the binary.
+/// Pattern: `<binary_parent_dir>/.<binary_file_stem>/`
+/// E.g., `C:\tools\agentscommander_standalone.exe` → `C:\tools\.agentscommander_standalone\`
+/// Fallback: `$HOME/<profile::config_dir_name()>` if current_exe() fails.
 pub fn config_dir() -> Option<PathBuf> {
+    // Primary: portable config next to the binary
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let (Some(parent), Some(stem)) = (exe_path.parent(), exe_path.file_stem()) {
+            return Some(parent.join(format!(".{}", stem.to_string_lossy())));
+        }
+    }
+    // Fallback: old $HOME-based path
     let home = dirs::home_dir()?;
     Some(home.join(profile::config_dir_name()))
 }
