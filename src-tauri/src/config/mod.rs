@@ -21,7 +21,7 @@ pub fn agent_local_dir_name() -> String {
 
 /// Returns the app config directory based on build profile.
 /// DEV: `~/.agentscommander-new-dev`
-/// PROD/STAGE: `~/.agentscommander` (shared)
+/// PROD/STAGE/others: `~/.agentscommander-new` (shared)
 pub fn config_dir() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     Some(home.join(profile::config_dir_name()))
