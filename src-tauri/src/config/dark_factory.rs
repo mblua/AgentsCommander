@@ -168,9 +168,10 @@ pub fn set_last_coding_agent(
     app_label: &str,
     ac_session_id: Option<&str>,
 ) -> Result<(), String> {
-    let config_dir = std::path::Path::new(repo_path).join(".agentscommander");
+    let local_dir_name = crate::config::agent_local_dir_name();
+    let config_dir = std::path::Path::new(repo_path).join(local_dir_name.as_str());
     std::fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Failed to create .agentscommander dir: {}", e))?;
+        .map_err(|e| format!("Failed to create {} dir: {}", local_dir_name, e))?;
 
     let config_path = config_dir.join("config.json");
 
@@ -387,7 +388,7 @@ pub fn sync_agent_configs(config: &DarkFactoryConfig) -> Result<(), String> {
 
     // Write per-agent configs
     for (agent_path, data) in &agent_map {
-        let config_dir = Path::new(agent_path).join(".agentscommander");
+        let config_dir = Path::new(agent_path).join(crate::config::agent_local_dir_name());
 
         // Preserve existing agent identity and tooling sections
         let existing = config_dir

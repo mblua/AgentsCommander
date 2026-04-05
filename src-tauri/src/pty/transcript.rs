@@ -76,7 +76,7 @@ impl TranscriptWriter {
     /// `{cwd}/.agentscommander/transcripts/YYYYMMDD_HHMMSS_{sid8}_filtered.log`.
     pub fn register_session(&self, session_id: Uuid, cwd: &str) {
         let dir = PathBuf::from(cwd)
-            .join(".agentscommander")
+            .join(crate::config::agent_local_dir_name())
             .join("transcripts");
         if let Err(e) = fs::create_dir_all(&dir) {
             log::warn!("[transcript] Failed to create transcripts dir for {}: {}", session_id, e);

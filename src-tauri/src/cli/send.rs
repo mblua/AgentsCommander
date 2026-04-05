@@ -125,7 +125,7 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     };
     let sender = agent_name_from_root(&root);
-    let ac_dir = PathBuf::from(&root).join(".agentscommander");
+    let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
     // Validate mode — "queue" is no longer supported
     let valid_modes = ["active-only", "wake", "wake-and-sleep"];

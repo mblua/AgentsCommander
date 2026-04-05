@@ -106,7 +106,7 @@ impl MailboxPoller {
         // Collect all outbox directories to scan
         let mut outbox_dirs: Vec<PathBuf> = all_paths
             .iter()
-            .map(|p| Path::new(p).join(".agentscommander").join("outbox"))
+            .map(|p| Path::new(p).join(crate::config::agent_local_dir_name()).join("outbox"))
             .collect();
         outbox_dirs.push(PathBuf::from(&app_outbox_path));
 
@@ -637,7 +637,7 @@ impl MailboxPoller {
                 // Response file goes to the SENDER's .agentscommander/responses/
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let response_dir = std::path::PathBuf::from(sender_path)
-                        .join(".agentscommander")
+                        .join(crate::config::agent_local_dir_name())
                         .join("responses");
                     let mgr = pty_mgr.lock().map_err(|e| format!("PTY lock failed: {}", e))?;
                     mgr.register_response_watcher(session_id, rid.clone(), response_dir);
@@ -857,7 +857,7 @@ impl MailboxPoller {
         // Try lastCodingAgent from destination's config.json
         if let Some(dest_path) = self.resolve_repo_path(&msg.to, app).await {
             let config_path = Path::new(&dest_path)
-                .join(".agentscommander")
+                .join(crate::config::agent_local_dir_name())
                 .join("config.json");
             if let Ok(content) = std::fs::read_to_string(&config_path) {
                 if let Ok(local_config) = serde_json::from_str::<crate::config::dark_factory::AgentLocalConfig>(&content) {

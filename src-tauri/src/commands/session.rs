@@ -267,7 +267,7 @@ pub async fn create_session(
     // Auto-attach Telegram bot if repo has .agentscommander/config.json
     let id = Uuid::parse_str(&info.id).unwrap();
     let config_path = std::path::Path::new(&cwd)
-        .join(".agentscommander")
+        .join(crate::config::agent_local_dir_name())
         .join("config.json");
     if let Ok(contents) = tokio::fs::read_to_string(&config_path).await {
         if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&contents) {

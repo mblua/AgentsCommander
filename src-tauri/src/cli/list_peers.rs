@@ -275,7 +275,7 @@ fn read_wg_role(replica_dir: &Path) -> String {
 
 /// Build a PeerInfo for a WG replica directory. Also bootstraps IPC dirs.
 fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path) -> PeerInfo {
-    let replica_ac = agent_path.join(".agentscommander");
+    let replica_ac = agent_path.join(crate::config::agent_local_dir_name());
     let _ = std::fs::create_dir_all(replica_ac.join("inbox"));
     let _ = std::fs::create_dir_all(replica_ac.join("outbox"));
 
@@ -409,7 +409,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
     }
 
     // ── Standard teams-based discovery ───────────────────────────────
-    let ac_dir = PathBuf::from(&root).join(".agentscommander");
+    let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
     let my_name = agent_name_from_path(&root);
 
     // Read our own config
@@ -456,7 +456,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
                             continue;
                         }
 
-                        let peer_ac = Path::new(member_path).join(".agentscommander");
+                        let peer_ac = Path::new(member_path).join(crate::config::agent_local_dir_name());
                         let status = if peer_ac.join("active").exists() {
                             "active"
                         } else {
