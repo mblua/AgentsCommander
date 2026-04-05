@@ -8,6 +8,17 @@ use tauri::{AppHandle, Emitter, State};
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 
+/// Read `tooling.lastCodingAgent` from the per-instance config.json inside
+/// the given directory. Looks in `<dir>/<agent_local_dir_name>/config.json`.
+fn read_preferred_agent_id(dir: &Path) -> Option<String> {
+    let local_dir = crate::config::agent_local_dir_name();
+    let config_path = dir.join(local_dir).join("config.json");
+    std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|v| v.get("tooling")?.get("lastCodingAgent")?.as_str().map(String::from))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcAgentMatrix {
@@ -438,14 +449,9 @@ pub async fn discover_ac_agents(
                     let display_name = agent_display_name(&project_folder, &dir_name);
                     let role_exists = path.join("Role.md").exists();
 
-                    let preferred_agent_id = path.join("config.json")
-                        .exists()
-                        .then(|| std::fs::read_to_string(path.join("config.json")).ok())
-                        .flatten()
-                        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-                        .and_then(|v| v.get("tooling")?.get("lastCodingAgent")?.as_str().map(String::from));
+                    let preferred_agent_id = read_preferred_agent_id(&path);
 
-                    log::info!("[BUG#1] AC Discovery agent: dir={:?}, preferred_agent_id={:?}", dir_name, preferred_agent_id);
+                    log::info!("[ac-discovery] agent: dir={:?}, preferred_agent_id={:?}", dir_name, preferred_agent_id);
 
                     agents.push(AcAgentMatrix {
                         name: display_name,
@@ -512,11 +518,7 @@ pub async fn discover_ac_agents(
 
                                 // Resolve identity to matrix dir and read its lastCodingAgent
                                 let preferred_agent_id = identity_path.as_ref().and_then(|rel| {
-                                    let matrix_dir = wg_path.join(rel);
-                                    let matrix_config = matrix_dir.join("config.json");
-                                    std::fs::read_to_string(&matrix_config).ok()
-                                        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-                                        .and_then(|v| v.get("tooling")?.get("lastCodingAgent")?.as_str().map(String::from))
+                                    read_preferred_agent_id(&wg_path.join(rel))
                                 });
 
                                 // Extract repos from config.json and resolve to absolute paths
@@ -699,12 +701,7 @@ pub async fn discover_project(
             let display_name = agent_display_name(&project_folder, &dir_name);
             let role_exists = entry_path.join("Role.md").exists();
 
-            let preferred_agent_id = entry_path.join("config.json")
-                .exists()
-                .then(|| std::fs::read_to_string(entry_path.join("config.json")).ok())
-                .flatten()
-                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-                .and_then(|v| v.get("tooling")?.get("lastCodingAgent")?.as_str().map(String::from));
+            let preferred_agent_id = read_preferred_agent_id(&entry_path);
 
             agents.push(AcAgentMatrix {
                 name: display_name,
