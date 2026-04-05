@@ -7,14 +7,16 @@ use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
 
 #[derive(Args)]
 #[command(after_help = "\
-OUTPUT: JSON array of reachable peers. Each entry contains:\n  \
+OUTPUT: JSON array of team peers. Each entry contains:\n  \
   name              Agent name to use with `send --to` (e.g., \"repos/my-project\")\n  \
   path              Full filesystem path to the agent's root directory\n  \
   status            \"active\" if the agent has a running session, \"unknown\" otherwise\n  \
   role              Summary extracted from the agent's CLAUDE.md\n  \
   teams             List of shared team names\n  \
+  reachable         true if you can directly message this agent, false otherwise\n  \
   lastCodingAgent   Last coding CLI used (e.g., \"claude\", \"codex\"), if known\n\n\
-Only agents that share a team with you are listed. If you have no teams, the result is an empty array.")]
+All agents that belong to your team(s) are listed. Agents you cannot directly\n\
+message are included with reachable=false. If you have no teams, the result is an empty array.")]
 pub struct ListPeersArgs {
     /// Session token for authentication (from '# === Session Credentials ===' block)
     #[arg(long)]
@@ -33,6 +35,7 @@ struct PeerInfo {
     status: String,
     role: String,
     teams: Vec<String>,
+    reachable: bool,
     last_coding_agent: Option<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     coding_agents: HashMap<String, CodingAgentEntry>,
@@ -274,7 +277,7 @@ fn read_wg_role(replica_dir: &Path) -> String {
 }
 
 /// Build a PeerInfo for a WG replica directory. Also bootstraps IPC dirs.
-fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path) -> PeerInfo {
+fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path, reachable: bool) -> PeerInfo {
     let replica_ac = agent_path.join(crate::config::agent_local_dir_name());
     let _ = std::fs::create_dir_all(replica_ac.join("inbox"));
     let _ = std::fs::create_dir_all(replica_ac.join("outbox"));
@@ -298,6 +301,7 @@ fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path) -> PeerInfo
         status: status.to_string(),
         role: read_wg_role(agent_path),
         teams: vec![wg_name.to_string()],
+        reachable,
         last_coding_agent: peer_config.tooling.last_coding_agent,
         coding_agents: peer_config.tooling.coding_agents,
     }
@@ -336,15 +340,16 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
         if *agent_name == wg.my_agent_name {
             continue;
         }
-        // Communication rules: non-coordinator sees only coordinator.
-        // If coordinator is unknown, fall back to flat topology (show all).
-        if coordinator.is_some()
-            && !i_am_coordinator
-            && coordinator.as_deref() != Some(agent_name.as_str())
-        {
-            continue;
-        }
-        peers.push(build_wg_peer(agent_name, &wg.my_wg_name, agent_path));
+        // Reachability: non-coordinator can only reach the coordinator.
+        // Coordinator can reach all replicas. Unknown coordinator → flat topology.
+        let reachable = if coordinator.is_none() {
+            true // flat topology fallback
+        } else if i_am_coordinator {
+            true // coordinator reaches all replicas
+        } else {
+            coordinator.as_deref() == Some(agent_name.as_str())
+        };
+        peers.push(build_wg_peer(agent_name, &wg.my_wg_name, agent_path, reachable));
     }
 
     // Coordinator also sees coordinators of OTHER WGs in the same .ac-new
@@ -369,7 +374,7 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
                     if peers.iter().any(|p| p.name == peer_name) {
                         continue;
                     }
-                    peers.push(build_wg_peer(&other_coord, &other_wg_name, &coord_dir));
+                    peers.push(build_wg_peer(&other_coord, &other_wg_name, &coord_dir, true));
                 }
             }
         }
@@ -441,19 +446,17 @@ pub fn execute(args: ListPeersArgs) -> i32 {
                 continue;
             }
 
-            // For coordinators: only show other team coordinators if I'm not in this team
-            if !i_am_in_team {
-                let is_other_coordinator = team.coordinator_name.as_deref() == Some(display_name.as_str())
-                    || team.coordinator_path.as_ref().map(|p| agent_name_from_path(&p.to_string_lossy())).as_deref() == Some(&peer_name);
-                if !is_other_coordinator {
-                    continue;
-                }
-            }
+            // Determine reachability using the canonical routing rules
+            let reachable = crate::config::teams::can_communicate(&my_name, &peer_name, &discovered);
 
-            // Skip duplicates — add team to existing peer
+            // Skip duplicates — add team to existing peer, upgrade reachable if needed
             if let Some(existing) = peers.iter_mut().find(|p| p.name == peer_name) {
                 if !existing.teams.contains(&team.name) {
                     existing.teams.push(team.name.clone());
+                }
+                // If reachable via any team, mark as reachable
+                if reachable {
+                    existing.reachable = true;
                 }
                 continue;
             }
@@ -487,6 +490,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
                     .map(|p| read_role(&p.to_string_lossy()))
                     .unwrap_or_else(|| "No role description available.".to_string()),
                 teams: vec![team.name.clone()],
+                reachable,
                 last_coding_agent: peer_config.tooling.last_coding_agent,
                 coding_agents: peer_config.tooling.coding_agents,
             });
@@ -567,7 +571,8 @@ pub fn execute(args: ListPeersArgs) -> i32 {
                         continue;
                     }
 
-                    let mut peer = build_wg_peer(&agent_short, &wg_name, &agent_path);
+                    let reachable = crate::config::teams::can_communicate(&my_name, &peer_name, &discovered);
+                    let mut peer = build_wg_peer(&agent_short, &wg_name, &agent_path, reachable);
                     peer.teams = vec![wg_team.clone()];
                     peers.push(peer);
                 }
