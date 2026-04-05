@@ -10,7 +10,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use tauri::Manager;
 use tower_http::services::ServeDir;
@@ -60,6 +60,7 @@ pub fn start_server(
 
     let mut app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/api/sessions", get(api_sessions_handler))
         .with_state(state);
 
     // Serve static files if dist/ exists
@@ -107,6 +108,70 @@ async fn ws_handler(
     }
 
     ws.on_upgrade(move |socket| handle_ws_connection(socket, state.ws_state))
+}
+
+/// Public session view for the HTTP API — omits sensitive fields like `token`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiSessionView {
+    id: String,
+    name: String,
+    working_directory: String,
+    status: crate::session::session::SessionStatus,
+    waiting_for_input: bool,
+    created_at: String,
+    shell: String,
+    git_branch: Option<String>,
+    last_prompt: Option<String>,
+}
+
+/// HTTP GET /api/sessions — returns JSON array of all sessions.
+async fn api_sessions_handler(
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // Token validation (same as WS: skip in dev)
+    if !cfg!(debug_assertions) {
+        let token = params.get("token").cloned().unwrap_or_default();
+        if !state.web_token.matches(&token) {
+            return (axum::http::StatusCode::UNAUTHORIZED, "Invalid token").into_response();
+        }
+    }
+
+    let mgr = state.ws_state.session_mgr.read().await;
+    let sessions = mgr.list_sessions().await;
+
+    // Project to public view (no token) and apply optional status filter
+    let status_filter = params.get("status").map(|s| s.to_lowercase());
+    let views: Vec<ApiSessionView> = sessions
+        .into_iter()
+        .filter(|s| {
+            if let Some(ref filter) = status_filter {
+                let s_status = match &s.status {
+                    crate::session::session::SessionStatus::Active => "active",
+                    crate::session::session::SessionStatus::Running => "running",
+                    crate::session::session::SessionStatus::Idle => "idle",
+                    crate::session::session::SessionStatus::Exited(_) => "exited",
+                };
+                s_status == filter.as_str()
+            } else {
+                true
+            }
+        })
+        .map(|s| ApiSessionView {
+            id: s.id,
+            name: s.name,
+            working_directory: s.working_directory,
+            status: s.status,
+            waiting_for_input: s.waiting_for_input,
+            created_at: s.created_at,
+            shell: s.shell,
+            git_branch: s.git_branch,
+            last_prompt: s.last_prompt,
+        })
+        .collect();
+
+    Json(views).into_response()
 }
 
 /// Handle an authenticated WebSocket connection.
