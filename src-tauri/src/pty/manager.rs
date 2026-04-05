@@ -287,24 +287,19 @@ impl PtyManager {
                         // redraws) are NOT user/agent activity and must not flip the
                         // session to busy. Strip ANSI escapes and check for printable
                         // characters above ASCII space.
-                        {
-                            // Fast path: if no escape sequences, skip the strip
-                            // allocation and check text directly.
-                            let has_printable = if text.contains('\x1b') {
-                                strip_ansi_csi(&text)
-                                    .chars()
-                                    .any(|c| c > ' ' && c != '\u{FFFD}')
-                            } else {
-                                text.chars().any(|c| c > ' ' && c != '\u{FFFD}')
-                            };
-                            if has_printable {
-                                idle_detector.record_activity_with_bytes(id, n);
-                            } else {
-                                log::trace!(
-                                    "[idle] SKIPPED activity for {} ({} bytes, escape-only output)",
-                                    &id.to_string()[..8], n
-                                );
-                            }
+                        let is_printable = |c: char| c > ' ' && c != '\u{FFFD}';
+                        let has_printable = if text.contains('\x1b') {
+                            strip_ansi_csi(&text).chars().any(is_printable)
+                        } else {
+                            text.chars().any(is_printable)
+                        };
+                        if has_printable {
+                            idle_detector.record_activity_with_bytes(id, n);
+                        } else {
+                            log::info!(
+                                "[idle] SKIPPED activity for {} ({} bytes, escape-only output)",
+                                &id.to_string()[..8], n
+                            );
                         }
                         {
                             scan_response_markers(id, &text, &response_watchers);
