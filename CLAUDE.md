@@ -400,6 +400,24 @@ npx tsc --noEmit               # TypeScript check
 
 ---
 
+## Never Go Idle While Waiting
+
+**RULE:** When you are waiting for something (a build to complete, a long compilation, a response from another agent, a background process), NEVER sit idle. Always set up a background timer so you can check back:
+
+```bash
+sleep 300 &  # or use run_in_background: true
+```
+
+After the timer fires, check the result (git log, file existence, process status) and take the next action. If the task is still in progress, set another timer. The goal is to never become inactive — always have a pending check that will wake you up.
+
+**Why:** If you don't set a timer, you become unresponsive. The coordinator or user has to manually poke you to continue work. This wastes everyone's time.
+
+**How to apply:**
+1. Before any wait, launch `sleep N` in background
+2. When it fires, check status and act
+3. If still waiting, set another timer
+4. ALWAYS run waits in background (`run_in_background: true`) so you remain available for incoming messages
+
 <!-- rtk-instructions -->
 ## RTK (Token Optimizer)
 
