@@ -95,16 +95,22 @@ pub struct OutboxMessage {
     pub command: Option<String>,
 }
 
-/// Derive agent name from a path: last two components → "parent/folder"
+/// Strip `__agent_` and `_agent_` prefixes from directory names.
+fn strip_agent_prefix(name: &str) -> &str {
+    name.strip_prefix("__agent_")
+        .or_else(|| name.strip_prefix("_agent_"))
+        .unwrap_or(name)
+}
+
+/// Derive agent name from a path: last two components → "parent/folder",
+/// stripping `__agent_`/`_agent_` prefixes for consistent WG replica naming.
 fn agent_name_from_root(root: &str) -> String {
     let normalized = root.replace('\\', "/");
     let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     if components.len() >= 2 {
-        format!(
-            "{}/{}",
-            components[components.len() - 2],
-            components[components.len() - 1]
-        )
+        let parent = components[components.len() - 2];
+        let last = strip_agent_prefix(components[components.len() - 1]);
+        format!("{}/{}", parent, last)
     } else {
         normalized
     }

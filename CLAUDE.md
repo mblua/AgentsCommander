@@ -307,6 +307,8 @@ Config export/import, session history, notifications, snippets, cross-platform.
 
 Both passes are non-negotiable. If a reviewer flags high-severity issues, fix them before considering the change complete.
 
+3. **Before reporting to coordinator**: When working under a coordinator, run `/feature-dev` (the full feature-dev skill) on the completed change BEFORE sending the completion message. Only report the work as done after the review passes or flagged issues are addressed. The coordinator must never receive unverified work.
+
 ---
 
 ## CRITICAL — Running the App

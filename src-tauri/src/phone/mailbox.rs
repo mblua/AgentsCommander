@@ -807,16 +807,18 @@ impl MailboxPoller {
         None
     }
 
-    /// Derive agent name (parent/folder) from a path.
+    /// Derive agent name (parent/folder) from a path, stripping `__agent_`/`_agent_` prefixes.
     fn agent_name_from_path(&self, path: &str) -> String {
         let normalized = path.replace('\\', "/");
         let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
         if components.len() >= 2 {
-            format!(
-                "{}/{}",
-                components[components.len() - 2],
-                components[components.len() - 1]
-            )
+            let parent = components[components.len() - 2];
+            let last = components[components.len() - 1];
+            let stripped = last
+                .strip_prefix("__agent_")
+                .or_else(|| last.strip_prefix("_agent_"))
+                .unwrap_or(last);
+            format!("{}/{}", parent, stripped)
         } else {
             normalized
         }

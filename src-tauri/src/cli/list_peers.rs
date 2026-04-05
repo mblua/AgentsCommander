@@ -58,18 +58,12 @@ fn agent_name_from_path(path: &str) -> String {
     }
 }
 
-/// Read role from CLAUDE.md: extract ## Role Prompt section, or first 5 lines.
-fn read_role(repo_path: &str) -> String {
-    let claude_md = Path::new(repo_path).join("CLAUDE.md");
-    let content = match std::fs::read_to_string(&claude_md) {
-        Ok(c) => c,
-        Err(_) => return "No role description available.".to_string(),
-    };
-
-    // Try to extract ## Role Prompt section
+/// Extract a role description from markdown content: finds the `## Role` section
+/// and returns up to 3 lines. Falls back to the first `fallback_lines` non-heading lines.
+fn extract_role_section(content: &str, fallback_lines: usize, default_msg: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let mut in_role = false;
-    let mut role_lines = Vec::new();
+    let mut role_lines: Vec<&str> = Vec::new();
 
     for line in &lines {
         if line.starts_with("## Role Prompt") || line.starts_with("## Role") {
@@ -88,22 +82,29 @@ fn read_role(repo_path: &str) -> String {
     }
 
     if !role_lines.is_empty() {
-        // Return up to first 3 non-empty lines for conciseness
         return role_lines.into_iter().take(3).collect::<Vec<_>>().join(" ");
     }
 
-    // Fallback: first 5 non-empty lines
-    let first_lines: Vec<&str> = lines
+    let fallback: Vec<&str> = lines
         .iter()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .take(5)
-        .copied()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .take(fallback_lines)
         .collect();
 
-    if first_lines.is_empty() {
-        "No role description available.".to_string()
+    if fallback.is_empty() {
+        default_msg.to_string()
     } else {
-        first_lines.join(" ")
+        fallback.join(" ")
+    }
+}
+
+/// Read role from CLAUDE.md: extract ## Role section, or first 5 lines.
+fn read_role(repo_path: &str) -> String {
+    let claude_md = Path::new(repo_path).join("CLAUDE.md");
+    match std::fs::read_to_string(&claude_md) {
+        Ok(content) => extract_role_section(&content, 5, "No role description available."),
+        Err(_) => "No role description available.".to_string(),
     }
 }
 
@@ -119,14 +120,15 @@ struct WgReplicaInfo {
     my_wg_name: String,
     my_wg_dir: PathBuf,
     ac_new_dir: PathBuf,
-    #[allow(dead_code)]
-    my_replica_dir: PathBuf,
 }
 
 /// Detect if `root` is a WG replica: path matches `*/.ac-new/wg-*/__agent_*/`.
 fn detect_wg_replica(root: &str) -> Option<WgReplicaInfo> {
     let path = PathBuf::from(root);
-    let canon = std::fs::canonicalize(&path).unwrap_or(path);
+    let canon = match std::fs::canonicalize(&path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
 
     let my_dir_name = canon.file_name()?.to_str()?;
     if !my_dir_name.starts_with("__agent_") {
@@ -151,13 +153,20 @@ fn detect_wg_replica(root: &str) -> Option<WgReplicaInfo> {
         my_wg_name: wg_name.to_string(),
         my_wg_dir: wg_dir.to_path_buf(),
         ac_new_dir: ac_new_dir.to_path_buf(),
-        my_replica_dir: canon,
     })
 }
 
 /// Resolve the coordinator agent name for a WG by matching replica identity
-/// paths against team coordinator paths in `.ac-new/_team_*/config.json`.
+/// paths against the team coordinator path in `.ac-new/_team_*/config.json`.
+/// Only checks the team whose name matches the WG suffix (e.g. `wg-1-ac-devs` → `_team_ac-devs`).
 fn resolve_wg_coordinator(ac_new_dir: &Path, wg_dir: &Path) -> Option<String> {
+    // Derive expected team dir from WG name: "wg-1-ac-devs" → "_team_ac-devs"
+    let wg_name = wg_dir.file_name()?.to_str()?;
+    let team_suffix = wg_name
+        .strip_prefix("wg-")
+        .and_then(|s| s.split_once('-').map(|(_, rest)| rest))?;
+    let expected_team_dir = format!("_team_{}", team_suffix);
+
     let entries = match std::fs::read_dir(ac_new_dir) {
         Ok(e) => e,
         Err(_) => return None,
@@ -168,11 +177,10 @@ fn resolve_wg_coordinator(ac_new_dir: &Path, wg_dir: &Path) -> Option<String> {
         if !team_dir.is_dir() {
             continue;
         }
-        let team_name = match team_dir.file_name().and_then(|n| n.to_str()) {
-            Some(n) if n.starts_with("_team_") => n,
+        match team_dir.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n == expected_team_dir => {}
             _ => continue,
-        };
-        let _ = team_name; // used for the gate only
+        }
 
         let team_config: serde_json::Value =
             match std::fs::read_to_string(team_dir.join("config.json"))
@@ -242,7 +250,7 @@ fn resolve_wg_coordinator(ac_new_dir: &Path, wg_dir: &Path) -> Option<String> {
     None
 }
 
-/// Read role from a WG replica's identity matrix Role.md.
+/// Read role from a WG replica's identity matrix Role.md, falling back to CLAUDE.md.
 fn read_wg_role(replica_dir: &Path) -> String {
     let config: serde_json::Value = match std::fs::read_to_string(replica_dir.join("config.json"))
         .ok()
@@ -257,55 +265,20 @@ fn read_wg_role(replica_dir: &Path) -> String {
         None => return "WG replica agent.".to_string(),
     };
 
-    let role_path = replica_dir.join(identity_ref).join("Role.md");
+    let matrix_dir = replica_dir.join(identity_ref);
+    let role_path = matrix_dir.join("Role.md");
     match std::fs::read_to_string(&role_path) {
-        Ok(content) => {
-            // Extract ## Role section
-            let lines: Vec<&str> = content.lines().collect();
-            let mut in_role = false;
-            let mut role_lines = Vec::new();
-
-            for line in &lines {
-                if line.starts_with("## Role") {
-                    in_role = true;
-                    continue;
-                }
-                if in_role {
-                    if line.starts_with("## ") || line.starts_with("---") {
-                        break;
-                    }
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        role_lines.push(trimmed);
-                    }
-                }
-            }
-
-            if !role_lines.is_empty() {
-                return role_lines.into_iter().take(3).collect::<Vec<_>>().join(" ");
-            }
-
-            // Fallback: first 3 non-heading lines
-            let fallback: Vec<&str> = lines
-                .iter()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .take(3)
-                .collect();
-
-            if fallback.is_empty() {
-                "WG replica agent.".to_string()
-            } else {
-                fallback.join(" ")
-            }
-        }
-        Err(_) => read_role(&replica_dir.join(identity_ref).to_string_lossy()),
+        Ok(content) => extract_role_section(&content, 3, "WG replica agent."),
+        Err(_) => read_role(&matrix_dir.to_string_lossy()),
     }
 }
 
-/// Build a PeerInfo for a WG replica directory.
+/// Build a PeerInfo for a WG replica directory. Also bootstraps IPC dirs.
 fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path) -> PeerInfo {
     let replica_ac = agent_path.join(".agentscommander");
+    let _ = std::fs::create_dir_all(replica_ac.join("inbox"));
+    let _ = std::fs::create_dir_all(replica_ac.join("outbox"));
+
     let status = if replica_ac.join("active").exists() {
         "active"
     } else {
@@ -337,6 +310,13 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
     let coordinator = resolve_wg_coordinator(&wg.ac_new_dir, &wg.my_wg_dir);
     let i_am_coordinator = coordinator.as_deref() == Some(wg.my_agent_name.as_str());
 
+    if coordinator.is_none() {
+        eprintln!(
+            "Warning: no coordinator found for WG '{}', showing all replicas",
+            wg.my_wg_name
+        );
+    }
+
     // Collect all replicas in my WG
     let replicas: Vec<(String, PathBuf)> = std::fs::read_dir(&wg.my_wg_dir)
         .into_iter()
@@ -356,8 +336,12 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
         if *agent_name == wg.my_agent_name {
             continue;
         }
-        // Communication rules: non-coordinator sees only coordinator
-        if !i_am_coordinator && coordinator.as_deref() != Some(agent_name.as_str()) {
+        // Communication rules: non-coordinator sees only coordinator.
+        // If coordinator is unknown, fall back to flat topology (show all).
+        if coordinator.is_some()
+            && !i_am_coordinator
+            && coordinator.as_deref() != Some(agent_name.as_str())
+        {
             continue;
         }
         peers.push(build_wg_peer(agent_name, &wg.my_wg_name, agent_path));
@@ -378,6 +362,9 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
 
                 if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_new_dir, &other_wg_dir) {
                     let coord_dir = other_wg_dir.join(format!("__agent_{}", other_coord));
+                    if !coord_dir.is_dir() {
+                        continue;
+                    }
                     let peer_name = format!("{}/{}", other_wg_name, other_coord);
                     if peers.iter().any(|p| p.name == peer_name) {
                         continue;
@@ -572,38 +559,9 @@ pub fn execute(args: ListPeersArgs) -> i32 {
                         continue;
                     }
 
-                    // Ensure .agentscommander runtime dirs exist
-                    let replica_ac = agent_path.join(".agentscommander");
-                    let _ = std::fs::create_dir_all(replica_ac.join("inbox"));
-                    let _ = std::fs::create_dir_all(replica_ac.join("outbox"));
-
-                    let status = if replica_ac.join("active").exists() {
-                        "active"
-                    } else {
-                        "unknown"
-                    };
-
-                    // Read role from the identity matrix's Role.md
-                    let role = agent_path.join("config.json")
-                        .to_str()
-                        .and_then(|_| std::fs::read_to_string(agent_path.join("config.json")).ok())
-                        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-                        .and_then(|v| v.get("identity")?.as_str().map(String::from))
-                        .map(|identity_ref| {
-                            let matrix_dir = agent_path.join(&identity_ref);
-                            read_role(&matrix_dir.to_string_lossy())
-                        })
-                        .unwrap_or_else(|| "WG replica agent.".to_string());
-
-                    peers.push(PeerInfo {
-                        name: peer_name,
-                        path: agent_path.to_string_lossy().to_string(),
-                        status: status.to_string(),
-                        role,
-                        teams: vec![wg_team.clone()],
-                        last_coding_agent: None,
-                        coding_agents: HashMap::new(),
-                    });
+                    let mut peer = build_wg_peer(&agent_short, &wg_name, &agent_path);
+                    peer.teams = vec![wg_team.clone()];
+                    peers.push(peer);
                 }
             }
         }
