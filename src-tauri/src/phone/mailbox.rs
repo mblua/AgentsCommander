@@ -816,7 +816,10 @@ impl MailboxPoller {
         let cfg = settings.read().await;
         for rp in &cfg.repo_paths {
             let normalized = rp.replace('\\', "/");
-            if normalized.ends_with(agent_name) || normalized.contains(&format!("/{}", agent_name)) {
+            if self.agent_name_from_path(rp) == agent_name
+                || normalized.ends_with(agent_name)
+                || normalized.contains(&format!("/{}", agent_name))
+            {
                 return Some(rp.clone());
             }
         }
@@ -826,7 +829,10 @@ impl MailboxPoller {
         for team in &dark_factory.teams {
             for member in &team.members {
                 let normalized = member.path.replace('\\', "/");
-                if normalized.ends_with(agent_name) || normalized.contains(&format!("/{}", agent_name)) {
+                if self.agent_name_from_path(&member.path) == agent_name
+                    || normalized.ends_with(agent_name)
+                    || normalized.contains(&format!("/{}", agent_name))
+                {
                     return Some(member.path.clone());
                 }
             }
