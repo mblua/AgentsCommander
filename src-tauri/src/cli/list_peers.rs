@@ -38,16 +38,21 @@ struct PeerInfo {
     coding_agents: HashMap<String, CodingAgentEntry>,
 }
 
-/// Get the agent name (parent/repo) from a path.
+/// Strip `__agent_` and `_agent_` prefixes from agent directory names.
+fn strip_agent_prefix(name: &str) -> &str {
+    name.strip_prefix("__agent_")
+        .or_else(|| name.strip_prefix("_agent_"))
+        .unwrap_or(name)
+}
+
+/// Get the agent name (parent/repo) from a path, stripping agent prefixes.
 fn agent_name_from_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     if components.len() >= 2 {
-        format!(
-            "{}/{}",
-            components[components.len() - 2],
-            components[components.len() - 1]
-        )
+        let parent = components[components.len() - 2];
+        let last = strip_agent_prefix(components[components.len() - 1]);
+        format!("{}/{}", parent, last)
     } else {
         normalized
     }
@@ -102,6 +107,299 @@ fn read_role(repo_path: &str) -> String {
     }
 }
 
+/// Canonicalize a path, stripping `\\?\` UNC prefix on Windows.
+fn canon_str(path: &Path) -> Option<String> {
+    let canon = std::fs::canonicalize(path).ok()?;
+    let s = canon.to_string_lossy().to_string();
+    Some(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string())
+}
+
+struct WgReplicaInfo {
+    my_agent_name: String,
+    my_wg_name: String,
+    my_wg_dir: PathBuf,
+    ac_new_dir: PathBuf,
+    #[allow(dead_code)]
+    my_replica_dir: PathBuf,
+}
+
+/// Detect if `root` is a WG replica: path matches `*/.ac-new/wg-*/__agent_*/`.
+fn detect_wg_replica(root: &str) -> Option<WgReplicaInfo> {
+    let path = PathBuf::from(root);
+    let canon = std::fs::canonicalize(&path).unwrap_or(path);
+
+    let my_dir_name = canon.file_name()?.to_str()?;
+    if !my_dir_name.starts_with("__agent_") {
+        return None;
+    }
+    let my_agent_name = my_dir_name.strip_prefix("__agent_")?.to_string();
+
+    let wg_dir = canon.parent()?;
+    let wg_name = wg_dir.file_name()?.to_str()?;
+    if !wg_name.starts_with("wg-") {
+        return None;
+    }
+
+    let ac_new_dir = wg_dir.parent()?;
+    let ac_new_name = ac_new_dir.file_name()?.to_str()?;
+    if ac_new_name != ".ac-new" {
+        return None;
+    }
+
+    Some(WgReplicaInfo {
+        my_agent_name,
+        my_wg_name: wg_name.to_string(),
+        my_wg_dir: wg_dir.to_path_buf(),
+        ac_new_dir: ac_new_dir.to_path_buf(),
+        my_replica_dir: canon,
+    })
+}
+
+/// Resolve the coordinator agent name for a WG by matching replica identity
+/// paths against team coordinator paths in `.ac-new/_team_*/config.json`.
+fn resolve_wg_coordinator(ac_new_dir: &Path, wg_dir: &Path) -> Option<String> {
+    let entries = match std::fs::read_dir(ac_new_dir) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+
+    for entry in entries.flatten() {
+        let team_dir = entry.path();
+        if !team_dir.is_dir() {
+            continue;
+        }
+        let team_name = match team_dir.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.starts_with("_team_") => n,
+            _ => continue,
+        };
+        let _ = team_name; // used for the gate only
+
+        let team_config: serde_json::Value =
+            match std::fs::read_to_string(team_dir.join("config.json"))
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+            {
+                Some(v) => v,
+                None => continue,
+            };
+
+        let coordinator_ref = match team_config.get("coordinator").and_then(|c| c.as_str()) {
+            Some(c) => c.to_string(),
+            None => continue,
+        };
+
+        let coordinator_abs = match canon_str(&team_dir.join(&coordinator_ref)) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Check each replica in the WG for identity match
+        let replica_entries = match std::fs::read_dir(wg_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for replica_entry in replica_entries.flatten() {
+            let replica_dir = replica_entry.path();
+            if !replica_dir.is_dir() {
+                continue;
+            }
+            let dir_name = match replica_dir.file_name().and_then(|n| n.to_str()) {
+                Some(n) if n.starts_with("__agent_") => n,
+                _ => continue,
+            };
+
+            let config: serde_json::Value =
+                match std::fs::read_to_string(replica_dir.join("config.json"))
+                    .ok()
+                    .and_then(|c| serde_json::from_str(&c).ok())
+                {
+                    Some(v) => v,
+                    None => continue,
+                };
+
+            let identity_ref = match config.get("identity").and_then(|i| i.as_str()) {
+                Some(i) => i.to_string(),
+                None => continue,
+            };
+
+            let identity_abs = match canon_str(&replica_dir.join(&identity_ref)) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            if identity_abs == coordinator_abs {
+                return Some(
+                    dir_name
+                        .strip_prefix("__agent_")
+                        .unwrap_or(dir_name)
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    None
+}
+
+/// Read role from a WG replica's identity matrix Role.md.
+fn read_wg_role(replica_dir: &Path) -> String {
+    let config: serde_json::Value = match std::fs::read_to_string(replica_dir.join("config.json"))
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+    {
+        Some(v) => v,
+        None => return "WG replica agent.".to_string(),
+    };
+
+    let identity_ref = match config.get("identity").and_then(|i| i.as_str()) {
+        Some(i) => i,
+        None => return "WG replica agent.".to_string(),
+    };
+
+    let role_path = replica_dir.join(identity_ref).join("Role.md");
+    match std::fs::read_to_string(&role_path) {
+        Ok(content) => {
+            // Extract ## Role section
+            let lines: Vec<&str> = content.lines().collect();
+            let mut in_role = false;
+            let mut role_lines = Vec::new();
+
+            for line in &lines {
+                if line.starts_with("## Role") {
+                    in_role = true;
+                    continue;
+                }
+                if in_role {
+                    if line.starts_with("## ") || line.starts_with("---") {
+                        break;
+                    }
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        role_lines.push(trimmed);
+                    }
+                }
+            }
+
+            if !role_lines.is_empty() {
+                return role_lines.into_iter().take(3).collect::<Vec<_>>().join(" ");
+            }
+
+            // Fallback: first 3 non-heading lines
+            let fallback: Vec<&str> = lines
+                .iter()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .take(3)
+                .collect();
+
+            if fallback.is_empty() {
+                "WG replica agent.".to_string()
+            } else {
+                fallback.join(" ")
+            }
+        }
+        Err(_) => read_role(&replica_dir.join(identity_ref).to_string_lossy()),
+    }
+}
+
+/// Build a PeerInfo for a WG replica directory.
+fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path) -> PeerInfo {
+    let replica_ac = agent_path.join(".agentscommander");
+    let status = if replica_ac.join("active").exists() {
+        "active"
+    } else {
+        "unknown"
+    };
+
+    let peer_config: AgentLocalConfig = replica_ac
+        .join("config.json")
+        .to_str()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_default();
+
+    PeerInfo {
+        name: format!("{}/{}", wg_name, agent_name),
+        path: agent_path.to_string_lossy().to_string(),
+        status: status.to_string(),
+        role: read_wg_role(agent_path),
+        teams: vec![wg_name.to_string()],
+        last_coding_agent: peer_config.tooling.last_coding_agent,
+        coding_agents: peer_config.tooling.coding_agents,
+    }
+}
+
+/// WG-specific peer discovery — self-contained, returns exit code.
+fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
+    let mut peers: Vec<PeerInfo> = Vec::new();
+
+    let coordinator = resolve_wg_coordinator(&wg.ac_new_dir, &wg.my_wg_dir);
+    let i_am_coordinator = coordinator.as_deref() == Some(wg.my_agent_name.as_str());
+
+    // Collect all replicas in my WG
+    let replicas: Vec<(String, PathBuf)> = std::fs::read_dir(&wg.my_wg_dir)
+        .into_iter()
+        .flat_map(|rd| rd.flatten())
+        .filter_map(|e| {
+            let p = e.path();
+            if !p.is_dir() {
+                return None;
+            }
+            let name = p.file_name()?.to_str()?;
+            let agent = name.strip_prefix("__agent_")?.to_string();
+            Some((agent, p))
+        })
+        .collect();
+
+    for (agent_name, agent_path) in &replicas {
+        if *agent_name == wg.my_agent_name {
+            continue;
+        }
+        // Communication rules: non-coordinator sees only coordinator
+        if !i_am_coordinator && coordinator.as_deref() != Some(agent_name.as_str()) {
+            continue;
+        }
+        peers.push(build_wg_peer(agent_name, &wg.my_wg_name, agent_path));
+    }
+
+    // Coordinator also sees coordinators of OTHER WGs in the same .ac-new
+    if i_am_coordinator {
+        if let Ok(entries) = std::fs::read_dir(&wg.ac_new_dir) {
+            for entry in entries.flatten() {
+                let other_wg_dir = entry.path();
+                if !other_wg_dir.is_dir() {
+                    continue;
+                }
+                let other_wg_name = match other_wg_dir.file_name().and_then(|n| n.to_str()) {
+                    Some(n) if n.starts_with("wg-") && n != wg.my_wg_name => n.to_string(),
+                    _ => continue,
+                };
+
+                if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_new_dir, &other_wg_dir) {
+                    let coord_dir = other_wg_dir.join(format!("__agent_{}", other_coord));
+                    let peer_name = format!("{}/{}", other_wg_name, other_coord);
+                    if peers.iter().any(|p| p.name == peer_name) {
+                        continue;
+                    }
+                    peers.push(build_wg_peer(&other_coord, &other_wg_name, &coord_dir));
+                }
+            }
+        }
+    }
+
+    match serde_json::to_string_pretty(&peers) {
+        Ok(json) => {
+            println!("{}", json);
+            0
+        }
+        Err(e) => {
+            eprintln!("Error: failed to serialize peers: {}", e);
+            1
+        }
+    }
+}
+
 /// Load the teams.json from the global config directory.
 fn load_teams_config() -> Option<serde_json::Value> {
     let teams_path = crate::config::config_dir()?.join("teams.json");
@@ -117,6 +415,13 @@ pub fn execute(args: ListPeersArgs) -> i32 {
             return 1;
         }
     };
+    // ── WG replica fast path ──────────────────────────────────────────
+    // If we're a WG replica, use dedicated discovery and return early.
+    if let Some(wg) = detect_wg_replica(&root) {
+        return execute_wg_discovery(wg);
+    }
+
+    // ── Standard teams-based discovery ───────────────────────────────
     let ac_dir = PathBuf::from(&root).join(".agentscommander");
     let my_name = agent_name_from_path(&root);
 
