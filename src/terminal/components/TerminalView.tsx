@@ -233,11 +233,7 @@ const TerminalView: Component = () => {
         return;
       }
 
-      entry.terminal.write(new Uint8Array(data), () => {
-        if (sessionId === activeSessionId) {
-          entry.terminal.scrollToBottom();
-        }
-      });
+      entry.terminal.write(new Uint8Array(data));
     });
 
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {
