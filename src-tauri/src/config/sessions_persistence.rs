@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::session::manager::SessionManager;
+use crate::session::session::TEMP_SESSION_PREFIX;
 
 /// Minimal session data needed to restore a session on next app start.
 /// No UUID, no status - just the "recipe" to re-create it.
@@ -28,25 +29,52 @@ fn sessions_path() -> Option<PathBuf> {
     super::config_dir().map(|d| d.join("sessions.json"))
 }
 
-/// Remove duplicate sessions by name.
-/// If multiple entries share the same name, keep the one with `was_active=true`;
-/// if none (or both) are active, keep the last occurrence.
+/// Remove duplicate sessions by name AND working_directory.
+/// When duplicates share the same key (name or CWD), keep the one with
+/// `was_active=true`; if none (or both) are active, keep the last occurrence.
+/// Note: callers are expected to filter out temp sessions before calling this.
 fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
     let total = sessions.len();
-    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut name_index: HashMap<String, usize> = HashMap::new();
+    let mut cwd_index: HashMap<String, usize> = HashMap::new();
     let mut result: Vec<PersistedSession> = Vec::with_capacity(total);
 
     for session in sessions {
-        if let Some(&idx) = index.get(&session.name) {
-            log::warn!("[sessions] Dropping duplicate session '{}'", session.name);
-            // Replace unless existing is active and incoming is not
+        let norm_cwd = session.working_directory.replace('\\', "/").to_lowercase();
+
+        // Check name-based duplicate
+        if let Some(&idx) = name_index.get(&session.name) {
+            log::warn!("[sessions] Dropping duplicate session by name '{}'", session.name);
             if !result[idx].was_active || session.was_active {
+                // Patch cwd_index if the CWD changed
+                let old_cwd = result[idx].working_directory.replace('\\', "/").to_lowercase();
+                if old_cwd != norm_cwd {
+                    cwd_index.remove(&old_cwd);
+                    cwd_index.insert(norm_cwd, idx);
+                }
                 result[idx] = session;
             }
-        } else {
-            index.insert(session.name.clone(), result.len());
-            result.push(session);
+            continue;
         }
+
+        // Check CWD-based duplicate
+        if let Some(&idx) = cwd_index.get(&norm_cwd) {
+            log::warn!(
+                "[sessions] Dropping duplicate session by CWD '{}' (existing='{}', incoming='{}')",
+                session.working_directory, result[idx].name, session.name
+            );
+            if !result[idx].was_active || session.was_active {
+                name_index.remove(&result[idx].name);
+                name_index.insert(session.name.clone(), idx);
+                result[idx] = session;
+            }
+            continue;
+        }
+
+        // New unique session
+        name_index.insert(session.name.clone(), result.len());
+        cwd_index.insert(norm_cwd, result.len());
+        result.push(session);
     }
 
     if result.len() < total {
@@ -74,7 +102,23 @@ pub fn load_sessions() -> Vec<PersistedSession> {
     match std::fs::read_to_string(&path) {
         Ok(contents) => match serde_json::from_str::<Vec<PersistedSession>>(&contents) {
             Ok(sessions) => {
-                let deduped = deduplicate(sessions);
+                // Safety net: filter out [temp] sessions that should never survive a restart
+                let temp_count = sessions.iter().filter(|s| s.name.starts_with(TEMP_SESSION_PREFIX)).count();
+                let filtered: Vec<PersistedSession> = sessions
+                    .into_iter()
+                    .filter(|s| {
+                        if s.name.starts_with(TEMP_SESSION_PREFIX) {
+                            log::warn!("[sessions] Filtering out temp session '{}' from persistence", s.name);
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+                if temp_count > 0 {
+                    log::info!("[sessions] Removed {} temp sessions from persistence file", temp_count);
+                }
+                let deduped = deduplicate(filtered);
                 log::info!("Loaded {} persisted sessions from {:?}", deduped.len(), path);
                 deduped
             }
@@ -121,6 +165,14 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
 
     let all: Vec<PersistedSession> = sessions
         .iter()
+        .filter(|s| {
+            if s.name.starts_with(TEMP_SESSION_PREFIX) {
+                log::debug!("[sessions] Excluding temp session '{}' from snapshot", s.name);
+                false
+            } else {
+                true
+            }
+        })
         .map(|s| PersistedSession {
             name: s.name.clone(),
             shell: s.shell.clone(),

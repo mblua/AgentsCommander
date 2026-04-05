@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Prefix used for temporary sessions spawned by wake-and-sleep delivery.
+/// These sessions are ephemeral and must never be persisted across restarts.
+pub const TEMP_SESSION_PREFIX: &str = "[temp]";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {

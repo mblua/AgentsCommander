@@ -425,7 +425,7 @@ impl MailboxPoller {
                 shell,
                 shell_args,
                 cwd,
-                Some(format!("[temp] {}", msg.to)),
+                Some(format!("{} {}", crate::session::session::TEMP_SESSION_PREFIX, msg.to)),
                 None, // Temp session — don't update lastCodingAgent
                 None, // No agent label for temp sessions
                 true,  // Skip tooling save for temp sessions
@@ -486,8 +486,10 @@ impl MailboxPoller {
 
                         let session_mgr = app_clone
                             .state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                        let mgr = session_mgr.read().await;
-                        let _ = mgr.destroy_session(session_id_clone).await;
+                        {
+                            let mgr = session_mgr.read().await;
+                            let _ = mgr.destroy_session(session_id_clone).await;
+                        } // guard dropped before persist
 
                         let _ = tauri::Emitter::emit(
                             &app_clone,
@@ -495,6 +497,10 @@ impl MailboxPoller {
                             serde_json::json!({ "id": session_id_clone.to_string() }),
                         );
                         log::info!("wake-and-sleep: destroyed temp session {}", session_id_clone);
+
+                        // Persist immediately so the temp session is flushed from sessions.json
+                        let mgr = session_mgr.read().await;
+                        crate::config::sessions_persistence::persist_current_state(&mgr).await;
                     });
 
                     Ok(())
@@ -731,30 +737,59 @@ impl MailboxPoller {
         ).await
     }
 
-    /// Find an active session for a given agent name (matches by working directory).
+    /// Find the best session for a given agent name (matches by working directory).
+    /// Prefers active/running non-temp sessions over idle/exited ones.
     async fn find_active_session(&self, app: &tauri::AppHandle, agent_name: &str) -> Option<Uuid> {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
-        let dirs = mgr.get_sessions_directories().await;
+        let sessions = mgr.list_sessions().await;
 
         log::info!(
             "[mailbox] find_active_session for '{}' — {} sessions: {:?}",
             agent_name,
-            dirs.len(),
-            dirs.iter().map(|(id, cwd, _, _)| format!("{}={}", id, cwd)).collect::<Vec<_>>()
+            sessions.len(),
+            sessions.iter().map(|s| format!("{}={} status={:?} name={}", s.id, s.working_directory, s.status, s.name)).collect::<Vec<_>>()
         );
 
-        for (id, cwd, _, _) in &dirs {
-            let normalized = cwd.replace('\\', "/");
-            if normalized.ends_with(agent_name)
-                || normalized.contains(&format!("/{}", agent_name))
-            {
-                log::info!("[mailbox] Matched session {} (cwd={})", id, cwd);
-                return Some(*id);
-            }
+        // Collect all CWD-matching sessions
+        let mut matches: Vec<&crate::session::session::SessionInfo> = sessions
+            .iter()
+            .filter(|s| {
+                let normalized = s.working_directory.replace('\\', "/");
+                normalized.ends_with(agent_name)
+                    || normalized.contains(&format!("/{}", agent_name))
+            })
+            .collect();
+
+        if matches.is_empty() {
+            log::warn!("[mailbox] No session matched for '{}'", agent_name);
+            return None;
         }
-        log::warn!("[mailbox] No session matched for '{}'", agent_name);
-        None
+
+        log::info!(
+            "[mailbox] {} CWD matches for '{}': {:?}",
+            matches.len(),
+            agent_name,
+            matches.iter().map(|s| format!("{}({})", s.id, s.name)).collect::<Vec<_>>()
+        );
+
+        // Sort: non-temp first (false < true), then Active/Running before Idle before Exited
+        matches.sort_by_key(|s| {
+            let is_temp = s.name.starts_with(crate::session::session::TEMP_SESSION_PREFIX);
+            let status = match s.status {
+                SessionStatus::Active | SessionStatus::Running => 0u8,
+                SessionStatus::Idle => 1,
+                SessionStatus::Exited(_) => 2,
+            };
+            (is_temp, status)
+        });
+
+        let best = &matches[0];
+        log::info!(
+            "[mailbox] Best match for '{}': session {} (name='{}', status={:?})",
+            agent_name, best.id, best.name, best.status
+        );
+        Uuid::parse_str(&best.id).ok()
     }
 
     /// Resolve the full filesystem path for an agent name.
