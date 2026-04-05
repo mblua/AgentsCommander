@@ -609,6 +609,9 @@ pub fn run() {
             commands::entity_creation::create_agent_matrix,
             commands::entity_creation::list_all_agents,
             commands::entity_creation::create_team,
+            commands::entity_creation::delete_team,
+            commands::entity_creation::update_team,
+            commands::entity_creation::get_team_config,
             commands::entity_creation::create_workgroup,
         ])
         .build(tauri::generate_context!())

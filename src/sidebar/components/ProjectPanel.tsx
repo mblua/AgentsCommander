@@ -1,7 +1,7 @@
 import { Component, For, Show, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, Session } from "../../shared/types";
-import { SessionAPI, WindowAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
@@ -10,6 +10,7 @@ import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
 import AgentPickerModal from "./AgentPickerModal";
+import EditTeamModal from "./EditTeamModal";
 
 interface PendingLaunch {
   path: string;
@@ -170,6 +171,10 @@ const ProjectPanel: Component = () => {
         const [showNewTeam, setShowNewTeam] = createSignal(false);
         const [showNewWorkgroup, setShowNewWorkgroup] = createSignal(false);
         const [teamCtxMenu, setTeamCtxMenu] = createSignal<{ team: AcTeam; x: number; y: number } | null>(null);
+        const [editingTeam, setEditingTeam] = createSignal<AcTeam | null>(null);
+        const [deletingTeam, setDeletingTeam] = createSignal<AcTeam | null>(null);
+        const [deleteError, setDeleteError] = createSignal("");
+        const [deleteInProgress, setDeleteInProgress] = createSignal(false);
 
         let dismissCtx: (() => void) | null = null;
 
@@ -574,19 +579,106 @@ const ProjectPanel: Component = () => {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
-                    class="session-context-option context-option-disabled"
-                    disabled
-                    onClick={() => setTeamCtxMenu(null)}
+                    class="session-context-option"
+                    onClick={() => {
+                      const menu = teamCtxMenu();
+                      if (menu) setEditingTeam(menu.team);
+                      setTeamCtxMenu(null);
+                    }}
                   >
                     Edit Team
                   </button>
                   <button
-                    class="session-context-option context-option-disabled"
-                    disabled
-                    onClick={() => setTeamCtxMenu(null)}
+                    class="session-context-option session-context-option--danger"
+                    onClick={() => {
+                      const menu = teamCtxMenu();
+                      if (menu) setDeletingTeam(menu.team);
+                      setTeamCtxMenu(null);
+                    }}
                   >
                     Delete Team
                   </button>
+                </div>
+              </Portal>
+            )}
+
+            {/* Edit team modal */}
+            {editingTeam() && (
+              <Portal>
+                <EditTeamModal
+                  projectPath={proj.path}
+                  team={editingTeam()!}
+                  onClose={() => setEditingTeam(null)}
+                />
+              </Portal>
+            )}
+
+            {/* Delete team confirmation */}
+            {deletingTeam() && (
+              <Portal>
+                <div
+                  class="modal-overlay"
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
+                      setDeleteError("");
+                      setDeletingTeam(null);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setDeleteError("");
+                      setDeletingTeam(null);
+                    }
+                  }}
+                >
+                  <div class="agent-modal" style={{ "max-width": "360px" }}>
+                    <div class="agent-modal-header">
+                      <span class="agent-modal-title">Delete Team</span>
+                    </div>
+                    <div class="new-agent-form">
+                      <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
+                        Delete team <strong>{deletingTeam()!.name}</strong>? This will remove the team configuration and all associated workgroups. This action cannot be undone.
+                      </p>
+                      <Show when={deleteError()}>
+                        <div class="new-agent-error">{deleteError()}</div>
+                      </Show>
+                    </div>
+                    <div class="new-agent-footer">
+                      <button
+                        class="new-agent-cancel-btn"
+                        onClick={() => {
+                          setDeleteError("");
+                          setDeletingTeam(null);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        class="new-agent-create-btn"
+                        style={{ "background": "var(--danger, #c0392b)" }}
+                        disabled={deleteInProgress()}
+                        onClick={async () => {
+                          if (deleteInProgress()) return;
+                          setDeleteInProgress(true);
+                          const team = deletingTeam()!;
+                          try {
+                            await EntityAPI.deleteTeam(proj.path, team.name);
+                            await projectStore.reloadProject(proj.path);
+                          } catch (e: any) {
+                            console.error("delete_team failed:", e);
+                            setDeleteError(typeof e === "string" ? e : e?.message ?? "Failed to delete team");
+                            setDeleteInProgress(false);
+                            return;
+                          }
+                          setDeleteError("");
+                          setDeleteInProgress(false);
+                          setDeletingTeam(null);
+                        }}
+                      >
+                        {deleteInProgress() ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </Portal>
             )}

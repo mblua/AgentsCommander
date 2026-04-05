@@ -18,6 +18,22 @@ const Titlebar: Component<{ detached?: boolean }> = (props) => {
     }
   });
 
+  const handleShowSidebar = async () => {
+    if (!isTauri) return;
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const sidebar = await WebviewWindow.getByLabel("sidebar");
+      if (sidebar) {
+        // unminimize is best-effort — setFocus must always run
+        await sidebar.unminimize().catch(() => {});
+        await sidebar.show().catch(() => {});
+        await sidebar.setFocus();
+      }
+    } catch (err) {
+      console.error("handleShowSidebar failed:", err);
+    }
+  };
+
   const handleMinimize = async () => {
     if (!isTauri) return;
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -72,6 +88,11 @@ const Titlebar: Component<{ detached?: boolean }> = (props) => {
       </div>
       <Show when={isTauri}>
         <div class="titlebar-controls">
+          <Show when={!props.detached}>
+            <button class="titlebar-btn" onClick={handleShowSidebar} title="Show Sidebar">
+              &#x2630;
+            </button>
+          </Show>
           <button class="titlebar-btn" onClick={handleMinimize} title="Minimize">
             &#x2014;
           </button>

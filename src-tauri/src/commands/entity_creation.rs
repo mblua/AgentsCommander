@@ -22,11 +22,22 @@ pub struct AgentInfo {
     pub project_name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoAssignment {
     pub url: String,
     pub agents: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamConfigResult {
+    #[serde(default)]
+    pub agents: Vec<String>,
+    #[serde(default)]
+    pub coordinator: String,
+    #[serde(default)]
+    pub repos: Vec<RepoAssignment>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +77,19 @@ fn sanitize_name(raw: &str) -> Result<String, String> {
         return Err("Name must contain at least one alphanumeric character".into());
     }
     Ok(sanitized)
+}
+
+/// Validate that an existing team name is safe for path operations.
+/// Unlike `sanitize_name`, this does NOT transform the name — it just rejects
+/// names that contain path traversal or separator characters.
+fn validate_existing_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Team name cannot be empty".into());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("Invalid team name: only alphanumeric characters and hyphens are allowed".into());
+    }
+    Ok(())
 }
 
 /// Extract a repo directory name from a git URL.
@@ -444,9 +468,241 @@ pub async fn create_workgroup(
     })
 }
 
+/// Delete a team directory from {project_path}/.ac-new/_team_{name}/
+#[tauri::command]
+pub async fn delete_team(
+    project_path: String,
+    team_name: String,
+) -> Result<(), String> {
+    validate_existing_name(&team_name)?;
+    let base = Path::new(&project_path).join(".ac-new");
+    if !base.is_dir() {
+        return Err(format!(".ac-new directory not found in {}", project_path));
+    }
+
+    let team_dir = base.join(format!("_team_{}", team_name));
+    if !team_dir.exists() {
+        return Err(format!("Team '{}' not found", team_name));
+    }
+
+    // Collect associated workgroup dirs (wg-N-{team_name}/)
+    let wg_suffix = format!("-{}", team_name);
+    let mut wg_dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("wg-") && name_str.ends_with(&wg_suffix) {
+                let middle = &name_str[3..name_str.len() - wg_suffix.len()];
+                if middle.parse::<u32>().is_ok() {
+                    wg_dirs.push(entry.path());
+                }
+            }
+        }
+    }
+
+    // Check workgroup repos for dirty git state before deleting
+    let dirty_repos = check_workgroup_repos_dirty(&wg_dirs);
+    if !dirty_repos.is_empty() {
+        let list = dirty_repos
+            .iter()
+            .map(|(repo, reason)| format!("  - {} ({})", repo, reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "Cannot delete team: the following repos have pending work:\n{}\n\nCommit or push changes before deleting.",
+            list
+        ));
+    }
+
+    // Delete team dir first — bail before touching workgroups if this fails
+    std::fs::remove_dir_all(&team_dir)
+        .map_err(|e| format!("Failed to delete team directory: {}", e))?;
+    log::info!("[entity_creation] Deleted team: {}", team_name);
+
+    // Then delete workgroups
+    for wg_dir in &wg_dirs {
+        let wg_name = wg_dir.file_name().unwrap_or_default().to_string_lossy();
+        if let Err(e) = std::fs::remove_dir_all(wg_dir) {
+            log::warn!("[entity_creation] Failed to delete workgroup {}: {}", wg_name, e);
+        } else {
+            log::info!("[entity_creation] Deleted workgroup: {}", wg_name);
+        }
+    }
+    Ok(())
+}
+
+/// Update an existing team's config.json in {project_path}/.ac-new/_team_{name}/
+#[tauri::command]
+pub async fn update_team(
+    project_path: String,
+    team_name: String,
+    agents: Vec<String>,
+    coordinator: String,
+    repos: Vec<RepoAssignment>,
+) -> Result<(), String> {
+    validate_existing_name(&team_name)?;
+    let base = Path::new(&project_path).join(".ac-new");
+    if !base.is_dir() {
+        return Err(format!(".ac-new directory not found in {}", project_path));
+    }
+
+    let team_dir = base.join(format!("_team_{}", team_name));
+    if !team_dir.exists() {
+        return Err(format!("Team '{}' not found", team_name));
+    }
+
+    if !coordinator.is_empty() && !agents.contains(&coordinator) {
+        return Err("Coordinator must be one of the selected agents".into());
+    }
+
+    let repos_json: Vec<serde_json::Value> = repos
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "url": r.url,
+                "agents": r.agents,
+            })
+        })
+        .collect();
+
+    let config = serde_json::json!({
+        "agents": agents,
+        "coordinator": coordinator,
+        "repos": repos_json,
+    });
+
+    let config_str = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
+    std::fs::write(team_dir.join("config.json"), &config_str)
+        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+
+    log::info!("[entity_creation] Updated team: {}", team_name);
+    Ok(())
+}
+
+/// Read a team's config.json and return its contents.
+#[tauri::command]
+pub async fn get_team_config(
+    project_path: String,
+    team_name: String,
+) -> Result<TeamConfigResult, String> {
+    validate_existing_name(&team_name)?;
+    let base = Path::new(&project_path).join(".ac-new");
+    if !base.is_dir() {
+        return Err(format!(".ac-new directory not found in {}", project_path));
+    }
+
+    let team_dir = base.join(format!("_team_{}", team_name));
+    let config_path = team_dir.join("config.json");
+    if !config_path.exists() {
+        return Err(format!("Team '{}' config not found", team_name));
+    }
+
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config.json: {}", e))?;
+    let result: TeamConfigResult = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
+
+    Ok(result)
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Check all repo-* dirs inside the given workgroup dirs for dirty git state.
+/// Returns a list of (repo_display_name, reason) for repos with pending work.
+fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, String)> {
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut dirty: Vec<(String, String)> = Vec::new();
+
+    for wg_dir in wg_dirs {
+        let wg_name = wg_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let entries = match std::fs::read_dir(wg_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let dir_name = entry.file_name();
+            let dir_name_str = dir_name.to_string_lossy();
+            if !dir_name_str.starts_with("repo-") {
+                continue;
+            }
+            if !path.join(".git").exists() {
+                continue;
+            }
+
+            let display = format!("{}/{}", wg_name, dir_name_str);
+            let mut reasons: Vec<&str> = Vec::new();
+
+            // Check for uncommitted changes (staged + unstaged + untracked)
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["status", "--porcelain"])
+                .current_dir(&path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                #[allow(unused_imports)]
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            if let Ok(output) = cmd.output() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if !stdout.trim().is_empty() {
+                    reasons.push("uncommitted changes");
+                }
+            }
+
+            // Check for unpushed commits
+            let mut cmd2 = std::process::Command::new("git");
+            cmd2.args(["log", "@{upstream}..HEAD", "--oneline"])
+                .current_dir(&path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                #[allow(unused_imports)]
+                use std::os::windows::process::CommandExt;
+                cmd2.creation_flags(CREATE_NO_WINDOW);
+            }
+            match cmd2.output() {
+                Ok(output) if output.status.success() => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if !stdout.trim().is_empty() {
+                        reasons.push("unpushed commits");
+                    }
+                }
+                _ => {
+                    // No upstream configured — local-only branch = unpushed work
+                    reasons.push("no remote upstream");
+                }
+            }
+
+            if !reasons.is_empty() {
+                dirty.push((display, reasons.join(", ")));
+            }
+        }
+    }
+
+    dirty
+}
 
 /// Scan .ac-new/ for existing wg-*-{team_name}/ dirs and return the next N.
 fn determine_next_wg_number(ac_new_dir: &Path, team_name: &str) -> u32 {
