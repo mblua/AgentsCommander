@@ -139,16 +139,24 @@ pub fn execute(args: SendArgs) -> i32 {
     }
 
     // ── Pre-validate routing ──────────────────────────────────────────────
-    // Load teams config and check if sender can reach destination BEFORE
-    // writing to outbox. Fail immediately with a clear error if not.
-    let config = dark_factory::load_dark_factory();
-    if config.teams.is_empty() || !can_communicate(&sender, &args.to, &config) {
-        eprintln!(
-            "Error: routing rejected — '{}' cannot reach '{}'. \
-             Check team membership and coordinator rules.",
-            sender, args.to
-        );
-        return 1;
+    // Root token bypasses all routing checks. Only load settings if a token is present.
+    let is_root = args.token.as_deref().is_some_and(|t| {
+        let settings = crate::config::settings::load_settings();
+        settings.root_token.as_deref().is_some_and(|rt| rt == t)
+    });
+
+    if !is_root {
+        // Load teams config and check if sender can reach destination BEFORE
+        // writing to outbox. Fail immediately with a clear error if not.
+        let config = dark_factory::load_dark_factory();
+        if config.teams.is_empty() || !can_communicate(&sender, &args.to, &config) {
+            eprintln!(
+                "Error: routing rejected — '{}' cannot reach '{}'. \
+                 Check team membership and coordinator rules.",
+                sender, args.to
+            );
+            return 1;
+        }
     }
 
     // Resolve message body: --message-file takes priority over --message
@@ -192,7 +200,7 @@ pub fn execute(args: SendArgs) -> i32 {
 
     let message = OutboxMessage {
         id: msg_id.clone(),
-        token: args.token,
+        token: if is_root { None } else { args.token },
         from: sender.clone(),
         to: args.to.clone(),
         body: message_body,

@@ -97,6 +97,9 @@ pub struct AppSettings {
     /// Sidebar visual style: "classic", "noir-minimal", "card-sections", "command-center"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
+    /// Root token that bypasses all routing checks in the send command
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_token: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -168,6 +171,7 @@ impl Default for AppSettings {
             project_path: None,
             project_paths: vec![],
             sidebar_style: default_sidebar_style(),
+            root_token: None,
         }
     }
 }
@@ -176,7 +180,8 @@ fn settings_path() -> Option<PathBuf> {
     super::config_dir().map(|d| d.join("settings.json"))
 }
 
-/// Load settings from the app config directory (see config_dir()), falling back to defaults
+/// Load settings from the app config directory (see config_dir()), falling back to defaults.
+/// Auto-generates a root_token if missing and persists it.
 pub fn load_settings() -> AppSettings {
 
     let path = match settings_path() {
@@ -187,27 +192,38 @@ pub fn load_settings() -> AppSettings {
         }
     };
 
-    if !path.exists() {
+    let mut settings = if !path.exists() {
         log::info!("No settings file found at {:?}, using defaults", path);
-        return AppSettings::default();
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => match serde_json::from_str::<AppSettings>(&contents) {
-            Ok(settings) => {
-                log::info!("Loaded settings from {:?}", path);
-                settings
-            }
+        AppSettings::default()
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => match serde_json::from_str::<AppSettings>(&contents) {
+                Ok(s) => {
+                    log::info!("Loaded settings from {:?}", path);
+                    s
+                }
+                Err(e) => {
+                    log::error!("Failed to parse settings file: {}", e);
+                    AppSettings::default()
+                }
+            },
             Err(e) => {
-                log::error!("Failed to parse settings file: {}", e);
+                log::error!("Failed to read settings file: {}", e);
                 AppSettings::default()
             }
-        },
-        Err(e) => {
-            log::error!("Failed to read settings file: {}", e);
-            AppSettings::default()
+        }
+    };
+
+    // Auto-generate root token if missing
+    if settings.root_token.is_none() {
+        settings.root_token = Some(uuid::Uuid::new_v4().to_string());
+        log::info!("Generated new root token");
+        if let Err(e) = save_settings(&settings) {
+            log::error!("Failed to persist auto-generated root token: {}", e);
         }
     }
+
+    settings
 }
 
 /// Save settings to the app config directory (see config_dir())
