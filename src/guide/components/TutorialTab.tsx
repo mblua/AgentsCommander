@@ -18,7 +18,7 @@ const TutorialTab: Component = () => {
       <div class="guide-card">
         <div class="guide-card-title">Creating a session</div>
         <div class="guide-card-body">
-          Use the "Open Agent" button in the sidebar to launch an AI agent (Claude Code, Codex, or custom) in a directory of your choice. Each session is an independent PTY process.
+          Use the "Open Agent" button in the sidebar to launch a Coding Agent (Claude Code, Codex, or custom) in a directory of your choice. Each session is an independent PTY process.
         </div>
       </div>
 
