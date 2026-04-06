@@ -981,38 +981,6 @@ html, body, #root {
   border-radius: var(--radius-sm);
 }
 
-/* Repo path rows */
-.settings-path-row {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-xs);
-}
-
-.settings-path-input {
-  flex: 1;
-}
-
-.settings-path-remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: transparent;
-  color: var(--sidebar-fg-dim);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  flex-shrink: 0;
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-
-.settings-path-remove:hover {
-  background: rgba(255, 59, 92, 0.15);
-  color: var(--status-exited);
-}
-
 .settings-add-btn {
   padding: var(--spacing-xs) var(--spacing-sm);
   border: 1px dashed var(--sidebar-border);
