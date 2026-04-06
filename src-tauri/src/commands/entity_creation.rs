@@ -79,15 +79,15 @@ fn sanitize_name(raw: &str) -> Result<String, String> {
     Ok(sanitized)
 }
 
-/// Validate that an existing team name is safe for path operations.
+/// Validate that an existing entity name is safe for path operations.
 /// Unlike `sanitize_name`, this does NOT transform the name — it just rejects
 /// names that contain path traversal or separator characters.
-fn validate_existing_name(name: &str) -> Result<(), String> {
+fn validate_existing_name(name: &str, entity_label: &str) -> Result<(), String> {
     if name.is_empty() {
-        return Err("Team name cannot be empty".into());
+        return Err(format!("{} name cannot be empty", entity_label));
     }
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err("Invalid team name: only alphanumeric characters and hyphens are allowed".into());
+        return Err(format!("Invalid {} name: only alphanumeric characters and hyphens are allowed", entity_label));
     }
     Ok(())
 }
@@ -183,6 +183,81 @@ pub async fn create_agent_matrix(
     let result_path = agent_dir.to_string_lossy().to_string();
     log::info!("[entity_creation] Created agent matrix: {}", result_path);
     Ok(CreatedEntityResult { path: result_path })
+}
+
+/// Delete an agent matrix directory from a project.
+/// Removes {project_path}/.ac-new/_agent_{agent_name}/ entirely.
+/// Checks that no team references this agent before deleting.
+#[tauri::command]
+pub async fn delete_agent_matrix(
+    project_path: String,
+    agent_name: String,
+) -> Result<(), String> {
+    validate_existing_name(&agent_name, "Agent")?;
+
+    let base = Path::new(&project_path).join(".ac-new");
+    if !base.is_dir() {
+        return Err(format!(".ac-new directory not found in {}", project_path));
+    }
+
+    let agent_dir = base.join(format!("_agent_{}", agent_name));
+    if !agent_dir.exists() {
+        return Err(format!("Agent '{}' not found", agent_name));
+    }
+
+    // Referential integrity: check if any team references this agent.
+    // Team configs store agent refs in varying formats (relative: "../_agent_X",
+    // absolute: "C:\..._agent_X", or bare: "_agent_X"). Normalize by extracting
+    // the final path component after replacing backslashes.
+    let agent_dir_name = format!("_agent_{}", agent_name);
+    let mut referencing_teams: Vec<String> = Vec::new();
+    let entries = std::fs::read_dir(&base)
+        .map_err(|e| format!("Cannot read .ac-new directory for integrity check: {}", e))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|e| format!("Cannot read directory entry during integrity check: {}", e))?;
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if !dir_name.starts_with("_team_") {
+            continue;
+        }
+        let config_path = entry.path().join("config.json");
+        if !config_path.exists() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Cannot read team config {}/config.json for integrity check: {}", dir_name, e))?;
+        let config: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Cannot parse team config {}/config.json: {}", dir_name, e))?;
+        let agents = config
+            .get("agents")
+            .and_then(|a| a.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if agents.iter().any(|a| {
+            // Normalize: replace backslashes, split on '/', take the last component
+            let normalized = a.replace('\\', "/");
+            normalized
+                .rsplit('/')
+                .next()
+                .map(|last| last == agent_dir_name)
+                .unwrap_or(false)
+        }) {
+            let team_name = dir_name.strip_prefix("_team_").unwrap_or(&dir_name);
+            referencing_teams.push(team_name.to_string());
+        }
+    }
+    if !referencing_teams.is_empty() {
+        return Err(format!(
+            "Cannot delete agent '{}': referenced by team(s): {}. Remove the agent from those teams first.",
+            agent_name,
+            referencing_teams.join(", ")
+        ));
+    }
+
+    std::fs::remove_dir_all(&agent_dir)
+        .map_err(|e| format!("Failed to delete agent directory: {}", e))?;
+    log::info!("[entity_creation] Deleted agent matrix: {}", agent_name);
+    Ok(())
 }
 
 /// List all agent matrices across multiple project paths.
@@ -474,7 +549,7 @@ pub async fn delete_team(
     project_path: String,
     team_name: String,
 ) -> Result<(), String> {
-    validate_existing_name(&team_name)?;
+    validate_existing_name(&team_name, "Team")?;
     let base = Path::new(&project_path).join(".ac-new");
     if !base.is_dir() {
         return Err(format!(".ac-new directory not found in {}", project_path));
@@ -544,7 +619,7 @@ pub async fn delete_workgroup(
     workgroup_name: String,
     force: Option<bool>,
 ) -> Result<(), String> {
-    validate_existing_name(&workgroup_name)?;
+    validate_existing_name(&workgroup_name, "Workgroup")?;
 
     let base = Path::new(&project_path).join(".ac-new");
     if !base.is_dir() {
@@ -592,7 +667,7 @@ pub async fn update_team(
     coordinator: String,
     repos: Vec<RepoAssignment>,
 ) -> Result<(), String> {
-    validate_existing_name(&team_name)?;
+    validate_existing_name(&team_name, "Team")?;
     let base = Path::new(&project_path).join(".ac-new");
     if !base.is_dir() {
         return Err(format!(".ac-new directory not found in {}", project_path));
@@ -638,7 +713,7 @@ pub async fn get_team_config(
     project_path: String,
     team_name: String,
 ) -> Result<TeamConfigResult, String> {
-    validate_existing_name(&team_name)?;
+    validate_existing_name(&team_name, "Team")?;
     let base = Path::new(&project_path).join(".ac-new");
     if !base.is_dir() {
         return Err(format!(".ac-new directory not found in {}", project_path));
