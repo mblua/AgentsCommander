@@ -489,20 +489,78 @@ const ProjectPanel: Component = () => {
                     </div>
                   );
                 })()}
-                {/* Agent Matrix */}
+                {/* Agents */}
                 {(() => {
                   const [matrixCollapsed, setMatrixCollapsed] = createSignal(false);
+                  const [agentCtxMenu, setAgentCtxMenu] = createSignal<{ agent: { name: string; path: string; preferredAgentId?: string }; x: number; y: number } | null>(null);
+                  const [deletingAgent, setDeletingAgent] = createSignal<{ name: string; path: string } | null>(null);
+                  const [agentDeleteError, setAgentDeleteError] = createSignal("");
+                  const [agentDeleteInProgress, setAgentDeleteInProgress] = createSignal(false);
+                  const [agentsHeaderCtxMenu, setAgentsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
+
+                  const closeAgentDeleteModal = () => {
+                    setAgentDeleteError("");
+                    setAgentDeleteInProgress(false);
+                    setDeletingAgent(null);
+                  };
+
+                  const handleAgentContextMenu = (e: MouseEvent, agent: { name: string; path: string; preferredAgentId?: string }) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cleanupCtx();
+                    setShowCtxMenu(false);
+                    setTeamCtxMenu(null);
+                    setWgCtxMenu(null);
+                    setAgentsHeaderCtxMenu(null);
+                    setAgentCtxMenu({ agent, x: e.clientX, y: e.clientY });
+                    const dismiss = (ev?: Event) => {
+                      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+                      setAgentCtxMenu(null);
+                      cleanupCtx();
+                    };
+                    dismissCtx = dismiss;
+                    setTimeout(() => {
+                      window.addEventListener("click", dismiss);
+                      window.addEventListener("contextmenu", dismiss);
+                      window.addEventListener("keydown", dismiss as any);
+                    });
+                  };
+
+                  const handleAgentsHeaderContextMenu = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cleanupCtx();
+                    setShowCtxMenu(false);
+                    setTeamCtxMenu(null);
+                    setWgCtxMenu(null);
+                    setAgentCtxMenu(null);
+                    setAgentsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
+                    const dismiss = (ev?: Event) => {
+                      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+                      setAgentsHeaderCtxMenu(null);
+                      cleanupCtx();
+                    };
+                    dismissCtx = dismiss;
+                    setTimeout(() => {
+                      window.addEventListener("click", dismiss);
+                      window.addEventListener("contextmenu", dismiss);
+                      window.addEventListener("keydown", dismiss as any);
+                    });
+                  };
+
                   return (
+                    <>
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
                         onClick={() => setMatrixCollapsed((c) => !c)}
+                        onContextMenu={handleAgentsHeaderContextMenu}
                       >
                         <span class="ac-discovery-chevron" classList={{ collapsed: matrixCollapsed() }}>
                           &#x25BE;
                         </span>
                         <div class="ac-wg-header-text">
-                          <span class="ac-wg-name">Agent Matrix</span>
+                          <span class="ac-wg-name">Agents</span>
                         </div>
                       </div>
                       <Show when={!matrixCollapsed()}>
@@ -522,6 +580,7 @@ const ProjectPanel: Component = () => {
                                     <div
                                       class="ac-discovery-item"
                                       onClick={() => handleAgentClick(agent)}
+                                      onContextMenu={(e) => handleAgentContextMenu(e, agent)}
                                       title={agent.path}
                                     >
                                       <div class="session-item-status offline" />
@@ -546,6 +605,117 @@ const ProjectPanel: Component = () => {
                         </Show>
                       </Show>
                     </div>
+
+                    {/* Agent item context menu */}
+                    {agentCtxMenu() && (
+                      <Portal>
+                        <div
+                          class="session-context-menu"
+                          style={{ left: `${agentCtxMenu()!.x}px`, top: `${agentCtxMenu()!.y}px` }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            class="session-context-option"
+                            onClick={() => {
+                              const menu = agentCtxMenu();
+                              setAgentCtxMenu(null);
+                              if (menu) WindowAPI.openInExplorer(menu.agent.path);
+                            }}
+                          >
+                            Open in Explorer
+                          </button>
+                          <button
+                            class="session-context-option context-option-danger"
+                            onClick={() => {
+                              const menu = agentCtxMenu();
+                              if (menu) setDeletingAgent({ name: menu.agent.name, path: menu.agent.path });
+                              setAgentCtxMenu(null);
+                            }}
+                          >
+                            Delete Agent
+                          </button>
+                        </div>
+                      </Portal>
+                    )}
+
+                    {/* Agents header context menu */}
+                    {agentsHeaderCtxMenu() && (
+                      <Portal>
+                        <div
+                          class="session-context-menu"
+                          style={{ left: `${agentsHeaderCtxMenu()!.x}px`, top: `${agentsHeaderCtxMenu()!.y}px` }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            class="session-context-option"
+                            onClick={() => {
+                              setAgentsHeaderCtxMenu(null);
+                              setShowNewAgent(true);
+                            }}
+                          >
+                            New Agent
+                          </button>
+                        </div>
+                      </Portal>
+                    )}
+
+                    {/* Delete agent confirmation */}
+                    {deletingAgent() && (
+                      <Portal>
+                        <div
+                          class="modal-overlay"
+                          onClick={(e) => {
+                            if ((e.target as HTMLElement).classList.contains("modal-overlay")) closeAgentDeleteModal();
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") closeAgentDeleteModal();
+                          }}
+                        >
+                          <div class="agent-modal" style={{ "max-width": "360px" }}>
+                            <div class="agent-modal-header">
+                              <span class="agent-modal-title">Delete Agent</span>
+                            </div>
+                            <div class="new-agent-form">
+                              <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
+                                Delete agent <strong>{deletingAgent()!.name.slice(deletingAgent()!.name.lastIndexOf("/") + 1)}</strong>? This will remove the agent directory and all its contents. This action cannot be undone.
+                              </p>
+                              <Show when={agentDeleteError()}>
+                                <div class="new-agent-error">{agentDeleteError()}</div>
+                              </Show>
+                            </div>
+                            <div class="new-agent-footer">
+                              <button class="new-agent-cancel-btn" onClick={closeAgentDeleteModal}>
+                                Cancel
+                              </button>
+                              <button
+                                class="new-agent-create-btn"
+                                style={{ "background": "var(--danger, #c0392b)" }}
+                                disabled={agentDeleteInProgress()}
+                                onClick={async () => {
+                                  if (agentDeleteInProgress()) return;
+                                  setAgentDeleteInProgress(true);
+                                  const agent = deletingAgent()!;
+                                  const shortName = agent.name.slice(agent.name.lastIndexOf("/") + 1);
+                                  try {
+                                    await EntityAPI.deleteAgentMatrix(proj.path, shortName);
+                                    await projectStore.reloadProject(proj.path);
+                                  } catch (e: any) {
+                                    console.error("delete_agent_matrix failed:", e);
+                                    setAgentDeleteError(typeof e === "string" ? e : e?.message ?? "Failed to delete agent");
+                                    setAgentDeleteInProgress(false);
+                                    return;
+                                  }
+                                  closeAgentDeleteModal();
+                                }}
+                              >
+                                {agentDeleteInProgress() ? "Deleting..." : "Delete"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </Portal>
+                    )}
+                    </>
                   );
                 })()}
                 {/* Teams */}

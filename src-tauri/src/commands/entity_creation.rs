@@ -185,6 +185,68 @@ pub async fn create_agent_matrix(
     Ok(CreatedEntityResult { path: result_path })
 }
 
+/// Delete an agent matrix directory from a project.
+/// Removes {project_path}/.ac-new/_agent_{agent_name}/ entirely.
+/// Checks that no team references this agent before deleting.
+#[tauri::command]
+pub async fn delete_agent_matrix(
+    project_path: String,
+    agent_name: String,
+) -> Result<(), String> {
+    validate_existing_name(&agent_name)?;
+
+    let base = Path::new(&project_path).join(".ac-new");
+    if !base.is_dir() {
+        return Err(format!(".ac-new directory not found in {}", project_path));
+    }
+
+    let agent_dir = base.join(format!("_agent_{}", agent_name));
+    if !agent_dir.exists() {
+        return Err(format!("Agent '{}' not found", agent_name));
+    }
+
+    // Referential integrity: check if any team references this agent
+    let agent_ref = format!("_agent_{}", agent_name);
+    let mut referencing_teams: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            if !dir_name.starts_with("_team_") {
+                continue;
+            }
+            let config_path = entry.path().join("config.json");
+            if !config_path.exists() {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let agents = config
+                        .get("agents")
+                        .and_then(|a| a.as_array())
+                        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    if agents.iter().any(|a| *a == agent_ref) {
+                        let team_name = dir_name.strip_prefix("_team_").unwrap_or(&dir_name);
+                        referencing_teams.push(team_name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    if !referencing_teams.is_empty() {
+        return Err(format!(
+            "Cannot delete agent '{}': referenced by team(s): {}. Remove the agent from those teams first.",
+            agent_name,
+            referencing_teams.join(", ")
+        ));
+    }
+
+    std::fs::remove_dir_all(&agent_dir)
+        .map_err(|e| format!("Failed to delete agent directory: {}", e))?;
+    log::info!("[entity_creation] Deleted agent matrix: {}", agent_name);
+    Ok(())
+}
+
 /// List all agent matrices across multiple project paths.
 /// Scans {project}/.ac-new/_agent_*/ and reads Role.md frontmatter.
 #[tauri::command]
