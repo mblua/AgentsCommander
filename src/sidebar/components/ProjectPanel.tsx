@@ -19,11 +19,16 @@ interface PendingLaunch {
   gitBranchPrefix?: string;
 }
 
+/** Strip 'repo-' prefix from a directory name */
+function stripRepoPrefix(name: string): string {
+  return name.startsWith("repo-") ? name.slice(5) : name;
+}
+
 /** Derive the repo name from a replica's repoPaths (strip 'repo-' prefix) */
 function replicaRepoName(replica: AcAgentReplica): string | undefined {
   if (!replica.repoPaths?.length) return undefined;
   const dirName = replica.repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
-  return dirName.startsWith("repo-") ? dirName.slice(5) : dirName;
+  return stripRepoPrefix(dirName);
 }
 
 /** Build the session name used to link a replica to its session */
@@ -427,7 +432,7 @@ const ProjectPanel: Component = () => {
                                 }
                               >
                                 {(s) => {
-                                  const repoName = () => replicaRepoName(item.replica) || item.wg.repoPath?.replace(/\\/g, "/").split("/").pop() || proj.folderName;
+                                  const repoName = () => replicaRepoName(item.replica) || stripRepoPrefix(item.wg.repoPath?.replace(/\\/g, "/").split("/").pop() ?? "") || proj.folderName;
                                   const branchLabel = () => {
                                     const sess = s();
                                     const rn = repoName();
@@ -546,7 +551,7 @@ const ProjectPanel: Component = () => {
                                             }
                                           >
                                             {(s) => {
-                                              const rn = () => replicaRepoName(replica) || wg.repoPath?.replace(/\\/g, "/").split("/").pop() || proj.folderName;
+                                              const rn = () => replicaRepoName(replica) || stripRepoPrefix(wg.repoPath?.replace(/\\/g, "/").split("/").pop() ?? "") || proj.folderName;
                                               const branchLabel = () => {
                                                 const sess = s();
                                                 const name = rn();
