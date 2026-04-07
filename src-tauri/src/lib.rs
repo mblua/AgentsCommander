@@ -40,7 +40,7 @@ pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 pub type WebServerHandle = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>;
 
 /// Master token generated at app startup. Allows bypassing team validation (can_reach).
-/// Ephemeral: lives only in memory, never persisted to disk.
+/// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See #34.
 /// Field is private — use `matches()` for constant-time comparison.
 pub struct MasterToken(String);
 
@@ -125,7 +125,7 @@ pub fn run() {
         .init();
     }
 
-    // Generate master token — printed once to stdout, never persisted
+    // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
 
     // Create instance-private outbox directory and clean up stale ones
