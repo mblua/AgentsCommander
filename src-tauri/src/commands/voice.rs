@@ -13,7 +13,7 @@ struct GeminiResponse {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiCandidate {
-    content: GeminiContent,
+    content: Option<GeminiContent>,
 }
 
 #[derive(serde::Deserialize)]
@@ -83,6 +83,8 @@ pub async fn voice_transcribe(
         .map_err(|e| format!("Gemini API request failed: {}", e))?;
 
     let status = resp.status();
+    log::debug!("Gemini request: model={}, audio_size={} bytes, status={}", model, audio.len(), status);
+
     if !status.is_success() {
         let error_body = resp.text().await.unwrap_or_default();
         let msg = if status.as_u16() == 429 {
@@ -96,15 +98,22 @@ pub async fn voice_transcribe(
         return Err(msg);
     }
 
-    let gemini_resp: GeminiResponse = resp
-        .json()
+    let text_body = resp
+        .text()
         .await
-        .map_err(|e| format!("Failed to parse Gemini response: {}", e))?;
+        .map_err(|e| format!("Failed to read Gemini response body: {}", e))?;
+    log::debug!("Gemini raw response: {}", text_body);
+
+    let gemini_resp: GeminiResponse = serde_json::from_str(&text_body)
+        .map_err(|e| {
+            log::error!("Failed to parse Gemini response: {}. Raw body: {}", e, text_body);
+            format!("Failed to parse Gemini response: {}", e)
+        })?;
 
     let text = gemini_resp
         .candidates
         .and_then(|c| c.into_iter().next())
-        .map(|c| c.content)
+        .and_then(|c| c.content)
         .and_then(|content| {
             content
                 .parts
