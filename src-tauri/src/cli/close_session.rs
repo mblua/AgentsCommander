@@ -58,8 +58,21 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
 
     let sender = agent_name_from_root(&root);
 
-    // Pre-validate coordinator authorization
-    if !is_root {
+    // Pre-validate coordinator authorization.
+    // Check master token from LocalDir as additional bypass (independent of validate_cli_token).
+    let is_master = is_root || {
+        if let Some(ref token_str) = args.token {
+            crate::config::config_dir()
+                .map(|d| d.join("master-token.txt"))
+                .and_then(|p| std::fs::read_to_string(&p).ok())
+                .map(|m| m.trim() == token_str)
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    };
+
+    if !is_master {
         let discovered = teams::discover_teams();
         if discovered.is_empty() || !teams::is_coordinator_of(&sender, &args.target, &discovered) {
             eprintln!(
