@@ -7,7 +7,7 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
-import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
+import { voiceRecorder } from "../../shared/voice-recorder";
 import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
