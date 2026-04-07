@@ -72,6 +72,15 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
         return Ok((token, true));
     }
 
+    // Accept master token from persisted file
+    if let Some(master_path) = crate::config::config_dir().map(|d| d.join("master-token.txt")) {
+        if let Ok(master) = std::fs::read_to_string(&master_path) {
+            if master.trim() == token {
+                return Ok((token, true));
+            }
+        }
+    }
+
     // Otherwise must be a valid UUID (all session tokens are UUIDs)
     if uuid::Uuid::parse_str(&token).is_err() {
         let display = if token.len() > 8 { &token[..8] } else { &token };

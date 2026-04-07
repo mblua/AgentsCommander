@@ -160,6 +160,12 @@ pub fn run() {
         let _ = std::fs::write(&token_path, web_access_token.value());
     }
 
+    // Persist master token and app outbox path so the CLI can use them
+    if let Some(dir) = config::config_dir() {
+        let _ = std::fs::write(dir.join("master-token.txt"), master_token.value());
+        let _ = std::fs::write(dir.join("app-outbox-path.txt"), app_outbox.path());
+    }
+
     // Create WS broadcaster (shared between Tauri commands and web server)
     let broadcaster = WsBroadcaster::new();
 
