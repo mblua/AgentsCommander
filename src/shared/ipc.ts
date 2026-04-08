@@ -321,6 +321,11 @@ export const EntityAPI = {
 
   deleteWorkgroup: (projectPath: string, workgroupName: string, force?: boolean) =>
     transport.invoke<void>("delete_workgroup", { projectPath, workgroupName, force: force ?? false }),
+
+  syncWorkgroupRepos: (projectPath: string, teamName: string) =>
+    transport.invoke<{ workgroupsUpdated: number; replicasUpdated: number; errors: { replica: string; error: string }[] }>(
+      "sync_workgroup_repos", { projectPath, teamName }
+    ),
 };
 
 // Agent Creator API

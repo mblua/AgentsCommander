@@ -56,6 +56,21 @@ pub struct CloneError {
     pub error: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncError {
+    pub replica: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResult {
+    pub workgroups_updated: u32,
+    pub replicas_updated: u32,
+    pub errors: Vec<SyncError>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -104,6 +119,17 @@ fn repo_dir_name_from_url(url: &str) -> String {
         .strip_suffix(".git")
         .unwrap_or(last_segment)
         .to_string()
+}
+
+/// Check if a team-config agent entry (absolute path or dir name) matches a given agent name.
+/// `agent_name` is the bare name (e.g., "dev-rust"), not prefixed.
+fn agent_matches(team_agent_entry: &str, agent_name: &str) -> bool {
+    let entry_dir = Path::new(team_agent_entry)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(team_agent_entry);
+    entry_dir == format!("_agent_{}", agent_name)
+        || entry_dir == agent_name
 }
 
 /// Parse YAML frontmatter from a Role.md file.
@@ -492,7 +518,7 @@ pub async fn create_workgroup(
         // Determine repos assigned to this agent (match by _agent_ name)
         let assigned_repos: Vec<String> = team_repos
             .iter()
-            .filter(|r| r.agents.iter().any(|a| a == agent_dir_name || a == &format!("_agent_{}", agent_name)))
+            .filter(|r| r.agents.iter().any(|a| agent_matches(a, agent_name)))
             .filter_map(|r| {
                 let dir_name = format!("repo-{}", repo_dir_name_from_url(&r.url));
                 Some(format!("../{}", dir_name))
@@ -505,6 +531,7 @@ pub async fn create_workgroup(
         let replica_config = serde_json::json!({
             "identity": identity_rel,
             "repos": assigned_repos,
+            "context": ["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"],
         });
 
         let config_str = serde_json::to_string_pretty(&replica_config)
@@ -704,7 +731,229 @@ pub async fn update_team(
         .map_err(|e| format!("Failed to write config.json: {}", e))?;
 
     log::info!("[entity_creation] Updated team: {}", team_name);
+
+    // Propagate repo changes to existing workgroups
+    match sync_workgroup_repos_inner(&base, &team_name, &repos) {
+        Ok(result) => {
+            log::info!(
+                "[entity_creation] Synced {} workgroups, {} replicas for team '{}' ({} errors)",
+                result.workgroups_updated, result.replicas_updated, team_name, result.errors.len()
+            );
+        }
+        Err(e) => {
+            log::warn!("[entity_creation] Failed to sync workgroup repos: {}", e);
+            // Non-fatal: team config was saved successfully
+        }
+    }
+
     Ok(())
+}
+
+/// Core sync logic — updates repos and context in all replica configs for a team's workgroups.
+fn sync_workgroup_repos_inner(
+    base: &Path,
+    team_name: &str,
+    repos: &[RepoAssignment],
+) -> Result<SyncResult, String> {
+    let mut result = SyncResult {
+        workgroups_updated: 0,
+        replicas_updated: 0,
+        errors: Vec::new(),
+    };
+
+    // Find all workgroups for this team (same discovery as delete_team(), lines 563-580)
+    let wg_suffix = format!("-{}", team_name);
+    let mut wg_dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(base) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("wg-") && name_str.ends_with(&wg_suffix) {
+                let middle = &name_str[3..name_str.len() - wg_suffix.len()];
+                if middle.parse::<u32>().is_ok() {
+                    wg_dirs.push(entry.path());
+                }
+            }
+        }
+    }
+
+    for wg_dir in &wg_dirs {
+        let mut wg_touched = false;
+
+        // List __agent_* directories in this workgroup
+        let replica_dirs: Vec<PathBuf> = match std::fs::read_dir(wg_dir) {
+            Ok(entries) => entries
+                .flatten()
+                .filter(|e| {
+                    e.path().is_dir()
+                        && e.file_name().to_string_lossy().starts_with("__agent_")
+                })
+                .map(|e| e.path())
+                .collect(),
+            Err(e) => {
+                log::warn!("Failed to read workgroup dir {}: {}", wg_dir.display(), e);
+                continue;
+            }
+        };
+
+        for replica_dir in &replica_dirs {
+            let dir_name = replica_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+
+            // __agent_dev-rust → dev-rust
+            let replica_name = dir_name.strip_prefix("__agent_").unwrap_or(dir_name);
+
+            // Compute assigned repos using the shared helper
+            let assigned_repos: Vec<String> = repos
+                .iter()
+                .filter(|r| r.agents.iter().any(|a| agent_matches(a, replica_name)))
+                .filter_map(|r| {
+                    let d = format!("repo-{}", repo_dir_name_from_url(&r.url));
+                    Some(format!("../{}", d))
+                })
+                .collect();
+
+            // Read existing config, preserving identity/tooling/other runtime fields
+            let config_path = replica_dir.join("config.json");
+            let mut config: serde_json::Value = match std::fs::read_to_string(&config_path) {
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        result.errors.push(SyncError {
+                            replica: dir_name.to_string(),
+                            error: format!("Failed to parse config.json: {}", e),
+                        });
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    result.errors.push(SyncError {
+                        replica: dir_name.to_string(),
+                        error: format!("Failed to read config.json: {}", e),
+                    });
+                    continue;
+                }
+            };
+
+            // Update repos
+            config["repos"] = serde_json::json!(assigned_repos);
+
+            // Context merge: prepend required tokens to maintain consistent ordering
+            // with create_workgroup() (which writes [$AC_CONTEXT, $REPOS_INFO] first).
+            // Preserve any custom entries that were added via set_replica_context_files().
+            let existing_context: Vec<String> = config
+                .get("context")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let required = ["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"];
+            let mut new_context: Vec<String> =
+                required.iter().map(|s| s.to_string()).collect();
+            for entry in &existing_context {
+                if !required.contains(&entry.as_str()) {
+                    new_context.push(entry.clone());
+                }
+            }
+            config["context"] = serde_json::json!(new_context);
+
+            // Write back
+            match serde_json::to_string_pretty(&config) {
+                Ok(serialized) => {
+                    if let Err(e) = std::fs::write(&config_path, &serialized) {
+                        result.errors.push(SyncError {
+                            replica: dir_name.to_string(),
+                            error: format!("Failed to write config.json: {}", e),
+                        });
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    result.errors.push(SyncError {
+                        replica: dir_name.to_string(),
+                        error: format!("Failed to serialize config.json: {}", e),
+                    });
+                    continue;
+                }
+            }
+
+            result.replicas_updated += 1;
+            wg_touched = true;
+        }
+
+        if wg_touched {
+            result.workgroups_updated += 1;
+        }
+    }
+
+    if !result.errors.is_empty() {
+        log::warn!(
+            "[entity_creation] sync_workgroup_repos for '{}': {} replicas updated, {} errors",
+            team_name,
+            result.replicas_updated,
+            result.errors.len()
+        );
+    }
+
+    Ok(result)
+}
+
+/// Sync repo assignments and context tokens from team config to all existing workgroup replicas.
+#[tauri::command]
+pub async fn sync_workgroup_repos(
+    project_path: String,
+    team_name: String,
+) -> Result<SyncResult, String> {
+    validate_existing_name(&team_name, "Team")?;
+
+    let base = Path::new(&project_path).join(".ac-new");
+    if !base.is_dir() {
+        return Err(format!(".ac-new directory not found in {}", project_path));
+    }
+
+    let team_dir = base.join(format!("_team_{}", team_name));
+    if !team_dir.exists() {
+        return Err(format!("Team '{}' not found", team_name));
+    }
+
+    // Read team config and parse repo assignments
+    let config_content = std::fs::read_to_string(team_dir.join("config.json"))
+        .map_err(|e| format!("Failed to read team config: {}", e))?;
+    let config: serde_json::Value = serde_json::from_str(&config_content)
+        .map_err(|e| format!("Failed to parse team config: {}", e))?;
+
+    let repos: Vec<RepoAssignment> = config
+        .get("repos")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    let url = v.get("url")?.as_str()?.to_string();
+                    let agents = v
+                        .get("agents")
+                        .and_then(|a| a.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(RepoAssignment { url, agents })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    sync_workgroup_repos_inner(&base, &team_name, &repos)
 }
 
 /// Read a team's config.json and return its contents.
