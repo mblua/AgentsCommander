@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 use crate::errors::AppError;
@@ -32,15 +32,6 @@ pub struct ResponseWatcher {
     pub capturing: bool,
 }
 
-/// Tracks sessions with a pending %%ACRC%% credential injection to prevent duplicates.
-pub type AcrcPendingSet = Arc<Mutex<std::collections::HashSet<Uuid>>>;
-
-/// Tracks sessions that have already received their credentials.
-/// Once credentials are successfully injected, the session is added here
-/// and all subsequent %%ACRC%% detections are permanently ignored.
-/// This prevents the feedback loop where TUI repaints re-render the marker.
-pub type AcrcDeliveredSet = Arc<Mutex<std::collections::HashSet<Uuid>>>;
-
 pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     output_senders: OutputSenderMap,
@@ -52,8 +43,6 @@ pub struct PtyManager {
     /// VT100 screen state per session for replay to late-joining WS clients
     screen_parsers: Arc<Mutex<HashMap<Uuid, vt100::Parser>>>,
     transcript: TranscriptWriter,
-    acrc_pending: AcrcPendingSet,
-    acrc_delivered: AcrcDeliveredSet,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -151,8 +140,6 @@ impl PtyManager {
             ws_broadcaster,
             screen_parsers: Arc::new(Mutex::new(HashMap::new())),
             transcript,
-            acrc_pending: Arc::new(Mutex::new(std::collections::HashSet::new())),
-            acrc_delivered: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -249,12 +236,8 @@ impl PtyManager {
         let ws_broadcaster = self.ws_broadcaster.clone();
         let screen_parsers = Arc::clone(&self.screen_parsers);
         let transcript = self.transcript.clone();
-        let acrc_pending = Arc::clone(&self.acrc_pending);
-        let acrc_delivered = Arc::clone(&self.acrc_delivered);
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
-            // Trailing buffer for detecting %%ACRC%% split across reads (marker is 8 bytes)
-            let mut acrc_tail = String::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break, // EOF
@@ -264,11 +247,11 @@ impl PtyManager {
                         // Record transcript (agent output)
                         transcript.record_output(id, &data);
 
-                        // Scan for response markers and credential requests.
+                        // Scan for response markers.
                         // Use from_utf8_lossy to prevent silent detection skips
                         // when a multi-byte UTF-8 character is split at the 4096-byte
-                        // read boundary. The ACRC marker and response markers are pure
-                        // ASCII, so replacement chars (U+FFFD) don't affect detection.
+                        // read boundary. Response markers are pure ASCII, so
+                        // replacement chars (U+FFFD) don't affect detection.
                         let text = String::from_utf8_lossy(&data);
                         if text.contains('\u{FFFD}') {
                             log::debug!(
@@ -297,108 +280,7 @@ impl PtyManager {
                                 &id.to_string()[..8], n
                             );
                         }
-                        {
-                            scan_response_markers(id, &text, &response_watchers);
-
-                            // Detect %%ACRC%% with cross-buffer support and debounce.
-                            // Use line-based matching: only trigger when %%ACRC%% is a
-                            // standalone line (trimmed). This prevents false positives
-                            // from rendered text that mentions the marker in prose,
-                            // search queries, or code references.
-                            let scan_text = format!("{}{}", acrc_tail, text);
-                            let has_standalone_marker = scan_text
-                                .lines()
-                                .any(|line| strip_ansi_csi(line).trim() == "%%ACRC%%");
-                            if !has_standalone_marker && scan_text.contains("ACRC") {
-                                log::debug!("[ACRC] partial match in session {} (not standalone): {:?}",
-                                    id, &scan_text[..scan_text.len().min(100)]);
-                            }
-                            if has_standalone_marker {
-                                // Permanent delivery check: once credentials are injected
-                                // successfully, ignore all subsequent ACRC markers for this
-                                // session. This prevents the feedback loop where TUI repaints
-                                // re-render the marker and trigger re-injection.
-                                let should_inject = {
-                                    let already_delivered = acrc_delivered.lock()
-                                        .map(|set| set.contains(&id))
-                                        .unwrap_or(false);
-                                    if already_delivered {
-                                        false
-                                    } else {
-                                        log::info!("[ACRC] standalone marker detected for session {}", id);
-                                        let already_pending = acrc_pending.lock()
-                                            .map(|mut set| !set.insert(id))
-                                            .unwrap_or(false);
-                                        if already_pending {
-                                            log::info!("[ACRC] already pending for session {}, skipping", id);
-                                        }
-                                        !already_pending
-                                    }
-                                };
-                                if should_inject {
-                                    log::info!("[ACRC] spawning inject task for session {}", id);
-                                    let app = app_handle.clone();
-                                    let pending = Arc::clone(&acrc_pending);
-                                    let delivered = Arc::clone(&acrc_delivered);
-                                    tauri::async_runtime::spawn(async move {
-                                        // Guard: always clear pending flag, even on panic.
-                                        struct PendingGuard {
-                                            pending: AcrcPendingSet,
-                                            id: Uuid,
-                                        }
-                                        impl Drop for PendingGuard {
-                                            fn drop(&mut self) {
-                                                if let Ok(mut set) = self.pending.lock() {
-                                                    set.remove(&self.id);
-                                                }
-                                            }
-                                        }
-                                        let _guard = PendingGuard {
-                                            pending: Arc::clone(&pending),
-                                            id,
-                                        };
-
-                                        let success = inject_credentials(&app, id).await;
-                                        log::info!("[ACRC] inject task completed for session {} success={}", id, success);
-                                        if success {
-                                            // Mark as delivered — all future ACRC markers
-                                            // for this session will be permanently ignored.
-                                            if let Ok(mut set) = delivered.lock() {
-                                                set.insert(id);
-                                                log::info!("[ACRC] session {} marked as delivered", id);
-                                            }
-                                        } else {
-                                            // Throttle retries on failure — keep pending
-                                            // flag for 3s so TUI repaints don't cause a
-                                            // retry storm at 10-50 attempts/second.
-                                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                                        }
-                                        // PendingGuard clears pending on drop, allowing
-                                        // retry after the throttle delay.
-                                    });
-                                }
-                            }
-                            // Keep everything after the last newline so that
-                            // line-based detection works across buffer splits.
-                            // Cap at 512 bytes to bound memory if no newline arrives.
-                            acrc_tail = match text.rfind('\n') {
-                                Some(i) => text[i..].to_string(),
-                                None => {
-                                    let combined = format!("{}{}", acrc_tail, text);
-                                    if combined.len() > 512 {
-                                        // Find nearest valid char boundary to avoid
-                                        // panicking on multi-byte UTF-8 sequences.
-                                        let target = combined.len() - 512;
-                                        let start = (target..combined.len())
-                                            .find(|&i| combined.is_char_boundary(i))
-                                            .unwrap_or(0);
-                                        combined[start..].to_string()
-                                    } else {
-                                        combined
-                                    }
-                                }
-                            };
-                        }
+                        scan_response_markers(id, &text, &response_watchers);
 
                         // Feed Telegram bridge if active (non-blocking)
                         if let Ok(senders) = output_senders.lock() {
@@ -495,12 +377,6 @@ impl PtyManager {
         self.idle_detector.remove_session(id);
         self.git_watcher.remove_session(id);
         self.transcript.close_session(id);
-        if let Ok(mut set) = self.acrc_pending.lock() {
-            set.remove(&id);
-        }
-        if let Ok(mut set) = self.acrc_delivered.lock() {
-            set.remove(&id);
-        }
 
         // Clean up any response watchers for this session
         if let Ok(mut watchers) = self.response_watchers.lock() {
@@ -529,13 +405,6 @@ impl PtyManager {
         let parsers = self.screen_parsers.lock().ok()?;
         let parser = parsers.get(&id)?;
         Some(parser.screen().size())
-    }
-
-    /// Register a watcher for response markers on a session's output.
-    /// Get a clone of the acrc_delivered set for external use (e.g., credential
-    /// pre-injection in create_session_inner).
-    pub fn acrc_delivered(&self) -> AcrcDeliveredSet {
-        Arc::clone(&self.acrc_delivered)
     }
 
     pub fn register_response_watcher(
@@ -676,95 +545,3 @@ fn scan_response_markers(session_id: Uuid, text: &str, watchers: &ResponseWatche
     }
 }
 
-/// Inject session credentials into a PTY in response to a %%ACRC%% marker.
-/// Returns `true` if injection succeeded, `false` on any failure.
-async fn inject_credentials(app: &AppHandle, session_id: Uuid) -> bool {
-    log::info!("[ACRC] inject_credentials START for session {}", session_id);
-
-    // Step 1: Acquire SessionManager read lock
-    log::info!("[ACRC] step 1: acquiring SessionManager lock for {}", session_id);
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-    let mgr = session_mgr.read().await;
-    log::info!("[ACRC] step 1: lock acquired for {}", session_id);
-
-    // Step 2: List sessions and find ours
-    let sessions: Vec<crate::session::session::SessionInfo> = mgr.list_sessions().await;
-    log::info!("[ACRC] step 2: listed {} sessions, looking for {}", sessions.len(), session_id);
-
-    let session = match sessions.iter().find(|s| s.id == session_id.to_string()) {
-        Some(s) => {
-            log::info!("[ACRC] step 2: session {} found (name={:?}, cwd={:?})",
-                session_id, s.name, s.working_directory);
-            s
-        }
-        None => {
-            let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
-            log::warn!("[ACRC] session {} NOT FOUND in {} sessions: {:?} — will retry",
-                session_id, sessions.len(), ids);
-            return false;
-        }
-    };
-
-    // Step 3: Resolve binary info from current_exe()
-    let exe_path = std::env::current_exe().ok();
-    let binary_name = exe_path.as_ref()
-        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "agentscommander".to_string());
-    let binary_path = {
-        let raw = exe_path.as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "agentscommander.exe".to_string());
-        raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
-    };
-    let local_dir = exe_path.as_ref()
-        .and_then(|p| p.parent())
-        .map(|parent| parent.join(format!(".{}", &binary_name)).to_string_lossy().to_string())
-        .unwrap_or_else(|| format!(".{}", &binary_name));
-    let local_dir = local_dir.strip_prefix(r"\\?\").unwrap_or(&local_dir).to_string();
-    log::info!("[ACRC] step 3: binary={}, path={}, localDir={}", binary_name, binary_path, local_dir);
-
-    // Step 4: Format credential block
-    let cred_block = format!(
-        concat!(
-            "\n",
-            "# === Session Credentials ===\n",
-            "# Token: {token}\n",
-            "# Root: {root}\n",
-            "# Binary: {binary}\n",
-            "# BinaryPath: {binary_path}\n",
-            "# LocalDir: {local_dir}\n",
-            "# === End Credentials ===\n",
-        ),
-        token = session.token,
-        root = session.working_directory,
-        binary = binary_name,
-        binary_path = binary_path,
-        local_dir = local_dir,
-    );
-    log::info!("[ACRC] step 4: credential block formatted ({} bytes) for session {}", cred_block.len(), session_id);
-
-    drop(mgr);
-
-    // Step 5: Write credential block into PTY
-    log::info!("[ACRC] step 5: calling inject_text_into_session for {}", session_id);
-    if let Err(e) = crate::pty::inject::inject_text_into_session(
-        app,
-        session_id,
-        &cred_block,
-        true, // Claude Code needs explicit Enter (submit=true) to process the injected text
-        crate::pty::transcript::InjectReason::TokenRefresh,
-        None,
-    )
-    .await
-    {
-        log::warn!(
-            "[ACRC] step 5 FAILED: inject into PTY for session {} — will retry: {}",
-            session_id,
-            e
-        );
-        return false;
-    }
-
-    log::info!("[ACRC] credentials injected for session {}", session_id);
-    true
-}

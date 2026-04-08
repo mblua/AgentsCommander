@@ -156,24 +156,19 @@ pub async fn create_session_inner(
         }
     }
 
-    // Grab acrc_delivered handle before spawning (need it for credential pre-injection)
-    let acrc_delivered = pty_mgr.lock().unwrap().acrc_delivered();
-
     pty_mgr
         .lock()
         .unwrap()
         .spawn(id, &shell, &shell_args, &cwd, 120, 30, app.clone())
         .map_err(|e| e.to_string())?;
 
-    // Auto-inject credentials for Claude sessions immediately after PTY spawn.
-    // Wait 2s for Claude Code to boot, then inject once and mark acrc_delivered
-    // so any subsequent %%ACRC%% markers from TUI repaints are ignored.
+    // Auto-inject credentials for Claude sessions after PTY spawn.
+    // Wait 2s for Claude Code to boot, then inject the credential block once.
     if is_claude {
         let app_clone = app.clone();
         let session_id = id;
         let token = session.token.clone();
         let cwd_clone = cwd.clone();
-        let delivered = Arc::clone(&acrc_delivered);
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
@@ -220,9 +215,6 @@ pub async fn create_session_inner(
                 None,
             ).await {
                 Ok(()) => {
-                    if let Ok(mut set) = delivered.lock() {
-                        set.insert(session_id);
-                    }
                     log::info!("[session] Credentials auto-injected for Claude session {}", session_id);
                 }
                 Err(e) => {
@@ -698,9 +690,7 @@ pub async fn create_root_agent_session(
         }
     }
 
-    // Credentials are delivered via the ACRC mechanism: the agent outputs %%ACRC%%
-    // on boot, the PTY scanner detects it and injects credentials once (acrc_delivered
-    // flag prevents re-injection). No separate delayed injection needed here.
+    // Credentials are auto-injected by create_session_inner for all Claude sessions.
 
     Ok(info)
 }

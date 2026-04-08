@@ -384,15 +384,7 @@ The `--help` text documents every flag, its purpose, accepted values, priority r
 
 ## Session credentials
 
-Your session token and agent root are provided on demand. To request them, output the marker three times on separate lines:
-
-```
-%%ACRC%%
-%%ACRC%%
-%%ACRC%%
-```
-
-The system will inject a `# === Session Credentials ===` block into your console containing your current token, root, and binary path. This also happens automatically whenever a `send` command fails due to a stale or missing token.
+Your session credentials are delivered automatically when your session starts. They appear as a `# === Session Credentials ===` block in your conversation.
 
 The credentials block contains:
 - **Token**: your session authentication token

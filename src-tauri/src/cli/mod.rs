@@ -63,7 +63,7 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
             return Err(
                 "Error: --token is required. Your session token is in the \
                  '# === Session Credentials ===' block.\n\
-                 If you don't have one, output %%ACRC%% to request fresh credentials."
+                 Session credentials are delivered automatically at startup. If you don't have them, restart your session."
                     .to_string(),
             );
         }
@@ -89,7 +89,7 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
         let display = if token.len() > 8 { &token[..8] } else { &token };
         return Err(format!(
             "Error: invalid token '{}...'. Expected a valid session token (UUID) or root token.\n\
-             Output %%ACRC%% to request fresh credentials.",
+             Session credentials are delivered automatically at startup. If you don't have them, restart your session.",
             display
         ));
     }
