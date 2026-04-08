@@ -314,6 +314,7 @@ impl PtyManager {
                                     id, &scan_text[..scan_text.len().min(100)]);
                             }
                             if has_standalone_marker {
+                                log::info!("[ACRC] standalone marker detected for session {}", id);
                                 // Permanent delivery check: once credentials are injected
                                 // successfully, ignore all subsequent ACRC markers for this
                                 // session. This prevents the feedback loop where TUI repaints
@@ -323,9 +324,9 @@ impl PtyManager {
                                         .map(|set| set.contains(&id))
                                         .unwrap_or(false);
                                     if already_delivered {
+                                        log::debug!("[ACRC] already delivered for session {}, ignoring permanently", id);
                                         false
                                     } else {
-                                        log::info!("[ACRC] standalone marker detected for session {}", id);
                                         let already_pending = acrc_pending.lock()
                                             .map(|mut set| !set.insert(id))
                                             .unwrap_or(false);
@@ -367,14 +368,9 @@ impl PtyManager {
                                                 set.insert(id);
                                                 log::info!("[ACRC] session {} marked as delivered", id);
                                             }
-                                        } else {
-                                            // Throttle retries on failure — keep pending
-                                            // flag for 3s so TUI repaints don't cause a
-                                            // retry storm at 10-50 attempts/second.
-                                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                                         }
                                         // PendingGuard clears pending on drop, allowing
-                                        // retry after the throttle delay.
+                                        // retry if injection failed.
                                     });
                                 }
                             }
