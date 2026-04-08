@@ -402,8 +402,6 @@ The credentials block contains:
 
 Your agent root is your current working directory.
 
-**IMPORTANT:** Always use the LATEST credentials from the Session Credentials block. Ignore any credentials that appear in conversation history from previous sessions. Credentials are delivered once per session launch. Do not request them repeatedly.
-
 ## Inter-Agent Messaging
 
 ### Send a message to another agent

@@ -633,9 +633,59 @@ pub async fn create_root_agent_session(
         }
     }
 
-    // Credentials are delivered via the ACRC mechanism: the agent outputs %%ACRC%%
-    // on boot, the PTY scanner detects it and injects credentials once (acrc_delivered
-    // flag prevents re-injection). No separate delayed injection needed here.
+    // Inject credentials immediately so the root agent has its token right away.
+    // Extract needed data before spawning to avoid holding locks across awaits.
+    let token = info.token.clone();
+    let cwd = info.working_directory.clone();
+    let app_clone = app.clone();
+    let session_id = id;
+    tokio::spawn(async move {
+        // Small delay to let the PTY initialize
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let exe = std::env::current_exe().ok();
+        let bin_name = exe.as_ref()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "agentscommander".to_string());
+        let bin_path = {
+            let raw = exe.as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "agentscommander.exe".to_string());
+            raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
+        };
+        let local_dir = format!(".{}", &bin_name);
+
+        let cred_block = format!(
+            concat!(
+                "\n",
+                "# === Session Credentials ===\n",
+                "# Token: {token}\n",
+                "# Root: {root}\n",
+                "# Binary: {binary}\n",
+                "# BinaryPath: {binary_path}\n",
+                "# LocalDir: {local_dir}\n",
+                "# === End Credentials ===\n",
+            ),
+            token = token,
+            root = cwd,
+            binary = bin_name,
+            binary_path = bin_path,
+            local_dir = local_dir,
+        );
+
+        if let Err(e) = crate::pty::inject::inject_text_into_session(
+            &app_clone,
+            session_id,
+            &cred_block,
+            true,
+            crate::pty::transcript::InjectReason::TokenRefresh,
+            None,
+        ).await {
+            log::warn!("[root-agent] Failed to inject credentials: {}", e);
+        } else {
+            log::info!("[root-agent] Credentials injected for root agent session {}", session_id);
+        }
+    });
 
     Ok(info)
 }

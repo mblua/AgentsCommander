@@ -35,11 +35,15 @@ pub struct ResponseWatcher {
 /// Tracks sessions with a pending %%ACRC%% credential injection to prevent duplicates.
 pub type AcrcPendingSet = Arc<Mutex<std::collections::HashSet<Uuid>>>;
 
-/// Tracks sessions that have already received their credentials.
-/// Once credentials are successfully injected, the session is added here
-/// and all subsequent %%ACRC%% detections are permanently ignored.
-/// This prevents the feedback loop where TUI repaints re-render the marker.
-pub type AcrcDeliveredSet = Arc<Mutex<std::collections::HashSet<Uuid>>>;
+/// Per-session cooldown to prevent excessive %%ACRC%% injections (e.g. feedback loops).
+pub type AcrcCooldownMap = Arc<Mutex<HashMap<Uuid, std::time::Instant>>>;
+
+/// Minimum interval between consecutive ACRC injections for the same session.
+const ACRC_COOLDOWN_SECS: u64 = 10;
+
+/// Short cooldown after a failed injection to prevent retry storms
+/// when an agent emits %%ACRC%% in a tight loop but injection keeps failing.
+const ACRC_FAILURE_COOLDOWN_SECS: u64 = 3;
 
 pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
@@ -53,7 +57,7 @@ pub struct PtyManager {
     screen_parsers: Arc<Mutex<HashMap<Uuid, vt100::Parser>>>,
     transcript: TranscriptWriter,
     acrc_pending: AcrcPendingSet,
-    acrc_delivered: AcrcDeliveredSet,
+    acrc_cooldowns: AcrcCooldownMap,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -152,7 +156,7 @@ impl PtyManager {
             screen_parsers: Arc::new(Mutex::new(HashMap::new())),
             transcript,
             acrc_pending: Arc::new(Mutex::new(std::collections::HashSet::new())),
-            acrc_delivered: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            acrc_cooldowns: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -250,7 +254,7 @@ impl PtyManager {
         let screen_parsers = Arc::clone(&self.screen_parsers);
         let transcript = self.transcript.clone();
         let acrc_pending = Arc::clone(&self.acrc_pending);
-        let acrc_delivered = Arc::clone(&self.acrc_delivered);
+        let acrc_cooldowns = Arc::clone(&self.acrc_cooldowns);
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             // Trailing buffer for detecting %%ACRC%% split across reads (marker is 8 bytes)
@@ -315,34 +319,44 @@ impl PtyManager {
                             }
                             if has_standalone_marker {
                                 log::info!("[ACRC] standalone marker detected for session {}", id);
-                                // Permanent delivery check: once credentials are injected
-                                // successfully, ignore all subsequent ACRC markers for this
-                                // session. This prevents the feedback loop where TUI repaints
-                                // re-render the marker and trigger re-injection.
+                                log::debug!("[ACRC] scan_text for session {}: {:?}",
+                                    id, &scan_text[..scan_text.len().min(100)]);
+                                // Cooldown check + pending check + cooldown write
+                                // in a single logical block to avoid inconsistency windows.
                                 let should_inject = {
-                                    let already_delivered = acrc_delivered.lock()
-                                        .map(|set| set.contains(&id))
+                                    let in_cooldown = acrc_cooldowns.lock()
+                                        .map(|map| map.get(&id)
+                                            .map(|last| last.elapsed().as_secs() < ACRC_COOLDOWN_SECS)
+                                            .unwrap_or(false))
                                         .unwrap_or(false);
-                                    if already_delivered {
-                                        log::debug!("[ACRC] already delivered for session {}, ignoring permanently", id);
+                                    if in_cooldown {
+                                        log::debug!("[ACRC] cooldown active for session {}, skipping", id);
                                         false
                                     } else {
+                                        log::info!("[ACRC] cooldown clear for session {}, proceeding", id);
                                         let already_pending = acrc_pending.lock()
                                             .map(|mut set| !set.insert(id))
                                             .unwrap_or(false);
-                                        if already_pending {
+                                        if !already_pending {
+                                            // Cooldown is set AFTER successful injection
+                                            // (inside the async task) so that failed
+                                            // injections don't block retries.
+                                            true
+                                        } else {
                                             log::info!("[ACRC] already pending for session {}, skipping", id);
+                                            false
                                         }
-                                        !already_pending
                                     }
                                 };
                                 if should_inject {
                                     log::info!("[ACRC] spawning inject task for session {}", id);
                                     let app = app_handle.clone();
                                     let pending = Arc::clone(&acrc_pending);
-                                    let delivered = Arc::clone(&acrc_delivered);
+                                    let cooldowns = Arc::clone(&acrc_cooldowns);
                                     tauri::async_runtime::spawn(async move {
                                         // Guard: always clear pending flag, even on panic.
+                                        // Without this, a panic in inject_credentials would
+                                        // permanently lock out this session from future ACRC.
                                         struct PendingGuard {
                                             pending: AcrcPendingSet,
                                             id: Uuid,
@@ -361,16 +375,25 @@ impl PtyManager {
 
                                         let success = inject_credentials(&app, id).await;
                                         log::info!("[ACRC] inject task completed for session {} success={}", id, success);
-                                        if success {
-                                            // Mark as delivered — all future ACRC markers
-                                            // for this session will be permanently ignored.
-                                            if let Ok(mut set) = delivered.lock() {
-                                                set.insert(id);
-                                                log::info!("[ACRC] session {} marked as delivered", id);
+                                        // Set cooldown: full duration on success, short on
+                                        // failure to prevent retry storms while still
+                                        // allowing prompt retries for transient errors.
+                                        if let Ok(mut map) = cooldowns.lock() {
+                                            if success {
+                                                map.insert(id, std::time::Instant::now());
+                                            } else {
+                                                let offset = std::time::Duration::from_secs(
+                                                    ACRC_COOLDOWN_SECS - ACRC_FAILURE_COOLDOWN_SECS
+                                                );
+                                                map.insert(id, std::time::Instant::now() - offset);
                                             }
                                         }
-                                        // PendingGuard clears pending on drop, allowing
-                                        // retry if injection failed.
+                                        // PendingGuard clears pending on drop, but do it
+                                        // explicitly here for the log message.
+                                        if let Ok(mut set) = pending.lock() {
+                                            set.remove(&id);
+                                            log::info!("[ACRC] pending flag cleared for session {} (success={})", id, success);
+                                        }
                                     });
                                 }
                             }
@@ -494,8 +517,8 @@ impl PtyManager {
         if let Ok(mut set) = self.acrc_pending.lock() {
             set.remove(&id);
         }
-        if let Ok(mut set) = self.acrc_delivered.lock() {
-            set.remove(&id);
+        if let Ok(mut map) = self.acrc_cooldowns.lock() {
+            map.remove(&id);
         }
 
         // Clean up any response watchers for this session
