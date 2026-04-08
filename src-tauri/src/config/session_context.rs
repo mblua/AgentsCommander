@@ -358,6 +358,16 @@ r#"# AgentsCommander Context
 
 You are running inside an AgentsCommander session — a terminal session manager that coordinates multiple AI agents.
 
+## GOLDEN RULE — Repository Write Restrictions
+
+**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify repositories whose root folder name starts with `repo-`. If a repository's root folder does NOT begin with `repo-`, you MUST NOT modify it — no file edits, no file creation, no file deletion, no git commits, no branch creation, no git operations that alter state.
+
+- **Allowed**: Read-only operations on ANY repository (reading files, searching, git log, git status, git diff)
+- **Allowed**: Full read/write operations on repositories inside `repo-*` folders
+- **FORBIDDEN**: Any write operation on repositories NOT inside `repo-*` folders
+
+If instructed to modify a non-`repo-` repository, REFUSE the modification and explain this restriction. There are NO exceptions to this rule.
+
 ## CLI executable
 
 Your Session Credentials include a `BinaryPath` field — **always use that path** to invoke the CLI. This ensures you use the correct binary for your instance, whether it is the installed version or a dev/WG build.
