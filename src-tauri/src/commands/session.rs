@@ -62,8 +62,8 @@ pub async fn create_session_inner(
     let mut shell_args = shell_args;
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
     let cmd_basenames: Vec<String> = full_cmd.split_whitespace().map(|t| executable_basename(t)).collect();
-    let is_claude = cmd_basenames.iter().any(|b| b == "claude");
-    let is_codex = cmd_basenames.iter().any(|b| b == "codex");
+    let is_claude = cmd_basenames.iter().any(|b| b.starts_with("claude"));
+    let is_codex = cmd_basenames.iter().any(|b| b.starts_with("codex"));
 
     // Auto-inject --continue for Claude agents when a prior conversation exists
     // Only if ~/.claude/projects/{mangled-cwd}/ exists (prior conversation exists)
@@ -173,10 +173,10 @@ pub async fn create_session_inner(
         .spawn(id, &shell, &shell_args, &cwd, 120, 30, app.clone())
         .map_err(|e| e.to_string())?;
 
-    // Auto-inject credentials for Claude sessions after PTY spawn.
+    // Auto-inject credentials for agent sessions after PTY spawn.
     // Wait for Claude to become idle (ready for input) instead of fixed delay.
     // Mirrors the pattern in mailbox.rs inject_followup_after_idle_static.
-    if is_claude {
+    if agent_id.is_some() {
         let app_clone = app.clone();
         let session_id = id;
         let token = session.token.clone();
@@ -247,7 +247,7 @@ pub async fn create_session_inner(
                 true,
             ).await {
                 Ok(()) => {
-                    log::info!("[session] Credentials auto-injected for Claude session {}", session_id);
+                    log::info!("[session] Credentials auto-injected for session {}", session_id);
                 }
                 Err(e) => {
                     log::warn!("[session] Failed to auto-inject credentials for {}: {}", session_id, e);
