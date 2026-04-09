@@ -41,6 +41,9 @@ export const SessionAPI = {
 
   destroy: (id: string) => transport.invoke<void>("destroy_session", { id }),
 
+  restart: (id: string): Promise<Session> =>
+    transport.invoke<Session>("restart_session", { id }),
+
   switch: (id: string) => transport.invoke<void>("switch_session", { id }),
 
   rename: (id: string, name: string) =>
