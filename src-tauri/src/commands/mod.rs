@@ -3,6 +3,7 @@ pub mod agent_creator;
 pub mod config;
 pub mod entity_creation;
 pub mod phone;
+pub mod project_settings;
 pub mod pty;
 pub mod repos;
 pub mod session;
