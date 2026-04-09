@@ -196,6 +196,7 @@ const ProjectPanel: Component = () => {
         const [deleteError, setDeleteError] = createSignal("");
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
+        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; x: number; y: number } | null>(null);
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -244,6 +245,7 @@ const ProjectPanel: Component = () => {
           setWgCtxMenu(null);
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
+          setReplicaCtxMenu(null);
           setCtxMenuPos({ x: e.clientX, y: e.clientY });
           setShowCtxMenu(true);
           const dismiss = (ev?: Event) => {
@@ -274,6 +276,7 @@ const ProjectPanel: Component = () => {
           setWgCtxMenu(null);
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
+          setReplicaCtxMenu(null);
           setTeamCtxMenu({ team, x: e.clientX, y: e.clientY });
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -296,10 +299,34 @@ const ProjectPanel: Component = () => {
           setTeamCtxMenu(null);
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
+          setReplicaCtxMenu(null);
           setWgCtxMenu({ wg, x: e.clientX, y: e.clientY });
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
             setWgCtxMenu(null);
+            cleanupCtx();
+          };
+          dismissCtx = dismiss;
+          setTimeout(() => {
+            window.addEventListener("click", dismiss);
+            window.addEventListener("contextmenu", dismiss);
+            window.addEventListener("keydown", dismiss as any);
+          });
+        };
+
+        const handleReplicaContextMenu = (e: MouseEvent, sessionId: string) => {
+          e.preventDefault();
+          e.stopPropagation();
+          cleanupCtx();
+          setShowCtxMenu(false);
+          setTeamCtxMenu(null);
+          setWgCtxMenu(null);
+          setAgentCtxMenu(null);
+          setAgentsHeaderCtxMenu(null);
+          setReplicaCtxMenu({ sessionId, x: e.clientX, y: e.clientY });
+          const dismiss = (ev?: Event) => {
+            if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+            setReplicaCtxMenu(null);
             cleanupCtx();
           };
           dismissCtx = dismiss;
@@ -568,6 +595,10 @@ const ProjectPanel: Component = () => {
                                           <div
                                             class="replica-item"
                                             onClick={() => handleReplicaClick(replica, wg)}
+                                            onContextMenu={(e) => {
+                                              const s = session();
+                                              if (s && isLive()) handleReplicaContextMenu(e, s.id);
+                                            }}
                                             title={replica.path}
                                           >
                                             <div class={`session-item-status ${dotClass()}`} />
@@ -645,6 +676,7 @@ const ProjectPanel: Component = () => {
                     setTeamCtxMenu(null);
                     setWgCtxMenu(null);
                     setAgentsHeaderCtxMenu(null);
+                    setReplicaCtxMenu(null);
                     setAgentCtxMenu({ agent, x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -667,6 +699,7 @@ const ProjectPanel: Component = () => {
                     setTeamCtxMenu(null);
                     setWgCtxMenu(null);
                     setAgentCtxMenu(null);
+                    setReplicaCtxMenu(null);
                     setAgentsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -978,6 +1011,31 @@ const ProjectPanel: Component = () => {
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                     </svg>
                     Delete Workgroup
+                  </button>
+                </div>
+              </Portal>
+            )}
+
+            {/* Replica context menu */}
+            {replicaCtxMenu() && (
+              <Portal>
+                <div
+                  class="session-context-menu"
+                  style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    class="session-context-option context-option-danger"
+                    onClick={async () => {
+                      const menu = replicaCtxMenu();
+                      setReplicaCtxMenu(null);
+                      if (menu) {
+                        try { await SessionAPI.restart(menu.sessionId); }
+                        catch (e) { console.error("Failed to restart session:", e); }
+                      }
+                    }}
+                  >
+                    Restart Session
                   </button>
                 </div>
               </Portal>

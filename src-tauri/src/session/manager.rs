@@ -154,6 +154,10 @@ impl SessionManager {
         *self.active_session.read().await
     }
 
+    pub async fn get_session(&self, id: Uuid) -> Option<Session> {
+        self.sessions.read().await.get(&id).cloned()
+    }
+
     pub async fn get_shell(&self, id: Uuid) -> Option<String> {
         self.sessions.read().await.get(&id).map(|s| s.shell.clone())
     }

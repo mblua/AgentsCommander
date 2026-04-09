@@ -176,6 +176,15 @@ const SessionItem: Component<{
     });
   };
 
+  const handleRestart = async () => {
+    setShowContextMenu(false);
+    try {
+      await SessionAPI.restart(props.session.id);
+    } catch (e) {
+      console.error("Failed to restart session:", e);
+    }
+  };
+
   const handleExcludeClaudeMd = async (e: MouseEvent) => {
     e.stopPropagation();
     setShowContextMenu(false);
@@ -371,16 +380,25 @@ const SessionItem: Component<{
           />
         </Portal>
       )}
-      {showContextMenu() && hasClaude() && (
+      {showContextMenu() && (
         <Portal>
           <div
             class="session-context-menu"
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
           >
-            <button class="session-context-option" onClick={handleExcludeClaudeMd}>
-              Exclude global CLAUDE.md
+            <button
+              class="session-context-option context-option-danger"
+              onClick={handleRestart}
+            >
+              Restart Session
             </button>
+            <Show when={hasClaude()}>
+              <div class="context-separator" />
+              <button class="session-context-option" onClick={handleExcludeClaudeMd}>
+                Exclude global CLAUDE.md
+              </button>
+            </Show>
           </div>
         </Portal>
       )}

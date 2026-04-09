@@ -432,6 +432,7 @@ impl MailboxPoller {
                 true,  // Skip tooling save for temp sessions
                 None,  // git_branch_source
                 None,  // git_branch_prefix
+                false, // skip_continue
             )
             .await
             {
@@ -1275,6 +1276,7 @@ impl MailboxPoller {
                 false, // Persist tooling
                 None,  // git_branch_source
                 None,  // git_branch_prefix
+                false, // skip_continue
             )
             .await
             {

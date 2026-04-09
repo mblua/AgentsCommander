@@ -3,6 +3,7 @@ import { Portal } from "solid-js/web";
 import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../shared/types";
 import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
 import AgentPickerModal from "./AgentPickerModal";
+import { sessionsStore } from "../stores/sessions";
 
 interface PendingLaunch {
   path: string;
@@ -329,6 +330,30 @@ const AcDiscoveryPanel: Component = () => {
             style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
           >
+            {(() => {
+              const replica = ctxMenuReplica()!;
+              const rp = replica.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+              const session = sessionsStore.sessions.find(s =>
+                s.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") === rp
+              );
+              if (!session) return null;
+              return (
+                <>
+                  <button
+                    class="session-context-option context-option-danger"
+                    onClick={async () => {
+                      setCtxMenuReplica(null);
+                      cleanupCtxMenu();
+                      try { await SessionAPI.restart(session.id); }
+                      catch (err) { console.error("Failed to restart session:", err); }
+                    }}
+                  >
+                    Restart Session
+                  </button>
+                  <div class="context-separator" />
+                </>
+              );
+            })()}
             <button
               class="session-context-option"
               onClick={() => openContextFilesPanel(ctxMenuReplica()!)}

@@ -525,6 +525,7 @@ pub fn run() {
                             false, // Persist tooling on restore
                             ps.git_branch_source.clone(),
                             ps.git_branch_prefix.clone(),
+                            false, // skip_continue
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {
@@ -569,6 +570,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::session::create_session,
             commands::session::destroy_session,
+            commands::session::restart_session,
             commands::session::switch_session,
             commands::session::rename_session,
             commands::session::set_last_prompt,

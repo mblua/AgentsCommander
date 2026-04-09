@@ -68,6 +68,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 false, // skip_tooling_save
                 None,  // git_branch_source
                 None,  // git_branch_prefix
+                false, // skip_continue
             ).await?;
 
             serde_json::to_value(info).map_err(|e| e.to_string())

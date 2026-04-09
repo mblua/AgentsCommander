@@ -211,7 +211,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
         .map(|s| PersistedSession {
             name: s.name.clone(),
             shell: s.shell.clone(),
-            shell_args: strip_auto_injected_continue(&s.shell, &s.shell_args),
+            shell_args: strip_auto_injected_args(&s.shell, &s.shell_args),
             working_directory: s.working_directory.clone(),
             was_active: active_id.as_deref() == Some(&s.id),
             git_branch_source: s.git_branch_source.clone(),
@@ -227,11 +227,16 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
     deduplicate(all)
 }
 
-/// Strip `--continue` from Claude agent shell args before persisting.
-/// This flag is auto-injected at session creation time (see commands/session.rs)
-/// and must not be baked into the saved "recipe" — otherwise it self-perpetuates
-/// across app restarts even when the conditions for injection no longer apply.
-fn strip_auto_injected_continue(shell: &str, args: &[String]) -> Vec<String> {
+/// Strip auto-injected flags from Claude agent shell args.
+/// Removes `--continue` and `--append-system-prompt-file <path>` which are
+/// auto-injected at session creation time (see commands/session.rs).
+/// These must not be baked into the saved "recipe" — otherwise they self-perpetuate
+/// across app restarts (or session restarts) even when the conditions change.
+///
+/// Handles two injection modes:
+/// - **Direct-exec**: flags are separate args: `["--continue", "--append-system-prompt-file", "/path"]`
+/// - **cmd.exe wrapper**: flags are suffixed onto the last arg: `"claude --continue --append-system-prompt-file \"/path\""`
+pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<String> {
     let is_claude = std::iter::once(shell)
         .chain(args.iter().map(|s| s.as_str()))
         .any(|t| {
@@ -246,17 +251,49 @@ fn strip_auto_injected_continue(shell: &str, args: &[String]) -> Vec<String> {
         return args.to_vec();
     }
 
-    // Strip standalone "--continue" args and " --continue" suffix (cmd wrapper path)
-    args.iter()
-        .filter(|a| !a.eq_ignore_ascii_case("--continue"))
-        .map(|a| {
-            if a.to_lowercase().ends_with(" --continue") {
-                a[..a.len() - " --continue".len()].to_string()
-            } else {
-                a.clone()
+    let is_cmd = crate::commands::session::executable_basename(shell) == "cmd";
+
+    if is_cmd {
+        // cmd.exe wrapper mode: flags are embedded as suffixes in the last arg string.
+        // e.g. "claude --continue --append-system-prompt-file \"/tmp/ctx.md\""
+        args.iter()
+            .map(|a| {
+                let mut s = a.clone();
+                // Strip " --continue" suffix
+                if let Some(pos) = s.to_lowercase().rfind(" --continue") {
+                    // Verify it's at the end or followed by " --append-system-prompt-file"
+                    let after = &s[pos + " --continue".len()..];
+                    if after.is_empty() || after.to_lowercase().starts_with(" --append-system-prompt-file") {
+                        s = format!("{}{}", &s[..pos], after);
+                    }
+                }
+                // Strip " --append-system-prompt-file ..." suffix (with quoted or unquoted path)
+                if let Some(pos) = s.to_lowercase().rfind(" --append-system-prompt-file") {
+                    s = s[..pos].to_string();
+                }
+                s
+            })
+            .collect()
+    } else {
+        // Direct-exec mode: flags are separate args.
+        let mut result = Vec::with_capacity(args.len());
+        let mut skip_next = false;
+        for a in args {
+            if skip_next {
+                skip_next = false;
+                continue;
             }
-        })
-        .collect()
+            if a.eq_ignore_ascii_case("--continue") {
+                continue;
+            }
+            if a.eq_ignore_ascii_case("--append-system-prompt-file") {
+                skip_next = true; // skip the next arg (the file path)
+                continue;
+            }
+            result.push(a.clone());
+        }
+        result
+    }
 }
 
 /// Persist live sessions merged with entries that failed to restore.

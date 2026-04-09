@@ -17,6 +17,8 @@ use crate::DetachedSessionsState;
 /// Auto-detects agent from shell command if not provided, and auto-injects --continue
 /// for Claude when a prior conversation exists (~/.claude/projects/{mangled-cwd}/).
 /// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
+/// If `skip_continue` is true, suppresses `--continue` auto-injection (used by restart_session
+/// to ensure a fresh conversation even when prior history exists).
 pub async fn create_session_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -30,6 +32,7 @@ pub async fn create_session_inner(
     skip_tooling_save: bool,
     git_branch_source: Option<String>,
     git_branch_prefix: Option<String>,
+    skip_continue: bool,
 ) -> Result<SessionInfo, String> {
     let mgr = session_mgr.read().await;
     let mut session = mgr
@@ -74,7 +77,7 @@ pub async fn create_session_inner(
             false
         }
     };
-    if is_claude && claude_project_exists {
+    if is_claude && claude_project_exists && !skip_continue {
         if let Some(ref aid) = agent_id {
             let already_has_continue = full_cmd.split_whitespace().any(|t| {
                 let lower = t.to_lowercase();
@@ -362,6 +365,7 @@ pub async fn create_session(
         false, // persist tooling
         git_branch_source,
         git_branch_prefix,
+        false, // skip_continue
     )
     .await?;
 
@@ -485,6 +489,104 @@ pub async fn destroy_session(
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     destroy_session_inner(&app, uuid).await
+}
+
+/// Restart a session: destroy the existing one and recreate it with the same
+/// configuration but a fresh PTY (no `--continue`). The restarted session is
+/// automatically activated, Telegram bridges are re-attached, and state is persisted.
+#[tauri::command]
+pub async fn restart_session(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    tg_mgr: State<'_, TelegramBridgeState>,
+    settings: State<'_, SettingsState>,
+    id: String,
+) -> Result<SessionInfo, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    // 1. Read config from existing session BEFORE destroying it
+    let (shell, shell_args, cwd, name, git_branch_source, git_branch_prefix) = {
+        let mgr = session_mgr.read().await;
+        let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
+        (
+            session.shell.clone(),
+            session.shell_args.clone(),
+            session.working_directory.clone(),
+            session.name.clone(),
+            session.git_branch_source.clone(),
+            session.git_branch_prefix.clone(),
+        )
+    };
+
+    // 2. Strip auto-injected args (--continue + --append-system-prompt-file and its value)
+    let clean_args = crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
+
+    // 3. Destroy the old session (resolves all State<> internally from app)
+    destroy_session_inner(&app, uuid).await?;
+
+    // 4. Create new session with same config, skip_continue = true
+    let session_info = create_session_inner(
+        &app,
+        session_mgr.inner(),
+        pty_mgr.inner(),
+        shell,
+        clean_args,
+        cwd.clone(),
+        Some(name),
+        None,  // agent_id — auto-detection from shell command
+        None,  // agent_label — resolved from settings during creation
+        false, // skip_tooling_save
+        git_branch_source,
+        git_branch_prefix,
+        true,  // skip_continue — the whole point of restart
+    )
+    .await?;
+
+    // 5. Explicitly activate the new session.
+    //    destroy_session_inner may have auto-activated a sibling.
+    //    create_session_inner only auto-activates if active.is_none().
+    //    With multiple sessions, the new session would NOT be active without this.
+    let new_uuid = Uuid::parse_str(&session_info.id).map_err(|e| e.to_string())?;
+    {
+        let mgr = session_mgr.read().await;
+        let _ = mgr.switch_session(new_uuid).await;
+    }
+    let _ = app.emit("session_switched", serde_json::json!({ "id": session_info.id }));
+
+    // 6. Re-attach Telegram bridge if the repo config has one
+    let config_path = std::path::Path::new(&cwd)
+        .join(crate::config::agent_local_dir_name())
+        .join("config.json");
+    if let Ok(contents) = tokio::fs::read_to_string(&config_path).await {
+        if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&contents) {
+            if let Some(bot_label) = local_config.tooling.telegram_bot {
+                let cfg = settings.read().await;
+                let bot = cfg
+                    .telegram_bots
+                    .iter()
+                    .find(|b| b.label == bot_label)
+                    .cloned();
+                drop(cfg);
+
+                if let Some(bot) = bot {
+                    let pty_arc = pty_mgr.inner().clone();
+                    let mut tg = tg_mgr.lock().await;
+                    if let Ok(bridge_info) = tg.attach(new_uuid, &bot, pty_arc, app.clone()) {
+                        let _ = app.emit("telegram_bridge_attached", bridge_info);
+                    }
+                }
+            }
+        }
+    }
+
+    // 7. Persist state — create_session_inner does NOT persist
+    {
+        let mgr = session_mgr.read().await;
+        persist_current_state(&mgr).await;
+    }
+
+    Ok(session_info)
 }
 
 #[tauri::command]
@@ -686,6 +788,7 @@ pub async fn create_root_agent_session(
         false,
         None,
         None,
+        false, // skip_continue
     )
     .await?;
 
