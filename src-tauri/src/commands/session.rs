@@ -64,9 +64,18 @@ pub async fn create_session_inner(
     let is_codex = cmd_basenames.iter().any(|b| b == "codex");
 
     // Auto-inject --continue for Claude agents only on session restore (app restart)
-    // Only if the cwd has a .claude/ directory (prior conversation exists)
-    let claude_dir_exists = std::path::Path::new(&cwd).join(".claude").is_dir();
-    if is_claude && is_restore && claude_dir_exists {
+    // Only if ~/.claude/projects/{mangled-cwd}/ exists (prior conversation exists)
+    let claude_project_exists = {
+        if let Some(home) = dirs::home_dir() {
+            let mangled: String = cwd.chars().map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }
+            }).collect();
+            home.join(".claude").join("projects").join(&mangled).is_dir()
+        } else {
+            false
+        }
+    };
+    if is_claude && is_restore && claude_project_exists {
         if let Some(ref aid) = agent_id {
             let already_has_continue = full_cmd.split_whitespace().any(|t| {
                 let lower = t.to_lowercase();
