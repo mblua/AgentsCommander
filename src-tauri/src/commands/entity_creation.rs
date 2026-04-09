@@ -427,6 +427,11 @@ pub async fn create_workgroup(
         return Err(format!(".ac-new directory not found in {}", project_path));
     }
 
+    // Ensure gitignore protects workgroup clones from parent repo operations
+    if let Err(e) = crate::commands::ac_discovery::ensure_ac_new_gitignore(&base) {
+        log::warn!("[create_workgroup] Failed to ensure .ac-new/.gitignore: {}", e);
+    }
+
     // Read team config
     let team_dir = base.join(format!("_team_{}", safe_team));
     let team_config_path = team_dir.join("config.json");

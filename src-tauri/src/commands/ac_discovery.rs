@@ -450,6 +450,9 @@ pub async fn discover_ac_agents(
                 continue;
             }
 
+            // Opportunistic: ensure gitignore exists for existing projects
+            let _ = ensure_ac_new_gitignore(&ac_new_dir);
+
             let project_folder = repo_dir
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -694,12 +697,45 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
     Ok(ac_new.is_dir())
 }
 
+/// Ensure .ac-new/.gitignore exists and contains the `wg-*/` exclusion pattern.
+/// This prevents parent repo operations (checkout, reset) from corrupting
+/// cloned repos inside workgroup directories.
+pub(crate) fn ensure_ac_new_gitignore(ac_new_dir: &Path) -> Result<(), String> {
+    let gitignore_path = ac_new_dir.join(".gitignore");
+    let required_pattern = "wg-*/";
+
+    if gitignore_path.exists() {
+        let content = std::fs::read_to_string(&gitignore_path)
+            .map_err(|e| format!("Failed to read .ac-new/.gitignore: {}", e))?;
+
+        if !content.lines().any(|line| line.trim() == required_pattern) {
+            let separator = if content.ends_with('\n') { "" } else { "\n" };
+            let addition = format!(
+                "{}# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\n{}\n",
+                separator, required_pattern
+            );
+            std::fs::write(&gitignore_path, format!("{}{}", content, addition))
+                .map_err(|e| format!("Failed to update .ac-new/.gitignore: {}", e))?;
+        }
+    } else {
+        let content = format!(
+            "# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\n{}\n",
+            required_pattern
+        );
+        std::fs::write(&gitignore_path, content)
+            .map_err(|e| format!("Failed to create .ac-new/.gitignore: {}", e))?;
+    }
+
+    Ok(())
+}
+
 /// Create a .ac-new/ directory inside the given path.
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
     let ac_new = Path::new(&path).join(".ac-new");
     std::fs::create_dir_all(&ac_new)
         .map_err(|e| format!("Failed to create .ac-new directory: {}", e))?;
+    ensure_ac_new_gitignore(&ac_new)?;
     Ok(())
 }
 
