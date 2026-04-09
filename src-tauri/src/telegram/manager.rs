@@ -37,6 +37,7 @@ impl TelegramBridgeManager {
         bot: &TelegramBotConfig,
         pty_mgr: Arc<Mutex<PtyManager>>,
         app_handle: tauri::AppHandle,
+        jsonl_cwd: Option<String>,
     ) -> Result<BridgeInfo, AppError> {
         // Exclusivity: one bot can only be attached to one session
         if let Some(existing) = self.bot_assignments.get(&bot.id) {
@@ -69,11 +70,15 @@ impl TelegramBridgeManager {
             info.clone(),
             pty_mgr,
             app_handle,
+            jsonl_cwd.clone(),
         );
 
-        // Register output sender so PTY read loop feeds it
-        if let Ok(mut senders) = self.output_senders.lock() {
-            senders.insert(session_id, handle.output_sender.clone());
+        // Only register output sender for PTY mode.
+        // In JSONL mode, the watcher reads directly from file — no PTY byte feed needed.
+        if jsonl_cwd.is_none() {
+            if let Ok(mut senders) = self.output_senders.lock() {
+                senders.insert(session_id, handle.output_sender.clone());
+            }
         }
 
         self.bot_assignments.insert(bot.id.clone(), session_id);

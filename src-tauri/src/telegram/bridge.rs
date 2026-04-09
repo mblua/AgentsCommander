@@ -14,12 +14,12 @@ use crate::telegram::types::BridgeInfo;
 
 // ── File logger ──────────────────────────────────────────────
 
-struct BridgeLogger {
+pub(super) struct BridgeLogger {
     file: Option<std::fs::File>,
 }
 
 impl BridgeLogger {
-    fn new(session_id: &str) -> Self {
+    pub(super) fn new(session_id: &str) -> Self {
         let file = crate::config::config_dir()
             .and_then(|dir| {
                 std::fs::create_dir_all(&dir).ok()?;
@@ -43,7 +43,7 @@ impl BridgeLogger {
         Self { file }
     }
 
-    fn log(&mut self, direction: &str, session_id: &str, text: &str) {
+    pub(super) fn log(&mut self, direction: &str, session_id: &str, text: &str) {
         if let Some(ref mut f) = self.file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
             let preview = if text.len() > 500 {
@@ -63,13 +63,13 @@ impl BridgeLogger {
 
 // ── Diagnostic logger (full capture, no truncation) ─────────
 
-struct DiagLogger {
+pub(super) struct DiagLogger {
     raw_file: Option<std::fs::File>,
     sent_file: Option<std::fs::File>,
 }
 
 impl DiagLogger {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = crate::config::config_dir();
 
         let open = |name: &str| -> Option<std::fs::File> {
@@ -95,7 +95,7 @@ impl DiagLogger {
     }
 
     /// Log stabilized rows (post-stabilization, pre-agent-filter)
-    fn log_raw(&mut self, text: &str) {
+    pub(super) fn log_raw(&mut self, text: &str) {
         if let Some(ref mut f) = self.raw_file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
             let _ = writeln!(f, "--- [{}] ---", now);
@@ -105,7 +105,7 @@ impl DiagLogger {
     }
 
     /// Log what actually gets sent to Telegram
-    fn log_sent(&mut self, text: &str) {
+    pub(super) fn log_sent(&mut self, text: &str) {
         if let Some(ref mut f) = self.sent_file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
             let _ = writeln!(f, "--- [{}] ---", now);
@@ -417,23 +417,37 @@ pub fn spawn_bridge(
     info: BridgeInfo,
     pty_mgr: Arc<Mutex<PtyManager>>,
     app_handle: tauri::AppHandle,
+    jsonl_cwd: Option<String>,
 ) -> BridgeHandle {
     let cancel = CancellationToken::new();
     let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
 
     let session_id_str = session_id.to_string();
 
-    // Output task: PTY bytes -> vt100 -> stabilize -> filter -> Telegram
-    tokio::spawn(output_task(
-        rx,
-        bot_token.clone(),
-        chat_id,
-        session_id_str.clone(),
-        cancel.clone(),
-        app_handle.clone(),
-    ));
+    if let Some(cwd) = jsonl_cwd {
+        // JSONL mode: watch Claude Code session log instead of PTY pipeline
+        drop(rx); // not needed — no PTY bytes feed
+        super::jsonl_watcher::spawn_watch_task(
+            cwd,
+            bot_token.clone(),
+            chat_id,
+            session_id_str.clone(),
+            cancel.clone(),
+            app_handle.clone(),
+        );
+    } else {
+        // PTY mode: existing 6-phase pipeline
+        tokio::spawn(output_task(
+            rx,
+            bot_token.clone(),
+            chat_id,
+            session_id_str.clone(),
+            cancel.clone(),
+            app_handle.clone(),
+        ));
+    }
 
-    // Poll task: Telegram getUpdates -> write to PTY stdin
+    // Poll task: Telegram getUpdates -> write to PTY stdin (runs in BOTH modes)
     tokio::spawn(poll_task(
         bot_token,
         chat_id,
@@ -532,6 +546,7 @@ async fn output_task(
                         flush_buffer(
                             &mut buffer, &client, &token, chat_id,
                             &session_id, &app, &mut logger, &mut diag,
+                            false,
                         ).await;
                     }
                 }
@@ -569,6 +584,7 @@ async fn output_task(
         flush_buffer(
             &mut buffer, &client, &token, chat_id,
             &session_id, &app, &mut logger, &mut diag,
+            false,
         )
         .await;
     }
@@ -576,7 +592,7 @@ async fn output_task(
 
 // ── Flush to Telegram ────────────────────────────────────────
 
-async fn flush_buffer(
+pub(super) async fn flush_buffer(
     buffer: &mut String,
     client: &reqwest::Client,
     token: &str,
@@ -585,20 +601,26 @@ async fn flush_buffer(
     app: &tauri::AppHandle,
     logger: &mut BridgeLogger,
     diag: &mut DiagLogger,
+    skip_dedup: bool,
 ) {
     let text = std::mem::take(buffer);
-    // Deduplicate consecutive identical lines
-    let mut lines: Vec<&str> = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+    // Deduplicate consecutive identical lines (PTY mode only — screen redraws cause duplicates).
+    // JSONL mode skips dedup because content is clean and legitimate repeated lines are valid.
+    let text = if skip_dedup {
+        text
+    } else {
+        let mut lines: Vec<&str> = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if lines.last().map(|l: &&str| l.trim()) != Some(trimmed) {
+                lines.push(line);
+            }
         }
-        if lines.last().map(|l: &&str| l.trim()) != Some(trimmed) {
-            lines.push(line);
-        }
-    }
-    let text = lines.join("\n");
+        lines.join("\n")
+    };
     let text = text.trim().to_string();
     if text.is_empty() {
         return;
@@ -624,7 +646,7 @@ async fn flush_buffer(
     }
 }
 
-fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
+pub(super) fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
     if text.len() <= max_len {
         return vec![text.to_string()];
     }
@@ -632,7 +654,11 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut start = 0;
     while start < text.len() {
-        let end = (start + max_len).min(text.len());
+        let mut end = (start + max_len).min(text.len());
+        // Snap backward to nearest char boundary to avoid UTF-8 slicing panic
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
         let actual_end = if end < text.len() {
             text[start..end]
                 .rfind('\n')
