@@ -13,6 +13,8 @@ import {
   onSessionRenamed,
   onSessionIdle,
   onSessionBusy,
+  onAgentCompleted,
+  onAgentHung,
   onSessionGitBranch,
   onTelegramBridgeAttached,
   onTelegramBridgeDetached,
@@ -31,6 +33,7 @@ import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
 import OnboardingModal from "./components/OnboardingModal";
+import HungNotification from "./components/HungNotification";
 import "./styles/sidebar.css";
 
 const SidebarApp: Component = () => {
@@ -157,6 +160,19 @@ const SidebarApp: Component = () => {
     );
 
     unlisteners.push(
+      await onAgentCompleted(({ id }) => {
+        sessionsStore.setCompletionStatus(id, "completed");
+      })
+    );
+
+    unlisteners.push(
+      await onAgentHung(({ id }) => {
+        sessionsStore.setCompletionStatus(id, "hung");
+        sessionsStore.addHungNotification(id);
+      })
+    );
+
+    unlisteners.push(
       await onSessionGitBranch(({ sessionId, branch }) => {
         sessionsStore.setGitBranch(sessionId, branch);
       })
@@ -208,6 +224,7 @@ const SidebarApp: Component = () => {
       <Show when={showOnboarding()}>
         <OnboardingModal onClose={() => setShowOnboarding(false)} />
       </Show>
+      <HungNotification />
     </>
   );
 };

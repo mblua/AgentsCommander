@@ -13,6 +13,7 @@ export interface Session {
   gitBranchSource: string | null;
   gitBranchPrefix: string | null;
   token: string;
+  completionStatus: "working" | "completed" | "hung";
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
@@ -163,6 +164,12 @@ export interface Team {
 }
 
 // Sidebar store state
+export interface HungNotification {
+  sessionId: string;
+  sessionName: string;
+  timestamp: number;
+}
+
 export interface SessionsState {
   sessions: Session[];
   activeId: string | null;
@@ -171,6 +178,7 @@ export interface SessionsState {
   showInactive: boolean;
   showCategories: boolean;
   repos: RepoMatch[];
+  hungNotifications: HungNotification[];
 }
 
 // Phone communication types

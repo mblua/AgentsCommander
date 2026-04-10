@@ -221,6 +221,18 @@ export function onSessionBusy(
   return transport.listen<{ id: string }>("session_busy", callback);
 }
 
+export function onAgentCompleted(
+  callback: (data: { id: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ id: string }>("agent_completed", callback);
+}
+
+export function onAgentHung(
+  callback: (data: { id: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ id: string }>("agent_hung", callback);
+}
+
 export function onTelegramBridgeAttached(
   callback: (data: BridgeInfo) => void
 ): Promise<UnlistenFn> {

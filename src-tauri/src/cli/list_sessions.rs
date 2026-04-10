@@ -33,6 +33,7 @@ struct SessionEntry {
     status: serde_json::Value,
     waiting_for_input: bool,
     created_at: String,
+    completion_status: String,
 }
 
 /// Convert a SessionStatus to its string tag (for filtering).
@@ -59,6 +60,7 @@ fn to_entry(s: &PersistedSession) -> SessionEntry {
         status: status_value,
         waiting_for_input: s.waiting_for_input.unwrap_or(false),
         created_at: s.created_at.clone().unwrap_or_default(),
+        completion_status: s.completion_status.clone().unwrap_or_else(|| "working".to_string()),
     }
 }
 

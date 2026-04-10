@@ -42,6 +42,9 @@ pub struct PersistedSession {
     /// ISO 8601 creation timestamp (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+    /// Completion status (only present in live snapshots)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_status: Option<String>,
 }
 
 fn sessions_path() -> Option<PathBuf> {
@@ -221,6 +224,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             status: Some(s.status.clone()),
             waiting_for_input: Some(s.waiting_for_input),
             created_at: Some(s.created_at.clone()),
+            completion_status: Some(s.completion_status.clone()),
         })
         .collect();
 

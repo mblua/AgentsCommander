@@ -229,7 +229,7 @@ const SessionItem: Component<{
       onContextMenu={isInactive() ? undefined : handleContextMenu}
     >
       <div
-        class={`session-item-status ${isInactive() ? "offline" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
+        class={`session-item-status ${isInactive() ? "offline" : props.session.completionStatus === "hung" ? "hung" : props.session.completionStatus === "completed" ? "completed" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
       />
       <div class="session-item-info">
         <div class="session-item-name" onDblClick={handleDoubleClick} title={props.session.workingDirectory}>

@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 use crate::errors::AppError;
+use crate::pty::completion_tracker::CompletionTracker;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::telegram::manager::OutputSenderMap;
@@ -35,6 +36,7 @@ pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     output_senders: OutputSenderMap,
     idle_detector: Arc<IdleDetector>,
+    completion_tracker: Arc<CompletionTracker>,
     git_watcher: Arc<GitWatcher>,
     pub response_watchers: ResponseWatcherMap,
     /// Optional WS broadcaster for remote access
@@ -125,6 +127,7 @@ impl PtyManager {
     pub fn new(
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
+        completion_tracker: Arc<CompletionTracker>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     ) -> Self {
@@ -132,6 +135,7 @@ impl PtyManager {
             ptys: Arc::new(Mutex::new(HashMap::new())),
             output_senders,
             idle_detector,
+            completion_tracker,
             git_watcher,
             response_watchers: Arc::new(Mutex::new(HashMap::new())),
             ws_broadcaster,
@@ -225,6 +229,7 @@ impl PtyManager {
         let session_id_str = id.to_string();
         let output_senders = self.output_senders.clone();
         let idle_detector = Arc::clone(&self.idle_detector);
+        let completion_tracker = Arc::clone(&self.completion_tracker);
         let response_watchers = Arc::clone(&self.response_watchers);
         let ws_broadcaster = self.ws_broadcaster.clone();
         let screen_parsers = Arc::clone(&self.screen_parsers);
@@ -271,6 +276,11 @@ impl PtyManager {
                         }
                         scan_response_markers(id, &text, &response_watchers);
 
+                        // Scan for completion phrase
+                        if has_printable && completion_tracker.scan_phrase(&text) {
+                            completion_tracker.record_phrase_detected(id);
+                        }
+
                         // Feed Telegram bridge if active (non-blocking)
                         if let Ok(senders) = output_senders.lock() {
                             if let Some(tx) = senders.get(&id) {
@@ -299,6 +309,8 @@ impl PtyManager {
                     Err(_) => break,
                 }
             }
+            // Natural PTY exit — remove from completion tracking
+            completion_tracker.remove_session(id);
         });
 
         Ok(())
@@ -364,6 +376,7 @@ impl PtyManager {
         // Dropping the PtyInstance will close the master, which signals the child
         ptys.remove(&id);
         self.idle_detector.remove_session(id);
+        self.completion_tracker.remove_session(id);
         self.git_watcher.remove_session(id);
 
         // Clean up any response watchers for this session

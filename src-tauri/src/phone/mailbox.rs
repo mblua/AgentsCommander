@@ -717,6 +717,11 @@ impl MailboxPoller {
                 e
             })?;
 
+        // Reset completion tracking — agent is now working on new task
+        if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
+            tracker.reset(session_id);
+        }
+
         log::info!("[mailbox] PTY injection SUCCESS session={} msg={}", session_id, msg.id);
         let _ = tauri::Emitter::emit(
             app,
@@ -779,12 +784,21 @@ impl MailboxPoller {
             body = msg.body,
             bin = bin_path,
         );
-        crate::pty::inject::inject_text_into_session(
+        let result = crate::pty::inject::inject_text_into_session(
             app,
             session_id,
             &payload,
             true,
-        ).await
+        ).await;
+
+        // Reset completion tracking on successful followup injection
+        if result.is_ok() {
+            if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
+                tracker.reset(session_id);
+            }
+        }
+
+        result
     }
 
     /// Find the best session for a given agent name (matches by working directory).

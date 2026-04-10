@@ -45,6 +45,13 @@ pub struct Session {
     /// Used by the Telegram bridge to choose JSONL watcher vs PTY pipeline.
     #[serde(default)]
     pub is_claude: bool,
+    /// Completion status: "working", "completed", or "hung"
+    #[serde(default = "default_completion_status")]
+    pub completion_status: String,
+}
+
+fn default_completion_status() -> String {
+    "working".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -79,6 +86,8 @@ pub struct SessionInfo {
     pub token: String,
     #[serde(default)]
     pub is_claude: bool,
+    #[serde(default)]
+    pub completion_status: String,
 }
 
 impl From<&Session> for SessionInfo {
@@ -99,6 +108,7 @@ impl From<&Session> for SessionInfo {
             git_branch_prefix: s.git_branch_prefix.clone(),
             token: s.token.to_string(),
             is_claude: s.is_claude,
+            completion_status: s.completion_status.clone(),
         }
     }
 }

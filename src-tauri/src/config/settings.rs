@@ -104,6 +104,12 @@ pub struct AppSettings {
     /// Whether the user has dismissed the first-run onboarding wizard
     #[serde(default)]
     pub onboarding_dismissed: bool,
+    /// Phrase that agents output when they finish work
+    #[serde(default = "default_completion_phrase")]
+    pub completion_phrase: String,
+    /// Seconds of idle before an agent is considered hung (default: 300 = 5 min)
+    #[serde(default = "default_hung_timeout")]
+    pub hung_timeout_secs: u64,
 }
 
 fn default_true() -> bool {
@@ -132,6 +138,14 @@ fn default_web_bind() -> String {
 
 fn default_sidebar_style() -> String {
     "noir-minimal".to_string()
+}
+
+fn default_completion_phrase() -> String {
+    "I have finished my work.".to_string()
+}
+
+fn default_hung_timeout() -> u64 {
+    300
 }
 
 impl Default for AppSettings {
@@ -177,6 +191,8 @@ impl Default for AppSettings {
             sidebar_style: default_sidebar_style(),
             root_token: None,
             onboarding_dismissed: false,
+            completion_phrase: default_completion_phrase(),
+            hung_timeout_secs: default_hung_timeout(),
         }
     }
 }

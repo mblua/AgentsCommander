@@ -12,6 +12,7 @@ const [state, setState] = createStore<SessionsState>({
   showInactive: false,
   showCategories: true,
   repos: [],
+  hungNotifications: [],
 });
 
 function normalizePath(p: string): string {
@@ -44,6 +45,7 @@ function makeInactiveEntry(name: string, path: string): Session {
     gitBranchSource: null,
     gitBranchPrefix: null,
     token: "",
+    completionStatus: "working",
   };
 }
 
@@ -299,6 +301,22 @@ export const sessionsStore = {
 
   setGitBranch(sessionId: string, branch: string | null) {
     setState("sessions", (s) => s.id === sessionId, "gitBranch", branch);
+  },
+
+  setCompletionStatus(sessionId: string, status: "working" | "completed" | "hung") {
+    setState("sessions", (s) => s.id === sessionId, "completionStatus", status);
+  },
+
+  addHungNotification(sessionId: string) {
+    const name = state.sessions.find(s => s.id === sessionId)?.name ?? sessionId;
+    setState("hungNotifications", (prev) => {
+      const next = [...prev, { sessionId, sessionName: name, timestamp: Date.now() }];
+      return next.length > 5 ? next.slice(-5) : next;
+    });
+  },
+
+  dismissHungNotification(sessionId: string) {
+    setState("hungNotifications", (prev) => prev.filter(n => n.sessionId !== sessionId));
   },
 
   setTeams(teams: Team[]) {

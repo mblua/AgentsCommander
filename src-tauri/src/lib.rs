@@ -175,16 +175,57 @@ pub fn run() {
 
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
 
+    // Completion tracker: detects agent completion phrase + hung sessions.
+    // Must be created BEFORE IdleDetector so idle/busy callbacks can capture it.
+    let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
+    let handle_for_completed = Arc::clone(&app_handle_lock);
+    let handle_for_hung = Arc::clone(&app_handle_lock);
+
+    let settings_for_tracker = crate::config::settings::load_settings();
+    let completion_tracker = crate::pty::completion_tracker::CompletionTracker::new(
+        settings_for_tracker.completion_phrase.clone(),
+        settings_for_tracker.hung_timeout_secs,
+        move |id| {
+            if let Some(app) = handle_for_completed.get() {
+                let _ = tauri::Emitter::emit(app, "agent_completed", serde_json::json!({
+                    "id": id.to_string()
+                }));
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr_clone = session_mgr.inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mgr = mgr_clone.read().await;
+                    mgr.set_completion_status(id, "completed").await;
+                });
+            }
+        },
+        move |id| {
+            if let Some(app) = handle_for_hung.get() {
+                let _ = tauri::Emitter::emit(app, "agent_hung", serde_json::json!({
+                    "id": id.to_string()
+                }));
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr_clone = session_mgr.inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mgr = mgr_clone.read().await;
+                    mgr.set_completion_status(id, "hung").await;
+                });
+            }
+        },
+    );
+    completion_tracker.start(shutdown_signal.clone());
+
     // Idle detector: emits session_idle / session_busy events.
     // Callbacks run on native threads (watcher + PTY read loop).
     // AppHandle.emit() is sync and thread-safe, so no tokio needed.
     // AppHandle is set in setup() via OnceLock; callbacks no-op until then.
-    let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
     let handle_for_idle = Arc::clone(&app_handle_lock);
     let handle_for_busy = Arc::clone(&app_handle_lock);
+    let tracker_for_idle = Arc::clone(&completion_tracker);
+    let tracker_for_busy = Arc::clone(&completion_tracker);
     let idle_detector = IdleDetector::new(
         move |id| {
             log::info!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
+            tracker_for_idle.mark_idle(id);
             if let Some(app) = handle_for_idle.get() {
                 let _ = tauri::Emitter::emit(app, "session_idle", serde_json::json!({ "id": id.to_string() }));
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -198,6 +239,7 @@ pub fn run() {
         },
         move |id| {
             log::info!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
+            tracker_for_busy.mark_busy(id);
             if let Some(app) = handle_for_busy.get() {
                 let _ = tauri::Emitter::emit(app, "session_busy", serde_json::json!({ "id": id.to_string() }));
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -218,6 +260,8 @@ pub fn run() {
     let session_mgr_for_exit = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
     let idle_detector_for_pty = Arc::clone(&idle_detector);
+    let completion_tracker_for_pty = Arc::clone(&completion_tracker);
+    let completion_tracker_for_state = Arc::clone(&completion_tracker);
     let broadcaster_for_pty = broadcaster.clone();
     let broadcaster_for_web = broadcaster.clone();
     let web_token_for_server = Arc::clone(&web_access_token);
@@ -270,10 +314,12 @@ pub fn run() {
             let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
                 output_senders_for_pty,
                 idle_detector_for_pty,
+                completion_tracker_for_pty,
                 git_watcher,
                 Some(broadcaster_for_pty),
             )));
             app.manage(pty_mgr.clone());
+            app.manage(completion_tracker_for_state);
 
             // Start web server if enabled in settings
             {

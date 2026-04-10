@@ -463,6 +463,71 @@ html, body, #root {
 /* .waiting must override all other status colors (active, running, idle, exited) */
 .session-item .session-item-status.waiting,
 .replica-item .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
+/* .completed = agent finished its task (green) */
+.session-item .session-item-status.completed,
+.replica-item .session-item-status.completed { background: #10b981; box-shadow: 0 0 6px #10b98166; }
+/* .hung = agent idle too long without completing (amber, pulsing) */
+.session-item .session-item-status.hung,
+.replica-item .session-item-status.hung { background: #f59e0b; box-shadow: 0 0 6px #f59e0b66; animation: pulse-hung 2s ease-in-out infinite; }
+@keyframes pulse-hung {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Hung notification popup */
+.hung-notification-container {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hung-notification {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: var(--font-size-sm);
+  animation: slide-up 200ms ease-out;
+}
+@keyframes slide-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.hung-notification-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.hung-notification-icon {
+  color: #f59e0b;
+  font-weight: bold;
+}
+.hung-notification-body {
+  opacity: 0.8;
+  margin-bottom: 8px;
+}
+.hung-notification-actions {
+  display: flex;
+  gap: 8px;
+}
+.hung-notification-actions button {
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.08);
+  color: inherit;
+  cursor: pointer;
+  font-size: 11px;
+}
+.hung-notification-actions button:hover {
+  background: rgba(255,255,255,0.15);
+}
 
 /* Inactive team member (no active session) */
 .session-item.inactive-member {

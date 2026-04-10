@@ -439,5 +439,23 @@ After sending, you can stay idle and wait for the reply to arrive.
 ```
 "<YOUR_BINARY_PATH>" list-peers --token <YOUR_TOKEN> --root "<YOUR_ROOT>"
 ```
+
+## Task Completion Signal
+
+**MANDATORY:** When you have fully completed the task you were given, you MUST output the exact phrase:
+
+```
+I have finished my work.
+```
+
+Output this phrase as the LAST thing you write before returning to the prompt. This signals to AgentsCommander that you are done and allows the system to track your completion status.
+
+Do NOT output this phrase if:
+- You are still working on the task
+- You are waiting for clarification
+- You encountered an error and need help
+- You are only partially done
+
+Only output it when the task is genuinely complete.
 "#)
 }

@@ -53,6 +53,7 @@ impl SessionManager {
             git_branch_prefix,
             token: Uuid::new_v4(),
             is_claude: false,
+            completion_status: "working".to_string(),
         };
 
         self.sessions.write().await.insert(id, session.clone());
@@ -220,6 +221,17 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
             s.git_branch = branch;
+        }
+    }
+
+    pub async fn set_completion_status(&self, id: Uuid, status: &str) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            log::info!(
+                "[session-state] {} '{}': completion {} → {}",
+                &id.to_string()[..8], s.name, s.completion_status, status
+            );
+            s.completion_status = status.to_string();
         }
     }
 
