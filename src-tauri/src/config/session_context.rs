@@ -344,6 +344,12 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
     std::fs::write(&file_path, &combined)
         .map_err(|e| format!("Failed to write combined context file: {}", e))?;
 
+    // Also save a copy in the agent's working directory for inspection
+    let local_copy = cwd_path.join("last_ac_context.md");
+    if let Err(e) = std::fs::write(&local_copy, &combined) {
+        log::warn!("Failed to write last_ac_context.md to {}: {}", local_copy.display(), e);
+    }
+
     log::info!(
         "Built replica context for {} ({} context files) → {}",
         cwd,
