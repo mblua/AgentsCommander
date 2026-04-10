@@ -1,0 +1,3 @@
+# AgentsCommander: exclude workgroup cloned repos from parent git tracking.
+# Without this, parent repo operations (checkout, reset) corrupt child clones.
+wg-*/

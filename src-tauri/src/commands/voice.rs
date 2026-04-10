@@ -28,28 +28,16 @@ struct GeminiPart {
     text: Option<String>,
 }
 
-#[tauri::command]
-pub async fn voice_transcribe(
-    settings: State<'_, SettingsState>,
-    audio: Vec<u8>,
-    mime_type: String,
+/// Transcribe audio bytes using the Gemini API.
+/// Reusable from both the Tauri command and the Telegram bridge.
+pub async fn transcribe_audio(
+    client: &reqwest::Client,
+    audio_bytes: &[u8],
+    mime_type: &str,
+    api_key: &str,
+    model: &str,
 ) -> Result<String, String> {
-    let cfg = settings.read().await;
-    let api_key = cfg.gemini_api_key.clone();
-    let model = cfg.gemini_model.clone();
-    drop(cfg);
-
-    let model = if model.is_empty() { "gemini-2.5-flash".to_string() } else { model };
-
-    if api_key.is_empty() {
-        return Err("Gemini API key not configured".to_string());
-    }
-
-    if audio.is_empty() {
-        return Err("No audio data provided".to_string());
-    }
-
-    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio);
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
 
     let body = serde_json::json!({
         "contents": [{
@@ -65,11 +53,6 @@ pub async fn voice_transcribe(
         }]
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
         model, api_key
@@ -83,7 +66,7 @@ pub async fn voice_transcribe(
         .map_err(|e| format!("Gemini API request failed: {}", e))?;
 
     let status = resp.status();
-    log::debug!("Gemini request: model={}, audio_size={} bytes, status={}", model, audio.len(), status);
+    log::debug!("Gemini request: model={}, audio_size={} bytes, status={}", model, audio_bytes.len(), status);
 
     if !status.is_success() {
         let error_body = resp.text().await.unwrap_or_default();
@@ -131,6 +114,35 @@ pub async fn voice_transcribe(
 
     log::info!("Voice transcription: {} chars", text.len());
     Ok(text)
+}
+
+#[tauri::command]
+pub async fn voice_transcribe(
+    settings: State<'_, SettingsState>,
+    audio: Vec<u8>,
+    mime_type: String,
+) -> Result<String, String> {
+    let cfg = settings.read().await;
+    let api_key = cfg.gemini_api_key.clone();
+    let model = cfg.gemini_model.clone();
+    drop(cfg);
+
+    let model = if model.is_empty() { "gemini-2.5-flash".to_string() } else { model };
+
+    if api_key.is_empty() {
+        return Err("Gemini API key not configured".to_string());
+    }
+
+    if audio.is_empty() {
+        return Err("No audio data provided".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    transcribe_audio(&client, &audio, &mime_type, &api_key, &model).await
 }
 
 #[tauri::command]

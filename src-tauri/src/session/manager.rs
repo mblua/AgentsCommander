@@ -52,6 +52,7 @@ impl SessionManager {
             git_branch_source,
             git_branch_prefix,
             token: Uuid::new_v4(),
+            is_claude: false,
         };
 
         self.sessions.write().await.insert(id, session.clone());
@@ -205,6 +206,13 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
             s.last_prompt = Some(prompt);
+        }
+    }
+
+    pub async fn set_is_claude(&self, id: Uuid, val: bool) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.is_claude = val;
         }
     }
 

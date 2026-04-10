@@ -2,6 +2,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Mangle a CWD path the same way Claude Code does for its project directories.
+/// Non-alphanumeric, non-hyphen characters are replaced with '-'.
+/// Used by session creation (--continue detection) and the JSONL watcher.
+pub fn mangle_cwd_for_claude(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect()
+}
+
 /// Prefix used for temporary sessions spawned by wake-and-sleep delivery.
 /// These sessions are ephemeral and must never be persisted across restarts.
 pub const TEMP_SESSION_PREFIX: &str = "[temp]";
@@ -32,6 +41,10 @@ pub struct Session {
     pub git_branch_prefix: Option<String>,
     /// Unique token for CLI authentication. Passed to agents via init prompt.
     pub token: Uuid,
+    /// True if this session runs Claude Code (detected at creation time).
+    /// Used by the Telegram bridge to choose JSONL watcher vs PTY pipeline.
+    #[serde(default)]
+    pub is_claude: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -64,6 +77,8 @@ pub struct SessionInfo {
     #[serde(default)]
     pub git_branch_prefix: Option<String>,
     pub token: String,
+    #[serde(default)]
+    pub is_claude: bool,
 }
 
 impl From<&Session> for SessionInfo {
@@ -83,6 +98,7 @@ impl From<&Session> for SessionInfo {
             git_branch_source: s.git_branch_source.clone(),
             git_branch_prefix: s.git_branch_prefix.clone(),
             token: s.token.to_string(),
+            is_claude: s.is_claude,
         }
     }
 }

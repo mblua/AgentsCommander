@@ -62,16 +62,22 @@ pub async fn create_session_inner(
     let mut shell_args = shell_args;
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
     let cmd_basenames: Vec<String> = full_cmd.split_whitespace().map(|t| executable_basename(t)).collect();
-    let is_claude = cmd_basenames.iter().any(|b| b == "claude");
-    let is_codex = cmd_basenames.iter().any(|b| b == "codex");
+    let is_claude = cmd_basenames.iter().any(|b| b.starts_with("claude"));
+    let is_codex = cmd_basenames.iter().any(|b| b.starts_with("codex"));
+
+    // Persist is_claude flag in the SessionManager AND the local clone.
+    // The manager update ensures get_session() returns the correct flag (for telegram_attach).
+    // The local clone update ensures SessionInfo.is_claude is correct (for auto-attach sites).
+    if is_claude {
+        mgr.set_is_claude(id, true).await;
+        session.is_claude = true;
+    }
 
     // Auto-inject --continue for Claude agents when a prior conversation exists
     // Only if ~/.claude/projects/{mangled-cwd}/ exists (prior conversation exists)
     let claude_project_exists = {
         if let Some(home) = dirs::home_dir() {
-            let mangled: String = cwd.chars().map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }
-            }).collect();
+            let mangled = crate::session::session::mangle_cwd_for_claude(&cwd);
             home.join(".claude").join("projects").join(&mangled).is_dir()
         } else {
             false
@@ -173,10 +179,10 @@ pub async fn create_session_inner(
         .spawn(id, &shell, &shell_args, &cwd, 120, 30, app.clone())
         .map_err(|e| e.to_string())?;
 
-    // Auto-inject credentials for Claude sessions after PTY spawn.
+    // Auto-inject credentials for agent sessions after PTY spawn.
     // Wait for Claude to become idle (ready for input) instead of fixed delay.
     // Mirrors the pattern in mailbox.rs inject_followup_after_idle_static.
-    if is_claude {
+    if agent_id.is_some() {
         let app_clone = app.clone();
         let session_id = id;
         let token = session.token.clone();
@@ -247,7 +253,7 @@ pub async fn create_session_inner(
                 true,
             ).await {
                 Ok(()) => {
-                    log::info!("[session] Credentials auto-injected for Claude session {}", session_id);
+                    log::info!("[session] Credentials auto-injected for session {}", session_id);
                 }
                 Err(e) => {
                     log::warn!("[session] Failed to auto-inject credentials for {}: {}", session_id, e);
@@ -393,8 +399,9 @@ pub async fn create_session(
 
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
+                    let jsonl_cwd = if info.is_claude { Some(cwd.clone()) } else { None };
                     let mut tg = tg_mgr.lock().await;
-                    if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone()) {
+                    if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone(), jsonl_cwd) {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);
                     }
                 }
@@ -571,8 +578,9 @@ pub async fn restart_session(
 
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
+                    let jsonl_cwd = if session_info.is_claude { Some(cwd.clone()) } else { None };
                     let mut tg = tg_mgr.lock().await;
-                    if let Ok(bridge_info) = tg.attach(new_uuid, &bot, pty_arc, app.clone()) {
+                    if let Ok(bridge_info) = tg.attach(new_uuid, &bot, pty_arc, app.clone(), jsonl_cwd) {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);
                     }
                 }
@@ -811,8 +819,9 @@ pub async fn create_root_agent_session(
                 drop(cfg);
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
+                    let jsonl_cwd = if info.is_claude { Some(root_agent_path.clone()) } else { None };
                     let mut tg = tg_mgr.lock().await;
-                    if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone()) {
+                    if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone(), jsonl_cwd) {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);
                     }
                 }

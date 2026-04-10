@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
+use crate::session::manager::SessionManager;
 use crate::telegram::manager::TelegramBridgeState;
 use crate::telegram::types::BridgeInfo;
 
@@ -19,6 +20,18 @@ pub async fn telegram_attach(
 ) -> Result<BridgeInfo, String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
+    // Look up session to check is_claude flag for JSONL watcher mode
+    let jsonl_cwd = {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
+        if session.is_claude {
+            Some(session.working_directory.clone())
+        } else {
+            None
+        }
+    };
+
     let cfg = settings.read().await;
     let bot = cfg
         .telegram_bots
@@ -31,7 +44,7 @@ pub async fn telegram_attach(
     let pty_arc = pty_mgr.inner().clone();
     let mut tg = tg_mgr.lock().await;
     let info = tg
-        .attach(uuid, &bot, pty_arc, app.clone())
+        .attach(uuid, &bot, pty_arc, app.clone(), jsonl_cwd)
         .map_err(|e| e.to_string())?;
 
     let _ = app.emit("telegram_bridge_attached", info.clone());
