@@ -191,12 +191,22 @@ html, body, #root {
 
 .last-prompt-text {
   font-size: var(--font-size-sm);
-  color: #e8e8e8;
+  color: var(--terminal-fg);
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
   opacity: 0.85;
+}
+
+/* Light-theme overrides for last-prompt */
+html.light-theme .last-prompt-panel {
+  background: rgba(0, 0, 0, 0.03);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
 }
 
 /* Terminal container */
