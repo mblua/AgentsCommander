@@ -413,8 +413,7 @@ impl MailboxPoller {
         // Resolve agent_id and label from lastCodingAgent config
         let (agent_id, agent_label) = self.resolve_agent_id_and_label(app, &cwd).await;
 
-        // Extract short name for session (last path component)
-        let session_name = msg.to.rsplit('/').next().unwrap_or(&msg.to).to_string();
+        let session_name = msg.to.clone();
 
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
