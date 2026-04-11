@@ -146,6 +146,12 @@ pub async fn create_session_inner(
         };
 
         if let Some(context_path) = context_path {
+            // Save a copy of the resolved context to the agent's cwd for inspection
+            let local_copy = std::path::Path::new(&cwd).join("last_ac_context.md");
+            if let Err(e) = std::fs::copy(&context_path, &local_copy) {
+                log::warn!("Failed to copy context to {}: {}", local_copy.display(), e);
+            }
+
             if executable_basename(&shell) == "cmd" {
                 if let Some(last) = shell_args.last_mut() {
                     if last.to_lowercase().contains("claude") {

@@ -363,7 +363,8 @@ impl MailboxPoller {
         Err("No active session found for destination agent".to_string())
     }
 
-    /// Deliver mode: wake — inject into PTY if agent is idle (waiting for input), else queue.
+    /// Deliver mode: wake — inject into PTY if agent is idle (waiting for input).
+    /// If no active session exists, spawn a persistent one, wait for idle, then inject.
     async fn deliver_wake(&self, app: &tauri::AppHandle, msg: &OutboxMessage) -> Result<(), String> {
         if let Some(session_id) = self.find_active_session(app, &msg.to).await {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -377,15 +378,95 @@ impl MailboxPoller {
                     session_id, s.status, s.waiting_for_input
                 );
                 if s.waiting_for_input {
+                    drop(mgr);
                     return self.inject_into_pty(app, session_id, msg, true).await;
                 }
-                log::info!("[mailbox] wake: session not idle, rejecting");
-                return Err("Destination agent session is active but not idle (waiting for input)".to_string());
+                if !matches!(s.status, SessionStatus::Exited(_)) {
+                    return Err("Destination agent session is active but not idle (waiting for input)".to_string());
+                }
+                log::info!("[mailbox] wake: session {} is Exited, falling through to spawn", session_id);
+                // fall through to spawn path
             } else {
                 log::warn!("[mailbox] wake: session {} not in list_sessions", session_id);
             }
+            drop(mgr);
         }
-        Err("No active session found for destination agent".to_string())
+
+        // ── No active session (or only Exited) — spawn a persistent one ──
+        log::info!("[mailbox] wake: no active session for '{}', spawning persistent session", msg.to);
+
+        let agent_command = self.resolve_agent_command(app, msg).await;
+        let (shell, shell_args) = agent_command.ok_or_else(|| {
+            format!("No agent command resolved for '{}' — cannot spawn session. Configure lastCodingAgent or agents in settings.", msg.to)
+        })?;
+
+        let dest_path = self.resolve_repo_path(&msg.to, app).await;
+        let cwd = match dest_path {
+            Some(path) => path,
+            None => {
+                // Fallback: for WG agents (wg-name/agent), derive path from sibling session CWDs
+                self.resolve_wg_path_from_sessions(app, &msg.to).await
+                    .ok_or_else(|| format!("Cannot resolve repo path for '{}' — cannot spawn session", msg.to))?
+            }
+        };
+
+        // Resolve agent_id and label from lastCodingAgent config
+        let (agent_id, agent_label) = self.resolve_agent_id_and_label(app, &cwd).await;
+
+        let session_name = msg.to.clone();
+
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+
+        let info = crate::commands::session::create_session_inner(
+            app,
+            session_mgr.inner(),
+            pty_mgr.inner(),
+            shell,
+            shell_args,
+            cwd,
+            Some(session_name),       // readable name, no [temp] prefix
+            agent_id,                 // links to agent config
+            agent_label,              // human-readable label
+            false,                    // skip_tooling_save = false → persist lastCodingAgent
+            None,                     // git_branch_source
+            None,                     // git_branch_prefix
+            false,                    // skip_continue = false → allow --continue
+        ).await.map_err(|e| format!("Failed to spawn session for '{}': {}", msg.to, e))?;
+
+        let session_id = Uuid::parse_str(&info.id)
+            .map_err(|e| format!("Failed to parse session id: {}", e))?;
+
+        // Wait for agent to boot and become idle (ready for input)
+        let max_wait = std::time::Duration::from_secs(90);
+        let poll = std::time::Duration::from_millis(500);
+        let start = std::time::Instant::now();
+
+        loop {
+            if start.elapsed() >= max_wait {
+                log::warn!("[mailbox] wake: timeout waiting for session {} to become idle", session_id);
+                break; // inject anyway as fallback
+            }
+            tokio::time::sleep(poll).await;
+
+            let mgr = session_mgr.read().await;
+            let sessions = mgr.list_sessions().await;
+            match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                Some(s) if s.waiting_for_input => {
+                    log::info!("[mailbox] wake: session {} is idle, injecting message", session_id);
+                    drop(mgr);
+                    break;
+                }
+                Some(_) => {} // still booting
+                None => {
+                    return Err(format!("Session {} was destroyed before message injection", session_id));
+                }
+            }
+            drop(mgr);
+        }
+
+        // Inject message — interactive mode (session persists, user sees reply instructions)
+        self.inject_into_pty(app, session_id, msg, true).await
     }
 
     /// Deliver mode: wake-and-sleep — spawn temporary session if needed, inject, wait for idle, kill.
@@ -1123,6 +1204,64 @@ impl MailboxPoller {
 
         // Last resort: use first configured agent
         cfg.agents.first().map(|a| (a.command.clone(), vec![]))
+    }
+
+    /// Resolve agent_id and agent_label for a destination agent.
+    /// Reads lastCodingAgent from the dest's config.json, then looks up the label in settings.
+    async fn resolve_agent_id_and_label(
+        &self,
+        app: &tauri::AppHandle,
+        cwd: &str,
+    ) -> (Option<String>, Option<String>) {
+        let config_path = std::path::Path::new(cwd)
+            .join(crate::config::agent_local_dir_name())
+            .join("config.json");
+
+        let last_agent_id = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<AgentLocalConfig>(&content).ok())
+            .and_then(|cfg| cfg.tooling.last_coding_agent);
+
+        let Some(ref agent_id) = last_agent_id else {
+            return (None, None);
+        };
+
+        let settings = app.state::<SettingsState>();
+        let cfg = settings.read().await;
+        let label = cfg.agents.iter()
+            .find(|a| a.id == *agent_id)
+            .map(|a| a.label.clone());
+
+        (last_agent_id, label)
+    }
+
+    /// Fallback path resolution for WG agents: find a sibling session in the same WG,
+    /// derive the WG directory from its CWD, and construct the target agent path.
+    async fn resolve_wg_path_from_sessions(&self, app: &tauri::AppHandle, agent_name: &str) -> Option<String> {
+        let (wg_name, agent_short) = agent_name.split_once('/')?;
+        if !wg_name.starts_with("wg-") {
+            return None;
+        }
+
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let dirs = mgr.get_sessions_directories().await;
+        drop(mgr);
+
+        let wg_marker = format!("/{}/", wg_name);
+        for (_, cwd, _, _) in &dirs {
+            let normalized = cwd.replace('\\', "/");
+            if let Some(wg_pos) = normalized.rfind(&wg_marker) {
+                let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
+                let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
+                if std::path::Path::new(&candidate).is_dir() {
+                    log::info!("[mailbox] wake: resolved WG agent path from sibling session: {}", candidate);
+                    return Some(std::path::PathBuf::from(&candidate).to_string_lossy().to_string());
+                }
+            }
+        }
+
+        None
     }
 
     /// Move an outbox message to outbox/delivered/ with token stripped.

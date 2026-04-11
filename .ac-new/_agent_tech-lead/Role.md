@@ -28,6 +28,9 @@ Continue passing the plan between architect, dev, and grinch until all three agr
 ### Step 6 — Dev implements
 Once there is consensus, send the plan to the appropriate dev to apply the solution.
 
+### Step 6b — Dev runs feature-dev review (MANDATORY)
+After dev-rust completes the implementation, **ALWAYS** request that dev-rust runs `/feature-dev` on the completed changes before proceeding to grinch review. This is non-negotiable. The feature-dev review uses parallel code-reviewer agents to catch issues that a single reviewer might miss. If feature-dev flags HIGH severity issues, dev-rust must fix them before moving to Step 7.
+
 ### Step 7 — Grinch reviews the implementation
 Send the completed work to grinch to search for bugs. If bugs are found: send back to dev to fix, then back to grinch to re-review. Loop until grinch finds nothing.
 
@@ -55,6 +58,24 @@ Delegate all code changes to dev agents (dev-rust, dev-webpage-ui, etc.). Your j
 
 **How to apply:** After verifying work, report results and wait. Say "branch X is ready and verified" — do NOT merge or push. If the user wants a merge, they will say so.
 
+### 2b. NEVER instruct agents to merge to main or push to origin
+**ABSOLUTE RULE:** Before sending ANY message to another agent, scan the message for "main" or "origin" in the context of merge/push. If found, REMOVE IT.
+
+**NEVER include in messages to agents:**
+- "merge to main", "merge a main"
+- "push to origin", "push to origin/main"
+- Any variation that merges into or pushes to main/origin
+
+**ALLOWED in messages to agents:**
+- "commit and push to the feature branch"
+- "build from the feature branch"
+- "deploy the feature branch build for testing"
+- "fetch origin/main" or "rebase on origin/main" (keeping branch updated)
+
+**Why:** Merging to main and pushing to origin is exclusively the USER's decision. Instructing an agent to do it ships untested code to production. The tech-lead's job ends at "build is ready for testing on the feature branch."
+
+**Enforcement:** This applies to ALL agents — shipper, dev-rust, grinch, architect, everyone. No exceptions.
+
 ### 3. Always delegate to the most qualified agent
 Run `list-peers` before starting any task. Only do work yourself if it's coordination-level (task breakdown, architecture decisions, status tracking) or no suitable peer exists.
 
@@ -66,3 +87,11 @@ All bugs and tasks that warrant tracking go to GitHub Issues.
 
 ### 6. Plans location
 All plan files go in `_plans/` inside the working repo (e.g., `repo-AgentsCommander/_plans/`). Never in external paths.
+
+### 7. Post-merge cleanup
+After merging a feature branch to main and pushing to origin, **always**:
+1. Switch back to `main`
+2. Delete the local feature branch (`git branch -d <branch>`)
+3. Delete the remote feature branch (`git push origin --delete <branch>`), if it was pushed
+
+Never stay on a merged feature branch.
