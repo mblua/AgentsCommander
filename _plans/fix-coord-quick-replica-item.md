@@ -166,7 +166,13 @@ const renderReplicaItem = (
 };
 ```
 
-**Placement**: Define this function inside the component scope, before the JSX return — it needs closure access to `proj`, stores, `voiceRecorder`, `handleReplicaClick`, `handleReplicaContextMenu`, etc.
+**Placement (CRITICAL)**: Define this function inside the `{(proj) => {` callback of `<For each={projectStore.projects}>` (between lines ~222 and ~339, after `activeReplicas` and before the `return` at line 340). It MUST be inside this scope because:
+- `proj` is only available inside this callback (needed for `proj.folderName`, `proj.teams`)
+- `handleReplicaContextMenu` is defined at line 317, inside this same per-project scope
+- `handleReplicaClick` is at component level (line 90) and accessible from here via closure
+- Module-level imports (`voiceRecorder`, `bridgesStore`, `settingsStore`) are accessible everywhere
+
+Placing it at the `ProjectPanel` component level (before the `return` at line 183) would FAIL because `proj` and `handleReplicaContextMenu` would be out of scope.
 
 **Key difference from the workgroups version**: The `extraBadge` parameter. When rendered inside coord-quick-access, pass `wg.name` (e.g. "WG-1-DEV-TEAM"). When rendered inside workgroups, pass `undefined` (the WG context is already clear from the section header).
 
@@ -256,6 +262,87 @@ Replace the entire `<For each={wg.agents}>` callback body:
 - The `extraBadge` param renders as `<span class="ac-discovery-badge team">` — the `.team` badge class already exists and is styled. No new CSS needed.
 - The coord-quick items will now inherit all `.replica-item` CSS (including hover button visibility rules at lines 2253-2257 and status circle specificity at lines 462/465). This fixes both bugs.
 - The `.coord-quick-access` container provides `display: none` by default and `display: block` per theme. This gating is preserved — the container just wraps `replica-item` divs now instead of `coord-quick-item` divs.
+
+---
+
+## Frontend Review (dev-webpage-ui)
+
+### Verification Summary
+
+All file paths, line numbers, and code references verified against the current codebase on branch `fix/coord-quick-use-replica-item`. All CSS selector line references are accurate.
+
+### SolidJS Reactivity — CONFIRMED CORRECT
+
+- `createSignal` inside `renderReplicaItem` creates independent instances per `<For>` iteration — correct. Signals are just data; they don't need scope-based disposal. The reactive bindings in the returned JSX (compiled by SolidJS into effects/memos) are created within the `<For>` callback's tracking scope, so they're automatically disposed when items are removed.
+- `extraBadge` as a plain `string` (not a getter) is acceptable: the `<For>` over `coordinators()` creates new `{ replica, wg }` objects every time the memo recalculates, so `<For>` treats every update as new items, re-invoking the callback with the fresh `wg.name` value. No stale-closure risk.
+
+### Concern: CSS double-styling for coordinator items in coord-quick
+
+**Impact: MEDIUM — visual only, not a blocker, but should be verified.**
+
+In **deep-space** and **obsidian-mesh** themes, existing CSS rules style `.replica-item:has(.ac-discovery-badge.coord)` with special "coordinator beacon" visuals:
+
+- **deep-space** (lines 2980-2990): adds `padding: 8px 12px`, gradient background, `border: 1px solid`, `border-radius: 6px`, `margin: 3px 4px`
+- **obsidian-mesh** (lines 3396-3401): adds `padding: 7px 10px`, background tint, `border-left: 3px solid`
+
+Since coord-quick items will now be `.replica-item` with `.ac-discovery-badge.coord`, these rules WILL match. The coord-quick-access container already provides its own visual framing (gradient backgrounds, borders via `::before`/`::after`). This could create:
+1. Nested borders (container border + item border)
+2. Stacking backgrounds (container gradient + item gradient)
+3. Extra padding/margins that may look cramped
+
+**Recommendation**: After implementation, visually verify coord-quick-access in deep-space and obsidian-mesh themes. If the double-styling looks off, add override rules:
+```css
+.coord-quick-access .replica-item:has(.ac-discovery-badge.coord) {
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: 6px 12px;  /* match old coord-quick-item */
+}
+```
+Neon-circuit has no coordinator-specific `.replica-item` rules, so no issue there.
+
+### Note: Visual behavior change — `originProject` suffix
+
+The current coord-quick items display `{item.replica.name}` (line 462). The `renderReplicaItem` function displays `{replica.originProject ? \`${replica.name}@${replica.originProject}\` : replica.name}` (line 115 of the plan's code block). This adds an `@originProject` suffix for cross-project coordinators. This is more informative and correct — flagging it as a deliberate, intentional change.
+
+### Note: `order: -1` rule is safe
+
+The rule at line 2974 (`[deep-space] .ac-wg-subgroup > .replica-item:has(.ac-discovery-badge.coord)`) uses `.ac-wg-subgroup >` parent constraint, so it won't affect coord-quick items. This is correct since coord-quick only contains coordinators — no ordering needed.
+
+---
+
+## Grinch Review
+
+### G1 — BUG: Bot menu dropdown clipped by `overflow: hidden` (HIGH)
+
+**What:** The Telegram bot selection menu (`.session-item-bot-menu`) is `position: absolute` with `top: 100%` (sidebar.css:1407-1409) — it renders below the `.replica-item`. The `.coord-quick-access` container has `overflow: hidden` in deep-space (line 3720) and neon-circuit (line 3829). Since `.replica-item` (the bot menu's containing block via `position: relative`) is INSIDE the overflow container, the bot menu dropdown WILL be clipped. Users cannot see or interact with bot options that extend beyond the container boundary.
+
+**Why it matters:** This is a functional bug, not cosmetic. When a user has 2+ Telegram bots configured and clicks the Telegram button on a coordinator in the coord-quick section, the dropdown is invisible or partially cut off. The feature is broken in these themes.
+
+**Fix options (pick one):**
+1. **Override `overflow` inside coord-quick-access** — add `.coord-quick-access { overflow: visible; }` per-theme, replacing the `overflow: hidden`. Verify that removing it doesn't break the container's visual clipping of border-radius corners or pseudo-elements.
+2. **Change bot menu to `position: fixed`** — compute position from click coordinates instead of relying on CSS flow. More invasive but eliminates the clipping issue universally (would also fix it if `.ac-wg-subgroup` ever gains `overflow: hidden`).
+3. **Accept the limitation** — if bot selection from coord-quick is considered unnecessary (users can always use the same button in the workgroups section below), document it and skip the fix.
+
+Note: obsidian-mesh does NOT set `overflow: hidden` on `.coord-quick-access`, so the bug does not affect that theme.
+
+### G2 — Placement precision (LOW)
+
+**What:** The plan says to define `renderReplicaItem` "between lines ~222 and ~339". This is a 117-line range. `handleReplicaContextMenu` is defined at line 317 and referenced by `renderReplicaItem` in the returned JSX. While JavaScript closures handle forward references correctly (the function isn't called until JSX renders, by which point all `const` declarations have been evaluated), placing `renderReplicaItem` BEFORE `handleReplicaContextMenu` creates a confusing read order.
+
+**Recommendation:** Place `renderReplicaItem` AFTER `handleReplicaContextMenu` (after line 338, immediately before the `return` at line 340). Same behavior, clearer maintainability.
+
+### G3 — Agree with dev-webpage-ui's CSS double-styling finding (MEDIUM)
+
+Confirmed: the coordinator beacon rules in deep-space (lines 2980-2990: gradient bg, border, border-radius, margin) and obsidian-mesh (lines 3396-3401: bg tint, border-left) match ANY `.replica-item:has(.ac-discovery-badge.coord)` — no parent constraint. These WILL apply to coord-quick items, stacking with the container's own styling. Dev-webpage-ui's proposed override fix is correct and should be part of the implementation.
+
+### Summary
+
+- **G1 (HIGH)** — must be addressed. Recommend option 1 (override overflow per-theme) or option 3 (accept limitation with documentation).
+- **G2 (LOW)** — placement guidance, not a bug.
+- **G3 (MEDIUM)** — confirmed, fix already proposed by dev-webpage-ui.
+
+---
 
 ## Files Summary
 
