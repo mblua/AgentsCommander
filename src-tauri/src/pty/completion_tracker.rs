@@ -5,17 +5,19 @@ use uuid::Uuid;
 
 const WATCHER_INTERVAL: Duration = Duration::from_secs(5);
 
-type Callback = Arc<dyn Fn(Uuid) + Send + Sync>;
+type CompletedCallback = Arc<dyn Fn(Uuid, String) + Send + Sync>;
+type HungCallback = Arc<dyn Fn(Uuid, String, u64) + Send + Sync>;
 
 pub struct CompletionTracker {
     state: Arc<Mutex<HashMap<Uuid, SessionCompletionState>>>,
     phrase: String,
     hung_timeout: Duration,
-    on_completed: Callback,
-    on_hung: Callback,
+    on_completed: CompletedCallback,
+    on_hung: HungCallback,
 }
 
 struct SessionCompletionState {
+    name: String,
     phrase_detected: bool,
     idle_since: Option<Instant>,
     status: CompletionStatus,
@@ -33,9 +35,13 @@ impl CompletionTracker {
     pub fn new(
         phrase: String,
         hung_timeout_secs: u64,
-        on_completed: impl Fn(Uuid) + Send + Sync + 'static,
-        on_hung: impl Fn(Uuid) + Send + Sync + 'static,
+        on_completed: impl Fn(Uuid, String) + Send + Sync + 'static,
+        on_hung: impl Fn(Uuid, String, u64) + Send + Sync + 'static,
     ) -> Arc<Self> {
+        log::info!(
+            "[completion] initialized: phrase={:?}, hung_timeout={}s",
+            phrase, hung_timeout_secs
+        );
         Arc::new(Self {
             state: Arc::new(Mutex::new(HashMap::new())),
             phrase,
@@ -45,17 +51,33 @@ impl CompletionTracker {
         })
     }
 
+    /// Register a Claude session for completion tracking.
+    /// Only registered sessions are monitored for phrase detection and hung state.
+    pub fn register_session(&self, session_id: Uuid, name: String) {
+        let mut state = self.state.lock().unwrap();
+        state.entry(session_id).or_insert_with(|| SessionCompletionState {
+            name,
+            phrase_detected: false,
+            idle_since: None,
+            status: CompletionStatus::Working,
+            hung_notified: false,
+        });
+        log::info!("[completion] registered session {}", &session_id.to_string()[..8]);
+    }
+
     /// Check if text contains the completion phrase. Called from PTY read loop.
     pub fn scan_phrase(&self, text: &str) -> bool {
         !self.phrase.is_empty() && text.contains(self.phrase.as_str())
     }
 
     /// Called from PTY read loop when output contains the completion phrase.
+    /// Only acts on registered sessions.
     pub fn record_phrase_detected(&self, session_id: Uuid) {
         let mut state = self.state.lock().unwrap();
-        let entry = state.entry(session_id).or_default();
-        entry.phrase_detected = true;
-        log::info!("[completion] phrase detected for {}", &session_id.to_string()[..8]);
+        if let Some(entry) = state.get_mut(&session_id) {
+            entry.phrase_detected = true;
+            log::info!("[completion] phrase detected for {}", &session_id.to_string()[..8]);
+        }
     }
 
     /// Called when a message is injected into a session (resets all tracking).
@@ -71,11 +93,13 @@ impl CompletionTracker {
     }
 
     /// Called when idle detector fires session_idle.
+    /// Only acts on registered (Claude) sessions.
     pub fn mark_idle(&self, session_id: Uuid) {
         let mut state = self.state.lock().unwrap();
-        let entry = state.entry(session_id).or_default();
-        if entry.idle_since.is_none() {
-            entry.idle_since = Some(Instant::now());
+        if let Some(entry) = state.get_mut(&session_id) {
+            if entry.idle_since.is_none() {
+                entry.idle_since = Some(Instant::now());
+            }
         }
     }
 
@@ -115,9 +139,14 @@ impl CompletionTracker {
                     break;
                 }
 
+                // Skip if hung timeout is disabled (0)
+                if tracker.hung_timeout.is_zero() {
+                    continue;
+                }
+
                 // Collect events under lock, fire callbacks after unlocking
-                let mut completed_ids = Vec::new();
-                let mut hung_ids = Vec::new();
+                let mut completed: Vec<(Uuid, String)> = Vec::new();
+                let mut hung: Vec<(Uuid, String, u64)> = Vec::new();
 
                 {
                     let now = Instant::now();
@@ -126,16 +155,17 @@ impl CompletionTracker {
                     for (&session_id, s) in state.iter_mut() {
                         if s.status == CompletionStatus::Working && s.phrase_detected && s.idle_since.is_some() {
                             s.status = CompletionStatus::Completed;
-                            completed_ids.push(session_id);
+                            completed.push((session_id, s.name.clone()));
                         }
 
                         if s.status == CompletionStatus::Working && !s.phrase_detected {
                             if let Some(idle_since) = s.idle_since {
                                 if let Some(elapsed) = now.checked_duration_since(idle_since) {
                                     if elapsed > tracker.hung_timeout && !s.hung_notified {
+                                        let idle_minutes = elapsed.as_secs() / 60;
                                         s.status = CompletionStatus::Hung;
                                         s.hung_notified = true;
-                                        hung_ids.push(session_id);
+                                        hung.push((session_id, s.name.clone(), idle_minutes));
                                     }
                                 }
                             }
@@ -144,13 +174,13 @@ impl CompletionTracker {
                 }
 
                 // Fire callbacks outside the lock
-                for id in completed_ids {
-                    log::info!("[completion] session {} completed", &id.to_string()[..8]);
-                    (tracker.on_completed)(id);
+                for (id, name) in completed {
+                    log::info!("[completion] session {} ({}) completed", &id.to_string()[..8], name);
+                    (tracker.on_completed)(id, name);
                 }
-                for id in hung_ids {
-                    log::warn!("[completion] session {} appears hung", &id.to_string()[..8]);
-                    (tracker.on_hung)(id);
+                for (id, name, idle_minutes) in hung {
+                    log::warn!("[completion] session {} ({}) appears hung (idle={}min, timeout={}s)", &id.to_string()[..8], name, idle_minutes, tracker.hung_timeout.as_secs());
+                    (tracker.on_hung)(id, name, idle_minutes);
                 }
             }
         });
@@ -160,6 +190,7 @@ impl CompletionTracker {
 impl Default for SessionCompletionState {
     fn default() -> Self {
         Self {
+            name: String::new(),
             phrase_detected: false,
             idle_since: None,
             status: CompletionStatus::Working,

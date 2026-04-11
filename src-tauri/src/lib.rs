@@ -185,10 +185,11 @@ pub fn run() {
     let completion_tracker = crate::pty::completion_tracker::CompletionTracker::new(
         settings_for_tracker.completion_phrase.clone(),
         settings_for_tracker.hung_timeout_secs,
-        move |id| {
+        move |id, name| {
             if let Some(app) = handle_for_completed.get() {
                 let _ = tauri::Emitter::emit(app, "agent_completed", serde_json::json!({
-                    "id": id.to_string()
+                    "id": id.to_string(),
+                    "name": name
                 }));
                 if let Some(session_mgr) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() {
                     let mgr_clone = session_mgr.inner().clone();
@@ -199,10 +200,12 @@ pub fn run() {
                 }
             }
         },
-        move |id| {
+        move |id, name, idle_minutes| {
             if let Some(app) = handle_for_hung.get() {
                 let _ = tauri::Emitter::emit(app, "agent_hung", serde_json::json!({
-                    "id": id.to_string()
+                    "id": id.to_string(),
+                    "name": name,
+                    "idleMinutes": idle_minutes
                 }));
                 if let Some(session_mgr) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() {
                     let mgr_clone = session_mgr.inner().clone();

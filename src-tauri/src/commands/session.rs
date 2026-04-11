@@ -71,6 +71,11 @@ pub async fn create_session_inner(
     if is_claude {
         mgr.set_is_claude(id, true).await;
         session.is_claude = true;
+        // Register with CompletionTracker so this session is monitored for
+        // phrase detection and hung state. Non-Claude sessions are excluded.
+        if let Some(tracker) = app.try_state::<std::sync::Arc<crate::pty::completion_tracker::CompletionTracker>>() {
+            tracker.register_session(id, session.name.clone());
+        }
     }
 
     // Auto-inject --continue for Claude agents when a prior conversation exists
