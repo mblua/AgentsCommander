@@ -174,6 +174,16 @@ impl SessionManager {
         }
     }
 
+    /// Clear the active session if it matches the given ID.
+    /// Used during restore to prevent deferred (Exited) sessions from
+    /// blocking auto-activation of subsequent sessions.
+    pub async fn clear_active_if(&self, id: Uuid) {
+        let mut active = self.active_session.write().await;
+        if *active == Some(id) {
+            *active = None;
+        }
+    }
+
     pub async fn mark_idle(&self, id: Uuid) {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {

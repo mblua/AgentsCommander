@@ -501,6 +501,14 @@ pub fn run() {
                 let pty_mgr_clone = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
                 let app_handle = app.handle().clone();
 
+                // Check if we should only auto-start coordinator sessions
+                let start_only_coords = crate::config::settings::load_settings().start_only_coordinators;
+                let teams = if start_only_coords {
+                    crate::config::teams::discover_teams()
+                } else {
+                    vec![]
+                };
+
                 tauri::async_runtime::spawn(async move {
                     let mut active_id = None;
                     let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
@@ -510,6 +518,45 @@ pub fn run() {
                         if !std::path::Path::new(&ps.working_directory).exists() {
                             log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
                             continue;
+                        }
+
+                        // Defer non-coordinator team members when setting is enabled
+                        if start_only_coords {
+                            let agent_name = crate::config::teams::agent_name_from_path(&ps.working_directory);
+                            let in_team = teams.iter().any(|t| crate::config::teams::is_in_team(&agent_name, t));
+                            let is_coord = crate::config::teams::is_any_coordinator(&agent_name, &teams);
+
+                            if in_team && !is_coord {
+                                // Create session record without PTY (dormant)
+                                let mgr = session_mgr_clone.read().await;
+                                match mgr.create_session(
+                                    ps.shell.clone(),
+                                    ps.shell_args.clone(),
+                                    ps.working_directory.clone(),
+                                    ps.git_branch_source.clone(),
+                                    ps.git_branch_prefix.clone(),
+                                ).await {
+                                    Ok(session) => {
+                                        mgr.rename_session(session.id, ps.name.clone()).await.ok();
+                                        mgr.mark_exited(session.id, 0).await;
+                                        mgr.clear_active_if(session.id).await;
+                                        // Read updated session so emitted event reflects Exited status
+                                        if let Some(updated) = mgr.get_session(session.id).await {
+                                            let info = crate::session::session::SessionInfo::from(&updated);
+                                            let _ = tauri::Emitter::emit(&app_handle, "session_created", info);
+                                        }
+                                        log::info!(
+                                            "Deferred non-coordinator session '{}' (agent: {}, no PTY)",
+                                            ps.name, agent_name
+                                        );
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to create deferred session '{}': {}", ps.name, e);
+                                        failed_recoverable.push(ps.clone());
+                                    }
+                                }
+                                continue; // Skip normal restore with PTY
+                            }
                         }
 
                         match commands::session::create_session_inner(

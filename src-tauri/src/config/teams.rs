@@ -195,6 +195,11 @@ pub fn is_coordinator_of(sender: &str, target: &str, teams: &[DiscoveredTeam]) -
     })
 }
 
+/// Check if an agent is a coordinator of ANY discovered team.
+pub fn is_any_coordinator(agent_name: &str, teams: &[DiscoveredTeam]) -> bool {
+    teams.iter().any(|t| is_coordinator(agent_name, t))
+}
+
 /// Check if two agents can communicate based on discovery-based team routing rules.
 ///
 /// Rules:

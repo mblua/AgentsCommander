@@ -118,6 +118,7 @@ export interface AppSettings {
   repoPaths: string[];
   agents: AgentConfig[];
   telegramBots: TelegramBotConfig[];
+  startOnlyCoordinators: boolean;
   sidebarAlwaysOnTop: boolean;
   raiseTerminalOnClick: boolean;
   voiceToTextEnabled: boolean;

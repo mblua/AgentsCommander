@@ -41,6 +41,10 @@ pub struct AppSettings {
     /// Configured Telegram bots for bridge
     #[serde(default)]
     pub telegram_bots: Vec<TelegramBotConfig>,
+    /// On app start, only auto-start PTY sessions for coordinator agents.
+    /// Non-coordinator team members appear in sidebar but are not auto-started.
+    #[serde(default = "default_true")]
+    pub start_only_coordinators: bool,
     /// Keep sidebar window always on top
     #[serde(default)]
     pub sidebar_always_on_top: bool,
@@ -156,6 +160,7 @@ impl Default for AppSettings {
             repo_paths,
             agents: vec![],
             telegram_bots: vec![],
+            start_only_coordinators: true,
             sidebar_always_on_top: false,
             raise_terminal_on_click: true,
             voice_to_text_enabled: false,

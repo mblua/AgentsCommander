@@ -238,6 +238,17 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           <input
             type="checkbox"
             class="settings-checkbox"
+            checked={settings.data!.startOnlyCoordinators}
+            onChange={(e) =>
+              updateField("startOnlyCoordinators", e.currentTarget.checked)
+            }
+          />
+          <span>On start only start Coordinators</span>
+        </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
             checked={settings.data!.sidebarAlwaysOnTop}
             onChange={(e) =>
               updateField("sidebarAlwaysOnTop", e.currentTarget.checked)
