@@ -354,3 +354,81 @@ The fallback chain in `resolve_target_root()` is: session CWDs → settings path
 - **1 missed doc comment** at ac_discovery.rs:743 (low severity, cosmetic)
 - **No edge cases found** — the replacement is purely mechanical (field rename from dead source to live source)
 - **APPROVED for implementation**
+
+---
+
+## Grinch Review
+
+**Reviewer:** dev-rust-grinch | **Date:** 2026-04-12
+
+### G1: VERIFIED — Serde backward compatibility is safe
+
+Traced the full load/save cycle for `settings.json`:
+
+1. **No `deny_unknown_fields`** anywhere on `AppSettings`. Confirmed via exhaustive grep — zero matches across the entire Rust codebase. Serde silently ignores unknown JSON keys during deserialization.
+
+2. **`project_paths` has `#[serde(default)]`** (settings.rs:100). If the key is missing from JSON, serde defaults to `Vec::default()` = `vec![]`. No deserialization failure.
+
+3. **First save after upgrade** (`save_settings` at settings.rs:241-253) writes `serde_json::to_string_pretty(settings)`. Since `repo_paths` no longer exists in the struct, the output JSON will NOT contain `repoPaths`. The old key is silently dropped — never re-written. Clean.
+
+4. **Upgrade scenario**: Old settings.json has `repoPaths: []` and `projectPaths: [...]`. After load: `repoPaths` ignored (unknown key), `projectPaths` loaded normally. After save: `repoPaths` gone, `projectPaths` preserved. No data loss, no corruption. **Safe.**
+
+5. **Oldest settings.json edge case**: A file that has `repoPaths` but NO `projectPaths` (pre-multi-project era). After load: `repoPaths` ignored, `projectPaths` defaults to `[]`. The `projectPath` (singular, settings.rs:96-98) still exists and the frontend migration code (`project.ts:66-75`) merges it into the array on first use. **No data loss.**
+
+### G2: VERIFIED — No runtime code path breaks
+
+Independently read all 8 replacement sites in context. Every loop body has:
+- `if !base.is_dir() { continue; }` guard (repos.rs:100, ac_discovery.rs:426, list_peers.rs:501, web/commands.rs:237)
+- Or path existence checks (`Path::new(rp)` → `is_dir()`)
+
+Replacing the data source from `repo_paths: []` to `project_paths: [actual paths]` changes the INPUT but not the LOGIC. All loops handle non-existent and non-directory paths gracefully. **No breakage.**
+
+### G3: VERIFIED — Empty `project_paths` behaves identically to empty `repo_paths`
+
+If `project_paths` is `[]`: all for loops produce zero iterations, no scanning happens, all discovery functions return empty results. Identical to the current behavior with `repo_paths: []`. **No regression.**
+
+### G4: VERIFIED — No frontend consumers of `appSettings.repoPaths`
+
+Independently grepped all 15 TypeScript occurrences of `repoPaths`:
+- 1 in `types.ts:118` (`AppSettings`) → REMOVED by plan
+- 1 in `types.ts:224` (`AcAgentReplica`) → DO NOT TOUCH
+- 6 in `AcDiscoveryPanel.tsx` → ALL are `replica.repoPaths`
+- 7 in `ProjectPanel.tsx` → ALL are `replica.repoPaths`
+
+**Zero** frontend code reads `appSettings.repoPaths` or `settings.data.repoPaths`. Removing the field from `AppSettings` has zero frontend impact. **Clean.**
+
+### G5: CONFIRMED — Dev-rust's missed doc comment at ac_discovery.rs:743
+
+Verified line 743: `/// Unlike discover_ac_agents which scans repo_paths from settings,`
+This is a doc comment on `discover_project()`. Should be updated to `project_paths`. Dev-rust correctly flagged this. **Include in implementation.**
+
+### G6: CONFIRMED — `SettingsModal.tsx:172` optional comment should be included
+
+Line 172: `// Refresh repos (repo_paths may have changed)` — stale reference. While cosmetic, leaving it creates confusion for future developers who grep for `repo_paths` and find a reference in frontend code that no longer corresponds to any backend field. **Recommend including this change.**
+
+### G7: NOTE — Combined behavior with `start-only-coordinators` (same branch)
+
+The `start-only-coordinators` feature calls `discover_teams()` during session restore (lib.rs:507). Before this refactor, `discover_teams()` scanned `repo_paths: []` → found NO teams → ALL sessions restored normally (deferred path never triggered).
+
+After this refactor, `discover_teams()` scans `project_paths` → finds ACTUAL teams → the coordinator-only-start feature becomes functional for the first time.
+
+This is correct and intended (plan Note #3 calls it out). Not a bug — but the implementer should be aware that this refactor effectively "activates" the start-only-coordinators feature. Users who upgraded with the setting enabled (default: true) will see deferred sessions for the first time after this change lands.
+
+### G8: NOTE — Non-Windows default removed (cosmetic)
+
+The old Default impl had a non-Windows branch that set `repo_paths` to `["{home}/repos"]`. The plan's simplification removes this. Since AgentsCommander is Windows-only in production, this has zero impact. But if the app is ever ported, `project_paths` would need manual configuration (no auto-discovery default). **Not a concern now.**
+
+### Summary
+
+| Finding | Severity | Action |
+|---|---|---|
+| G1: Serde backward compat | VERIFIED | None — safe |
+| G2: Runtime code paths | VERIFIED | None — safe |
+| G3: Empty project_paths | VERIFIED | None — identical behavior |
+| G4: No frontend consumers | VERIFIED | None — clean |
+| G5: ac_discovery.rs:743 comment | CONFIRMED | Include (dev-rust finding) |
+| G6: SettingsModal.tsx:172 comment | LOW | Recommend including |
+| G7: start-only-coordinators activation | NOTE | Awareness only |
+| G8: Non-Windows default removed | NOTE | Cosmetic, no impact |
+
+**Overall verdict: APPROVED for implementation.** No bugs, no edge cases that could break. The refactor is mechanical and safe. All backward compatibility scenarios verified clean.
