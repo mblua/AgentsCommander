@@ -27,9 +27,9 @@ fn needs_explicit_enter(shell: &str) -> bool {
 /// - `submit = false` → passive injection (token refresh).
 ///   Text is written as-is. No Enter is ever sent, regardless of agent type.
 /// - `submit = true` → active injection (init prompt, message delivery, Telegram input).
-///   For agents that require explicit Enter (Claude, Codex), a `\r` is sent
-///   as a separate write after a 1500 ms delay to let the agent finish
-///   processing the pasted text block.
+///   For agents that require explicit Enter (Claude, Codex), `\r` is sent
+///   twice — at 1500 ms and 2000 ms after the text write — as a reliability
+///   measure against Enter not registering on the first attempt.
 ///
 /// This is the ONLY function that should be used for text-block injection.
 /// Direct keystrokes from xterm.js (single chars, Ctrl sequences) bypass this
@@ -66,18 +66,35 @@ pub async fn inject_text_into_session(
         log::info!("[inject] PTY write OK session={} bytes={}", session_id, text.len());
     }
 
-    // Agent CLIs (Claude, Codex): send Enter as a separate write after a delay.
-    // The delay must be long enough for the agent to finish processing the pasted
-    // text block and exit any internal "paste detection" mode.
+    // Agent CLIs (Claude, Codex): send Enter twice with staggered delays.
+    // Sometimes a single \r doesn't register (race with paste-detection mode).
+    // The second \r is a safety net — if the first worked, the agent is already
+    // processing and an extra Enter on empty input is harmless.
     if send_enter {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        log::info!("[inject] sending Enter for session {}", session_id);
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-        pty_mgr
-            .lock()
-            .map_err(|_| "PtyManager lock poisoned".to_string())?
-            .write(session_id, b"\r")
-            .map_err(|e| format!("PTY Enter write failed: {}", e))?;
+        log::info!("[inject] sending Enter (1/2) for session {}", session_id);
+        {
+            let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+            pty_mgr
+                .lock()
+                .map_err(|_| "PtyManager lock poisoned".to_string())?
+                .write(session_id, b"\r")
+                .map_err(|e| format!("PTY Enter (1/2) write failed: {}", e))?;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        log::info!("[inject] sending Enter (2/2) for session {}", session_id);
+        {
+            let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+            match pty_mgr
+                .lock()
+                .map_err(|_| "PtyManager lock poisoned".to_string())
+                .and_then(|mgr| mgr.write(session_id, b"\r").map_err(|e| e.to_string()))
+            {
+                Ok(()) => {}
+                Err(e) => log::warn!("[inject] Enter (2/2) failed for session {} (non-fatal): {}", session_id, e),
+            }
+        }
     }
 
     Ok(())
