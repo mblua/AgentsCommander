@@ -19,7 +19,7 @@ fn needs_explicit_enter(shell: &str) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or(shell.trim())
         .to_lowercase();
-    stem.starts_with("codex") || stem.starts_with("claude")
+    stem.starts_with("codex") || stem.starts_with("claude") || stem.starts_with("gemini")
 }
 
 /// Inject a text block into a session's PTY stdin.
