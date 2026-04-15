@@ -58,12 +58,22 @@ pub async fn create_session_inner(
         resolve_agent_from_shell(&shell, &shell_args, &cfg)
     };
 
-    // Detect if this is a Claude session (shared flag for --continue and --append-system-prompt-file)
+    // Detect coding agent families so we can materialize provider-specific context files.
     let mut shell_args = shell_args;
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
     let cmd_basenames: Vec<String> = full_cmd.split_whitespace().map(|t| executable_basename(t)).collect();
     let is_claude = cmd_basenames.iter().any(|b| b.starts_with("claude"));
     let is_codex = cmd_basenames.iter().any(|b| b.starts_with("codex"));
+    let is_gemini = cmd_basenames.iter().any(|b| b.starts_with("gemini"));
+    let context_target = if is_claude {
+        Some(crate::config::session_context::ManagedContextTarget::Claude)
+    } else if is_codex {
+        Some(crate::config::session_context::ManagedContextTarget::Codex)
+    } else if is_gemini {
+        Some(crate::config::session_context::ManagedContextTarget::Gemini)
+    } else {
+        None
+    };
 
     // Persist is_claude flag in the SessionManager AND the local clone.
     // The manager update ensures get_session() returns the correct flag (for telegram_attach).
@@ -105,35 +115,17 @@ pub async fn create_session_inner(
         }
     }
 
-    // Auto-inject --append-system-prompt-file for Claude sessions.
-    // Replica context (config.json context[]) takes priority over global-only context.
-    if is_claude {
-        let context_path = match crate::config::session_context::build_replica_context(&cwd) {
-            Ok(Some(combined_path)) => {
-                log::info!("Using replica combined context for Claude session: {}", combined_path);
-                Some(combined_path)
-            }
-            Ok(None) => {
-                // No replica context[] — use per-agent context only
-                match crate::config::session_context::ensure_session_context(&cwd) {
-                    Ok(path) => Some(path),
-                    Err(e) => {
-                        log::warn!("Failed to ensure AgentsCommanderContext.md: {}", e);
-                        None
-                    }
-                }
-            }
+    let materialized_context_path = if let Some(target) = context_target {
+        match crate::config::session_context::materialize_agent_context_file(&cwd, target) {
+            Ok(context) => context,
             Err(e) => {
-                // Missing context files — show error dialog and abort launch
                 log::error!("Replica context validation failed: {}", e);
                 use tauri_plugin_dialog::DialogExt;
                 let dialog_msg = format!("Cannot launch session — context files missing:\n\n{}", e);
-                // Use non-blocking show() — blocking_show() panics in async context
                 app.dialog()
                     .message(&dialog_msg)
                     .title("Context File Error")
                     .show(|_| {});
-                // Abort: destroy the session we just created and emit switch if auto-activated
                 let mgr2 = session_mgr.read().await;
                 if let Ok(Some(new_id)) = mgr2.destroy_session(id).await {
                     let _ = app.emit(
@@ -143,15 +135,14 @@ pub async fn create_session_inner(
                 }
                 return Err(e);
             }
-        };
+        }
+    } else {
+        None
+    };
 
-        if let Some(context_path) = context_path {
-            // Save a copy of the resolved context to the agent's cwd for inspection
-            let local_copy = std::path::Path::new(&cwd).join("last_ac_context.md");
-            if let Err(e) = std::fs::copy(&context_path, &local_copy) {
-                log::warn!("Failed to copy context to {}: {}", local_copy.display(), e);
-            }
-
+    // Claude consumes the materialized CLAUDE.md via --append-system-prompt-file.
+    if is_claude {
+        if let Some(context_path) = materialized_context_path.as_ref() {
             if executable_basename(&shell) == "cmd" {
                 if let Some(last) = shell_args.last_mut() {
                     if last.to_lowercase().contains("claude") {
@@ -161,20 +152,8 @@ pub async fn create_session_inner(
                 }
             } else {
                 shell_args.push("--append-system-prompt-file".to_string());
-                shell_args.push(context_path);
+                shell_args.push(context_path.to_string());
                 log::info!("Injected --append-system-prompt-file for Claude session");
-            }
-        }
-    }
-
-    // Auto-inject developer_instructions for Codex sessions (global user config)
-    if is_codex {
-        match crate::config::session_context::ensure_codex_context() {
-            Ok(()) => {
-                log::info!("Injected developer_instructions into ~/.codex/config.toml for Codex session");
-            }
-            Err(e) => {
-                log::warn!("Failed to inject Codex context: {}", e);
             }
         }
     }

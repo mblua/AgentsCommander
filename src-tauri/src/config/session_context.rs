@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
 /// root path interpolated into the GOLDEN RULE. Uses a deterministic filename
 /// based on the agent_root to prevent races between concurrent session launches.
@@ -28,125 +26,22 @@ pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
     Ok(file_path.to_string_lossy().to_string())
 }
 
-/// Writes the shared AgentsCommanderContext.md with generic (non-per-agent)
-/// wording in the GOLDEN RULE — used for Codex developer_instructions, which
-/// is shared across all Codex sessions on the machine.
-pub fn ensure_global_context_generic() -> Result<String, String> {
-    let config_dir = super::config_dir()
-        .ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let file_path = config_dir.join("AgentsCommanderContext.md");
+const MANAGED_CONTEXT_FILENAMES: &[&str] = &["last_ac_context.md", "CLAUDE.md", "GEMINI.md", "AGENTS.md"];
 
-    std::fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Failed to create config dir: {}", e))?;
-    std::fs::write(&file_path, &default_context_generic())
-        .map_err(|e| format!("Failed to write AgentsCommanderContext.md: {}", e))?;
-    log::info!("Refreshed global (generic) AgentsCommanderContext.md at {:?}", file_path);
-
-    Ok(file_path.to_string_lossy().to_string())
+#[derive(Debug, Clone, Copy)]
+pub enum ManagedContextTarget {
+    Claude,
+    Gemini,
+    Codex,
 }
 
-/// Returns the expected path without creating the file.
-pub fn global_context_path() -> Option<PathBuf> {
-    super::config_dir().map(|d| d.join("AgentsCommanderContext.md"))
-}
-
-const AC_START_MARKER: &str = "# === AgentsCommander Context START ===";
-const AC_END_MARKER: &str = "# === AgentsCommander Context END ===";
-
-/// Ensures the Codex user-level config at ~/.codex/config.toml contains
-/// the AgentsCommander context as `developer_instructions`.
-/// Uses start/end markers to preserve any existing user content in the field.
-pub fn ensure_codex_context() -> Result<(), String> {
-    // 1. Ensure AgentsCommanderContext.md exists and read its content
-    let context_path = ensure_global_context_generic()?;
-    let context_content = std::fs::read_to_string(&context_path)
-        .map_err(|e| format!("Failed to read AgentsCommanderContext.md: {}", e))?;
-
-    // 2. Resolve ~/.codex/config.toml
-    let codex_dir = dirs::home_dir()
-        .ok_or_else(|| "Could not resolve home directory".to_string())?
-        .join(".codex");
-    let config_path = codex_dir.join("config.toml");
-
-    // 3. Read existing config or start with empty table
-    let mut table: toml::value::Table = if config_path.exists() {
-        let raw = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read ~/.codex/config.toml: {}", e))?;
-        raw.parse::<toml::Value>()
-            .map_err(|e| format!("Failed to parse ~/.codex/config.toml: {}", e))?
-            .as_table()
-            .cloned()
-            .unwrap_or_default()
-    } else {
-        toml::value::Table::new()
-    };
-
-    // 4. Build the marked AC block
-    let ac_block = format!(
-        "{}\n{}\n{}",
-        AC_START_MARKER,
-        context_content.trim(),
-        AC_END_MARKER,
-    );
-
-    // 5. Merge with existing developer_instructions (preserve user content outside markers)
-    let current_di = table
-        .get("developer_instructions")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let new_di = replace_ac_block(current_di, &ac_block);
-
-    // 6. Skip write if nothing changed
-    if new_di == current_di {
-        log::debug!("Codex developer_instructions already up to date, skipping write");
-        return Ok(());
-    }
-
-    // 7. Write back
-    table.insert(
-        "developer_instructions".to_string(),
-        toml::Value::String(new_di),
-    );
-    std::fs::create_dir_all(&codex_dir)
-        .map_err(|e| format!("Failed to create ~/.codex/ directory: {}", e))?;
-    let serialized = toml::to_string(&toml::Value::Table(table))
-        .map_err(|e| format!("Failed to serialize ~/.codex/config.toml: {}", e))?;
-    std::fs::write(&config_path, &serialized)
-        .map_err(|e| format!("Failed to write ~/.codex/config.toml: {}", e))?;
-
-    log::info!("Injected AgentsCommander context into ~/.codex/config.toml developer_instructions");
-    Ok(())
-}
-
-/// Replace (or insert) the AgentsCommander marked block within an existing string,
-/// preserving any content outside the markers.
-fn replace_ac_block(existing: &str, new_block: &str) -> String {
-    if let Some(start) = existing.find(AC_START_MARKER) {
-        if let Some(end_rel) = existing[start..].find(AC_END_MARKER) {
-            let end = start + end_rel + AC_END_MARKER.len();
-            let before = existing[..start].trim_end_matches('\n');
-            let after = existing[end..].trim_start_matches('\n');
-
-            let mut result = String::new();
-            if !before.is_empty() {
-                result.push_str(before);
-                result.push('\n');
-            }
-            result.push_str(new_block);
-            if !after.is_empty() {
-                result.push('\n');
-                result.push_str(after);
-            }
-            return result;
+impl ManagedContextTarget {
+    fn filename(self) -> &'static str {
+        match self {
+            Self::Claude => "CLAUDE.md",
+            Self::Gemini => "GEMINI.md",
+            Self::Codex => "AGENTS.md",
         }
-    }
-
-    // No existing block — prepend if there's user content, or just the block
-    if existing.trim().is_empty() {
-        new_block.to_string()
-    } else {
-        format!("{}\n\n{}", new_block, existing)
     }
 }
 
@@ -382,6 +277,61 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
     Ok(Some(file_path.to_string_lossy().to_string()))
 }
 
+/// Resolve the final session context content for a replica directory.
+/// Prefers replica config.json context[] and falls back to the per-agent default context.
+fn resolve_session_context_content(cwd: &str) -> Result<Option<String>, String> {
+    if !is_replica_agent_dir(cwd) {
+        return Ok(None);
+    }
+
+    let context_path = match build_replica_context(cwd) {
+        Ok(Some(combined_path)) => {
+            log::info!("Using replica combined context for agent session: {}", combined_path);
+            combined_path
+        }
+        Ok(None) => ensure_session_context(cwd)?,
+        Err(e) => return Err(e),
+    };
+
+    let content = std::fs::read_to_string(&context_path)
+        .map_err(|e| format!("Failed to read resolved session context {}: {}", context_path, e))?;
+    Ok(Some(content))
+}
+
+/// Delete stale agent-specific context files from a replica cwd and rewrite the
+/// current resolved context into the single provider-specific filename required
+/// by the coding agent being launched.
+pub fn materialize_agent_context_file(
+    cwd: &str,
+    target: ManagedContextTarget,
+) -> Result<Option<String>, String> {
+    let content = match resolve_session_context_content(cwd)? {
+        Some(content) => content,
+        None => return Ok(None),
+    };
+
+    let cwd_path = std::path::Path::new(cwd);
+    for filename in MANAGED_CONTEXT_FILENAMES {
+        let path = cwd_path.join(filename);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("Failed to remove stale context file {}: {}", path.display(), e))?;
+        }
+    }
+
+    let target_path = cwd_path.join(target.filename());
+    std::fs::write(&target_path, &content)
+        .map_err(|e| format!("Failed to write {}: {}", target_path.display(), e))?;
+
+    log::info!(
+        "Materialized managed agent context file in {}: {}",
+        cwd,
+        target_path.display()
+    );
+
+    Ok(Some(target_path.to_string_lossy().to_string()))
+}
+
 /// Simple deterministic hash for a string (for temp file naming).
 fn simple_hash(s: &str) -> u64 {
     let mut hash: u64 = 5381;
@@ -485,8 +435,10 @@ After sending, you can stay idle and wait for the reply to arrive.
     )
 }
 
-/// Generate the default agent context with a generic placeholder for the agent root.
-/// Used for Codex developer_instructions (user-level, shared across all sessions).
-fn default_context_generic() -> String {
-    default_context("<YOUR OWN REPLICA ROOT — see Session Credentials below>")
+fn is_replica_agent_dir(cwd: &str) -> bool {
+    std::path::Path::new(cwd)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with("__agent_"))
+        .unwrap_or(false)
 }

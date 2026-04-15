@@ -709,8 +709,20 @@ pub(crate) fn ensure_ac_new_gitignore(ac_new_dir: &Path) -> Result<(), String> {
             "# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
         ),
         (
-            "last_ac_context.md",
-            "# AgentsCommander: exclude session context debug copies.",
+            "**/__agent_*/last_ac_context.md",
+            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
+        ),
+        (
+            "**/__agent_*/CLAUDE.md",
+            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
+        ),
+        (
+            "**/__agent_*/GEMINI.md",
+            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
+        ),
+        (
+            "**/__agent_*/AGENTS.md",
+            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
         ),
     ];
 
