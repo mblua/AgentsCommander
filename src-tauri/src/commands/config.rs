@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tauri::State;
 
-use crate::config::settings::{save_settings, load_settings, AppSettings, SettingsState};
+use crate::config::settings::{load_settings, save_settings, AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::web::auth::WebAccessToken;
@@ -36,6 +36,7 @@ pub async fn update_settings(
     let mut to_save = new_settings;
     // Preserve existing root token — frontend cannot overwrite it
     to_save.root_token = settings.read().await.root_token.clone();
+    crate::config::settings::validate_agent_commands(&to_save)?;
     save_settings(&to_save)?;
     let mut s = settings.write().await;
     *s = to_save;
@@ -58,7 +59,9 @@ pub async fn open_web_remote() -> Result<(), String> {
 
     let url = format!(
         "http://{}:{}/?window=browser&remoteToken={}",
-        settings.web_server_bind, settings.web_server_port, token.trim()
+        settings.web_server_bind,
+        settings.web_server_port,
+        token.trim()
     );
 
     open::that(&url).map_err(|e| format!("Failed to open browser: {}", e))?;
@@ -105,9 +108,7 @@ pub async fn start_web_server(
 }
 
 #[tauri::command]
-pub async fn stop_web_server(
-    ws_handle: State<'_, WebServerHandle>,
-) -> Result<bool, String> {
+pub async fn stop_web_server(ws_handle: State<'_, WebServerHandle>) -> Result<bool, String> {
     let mut guard = ws_handle.lock().unwrap();
     if let Some(handle) = guard.take() {
         handle.abort();
@@ -119,9 +120,7 @@ pub async fn stop_web_server(
 }
 
 #[tauri::command]
-pub async fn get_web_server_status(
-    settings: State<'_, SettingsState>,
-) -> Result<bool, String> {
+pub async fn get_web_server_status(settings: State<'_, SettingsState>) -> Result<bool, String> {
     let s = settings.read().await;
     let addr = format!("{}:{}", s.web_server_bind, s.web_server_port);
     drop(s);

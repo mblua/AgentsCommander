@@ -29,7 +29,6 @@ pub struct PersistedSession {
     pub git_branch_prefix: Option<String>,
 
     // ── Runtime fields (populated during live snapshots, ignored on restore) ──
-
     /// Session UUID (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -63,10 +62,16 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
 
         // Check name-based duplicate
         if let Some(&idx) = name_index.get(&session.name) {
-            log::warn!("[sessions] Dropping duplicate session by name '{}'", session.name);
+            log::warn!(
+                "[sessions] Dropping duplicate session by name '{}'",
+                session.name
+            );
             if !result[idx].was_active || session.was_active {
                 // Patch cwd_index if the CWD changed
-                let old_cwd = result[idx].working_directory.replace('\\', "/").to_lowercase();
+                let old_cwd = result[idx]
+                    .working_directory
+                    .replace('\\', "/")
+                    .to_lowercase();
                 if old_cwd != norm_cwd {
                     cwd_index.remove(&old_cwd);
                     cwd_index.insert(norm_cwd, idx);
@@ -80,7 +85,9 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
         if let Some(&idx) = cwd_index.get(&norm_cwd) {
             log::warn!(
                 "[sessions] Dropping duplicate session by CWD '{}' (existing='{}', incoming='{}')",
-                session.working_directory, result[idx].name, session.name
+                session.working_directory,
+                result[idx].name,
+                session.name
             );
             if !result[idx].was_active || session.was_active {
                 name_index.remove(&result[idx].name);
@@ -97,7 +104,11 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
     }
 
     if result.len() < total {
-        log::info!("[sessions] Deduplicated: {} → {} sessions", total, result.len());
+        log::info!(
+            "[sessions] Deduplicated: {} → {} sessions",
+            total,
+            result.len()
+        );
     }
 
     result
@@ -138,12 +149,18 @@ pub fn load_sessions() -> Vec<PersistedSession> {
         Ok(contents) => match serde_json::from_str::<Vec<PersistedSession>>(&contents) {
             Ok(sessions) => {
                 // Safety net: filter out [temp] sessions that should never survive a restart
-                let temp_count = sessions.iter().filter(|s| s.name.starts_with(TEMP_SESSION_PREFIX)).count();
+                let temp_count = sessions
+                    .iter()
+                    .filter(|s| s.name.starts_with(TEMP_SESSION_PREFIX))
+                    .count();
                 let filtered: Vec<PersistedSession> = sessions
                     .into_iter()
                     .filter(|s| {
                         if s.name.starts_with(TEMP_SESSION_PREFIX) {
-                            log::warn!("[sessions] Filtering out temp session '{}' from persistence", s.name);
+                            log::warn!(
+                                "[sessions] Filtering out temp session '{}' from persistence",
+                                s.name
+                            );
                             false
                         } else {
                             true
@@ -151,10 +168,17 @@ pub fn load_sessions() -> Vec<PersistedSession> {
                     })
                     .collect();
                 if temp_count > 0 {
-                    log::info!("[sessions] Removed {} temp sessions from persistence file", temp_count);
+                    log::info!(
+                        "[sessions] Removed {} temp sessions from persistence file",
+                        temp_count
+                    );
                 }
                 let deduped = deduplicate(filtered);
-                log::info!("Loaded {} persisted sessions from {:?}", deduped.len(), path);
+                log::info!(
+                    "Loaded {} persisted sessions from {:?}",
+                    deduped.len(),
+                    path
+                );
                 deduped
             }
             Err(e) => {
@@ -193,7 +217,7 @@ pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
 }
 
 /// Snapshot current live sessions into the persisted format.
-/// Strips auto-injected flags (--continue) so they are re-evaluated on next restore.
+/// Strips auto-injected resume flags so they are re-evaluated on next restore.
 pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
     let sessions = mgr.list_sessions().await;
     let active_id = mgr.get_active().await.map(|id| id.to_string());
@@ -202,7 +226,10 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
         .iter()
         .filter(|s| {
             if s.name.starts_with(TEMP_SESSION_PREFIX) {
-                log::debug!("[sessions] Excluding temp session '{}' from snapshot", s.name);
+                log::debug!(
+                    "[sessions] Excluding temp session '{}' from snapshot",
+                    s.name
+                );
                 false
             } else {
                 true
@@ -227,18 +254,81 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
     deduplicate(all)
 }
 
-/// Strip auto-injected flags from Claude agent shell args.
-/// Removes `--continue` and `--append-system-prompt-file <path>` which are
-/// auto-injected at session creation time (see commands/session.rs).
+/// Strip auto-injected provider args from saved shell arguments.
+/// Removes Claude's `--continue` / `--append-system-prompt-file <path>` and Codex's
+/// `resume --last`, which are auto-injected at session creation time (see commands/session.rs).
 /// These must not be baked into the saved "recipe" — otherwise they self-perpetuate
 /// across app restarts (or session restarts) even when the conditions change.
 ///
 /// Handles two injection modes:
-/// - **Direct-exec**: flags are separate args: `["--continue", "--append-system-prompt-file", "/path"]`
-/// - **cmd.exe wrapper**: flags are suffixed onto the last arg: `"claude --continue --append-system-prompt-file \"/path\""`
+/// - **Direct-exec**: args are separate tokens like `["--continue", ...]` or `["resume", "--last", ...]`
+/// - **cmd.exe wrapper**: tokens may be separate args (`["/C", "codex", "resume", "--last"]`)
+///   or embedded in a single arg string (`["/K", "git pull && codex resume --last"]`)
 pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<String> {
+    fn token_has_unclosed_quote(token: &str, quote: char) -> bool {
+        token.chars().filter(|c| *c == quote).count() % 2 == 1
+    }
+
+    fn advance_past_quoted_value(tokens: &[String], start: usize) -> usize {
+        if start >= tokens.len() {
+            return start;
+        }
+
+        let mut idx = start;
+        let mut in_single = false;
+        let mut in_double = false;
+
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token_has_unclosed_quote(token, '\'') {
+                in_single = !in_single;
+            }
+            if token_has_unclosed_quote(token, '"') {
+                in_double = !in_double;
+            }
+            idx += 1;
+            if !in_single && !in_double {
+                break;
+            }
+        }
+
+        idx
+    }
+
+    fn strip_claude_tokens(tokens: &mut Vec<String>, start: usize) {
+        let mut idx = start;
+        while idx < tokens.len() {
+            if tokens[idx].eq_ignore_ascii_case("--continue") {
+                tokens.remove(idx);
+                continue;
+            }
+            if tokens[idx].eq_ignore_ascii_case("--append-system-prompt-file") {
+                tokens.remove(idx);
+                let end = advance_past_quoted_value(tokens, idx);
+                for _ in idx..end {
+                    tokens.remove(idx);
+                }
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    fn strip_codex_tokens(tokens: &mut Vec<String>, start: usize) {
+        if tokens
+            .get(start)
+            .is_some_and(|token| token.eq_ignore_ascii_case("resume"))
+            && tokens
+                .get(start + 1)
+                .is_some_and(|token| token.eq_ignore_ascii_case("--last"))
+        {
+            tokens.remove(start);
+            tokens.remove(start);
+        }
+    }
+
     let is_claude = std::iter::once(shell)
-        .chain(args.iter().map(|s| s.as_str()))
+        .chain(args.iter().flat_map(|s| s.split_whitespace()))
         .any(|t| {
             std::path::Path::new(t)
                 .file_stem()
@@ -246,47 +336,104 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
                 .unwrap_or(t)
                 .eq_ignore_ascii_case("claude")
         });
+    let is_codex = std::iter::once(shell)
+        .chain(args.iter().flat_map(|s| s.split_whitespace()))
+        .any(|t| {
+            std::path::Path::new(t)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(t)
+                .eq_ignore_ascii_case("codex")
+        });
 
-    if !is_claude {
+    if !is_claude && !is_codex {
         return args.to_vec();
     }
 
     let is_cmd = crate::commands::session::executable_basename(shell) == "cmd";
 
     if is_cmd {
-        // cmd.exe wrapper mode: flags are embedded as suffixes in the last arg string.
-        // e.g. "claude --continue --append-system-prompt-file \"/tmp/ctx.md\""
-        args.iter()
-            .map(|a| {
-                let mut s = a.clone();
-                // Strip " --continue" suffix
-                if let Some(pos) = s.to_lowercase().rfind(" --continue") {
-                    // Verify it's at the end or followed by " --append-system-prompt-file"
-                    let after = &s[pos + " --continue".len()..];
-                    if after.is_empty() || after.to_lowercase().starts_with(" --append-system-prompt-file") {
-                        s = format!("{}{}", &s[..pos], after);
-                    }
+        let mut result = args.to_vec();
+
+        if is_claude {
+            if let Some(idx) = result
+                .iter()
+                .position(|arg| crate::commands::session::executable_basename(arg) == "claude")
+            {
+                strip_claude_tokens(&mut result, idx + 1);
+            }
+        }
+        if is_codex {
+            if let Some(idx) = result
+                .iter()
+                .position(|arg| crate::commands::session::executable_basename(arg) == "codex")
+            {
+                strip_codex_tokens(&mut result, idx + 1);
+            }
+        }
+
+        for arg in &mut result {
+            let mut tokens: Vec<String> = arg
+                .split_whitespace()
+                .map(|token| token.to_string())
+                .collect();
+            let mut changed = false;
+
+            if is_claude {
+                if let Some(idx) = tokens.iter().position(|token| {
+                    crate::commands::session::executable_basename(token) == "claude"
+                }) {
+                    let before = tokens.len();
+                    strip_claude_tokens(&mut tokens, idx + 1);
+                    changed |= tokens.len() != before;
                 }
-                // Strip " --append-system-prompt-file ..." suffix (with quoted or unquoted path)
-                if let Some(pos) = s.to_lowercase().rfind(" --append-system-prompt-file") {
-                    s = s[..pos].to_string();
+            }
+
+            if is_codex {
+                if let Some(idx) = tokens.iter().position(|token| {
+                    crate::commands::session::executable_basename(token) == "codex"
+                }) {
+                    let before = tokens.len();
+                    strip_codex_tokens(&mut tokens, idx + 1);
+                    changed |= tokens.len() != before;
                 }
-                s
-            })
-            .collect()
+            }
+
+            if changed {
+                *arg = tokens.join(" ");
+            }
+        }
+
+        result
     } else {
-        // Direct-exec mode: flags are separate args.
         let mut result = Vec::with_capacity(args.len());
         let mut skip_next = false;
-        for a in args {
+        for (idx, a) in args.iter().enumerate() {
             if skip_next {
                 skip_next = false;
                 continue;
             }
-            if a.eq_ignore_ascii_case("--continue") {
+            if is_codex && idx == 0 && a.eq_ignore_ascii_case("resume") {
+                if args
+                    .get(1)
+                    .is_some_and(|next| next.eq_ignore_ascii_case("--last"))
+                {
+                    continue;
+                }
+            }
+            if is_codex
+                && idx == 1
+                && args
+                    .first()
+                    .is_some_and(|first| first.eq_ignore_ascii_case("resume"))
+                && a.eq_ignore_ascii_case("--last")
+            {
                 continue;
             }
-            if a.eq_ignore_ascii_case("--append-system-prompt-file") {
+            if is_claude && a.eq_ignore_ascii_case("--continue") {
+                continue;
+            }
+            if is_claude && a.eq_ignore_ascii_case("--append-system-prompt-file") {
                 skip_next = true; // skip the next arg (the file path)
                 continue;
             }
@@ -298,10 +445,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
 
 /// Persist live sessions merged with entries that failed to restore.
 /// Failed entries are appended so they survive for the next startup attempt.
-pub async fn persist_merging_failed(
-    mgr: &SessionManager,
-    failed: &[PersistedSession],
-) {
+pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSession]) {
     let mut snapshot = snapshot_sessions(mgr).await;
     snapshot.extend(failed.iter().cloned());
     let snapshot = deduplicate(snapshot);
@@ -315,5 +459,119 @@ pub async fn persist_current_state(mgr: &SessionManager) {
     let snapshot = snapshot_sessions(mgr).await;
     if let Err(e) = save_sessions(&snapshot) {
         log::error!("Failed to persist sessions: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_auto_injected_args;
+
+    #[test]
+    fn strip_auto_injected_args_removes_direct_claude_continue() {
+        let stripped = strip_auto_injected_args(
+            "claude",
+            &["--continue".to_string(), "--search".to_string()],
+        );
+        assert_eq!(stripped, vec!["--search".to_string()]);
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_cmd_claude_continue() {
+        let stripped = strip_auto_injected_args(
+            "cmd.exe",
+            &[
+                "/C".to_string(),
+                "claude".to_string(),
+                "--continue".to_string(),
+            ],
+        );
+        assert_eq!(stripped, vec!["/C".to_string(), "claude".to_string()]);
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_direct_claude_context_file() {
+        let stripped = strip_auto_injected_args(
+            "claude",
+            &[
+                "--append-system-prompt-file".to_string(),
+                "C:\\temp\\ctx.md".to_string(),
+                "--search".to_string(),
+            ],
+        );
+        assert_eq!(stripped, vec!["--search".to_string()]);
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_embedded_claude_context_file_with_spaces() {
+        let stripped = strip_auto_injected_args(
+            "cmd.exe",
+            &[
+                "/K".to_string(),
+                "claude --continue --append-system-prompt-file \"C:\\Program Files\\ctx.md\" --search".to_string(),
+            ],
+        );
+        assert_eq!(
+            stripped,
+            vec!["/K".to_string(), "claude --search".to_string(),]
+        );
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_direct_codex_resume_last() {
+        let stripped = strip_auto_injected_args(
+            "codex",
+            &[
+                "resume".to_string(),
+                "--last".to_string(),
+                "-m".to_string(),
+                "gpt-5".to_string(),
+            ],
+        );
+        assert_eq!(stripped, vec!["-m".to_string(), "gpt-5".to_string()]);
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_cmd_codex_resume_last() {
+        let stripped = strip_auto_injected_args(
+            "cmd.exe",
+            &[
+                "/C".to_string(),
+                "codex".to_string(),
+                "resume".to_string(),
+                "--last".to_string(),
+                "-m".to_string(),
+                "gpt-5".to_string(),
+            ],
+        );
+        assert_eq!(
+            stripped,
+            vec![
+                "/C".to_string(),
+                "codex".to_string(),
+                "-m".to_string(),
+                "gpt-5".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_embedded_cmd_codex_resume_last() {
+        let stripped = strip_auto_injected_args(
+            "cmd.exe",
+            &[
+                "/K".to_string(),
+                "git pull && codex resume --last -m gpt-5".to_string(),
+            ],
+        );
+        assert_eq!(
+            stripped,
+            vec!["/K".to_string(), "git pull && codex -m gpt-5".to_string(),]
+        );
+    }
+
+    #[test]
+    fn strip_auto_injected_args_leaves_unrelated_commands_unchanged() {
+        let args = vec!["-NoLogo".to_string()];
+        assert_eq!(strip_auto_injected_args("powershell.exe", &args), args);
     }
 }

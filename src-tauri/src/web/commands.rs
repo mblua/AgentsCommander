@@ -48,11 +48,21 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let cfg = state.settings.read().await;
             let shell = str_or(args, "shell", &cfg.default_shell);
             let shell_args = str_vec_or(args, "shellArgs", &cfg.default_shell_args);
-            let cwd = str_or(args, "cwd", &dirs::home_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| "C:\\".to_string()));
-            let session_name = args.get("sessionName").and_then(|v| v.as_str()).map(String::from);
-            let agent_id = args.get("agentId").and_then(|v| v.as_str()).map(String::from);
+            let cwd = str_or(
+                args,
+                "cwd",
+                &dirs::home_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "C:\\".to_string()),
+            );
+            let session_name = args
+                .get("sessionName")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let agent_id = args
+                .get("agentId")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             drop(cfg);
 
             let info = crate::commands::session::create_session_inner(
@@ -64,12 +74,13 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 cwd,
                 session_name,
                 agent_id,
-                None, // agent_label (auto-detected)
+                None,  // agent_label (auto-detected)
                 false, // skip_tooling_save
                 None,  // git_branch_source
                 None,  // git_branch_prefix
-                false, // skip_continue
-            ).await?;
+                false, // skip_auto_resume
+            )
+            .await?;
 
             serde_json::to_value(info).map_err(|e| e.to_string())
         }
@@ -78,15 +89,30 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let id = require_str(args, "id")?;
             let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
-            state.pty_mgr.lock().unwrap().kill(uuid).map_err(|e| e.to_string())?;
+            state
+                .pty_mgr
+                .lock()
+                .unwrap()
+                .kill(uuid)
+                .map_err(|e| e.to_string())?;
 
             let mgr = state.session_mgr.read().await;
             let new_active = mgr.destroy_session(uuid).await.map_err(|e| e.to_string())?;
 
-            broadcast_all(&state.app_handle, &state.broadcaster, "session_destroyed", &json!({ "id": id }));
+            broadcast_all(
+                &state.app_handle,
+                &state.broadcaster,
+                "session_destroyed",
+                &json!({ "id": id }),
+            );
 
             if let Some(new_id) = new_active {
-                broadcast_all(&state.app_handle, &state.broadcaster, "session_switched", &json!({ "id": new_id.to_string() }));
+                broadcast_all(
+                    &state.app_handle,
+                    &state.broadcaster,
+                    "session_switched",
+                    &json!({ "id": new_id.to_string() }),
+                );
             }
 
             Ok(json!(null))
@@ -99,7 +125,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let mgr = state.session_mgr.read().await;
             mgr.switch_session(uuid).await.map_err(|e| e.to_string())?;
 
-            broadcast_all(&state.app_handle, &state.broadcaster, "session_switched", &json!({ "id": id }));
+            broadcast_all(
+                &state.app_handle,
+                &state.broadcaster,
+                "session_switched",
+                &json!({ "id": id }),
+            );
 
             Ok(json!(null))
         }
@@ -110,9 +141,16 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
             let mgr = state.session_mgr.read().await;
-            mgr.rename_session(uuid, name.clone()).await.map_err(|e| e.to_string())?;
+            mgr.rename_session(uuid, name.clone())
+                .await
+                .map_err(|e| e.to_string())?;
 
-            broadcast_all(&state.app_handle, &state.broadcaster, "session_renamed", &json!({ "id": id, "name": name }));
+            broadcast_all(
+                &state.app_handle,
+                &state.broadcaster,
+                "session_renamed",
+                &json!({ "id": id, "name": name }),
+            );
 
             Ok(json!(null))
         }
@@ -125,7 +163,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let mgr = state.session_mgr.read().await;
             mgr.set_last_prompt(uuid, text.clone()).await;
 
-            broadcast_all(&state.app_handle, &state.broadcaster, "last_prompt", &json!({ "sessionId": id, "text": text }));
+            broadcast_all(
+                &state.app_handle,
+                &state.broadcaster,
+                "last_prompt",
+                &json!({ "sessionId": id, "text": text }),
+            );
 
             Ok(json!(null))
         }
@@ -137,7 +180,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
             let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-            state.pty_mgr.lock().unwrap().resize(uuid, cols, rows).map_err(|e| e.to_string())?;
+            state
+                .pty_mgr
+                .lock()
+                .unwrap()
+                .resize(uuid, cols, rows)
+                .map_err(|e| e.to_string())?;
 
             Ok(json!(null))
         }
@@ -146,12 +194,22 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "pty_write" => {
             let session_id = require_str(args, "sessionId")?;
             let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-            let data: Vec<u8> = args.get("data")
+            let data: Vec<u8> = args
+                .get("data")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_u64().map(|n| n as u8))
+                        .collect()
+                })
                 .unwrap_or_default();
 
-            state.pty_mgr.lock().unwrap().write(uuid, &data).map_err(|e| e.to_string())?;
+            state
+                .pty_mgr
+                .lock()
+                .unwrap()
+                .write(uuid, &data)
+                .map_err(|e| e.to_string())?;
 
             Ok(json!(null))
         }
@@ -163,10 +221,11 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         "update_settings" => {
-            let new_settings: crate::config::settings::AppSettings = serde_json::from_value(
-                args.get("newSettings").cloned().unwrap_or(args.clone())
-            ).map_err(|e| e.to_string())?;
+            let new_settings: crate::config::settings::AppSettings =
+                serde_json::from_value(args.get("newSettings").cloned().unwrap_or(args.clone()))
+                    .map_err(|e| e.to_string())?;
 
+            crate::config::settings::validate_agent_commands(&new_settings)?;
             let mut cfg = state.settings.write().await;
             *cfg = new_settings.clone();
             drop(cfg);
@@ -215,14 +274,19 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         // --- Window commands (no-ops for web clients) ---
-        "detach_terminal" | "close_detached_terminal" | "open_in_explorer"
-        | "ensure_terminal_window" | "open_guide_window" => {
-            Ok(json!(null))
-        }
+        "detach_terminal"
+        | "close_detached_terminal"
+        | "open_in_explorer"
+        | "ensure_terminal_window"
+        | "open_guide_window" => Ok(json!(null)),
 
         // --- Repos ---
         "search_repos" => {
-            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let cfg = state.settings.read().await;
             let repo_paths = cfg.project_paths.clone();
             drop(cfg);
@@ -234,7 +298,9 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let mut seen = std::collections::HashSet::new();
             for base_path in &repo_paths {
                 let base = std::path::Path::new(base_path);
-                if !base.is_dir() { continue; }
+                if !base.is_dir() {
+                    continue;
+                }
                 crate::commands::repos::try_add_repo(base, &query_lower, &mut seen, &mut results);
                 if let Ok(entries) = std::fs::read_dir(base) {
                     for entry in entries.flatten() {
@@ -242,7 +308,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                         if path.is_dir() {
                             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                                 if !name.starts_with('.') {
-                                    crate::commands::repos::try_add_repo(&path, &query_lower, &mut seen, &mut results);
+                                    crate::commands::repos::try_add_repo(
+                                        &path,
+                                        &query_lower,
+                                        &mut seen,
+                                        &mut results,
+                                    );
                                 }
                             }
                         }
@@ -270,7 +341,12 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
 }
 
 /// Emit event to both Tauri windows and WebSocket clients.
-pub fn broadcast_all(app: &tauri::AppHandle, broadcaster: &WsBroadcaster, event: &str, payload: &Value) {
+pub fn broadcast_all(
+    app: &tauri::AppHandle,
+    broadcaster: &WsBroadcaster,
+    event: &str,
+    payload: &Value,
+) {
     let _ = tauri::Emitter::emit(app, event, payload.clone());
     broadcaster.broadcast_event(event, payload);
 }
@@ -294,6 +370,10 @@ fn str_or(args: &Value, key: &str, default: &str) -> String {
 fn str_vec_or(args: &Value, key: &str, default: &[String]) -> Vec<String> {
     args.get(key)
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| default.to_vec())
 }

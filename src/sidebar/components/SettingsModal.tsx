@@ -137,16 +137,62 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     return settings.data.agents.some((a) => a.command.startsWith(command));
   };
 
+  const executableBasename = (token: string): string => {
+    const normalized = token.replace(/\\/g, "/");
+    const leaf = normalized.split("/").pop() || normalized;
+    return leaf.replace(/\.[^.]+$/, "").toLowerCase();
+  };
+
+  const tokenHasUnclosedQuote = (token: string, quote: string): boolean =>
+    (token.split(quote).length - 1) % 2 === 1;
+
+  const advancePastConfigValue = (tokens: string[], start: number): number => {
+    if (start >= tokens.length) return start;
+    let index = start;
+    let inSingle = false;
+    let inDouble = false;
+    while (index < tokens.length) {
+      const token = tokens[index];
+      if (tokenHasUnclosedQuote(token, "'")) inSingle = !inSingle;
+      if (tokenHasUnclosedQuote(token, '"')) inDouble = !inDouble;
+      index += 1;
+      if (!inSingle && !inDouble) break;
+    }
+    return index;
+  };
+
+  const codexHasManualResume = (tokens: string[], codexIndex: number): boolean => {
+    let index = codexIndex + 1;
+    while (index < tokens.length) {
+      const token = tokens[index].toLowerCase();
+      if (token === "-c" || token === "--config") {
+        index = advancePastConfigValue(tokens, index + 1);
+        continue;
+      }
+      if (token === "resume" || token === "--last") return true;
+      index += 1;
+    }
+    return false;
+  };
+
   // ── Validation ──
   const validateAgents = (): string | null => {
     if (!settings.data) return null;
     for (const agent of settings.data.agents) {
-      const cmd = agent.command.toLowerCase();
-      if (cmd.includes("claude")) {
-        const flags = cmd.split(/\s+/);
-        if (flags.includes("--continue") || flags.includes("-c")) {
-          return `Agent "${agent.label || "Unnamed"}": Claude commands must not include --continue or -c`;
-        }
+      const tokens = agent.command.trim().split(/\s+/).filter(Boolean);
+      const claudeIndex = tokens.findIndex((token) => executableBasename(token) === "claude");
+      if (
+        claudeIndex >= 0 &&
+        tokens
+          .slice(claudeIndex + 1)
+          .some((token) => token === "--continue" || token === "-c")
+      ) {
+        return `Agent "${agent.label || "Unnamed"}": Claude commands must not include --continue or -c`;
+      }
+
+      const codexIndex = tokens.findIndex((token) => executableBasename(token) === "codex");
+      if (codexIndex >= 0 && codexHasManualResume(tokens, codexIndex)) {
+        return `Agent "${agent.label || "Unnamed"}": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically`;
       }
     }
     return null;

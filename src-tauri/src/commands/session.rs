@@ -12,13 +12,185 @@ use crate::session::session::SessionInfo;
 use crate::telegram::manager::TelegramBridgeState;
 use crate::DetachedSessionsState;
 
+fn token_has_unclosed_quote(token: &str, quote: char) -> bool {
+    token.chars().filter(|c| *c == quote).count() % 2 == 1
+}
+
+fn advance_past_config_value(tokens: &[&str], start: usize) -> usize {
+    if start >= tokens.len() {
+        return start;
+    }
+
+    let mut idx = start;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while idx < tokens.len() {
+        let token = tokens[idx];
+        if token_has_unclosed_quote(token, '\'') {
+            in_single = !in_single;
+        }
+        if token_has_unclosed_quote(token, '"') {
+            in_double = !in_double;
+        }
+        idx += 1;
+        if !in_single && !in_double {
+            break;
+        }
+    }
+
+    idx
+}
+
+fn codex_option_takes_value(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "-c" | "--config"
+            | "--enable"
+            | "--disable"
+            | "--remote"
+            | "--remote-auth-token-env"
+            | "-i"
+            | "--image"
+            | "-m"
+            | "--model"
+            | "--local-provider"
+            | "-p"
+            | "--profile"
+            | "-s"
+            | "--sandbox"
+            | "-a"
+            | "--ask-for-approval"
+            | "--cd"
+            | "--add-dir"
+    )
+}
+
+fn codex_has_explicit_subcommand(tokens: &[&str], start: usize) -> bool {
+    const CODEX_SUBCOMMANDS: &[&str] = &[
+        "exec",
+        "e",
+        "review",
+        "login",
+        "logout",
+        "mcp",
+        "marketplace",
+        "mcp-server",
+        "app-server",
+        "completion",
+        "sandbox",
+        "debug",
+        "apply",
+        "a",
+        "resume",
+        "fork",
+        "cloud",
+        "exec-server",
+        "features",
+        "help",
+    ];
+
+    let mut idx = start;
+    while idx < tokens.len() {
+        let token = tokens[idx];
+        if token.eq_ignore_ascii_case("-c") || token.eq_ignore_ascii_case("--config") {
+            idx = advance_past_config_value(tokens, idx + 1);
+            continue;
+        }
+        if codex_option_takes_value(token) {
+            idx += 2;
+            continue;
+        }
+        if token.starts_with('-') {
+            idx += 1;
+            continue;
+        }
+        return CODEX_SUBCOMMANDS
+            .iter()
+            .any(|subcommand| token.eq_ignore_ascii_case(subcommand));
+    }
+
+    false
+}
+
+fn codex_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
+    let mut idx = start;
+    while idx < tokens.len() {
+        let token = tokens[idx];
+        if token.eq_ignore_ascii_case("-c") || token.eq_ignore_ascii_case("--config") {
+            idx = advance_past_config_value(tokens, idx + 1);
+            continue;
+        }
+        if token.eq_ignore_ascii_case("resume") || token.eq_ignore_ascii_case("--last") {
+            return true;
+        }
+        idx += 1;
+    }
+    false
+}
+
+fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
+    match executable_basename(shell).as_str() {
+        "codex" => {
+            let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
+            if codex_tokens_have_resume(&tokens, 0) || codex_has_explicit_subcommand(&tokens, 0) {
+                return false;
+            }
+            shell_args.insert(0, "resume".to_string());
+            shell_args.insert(1, "--last".to_string());
+            true
+        }
+        "cmd" => {
+            if let Some(idx) = shell_args
+                .iter()
+                .position(|arg| executable_basename(arg) == "codex")
+            {
+                let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
+                if codex_tokens_have_resume(&tokens, idx + 1)
+                    || codex_has_explicit_subcommand(&tokens, idx + 1)
+                {
+                    return false;
+                }
+                shell_args.insert(idx + 1, "resume".to_string());
+                shell_args.insert(idx + 2, "--last".to_string());
+                return true;
+            }
+
+            for arg in shell_args.iter_mut() {
+                let mut tokens: Vec<String> = arg
+                    .split_whitespace()
+                    .map(|token| token.to_string())
+                    .collect();
+                if let Some(idx) = tokens
+                    .iter()
+                    .position(|token| executable_basename(token) == "codex")
+                {
+                    let token_refs: Vec<&str> = tokens.iter().map(|token| token.as_str()).collect();
+                    if codex_tokens_have_resume(&token_refs, idx + 1)
+                        || codex_has_explicit_subcommand(&token_refs, idx + 1)
+                    {
+                        return false;
+                    }
+                    tokens.insert(idx + 1, "resume".to_string());
+                    tokens.insert(idx + 2, "--last".to_string());
+                    *arg = tokens.join(" ");
+                    return true;
+                }
+            }
+
+            false
+        }
+        _ => false,
+    }
+}
+
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
-/// Auto-detects agent from shell command if not provided, and auto-injects --continue
-/// for Claude when a prior conversation exists (~/.claude/projects/{mangled-cwd}/).
+/// Auto-detects agent from shell command if not provided, and auto-injects provider-specific
+/// resume flags (`claude --continue`, `codex resume --last`) when appropriate.
 /// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
-/// If `skip_continue` is true, suppresses `--continue` auto-injection (used by restart_session
-/// to ensure a fresh conversation even when prior history exists).
+/// If `skip_auto_resume` is true, suppresses provider-specific auto-resume injection (used by
+/// restart_session to ensure a fresh conversation even when prior history exists).
 pub async fn create_session_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -32,11 +204,17 @@ pub async fn create_session_inner(
     skip_tooling_save: bool,
     git_branch_source: Option<String>,
     git_branch_prefix: Option<String>,
-    skip_continue: bool,
+    skip_auto_resume: bool,
 ) -> Result<SessionInfo, String> {
     let mgr = session_mgr.read().await;
     let mut session = mgr
-        .create_session(shell.clone(), shell_args.clone(), cwd.clone(), git_branch_source, git_branch_prefix)
+        .create_session(
+            shell.clone(),
+            shell_args.clone(),
+            cwd.clone(),
+            git_branch_source,
+            git_branch_prefix,
+        )
         .await
         .map_err(|e| e.to_string())?;
 
@@ -61,7 +239,10 @@ pub async fn create_session_inner(
     // Detect coding agent families so we can materialize provider-specific context files.
     let mut shell_args = shell_args;
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
-    let cmd_basenames: Vec<String> = full_cmd.split_whitespace().map(|t| executable_basename(t)).collect();
+    let cmd_basenames: Vec<String> = full_cmd
+        .split_whitespace()
+        .map(|t| executable_basename(t))
+        .collect();
     let is_claude = cmd_basenames.iter().any(|b| b.starts_with("claude"));
     let is_codex = cmd_basenames.iter().any(|b| b.starts_with("codex"));
     let is_gemini = cmd_basenames.iter().any(|b| b.starts_with("gemini"));
@@ -88,12 +269,15 @@ pub async fn create_session_inner(
     let claude_project_exists = {
         if let Some(home) = dirs::home_dir() {
             let mangled = crate::session::session::mangle_cwd_for_claude(&cwd);
-            home.join(".claude").join("projects").join(&mangled).is_dir()
+            home.join(".claude")
+                .join("projects")
+                .join(&mangled)
+                .is_dir()
         } else {
             false
         }
     };
-    if is_claude && claude_project_exists && !skip_continue {
+    if is_claude && claude_project_exists && !skip_auto_resume {
         if let Some(ref aid) = agent_id {
             let already_has_continue = full_cmd.split_whitespace().any(|t| {
                 let lower = t.to_lowercase();
@@ -102,15 +286,28 @@ pub async fn create_session_inner(
             if !already_has_continue {
                 if executable_basename(&shell) == "cmd" {
                     if let Some(last) = shell_args.last_mut() {
-                        if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
+                        if executable_basename(last) == "claude"
+                            || last.to_lowercase().contains("claude")
+                        {
                             *last = format!("{} --continue", last);
                             log::info!("Auto-injected --continue for agent '{}' (prior conversation exists, cmd path)", aid);
                         }
                     }
                 } else {
                     shell_args.push("--continue".to_string());
-                    log::info!("Auto-injected --continue for agent '{}' (prior conversation exists)", aid);
+                    log::info!(
+                        "Auto-injected --continue for agent '{}' (prior conversation exists)",
+                        aid
+                    );
                 }
+            }
+        }
+    }
+
+    if is_codex && !skip_auto_resume {
+        if let Some(ref aid) = agent_id {
+            if inject_codex_resume(&shell, &mut shell_args) {
+                log::info!("Auto-injected `codex resume --last` for agent '{}'", aid);
             }
         }
     }
@@ -146,7 +343,8 @@ pub async fn create_session_inner(
             if executable_basename(&shell) == "cmd" {
                 if let Some(last) = shell_args.last_mut() {
                     if last.to_lowercase().contains("claude") {
-                        *last = format!("{} --append-system-prompt-file \"{}\"", last, context_path);
+                        *last =
+                            format!("{} --append-system-prompt-file \"{}\"", last, context_path);
                         log::info!("Injected --append-system-prompt-file for Claude (cmd path)");
                     }
                 }
@@ -189,29 +387,43 @@ pub async fn create_session_inner(
                 let sessions = mgr.list_sessions().await;
                 match sessions.iter().find(|s| s.id == session_id.to_string()) {
                     Some(s) if s.waiting_for_input => break, // ready
-                    Some(_) => {} // still busy, keep polling
+                    Some(_) => {}                            // still busy, keep polling
                     None => {
-                        log::warn!("[session] Session {} gone before credential injection", session_id);
+                        log::warn!(
+                            "[session] Session {} gone before credential injection",
+                            session_id
+                        );
                         return; // session destroyed, nothing to inject
                     }
                 }
             }
 
             let exe = std::env::current_exe().ok();
-            let binary_name = exe.as_ref()
+            let binary_name = exe
+                .as_ref()
                 .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
                 .unwrap_or_else(|| "agentscommander".to_string());
             let binary_path = {
-                let raw = exe.as_ref()
+                let raw = exe
+                    .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "agentscommander.exe".to_string());
                 raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
             };
-            let local_dir = exe.as_ref()
+            let local_dir = exe
+                .as_ref()
                 .and_then(|p| p.parent())
-                .map(|parent| parent.join(format!(".{}", &binary_name)).to_string_lossy().to_string())
+                .map(|parent| {
+                    parent
+                        .join(format!(".{}", &binary_name))
+                        .to_string_lossy()
+                        .to_string()
+                })
                 .unwrap_or_else(|| format!(".{}", &binary_name));
-            let local_dir = local_dir.strip_prefix(r"\\?\").unwrap_or(&local_dir).to_string();
+            let local_dir = local_dir
+                .strip_prefix(r"\\?\")
+                .unwrap_or(&local_dir)
+                .to_string();
 
             let cred_block = format!(
                 concat!(
@@ -236,12 +448,21 @@ pub async fn create_session_inner(
                 session_id,
                 &cred_block,
                 true,
-            ).await {
+            )
+            .await
+            {
                 Ok(()) => {
-                    log::info!("[session] Credentials auto-injected for session {}", session_id);
+                    log::info!(
+                        "[session] Credentials auto-injected for session {}",
+                        session_id
+                    );
                 }
                 Err(e) => {
-                    log::warn!("[session] Failed to auto-inject credentials for {}: {}", session_id, e);
+                    log::warn!(
+                        "[session] Failed to auto-inject credentials for {}: {}",
+                        session_id,
+                        e
+                    );
                 }
             }
         });
@@ -279,7 +500,12 @@ pub async fn create_session_inner(
                 }
             };
             let session_id_str = id.to_string();
-            if let Err(e) = agent_config::set_last_coding_agent(&cwd, aid, &resolved_label, Some(&session_id_str)) {
+            if let Err(e) = agent_config::set_last_coding_agent(
+                &cwd,
+                aid,
+                &resolved_label,
+                Some(&session_id_str),
+            ) {
                 log::warn!("Failed to save lastCodingAgent: {}", e);
             }
         }
@@ -320,13 +546,21 @@ pub async fn create_session(
             let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
             let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
             let al = agent_id.as_ref().and_then(|aid| {
-                cfg.agents.iter().find(|a| a.id == *aid).map(|a| a.label.clone())
+                cfg.agents
+                    .iter()
+                    .find(|a| a.id == *aid)
+                    .map(|a| a.label.clone())
             });
             (s, sa, al)
         }
     };
 
-    log::info!("[session] FINAL resolved: shell={:?}, args={:?}, label={:?}", shell, shell_args, agent_label);
+    log::info!(
+        "[session] FINAL resolved: shell={:?}, args={:?}, label={:?}",
+        shell,
+        shell_args,
+        agent_label
+    );
 
     drop(cfg);
 
@@ -343,7 +577,7 @@ pub async fn create_session(
         false, // persist tooling
         git_branch_source,
         git_branch_prefix,
-        false, // skip_continue
+        false, // skip_auto_resume
     )
     .await?;
 
@@ -371,7 +605,11 @@ pub async fn create_session(
 
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
-                    let jsonl_cwd = if info.is_claude { Some(cwd.clone()) } else { None };
+                    let jsonl_cwd = if info.is_claude {
+                        Some(cwd.clone())
+                    } else {
+                        None
+                    };
                     let mut tg = tg_mgr.lock().await;
                     if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone(), jsonl_cwd) {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);
@@ -421,10 +659,7 @@ pub async fn destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), St
 
     let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
     let mgr = session_mgr.read().await;
-    let new_active = mgr
-        .destroy_session(uuid)
-        .await
-        .map_err(|e| e.to_string())?;
+    let new_active = mgr.destroy_session(uuid).await.map_err(|e| e.to_string())?;
 
     // Persist after destruction
     persist_current_state(&mgr).await;
@@ -471,7 +706,7 @@ pub async fn destroy_session(
 }
 
 /// Restart a session: destroy the existing one and recreate it with the same
-/// configuration but a fresh PTY (no `--continue`). The restarted session is
+/// configuration but a fresh PTY (no provider auto-resume). The restarted session is
 /// automatically activated, Telegram bridges are re-attached, and state is persisted.
 #[tauri::command]
 pub async fn restart_session(
@@ -499,8 +734,9 @@ pub async fn restart_session(
         )
     };
 
-    // 2. Strip auto-injected args (--continue + --append-system-prompt-file and its value)
-    let clean_args = crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
+    // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
+    let clean_args =
+        crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
 
     let requested_agent_id = agent_id;
     let (shell, shell_args, agent_label) = if let Some(ref aid) = requested_agent_id {
@@ -529,7 +765,7 @@ pub async fn restart_session(
         false, // skip_tooling_save
         git_branch_source,
         git_branch_prefix,
-        true,  // skip_continue — the whole point of restart
+        true, // skip_auto_resume — the whole point of restart
     )
     .await?;
 
@@ -542,7 +778,10 @@ pub async fn restart_session(
         let mgr = session_mgr.read().await;
         let _ = mgr.switch_session(new_uuid).await;
     }
-    let _ = app.emit("session_switched", serde_json::json!({ "id": session_info.id }));
+    let _ = app.emit(
+        "session_switched",
+        serde_json::json!({ "id": session_info.id }),
+    );
 
     // 6. Re-attach Telegram bridge if the repo config has one
     let config_path = std::path::Path::new(&cwd)
@@ -561,9 +800,15 @@ pub async fn restart_session(
 
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
-                    let jsonl_cwd = if session_info.is_claude { Some(cwd.clone()) } else { None };
+                    let jsonl_cwd = if session_info.is_claude {
+                        Some(cwd.clone())
+                    } else {
+                        None
+                    };
                     let mut tg = tg_mgr.lock().await;
-                    if let Ok(bridge_info) = tg.attach(new_uuid, &bot, pty_arc, app.clone(), jsonl_cwd) {
+                    if let Ok(bridge_info) =
+                        tg.attach(new_uuid, &bot, pty_arc, app.clone(), jsonl_cwd)
+                    {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);
                     }
                 }
@@ -602,9 +847,7 @@ pub async fn switch_session(
     }
 
     let mgr = session_mgr.read().await;
-    mgr.switch_session(uuid)
-        .await
-        .map_err(|e| e.to_string())?;
+    mgr.switch_session(uuid).await.map_err(|e| e.to_string())?;
 
     // Persist after switch (updates was_active)
     persist_current_state(&mgr).await;
@@ -673,7 +916,10 @@ pub(crate) fn executable_basename(s: &str) -> String {
         .to_lowercase()
 }
 
-fn resolve_agent_command(agent_id: &str, settings: &AppSettings) -> (String, Vec<String>, Option<String>) {
+fn resolve_agent_command(
+    agent_id: &str,
+    settings: &AppSettings,
+) -> (String, Vec<String>, Option<String>) {
     if let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) {
         log::info!(
             "[session] Agent resolved: id={:?}, label={:?}, command={:?}",
@@ -681,7 +927,11 @@ fn resolve_agent_command(agent_id: &str, settings: &AppSettings) -> (String, Vec
             agent.label,
             agent.command
         );
-        let parts: Vec<String> = agent.command.split_whitespace().map(|s| s.to_string()).collect();
+        let parts: Vec<String> = agent
+            .command
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
         if let Some((cmd, args)) = parts.split_first() {
             (cmd.clone(), args.to_vec(), Some(agent.label.clone()))
         } else {
@@ -722,7 +972,11 @@ fn resolve_agent_from_shell(
         let agent_exec = agent.command.split_whitespace().next().unwrap_or("");
         let agent_basename = executable_basename(agent_exec);
         if !agent_basename.is_empty() && cmd_basenames.iter().any(|b| *b == agent_basename) {
-            log::info!("Auto-detected agent '{}' ({}) from shell command", agent.id, agent.label);
+            log::info!(
+                "Auto-detected agent '{}' ({}) from shell command",
+                agent.id,
+                agent.label
+            );
             return (Some(agent.id.clone()), Some(agent.label.clone()));
         }
     }
@@ -752,8 +1006,8 @@ pub async fn create_root_agent_session(
     settings: State<'_, SettingsState>,
 ) -> Result<SessionInfo, String> {
     // Derive root agent path from binary name
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get current exe path: {}", e))?;
+    let exe_path =
+        std::env::current_exe().map_err(|e| format!("Failed to get current exe path: {}", e))?;
     let binary_name = exe_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -773,8 +1027,15 @@ pub async fn create_root_agent_session(
     {
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
-        if let Some(existing) = sessions.iter().find(|s| s.working_directory == root_agent_path) {
-            log::info!("[root-agent] Reusing existing session {} at {}", existing.id, root_agent_path);
+        if let Some(existing) = sessions
+            .iter()
+            .find(|s| s.working_directory == root_agent_path)
+        {
+            log::info!(
+                "[root-agent] Reusing existing session {} at {}",
+                existing.id,
+                root_agent_path
+            );
             return Ok(existing.clone());
         }
     }
@@ -786,14 +1047,33 @@ pub async fn create_root_agent_session(
     // Get the first configured agent from settings
     let cfg = settings.read().await;
     let (agent_id, shell, shell_args, agent_label) = if let Some(agent) = cfg.agents.first() {
-        let parts: Vec<String> = agent.command.split_whitespace().map(|s| s.to_string()).collect();
+        let parts: Vec<String> = agent
+            .command
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
         if let Some((cmd, args)) = parts.split_first() {
-            (Some(agent.id.clone()), cmd.clone(), args.to_vec(), Some(agent.label.clone()))
+            (
+                Some(agent.id.clone()),
+                cmd.clone(),
+                args.to_vec(),
+                Some(agent.label.clone()),
+            )
         } else {
-            (None, cfg.default_shell.clone(), cfg.default_shell_args.clone(), None)
+            (
+                None,
+                cfg.default_shell.clone(),
+                cfg.default_shell_args.clone(),
+                None,
+            )
         }
     } else {
-        (None, cfg.default_shell.clone(), cfg.default_shell_args.clone(), None)
+        (
+            None,
+            cfg.default_shell.clone(),
+            cfg.default_shell_args.clone(),
+            None,
+        )
     };
     drop(cfg);
 
@@ -810,7 +1090,7 @@ pub async fn create_root_agent_session(
         false,
         None,
         None,
-        false, // skip_continue
+        false, // skip_auto_resume
     )
     .await?;
 
@@ -829,11 +1109,19 @@ pub async fn create_root_agent_session(
         if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&contents) {
             if let Some(bot_label) = local_config.tooling.telegram_bot {
                 let cfg = settings.read().await;
-                let bot = cfg.telegram_bots.iter().find(|b| b.label == bot_label).cloned();
+                let bot = cfg
+                    .telegram_bots
+                    .iter()
+                    .find(|b| b.label == bot_label)
+                    .cloned();
                 drop(cfg);
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
-                    let jsonl_cwd = if info.is_claude { Some(root_agent_path.clone()) } else { None };
+                    let jsonl_cwd = if info.is_claude {
+                        Some(root_agent_path.clone())
+                    } else {
+                        None
+                    };
                     let mut tg = tg_mgr.lock().await;
                     if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone(), jsonl_cwd) {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);
@@ -846,4 +1134,151 @@ pub async fn create_root_agent_session(
     // Credentials are auto-injected by create_session_inner for all Claude sessions.
 
     Ok(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inject_codex_resume;
+
+    #[test]
+    fn inject_codex_resume_prefixes_direct_codex_args() {
+        let mut args = vec![
+            "-m".to_string(),
+            "gpt-5".to_string(),
+            "-c".to_string(),
+            "model_reasoning_effort=\"high\"".to_string(),
+        ];
+
+        assert!(inject_codex_resume("codex", &mut args));
+        assert_eq!(
+            args,
+            vec![
+                "resume".to_string(),
+                "--last".to_string(),
+                "-m".to_string(),
+                "gpt-5".to_string(),
+                "-c".to_string(),
+                "model_reasoning_effort=\"high\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn inject_codex_resume_inserts_into_cmd_tokenized_wrapper() {
+        let mut args = vec![
+            "/C".to_string(),
+            "codex".to_string(),
+            "-m".to_string(),
+            "gpt-5".to_string(),
+        ];
+
+        assert!(inject_codex_resume("cmd.exe", &mut args));
+        assert_eq!(
+            args,
+            vec![
+                "/C".to_string(),
+                "codex".to_string(),
+                "resume".to_string(),
+                "--last".to_string(),
+                "-m".to_string(),
+                "gpt-5".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn inject_codex_resume_inserts_into_embedded_cmd_wrapper() {
+        let mut args = vec!["/K".to_string(), "git pull && codex -m gpt-5".to_string()];
+
+        assert!(inject_codex_resume("cmd.exe", &mut args));
+        assert_eq!(
+            args,
+            vec![
+                "/K".to_string(),
+                "git pull && codex resume --last -m gpt-5".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn inject_codex_resume_skips_existing_resume_tokens() {
+        let mut args = vec![
+            "resume".to_string(),
+            "--last".to_string(),
+            "-m".to_string(),
+            "gpt-5".to_string(),
+        ];
+
+        assert!(!inject_codex_resume("codex", &mut args));
+        assert_eq!(
+            args,
+            vec![
+                "resume".to_string(),
+                "--last".to_string(),
+                "-m".to_string(),
+                "gpt-5".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn inject_codex_resume_skips_explicit_fork_subcommand() {
+        let mut args = vec!["fork".to_string(), "--last".to_string()];
+
+        assert!(!inject_codex_resume("codex", &mut args));
+        assert_eq!(args, vec!["fork".to_string(), "--last".to_string()]);
+    }
+
+    #[test]
+    fn inject_codex_resume_skips_explicit_exec_subcommand_after_options() {
+        let mut args = vec![
+            "-m".to_string(),
+            "gpt-5".to_string(),
+            "exec".to_string(),
+            "--json".to_string(),
+        ];
+
+        assert!(!inject_codex_resume("codex", &mut args));
+        assert_eq!(
+            args,
+            vec![
+                "-m".to_string(),
+                "gpt-5".to_string(),
+                "exec".to_string(),
+                "--json".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn inject_codex_resume_skips_explicit_help_subcommand_in_cmd_wrapper() {
+        let mut args = vec!["/C".to_string(), "codex".to_string(), "help".to_string()];
+
+        assert!(!inject_codex_resume("cmd.exe", &mut args));
+        assert_eq!(
+            args,
+            vec!["/C".to_string(), "codex".to_string(), "help".to_string()]
+        );
+    }
+
+    #[test]
+    fn inject_codex_resume_ignores_resume_text_inside_config_value() {
+        let mut args = vec![
+            "-c".to_string(),
+            "instruction=\"resume later\"".to_string(),
+            "--search".to_string(),
+        ];
+
+        assert!(inject_codex_resume("codex", &mut args));
+        assert_eq!(
+            args,
+            vec![
+                "resume".to_string(),
+                "--last".to_string(),
+                "-c".to_string(),
+                "instruction=\"resume later\"".to_string(),
+                "--search".to_string(),
+            ]
+        );
+    }
 }

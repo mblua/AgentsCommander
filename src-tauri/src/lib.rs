@@ -5,25 +5,25 @@ pub mod errors;
 pub mod phone;
 pub mod pty;
 pub mod session;
+pub mod shutdown;
 pub mod telegram;
 pub mod voice;
-pub mod shutdown;
 pub mod web;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use config::sessions_persistence;
-use tauri::Manager;
-use config::settings::SettingsState;
 use commands::ac_discovery::DiscoveryBranchWatcher;
+use config::sessions_persistence;
+use config::settings::SettingsState;
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
 use session::manager::SessionManager;
+use shutdown::ShutdownSignal;
+use tauri::Manager;
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
-use shutdown::ShutdownSignal;
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
@@ -57,7 +57,10 @@ impl MasterToken {
         if a.len() != b.len() {
             return false;
         }
-        a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+        a.iter()
+            .zip(b.iter())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
     }
 
     /// Display value (for printing to stdout at startup only).
@@ -87,8 +90,8 @@ pub fn run() {
         use std::io::Write;
 
         // Resolve log file path: <config_dir>/app.log
-        let log_file: Option<std::sync::Mutex<std::fs::File>> = config::config_dir()
-            .and_then(|dir| {
+        let log_file: Option<std::sync::Mutex<std::fs::File>> =
+            config::config_dir().and_then(|dir| {
                 let _ = std::fs::create_dir_all(&dir);
                 let path = dir.join("app.log");
                 std::fs::OpenOptions::new()
@@ -104,14 +107,19 @@ pub fn run() {
         let log_file = std::sync::Arc::new(log_file);
 
         env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("agentscommander=info")
+            env_logger::Env::default().default_filter_or("agentscommander=info"),
         )
         .format({
             let log_file = std::sync::Arc::clone(&log_file);
             move |buf, record| {
                 let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-                let line = format!("{} [{}] {} — {}\n",
-                    ts, record.level(), record.target(), record.args());
+                let line = format!(
+                    "{} [{}] {} — {}\n",
+                    ts,
+                    record.level(),
+                    record.target(),
+                    record.args()
+                );
                 // Write to stderr (via env_logger's buf)
                 buf.write_all(line.as_bytes())?;
                 // Tee to file
@@ -186,7 +194,11 @@ pub fn run() {
         move |id| {
             log::info!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_idle.get() {
-                let _ = tauri::Emitter::emit(app, "session_idle", serde_json::json!({ "id": id.to_string() }));
+                let _ = tauri::Emitter::emit(
+                    app,
+                    "session_idle",
+                    serde_json::json!({ "id": id.to_string() }),
+                );
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 tauri::async_runtime::spawn(async move {
@@ -199,7 +211,11 @@ pub fn run() {
         move |id| {
             log::info!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_busy.get() {
-                let _ = tauri::Emitter::emit(app, "session_busy", serde_json::json!({ "id": id.to_string() }));
+                let _ = tauri::Emitter::emit(
+                    app,
+                    "session_busy",
+                    serde_json::json!({ "id": id.to_string() }),
+                );
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 tauri::async_runtime::spawn(async move {
@@ -222,10 +238,12 @@ pub fn run() {
     let broadcaster_for_web = broadcaster.clone();
     let web_token_for_server = Arc::clone(&web_access_token);
 
-    let tg_mgr: TelegramBridgeState =
-        Arc::new(tokio::sync::Mutex::new(TelegramBridgeManager::new(output_senders)));
+    let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
+        TelegramBridgeManager::new(output_senders),
+    ));
 
-    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(config::settings::load_settings()));
+    let settings: SettingsState =
+        Arc::new(tokio::sync::RwLock::new(config::settings::load_settings()));
     let settings_for_web = Arc::clone(&settings);
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
@@ -572,7 +590,7 @@ pub fn run() {
                             false, // Persist tooling on restore
                             ps.git_branch_source.clone(),
                             ps.git_branch_prefix.clone(),
-                            false, // skip_continue
+                            false, // skip_auto_resume
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {

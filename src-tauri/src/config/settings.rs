@@ -139,15 +139,9 @@ fn default_sidebar_style() -> String {
 impl Default for AppSettings {
     fn default() -> Self {
         let (default_shell, default_shell_args) = if cfg!(target_os = "windows") {
-            (
-                "powershell.exe".to_string(),
-                vec!["-NoLogo".to_string()],
-            )
+            ("powershell.exe".to_string(), vec!["-NoLogo".to_string()])
         } else {
-            (
-                "/bin/bash".to_string(),
-                vec![],
-            )
+            ("/bin/bash".to_string(), vec![])
         };
 
         Self {
@@ -181,15 +175,101 @@ impl Default for AppSettings {
     }
 }
 
+fn command_token_basename(token: &str) -> String {
+    std::path::Path::new(token)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(token)
+        .to_lowercase()
+}
+
+fn token_has_unclosed_quote(token: &str, quote: char) -> bool {
+    token.chars().filter(|c| *c == quote).count() % 2 == 1
+}
+
+fn advance_past_config_value(tokens: &[&str], start: usize) -> usize {
+    if start >= tokens.len() {
+        return start;
+    }
+
+    let mut idx = start;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while idx < tokens.len() {
+        let token = tokens[idx];
+        if token_has_unclosed_quote(token, '\'') {
+            in_single = !in_single;
+        }
+        if token_has_unclosed_quote(token, '"') {
+            in_double = !in_double;
+        }
+        idx += 1;
+        if !in_single && !in_double {
+            break;
+        }
+    }
+
+    idx
+}
+
+fn find_provider_token(tokens: &[&str], provider: &str) -> Option<usize> {
+    tokens
+        .iter()
+        .position(|token| command_token_basename(token) == provider)
+}
+
+fn codex_has_manual_resume(tokens: &[&str], codex_idx: usize) -> bool {
+    let mut idx = codex_idx + 1;
+    while idx < tokens.len() {
+        let token = tokens[idx];
+        if token.eq_ignore_ascii_case("-c") || token.eq_ignore_ascii_case("--config") {
+            idx = advance_past_config_value(tokens, idx + 1);
+            continue;
+        }
+        if token.eq_ignore_ascii_case("resume") || token.eq_ignore_ascii_case("--last") {
+            return true;
+        }
+        idx += 1;
+    }
+    false
+}
+
+pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
+    for agent in &settings.agents {
+        let tokens: Vec<&str> = agent.command.split_whitespace().collect();
+
+        if let Some(claude_idx) = find_provider_token(&tokens, "claude") {
+            if tokens[claude_idx + 1..].iter().any(|token| {
+                token.eq_ignore_ascii_case("--continue") || token.eq_ignore_ascii_case("-c")
+            }) {
+                return Err(format!(
+                    "Agent \"{}\": Claude commands must not include --continue or -c",
+                    agent.label
+                ));
+            }
+        }
+
+        if let Some(codex_idx) = find_provider_token(&tokens, "codex") {
+            if codex_has_manual_resume(&tokens, codex_idx) {
+                return Err(format!(
+                    "Agent \"{}\": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically",
+                    agent.label
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn settings_path() -> Option<PathBuf> {
     super::config_dir().map(|d| d.join("settings.json"))
 }
 
-
 /// Load settings from the app config directory (see config_dir()), falling back to defaults.
 /// Auto-generates a root_token if missing and persists it.
 pub fn load_settings() -> AppSettings {
-
     let path = match settings_path() {
         Some(p) => p,
         None => {
@@ -244,11 +324,84 @@ pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     let json = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
 
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write settings file: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write settings file: {}", e))?;
 
     log::info!("Saved settings to {:?}", path);
     Ok(())
 }
 
 pub type SettingsState = Arc<RwLock<AppSettings>>;
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_agent_commands, AgentConfig, AppSettings};
+
+    fn settings_with_agents(commands: &[(&str, &str)]) -> AppSettings {
+        let mut settings = AppSettings::default();
+        settings.agents = commands
+            .iter()
+            .enumerate()
+            .map(|(idx, (label, command))| AgentConfig {
+                id: format!("agent-{idx}"),
+                label: (*label).to_string(),
+                command: (*command).to_string(),
+                color: "#000000".to_string(),
+                git_pull_before: false,
+                exclude_global_claude_md: false,
+            })
+            .collect();
+        settings
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_plain_claude() {
+        let settings = settings_with_agents(&[("Claude", "claude")]);
+        assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_agent_commands_rejects_claude_continue() {
+        let settings = settings_with_agents(&[("Claude", "claude --continue")]);
+        let err = validate_agent_commands(&settings).unwrap_err();
+        assert!(err.contains("Claude commands must not include --continue or -c"));
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_plain_codex() {
+        let settings = settings_with_agents(&[("Codex", "codex")]);
+        assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_codex_search() {
+        let settings = settings_with_agents(&[("Codex", "codex --search")]);
+        assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_explicit_codex_help() {
+        let settings = settings_with_agents(&[("Codex", "codex help")]);
+        assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_agent_commands_rejects_codex_resume_last() {
+        let settings = settings_with_agents(&[("Codex", "codex resume --last")]);
+        let err = validate_agent_commands(&settings).unwrap_err();
+        assert!(err.contains("Codex commands must not include resume or --last"));
+    }
+
+    #[test]
+    fn validate_agent_commands_rejects_cmd_wrapper_codex_resume_last() {
+        let settings = settings_with_agents(&[("Codex", "cmd /C codex resume --last")]);
+        let err = validate_agent_commands(&settings).unwrap_err();
+        assert!(err.contains("Codex commands must not include resume or --last"));
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_codex_config_value_with_resume_text() {
+        let settings =
+            settings_with_agents(&[("Codex", "codex -c instruction=\"resume later\" --search")]);
+        assert!(validate_agent_commands(&settings).is_ok());
+    }
+}
