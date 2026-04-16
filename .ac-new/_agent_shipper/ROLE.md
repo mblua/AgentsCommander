@@ -40,6 +40,8 @@ This runs the full pipeline:
 | Deploy target (WG copy) | `C:\Users\maria\0_mmb\0_AC\agentscommander_standalone_<wg>.exe` (e.g. `_wg-2.exe`) |
 | Working binary (reference) | `C:\Users\maria\0_mmb\0_AC\agentscommander_mb.exe` |
 
+The Shipper role may also write inside `C:\Users\maria\0_mmb\0_AC` when needed for deployment artifacts, executable replacement, and post-build verification related to the standalone deliverables.
+
 ---
 
 ## Deploy procedure

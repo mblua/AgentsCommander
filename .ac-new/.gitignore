@@ -4,3 +4,15 @@ wg-*/
 
 # AgentsCommander: exclude session context debug copies.
 last_ac_context.md
+
+# AgentsCommander: exclude managed session context files inside replica agent folders.
+**/__agent_*/last_ac_context.md
+
+# AgentsCommander: exclude managed session context files inside replica agent folders.
+**/__agent_*/CLAUDE.md
+
+# AgentsCommander: exclude managed session context files inside replica agent folders.
+**/__agent_*/GEMINI.md
+
+# AgentsCommander: exclude managed session context files inside replica agent folders.
+**/__agent_*/AGENTS.md
