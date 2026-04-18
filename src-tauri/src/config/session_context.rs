@@ -351,7 +351,7 @@ You are running inside an AgentsCommander session — a terminal session manager
 
 ## GOLDEN RULE — Repository Write Restrictions
 
-**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in two places:
+**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in three places:
 
 1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
 2. **Your own agent replica directory and its subdirectories** — your assigned root:
@@ -359,13 +359,15 @@ You are running inside an AgentsCommander session — a terminal session manager
    {agent_root}
    ```
    Use this for plans scratch, personal notes, role drafts, and session artifacts. Do NOT write into other agents' replica directories.
+3. **The workgroup messaging directory** — `<workgroup-root>/messaging/` (walk up from your agent root until you find the parent `wg-<N>-*` folder). This is the shared inbox used by the file-based inter-agent protocol documented in `## Inter-Agent Messaging` below. You may CREATE new message files here following the canonical filename pattern. Do NOT modify or delete files authored by other agents.
 
-Any repository or directory outside the two places above is READ-ONLY.
+Any path outside those three zones is READ-ONLY.
 
 - **Allowed**: Read-only operations on ANY path (reading files, searching, git log, git status, git diff)
 - **Allowed**: Full read/write inside `repo-*` folders
 - **Allowed**: Full read/write inside your own replica root ({agent_root}) and its subdirectories
-- **FORBIDDEN**: Any write operation outside those two zones — including other agents' replica directories, the workspace root, parent project dirs, user home files, or arbitrary paths on disk
+- **Allowed**: CREATE new message files inside `<workgroup-root>/messaging/` for outgoing inter-agent messages
+- **FORBIDDEN**: Any write operation outside those three zones — including other agents' replica directories, the workspace root, parent project dirs, user home files, or arbitrary paths on disk
 
 **Clarification on git operations:** Your replica directory is typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside your replica directory — that would affect the parent repo unintentionally. `git status`, `git log`, `git diff` are fine.
 
@@ -383,7 +385,9 @@ Your Session Credentials include a `BinaryPath` field — **always use that path
 
 ## Self-discovery via --help
 
-The CLI `--help` output is the **primary and authoritative reference** for learning how to use AgentsCommander. Before guessing flags, modes, or behavior, always consult it:
+The CLI `--help` output documents every subcommand, flag, and accepted value. Use it as a FALLBACK reference for commands or flags NOT covered inline in this context.
+
+**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly — you do NOT need to consult `--help` to confirm their syntax.
 
 ```
 "<YOUR_BINARY_PATH>" --help                  # List all subcommands
@@ -391,9 +395,7 @@ The CLI `--help` output is the **primary and authoritative reference** for learn
 "<YOUR_BINARY_PATH>" list-peers --help       # Full docs for discovering peers
 ```
 
-The `--help` text documents every flag, its purpose, accepted values, priority rules, delivery modes, and discovery flows. It is designed to be self-contained — you should not need README, CLAUDE.md, or external docs to use any command correctly.
-
-**RULE:** When in doubt about how a command works, run `--help` first. The examples below are a quick-start — `--help` is the complete reference.
+**RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly.
 
 ## Session credentials
 
