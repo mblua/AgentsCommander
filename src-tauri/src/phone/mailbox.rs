@@ -379,54 +379,19 @@ impl MailboxPoller {
             msg.mode.as_str()
         };
         match mode {
-            "active-only" => self.deliver_active_only(app, &msg).await?,
             "wake" => self.deliver_wake(app, &msg).await?,
             "wake-and-sleep" => self.deliver_wake_and_sleep(app, &msg).await?,
             _ => {
                 return self.reject_message(
                     path,
                     &msg,
-                    &format!("Unsupported delivery mode '{}'. Valid: active-only, wake, wake-and-sleep", mode),
+                    &format!("Unsupported delivery mode '{}'. Valid: wake, wake-and-sleep", mode),
                 ).await;
             }
         }
 
         // Move to delivered/ with token stripped
         self.move_to_delivered(path, &msg).await
-    }
-
-    /// Deliver mode: active-only — inject into PTY if agent is active and not idle, else reject.
-    async fn deliver_active_only(
-        &self,
-        app: &tauri::AppHandle,
-        msg: &OutboxMessage,
-    ) -> Result<(), String> {
-        if let Some(session_id) = self.find_active_session(app, &msg.to).await {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            let sessions = mgr.list_sessions().await;
-            let session = sessions.iter().find(|s| s.id == session_id.to_string());
-
-            if let Some(s) = session {
-                log::info!(
-                    "[mailbox] active-only: session {} status={:?} waiting_for_input={}",
-                    session_id,
-                    s.status,
-                    s.waiting_for_input
-                );
-                // Only deliver if session is active/running and NOT waiting for input
-                if !s.waiting_for_input
-                    && matches!(s.status, SessionStatus::Active | SessionStatus::Running)
-                {
-                    return self.inject_into_pty(app, session_id, msg, true).await;
-                }
-                log::info!("[mailbox] active-only: conditions not met, rejecting");
-                return Err(
-                    "Destination agent session is not active or is waiting for input".to_string(),
-                );
-            }
-        }
-        Err("No active session found for destination agent".to_string())
     }
 
     /// Deliver mode: wake — inject into PTY if agent is idle (waiting for input).

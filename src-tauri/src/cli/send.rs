@@ -9,7 +9,6 @@ use crate::phone::types::OutboxMessage;
 #[command(after_help = "\
 DELIVERY MODES:\n  \
   wake            Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.\n  \
-  active-only     Inject into PTY if the destination agent is actively running (not idle). Reject otherwise.\n  \
   wake-and-sleep  Spawn a temporary session for the destination agent, inject the message, destroy when done.\n\n\
 ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
 membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
@@ -107,7 +106,7 @@ pub fn execute(args: SendArgs) -> i32 {
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
     // Validate mode — "queue" is no longer supported
-    let valid_modes = ["active-only", "wake", "wake-and-sleep"];
+    let valid_modes = ["wake", "wake-and-sleep"];
     if !valid_modes.contains(&args.mode.as_str()) {
         eprintln!(
             "Error: invalid mode '{}'. Valid: {}",

@@ -214,7 +214,7 @@ All messages are delivered synchronously — the CLI validates routing, delivers
 | `--to` | Yes | Destination agent name (e.g., `"repos/my-project"`) |
 | `--send` | No* | Filename (not path) of a message file already written in `<workgroup-root>/messaging/` |
 | `--command` | No* | Remote command to execute (whitelist: `clear`, `compact`) |
-| `--mode` | No | Delivery mode: `wake` (default), `active-only`, `wake-and-sleep` |
+| `--mode` | No | Delivery mode: `wake` (default), `wake-and-sleep` |
 | `--get-output` | No | Wait for and return the agent's response |
 | `--timeout` | No | Timeout in seconds for `--get-output` (default: 300) |
 
@@ -226,7 +226,6 @@ All messages are delivered synchronously — the CLI validates routing, delivers
 
 **Delivery modes:**
 - `wake` — Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.
-- `active-only` — Inject into PTY if the destination agent is actively running (not idle). Reject otherwise.
 - `wake-and-sleep` — Spawn a temporary session for the destination agent, inject the message, and destroy the session when done. Reject if the agent cannot be spawned.
 
 **Exit codes:** `0` = message delivered and confirmed, `1` = routing rejected, delivery failed, or timeout.
