@@ -180,15 +180,9 @@ pub fn execute(args: SendArgs) -> i32 {
             );
         }
 
-        // PTY_SAFE_MAX clamp with dynamic overhead (plan §13.2 P1-4; NIT-resolution: dynamic
-        // overhead using sender-side proxies for recipient-side template values).
-        let bin_path = crate::resolve_bin_label();
-        let wg_root_str = wg_root.to_string_lossy();
-        let overhead = crate::phone::messaging::estimate_wrap_overhead(
-            &sender,
-            &wg_root_str,
-            &bin_path,
-        );
+        // PTY_SAFE_MAX clamp (trimmed overhead: the wrap no longer embeds
+        // wg_root or bin_path — only `from` and the fixed framing remain).
+        let overhead = crate::phone::messaging::PTY_WRAP_FIXED + sender.len();
         if body.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
             eprintln!(
                 "Error: notification exceeds PTY-safe length (body {} + overhead {} > {}). \

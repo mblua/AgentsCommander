@@ -849,30 +849,16 @@ impl MailboxPoller {
         // Only use response markers for non-interactive sessions
         let use_markers = msg.get_output && !interactive;
 
-        // Resolve binary path for reply instructions
-        let bin_path = crate::resolve_bin_label();
-
-        let payload = if use_markers {
-            if let Some(ref rid) = msg.request_id {
-                format!(
-                    "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n\r",
-                    msg.from, msg.body, rid, rid
-                )
-            } else {
-                format!("\n[Message from {}] {}\n\r", msg.from, msg.body)
-            }
-        } else {
-            let wg_root_display = Self::resolve_recipient_wg_root(app, session_id)
-                .await
-                .unwrap_or_else(|| "<wg-root>".to_string());
-            // Template lives in `phone::messaging::reply_hint!` — single source
-            // of truth shared with the overhead accounting in `estimate_wrap_overhead`.
-            crate::reply_hint!(
-                from = msg.from,
-                body = msg.body,
-                bin = bin_path,
-                wg_root = wg_root_display,
-            )
+        // Interactive and marker-less paths share the minimal PTY wrap via
+        // `format_pty_wrap` (single source with `PTY_WRAP_FIXED` used by the
+        // CLI clamp). Only the `--get-output` + `request_id` case wraps the
+        // payload with response markers.
+        let payload = match (use_markers, msg.request_id.as_ref()) {
+            (true, Some(rid)) => format!(
+                "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n\r",
+                msg.from, msg.body, rid, rid
+            ),
+            _ => crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body),
         };
 
         // Register response watcher only for non-interactive sessions
@@ -969,46 +955,8 @@ impl MailboxPoller {
         // Inject the follow-up body as a standard interactive message.
         // Note: same TOCTOU race as the command path — agent could become busy
         // between the idle check above and this write. Acceptable for this use case.
-        let bin_path = crate::resolve_bin_label();
-        let wg_root_display = Self::resolve_recipient_wg_root(app, session_id)
-            .await
-            .unwrap_or_else(|| "<wg-root>".to_string());
-        // Template lives in `phone::messaging::reply_hint!` — single source
-        // of truth shared with the interactive-path injection above.
-        let payload = crate::reply_hint!(
-            from = msg.from,
-            body = msg.body,
-            bin = bin_path,
-            wg_root = wg_root_display,
-        );
+        let payload = crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body);
         crate::pty::inject::inject_text_into_session(app, session_id, &payload, true).await
-    }
-
-    /// Resolve the recipient's workgroup-root for reply-hint interpolation.
-    /// Returns the UNC-stripped display string on success; `None` if the session
-    /// cannot be found, its working dir is not under a `wg-<N>-*` ancestor, or
-    /// the state read-lock cannot be acquired (caller falls back to the literal
-    /// `<wg-root>` placeholder).
-    async fn resolve_recipient_wg_root(
-        app: &tauri::AppHandle,
-        session_id: Uuid,
-    ) -> Option<String> {
-        // Extract the session's working_directory quickly then drop the
-        // SessionManager read-guard before doing any sync path work. Keeps
-        // the lock window as short as possible.
-        let working_dir = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            let sessions = mgr.list_sessions().await;
-            sessions
-                .iter()
-                .find(|s| s.id == session_id.to_string())
-                .map(|s| s.working_directory.clone())?
-        };
-        let wg_root =
-            crate::phone::messaging::workgroup_root(std::path::Path::new(&working_dir)).ok()?;
-        let s = wg_root.to_string_lossy();
-        Some(s.trim_start_matches(r"\\?\").to_string())
     }
 
     /// Find the best session for a given agent name (matches by working directory).

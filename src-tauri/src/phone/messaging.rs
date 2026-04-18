@@ -7,44 +7,24 @@
 use chrono::{DateTime, Utc};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 pub const MESSAGING_DIR_NAME: &str = "messaging";
-pub const PTY_SAFE_MAX: usize = 500;
+pub const PTY_SAFE_MAX: usize = 1024;
 
 const MAX_SLUG_LEN: usize = 50;
 const MAX_COLLISION_SUFFIX: u32 = 99;
 
-/// Single source of truth for the interactive reply-hint template.
-///
-/// Both PTY injection sites in `phone::mailbox` (`inject_into_pty` interactive
-/// path and `inject_followup_after_idle_static`) invoke this macro, AND the
-/// `estimate_wrap_overhead` accounting reads its empty-placeholder expansion
-/// to compute `PTY_WRAP_FIXED`. Any edit to the template text is therefore
-/// reflected atomically in live payloads, in the overhead accounting used by
-/// the `PTY_SAFE_MAX` clamp, and in the contract test. No drift window.
-#[macro_export]
-macro_rules! reply_hint {
-    ($($arg:tt)*) => {
-        format!(
-            concat!(
-                "\n[Message from {from}] {body}\n",
-                "(To reply, write your response to {wg_root}/messaging/<new-filename>.md, ",
-                "then run: \"{bin}\" send --token <your_token> --root \"<your_root>\" ",
-                "--to \"{from}\" --send <new-filename> --mode wake)\n\r",
-            ),
-            $($arg)*
-        )
-    };
-}
+/// Fixed-char portion of the interactive PTY wrap template
+/// `\n[Message from {from}] {body}\n\r` with empty placeholders.
+/// Kept as a public constant so the CLI clamp can size overhead precisely.
+pub const PTY_WRAP_FIXED: usize = "\n[Message from ] \n\r".len();
 
-/// Fixed-chars portion of the reply-hint template — the length of the macro
-/// expansion with every placeholder emptied. Computed once at first call via
-/// OnceLock, so the value is always in sync with whatever `reply_hint!`
-/// actually emits (no hand-counted magic number, no duplicated sample const).
-fn pty_wrap_fixed() -> usize {
-    static CELL: OnceLock<usize> = OnceLock::new();
-    *CELL.get_or_init(|| crate::reply_hint!(from = "", body = "", bin = "", wg_root = "").len())
+/// Single-source render of the interactive PTY wrap. Both injection sites in
+/// `phone::mailbox` call this, and the contract test measures its empty
+/// expansion against `PTY_WRAP_FIXED` — any edit to the literal here trips
+/// the test before the clamp accounting can drift.
+pub fn format_pty_wrap(from: &str, body: &str) -> String {
+    format!("\n[Message from {}] {}\n\r", from, body)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -277,17 +257,6 @@ pub fn resolve_existing_message(
     }
 
     Ok(abs)
-}
-
-/// Estimated PTY wrap overhead for a file-based notification, computed at
-/// send-time using sender-known proxies for recipient-side template variables.
-///
-/// Used by the CLI clamp: `body.len() + estimate_wrap_overhead(...) > PTY_SAFE_MAX`
-/// fails the send. Dynamic (not a constant) so the effective budget scales
-/// with actual agent names, workgroup paths, and binary paths — preventing the
-/// clamp from under- or over-estimating in deployments with unusual dimensions.
-pub fn estimate_wrap_overhead(from: &str, wg_root: &str, bin_path: &str) -> usize {
-    pty_wrap_fixed() + 2 * from.len() + wg_root.len() + bin_path.len()
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
@@ -549,58 +518,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Contract test: `format_pty_wrap("", "")` is the empty-placeholder
+    /// expansion used by both mailbox.rs injection sites. Its length MUST
+    /// equal `PTY_WRAP_FIXED`. If someone edits the `format!` string inside
+    /// `format_pty_wrap` (e.g. drops the trailing `\r`, adds a space), this
+    /// test fires before the clamp accounting can drift silently.
     #[test]
-    fn estimate_wrap_overhead_monotonic() {
-        let a = estimate_wrap_overhead("from", "/wg/root", "/bin/path");
-        let b = estimate_wrap_overhead("from-longer", "/wg/root", "/bin/path");
-        assert!(b > a);
-        let c = estimate_wrap_overhead("from", "/wg/root/deeper", "/bin/path");
-        assert!(c > a);
+    fn format_pty_wrap_matches_pty_wrap_fixed() {
+        assert_eq!(format_pty_wrap("", "").len(), PTY_WRAP_FIXED);
+        assert_eq!(PTY_WRAP_FIXED, 19);
     }
 
-    /// Contract test: the `reply_hint!` macro is the single source of truth
-    /// for the interactive PTY reply-hint template. Both mailbox.rs injection
-    /// sites invoke it; `pty_wrap_fixed()` is seeded from its empty-placeholder
-    /// expansion. If anyone edits the macro body, all three sites move in
-    /// lockstep — drift is impossible by construction.
-    ///
-    /// This test verifies the wiring end-to-end: expand the macro with
-    /// non-empty placeholders, confirm the output actually includes them and
-    /// has non-trivial length. Any compile error in the macro or in the
-    /// placeholder set surfaces here before it can break mailbox.rs.
+    /// Structural round-trip: non-empty placeholders are rendered visibly.
     #[test]
-    fn reply_hint_macro_is_single_source_of_truth() {
-        let rendered = crate::reply_hint!(
-            from = "wg7-me",
-            body = "hello",
-            bin = "C:\\bin\\x.exe",
-            wg_root = "C:\\wg"
-        );
+    fn format_pty_wrap_round_trips_inputs() {
+        let rendered = format_pty_wrap("wg7-me", "hello");
         assert!(rendered.contains("[Message from wg7-me] hello"));
-        assert!(rendered.contains("C:\\wg/messaging/<new-filename>.md"));
-        assert!(rendered.contains("\"C:\\bin\\x.exe\" send"));
-        assert!(rendered.contains("--to \"wg7-me\""));
-        assert!(rendered.contains("--send <new-filename> --mode wake"));
-        // pty_wrap_fixed() is seeded from the same macro with empty args,
-        // so the relationship is tautological but worth asserting.
-        let empty = crate::reply_hint!(from = "", body = "", bin = "", wg_root = "");
-        assert_eq!(pty_wrap_fixed(), empty.len());
+        assert!(rendered.starts_with('\n'));
+        assert!(rendered.ends_with("\n\r"));
     }
 
-    /// PTY_SAFE_MAX clamp arithmetic — simulate a realistic long-path scenario
-    /// and assert the clamp in `cli/send.rs` would reject it. Mirrors the
-    /// inequality at send.rs:192 (`body.len() + overhead > PTY_SAFE_MAX`).
+    /// PTY_SAFE_MAX clamp arithmetic — pathological long path must exceed
+    /// `PTY_WRAP_FIXED + from.len() + body.len() > PTY_SAFE_MAX=1024`.
     #[test]
     fn pty_safe_max_clamp_rejects_long_path() {
-        let from = "wg12-dev-rust";
-        // Pathological but plausible path: 180+ chars of nesting.
-        let wg_root = "C:\\Users\\some-long-username\\projects\\deep\\deeper\\deepest\\wg-999-extremely-long-workgroup-name-with-too-many-segments";
-        let bin = "C:\\Users\\some-long-username\\AppData\\Local\\Agents Commander\\agentscommander.exe";
-        // Notification body: 34 fixed chars ("Nuevo mensaje: " + ". Lee este archivo.")
-        // + abs path (wg_root + "\messaging\" + 100-char filename ≈ 240 chars).
-        let body_len = 34 + wg_root.len() + "\\messaging\\".len() + 100;
-
-        let overhead = estimate_wrap_overhead(from, wg_root, bin);
+        let from = "wg99-extremely-long-agent-name-segment";
+        // Synthetic body large enough to push the total past 1024.
+        let body_len = 34 + 1000; // 1000-char abs_path
+        let overhead = PTY_WRAP_FIXED + from.len();
         assert!(
             body_len + overhead > PTY_SAFE_MAX,
             "expected clamp to fire for body={} overhead={} max={}",
@@ -610,15 +555,13 @@ mod tests {
         );
     }
 
-    /// Happy-path negation: short, typical paths fit comfortably under the clamp.
+    /// Happy-path: realistic production body (155) + typical from (13) fits
+    /// comfortably under the 1024 clamp — the case that motivated this trim.
     #[test]
     fn pty_safe_max_clamp_accepts_typical() {
         let from = "wg7-architect";
-        let wg_root = "C:\\work\\wg-7-dev-team";
-        let bin = "C:\\work\\bin\\agentscommander.exe";
-        let body_len = 34 + wg_root.len() + 80; // typical filename
-
-        let overhead = estimate_wrap_overhead(from, wg_root, bin);
+        let body_len = 155;
+        let overhead = PTY_WRAP_FIXED + from.len();
         assert!(
             body_len + overhead <= PTY_SAFE_MAX,
             "expected clamp to accept body={} overhead={} max={}",
