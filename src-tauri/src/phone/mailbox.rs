@@ -23,6 +23,28 @@ struct RetryState {
 const MAX_DELIVERY_ATTEMPTS: u32 = 10;
 const ERR_UNRESOLVABLE_AGENT: &str = "Could not resolve inbox for agent";
 
+/// Decision made by `deliver_wake` for an existing session.
+#[derive(Debug, PartialEq)]
+pub(crate) enum WakeAction {
+    /// Session is live — inject into stdin, regardless of whether the agent
+    /// is waiting for input or mid-turn. Bias toward delivery.
+    Inject,
+    /// Session is Exited — destroy it and fall through to spawn a fresh one.
+    RespawnExited,
+}
+
+/// Pure decision given a session's status. Extracted so the decision table is
+/// unit-testable without a tauri runtime. `deliver_wake` calls this and acts
+/// on the result; any future restoration of a busy-gate would require editing
+/// this fn (and its tests below), not a lone `if` inside `deliver_wake`.
+pub(crate) fn wake_action_for(status: &SessionStatus) -> WakeAction {
+    if matches!(status, SessionStatus::Exited(_)) {
+        WakeAction::RespawnExited
+    } else {
+        WakeAction::Inject
+    }
+}
+
 /// The MailboxPoller runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
 pub struct MailboxPoller {
@@ -395,8 +417,10 @@ impl MailboxPoller {
         self.move_to_delivered(path, &msg).await
     }
 
-    /// Deliver mode: wake — inject into PTY if agent is idle (waiting for input).
-    /// If no active session exists, spawn a persistent one, wait for idle, then inject.
+    /// Deliver mode: wake — inject into the recipient's PTY for any non-Exited
+    /// session; destroy and respawn if Exited; spawn persistent if none. Always
+    /// delivers (no busy-gate — stdin buffer absorbs input while the agent is
+    /// mid-turn).
     async fn deliver_wake(
         &self,
         app: &tauri::AppHandle,
@@ -415,30 +439,32 @@ impl MailboxPoller {
                     s.status,
                     s.waiting_for_input
                 );
-                if s.waiting_for_input {
-                    drop(mgr);
-                    return self.inject_into_pty(app, session_id, msg, true).await;
-                }
-                if !matches!(s.status, SessionStatus::Exited(_)) {
-                    return Err(
-                        "Destination agent session is active but not idle (waiting for input)"
-                            .to_string(),
-                    );
-                }
-                log::info!(
-                    "[mailbox] wake: session {} is Exited, destroying before respawn",
-                    session_id
-                );
-                // Drop read lock before destroy call — release promptly (destroy acquires its own read lock)
-                drop(mgr);
-                if let Err(e) =
-                    crate::commands::session::destroy_session_inner(app, session_id).await
-                {
-                    log::error!(
-                        "[mailbox] wake: failed to destroy exited session {}: {}",
-                        session_id,
-                        e
-                    );
+                match wake_action_for(&s.status) {
+                    WakeAction::Inject => {
+                        // Always inject — PTY stdin buffer holds the input
+                        // until the agent finishes the current turn.
+                        drop(mgr);
+                        return self.inject_into_pty(app, session_id, msg, true).await;
+                    }
+                    WakeAction::RespawnExited => {
+                        log::info!(
+                            "[mailbox] wake: session {} is Exited, destroying before respawn",
+                            session_id
+                        );
+                        // Drop read lock before destroy call — release promptly
+                        // (destroy acquires its own read lock).
+                        drop(mgr);
+                        if let Err(e) =
+                            crate::commands::session::destroy_session_inner(app, session_id).await
+                        {
+                            log::error!(
+                                "[mailbox] wake: failed to destroy exited session {}: {}",
+                                session_id,
+                                e
+                            );
+                        }
+                        // Fall through to spawn-persistent.
+                    }
                 }
             } else {
                 log::warn!(
@@ -1520,5 +1546,42 @@ impl MailboxPoller {
                 e
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wake_action_running_injects() {
+        assert_eq!(wake_action_for(&SessionStatus::Running), WakeAction::Inject);
+    }
+
+    #[test]
+    fn wake_action_active_injects() {
+        assert_eq!(wake_action_for(&SessionStatus::Active), WakeAction::Inject);
+    }
+
+    #[test]
+    fn wake_action_idle_injects() {
+        assert_eq!(wake_action_for(&SessionStatus::Idle), WakeAction::Inject);
+    }
+
+    #[test]
+    fn wake_action_exited_respawns() {
+        assert_eq!(
+            wake_action_for(&SessionStatus::Exited(0)),
+            WakeAction::RespawnExited
+        );
+        // Non-zero exit codes take the same path.
+        assert_eq!(
+            wake_action_for(&SessionStatus::Exited(1)),
+            WakeAction::RespawnExited
+        );
+        assert_eq!(
+            wake_action_for(&SessionStatus::Exited(-1)),
+            WakeAction::RespawnExited
+        );
     }
 }

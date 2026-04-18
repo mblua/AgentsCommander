@@ -215,7 +215,7 @@ All messages are delivered synchronously — the CLI validates routing, delivers
 | `--send` | No* | Filename (not path) of a message file already written in `<workgroup-root>/messaging/` |
 | `--command` | No* | Remote command to execute (whitelist: `clear`, `compact`) |
 | `--mode` | No | Delivery mode: `wake` (default and currently the only supported value; reserved for future modes) |
-| `--get-output` | No | Wait for and return the agent's response |
+| `--get-output` | No | Wait for and return the agent's response. **Currently non-functional under `--mode wake` (the only supported mode); reserved for future reimplementation.** |
 | `--timeout` | No | Timeout in seconds for `--get-output` (default: 300) |
 
 *Exactly one of `--send` or `--command` is required. They are mutually exclusive.
@@ -225,7 +225,7 @@ All messages are delivered synchronously — the CLI validates routing, delivers
 **Remote commands** (`--command`) inject a slash command (e.g. `/clear`) directly into the agent's PTY. The destination agent must be idle (green circle in the sidebar) — the command is rejected otherwise.
 
 **Delivery modes:**
-- `wake` — Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.
+- `wake` — Inject into the recipient's PTY. If an active session exists, the message is written to stdin regardless of whether the agent is mid-turn (the stdin buffer absorbs it; the agent reads on the next idle). If the session is Exited it is destroyed and a fresh persistent one is spawned. If no session exists one is spawned.
 
 **Exit codes:** `0` = message delivered and confirmed, `1` = routing rejected, delivery failed, or timeout.
 

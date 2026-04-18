@@ -8,7 +8,7 @@ use crate::phone::types::OutboxMessage;
 #[derive(Args)]
 #[command(after_help = "\
 DELIVERY MODES:\n  \
-  wake            Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.\n\n\
+  wake            Inject into PTY. If no session exists, spawn a persistent one; if Exited, respawn. Always delivers.\n\n\
 ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
 membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
 DISCOVERY: Use `list-peers` to get valid agent names for --to. The \"name\" field in the JSON output \
