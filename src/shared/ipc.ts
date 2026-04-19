@@ -4,6 +4,7 @@ import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
   Session,
+  SessionRepo,
   PtyOutputEvent,
   AppSettings,
   RepoMatch,
@@ -14,6 +15,11 @@ import type {
   TeamConfigResult,
 } from "./types";
 
+export interface SessionRepoInput {
+  label: string;
+  sourcePath: string;
+}
+
 // Select transport based on runtime environment
 const transport: Transport = isTauri ? new TauriTransport() : new WsTransport();
 
@@ -23,8 +29,7 @@ export interface CreateSessionOptions {
   cwd?: string;
   sessionName?: string;
   agentId?: string;
-  gitBranchSource?: string;
-  gitBranchPrefix?: string;
+  gitRepos?: SessionRepoInput[];
 }
 
 export interface RestartSessionOptions {
@@ -39,8 +44,7 @@ export const SessionAPI = {
       cwd: opts?.cwd ?? null,
       sessionName: opts?.sessionName ?? null,
       agentId: opts?.agentId ?? null,
-      gitBranchSource: opts?.gitBranchSource ?? null,
-      gitBranchPrefix: opts?.gitBranchPrefix ?? null,
+      gitRepos: opts?.gitRepos ?? null,
     }),
 
   destroy: (id: string) => transport.invoke<void>("destroy_session", { id }),
@@ -198,11 +202,20 @@ export function onPtyResized(
   );
 }
 
-export function onSessionGitBranch(
-  callback: (data: { sessionId: string; branch: string | null }) => void
+export function onSessionGitRepos(
+  callback: (data: { sessionId: string; repos: SessionRepo[] }) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<{ sessionId: string; branch: string | null }>(
-    "session_git_branch",
+  return transport.listen<{ sessionId: string; repos: SessionRepo[] }>(
+    "session_git_repos",
+    callback
+  );
+}
+
+export function onSessionCoordinatorChanged(
+  callback: (data: { sessionId: string; isCoordinator: boolean }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ sessionId: string; isCoordinator: boolean }>(
+    "session_coordinator_changed",
     callback
   );
 }

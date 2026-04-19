@@ -2,14 +2,23 @@ import { Component, createSignal, For, Show, onMount, onCleanup } from "solid-js
 import { Portal } from "solid-js/web";
 import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../shared/types";
 import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
+import type { SessionRepoInput } from "../../shared/ipc";
 import AgentPickerModal from "./AgentPickerModal";
 import { sessionsStore } from "../stores/sessions";
 
 interface PendingLaunch {
   path: string;
   sessionName: string;
-  gitBranchSource?: string;
-  gitBranchPrefix?: string;
+  gitRepos: SessionRepoInput[];
+}
+
+/** Build gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
+function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
+  return (replica.repoPaths ?? []).map((p) => {
+    const dir = p.replace(/\\/g, "/").split("/").pop() ?? "";
+    const label = dir.startsWith("repo-") ? dir.slice(5) : dir;
+    return { label, sourcePath: p };
+  });
 }
 
 const AcDiscoveryPanel: Component = () => {
@@ -34,9 +43,29 @@ const AcDiscoveryPanel: Component = () => {
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
 
+  /** Check if a replica is the coordinator of any team. Two-pass: exact match first,
+   * suffix fallback for missing originProject (mirrors backend suffix rule at
+   * ac_discovery.rs:666-684). */
+  const isReplicaCoord = (replica: AcAgentReplica): boolean => {
+    if (replica.originProject) {
+      const ref = `${replica.originProject}/${replica.name}`;
+      if (teams().some((t) => t.coordinator === ref)) return true;
+    }
+    const suffixHit = teams().some(
+      (t) => t.coordinator?.split("/").pop() === replica.name
+    );
+    if (suffixHit && !replica.originProject) {
+      console.warn(
+        "[AcDiscoveryPanel] replica treated as coordinator via suffix fallback; originProject missing",
+        replica.path
+      );
+    }
+    return suffixHit;
+  };
+
   const handleAgentClick = (agent: AcAgentMatrix) => {
     if (!agent.preferredAgentId) {
-      setPendingLaunch({ path: agent.path, sessionName: agent.name });
+      setPendingLaunch({ path: agent.path, sessionName: agent.name, gitRepos: [] });
       return;
     }
     SessionAPI.create({
@@ -47,24 +76,13 @@ const AcDiscoveryPanel: Component = () => {
   };
 
   const handleReplicaClick = (replica: AcAgentReplica, wg: AcWorkgroup) => {
-    const repoPaths = replica.repoPaths ?? [];
-    let gitBranchSource: string | undefined;
-    let gitBranchPrefix: string | undefined;
-
-    if (repoPaths.length === 1) {
-      gitBranchSource = repoPaths[0];
-      const dirName = repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
-      gitBranchPrefix = dirName.startsWith("repo-") ? dirName.slice(5) : dirName;
-    } else if (repoPaths.length > 1) {
-      gitBranchPrefix = "multi-repo";
-    }
+    const gitRepos = buildGitRepos(replica);
 
     if (!replica.preferredAgentId) {
       setPendingLaunch({
         path: replica.path,
         sessionName: `${wg.name}/${replica.name}`,
-        gitBranchSource,
-        gitBranchPrefix,
+        gitRepos,
       });
       return;
     }
@@ -73,8 +91,7 @@ const AcDiscoveryPanel: Component = () => {
       cwd: replica.path,
       sessionName: `${wg.name}/${replica.name}`,
       agentId: replica.preferredAgentId,
-      gitBranchSource,
-      gitBranchPrefix,
+      gitRepos,
     });
   };
 
@@ -288,12 +305,7 @@ const AcDiscoveryPanel: Component = () => {
                     </div>
                     <For each={wg.agents}>
                       {(replica) => {
-                        const repoCount = () => replica.repoPaths.length;
-                        const branchLabel = () => {
-                          if (repoCount() === 1) return replica.repoBranch ?? "1 repo";
-                          if (repoCount() > 1) return "multi-repo";
-                          return null;
-                        };
+                        const coord = () => isReplicaCoord(replica);
                         return (
                           <div
                             class="replica-item"
@@ -304,8 +316,16 @@ const AcDiscoveryPanel: Component = () => {
                             <div class="replica-item-info">
                               <span class="replica-item-name">{replica.name}</span>
                               <div class="ac-discovery-badges">
-                                <Show when={branchLabel()}>
-                                  <span class="ac-discovery-badge branch">{branchLabel()}</span>
+                                <Show when={coord()}>
+                                  <Show when={replica.repoPaths.length === 1 && replica.repoBranch}>
+                                    <span class="ac-discovery-badge branch">
+                                      {(() => {
+                                        const dir = replica.repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
+                                        const label = dir.startsWith("repo-") ? dir.slice(5) : dir;
+                                        return `${label}/${replica.repoBranch}`;
+                                      })()}
+                                    </span>
+                                  </Show>
                                 </Show>
                                 <span class="ac-discovery-badge team">replica</span>
                               </div>
@@ -375,8 +395,7 @@ const AcDiscoveryPanel: Component = () => {
                 cwd: pending.path,
                 sessionName: pending.sessionName,
                 agentId: agent.id,
-                gitBranchSource: pending.gitBranchSource,
-                gitBranchPrefix: pending.gitBranchPrefix,
+                gitRepos: pending.gitRepos,
               });
               setPendingLaunch(null);
             }}

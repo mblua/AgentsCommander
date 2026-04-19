@@ -13,7 +13,8 @@ import {
   onSessionRenamed,
   onSessionIdle,
   onSessionBusy,
-  onSessionGitBranch,
+  onSessionGitRepos,
+  onSessionCoordinatorChanged,
   onTelegramBridgeAttached,
   onTelegramBridgeDetached,
   onTelegramBridgeError,
@@ -157,8 +158,14 @@ const SidebarApp: Component = () => {
     );
 
     unlisteners.push(
-      await onSessionGitBranch(({ sessionId, branch }) => {
-        sessionsStore.setGitBranch(sessionId, branch);
+      await onSessionGitRepos(({ sessionId, repos }) => {
+        sessionsStore.setGitRepos(sessionId, repos);
+      })
+    );
+
+    unlisteners.push(
+      await onSessionCoordinatorChanged(({ sessionId, isCoordinator }) => {
+        sessionsStore.setIsCoordinator(sessionId, isCoordinator);
       })
     );
 
