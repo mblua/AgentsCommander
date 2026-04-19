@@ -407,50 +407,8 @@ pub async fn create_session_inner(
                 }
             }
 
-            let exe = std::env::current_exe().ok();
-            let binary_name = exe
-                .as_ref()
-                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-                .unwrap_or_else(|| "agentscommander".to_string());
-            let binary_path = {
-                let raw = exe
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "agentscommander.exe".to_string());
-                raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
-            };
-            let local_dir = exe
-                .as_ref()
-                .and_then(|p| p.parent())
-                .map(|parent| {
-                    parent
-                        .join(format!(".{}", &binary_name))
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .unwrap_or_else(|| format!(".{}", &binary_name));
-            let local_dir = local_dir
-                .strip_prefix(r"\\?\")
-                .unwrap_or(&local_dir)
-                .to_string();
-
-            let cred_block = format!(
-                concat!(
-                    "\n",
-                    "# === Session Credentials ===\n",
-                    "# Token: {token}\n",
-                    "# Root: {root}\n",
-                    "# Binary: {binary}\n",
-                    "# BinaryPath: {binary_path}\n",
-                    "# LocalDir: {local_dir}\n",
-                    "# === End Credentials ===\n",
-                ),
-                token = token,
-                root = cwd_clone,
-                binary = binary_name,
-                binary_path = binary_path,
-                local_dir = local_dir,
-            );
+            let cred_block =
+                crate::pty::credentials::build_credentials_block(&token, &cwd_clone);
 
             match crate::pty::inject::inject_text_into_session(
                 &app_clone,

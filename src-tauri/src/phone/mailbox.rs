@@ -650,20 +650,53 @@ impl MailboxPoller {
                 }),
             );
 
-            // If body is also present, spawn follow-up as background task.
-            // Command delivery is already complete — don't block the delivery pipeline.
-            if !msg.body.is_empty() {
-                let app_clone = app.clone();
-                let msg_clone = msg.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) =
-                        Self::inject_followup_after_idle_static(&app_clone, session_id, &msg_clone)
-                            .await
+            // Post-command background work:
+            //  - For `/clear` on an agent session: re-inject credentials (Claude wipes
+            //    them with the context), then the body follow-up if present.
+            //  - For `/compact` (or `/clear` on a plain shell): body follow-up only.
+            // Never block the delivery pipeline — spawn as a detached task.
+            let is_clear = command == "clear";
+            let app_clone = app.clone();
+            let msg_clone = msg.clone();
+            let command_owned = command.clone();
+            tauri::async_runtime::spawn(async move {
+                if is_clear {
+                    match Self::reinject_credentials_after_clear_static(
+                        &app_clone,
+                        session_id,
+                    )
+                    .await
                     {
-                        log::warn!("Follow-up injection after remote command failed: {}", e);
+                        Ok(()) => { /* creds in — fall through to body */ }
+                        Err(e) => {
+                            log::warn!(
+                                "[mailbox] Cred re-inject after /clear failed (session={}): {} \
+                                 — skipping body follow-up to avoid delivering a message the \
+                                 agent cannot reply to",
+                                session_id,
+                                e
+                            );
+                            return;
+                        }
                     }
-                });
-            }
+                }
+                if !msg_clone.body.is_empty() {
+                    if let Err(e) = Self::inject_followup_after_idle_static(
+                        &app_clone,
+                        session_id,
+                        &msg_clone,
+                    )
+                    .await
+                    {
+                        log::warn!(
+                            "[mailbox] Follow-up body injection after /{} failed (session={}): {}",
+                            command_owned,
+                            session_id,
+                            e
+                        );
+                    }
+                }
+            });
 
             return Ok(());
         }
@@ -701,6 +734,10 @@ impl MailboxPoller {
             }
         }
 
+        // SECURITY: this `first_100` log MUST NOT see credential blocks.
+        // Cred re-inject (reinject_credentials_after_clear_static) and spawn-path
+        // cred inject call inject_text_into_session directly, bypassing this
+        // branch. Do not refactor without re-verifying.
         log::debug!(
             "[mailbox] Injecting into PTY session={} msg={} payload_len={} first_100={:?}",
             session_id,
@@ -780,6 +817,80 @@ impl MailboxPoller {
         // between the idle check above and this write. Acceptable for this use case.
         let payload = crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body);
         crate::pty::inject::inject_text_into_session(app, session_id, &payload, true).await
+    }
+
+    /// Wait for agent to become idle after `/clear`, then re-inject the
+    /// credentials block so the agent keeps its Token/Root/BinaryPath/
+    /// LocalDir after its context window was wiped. Best-effort only.
+    ///
+    /// Gated to agent sessions (`session.agent_id.is_some()`). Plain shell
+    /// sessions skip silently with `Ok(())`.
+    ///
+    /// Static — safe to spawn as a detached task without borrowing self.
+    async fn reinject_credentials_after_clear_static(
+        app: &tauri::AppHandle,
+        session_id: Uuid,
+    ) -> Result<(), String> {
+        // Resolve the session once up front. We need `agent_id`, `token`,
+        // and `working_directory`. Fields are immutable for the lifetime
+        // of the session; the idle-poll loop below uses `list_sessions`
+        // to detect destruction tick-by-tick.
+        let (token, cwd) = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            match mgr.get_session(session_id).await {
+                Some(s) if s.agent_id.is_some() => (s.token, s.working_directory.clone()),
+                Some(_) => {
+                    // Not an agent session — nothing to re-inject.
+                    return Ok(());
+                }
+                None => {
+                    return Err(format!(
+                        "Session {} gone before credential re-inject",
+                        session_id
+                    ));
+                }
+            }
+        };
+
+        let max_wait = std::time::Duration::from_secs(30);
+        let poll = std::time::Duration::from_millis(500);
+        let start = std::time::Instant::now();
+
+        // Wait for idle (waiting_for_input = true)
+        loop {
+            if start.elapsed() >= max_wait {
+                return Err(format!(
+                    "Timeout waiting for idle before credential re-inject ({}s)",
+                    max_wait.as_secs()
+                ));
+            }
+            tokio::time::sleep(poll).await;
+
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            let sessions = mgr.list_sessions().await;
+            match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                Some(s) if s.waiting_for_input => break,
+                Some(_) => {} // busy — keep polling
+                None => {
+                    return Err(format!(
+                        "Session {} destroyed during credential re-inject poll",
+                        session_id
+                    ));
+                }
+            }
+        }
+
+        // Build + inject. Same call shape as spawn path.
+        let cred_block = crate::pty::credentials::build_credentials_block(&token, &cwd);
+        crate::pty::inject::inject_text_into_session(app, session_id, &cred_block, true).await?;
+
+        log::info!(
+            "[mailbox] Credentials re-injected after /clear (session={})",
+            session_id
+        );
+        Ok(())
     }
 
     /// Find the best session for a given agent name (matches by working directory).
