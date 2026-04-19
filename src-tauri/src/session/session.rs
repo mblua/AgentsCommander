@@ -23,6 +23,21 @@ pub fn mangle_cwd_for_claude(cwd: &str) -> String {
 /// (non-temp sessions preferred).
 pub const TEMP_SESSION_PREFIX: &str = "[temp]";
 
+/// One repo watched inside a session, rendered as a single sidebar badge "<label>/<branch>".
+/// Populated at session creation time from the replica's `repoPaths`; `branch` is filled
+/// and refreshed by `GitWatcher` on each poll.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRepo {
+    /// Repo dir name with leading "repo-" stripped (e.g. "AgentsCommander").
+    pub label: String,
+    /// Absolute path to the repo root. Branch detection runs `git rev-parse` in this dir.
+    pub source_path: String,
+    /// Current branch. `None` until first watcher tick, or when detection fails.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
@@ -42,15 +57,21 @@ pub struct Session {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub agent_label: Option<String>,
-    pub git_branch: Option<String>,
-    /// Path to detect git branch from (overrides working_directory when set).
-    /// Used for replica sessions where the cwd is the agent dir but we want the repo's branch.
+    /// Repos watched by this session. Empty = no repo badge rendered.
+    /// Order = replica config.json `repos` array order. Never sort, never dedupe,
+    /// never rebuild from a map — equality comparisons in `GitWatcher` depend on order.
     #[serde(default)]
-    pub git_branch_source: Option<String>,
-    /// Prefix to prepend to the detected branch (e.g., "agentscommander" → "agentscommander/main").
-    /// When set without git_branch_source, used as the full static label (e.g., "multi-repo").
+    pub git_repos: Vec<SessionRepo>,
+    /// Whether this session's agent is a coordinator of any discovered team.
+    /// Controls repo-badge visibility on the sidebar. Recomputed after every discovery.
     #[serde(default)]
-    pub git_branch_prefix: Option<String>,
+    pub is_coordinator: bool,
+    /// Monotonic generation counter for `git_repos`. Bumped on every refresh/watcher write.
+    /// Used for compare-and-swap in `set_git_repos_if_gen` so an in-flight watcher poll
+    /// cannot overwrite a refresh that landed during its detection window. Runtime-only;
+    /// never persisted and never exposed via SessionInfo.
+    #[serde(skip)]
+    pub git_repos_gen: u64,
     /// Unique token for CLI authentication. Passed to agents via init prompt.
     pub token: Uuid,
     /// True if this session runs Claude Code (detected at creation time).
@@ -87,11 +108,10 @@ pub struct SessionInfo {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub agent_label: Option<String>,
-    pub git_branch: Option<String>,
     #[serde(default)]
-    pub git_branch_source: Option<String>,
+    pub git_repos: Vec<SessionRepo>,
     #[serde(default)]
-    pub git_branch_prefix: Option<String>,
+    pub is_coordinator: bool,
     pub token: String,
     #[serde(default)]
     pub is_claude: bool,
@@ -112,9 +132,8 @@ impl From<&Session> for SessionInfo {
             last_prompt: s.last_prompt.clone(),
             agent_id: s.agent_id.clone(),
             agent_label: s.agent_label.clone(),
-            git_branch: s.git_branch.clone(),
-            git_branch_source: s.git_branch_source.clone(),
-            git_branch_prefix: s.git_branch_prefix.clone(),
+            git_repos: s.git_repos.clone(),
+            is_coordinator: s.is_coordinator,
             token: s.token.to_string(),
             is_claude: s.is_claude,
         }

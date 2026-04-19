@@ -200,6 +200,13 @@ pub fn is_any_coordinator(agent_name: &str, teams: &[DiscoveredTeam]) -> bool {
     teams.iter().any(|t| is_coordinator(agent_name, t))
 }
 
+/// Resolve whether the agent running at `working_directory` is a coordinator of any discovered team.
+/// Thin wrapper so call sites don't have to duplicate the `agent_name_from_path` + `is_any_coordinator` pair.
+pub fn is_coordinator_for_cwd(working_directory: &str, teams: &[DiscoveredTeam]) -> bool {
+    let agent_name = agent_name_from_path(working_directory);
+    is_any_coordinator(&agent_name, teams)
+}
+
 /// Check if two agents can communicate based on discovery-based team routing rules.
 ///
 /// Rules:
@@ -232,6 +239,45 @@ pub fn can_communicate(from: &str, to: &str, teams: &[DiscoveredTeam]) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Validation #16: `is_coordinator_for_cwd` correctness guard.
+    /// Live sessions always run inside WG replica dirs (`wg-*/__agent_*`); the function
+    /// consumes those via `agent_name_from_path` + WG-aware `is_coordinator`.
+    #[test]
+    fn is_coordinator_for_cwd_matches_wg_replica() {
+        let teams = vec![DiscoveredTeam {
+            name: "dev-team".into(),
+            agent_names: vec!["wg-1-dev-team/dev-rust".into()],
+            agent_paths: vec![None],
+            coordinator_name: Some("wg-1-dev-team/tech-lead".into()),
+            coordinator_path: None,
+        }];
+
+        // Coordinator replica (any WG of the same team) resolves true.
+        let coord_cwd = "C:/repos/foo/.ac-new/wg-4-dev-team/__agent_tech-lead";
+        assert!(is_coordinator_for_cwd(coord_cwd, &teams));
+
+        // Non-coordinator member of the team → false.
+        let member_cwd = "C:/repos/foo/.ac-new/wg-4-dev-team/__agent_dev-rust";
+        assert!(!is_coordinator_for_cwd(member_cwd, &teams));
+
+        // Unrelated agent outside any team → false.
+        let other_cwd = "C:/repos/foo/.ac-new/wg-9-other-team/__agent_dev-rust";
+        assert!(!is_coordinator_for_cwd(other_cwd, &teams));
+    }
+
+    /// Empty teams list → nothing is a coordinator.
+    #[test]
+    fn is_coordinator_for_cwd_empty_teams() {
+        let teams: Vec<DiscoveredTeam> = vec![];
+        let cwd = "C:/repos/foo/.ac-new/wg-1-dev-team/__agent_tech-lead";
+        assert!(!is_coordinator_for_cwd(cwd, &teams));
+    }
 }
 
 /// Discover all teams from all known project paths.

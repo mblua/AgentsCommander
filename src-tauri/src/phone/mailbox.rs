@@ -96,11 +96,11 @@ impl MailboxPoller {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let session_dirs = {
             let mgr = session_mgr.read().await;
-            mgr.get_sessions_directories().await
+            mgr.get_sessions_working_dirs().await
         };
 
         let mut all_paths: Vec<String> = repo_paths;
-        for (_, dir, _, _) in &session_dirs {
+        for (_, dir) in &session_dirs {
             if !all_paths.contains(dir) {
                 all_paths.push(dir.clone());
             }
@@ -521,8 +521,7 @@ impl MailboxPoller {
             agent_id,           // links to agent config
             agent_label,        // human-readable label
             false,              // skip_tooling_save = false → persist lastCodingAgent
-            None,               // git_branch_source
-            None,               // git_branch_prefix
+            Vec::new(),         // git_repos
             false,              // skip_auto_resume = false → allow provider auto-resume
         )
         .await
@@ -1121,9 +1120,9 @@ impl MailboxPoller {
         // Check session CWDs first
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
-        let dirs = mgr.get_sessions_directories().await;
+        let dirs = mgr.get_sessions_working_dirs().await;
 
-        for (_, cwd, _, _) in &dirs {
+        for (_, cwd) in &dirs {
             let normalized = cwd.replace('\\', "/");
             if self.agent_name_from_path(cwd) == agent_name
                 || normalized.ends_with(agent_name)
@@ -1304,11 +1303,11 @@ impl MailboxPoller {
 
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
-        let dirs = mgr.get_sessions_directories().await;
+        let dirs = mgr.get_sessions_working_dirs().await;
         drop(mgr);
 
         let wg_marker = format!("/{}/", wg_name);
-        for (_, cwd, _, _) in &dirs {
+        for (_, cwd) in &dirs {
             let normalized = cwd.replace('\\', "/");
             if let Some(wg_pos) = normalized.rfind(&wg_marker) {
                 let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
@@ -1478,8 +1477,7 @@ impl MailboxPoller {
                 Some(request.agent_id.clone()),
                 None,  // No agent label — auto-detected from shell
                 false, // Persist tooling
-                None,  // git_branch_source
-                None,  // git_branch_prefix
+                Vec::new(), // git_repos
                 false, // skip_auto_resume
             )
             .await
