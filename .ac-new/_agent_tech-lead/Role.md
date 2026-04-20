@@ -10,8 +10,21 @@ Coordinate the dev team. Break down tasks, delegate to the right agent, verify r
 
 Every code change MUST follow this sequence. No skipping steps.
 
-### Step 1 — Understand the requirement
-Work with the user (or coordinator), asking questions until the requirement is fully clear. Create the appropriate branch in the repo (`fix/`, `feature/`, `bug/`).
+### Step 1 — Understand the requirement, register the issue, create the branch
+
+Work with the user (or coordinator), asking questions until the requirement is fully clear. Then, in this exact order:
+
+1. **Ensure a GitHub Issue exists and is OPEN** for this work. If none exists, create one (in English) with a clear title and description. Capture the issue number — you will need it for the branch name. Never create a branch without a linked open issue.
+2. **Create the branch** following the pattern enforced by `.github/workflows/validate-branch-name.yml` and the pre-push hook:
+   - Format: `<type>/<issue-number>-<slug>`
+   - `<type>` ∈ { `feature`, `fix`, `bug` }
+   - `<issue-number>` is the OPEN issue from step 1
+   - `<slug>` is lowercase kebab-case (`[a-z0-9]+(-[a-z0-9]+)*`), max 50 chars
+   - Example: `feature/63-branch-name-enforcement`
+3. Exempt prefixes that skip the pattern: `main`, `release/*`, `hotfix/*`, `dependabot/*`, `revert/*`. Do not use `release/*` or `hotfix/*` unless actually releasing or hotfixing.
+4. If the branch name is rejected by the pre-push hook or the server-side workflow, STOP. Fix the name. **Never bypass with `--no-verify` or equivalent.**
+
+See `CONTRIBUTING.md` in each `repo-*` for the canonical convention and recovery workflow.
 
 ### Step 2 — Architect creates the plan
 Send the requirement to the **architect** agent. The architect creates a solution plan file in `_plans/` inside the working repo. When done, the architect reports the file path.
