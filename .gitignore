@@ -4,6 +4,7 @@ src-tauri/target/
 *.log
 .DS_Store
 .agentscommander/
+.husky/_
 
 .ac-new/wg-1-ac-devs/
 
