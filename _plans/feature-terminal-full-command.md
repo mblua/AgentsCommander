@@ -264,7 +264,7 @@ import { Component, Show, createMemo, onCleanup } from "solid-js";
 Notes:
 - The `status-bar-command` modifier class is new (CSS rules added in §3.5).
 - The `title` attribute provides the native tooltip showing the full command when the text is truncated. The browser/WebView renders the tooltip after a short hover delay; no custom component needed.
-- The termSize `<Show>` is removed entirely; no call site references it (keep the `setTermSize` method in the store — it's still called by `TerminalView` to track pixel-to-cell size, even though the StatusBar no longer renders it).
+- The termSize `<Show>` is removed entirely; no call site references it.
 
 **No other changes in StatusBar.tsx.**
 
