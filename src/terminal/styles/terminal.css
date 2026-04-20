@@ -257,6 +257,8 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .status-bar-item {
@@ -273,11 +275,6 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
    Option A (per grinch §9.1): apply ellipsis directly to the command wrapper
    as a plain block (overrides inherited display:flex from .status-bar-item).
    Single-element ellipsis is more predictable than nested flex+inline-block. */
-.status-bar-left {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
 .status-bar-command {
   display: block;
   min-width: 0;

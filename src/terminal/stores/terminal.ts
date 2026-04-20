@@ -30,6 +30,13 @@ export const terminalStore = {
     return termSize();
   },
 
+  /**
+   * Partial-update contract: `id` always applied; any of `name` / `shell` /
+   * `shellArgs` / `workingDirectory` omitted or passed as `undefined` leaves
+   * the current value untouched. Rename events rely on this — they pass only
+   * `(id, name)` so shell/args/cwd are preserved. Do NOT change the
+   * undefined-skip semantics without auditing every caller.
+   */
   setActiveSession(
     id: string | null,
     name?: string,

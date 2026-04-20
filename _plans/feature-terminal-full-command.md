@@ -307,37 +307,37 @@ That's the entire Titlebar change. No other lines touched.
 
 ### 3.5 `src/terminal/styles/terminal.css`
 
-Insert the following block **immediately after** the existing `.status-bar-accent { … }` rule at lines 268-270. This adds ellipsis truncation behavior scoped to the new `status-bar-command` wrapper and ensures the `status-bar-left` flex container allows its children to shrink (required for `text-overflow: ellipsis` to fire).
+**Implementation note** (2026-04-20): this section originally documented a nested-flex-with-inline-block ellipsis pattern (Option B). Per grinch §9.1 MEDIUM and tech-lead direction, the implementer (dev-webpage-ui) chose **Option A** — simpler, more predictable, single-element ellipsis. The actual CSS shipped is below; `vertical-align: bottom` (grinch §9.2) is intentionally omitted because it has no effect with the block-level pattern.
+
+Extend the existing `.status-bar-left` rule (currently `display: flex; align-items: center; gap: var(--spacing-md);`) with `min-width: 0;` and `flex: 1 1 auto;` so it can shrink inside the `space-between` parent. Then, after `.status-bar-accent`, insert one new rule for the command wrapper:
 
 ```css
-/* Full command item: shrink-to-fit with ellipsis when tight on space */
 .status-bar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
   min-width: 0;
   flex: 1 1 auto;
 }
 
+/* Full launch command in status bar: ellipsis + tooltip on overflow.
+   Option A (per grinch §9.1): apply ellipsis directly to the command wrapper
+   as a plain block (overrides inherited display:flex from .status-bar-item).
+   Single-element ellipsis is more predictable than nested flex+inline-block. */
 .status-bar-command {
+  display: block;
   min-width: 0;
-  overflow: hidden;
-}
-
-.status-bar-command > .status-bar-accent {
-  display: inline-block;
-  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  vertical-align: bottom;
 }
 ```
 
 Rationale:
-- `.status-bar-left` gets `min-width: 0; flex: 1 1 auto;` so it can actually shrink inside the space-between flex parent (`.status-bar`). Default `min-width: auto` would prevent shrinking below content width, blocking ellipsis.
-- `.status-bar-command` also needs `min-width: 0` to let its inner text shrink. `overflow: hidden` is a safety clip.
-- `.status-bar-command > .status-bar-accent` applies the standard ellipsis triad (`overflow / text-overflow / white-space`) only within the command block, leaving other `.status-bar-accent` usages untouched.
-- `vertical-align: bottom` prevents a small baseline jitter that `inline-block` can introduce against sibling text.
+- `.status-bar-left`: `min-width: 0; flex: 1 1 auto;` — default `min-width: auto` blocks shrinking below content width (blocks ellipsis); `flex: 1 1 auto` gives it all remaining space inside `.status-bar` (the right side, `.status-bar-actions`, keeps its intrinsic width).
+- `.status-bar-command { display: block; ... }` — overrides the `display: flex` inherited from `.status-bar-item`. With a single block element carrying the ellipsis triad (`overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`), there is no nested flex+inline-block circular-sizing concern. The child `<span class="status-bar-accent">` is a plain inline child that inherits `white-space: nowrap` and stays inside the clipped parent.
 
-Touching `.status-bar-left` globally is safe: it currently has only `display: flex; align-items: center; gap: var(--spacing-md);` and no other rule overrides these props.
+Touching `.status-bar-left` is safe: only one rule defines it and there is no other selector that overrides these props (grinch §9.9 verified).
 
 ---
 
