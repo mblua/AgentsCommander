@@ -269,6 +269,23 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   color: var(--statusbar-accent);
 }
 
+/* Full launch command in status bar: ellipsis + tooltip on overflow.
+   Option A (per grinch §9.1): apply ellipsis directly to the command wrapper
+   as a plain block (overrides inherited display:flex from .status-bar-item).
+   Single-element ellipsis is more predictable than nested flex+inline-block. */
+.status-bar-left {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.status-bar-command {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-bar-detached {
   color: #ffaa00;
   font-weight: 600;

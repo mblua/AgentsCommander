@@ -91,9 +91,6 @@ const Titlebar: Component<{ detached?: boolean }> = (props) => {
           <span class="titlebar-session-name">
             {terminalStore.activeSessionName}
           </span>
-          <Show when={terminalStore.activeShell}>
-            <span> ({terminalStore.activeShell})</span>
-          </Show>
         </Show>
       </div>
       <Show when={isTauri}>

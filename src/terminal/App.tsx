@@ -37,10 +37,10 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       const sessions = await SessionAPI.list();
       const session = sessions.find((s) => s.id === props.lockedSessionId);
       if (session) {
-        terminalStore.setActiveSession(session.id, session.name, session.shell, session.workingDirectory);
+        terminalStore.setActiveSession(session.id, session.name, session.shell, session.shellArgs, session.workingDirectory);
       } else {
         // Session no longer exists, close this window
-        terminalStore.setActiveSession(null, "", "", "");
+        terminalStore.setActiveSession(null, "", "", [], "");
       }
       return;
     }
@@ -51,10 +51,10 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       const sessions = await SessionAPI.list();
       const active = sessions.find((s) => s.id === activeId);
       if (active) {
-        terminalStore.setActiveSession(active.id, active.name, active.shell, active.workingDirectory);
+        terminalStore.setActiveSession(active.id, active.name, active.shell, active.shellArgs, active.workingDirectory);
       }
     } else {
-      terminalStore.setActiveSession(null, "", "", "");
+      terminalStore.setActiveSession(null, "", "", [], "");
     }
   };
 
@@ -71,7 +71,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       unlisteners.push(
         await onSessionSwitched(async ({ id }) => {
           if (!id) {
-            terminalStore.setActiveSession(null, "", "", "");
+            terminalStore.setActiveSession(null, "", "", [], "");
             return;
           }
           const sessions = await SessionAPI.list();
@@ -81,6 +81,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
               session.id,
               session.name,
               session.shell,
+              session.shellArgs,
               session.workingDirectory
             );
           }
@@ -94,6 +95,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
               session.id,
               session.name,
               session.shell,
+              session.shellArgs,
               session.workingDirectory
             );
           }

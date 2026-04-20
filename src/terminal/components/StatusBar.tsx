@@ -1,4 +1,4 @@
-import { Component, Show, onCleanup } from "solid-js";
+import { Component, Show, createMemo, onCleanup } from "solid-js";
 import { terminalStore } from "../stores/terminal";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
@@ -9,6 +9,13 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
 
   const isRecording = () => !!voiceRecorder.recordingSessionId();
   const isProcessing = () => !!voiceRecorder.processingSessionId();
+
+  const fullCommand = createMemo(() => {
+    const shell = terminalStore.activeShell;
+    const args = terminalStore.activeShellArgs;
+    if (!shell) return "";
+    return args.length > 0 ? `${shell} ${args.join(" ")}` : shell;
+  });
 
   const handleMicDown = (e: MouseEvent) => {
     e.preventDefault();
@@ -57,14 +64,11 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
             <span class="status-bar-detached">DETACHED</span>
           </div>
         </Show>
-        <Show when={terminalStore.activeShell}>
-          <div class="status-bar-item">
-            <span class="status-bar-accent">{terminalStore.activeShell}</span>
-          </div>
-        </Show>
-        <Show when={terminalStore.termSize.cols > 0}>
-          <div class="status-bar-item">
-            {terminalStore.termSize.cols}x{terminalStore.termSize.rows}
+        <Show when={fullCommand()}>
+          <div class="status-bar-item status-bar-command">
+            <span class="status-bar-accent" title={fullCommand()}>
+              {fullCommand()}
+            </span>
           </div>
         </Show>
         <Show when={isRecording()}>
