@@ -746,9 +746,23 @@ pub async fn destroy_session(
     destroy_session_inner(&app, uuid).await
 }
 
+/// Resolves the effective `skip_auto_resume` flag for `restart_session`.
+/// Defaults to `true` (fresh conversation) to preserve existing restart-button semantics.
+/// `Some(false)` is used by the deferred-wake path (ProjectPanel.handleReplicaClick)
+/// to allow provider auto-resume and continue the prior conversation.
+fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
+    requested.unwrap_or(true)
+}
+
 /// Restart a session: destroy the existing one and recreate it with the same
-/// configuration but a fresh PTY (no provider auto-resume). The restarted session is
-/// automatically activated, Telegram bridges are re-attached, and state is persisted.
+/// configuration but a fresh PTY. By default suppresses provider auto-resume
+/// (true user-intent restart — fresh conversation). Callers that are instead
+/// *waking* a previously-deferred session (e.g. a non-coordinator replica whose
+/// PTY was Exited(0) at startup due to `startOnlyCoordinators: true`) pass
+/// `skip_auto_resume = Some(false)` to allow `claude --continue`,
+/// `codex resume --last`, or `gemini --resume latest` injection.
+/// The restarted session is automatically activated, Telegram bridges are
+/// re-attached, and state is persisted.
 #[tauri::command]
 pub async fn restart_session(
     app: AppHandle,
@@ -758,6 +772,7 @@ pub async fn restart_session(
     settings: State<'_, SettingsState>,
     id: String,
     agent_id: Option<String>,
+    skip_auto_resume: Option<bool>,
 ) -> Result<SessionInfo, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
@@ -814,7 +829,7 @@ pub async fn restart_session(
         agent_label,
         false, // skip_tooling_save
         git_repos,
-        true, // skip_auto_resume — the whole point of restart
+        effective_restart_skip_auto_resume(skip_auto_resume),
     )
     .await?;
 
@@ -1498,5 +1513,27 @@ mod tests {
             resolved,
             (Some("claude".to_string()), Some("Claude Code".to_string()))
         );
+    }
+
+    #[test]
+    fn effective_restart_skip_auto_resume_defaults_to_true_for_none() {
+        // No explicit value → preserve legacy "fresh conversation" semantics
+        // used by SessionItem, ProjectPanel context menu, AcDiscoveryPanel.
+        assert!(super::effective_restart_skip_auto_resume(None));
+    }
+
+    #[test]
+    fn effective_restart_skip_auto_resume_respects_explicit_false() {
+        // Deferred-wake path (ProjectPanel.handleReplicaClick) MUST be able
+        // to opt in to provider auto-resume; otherwise gemini/codex/claude
+        // sessions re-open with a blank slate instead of continuing.
+        assert!(!super::effective_restart_skip_auto_resume(Some(false)));
+    }
+
+    #[test]
+    fn effective_restart_skip_auto_resume_respects_explicit_true() {
+        // Explicit true still works (future-proof against a caller that
+        // wants to be explicit rather than rely on the default).
+        assert!(super::effective_restart_skip_auto_resume(Some(true)));
     }
 }
