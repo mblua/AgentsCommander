@@ -102,14 +102,17 @@ const ProjectPanel: Component = () => {
     const existing = replicaSession(wg, replica);
     if (existing) {
       if (!isSessionLive(existing)) {
-        // Session exists but PTY has exited — restart it
+        // Session exists but PTY has exited (deferred at startup by
+        // startOnlyCoordinators, or prior shutdown). Wake it with provider
+        // auto-resume so the prior conversation continues — this is NOT a
+        // user-intent "fresh conversation" restart.
         try {
-          await SessionAPI.restart(existing.id);
+          await SessionAPI.restart(existing.id, { skipAutoResume: false });
           if (isTauri) {
             await WindowAPI.ensureTerminal();
           }
         } catch (e) {
-          console.error("Failed to restart session:", e);
+          console.error("Failed to wake session:", e);
         }
         return;
       }
