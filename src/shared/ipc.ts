@@ -34,6 +34,14 @@ export interface CreateSessionOptions {
 
 export interface RestartSessionOptions {
   agentId?: string;
+  /**
+   * Forwarded to the backend `restart_session` command. Omit (or pass `true`)
+   * for a true user-intent restart that starts a fresh conversation. Pass
+   * `false` when waking a deferred session (PTY exited due to
+   * `startOnlyCoordinators: true`) to allow provider auto-resume
+   * (`claude --continue`, `codex resume --last`, `gemini --resume latest`).
+   */
+  skipAutoResume?: boolean;
 }
 
 export const SessionAPI = {
@@ -53,6 +61,7 @@ export const SessionAPI = {
     transport.invoke<Session>("restart_session", {
       id,
       agentId: opts?.agentId ?? null,
+      skipAutoResume: opts?.skipAutoResume ?? null,
     }),
 
   switch: (id: string) => transport.invoke<void>("switch_session", { id }),

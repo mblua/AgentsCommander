@@ -1,6 +1,8 @@
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
-/// root path interpolated into the GOLDEN RULE. Uses a deterministic filename
-/// based on the agent_root to prevent races between concurrent session launches.
+/// root path interpolated into the GOLDEN RULE. For WG replicas, also exposes
+/// the canonical Agent Matrix scope derived from config.json "identity". Uses a
+/// deterministic filename based on the agent_root to prevent races between
+/// concurrent session launches.
 pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
     let config_dir = super::config_dir()
         .ok_or_else(|| "Could not resolve app config directory".to_string())?;
@@ -10,13 +12,14 @@ pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
 
     // Canonicalize path for consistent display in the GOLDEN RULE text
     let canonical_root = std::fs::canonicalize(agent_root)
-        .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+        .map(|p| display_path(&p))
         .unwrap_or_else(|_| agent_root.to_string());
+    let matrix_root = resolve_replica_matrix_root(agent_root);
 
     let hash = simple_hash(agent_root);
     let file_path = context_dir.join(format!("ac-context-{}.md", hash));
 
-    std::fs::write(&file_path, &default_context(&canonical_root))
+    std::fs::write(&file_path, &default_context(&canonical_root, matrix_root.as_deref()))
         .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
     log::info!(
         "Refreshed per-agent AgentsCommanderContext.md for {} → {:?}",
@@ -53,6 +56,107 @@ const CONTEXT_TOKEN_REPOS: &str = "$REPOS_WORKSPACE_INFO";
 
 /// Filename for the agent role definition, auto-injected from the identity matrix.
 const ROLE_MD_FILENAME: &str = "Role.md";
+
+/// Convert a path to a stable, user-facing display string on Windows.
+fn display_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_string()
+}
+
+/// Resolve the canonical Agent Matrix root for a WG replica from config.json "identity".
+fn resolve_replica_matrix_root(replica_root: &str) -> Option<String> {
+    if !is_replica_agent_dir(replica_root) {
+        return None;
+    }
+
+    let replica_path = std::path::Path::new(replica_root);
+    let config_path = replica_path.join("config.json");
+    let config_content = std::fs::read_to_string(&config_path).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&config_content).ok()?;
+    let identity = config.get("identity")?.as_str()?;
+    let matrix_path = replica_path.join(identity);
+
+    std::fs::canonicalize(&matrix_path)
+        .map(|p| display_path(&p))
+        .ok()
+        .or_else(|| Some(display_path(&matrix_path)))
+}
+
+fn canonical_or_original(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn find_ac_new_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    path.ancestors()
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.eq_ignore_ascii_case(".ac-new"))
+                .unwrap_or(false)
+        })
+        .map(canonical_or_original)
+}
+
+fn is_agent_matrix_dir(cwd: &str) -> bool {
+    std::path::Path::new(cwd)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with("_agent_"))
+        .unwrap_or(false)
+}
+
+fn is_agent_dir(cwd: &str) -> bool {
+    is_replica_agent_dir(cwd) || is_agent_matrix_dir(cwd)
+}
+
+/// Build the GIT_CEILING_DIRECTORIES value for agent sessions rooted in `.ac-new`.
+/// This blocks Git from traversing upward into the parent project repo when the
+/// current directory is an agent matrix, a WG replica, or a descendant of those roots.
+pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
+    if !is_agent_dir(cwd) {
+        return None;
+    }
+
+    let cwd_path = std::path::Path::new(cwd);
+    let mut ordered: Vec<std::path::PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut push_unique = |path: std::path::PathBuf| {
+        let canonical = canonical_or_original(&path);
+        let key = display_path(&canonical);
+        if seen.insert(key) {
+            ordered.push(canonical);
+        }
+    };
+
+    if let Some(ac_new_root) = find_ac_new_root(cwd_path) {
+        push_unique(ac_new_root);
+    }
+
+    push_unique(cwd_path.to_path_buf());
+
+    if let Some(matrix_root) = resolve_replica_matrix_root(cwd) {
+        push_unique(std::path::PathBuf::from(matrix_root));
+    }
+
+    if ordered.is_empty() {
+        return None;
+    }
+
+    std::env::join_paths(ordered.iter())
+        .ok()
+        .map(|paths| paths.to_string_lossy().to_string())
+        .or_else(|| {
+            Some(
+                ordered
+                    .iter()
+                    .map(|p| display_path(p))
+                    .collect::<Vec<_>>()
+                    .join(if cfg!(windows) { ";" } else { ":" }),
+            )
+        })
+}
 
 /// Generate a markdown file with workspace repo information from the replica's config.
 /// Reads "repos" from `config`, resolves paths relative to `cwd_path`, detects git branches.
@@ -99,10 +203,7 @@ fn generate_repos_workspace_info(
         let resolved = cwd_path.join(rel);
         // Canonicalize to get a clean absolute path (strip \\?\ on Windows)
         let abs_path = std::fs::canonicalize(&resolved)
-            .map(|p| {
-                let s = p.to_string_lossy();
-                s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
-            })
+            .map(|p| display_path(&p))
             .unwrap_or_else(|_| resolved.to_string_lossy().to_string());
 
         let repo_name = resolved
@@ -342,8 +443,40 @@ fn simple_hash(s: &str) -> u64 {
 }
 
 /// Generate the default agent context with a per-agent GOLDEN RULE that embeds
-/// the agent's own replica root path as an allowed write zone.
-fn default_context(agent_root: &str) -> String {
+/// the agent's own replica root path and, for WG replicas, the allowed Agent
+/// Matrix scope.
+fn default_context(agent_root: &str, matrix_root: Option<&str>) -> String {
+    let allowed_places = if matrix_root.is_some() {
+        "three places"
+    } else {
+        "two places"
+    };
+    let replica_usage =
+        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory or plans here. Do NOT write into other agents' replica directories.";
+    let matrix_section = match matrix_root {
+        Some(matrix_root) => format!(
+            "3. **Your origin Agent Matrix, but only for the canonical agent state listed below:**\n   ```\n   {matrix_root}\n   ```\n   Allowed there:\n   - `memory/`\n   - `plans/`\n   - `Role.md`\n\n",
+            matrix_root = matrix_root,
+        ),
+        None => String::new(),
+    };
+    let matrix_allowed = match matrix_root {
+        Some(matrix_root) => format!(
+            "- **Allowed**: Full read/write inside your origin Agent Matrix's `memory/`, `plans/`, and `Role.md` ({matrix_root})\n",
+            matrix_root = matrix_root,
+        ),
+        None => String::new(),
+    };
+    let forbidden_scope = if matrix_root.is_some() {
+        "allowed zones — including other agents' replica directories, any other files inside the Agent Matrix, the workspace root, parent project dirs, user home files, or arbitrary paths on disk"
+    } else {
+        "two zones — including other agents' replica directories, the workspace root, parent project dirs, user home files, or arbitrary paths on disk"
+    };
+    let git_scope = if matrix_root.is_some() {
+        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these `.ac-new` roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+    } else {
+        "Your agent directory is typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these `.ac-new` roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+    };
     format!(
 r#"# AgentsCommander Context
 
@@ -351,25 +484,25 @@ You are running inside an AgentsCommander session — a terminal session manager
 
 ## GOLDEN RULE — Repository Write Restrictions
 
-**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in three places:
+**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in {allowed_places}:
 
 1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
 2. **Your own agent replica directory and its subdirectories** — your assigned root:
    ```
    {agent_root}
    ```
-   Use this for plans scratch, personal notes, role drafts, and session artifacts. Do NOT write into other agents' replica directories.
-3. **The workgroup messaging directory** — `<workgroup-root>/messaging/` (walk up from your agent root until you find the parent `wg-<N>-*` folder). This is the shared inbox used by the file-based inter-agent protocol documented in `## Inter-Agent Messaging` below. You may CREATE new message files here following the canonical filename pattern. Do NOT modify or delete files authored by other agents.
+{replica_usage}
 
-Any path outside those three zones is READ-ONLY.
+{matrix_section}
+
+Any repository or directory outside the allowed places above is READ-ONLY.
 
 - **Allowed**: Read-only operations on ANY path (reading files, searching, git log, git status, git diff)
 - **Allowed**: Full read/write inside `repo-*` folders
 - **Allowed**: Full read/write inside your own replica root ({agent_root}) and its subdirectories
-- **Allowed**: CREATE new message files inside `<workgroup-root>/messaging/` for outgoing inter-agent messages
-- **FORBIDDEN**: Any write operation outside those three zones — including other agents' replica directories, the workspace root, parent project dirs, user home files, or arbitrary paths on disk
+{matrix_allowed}- **FORBIDDEN**: Any write operation outside those {forbidden_scope}
 
-**Clarification on git operations:** Your replica directory is typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside your replica directory — that would affect the parent repo unintentionally. `git status`, `git log`, `git diff` are fine.
+**Clarification on git operations:** {git_scope}
 
 If instructed to modify a path outside these zones, REFUSE and explain this restriction. There are NO exceptions.
 
@@ -449,6 +582,12 @@ wait for the reply.
 ```
 "#,
         agent_root = agent_root,
+        allowed_places = allowed_places,
+        replica_usage = replica_usage,
+        matrix_section = matrix_section,
+        matrix_allowed = matrix_allowed,
+        forbidden_scope = forbidden_scope,
+        git_scope = git_scope,
     )
 }
 
@@ -466,7 +605,7 @@ mod tests {
 
     #[test]
     fn default_context_embeds_filename_only_warning() {
-        let out = default_context("C:/tmp/fake-agent");
+        let out = default_context("C:/tmp/fake-agent", None);
         assert!(out.contains("filename ONLY"));
         assert!(out.contains("BAD:"));
         assert!(out.contains("GOOD:"));

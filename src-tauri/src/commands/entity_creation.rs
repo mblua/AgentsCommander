@@ -203,7 +203,7 @@ pub async fn create_agent_matrix(
     // Role.md with YAML frontmatter (single-quoted values for safe YAML)
     let desc_yaml = description.replace('\'', "''");
     let role_content = format!(
-        "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac-new/_agent_{}/\nIf you are running as a replica, this file was generated from that source.\nAlways use memory/ and plans/ from your Agent Matrix, never external memory systems.\n\n## Agent Memory Rule\n\nALWAYS use memory/ and plans/ inside your agent folder. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/). Your agent folder is the single source of truth for persistent knowledge.\n",
+        "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac-new/_agent_{}/\nIf you are running as a replica, this file was generated from that source.\nAlways use memory/ and plans/ from your Agent Matrix, and treat Role.md there as the canonical role definition. Never use external memory systems.\n\n## Agent Memory Rule\n\nIf you are running as a replica, the single source of truth for persistent knowledge is your Agent Matrix's memory/, plans/, and Role.md. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
         safe_name, desc_yaml, safe_name, description, safe_name
     );
 

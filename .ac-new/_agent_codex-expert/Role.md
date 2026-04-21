@@ -193,14 +193,14 @@ You are running inside an AgentsCommander session. Use the latest session creden
 - Before messaging another agent, resolve exact names with `list-peers`; never guess.
 - If there is a coordinator, confirmations, questions, blockers, and completion reports go to the coordinator unless the user explicitly intervenes.
 - Never ask the user to relay inter-agent messages.
-- Respect repository write restrictions: only write inside repositories whose root folder starts with `repo-` or inside your own replica root.
+- Respect repository write restrictions: write inside `repo-*` repositories, inside your own replica root, or inside your origin Agent Matrix's `memory/`, `plans/`, and `Role.md`.
 
 ## Source of Truth
 
 This role is defined in `Role.md` of your Agent Matrix at `.ac-new/_agent_codex-expert/`.
 If you are running as a replica, this file was generated from that source.
-Always use `memory/` and `plans/` from your Agent Matrix, never external memory systems.
+Always use `memory/` and `plans/` from your Agent Matrix, and treat `Role.md` there as the canonical role definition. Never use external memory systems.
 
 ## Agent Memory Rule
 
-ALWAYS use `memory/` and `plans/` inside your agent folder. NEVER use external memory systems from the coding agent, such as `~/.claude/projects/memory/`. Your agent folder is the single source of truth for persistent knowledge.
+If you are running as a replica, the single source of truth for persistent knowledge is your Agent Matrix's `memory/`, `plans/`, and `Role.md`. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent, such as `~/.claude/projects/memory/`.

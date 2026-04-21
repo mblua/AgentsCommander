@@ -219,6 +219,23 @@ fn find_provider_token(tokens: &[&str], provider: &str) -> Option<usize> {
         .position(|token| command_token_basename(token) == provider)
 }
 
+
+fn gemini_has_manual_resume(tokens: &[&str], gemini_idx: usize) -> bool {
+    let mut idx = gemini_idx + 1;
+    while idx < tokens.len() {
+        let token = tokens[idx];
+        if token.eq_ignore_ascii_case("-c") || token.eq_ignore_ascii_case("--config") {
+            idx = advance_past_config_value(tokens, idx + 1);
+            continue;
+        }
+        if token.eq_ignore_ascii_case("--resume") || token.to_lowercase().starts_with("--resume=") {
+            return true;
+        }
+        idx += 1;
+    }
+    false
+}
+
 fn codex_has_manual_resume(tokens: &[&str], codex_idx: usize) -> bool {
     let mut idx = codex_idx + 1;
     while idx < tokens.len() {
@@ -258,6 +275,16 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
                 ));
             }
         }
+
+        if let Some(gemini_idx) = find_provider_token(&tokens, "gemini") {
+            if gemini_has_manual_resume(&tokens, gemini_idx) {
+                return Err(format!(
+                    "Agent \"{}\": Gemini commands must not include --resume; AgentsCommander injects gemini --resume latest automatically",
+                    agent.label
+                ));
+            }
+        }
+
     }
 
     Ok(())
@@ -334,6 +361,20 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn validate_agent_commands_allows_plain_gemini() {
+        let settings = settings_with_agents(&[("Gemini", "gemini")]);
+        assert!(super::validate_agent_commands(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_agent_commands_rejects_gemini_resume_latest() {
+        let settings = settings_with_agents(&[("Gemini", "gemini --resume latest")]);
+        let err = super::validate_agent_commands(&settings).unwrap_err();
+        assert!(err.contains("Gemini commands must not include --resume"));
+    }
+
     use super::{validate_agent_commands, AgentConfig, AppSettings};
 
     fn settings_with_agents(commands: &[(&str, &str)]) -> AppSettings {
