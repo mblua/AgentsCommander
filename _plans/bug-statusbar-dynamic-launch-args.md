@@ -561,3 +561,205 @@ Nothing in this enrichment changes the code the grinch will write. The plan's §
 - Offers test-placement details (§13.10) and one extra verification command (§13.11).
 
 **Verdict**: the architect's plan is implementable as-written. No sections rewritten, no disagreements.
+
+---
+
+## 14. Grinch adversarial review (dev-rust-grinch, 2026-04-21)
+
+Review against branch `feature/terminal-full-command` at tip `99b8ccc`. Verified all line numbers, all activation paths, all four `SessionInfo::from` call sites, every `setActiveSession` caller, and every `Session` struct literal in the tree. Architect's §1–§12 and dev-rust's §13 enrichment hold up — the core design is sound. Below are the gaps I found. One is a compilation blocker the plan cannot ship without addressing.
+
+### 14.1 `makeInactiveEntry` breaks TS compilation (HIGH — blocker)
+
+**What**: Plan §6.1 adds a **required** field `effectiveShellArgs: string[] | null;` to the `Session` interface at `src/shared/types.ts:7-23`. Exactly ONE place in the frontend constructs a `Session` literal: `src/sidebar/stores/sessions.ts:31-49` → `makeInactiveEntry`. That literal currently initializes 15 fields and does NOT include `effectiveShellArgs`.
+
+After §6.1 lands, `tsc --noEmit` will fail at `sessions.ts:32` with:
+> Property 'effectiveShellArgs' is missing in type '{ id: string; name: string; … }' but required in type 'Session'.
+
+Plan §8.1 lists `npx tsc --noEmit` as a must-pass check (§8.1 checklist line 321), so this is a hard blocker.
+
+**Why it matters**:
+- §10 explicitly forbids touching `src/sidebar/**` ("Do NOT modify the sidebar. StatusBar-only scope.").
+- §12 "Files touched" does not list `src/sidebar/stores/sessions.ts`.
+- A dev who strictly follows §10/§12 will skip this file, hit the TS error, and be forced to either (a) violate §10 without guidance on what value to use, or (b) bounce back to architect.
+
+**Fix**: Either:
+- **Option A (preferred, minimum diff)**: allow a targeted 1-line edit to `sessions.ts` and add it to §12. Specifically, inside `makeInactiveEntry`, after `shellArgs: [],` insert `effectiveShellArgs: null,`. This matches the "dormant / not-yet-spawned" semantics of inactive placeholders — they never reach a PTY spawn, so `effective_shell_args` on the Rust side would be `None` for them too. Then update §10 to read: "Do NOT modify the sidebar EXCEPT for a 1-line addition to `makeInactiveEntry` in `src/sidebar/stores/sessions.ts` to keep the `Session` object literal exhaustive; no behavioral change."
+- **Option B**: make the field optional in the TS interface (`effectiveShellArgs?: string[] | null;`). `makeInactiveEntry` can omit. Memo at §6.4 must then also guard on `args === undefined`. Rust side unchanged. Trade-off: permissive TS contract where the required-vs-optional distinction no longer mirrors Rust's `Option<Vec<String>>`. Minor TS ergonomics hit — prefer Option A.
+
+### 14.2 `§11 item 4` vs `§6.4` — claim that the memo handles `undefined` is false (MEDIUM)
+
+**What**: §11 edge case 4 asserts the StatusBar memo is "Updated in §6.4. Treat `null` and `undefined` identically." But the actual §6.4 code block reads:
+
+```tsx
+if (!shell || args === null) return "";
+return args.length > 0 ? `${shell} ${args.join(" ")}` : shell;
+```
+
+No `args === undefined` check. If `args` is `undefined` at runtime, `args === null` is false, flow falls through to `args.length` which throws `TypeError: Cannot read properties of undefined (reading 'length')`.
+
+**Why it matters**: Within the same-branch ship, the signal type `string[] | null` combined with `createSignal(null)` + backend's `#[serde(default)]` guarantees `args` is never `undefined` at runtime, so the bug is theoretical. BUT:
+1. The plan's own §11 item 4 explicitly raises the backward-compat scenario (older-backend-to-newer-frontend pairing during local dev), and then claims §6.4 handles it. It does not.
+2. If a future refactor widens the type to `string[] | null | undefined` (e.g. when adding an optional field helper), the memo will crash instead of gracefully hiding.
+3. If Option B from §14.1 is chosen (making the field optional), `undefined` becomes a real runtime case and the memo WILL crash.
+
+**Fix**: Either
+- Update §6.4 code block to `if (!shell || args === null || args === undefined) return "";` (safer; matches §11's stated intent; mandatory if §14.1 Option B is chosen).
+- OR remove the "Updated in §6.4. Treat `null` and `undefined` identically." sentence from §11 item 4 to keep the plan internally consistent.
+
+### 14.3 Proposed unit tests don't guard against the real regression (MEDIUM)
+
+**What**: §8.2 proposes two unit tests:
+1. `SessionInfo::from(&Session)` copies `effective_shell_args`.
+2. `SessionManager::set_effective_shell_args` writes the field.
+
+Both pass if (and only if) the struct-field plumbing (§5.1–§5.2) is correct. Neither exercises `create_session_inner` — which is where the bug actually lives (the missed capture between injections and spawn). If a future dev accidentally removes or gates the capture call at §5.3, these tests will happily pass and the Issue-#65 regression silently returns for any or all agents.
+
+**Why it matters**: The whole point of the plan is the capture point. The proposed tests leave it untested by construction. §8.2 item 3 acknowledges an integration test is hard ("requires Tauri State setup"), but then shrugs it off as "a two-line addition whose correctness is trivial to inspect." That's exactly the kind of reasoning that produced the original bug in the first place — the architect of that earlier work also thought the one-line shadowing was obvious. The bug existed for weeks before someone filed Issue #65.
+
+**Fix (pragmatic, no integration-test framework needed)**: Extract the capture logic into a tiny pure function that can be unit-tested. Concretely, add a helper in `commands/session.rs`:
+
+```rust
+/// Compute the effective arg vector after all dynamic injections.
+/// Extracted from `create_session_inner` to make injection sequencing testable
+/// in isolation. Keep the injection blocks in `create_session_inner` thin
+/// delegators so this function stays authoritative.
+pub(crate) fn compute_effective_shell_args(
+    shell: &str,
+    configured: &[String],
+    is_claude: bool,
+    is_codex: bool,
+    claude_project_exists: bool,
+    skip_auto_resume: bool,
+    materialized_context_path: Option<&str>,
+    agent_id_present: bool,
+) -> Vec<String> { /* ... */ }
+```
+
+Then unit-test each injection combination (Claude continue, Claude append-system-prompt, Codex resume, cmd-wrapper variants, skip_auto_resume gating) directly. This catches the "forgot to call `set_effective_shell_args`" regression because the helper's output IS what gets captured — the capture site becomes a one-line `let effective = compute_effective_shell_args(...); pty_mgr.spawn(...&effective...); session.effective_shell_args = Some(effective);`.
+
+**This is an optional improvement, NOT a blocker.** If scope pressure wins, keep §8.2 as-is and document the weakness: "The proposed tests verify field plumbing only. The actual capture behavior is not unit-testable without refactoring injection into a pure helper. A full Tauri-state integration test is out of scope. Reviewers of future changes to `create_session_inner` must mentally re-verify that the capture is still called on every code path."
+
+### 14.4 §8.1 manual-test #3 regression check is too lax re: `--append-system-prompt-file` (LOW)
+
+**What**: §13.4 already flagged that `--append-system-prompt-file` IS still injected on restart (not gated behind `skip_auto_resume`). §13.4 says "Correction to §8.1 manual test #3" — but the §8.1 text in the plan was never actually updated. Current §8.1 item 3 still reads:
+
+> **Restart a Claude session**: Click restart on an existing Claude session. Verify StatusBar shows the configured args **without** `--continue` (skip_auto_resume=true on restart).
+
+This doesn't mention `--append-system-prompt-file` one way or the other. A tester following this bullet literally will NOT check whether `--append-system-prompt-file` survives restart, which is the exact regression a future "while I'm here" refactor could introduce.
+
+**Fix**: Apply §13.4's proposed replacement to §8.1 item 3 directly. Replace the current bullet with:
+
+> **Restart a Claude session**: Click restart on an existing Claude session whose CWD has a CLAUDE.md file. Verify StatusBar shows configured args + `--append-system-prompt-file "<path>"` BUT NOT `--continue`. For a Claude session whose CWD has no CLAUDE.md, verify StatusBar shows the configured args with NEITHER `--continue` NOR `--append-system-prompt-file`.
+
+### 14.5 `shell_args.clone()` twice at the capture point (LOW)
+
+**What**: §5.3's replacement snippet clones `shell_args` twice:
+
+```rust
+mgr.set_effective_shell_args(id, shell_args.clone()).await;
+session.effective_shell_args = Some(shell_args.clone());
+```
+
+**Why it matters**: `shell_args` is short (typically ≤ 10 strings), so two clones per session creation is trivial. BUT: the double-clone reads as if the two consumers need different values, which they don't. Cosmetic noise that obscures intent.
+
+**Fix**: Replace with a single clone-then-move pattern. Note: `set_effective_shell_args` takes `Vec<String>` by value, so we can move; the local-clone sets `Some(...)`:
+
+```rust
+// Capture the effective arg vector BEFORE spawn so SessionInfo::from(&session)
+// (emitted at line ~439 as "session_created") carries the injected flags.
+let effective = shell_args.clone();
+mgr.set_effective_shell_args(id, effective.clone()).await;
+session.effective_shell_args = Some(effective);
+
+pty_mgr
+    .lock()
+    .unwrap()
+    .spawn(id, &shell, &shell_args, &cwd, 120, 30, app.clone())
+    .map_err(|e| e.to_string())?;
+```
+
+Still two `.clone()` calls but the intent is explicit: bind once, broadcast to two consumers, let `shell_args` stay owned for the spawn call. Trivial stylistic preference — accept or ignore.
+
+### 14.6 Dormant sessions are still auto-activated by terminal window → transient blank StatusBar during restore (LOW)
+
+**What**: `lib.rs:543` dormant path emits `session_created` with `effective_shell_args = None`. Terminal window's `onSessionCreated` handler (App.tsx:92-103) sets the dormant session as active if `!terminalStore.activeSessionId`. Under `start_only_coordinators = true`, if dormant sessions are emitted BEFORE any coordinator's `create_session_inner` completes, the terminal briefly auto-activates a dormant session. For that moment:
+- Terminal view renders for a session whose PTY was never spawned → empty xterm.
+- StatusBar `fullCommand()` returns `""` (because `effectiveShellArgs` is null) → entire StatusBar-left block disappears.
+
+When the coordinator session's `session_created` emit lands, it does NOT override the auto-activation (the handler only fires on no-active). The user sees a dead session until they manually switch.
+
+**Why it matters**: Pre-existing behavior for dormant sessions — confirmed not a regression INTRODUCED by this plan. BUT the plan's empty-StatusBar semantics make the "ghost dormant session" state more visible: in v0.7.3 and earlier, the StatusBar at least showed the shell name as a breadcrumb. After this plan, the entire bar-left block vanishes. This is spec-compliant per §2 ("StatusBar command block is empty — not the configured args, not a placeholder"), but an orientation-losing regression for first-time users booting with `start_only_coordinators = true`.
+
+**Fix**: NOT a blocker — the user confirmed the empty-state preference. Add to §11 as a documented edge case so future readers don't re-open this as a bug:
+
+> **9. Cold-start auto-activation of a dormant session**: under `start_only_coordinators = true`, if dormant sessions emit `session_created` before any coordinator, the terminal window may briefly auto-activate a dormant session (pre-existing auto-activate behavior in App.tsx:92-103). The StatusBar will be empty (null `effectiveShellArgs`) and the terminal view will be blank (no PTY). This is the spec-compliant behavior for dormant sessions. User manually switches to a live session to proceed. Not changed by this fix.
+
+### 14.7 `set_effective_shell_args` silent no-op if session was destroyed in race (INFO)
+
+**What**: Plan's `set_effective_shell_args` does:
+
+```rust
+pub async fn set_effective_shell_args(&self, id: Uuid, args: Vec<String>) {
+    let mut sessions = self.sessions.write().await;
+    if let Some(s) = sessions.get_mut(&id) {
+        s.effective_shell_args = Some(args);
+    }
+}
+```
+
+If the session was destroyed between `mgr.create_session` (L226) and this call, the write is a silent no-op. The local `session` clone's `effective_shell_args` still gets set, so the `session_created` emit at L438 carries the captured args regardless. Frontend learns about a session the backend no longer has — then receives `session_destroyed` later. Net: harmless.
+
+**Why it matters**: Not reachable through the UI because the session UUID isn't exposed to any caller before emit. A programmatic destroy via CLI or mailbox would need the UUID too. In practice the race can't fire. INFO-only.
+
+**Fix**: None required. Flagged for future readers who might worry about this.
+
+### 14.8 No new IPC event confirmation — cross-checked (INFO, confirms §5.4)
+
+**What**: Verified that `session_created` is the only `SessionInfo`-carrying emit. Grepped for `session_created` emits — exactly 2 in Rust (commands/session.rs:439, lib.rs:559). Verified 4 `SessionInfo::from` call sites: commands/session.rs:438 (emit), lib.rs:558 (emit), session/manager.rs:157 (`list_sessions`), session/manager.rs:367 (`find_by_token`). All four automatically carry the new field via the struct-literal update in §5.1.c. `list_sessions` is called by the frontend on every switch (App.tsx:51, 77) and on initial load (App.tsx:113 in sidebar). `find_by_token` is CLI/web auth path and never hits the terminal StatusBar.
+
+**No fix needed.** Independent confirmation of §5.4 and §13.6.
+
+### 14.9 `ApiSessionView` (web HTTP API) doesn't expose `effectiveShellArgs` (INFO)
+
+**What**: `src-tauri/src/web/mod.rs:121-131` defines a public projection of SessionInfo that omits sensitive fields (token, etc.). It does NOT include `effective_shell_args`. After this plan lands, the `/api/sessions` HTTP endpoint will continue to NOT expose effective args to HTTP consumers.
+
+**Why it matters**: Correct by default — public HTTP API should not expose agent-internal auto-injected flags. Confirms the plan's blast radius is bounded to the Tauri IPC consumer (the terminal window). If the web frontend (src/browser/) someday adds a StatusBar-equivalent, it would need to use `SessionInfo` via WebSocket, not `ApiSessionView` via HTTP.
+
+**No fix needed.** INFO-only, flagged for clarity.
+
+### 14.10 CLI `list-sessions` reads from disk, does NOT show effective args (INFO)
+
+**What**: `cli/list_sessions.rs` reads `PersistedSession` via `load_sessions_raw()`. `PersistedSession` has no `effective_shell_args` field (plan §13.8 confirms). The CLI output is configured-recipe-only, as expected. Users inspecting live effective args via CLI would not find it here — the data lives in-memory only.
+
+**No fix needed.** INFO-only. If a future CLI tool wants effective args, it would need to query the live app via the future IPC surface, not the sessions.json file.
+
+---
+
+## Grinch Review Summary — §14
+
+| # | Finding | Severity | Action |
+|---|---------|----------|--------|
+| 14.1 | `makeInactiveEntry` in `sidebar/stores/sessions.ts` breaks TS compile after new required `Session` field | **HIGH (blocker)** | Must amend §10/§12 + touch `sessions.ts` (1 line) or make field optional |
+| 14.2 | §11 item 4 claims §6.4 handles `undefined`; §6.4 code block does not | MEDIUM | Reconcile: either add `args === undefined` guard, or drop the claim |
+| 14.3 | §8.2 unit tests don't catch the real bug (non-capture) — they test plumbing, not the capture site | MEDIUM | Extract injection logic into a pure helper for unit-testability, OR explicitly document the test weakness |
+| 14.4 | §8.1 manual test #3 not updated to incorporate §13.4's correction about `--append-system-prompt-file` on restart | LOW | Apply §13.4's proposed replacement to §8.1 #3 in-place |
+| 14.5 | `shell_args.clone()` twice in the capture snippet is cosmetic noise | LOW | Bind `let effective = shell_args.clone();` once; move + clone from there |
+| 14.6 | Dormant cold-start auto-activation → brief blank StatusBar (pre-existing, more visible now) | LOW | Document as edge case #9 in §11 |
+| 14.7 | `set_effective_shell_args` silent no-op in theoretical destroy race | INFO | None |
+| 14.8 | `session_created` is the sole IPC carrier for `SessionInfo`; four From sites auto-covered | INFO | None (confirms §5.4) |
+| 14.9 | Web HTTP `/api/sessions` uses `ApiSessionView` that omits `effectiveShellArgs` | INFO | None (correct by default) |
+| 14.10 | CLI `list-sessions` reads persisted TOML, does not expose effective args | INFO | None (correct by default) |
+
+### Verdict
+
+**NEEDS ANOTHER ROUND — one HIGH blocker.**
+
+§14.1 (`makeInactiveEntry`) will fail `npx tsc --noEmit` and contradicts §10. The dev needs an explicit directive on whether to touch `sidebar/stores/sessions.ts` (Option A, preferred) or make the field optional (Option B). Architect or tech-lead must decide before implementation.
+
+§14.2 and §14.3 are MEDIUM — should be addressed in the same round for internal-consistency and test-robustness reasons, but neither breaks the build.
+
+§14.4 is a LOW — same-round fix, one-line replacement.
+
+§14.5, §14.6 are stylistic / documentation touches — accept or ignore at architect/dev-rust discretion.
+
+No BLOCKER on the backend Rust design itself — §5 and §13 remain sound. The backend implementation can proceed to Step 6 once §14.1 is resolved.
