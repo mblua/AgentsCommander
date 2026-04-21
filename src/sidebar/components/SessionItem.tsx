@@ -298,7 +298,7 @@ const SessionItem: Component<{
         </Show>
 
         <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
-          <Show when={sessionAgentLabel() || (!isInactive() && props.session.gitBranch)}>
+          <Show when={sessionAgentLabel() || (props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0)}>
             <div class="session-item-meta">
               <Show when={sessionAgentLabel()}>
                 {(agentLabel) => (
@@ -310,9 +310,18 @@ const SessionItem: Component<{
                   </span>
                 )}
               </Show>
-              <Show when={!isInactive() && props.session.gitBranch}>
-                <div class="session-item-branch" title={props.session.gitBranch!}>
-                  {props.session.gitBranch}
+              <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
+                <div class="session-item-branches">
+                  <For each={props.session.gitRepos}>
+                    {(repo) => (
+                      <div
+                        class="session-item-branch"
+                        title={`${repo.label}${repo.branch ? `/${repo.branch}` : ""}`}
+                      >
+                        {repo.label}{repo.branch ? `/${repo.branch}` : ""}
+                      </div>
+                    )}
+                  </For>
                 </div>
               </Show>
             </div>

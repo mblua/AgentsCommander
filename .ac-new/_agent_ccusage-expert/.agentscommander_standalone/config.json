@@ -1,11 +1,6 @@
 {
   "tooling": {
     "codingAgents": {
-      "agent_1775433917875_2": {
-        "acSessionId": "3d161d39-b139-4a85-aa66-980e348173ed",
-        "app": "Codex",
-        "lastUsed": "2026-04-14T17:44:23.380727300+00:00"
-      },
       "agent_1776055231084_0": {
         "acSessionId": "ed09d602-16df-44f9-a231-6ff825740608",
         "app": "Claude Code",

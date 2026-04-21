@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use super::session::{Session, SessionInfo, SessionStatus};
+use super::session::{Session, SessionInfo, SessionRepo, SessionStatus};
 use crate::errors::AppError;
 
 pub struct SessionManager {
@@ -30,8 +30,8 @@ impl SessionManager {
         working_directory: String,
         agent_id: Option<String>,
         agent_label: Option<String>,
-        git_branch_source: Option<String>,
-        git_branch_prefix: Option<String>,
+        git_repos: Vec<SessionRepo>,
+        is_coordinator: bool,
     ) -> Result<Session, AppError> {
         let id = Uuid::new_v4();
 
@@ -52,9 +52,9 @@ impl SessionManager {
             last_prompt: None,
             agent_id,
             agent_label,
-            git_branch: None,
-            git_branch_source,
-            git_branch_prefix,
+            git_repos,
+            is_coordinator,
+            git_repos_gen: 0,
             token: Uuid::new_v4(),
             is_claude: false,
         };
@@ -240,27 +240,112 @@ impl SessionManager {
         }
     }
 
-    pub async fn set_git_branch(&self, id: Uuid, branch: Option<String>) {
+    /// Overwrite `git_repos` atomically. Bumps `git_repos_gen`. Invariant:
+    /// callers preserve insertion order (replica config.json `repos` array order).
+    pub async fn set_git_repos(&self, id: Uuid, repos: Vec<SessionRepo>) {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
-            s.git_branch = branch;
+            s.git_repos = repos;
+            s.git_repos_gen = s.git_repos_gen.wrapping_add(1);
         }
     }
 
-    pub async fn get_sessions_directories(
+    /// Compare-and-swap variant for the watcher. Only writes if `expected_gen` still
+    /// matches `git_repos_gen`. On mismatch a concurrent refresh has landed; the watcher
+    /// discards its stale detection to prevent emit reordering (see §2.1.d / Grinch #14).
+    /// Returns true on successful write.
+    pub async fn set_git_repos_if_gen(
         &self,
-    ) -> Vec<(Uuid, String, Option<String>, Option<String>)> {
+        id: Uuid,
+        repos: Vec<SessionRepo>,
+        expected_gen: u64,
+    ) -> bool {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            if s.git_repos_gen == expected_gen {
+                s.git_repos = repos;
+                s.git_repos_gen = s.git_repos_gen.wrapping_add(1);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Snapshot the current `git_repos_gen` for a session. Used by watchers to capture
+    /// generation at the start of a poll so `set_git_repos_if_gen` can detect a race.
+    pub async fn get_git_repos_gen(&self, id: Uuid) -> Option<u64> {
+        let sessions = self.sessions.read().await;
+        sessions.get(&id).map(|s| s.git_repos_gen)
+    }
+
+    /// Overwrite `is_coordinator`. Use after a team-config refresh.
+    pub async fn set_is_coordinator(&self, id: Uuid, is_coordinator: bool) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.is_coordinator = is_coordinator;
+        }
+    }
+
+    /// Recompute `is_coordinator` for every session using the current team snapshot.
+    /// Returns the list of (session_id, new_value) pairs whose flag actually changed,
+    /// so callers can emit a single event batch.
+    pub async fn refresh_coordinator_flags(
+        &self,
+        teams: &[crate::config::teams::DiscoveredTeam],
+    ) -> Vec<(Uuid, bool)> {
+        let mut sessions = self.sessions.write().await;
+        let mut changes = Vec::new();
+        for (id, s) in sessions.iter_mut() {
+            let new_val =
+                crate::config::teams::is_coordinator_for_cwd(&s.working_directory, teams);
+            if s.is_coordinator != new_val {
+                s.is_coordinator = new_val;
+                changes.push((*id, new_val));
+            }
+        }
+        changes
+    }
+
+    /// Replace `git_repos` for sessions whose name matches. Bumps `git_repos_gen` on every
+    /// write so an in-flight `GitWatcher::poll` that captured the pre-refresh snapshot
+    /// cannot overwrite us (see §2.1.d / Grinch #14).
+    /// Returns the list of (session_id, new_repos) pairs where a write actually happened.
+    pub async fn refresh_git_repos_for_sessions(
+        &self,
+        updates: &[(String, Vec<SessionRepo>)],
+    ) -> Vec<(Uuid, Vec<SessionRepo>)> {
+        let mut sessions = self.sessions.write().await;
+        let mut changed = Vec::new();
+        for (name, repos) in updates {
+            if let Some((id, s)) = sessions.iter_mut().find(|(_, s)| &s.name == name) {
+                if &s.git_repos != repos {
+                    s.git_repos = repos.clone();
+                    s.git_repos_gen = s.git_repos_gen.wrapping_add(1);
+                    changed.push((*id, repos.clone()));
+                }
+            }
+        }
+        changed
+    }
+
+    /// Per-session view for the `GitWatcher` fan-out. Returns (session_id, repos, gen).
+    /// The generation snapshot lets the watcher call `set_git_repos_if_gen` for its
+    /// write, skipping the write+emit if a refresh landed during detection.
+    pub async fn get_sessions_repos(&self) -> Vec<(Uuid, Vec<SessionRepo>, u64)> {
         let sessions = self.sessions.read().await;
         sessions
             .iter()
-            .map(|(id, s)| {
-                (
-                    *id,
-                    s.working_directory.clone(),
-                    s.git_branch_source.clone(),
-                    s.git_branch_prefix.clone(),
-                )
-            })
+            .map(|(id, s)| (*id, s.git_repos.clone(), s.git_repos_gen))
+            .collect()
+    }
+
+    /// (session_id, working_directory) view for callers that only need the CWD
+    /// (e.g. mailbox outbox scanning, agent-name resolution).
+    pub async fn get_sessions_working_dirs(&self) -> Vec<(Uuid, String)> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .iter()
+            .map(|(id, s)| (*id, s.working_directory.clone()))
             .collect()
     }
 

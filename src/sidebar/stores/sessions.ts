@@ -1,7 +1,7 @@
 import { createMemo, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
-import type { RepoMatch, Session, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
+import type { RepoMatch, Session, SessionRepo, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
 import { projectStore } from "./project";
 
 const [state, setState] = createStore<SessionsState>({
@@ -42,9 +42,8 @@ function makeInactiveEntry(name: string, path: string): Session {
     lastPrompt: null,
     agentId: null,
     agentLabel: null,
-    gitBranch: null,
-    gitBranchSource: null,
-    gitBranchPrefix: null,
+    gitRepos: [],
+    isCoordinator: false,
     token: "",
   };
 }
@@ -299,8 +298,12 @@ export const sessionsStore = {
     }
   },
 
-  setGitBranch(sessionId: string, branch: string | null) {
-    setState("sessions", (s) => s.id === sessionId, "gitBranch", branch);
+  setGitRepos(sessionId: string, repos: SessionRepo[]) {
+    setState("sessions", (s) => s.id === sessionId, "gitRepos", repos);
+  },
+
+  setIsCoordinator(sessionId: string, value: boolean) {
+    setState("sessions", (s) => s.id === sessionId, "isCoordinator", value);
   },
 
   setTeams(teams: Team[]) {

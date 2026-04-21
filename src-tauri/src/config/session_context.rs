@@ -518,7 +518,9 @@ Your Session Credentials include a `BinaryPath` field — **always use that path
 
 ## Self-discovery via --help
 
-The CLI `--help` output is the **primary and authoritative reference** for learning how to use AgentsCommander. Before guessing flags, modes, or behavior, always consult it:
+The CLI `--help` output documents every subcommand, flag, and accepted value. Use it as a FALLBACK reference for commands or flags NOT covered inline in this context.
+
+**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly — you do NOT need to consult `--help` to confirm their syntax.
 
 ```
 "<YOUR_BINARY_PATH>" --help                  # List all subcommands
@@ -526,9 +528,7 @@ The CLI `--help` output is the **primary and authoritative reference** for learn
 "<YOUR_BINARY_PATH>" list-peers --help       # Full docs for discovering peers
 ```
 
-The `--help` text documents every flag, its purpose, accepted values, priority rules, delivery modes, and discovery flows. It is designed to be self-contained — you should not need README, CLAUDE.md, or external docs to use any command correctly.
-
-**RULE:** When in doubt about how a command works, run `--help` first. The examples below are a quick-start — `--help` is the complete reference.
+**RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly.
 
 ## Session credentials
 
@@ -550,15 +550,30 @@ Your agent root is your current working directory.
 
 **MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers`. Never guess agent names — they follow the format `parent_folder/folder` based on where the agent is triggered.
 
-Fire-and-forget (do NOT use --get-output):
+Messaging is **file-based** to avoid PTY truncation. Two steps:
+
+1. Write your message to a new file in the workgroup messaging directory. The
+   directory lives at `<workgroup-root>/messaging/` (walk up from your root
+   until you find the parent `wg-<N>-*` folder). Filename must follow the
+   pattern `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (UTC
+   timestamp, sanitized kebab-case slug ≤50 chars).
+2. Fire the send:
 
 ```
-"<YOUR_BINARY_PATH>" send --token <YOUR_TOKEN> --root "<YOUR_ROOT>" --to "<agent_name>" --message "..." --mode wake
+"<YOUR_BINARY_PATH>" send --token <YOUR_TOKEN> --root "<YOUR_ROOT>" --to "<agent_name>" --send <filename> --mode wake
 ```
 
-The other agent will reply back via your console as a new message.
-Do NOT use `--get-output` — it blocks and is only for non-interactive sessions.
-After sending, you can stay idle and wait for the reply to arrive.
+**IMPORTANT: `--send` takes the filename ONLY — never a path.**
+
+- BAD:  `--send "C:\...\messaging\20260419-143052-wg3-you-to-wg3-peer-hello.md"`
+- GOOD: `--send "20260419-143052-wg3-you-to-wg3-peer-hello.md"`
+
+The CLI resolves the filename against `<workgroup-root>/messaging/` automatically. Passing a path triggers `filename '...' contains path separators or traversal`.
+
+The recipient receives a short notification pointing to your file's absolute
+path and reads the content via filesystem. Do NOT use `--get-output` — it
+blocks and is only for non-interactive sessions. After sending, stay idle and
+wait for the reply.
 
 ### List available peers
 
@@ -582,4 +597,17 @@ fn is_replica_agent_dir(cwd: &str) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("__agent_"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_context_embeds_filename_only_warning() {
+        let out = default_context("C:/tmp/fake-agent", None);
+        assert!(out.contains("filename ONLY"));
+        assert!(out.contains("BAD:"));
+        assert!(out.contains("GOOD:"));
+    }
 }

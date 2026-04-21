@@ -8,7 +8,7 @@ use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
-use crate::session::session::SessionInfo;
+use crate::session::session::{SessionInfo, SessionRepo};
 use crate::telegram::manager::TelegramBridgeState;
 use crate::DetachedSessionsState;
 
@@ -270,8 +270,7 @@ pub async fn create_session_inner(
     agent_id: Option<String>,
     agent_label: Option<String>,
     skip_tooling_save: bool,
-    git_branch_source: Option<String>,
-    git_branch_prefix: Option<String>,
+    git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
 ) -> Result<SessionInfo, String> {
     let (agent_id, agent_label) = {
@@ -286,6 +285,11 @@ pub async fn create_session_inner(
         )
     };
 
+    // Recompute is_coordinator from the current team snapshot. One source of truth —
+    // every caller of create_session_inner gets the same computation.
+    let teams = crate::config::teams::discover_teams();
+    let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
+
     let mgr = session_mgr.read().await;
     let mut session = mgr
         .create_session(
@@ -294,8 +298,8 @@ pub async fn create_session_inner(
             cwd.clone(),
             agent_id.clone(),
             agent_label.clone(),
-            git_branch_source,
-            git_branch_prefix,
+            git_repos,
+            is_coordinator,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -480,50 +484,8 @@ pub async fn create_session_inner(
                 }
             }
 
-            let exe = std::env::current_exe().ok();
-            let binary_name = exe
-                .as_ref()
-                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-                .unwrap_or_else(|| "agentscommander".to_string());
-            let binary_path = {
-                let raw = exe
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "agentscommander.exe".to_string());
-                raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
-            };
-            let local_dir = exe
-                .as_ref()
-                .and_then(|p| p.parent())
-                .map(|parent| {
-                    parent
-                        .join(format!(".{}", &binary_name))
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .unwrap_or_else(|| format!(".{}", &binary_name));
-            let local_dir = local_dir
-                .strip_prefix(r"\\?\")
-                .unwrap_or(&local_dir)
-                .to_string();
-
-            let cred_block = format!(
-                concat!(
-                    "\n",
-                    "# === Session Credentials ===\n",
-                    "# Token: {token}\n",
-                    "# Root: {root}\n",
-                    "# Binary: {binary}\n",
-                    "# BinaryPath: {binary_path}\n",
-                    "# LocalDir: {local_dir}\n",
-                    "# === End Credentials ===\n",
-                ),
-                token = token,
-                root = cwd_clone,
-                binary = binary_name,
-                binary_path = binary_path,
-                local_dir = local_dir,
-            );
+            let cred_block =
+                crate::pty::credentials::build_credentials_block(&token, &cwd_clone);
 
             match crate::pty::inject::inject_text_into_session(
                 &app_clone,
@@ -609,8 +571,7 @@ pub async fn create_session(
     cwd: Option<String>,
     session_name: Option<String>,
     agent_id: Option<String>,
-    git_branch_source: Option<String>,
-    git_branch_prefix: Option<String>,
+    git_repos: Option<Vec<SessionRepo>>,
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
 
@@ -656,8 +617,7 @@ pub async fn create_session(
         agent_id,
         agent_label,
         false, // persist tooling
-        git_branch_source,
-        git_branch_prefix,
+        git_repos.unwrap_or_default(),
         false, // skip_auto_resume
     )
     .await?;
@@ -809,8 +769,7 @@ pub async fn restart_session(
         name,
         stored_agent_id,
         stored_agent_label,
-        git_branch_source,
-        git_branch_prefix,
+        git_repos,
     ) = {
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
@@ -821,8 +780,7 @@ pub async fn restart_session(
             session.name.clone(),
             session.agent_id.clone(),
             session.agent_label.clone(),
-            session.git_branch_source.clone(),
-            session.git_branch_prefix.clone(),
+            session.git_repos.clone(),
         )
     };
 
@@ -855,8 +813,7 @@ pub async fn restart_session(
         requested_agent_id.or(stored_agent_id),
         agent_label,
         false, // skip_tooling_save
-        git_branch_source,
-        git_branch_prefix,
+        git_repos,
         true, // skip_auto_resume — the whole point of restart
     )
     .await?;
@@ -1228,8 +1185,7 @@ pub async fn create_root_agent_session(
         agent_id,
         agent_label,
         false,
-        None,
-        None,
+        Vec::new(),
         false, // skip_auto_resume
     )
     .await?;

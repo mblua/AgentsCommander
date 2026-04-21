@@ -2,6 +2,7 @@ import { Component, For, Show, createMemo, createSignal, onMount, onCleanup } fr
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, Session, TelegramBotConfig } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
+import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
@@ -18,8 +19,16 @@ import EditTeamModal from "./EditTeamModal";
 interface PendingLaunch {
   path: string;
   sessionName: string;
-  gitBranchSource?: string;
-  gitBranchPrefix?: string;
+  gitRepos: SessionRepoInput[];
+}
+
+/** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
+function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
+  return (replica.repoPaths ?? []).map((p) => {
+    const dir = p.replace(/\\/g, "/").split("/").pop() ?? "";
+    const label = dir.startsWith("repo-") ? dir.slice(5) : dir;
+    return { label, sourcePath: p };
+  });
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
@@ -118,24 +127,13 @@ const ProjectPanel: Component = () => {
     }
 
     // Not instantiated — create session in-place
-    const repoPaths = replica.repoPaths ?? [];
-    let gitBranchSource: string | undefined;
-    let gitBranchPrefix: string | undefined;
-
-    if (repoPaths.length === 1) {
-      gitBranchSource = repoPaths[0];
-      const dirName = repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
-      gitBranchPrefix = dirName.startsWith("repo-") ? dirName.slice(5) : dirName;
-    } else if (repoPaths.length > 1) {
-      gitBranchPrefix = "multi-repo";
-    }
+    const gitRepos = buildGitRepos(replica);
 
     if (!replica.preferredAgentId) {
       setPendingLaunch({
         path: replica.path,
         sessionName: replicaSessionName(wg, replica),
-        gitBranchSource,
-        gitBranchPrefix,
+        gitRepos,
       });
       return;
     }
@@ -144,8 +142,7 @@ const ProjectPanel: Component = () => {
       cwd: replica.path,
       sessionName: replicaSessionName(wg, replica),
       agentId: replica.preferredAgentId,
-      gitBranchSource,
-      gitBranchPrefix,
+      gitRepos,
     });
     await SessionAPI.switch(newSession.id);
     if (isTauri) {
@@ -174,7 +171,7 @@ const ProjectPanel: Component = () => {
     }
 
     if (!agent.preferredAgentId) {
-      setPendingLaunch({ path: agent.path, sessionName: agent.name });
+      setPendingLaunch({ path: agent.path, sessionName: agent.name, gitRepos: [] });
       return;
     }
 
@@ -401,15 +398,6 @@ const ProjectPanel: Component = () => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName);
           const rn = () => replicaRepoName(replica) || stripRepoPrefix(wg.repoPath?.replace(/\\/g, "/").split("/").pop() ?? "") || proj.folderName;
-          const branchLabel = () => {
-            const s = replicaSession(wg, replica);
-            if (s?.gitBranch) {
-              const name = rn();
-              return name && !s.gitBranch.includes("/") ? `${name}/${s.gitBranch}` : s.gitBranch;
-            }
-            const name = rn();
-            return name ? (replica.repoBranch ? `${name}/${replica.repoBranch}` : name) : null;
-          };
           const session = () => replicaSession(wg, replica);
           const liveAgentLabel = () => {
             const s = session();
@@ -487,8 +475,27 @@ const ProjectPanel: Component = () => {
               <div class="replica-item-info">
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                 <div class="ac-discovery-badges">
-                  <Show when={branchLabel()}>
-                    <span class="ac-discovery-badge branch">{branchLabel()}</span>
+                  <Show when={isCoord()}>
+                    <Show
+                      when={(() => { const s = session(); return s && s.gitRepos.length > 0 ? s : undefined; })()}
+                      fallback={
+                        <Show when={replica.repoPaths.length === 1 && replica.repoBranch}>
+                          <span class="ac-discovery-badge branch">
+                            {rn()}/{replica.repoBranch}
+                          </span>
+                        </Show>
+                      }
+                    >
+                      {(s) => (
+                        <For each={s().gitRepos}>
+                          {(repo) => (
+                            <span class="ac-discovery-badge branch">
+                              {repo.label}{repo.branch ? `/${repo.branch}` : ""}
+                            </span>
+                          )}
+                        </For>
+                      )}
+                    </Show>
                   </Show>
                   <Show when={liveAgentLabel()}>
                     <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
@@ -1313,8 +1320,7 @@ const ProjectPanel: Component = () => {
               cwd: pending.path,
               sessionName: pending.sessionName,
               agentId: agent.id,
-              gitBranchSource: pending.gitBranchSource,
-              gitBranchPrefix: pending.gitBranchPrefix,
+              gitRepos: pending.gitRepos,
             });
             await SessionAPI.switch(newSession.id);
             if (isTauri) {

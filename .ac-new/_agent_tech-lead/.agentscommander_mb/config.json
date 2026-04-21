@@ -2,11 +2,16 @@
   "tooling": {
     "codingAgents": {
       "agent_1775433898536_1": {
-        "acSessionId": "9af7e45c-f885-40ab-9761-51e85594efc6",
+        "acSessionId": "54cc9530-cf5f-45a5-8d47-db2864bb22b1",
         "app": "Claude Code",
-        "lastUsed": "2026-04-11T23:37:04.994762400+00:00"
+        "lastUsed": "2026-04-16T17:49:34.582118500+00:00"
+      },
+      "agent_1775433917875_2": {
+        "acSessionId": "940b8e03-fcb7-4f2e-bb26-169429bb0c01",
+        "app": "Codex",
+        "lastUsed": "2026-04-18T23:31:41.454055300+00:00"
       }
     },
-    "lastCodingAgent": "agent_1775433898536_1"
+    "lastCodingAgent": "agent_1775433917875_2"
   }
 }

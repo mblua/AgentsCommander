@@ -546,8 +546,8 @@ pub fn run() {
                                     ps.working_directory.clone(),
                                     ps.agent_id.clone(),
                                     ps.agent_label.clone(),
-                                    ps.git_branch_source.clone(),
-                                    ps.git_branch_prefix.clone(),
+                                    ps.git_repos.clone(),
+                                    false, // deferred = in_team && !is_coord, so never coordinator
                                 ).await {
                                     Ok(session) => {
                                         mgr.rename_session(session.id, ps.name.clone()).await.ok();
@@ -583,8 +583,7 @@ pub fn run() {
                             ps.agent_id.clone(),
                             ps.agent_label.clone(),
                             false, // Persist tooling on restore
-                            ps.git_branch_source.clone(),
-                            ps.git_branch_prefix.clone(),
+                            ps.git_repos.clone(),
                             false, // skip_auto_resume
                         ).await {
                             Ok(info) => {

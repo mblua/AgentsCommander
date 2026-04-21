@@ -9,6 +9,8 @@
     "build:prod": "cross-env BUILD_PROFILE=prod tauri build --config src-tauri/tauri.prod.conf.json",
     "build:stage": "cross-env BUILD_PROFILE=stage tauri build --config src-tauri/tauri.stage.conf.json",
     "kill-dev": "powershell.exe -ExecutionPolicy Bypass -File ./scripts/kill-dev.ps1",
+    "validate-branch-name": "node scripts/validate-branch-name.mjs",
+    "prepare": "husky",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -23,6 +25,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "cross-env": "^10.1.0",
+    "husky": "^9.1.7",
     "typescript": "^5",
     "vite": "^8.0.2",
     "vite-plugin-solid": "^2.11.11"

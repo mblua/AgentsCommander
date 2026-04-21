@@ -1,3 +1,4 @@
+use futures::future::join_all;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -7,6 +8,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
+use crate::session::session::SessionRepo;
 
 /// Resolve the preferred coding agent for a directory by matching the app
 /// label from the agent's config.json against THIS instance's settings.
@@ -185,15 +187,16 @@ fn detect_git_branch_sync(dir: &str) -> Option<String> {
 // --- Discovery Branch Watcher ---
 
 const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
+const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 struct ReplicaBranchEntry {
     replica_path: String,
-    repo_path: String,
+    /// (label, absolute repo path) pairs. Order = replica config.json `repos` array order.
+    /// Never sort or dedupe — `Vec<SessionRepo>` equality in poll() depends on order.
+    repos: Vec<(String, String)>,
     /// Session name format: "wg_name/replica_name"
     session_name: String,
-    /// Repo dir name with "repo-" prefix stripped, for formatting git branch display
-    git_branch_prefix: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -205,16 +208,26 @@ struct DiscoveryBranchPayload {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionGitBranchPayload {
+struct SessionGitReposPayload {
     session_id: String,
-    branch: Option<String>,
+    repos: Vec<SessionRepo>,
 }
 
 pub struct DiscoveryBranchWatcher {
     app_handle: AppHandle,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-    replicas: Mutex<Vec<ReplicaBranchEntry>>,
-    cache: Mutex<HashMap<String, Option<String>>>,
+    /// Keyed by the project directory that DIRECTLY CONTAINS `.ac-new/` — NOT by
+    /// `settings.project_paths` entries (which may be parent dirs holding many projects).
+    /// Keying by the direct parent prevents both (a) the original overwrite-across-projects
+    /// bug (Grinch #1) and (b) the double-registration that occurs when `project_paths`
+    /// contains both a parent and a child (Grinch #12).
+    replicas: Mutex<HashMap<String, Vec<ReplicaBranchEntry>>>,
+    /// Single-repo branch cache — gates `ac_discovery_branch_updated` emission (panel UI).
+    discovery_cache: Mutex<HashMap<String, Option<String>>>,
+    /// Full per-repo state cache — gates `session_git_repos` emission. Independent from
+    /// `discovery_cache` so multi-repo replicas re-emit on per-repo drift even when the
+    /// single-branch view stays None.
+    repos_cache: Mutex<HashMap<String, Vec<SessionRepo>>>,
 }
 
 impl DiscoveryBranchWatcher {
@@ -225,74 +238,142 @@ impl DiscoveryBranchWatcher {
         Arc::new(Self {
             app_handle,
             session_manager,
-            replicas: Mutex::new(Vec::new()),
-            cache: Mutex::new(HashMap::new()),
+            replicas: Mutex::new(HashMap::new()),
+            discovery_cache: Mutex::new(HashMap::new()),
+            repos_cache: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Update the list of replicas to watch from discovered workgroups.
-    /// Does NOT pre-seed the cache — first poll() will push branches to matching sessions.
-    pub fn update_replicas(&self, workgroups: &[AcWorkgroup]) {
+    /// Update this project's replicas in the watcher. `ac_new_parent_dir` is the directory
+    /// that directly contains `.ac-new/` — NOT a grand-parent from `settings.project_paths`.
+    /// See the invariant comment on the `replicas` field.
+    pub fn update_replicas_for_project(
+        &self,
+        ac_new_parent_dir: &str,
+        workgroups: &[AcWorkgroup],
+    ) {
+        // Invariant guard: catch mistaken call-site passes (e.g. a `base_path` parent)
+        // in dev builds. Release builds log a warn and return to prevent silent corruption.
+        let has_ac_new = Path::new(ac_new_parent_dir).join(".ac-new").is_dir();
+        debug_assert!(
+            has_ac_new,
+            "update_replicas_for_project: {} does not contain .ac-new/",
+            ac_new_parent_dir
+        );
+        if !has_ac_new {
+            log::warn!(
+                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no .ac-new/ — ignoring",
+                ac_new_parent_dir
+            );
+            return;
+        }
+
+        // Canonicalize the key so callers that pass slightly-different string shapes
+        // (backslash vs forward slash, trailing separator, unresolved "..") still
+        // converge to one map slot per project. Without this, the same project can
+        // end up with two entries (e.g. from `discover_ac_agents` reading `read_dir`
+        // output vs `discover_project` receiving a user-typed path) and emit doubled.
+        let canonical_key = std::fs::canonicalize(ac_new_parent_dir)
+            .ok()
+            .map(|p| {
+                let s = p.to_string_lossy();
+                s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+            })
+            .unwrap_or_else(|| ac_new_parent_dir.to_string());
+
+        // Invariant: git_repos order = replica.repo_paths order (which follows config.json `repos`).
+        // Never sort or dedupe here.
         let mut entries = Vec::new();
-        let mut known_branches: HashMap<String, Option<String>> = HashMap::new();
         for wg in workgroups {
             for agent in &wg.agents {
-                if agent.repo_paths.len() == 1 {
-                    // Derive git_branch_prefix from repo dir name (strip "repo-" prefix)
-                    let repo_dir = agent.repo_paths[0]
-                        .replace('\\', "/")
-                        .split('/')
-                        .last()
-                        .unwrap_or("")
-                        .to_string();
-                    let prefix = if repo_dir.starts_with("repo-") {
-                        repo_dir[5..].to_string()
-                    } else {
-                        repo_dir.clone()
-                    };
-
-                    entries.push(ReplicaBranchEntry {
-                        replica_path: agent.path.clone(),
-                        repo_path: agent.repo_paths[0].clone(),
-                        session_name: format!("{}/{}", wg.name, agent.name),
-                        git_branch_prefix: prefix,
-                    });
-                    known_branches.insert(agent.path.clone(), agent.repo_branch.clone());
+                if agent.repo_paths.is_empty() {
+                    continue;
                 }
+                let repos: Vec<(String, String)> = agent
+                    .repo_paths
+                    .iter()
+                    .map(|rp| {
+                        let dir = rp
+                            .replace('\\', "/")
+                            .split('/')
+                            .next_back()
+                            .unwrap_or("")
+                            .to_string();
+                        let label = dir
+                            .strip_prefix("repo-")
+                            .map(str::to_string)
+                            .unwrap_or(dir);
+                        (label, rp.clone())
+                    })
+                    .collect();
+                entries.push(ReplicaBranchEntry {
+                    replica_path: agent.path.clone(),
+                    repos,
+                    session_name: format!("{}/{}", wg.name, agent.name),
+                });
             }
         }
 
         log::info!(
-            "[DiscoveryBranchWatcher] update_replicas: {} single-repo replicas registered",
+            "[DiscoveryBranchWatcher] update_replicas_for_project({}): {} replicas",
+            canonical_key,
             entries.len()
         );
-        for e in &entries {
-            log::info!(
-                "[DiscoveryBranchWatcher]   replica={}, repo={}, discovery_branch={:?}",
-                e.replica_path,
-                e.repo_path,
-                known_branches.get(&e.replica_path)
-            );
+
+        // Swap in this project's entries; leave other projects alone.
+        let mut map = self.replicas.lock().unwrap();
+        map.insert(canonical_key, entries);
+
+        // Prune cache entries that no longer belong to ANY project.
+        let valid: std::collections::HashSet<String> = map
+            .values()
+            .flatten()
+            .map(|e| e.replica_path.clone())
+            .collect();
+        drop(map);
+        self.discovery_cache
+            .lock()
+            .unwrap()
+            .retain(|k, _| valid.contains(k));
+        self.repos_cache
+            .lock()
+            .unwrap()
+            .retain(|k, _| valid.contains(k));
+    }
+
+    /// Remove the specified replicas from `replicas`, `discovery_cache`, and `repos_cache`.
+    /// Called by `refresh_git_repos_for_sessions` callers (§2.1.e) so the next watcher
+    /// tick does not iterate stale `source_path`s between a session-level refresh and the
+    /// follow-up `discover_project` call that re-registers the replicas with NEW paths.
+    pub fn invalidate_replicas(&self, replica_paths: &[String]) {
+        {
+            let mut map = self.replicas.lock().unwrap();
+            for entries in map.values_mut() {
+                entries.retain(|e| !replica_paths.iter().any(|p| p == &e.replica_path));
+            }
         }
-
-        // Prune stale cache entries — do NOT pre-seed new ones.
-        // Leaving new entries absent from the cache forces the first poll()
-        // to treat them as "changed" and push the branch to matching sessions.
-        // Pre-seeding prevented this push, leaving restored sessions stale.
-        let valid_paths: std::collections::HashSet<&str> =
-            entries.iter().map(|e| e.replica_path.as_str()).collect();
-        let mut cache = self.cache.lock().unwrap();
-        cache.retain(|k, _| valid_paths.contains(k.as_str()));
-        drop(cache);
-
-        *self.replicas.lock().unwrap() = entries;
+        {
+            let mut dc = self.discovery_cache.lock().unwrap();
+            let mut rc = self.repos_cache.lock().unwrap();
+            for p in replica_paths {
+                dc.remove(p);
+                rc.remove(p);
+            }
+        }
+        log::debug!(
+            "[DiscoveryBranchWatcher] invalidated {} replica(s); awaiting next discover_project re-registration",
+            replica_paths.len()
+        );
     }
 
     /// Start the polling loop on a dedicated thread.
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let watcher = Arc::clone(self);
         std::thread::spawn(move || {
-            log::info!("[DiscoveryBranchWatcher] thread started, polling every {}s", BRANCH_POLL_INTERVAL.as_secs());
+            log::info!(
+                "[DiscoveryBranchWatcher] thread started, polling every {}s",
+                BRANCH_POLL_INTERVAL.as_secs()
+            );
             let rt = tokio::runtime::Runtime::new()
                 .expect("Failed to create tokio runtime for DiscoveryBranchWatcher");
             rt.block_on(async move {
@@ -313,74 +394,131 @@ impl DiscoveryBranchWatcher {
     }
 
     async fn poll(&self) {
-        let entries = self.replicas.lock().unwrap().clone();
+        // Flatten per-project entries.
+        let entries: Vec<ReplicaBranchEntry> = {
+            let map = self.replicas.lock().unwrap();
+            map.values().flatten().cloned().collect()
+        };
         if entries.is_empty() {
             return;
         }
 
-        log::info!("[DiscoveryBranchWatcher] poll: checking {} replicas", entries.len());
-
         for entry in &entries {
-            let branch = Self::detect_branch(&entry.repo_path).await;
+            // Capture the session's git_repos_gen (if a session exists) BEFORE running detections.
+            // Used for CAS on set_git_repos_if_gen (Grinch #14).
+            let (session_id_opt, gen_snapshot) = {
+                let mgr = self.session_manager.read().await;
+                match mgr.find_by_name(&entry.session_name).await {
+                    Some(id) => {
+                        let gen = mgr.get_git_repos_gen(id).await.unwrap_or(0);
+                        (Some(id), gen)
+                    }
+                    None => (None, 0),
+                }
+            };
 
-            // Single lock acquisition: check + update atomically
-            let changed = {
-                let mut cache = self.cache.lock().unwrap();
-                let cached = cache.get(&entry.replica_path).cloned();
-                log::info!(
-                    "[DiscoveryBranchWatcher]   replica={}, repo={}, detected={:?}, cached={:?}",
-                    entry.replica_path,
-                    entry.repo_path,
+            // Parallelize per-repo detection (Grinch #16). Each call individually bounded by
+            // detect_branch_with_timeout (2s). Without join_all this was M*N*2s worst case.
+            let branches: Vec<Option<String>> = join_all(
+                entry
+                    .repos
+                    .iter()
+                    .map(|(_, path)| Self::detect_branch_with_timeout(path)),
+            )
+            .await;
+
+            let refreshed: Vec<SessionRepo> = entry
+                .repos
+                .iter()
+                .zip(branches.into_iter())
+                .map(|((label, path), branch)| SessionRepo {
+                    label: label.clone(),
+                    source_path: path.clone(),
                     branch,
-                    cached
-                );
-                if cached.as_ref() != Some(&branch) {
-                    cache.insert(entry.replica_path.clone(), branch.clone());
+                })
+                .collect();
+
+            // Gate A: emit ac_discovery_branch_updated (single-branch UI for AcDiscoveryPanel).
+            // Only single-repo replicas surface a branch here; multi-repo = None so the panel hides it.
+            let discovery_branch: Option<String> = if entry.repos.len() == 1 {
+                refreshed[0].branch.clone()
+            } else {
+                None
+            };
+            let discovery_changed = {
+                let mut cache = self.discovery_cache.lock().unwrap();
+                let prev = cache.get(&entry.replica_path).cloned();
+                if prev.as_ref() != Some(&discovery_branch) {
+                    cache.insert(entry.replica_path.clone(), discovery_branch.clone());
                     true
                 } else {
                     false
                 }
             };
-
-            if changed {
-                log::info!(
-                    "[DiscoveryBranchWatcher] CHANGED -> emitting event for {}: {:?}",
-                    entry.replica_path,
-                    branch
-                );
-
-                // 1. Emit discovery branch event (for non-instanced replica display)
-                let emit_result = self.app_handle.emit(
+            if discovery_changed {
+                let _ = self.app_handle.emit(
                     "ac_discovery_branch_updated",
                     DiscoveryBranchPayload {
                         replica_path: entry.replica_path.clone(),
-                        branch: branch.clone(),
+                        branch: discovery_branch,
                     },
                 );
-                if let Err(e) = emit_result {
-                    log::error!("[DiscoveryBranchWatcher] emit failed: {:?}", e);
-                }
+            }
 
-                // 2. Update active session's gitBranch if one exists for this replica
-                let formatted_branch = branch.as_ref()
-                    .map(|b| format!("{}/{}", entry.git_branch_prefix, b));
-
-                let mgr = self.session_manager.read().await;
-                if let Some(session_id) = mgr.find_by_name(&entry.session_name).await {
-                    mgr.set_git_branch(session_id, formatted_branch.clone()).await;
-                    let _ = self.app_handle.emit(
-                        "session_git_branch",
-                        SessionGitBranchPayload {
-                            session_id: session_id.to_string(),
-                            branch: formatted_branch,
-                        },
-                    );
-                    log::info!(
-                        "[DiscoveryBranchWatcher] session {} ({}) gitBranch updated",
-                        entry.session_name,
-                        session_id
-                    );
+            // Gate B: emit session_git_repos (full per-repo state for SessionItem).
+            // Independent cache so multi-repo replicas re-emit on per-repo drift even when
+            // Gate A stays None.
+            let repos_changed = {
+                let mut cache = self.repos_cache.lock().unwrap();
+                let prev = cache.get(&entry.replica_path);
+                if prev != Some(&refreshed) {
+                    cache.insert(entry.replica_path.clone(), refreshed.clone());
+                    true
+                } else {
+                    false
                 }
+            };
+            if repos_changed {
+                if let Some(session_id) = session_id_opt {
+                    // CAS write: skip if a refresh bumped gen during our detection window.
+                    let wrote = {
+                        let mgr = self.session_manager.read().await;
+                        mgr.set_git_repos_if_gen(session_id, refreshed.clone(), gen_snapshot)
+                            .await
+                    };
+                    if wrote {
+                        let _ = self.app_handle.emit(
+                            "session_git_repos",
+                            SessionGitReposPayload {
+                                session_id: session_id.to_string(),
+                                repos: refreshed.clone(),
+                            },
+                        );
+                    } else {
+                        log::debug!(
+                            "[DiscoveryBranchWatcher] gen mismatch for {} — refresh landed during poll; skipping stale emit",
+                            entry.replica_path
+                        );
+                        // Clear our own cache entry so next tick re-evaluates against the fresh list.
+                        self.repos_cache.lock().unwrap().remove(&entry.replica_path);
+                    }
+                }
+                // If no session exists yet (un-instantiated replica), Gate A has already covered
+                // the display surface — no session to push git_repos into.
+            }
+        }
+    }
+
+    async fn detect_branch_with_timeout(working_dir: &str) -> Option<String> {
+        match tokio::time::timeout(DETECT_TIMEOUT, Self::detect_branch(working_dir)).await {
+            Ok(result) => result,
+            Err(_) => {
+                log::warn!(
+                    "[DiscoveryBranchWatcher] detect_branch timed out for {} (>{}s); treating as no-branch",
+                    working_dir,
+                    DETECT_TIMEOUT.as_secs()
+                );
+                None
             }
         }
     }
@@ -391,7 +529,8 @@ impl DiscoveryBranchWatcher {
 
         let mut cmd = tokio::process::Command::new("git");
         cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(dir);
+            .current_dir(dir)
+            .kill_on_drop(true);
 
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -413,6 +552,8 @@ impl DiscoveryBranchWatcher {
 /// Discover AC-new agent matrices from .ac-new/ directories within configured repo paths.
 #[tauri::command]
 pub async fn discover_ac_agents(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     settings: State<'_, SettingsState>,
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
 ) -> Result<AcDiscoveryResult, String> {
@@ -420,6 +561,12 @@ pub async fn discover_ac_agents(
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
     let mut teams: Vec<AcTeam> = Vec::new();
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
+    // Track the `.ac-new/`-containing dir each workgroup originated from. Keys are
+    // `wg.name` values (unique within a discovery run; workgroup dir names include
+    // the team name which collides only intentionally across projects). Populated as
+    // we push to `workgroups` so we can later call `update_replicas_for_project` once
+    // per project rather than once globally (Grinch #1 + #12).
+    let mut wg_project_map: HashMap<String, String> = HashMap::new();
 
     for base_path in &cfg.project_paths {
         let base = Path::new(base_path);
@@ -449,6 +596,7 @@ pub async fn discover_ac_agents(
             if !ac_new_dir.is_dir() {
                 continue;
             }
+            let repo_dir_str = repo_dir.to_string_lossy().to_string();
 
             // Opportunistic: ensure gitignore exists for existing projects
             let _ = ensure_ac_new_gitignore(&ac_new_dir);
@@ -598,6 +746,7 @@ pub async fn discover_ac_agents(
                         repo_path,
                         team_name: None,
                     });
+                    wg_project_map.insert(dir_name.clone(), repo_dir_str.clone());
                 }
 
                 // Teams: _team_*
@@ -642,6 +791,7 @@ pub async fn discover_ac_agents(
     agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     workgroups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    drop(cfg);
 
     // Associate each workgroup with its team by matching replica membership.
     // Two-pass approach: exact match across ALL teams first, then suffix fallback.
@@ -684,8 +834,33 @@ pub async fn discover_ac_agents(
         }
     }
 
-    // Update the branch watcher with discovered replicas
-    branch_watcher.update_replicas(&workgroups);
+    // Update the branch watcher per-project. Each `.ac-new/`-containing dir gets its own
+    // slot so multi-project setups don't overwrite each other (Grinch #1 + #12).
+    let mut by_project: HashMap<String, Vec<AcWorkgroup>> = HashMap::new();
+    for wg in &workgroups {
+        if let Some(proj) = wg_project_map.get(&wg.name) {
+            by_project.entry(proj.clone()).or_default().push(wg.clone());
+        }
+    }
+    for (proj, wgs) in &by_project {
+        branch_watcher.update_replicas_for_project(proj, wgs);
+    }
+
+    // Recompute coordinator flags on every live session against the fresh team snapshot.
+    let teams_snapshot = crate::config::teams::discover_teams();
+    let changes = {
+        let mgr = session_mgr.read().await;
+        mgr.refresh_coordinator_flags(&teams_snapshot).await
+    };
+    for (id, is_coord) in changes {
+        let _ = app.emit(
+            "session_coordinator_changed",
+            crate::pty::git_watcher::CoordinatorChangedPayload {
+                session_id: id.to_string(),
+                is_coordinator: is_coord,
+            },
+        );
+    }
 
     Ok(AcDiscoveryResult { agents, teams, workgroups })
 }
@@ -769,6 +944,8 @@ pub async fn create_ac_project(path: String) -> Result<(), String> {
 /// this targets a specific folder.
 #[tauri::command]
 pub async fn discover_project(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     path: String,
     settings: State<'_, SettingsState>,
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
@@ -1016,8 +1193,25 @@ pub async fn discover_project(
         }
     }
 
-    // Update the branch watcher with discovered replicas
-    branch_watcher.update_replicas(&workgroups);
+    drop(cfg);
+    // Update the branch watcher for THIS project only.
+    branch_watcher.update_replicas_for_project(&path, &workgroups);
+
+    // Recompute coordinator flags on every live session against the fresh team snapshot.
+    let teams_snapshot = crate::config::teams::discover_teams();
+    let changes = {
+        let mgr = session_mgr.read().await;
+        mgr.refresh_coordinator_flags(&teams_snapshot).await
+    };
+    for (id, is_coord) in changes {
+        let _ = app.emit(
+            "session_coordinator_changed",
+            crate::pty::git_watcher::CoordinatorChangedPayload {
+                session_id: id.to_string(),
+                is_coordinator: is_coord,
+            },
+        );
+    }
 
     Ok(AcDiscoveryResult { agents, teams, workgroups })
 }

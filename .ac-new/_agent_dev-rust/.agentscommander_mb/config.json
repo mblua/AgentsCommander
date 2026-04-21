@@ -2,11 +2,16 @@
   "tooling": {
     "codingAgents": {
       "agent_1775433898536_1": {
-        "acSessionId": "15daa9ed-f184-4416-ab5d-39d6be70b8ef",
+        "acSessionId": "0619e78d-e0e4-444f-bd06-5d4a6f33ca77",
         "app": "Claude Code",
-        "lastUsed": "2026-04-11T22:21:25.481709+00:00"
+        "lastUsed": "2026-04-14T21:22:39.149779200+00:00"
+      },
+      "agent_1775433950146_3": {
+        "acSessionId": "6f065824-d75b-4c19-9d4f-e6ea6978c128",
+        "app": "Gemini CLI",
+        "lastUsed": "2026-04-14T22:07:01.422602100+00:00"
       }
     },
-    "lastCodingAgent": "agent_1775433898536_1"
+    "lastCodingAgent": "agent_1775433950146_3"
   }
 }

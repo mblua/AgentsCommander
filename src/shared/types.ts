@@ -1,3 +1,9 @@
+export interface SessionRepo {
+  label: string;
+  sourcePath: string;
+  branch: string | null;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -11,9 +17,8 @@ export interface Session {
   lastPrompt: string | null;
   agentId: string | null;
   agentLabel: string | null;
-  gitBranch: string | null;
-  gitBranchSource: string | null;
-  gitBranchPrefix: string | null;
+  gitRepos: SessionRepo[];
+  isCoordinator: boolean;
   token: string;
 }
 

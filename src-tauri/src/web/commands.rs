@@ -76,8 +76,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 agent_id,
                 None,  // agent_label (auto-detected)
                 false, // skip_tooling_save
-                None,  // git_branch_source
-                None,  // git_branch_prefix
+                Vec::new(), // git_repos
                 false, // skip_auto_resume
             )
             .await?;

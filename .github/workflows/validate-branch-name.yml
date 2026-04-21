@@ -1,0 +1,42 @@
+name: Validate branch name
+
+on:
+  push:
+    branches-ignore:
+      - main
+      - 'release/**'
+      - 'hotfix/**'
+      - 'dependabot/**'
+      - 'revert/**'
+      - 'gh-readonly-queue/**'
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: validate-branch-name-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-branch-name:
+    name: validate-branch-name
+    # Skip branch-deletion push events (after-SHA is all zeros). G4.
+    if: github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for grandfather ancestor check)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate branch name and issue state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: node scripts/validate-branch-name.mjs --branch "$GITHUB_REF_NAME" --check-issue

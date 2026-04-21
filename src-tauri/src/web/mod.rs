@@ -171,7 +171,23 @@ async fn api_sessions_handler(
             waiting_for_input: s.waiting_for_input,
             created_at: s.created_at,
             shell: s.shell,
-            git_branch: s.git_branch,
+            // Back-compat: present each repo as "<label>/<branch>" (or bare label when
+            // branch unknown), joined with ", ". Comma — not newline — so single-line
+            // JSON clients don't truncate.
+            git_branch: if s.git_repos.is_empty() {
+                None
+            } else {
+                Some(
+                    s.git_repos
+                        .iter()
+                        .map(|r| match &r.branch {
+                            Some(b) => format!("{}/{}", r.label, b),
+                            None => r.label.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            },
             last_prompt: s.last_prompt,
         })
         .collect();

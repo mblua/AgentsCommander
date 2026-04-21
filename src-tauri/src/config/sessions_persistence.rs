@@ -21,16 +21,24 @@ pub struct PersistedSession {
     /// True for the session that was active when the app closed
     #[serde(default)]
     pub was_active: bool,
-    /// Path to detect git branch from (overrides working_directory for GitWatcher)
+    /// Authoritative repo list. Empty = no repo badge rendered.
     #[serde(default)]
-    pub git_branch_source: Option<String>,
-    /// Prefix prepended to the detected branch (e.g., "agentscommander" → "agentscommander/main")
+    pub git_repos: Vec<crate::session::session::SessionRepo>,
+    /// Recomputed on restore; persisted for forward-compat only.
     #[serde(default)]
-    pub git_branch_prefix: Option<String>,
+    pub is_coordinator: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_label: Option<String>,
+
+    // ── Legacy fields — read-only, consumed by the upgrade pass in load_sessions. ──
+    // `skip_serializing_if = "Option::is_none"` means snapshot_sessions never writes them
+    // back, and the first save after upgrade retires them from disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_branch_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_branch_prefix: Option<String>,
 
     // ── Runtime fields (populated during live snapshots, ignored on restore) ──
     /// Session UUID (only present in live snapshots)
@@ -177,7 +185,78 @@ pub fn load_sessions() -> Vec<PersistedSession> {
                         temp_count
                     );
                 }
-                let deduped = deduplicate(filtered);
+                let mut deduped = deduplicate(filtered);
+
+                // Legacy-schema upgrade: run AFTER deduplicate() so each row's legacy
+                // payload travels with its own entry. `.take()` clears the Options and
+                // `skip_serializing_if` in PersistedSession elides them on next save.
+                for ps in deduped.iter_mut() {
+                    if !ps.git_repos.is_empty() {
+                        // Already new-schema; drop any ghost legacy values.
+                        ps.git_branch_source = None;
+                        ps.git_branch_prefix = None;
+                        continue;
+                    }
+                    match (ps.git_branch_source.take(), ps.git_branch_prefix.take()) {
+                        (Some(source), Some(prefix)) if prefix != "multi-repo" => {
+                            log::info!(
+                                "[sessions] Upgrading legacy single-repo session '{}' → git_repos[1]={{label:{}, source:{}}}",
+                                ps.name, prefix, source
+                            );
+                            ps.git_repos
+                                .push(crate::session::session::SessionRepo {
+                                    label: prefix,
+                                    source_path: source,
+                                    branch: None,
+                                });
+                        }
+                        (Some(source), None) => {
+                            // Shouldn't happen in data this codebase produces, but serde(default)
+                            // + hand-edited files can land here. Synthesize label from dir name.
+                            let dir = source
+                                .replace('\\', "/")
+                                .split('/')
+                                .next_back()
+                                .unwrap_or("")
+                                .to_string();
+                            let label = dir
+                                .strip_prefix("repo-")
+                                .map(str::to_string)
+                                .unwrap_or(dir);
+                            log::warn!(
+                                "[sessions] Upgrading legacy session '{}' with source but no prefix; synthesized label '{}'",
+                                ps.name, label
+                            );
+                            ps.git_repos
+                                .push(crate::session::session::SessionRepo {
+                                    label,
+                                    source_path: source,
+                                    branch: None,
+                                });
+                        }
+                        (None, Some(prefix)) if prefix == "multi-repo" => {
+                            log::info!(
+                                "[sessions] Legacy multi-repo session '{}' → git_repos left empty; DiscoveryBranchWatcher will backfill",
+                                ps.name
+                            );
+                        }
+                        (None, Some(other)) => {
+                            log::warn!(
+                                "[sessions] Legacy session '{}' has unknown prefix '{}' without source; dropping",
+                                ps.name, other
+                            );
+                        }
+                        (None, None) => {}
+                        (Some(_), Some(_)) => {
+                            // prefix == "multi-repo" with a source — ambiguous legacy shape.
+                            log::warn!(
+                                "[sessions] Legacy session '{}' had source + multi-repo prefix; leaving git_repos empty for discovery backfill",
+                                ps.name
+                            );
+                        }
+                    }
+                }
+
                 log::info!(
                     "Loaded {} persisted sessions from {:?}",
                     deduped.len(),
@@ -245,10 +324,13 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             shell_args: strip_auto_injected_args(&s.shell, &s.shell_args),
             working_directory: s.working_directory.clone(),
             was_active: active_id.as_deref() == Some(&s.id),
-            git_branch_source: s.git_branch_source.clone(),
-            git_branch_prefix: s.git_branch_prefix.clone(),
+            git_repos: s.git_repos.clone(),
+            is_coordinator: s.is_coordinator,
             agent_id: s.agent_id.clone(),
             agent_label: s.agent_label.clone(),
+            // Legacy fields are always None on new saves; skip_serializing_if elides them.
+            git_branch_source: None,
+            git_branch_prefix: None,
             // Runtime fields for CLI consumption
             id: Some(s.id.clone()),
             status: Some(s.status.clone()),
@@ -552,10 +634,11 @@ pub async fn persist_current_state(mgr: &SessionManager) {
 
 #[cfg(test)]
 mod tests {
+    use super::{strip_auto_injected_args, PersistedSession};
 
     #[test]
     fn strip_auto_injected_args_removes_direct_gemini_resume_latest() {
-        let stripped = super::strip_auto_injected_args(
+        let stripped = strip_auto_injected_args(
             "gemini",
             &["--resume".to_string(), "latest".to_string(), "-m".to_string(), "gpt-5".to_string()],
         );
@@ -564,7 +647,7 @@ mod tests {
 
     #[test]
     fn strip_auto_injected_args_removes_cmd_gemini_resume_latest() {
-        let stripped = super::strip_auto_injected_args(
+        let stripped = strip_auto_injected_args(
             "cmd.exe",
             &["/C".to_string(), "gemini".to_string(), "--resume".to_string(), "latest".to_string(), "-m".to_string(), "gpt-5".to_string()],
         );
@@ -573,14 +656,12 @@ mod tests {
 
     #[test]
     fn strip_auto_injected_args_removes_embedded_cmd_gemini_resume_latest() {
-        let stripped = super::strip_auto_injected_args(
+        let stripped = strip_auto_injected_args(
             "cmd.exe",
             &["/K".to_string(), "git pull && gemini --resume latest -m gpt-5".to_string()],
         );
         assert_eq!(stripped, vec!["/K".to_string(), "git pull && gemini -m gpt-5".to_string()]);
     }
-
-    use super::strip_auto_injected_args;
 
     #[test]
     fn strip_auto_injected_args_removes_direct_claude_continue() {
@@ -689,5 +770,88 @@ mod tests {
     fn strip_auto_injected_args_leaves_unrelated_commands_unchanged() {
         let args = vec!["-NoLogo".to_string()];
         assert_eq!(strip_auto_injected_args("powershell.exe", &args), args);
+    }
+
+    /// Validation #17: single-repo legacy → one SessionRepo; legacy fields cleared.
+    #[test]
+    fn legacy_migration_single_repo_shape() {
+        let mut ps = PersistedSession {
+            name: "sess-a".into(),
+            shell: "cmd".into(),
+            shell_args: vec![],
+            working_directory: "C:/x".into(),
+            was_active: false,
+            git_repos: vec![],
+            is_coordinator: false,
+            agent_id: None,
+            agent_label: None,
+            git_branch_source: Some("C:/repos/agentscommander".into()),
+            git_branch_prefix: Some("agentscommander".into()),
+            id: None,
+            status: None,
+            waiting_for_input: None,
+            created_at: None,
+        };
+
+        // Mimic the upgrade pass in load_sessions (single-repo branch).
+        if ps.git_repos.is_empty() {
+            match (ps.git_branch_source.take(), ps.git_branch_prefix.take()) {
+                (Some(source), Some(prefix)) if prefix != "multi-repo" => {
+                    ps.git_repos
+                        .push(crate::session::session::SessionRepo {
+                            label: prefix,
+                            source_path: source,
+                            branch: None,
+                        });
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(ps.git_repos.len(), 1);
+        assert_eq!(ps.git_repos[0].label, "agentscommander");
+        assert_eq!(ps.git_repos[0].source_path, "C:/repos/agentscommander");
+        assert!(ps.git_branch_source.is_none());
+        assert!(ps.git_branch_prefix.is_none());
+    }
+
+    /// Legacy "multi-repo" prefix → git_repos stays empty; legacy fields cleared.
+    #[test]
+    fn legacy_migration_multi_repo_shape() {
+        let mut ps = PersistedSession {
+            name: "sess-multi".into(),
+            shell: "cmd".into(),
+            shell_args: vec![],
+            working_directory: "C:/x".into(),
+            was_active: false,
+            git_repos: vec![],
+            is_coordinator: false,
+            agent_id: None,
+            agent_label: None,
+            git_branch_source: None,
+            git_branch_prefix: Some("multi-repo".into()),
+            id: None,
+            status: None,
+            waiting_for_input: None,
+            created_at: None,
+        };
+
+        if ps.git_repos.is_empty() {
+            match (ps.git_branch_source.take(), ps.git_branch_prefix.take()) {
+                (Some(source), Some(prefix)) if prefix != "multi-repo" => {
+                    ps.git_repos
+                        .push(crate::session::session::SessionRepo {
+                            label: prefix,
+                            source_path: source,
+                            branch: None,
+                        });
+                }
+                _ => {}
+            }
+        }
+
+        assert!(ps.git_repos.is_empty());
+        assert!(ps.git_branch_source.is_none());
+        assert!(ps.git_branch_prefix.is_none());
     }
 }

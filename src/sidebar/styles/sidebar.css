@@ -437,9 +437,16 @@ html, body, #root {
   text-overflow: ellipsis;
 }
 
+.session-item-branches {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .session-item-meta {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   flex-wrap: wrap;
   min-width: 0;
