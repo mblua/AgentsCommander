@@ -258,7 +258,11 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   align-items: center;
   gap: var(--spacing-md);
   min-width: 0;
-  flex: 1 1 auto;
+  /* flex: 0 1 auto — shrink but don't grow past content width, so short commands
+     render at natural size. max-width caps the section at 50% of the statusbar,
+     reserving at least 50% for the right-side controls. */
+  flex: 0 1 auto;
+  max-width: 50%;
 }
 
 .status-bar-item {
