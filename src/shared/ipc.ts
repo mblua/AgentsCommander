@@ -379,6 +379,18 @@ export function onThemeChanged(
   return transport.listen<{ light: boolean }>("theme_changed", callback);
 }
 
+// Open the Settings modal (handled by sidebar ActionBar). Emitted from any
+// window — e.g. a disabled mic button asking the user to configure voice.
+export function emitOpenSettings(): Promise<void> {
+  return transport.emit("open_settings", {});
+}
+
+export function onOpenSettings(
+  callback: () => void
+): Promise<UnlistenFn> {
+  return transport.listen<unknown>("open_settings", () => callback());
+}
+
 export function onLastPrompt(
   callback: (data: { sessionId: string; text: string }) => void
 ): Promise<UnlistenFn> {

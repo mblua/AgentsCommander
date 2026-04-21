@@ -1,8 +1,9 @@
-import { Component, createSignal, createEffect, onCleanup, Show } from "solid-js";
+import { Component, createSignal, createEffect, onCleanup, Show, onMount } from "solid-js";
 import { open } from "@tauri-apps/plugin-dialog";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import { ProjectAPI, GuideAPI, emitThemeChanged } from "../../shared/ipc";
+import type { UnlistenFn } from "../../shared/transport";
+import { ProjectAPI, GuideAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
 import SettingsModal from "./SettingsModal";
 
 const ActionBar: Component = () => {
@@ -30,6 +31,16 @@ const ActionBar: Component = () => {
   });
 
   onCleanup(() => document.removeEventListener("mousedown", onClickAway));
+
+  // Cross-window / same-window trigger to open the Settings modal (e.g. from a
+  // disabled mic button prompting the user to configure voice).
+  let unlistenOpenSettings: UnlistenFn | null = null;
+  onMount(async () => {
+    unlistenOpenSettings = await onOpenSettings(() => setShowSettings(true));
+  });
+  onCleanup(() => {
+    if (unlistenOpenSettings) unlistenOpenSettings();
+  });
 
   const handleNewProject = async () => {
     if (isPendingDialog()) return;

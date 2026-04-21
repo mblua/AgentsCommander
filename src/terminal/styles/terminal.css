@@ -387,6 +387,18 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   opacity: 0.5;
 }
 
+/* Disabled mic: voice-to-text not configured. Clickable (opens Settings) but
+   visually de-emphasized. `help` cursor signals "hover me to learn more". */
+.status-bar-btn-mic.disabled {
+  opacity: 0.4;
+  cursor: help;
+}
+
+.status-bar-btn-mic.disabled:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--statusbar-fg);
+}
+
 .status-bar-btn-mic-cancel {
   color: rgba(255, 68, 68, 0.6);
   font-size: 10px;

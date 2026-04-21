@@ -2,7 +2,10 @@ import { Component, Show, createMemo, onCleanup } from "solid-js";
 import { terminalStore } from "../stores/terminal";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
-import { PtyAPI } from "../../shared/ipc";
+import { PtyAPI, emitOpenSettings } from "../../shared/ipc";
+
+const MIC_DISABLED_TITLE =
+  "Enable voice-to-text in Settings and set a Gemini API key to use this.";
 
 const StatusBar: Component<{ detached?: boolean }> = (props) => {
   let mouseUpHandler: (() => void) | null = null;
@@ -19,6 +22,10 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
 
   const handleMicDown = (e: MouseEvent) => {
     e.preventDefault();
+    if (!settingsStore.voiceEnabled) {
+      emitOpenSettings().catch(console.error);
+      return;
+    }
     const sessionId = terminalStore.activeSessionId;
     if (!sessionId || isProcessing()) return;
 
@@ -91,25 +98,31 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
       </div>
       <Show when={terminalStore.activeSessionId}>
         <div class="status-bar-actions">
-          <Show when={settingsStore.voiceEnabled}>
-            <Show when={isRecording()}>
-              <button
-                class="status-bar-btn status-bar-btn-mic-cancel"
-                onClick={handleCancelRecording}
-                title="Cancel recording"
-              >
-                &#x2715;
-              </button>
-            </Show>
+          <Show when={isRecording()}>
             <button
-              class={`status-bar-btn status-bar-btn-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""}`}
-              onMouseDown={handleMicDown}
-              title={isRecording() ? "Release to stop" : isProcessing() ? "Transcribing..." : "Hold to record (Ctrl+Shift+R)"}
-              disabled={isProcessing()}
+              class="status-bar-btn status-bar-btn-mic-cancel"
+              onClick={handleCancelRecording}
+              title="Cancel recording"
             >
-              &#x1F399;
+              &#x2715;
             </button>
           </Show>
+          <button
+            class={`status-bar-btn status-bar-btn-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
+            onMouseDown={handleMicDown}
+            title={
+              !settingsStore.voiceEnabled
+                ? MIC_DISABLED_TITLE
+                : isRecording()
+                  ? "Release to stop"
+                  : isProcessing()
+                    ? "Transcribing..."
+                    : "Hold to record (Ctrl+Shift+R)"
+            }
+            disabled={isProcessing()}
+          >
+            &#x1F399;
+          </button>
           <button
             class="status-bar-btn status-bar-btn-clear"
             onClick={handleClearInput}
