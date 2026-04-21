@@ -9,6 +9,7 @@ export interface Session {
   name: string;
   shell: string;
   shellArgs: string[];
+  effectiveShellArgs: string[] | null;
   createdAt: string;
   workingDirectory: string;
   status: SessionStatus;

@@ -45,6 +45,15 @@ pub struct Session {
     pub name: String,
     pub shell: String,
     pub shell_args: Vec<String>,
+    /// Effective arg vector actually handed to portable-pty at spawn time,
+    /// including dynamic injections (`--continue`, `codex resume --last`,
+    /// `--append-system-prompt-file <path>`). `None` until the PTY is
+    /// spawned for this session; set once by `create_session_inner` right
+    /// before `pty_mgr.spawn`. Runtime-only — NOT persisted to `sessions.toml`
+    /// (configured args in `shell_args` are the persistence recipe; the
+    /// effective args are re-derived at every spawn from current settings).
+    #[serde(skip)]
+    pub effective_shell_args: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
     pub working_directory: String,
     pub status: SessionStatus,
@@ -97,6 +106,10 @@ pub struct SessionInfo {
     pub name: String,
     pub shell: String,
     pub shell_args: Vec<String>,
+    /// See `Session::effective_shell_args`. `None` means "not yet registered"
+    /// (dormant or pre-spawn). On the wire, serializes as `null`.
+    #[serde(default)]
+    pub effective_shell_args: Option<Vec<String>>,
     pub created_at: String,
     pub working_directory: String,
     pub status: SessionStatus,
@@ -124,6 +137,7 @@ impl From<&Session> for SessionInfo {
             name: s.name.clone(),
             shell: s.shell.clone(),
             shell_args: s.shell_args.clone(),
+            effective_shell_args: s.effective_shell_args.clone(),
             created_at: s.created_at.to_rfc3339(),
             working_directory: s.working_directory.clone(),
             status: s.status.clone(),
@@ -137,5 +151,63 @@ impl From<&Session> for SessionInfo {
             token: s.token.to_string(),
             is_claude: s.is_claude,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_session(effective: Option<Vec<String>>) -> Session {
+        Session {
+            id: Uuid::nil(),
+            name: "Session 1".to_string(),
+            shell: "claude-mb".to_string(),
+            shell_args: vec!["--dangerously-skip-permissions".to_string()],
+            effective_shell_args: effective,
+            created_at: Utc::now(),
+            working_directory: "C:\\tmp".to_string(),
+            status: SessionStatus::Running,
+            waiting_for_input: false,
+            pending_review: false,
+            last_prompt: None,
+            agent_id: None,
+            agent_label: None,
+            git_repos: Vec::new(),
+            is_coordinator: false,
+            git_repos_gen: 0,
+            token: Uuid::nil(),
+            is_claude: false,
+        }
+    }
+
+    #[test]
+    fn session_info_from_session_copies_effective_shell_args_some() {
+        let s = sample_session(Some(vec![
+            "--dangerously-skip-permissions".to_string(),
+            "--continue".to_string(),
+        ]));
+        let info = SessionInfo::from(&s);
+        assert_eq!(
+            info.effective_shell_args,
+            Some(vec![
+                "--dangerously-skip-permissions".to_string(),
+                "--continue".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn session_info_from_session_copies_effective_shell_args_none() {
+        let s = sample_session(None);
+        let info = SessionInfo::from(&s);
+        assert_eq!(info.effective_shell_args, None);
+    }
+
+    #[test]
+    fn session_info_from_session_copies_effective_shell_args_empty() {
+        let s = sample_session(Some(Vec::new()));
+        let info = SessionInfo::from(&s);
+        assert_eq!(info.effective_shell_args, Some(Vec::new()));
     }
 }

@@ -36,7 +36,6 @@ const TerminalView: Component = () => {
     }
 
     entry.fitAddon.fit();
-    terminalStore.setTermSize(entry.terminal.cols, entry.terminal.rows);
     if (!skipPtyResize) {
       void PtyAPI.resize(sessionId, entry.terminal.cols, entry.terminal.rows);
     }
@@ -178,7 +177,6 @@ const TerminalView: Component = () => {
         return;
       }
 
-      terminalStore.setTermSize(cols, rows);
       void PtyAPI.resize(sessionId, cols, rows);
     });
 
@@ -251,7 +249,6 @@ const TerminalView: Component = () => {
         }
       }
       activeSessionId = null;
-      terminalStore.setTermSize(0, 0);
       return;
     }
 

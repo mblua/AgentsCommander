@@ -1179,9 +1179,21 @@ html.light-theme .root-agent-avatar {
   color: #f59e0b;
 }
 
+/* Disabled mic: voice-to-text not configured. Clickable (opens Settings) but
+   visually de-emphasized. `help` cursor signals "hover me to learn more". */
+.session-item-mic.disabled {
+  opacity: 0.4;
+  cursor: help;
+}
+
 .session-item-mic:hover {
   background: rgba(239, 68, 68, 0.15);
   color: #ef4444;
+}
+
+.session-item-mic.disabled:hover {
+  background: transparent;
+  color: var(--sidebar-fg-dim);
 }
 
 @keyframes mic-pulse {

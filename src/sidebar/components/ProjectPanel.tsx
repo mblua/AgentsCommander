@@ -1,7 +1,7 @@
 import { Component, For, Show, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, Session, TelegramBotConfig } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { projectStore } from "../stores/project";
@@ -418,6 +418,10 @@ const ProjectPanel: Component = () => {
 
           const handleMicClick = (e: MouseEvent) => {
             e.stopPropagation();
+            if (!settingsStore.voiceEnabled) {
+              emitOpenSettings("integrations").catch(console.error);
+              return;
+            }
             const s = session();
             if (s) voiceRecorder.toggle(s.id);
           };
@@ -512,16 +516,14 @@ const ProjectPanel: Component = () => {
                 </div>
               </div>
               <Show when={isLive()}>
-                <Show when={settingsStore.voiceEnabled}>
-                  <Show when={isRecording()}>
-                    <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
-                  </Show>
-                  <button
-                    class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""}`}
-                    onClick={handleMicClick}
-                    title={isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
-                  >&#x1F399;</button>
+                <Show when={isRecording()}>
+                  <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
                 </Show>
+                <button
+                  class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
+                  onClick={handleMicClick}
+                  title={!settingsStore.voiceEnabled ? "Enable voice-to-text in Settings and set a Gemini API key to use this." : isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
+                >&#x1F399;</button>
                 <button class="session-item-explorer" onClick={handleOpenExplorer} title="Open folder in explorer">&#x1F4C2;</button>
                 <button class="session-item-detach" onClick={handleDetach} title="Detach to own window">&#x29C9;</button>
                 <Show when={bridge()}>

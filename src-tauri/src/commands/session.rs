@@ -442,6 +442,18 @@ pub async fn create_session_inner(
         }
     }
 
+    // Capture the effective arg vector BEFORE spawn so SessionInfo::from(&session)
+    // (emitted at line ~439 as "session_created") carries the injected flags.
+    // Bind once, broadcast to two consumers: the store write is for later
+    // `mgr.get_session` callers; the local-clone write is for the imminent emit.
+    //
+    // DO NOT REMOVE OR GATE THIS CAPTURE. Issue #65 regression guard — removing
+    // or wrapping in a condition reintroduces the exact bug this plan fixes.
+    // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
+    let effective = shell_args.clone();
+    mgr.set_effective_shell_args(id, effective.clone()).await;
+    session.effective_shell_args = Some(effective);
+
     pty_mgr
         .lock()
         .unwrap()

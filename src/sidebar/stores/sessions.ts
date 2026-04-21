@@ -34,6 +34,7 @@ function makeInactiveEntry(name: string, path: string): Session {
     name,
     shell: "",
     shellArgs: [],
+    effectiveShellArgs: null,
     createdAt: "",
     workingDirectory: path,
     status: "idle",

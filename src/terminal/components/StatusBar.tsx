@@ -1,8 +1,11 @@
-import { Component, Show, onCleanup } from "solid-js";
+import { Component, Show, createMemo, onCleanup } from "solid-js";
 import { terminalStore } from "../stores/terminal";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
-import { PtyAPI } from "../../shared/ipc";
+import { PtyAPI, emitOpenSettings } from "../../shared/ipc";
+
+const MIC_DISABLED_TITLE =
+  "Enable voice-to-text in Settings and set a Gemini API key to use this.";
 
 const StatusBar: Component<{ detached?: boolean }> = (props) => {
   let mouseUpHandler: (() => void) | null = null;
@@ -10,8 +13,19 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
   const isRecording = () => !!voiceRecorder.recordingSessionId();
   const isProcessing = () => !!voiceRecorder.processingSessionId();
 
+  const fullCommand = createMemo(() => {
+    const shell = terminalStore.activeShell;
+    const args = terminalStore.activeShellArgs;
+    if (!shell || args === null || args === undefined) return "";
+    return args.length > 0 ? `${shell} ${args.join(" ")}` : shell;
+  });
+
   const handleMicDown = (e: MouseEvent) => {
     e.preventDefault();
+    if (!settingsStore.voiceEnabled) {
+      emitOpenSettings("integrations").catch(console.error);
+      return;
+    }
     const sessionId = terminalStore.activeSessionId;
     if (!sessionId || isProcessing()) return;
 
@@ -57,14 +71,11 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
             <span class="status-bar-detached">DETACHED</span>
           </div>
         </Show>
-        <Show when={terminalStore.activeShell}>
-          <div class="status-bar-item">
-            <span class="status-bar-accent">{terminalStore.activeShell}</span>
-          </div>
-        </Show>
-        <Show when={terminalStore.termSize.cols > 0}>
-          <div class="status-bar-item">
-            {terminalStore.termSize.cols}x{terminalStore.termSize.rows}
+        <Show when={fullCommand()}>
+          <div class="status-bar-item status-bar-command">
+            <span class="status-bar-accent" title={fullCommand()}>
+              {fullCommand()}
+            </span>
           </div>
         </Show>
         <Show when={isRecording()}>
@@ -87,25 +98,31 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
       </div>
       <Show when={terminalStore.activeSessionId}>
         <div class="status-bar-actions">
-          <Show when={settingsStore.voiceEnabled}>
-            <Show when={isRecording()}>
-              <button
-                class="status-bar-btn status-bar-btn-mic-cancel"
-                onClick={handleCancelRecording}
-                title="Cancel recording"
-              >
-                &#x2715;
-              </button>
-            </Show>
+          <Show when={isRecording()}>
             <button
-              class={`status-bar-btn status-bar-btn-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""}`}
-              onMouseDown={handleMicDown}
-              title={isRecording() ? "Release to stop" : isProcessing() ? "Transcribing..." : "Hold to record (Ctrl+Shift+R)"}
-              disabled={isProcessing()}
+              class="status-bar-btn status-bar-btn-mic-cancel"
+              onClick={handleCancelRecording}
+              title="Cancel recording"
             >
-              &#x1F399;
+              &#x2715;
             </button>
           </Show>
+          <button
+            class={`status-bar-btn status-bar-btn-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
+            onMouseDown={handleMicDown}
+            title={
+              !settingsStore.voiceEnabled
+                ? MIC_DISABLED_TITLE
+                : isRecording()
+                  ? "Release to stop"
+                  : isProcessing()
+                    ? "Transcribing..."
+                    : "Hold to record (Ctrl+Shift+R)"
+            }
+            disabled={isProcessing()}
+          >
+            &#x1F399;
+          </button>
           <button
             class="status-bar-btn status-bar-btn-clear"
             onClick={handleClearInput}

@@ -204,10 +204,10 @@ graph TD
     TA --> TTB["Titlebar.tsx<br/>Session name, shell<br/>DETACHED badge, controls"]
     TA --> LP["LastPrompt.tsx<br/>Last command per session<br/>listens to last_prompt events"]
     TA --> TV["TerminalView.tsx<br/>xterm.js multi-session container<br/>WebGL addon, FitAddon<br/>Map of SessionTerminal instances"]
-    TA --> SB["StatusBar.tsx<br/>Shell, cols x rows<br/>Mic button (hold-to-record)<br/>Clear input button"]
+    TA --> SB["StatusBar.tsx<br/>Full launch command (ellipsis + tooltip)<br/>Mic button (hold-to-record)<br/>Clear input button"]
 
     subgraph "Store"
-        TS["terminal.ts<br/>activeSessionId, name<br/>shell, termSize"]
+        TS["terminal.ts<br/>activeSessionId, name<br/>shell, shellArgs, workingDirectory"]
     end
 
     TA --> TS
@@ -474,7 +474,7 @@ graph TD
     end
 
     subgraph "Terminal Store"
-        TS["terminalStore<br/>createSignal × 4<br/>sessionId, name, shell, termSize"]
+        TS["terminalStore<br/>createSignal × 5<br/>sessionId, name, shell, shellArgs, workingDirectory"]
     end
 
     subgraph "Global"
@@ -611,10 +611,10 @@ graph TD
 | `sidebar/components/SettingsModal.tsx` | 4-tab settings: General, Agents, Integrations, Dark Factory |
 | `sidebar/components/OpenAgentModal.tsx` | Repo search → agent picker → launch |
 | `terminal/App.tsx` | Terminal root — session switching, detached mode |
-| `terminal/stores/terminal.ts` | `activeSessionId`, `name`, `shell`, `termSize` signals |
+| `terminal/stores/terminal.ts` | `activeSessionId`, `name`, `shell`, `shellArgs`, `workingDirectory` signals |
 | `terminal/components/TerminalView.tsx` | xterm.js multi-session container, WebGL, FitAddon |
 | `terminal/components/Titlebar.tsx` | Session name, shell, DETACHED badge |
-| `terminal/components/StatusBar.tsx` | Shell info, dimensions, mic button, clear input |
+| `terminal/components/StatusBar.tsx` | Full launch command (ellipsis + tooltip), mic button, clear input |
 | `terminal/components/LastPrompt.tsx` | Last command display per session |
 
 ### Config Files

@@ -1,13 +1,18 @@
-import { Component, createSignal, createEffect, onCleanup, Show } from "solid-js";
+import { Component, createSignal, createEffect, onCleanup, Show, onMount } from "solid-js";
 import { open } from "@tauri-apps/plugin-dialog";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import { ProjectAPI, GuideAPI, emitThemeChanged } from "../../shared/ipc";
+import type { UnlistenFn } from "../../shared/transport";
+import { ProjectAPI, GuideAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
 import SettingsModal from "./SettingsModal";
 
 const ActionBar: Component = () => {
   const [showDropdown, setShowDropdown] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
+  // `equals: false` → each write notifies even if the value is the same. Lets
+  // a second disabled-mic click re-snap the modal back to Integrations if the
+  // user manually navigated away to another tab between clicks.
+  const [pendingSection, setPendingSection] = createSignal<string | undefined>(undefined, { equals: false });
   const [confirmPath, setConfirmPath] = createSignal<string | null>(null);
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
   const [isLight, setIsLight] = createSignal(true);
@@ -30,6 +35,22 @@ const ActionBar: Component = () => {
   });
 
   onCleanup(() => document.removeEventListener("mousedown", onClickAway));
+
+  // Cross-window / same-window trigger to open the Settings modal (e.g. from a
+  // disabled mic button prompting the user to configure voice). The optional
+  // `section` argument targets a specific tab — SettingsModal picks it up via
+  // the `section` prop and its createEffect re-targets the tab if the modal is
+  // already open.
+  let unlistenOpenSettings: UnlistenFn | null = null;
+  onMount(async () => {
+    unlistenOpenSettings = await onOpenSettings((section) => {
+      setPendingSection(section);
+      setShowSettings(true);
+    });
+  });
+  onCleanup(() => {
+    if (unlistenOpenSettings) unlistenOpenSettings();
+  });
 
   const handleNewProject = async () => {
     if (isPendingDialog()) return;
@@ -129,13 +150,22 @@ const ActionBar: Component = () => {
           >
             {isLight() ? "\u2600\uFE0F" : "\uD83C\uDF19"}
           </button>
-          <button class="toolbar-gear-btn" onClick={() => setShowSettings(true)} title="Settings">
+          <button
+            class="toolbar-gear-btn"
+            onClick={() => { setPendingSection(undefined); setShowSettings(true); }}
+            title="Settings"
+          >
             &#x2699;
           </button>
         </div>
       </div>
 
-      {showSettings() && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showSettings() && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          section={pendingSection()}
+        />
+      )}
       <Show when={confirmPath()}>
         <div class="confirm-overlay" onClick={() => setConfirmPath(null)}>
           <div class="confirm-dialog" onClick={(e) => e.stopPropagation()}>
