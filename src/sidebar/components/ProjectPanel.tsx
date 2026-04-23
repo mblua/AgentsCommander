@@ -1,7 +1,7 @@
 import { Component, For, Show, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, Session, TelegramBotConfig } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { projectStore } from "../stores/project";
@@ -55,15 +55,6 @@ function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | und
   return sessionsStore.findSessionByName(replicaSessionName(wg, replica));
 }
 
-/** Check if a replica is the coordinator of its workgroup's team */
-function isReplicaCoordinator(replica: AcAgentReplica, projectFolder: string, teams: AcTeam[], teamName?: string): boolean {
-  const project = replica.originProject || projectFolder;
-  const fullRef = `${project}/${replica.name}`;
-  if (!teamName) return false;
-  const team = teams.find((t) => t.name === teamName);
-  return team ? team.coordinator === fullRef : false;
-}
-
 /** Compute CSS class for replica status dot */
 function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): string {
   const session = replicaSession(wg, replica);
@@ -102,14 +93,17 @@ const ProjectPanel: Component = () => {
     const existing = replicaSession(wg, replica);
     if (existing) {
       if (!isSessionLive(existing)) {
-        // Session exists but PTY has exited — restart it
+        // Session exists but PTY has exited (deferred at startup by
+        // startOnlyCoordinators, or prior shutdown). Wake it with provider
+        // auto-resume so the prior conversation continues — this is NOT a
+        // user-intent "fresh conversation" restart.
         try {
-          await SessionAPI.restart(existing.id);
+          await SessionAPI.restart(existing.id, { skipAutoResume: false });
           if (isTauri) {
             await WindowAPI.ensureTerminal();
           }
         } catch (e) {
-          console.error("Failed to restart session:", e);
+          console.error("Failed to wake session:", e);
         }
         return;
       }
@@ -393,10 +387,11 @@ const ProjectPanel: Component = () => {
         const renderReplicaItem = (
           replica: AcAgentReplica,
           wg: AcWorkgroup,
-          extraBadge?: string
+          extraBadge?: string,
+          runningPeers?: () => AcAgentReplica[]
         ) => {
           const dotClass = () => replicaDotClass(wg, replica);
-          const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName);
+          const isCoord = () => replica.isCoordinator;
           const rn = () => replicaRepoName(replica) || stripRepoPrefix(wg.repoPath?.replace(/\\/g, "/").split("/").pop() ?? "") || proj.folderName;
           const session = () => replicaSession(wg, replica);
           const liveAgentLabel = () => {
@@ -415,6 +410,10 @@ const ProjectPanel: Component = () => {
 
           const handleMicClick = (e: MouseEvent) => {
             e.stopPropagation();
+            if (!settingsStore.voiceEnabled) {
+              emitOpenSettings("integrations").catch(console.error);
+              return;
+            }
             const s = session();
             if (s) voiceRecorder.toggle(s.id);
           };
@@ -475,6 +474,18 @@ const ProjectPanel: Component = () => {
               <div class="replica-item-info">
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                 <div class="ac-discovery-badges">
+                  <Show when={runningPeers && runningPeers()!.length > 0}>
+                    <For each={runningPeers!()}>
+                      {(peer) => (
+                        <span
+                          class="ac-discovery-badge running-peer"
+                          title={`${wg.name}/${peer.name}`}
+                        >
+                          {peer.name} RUNNING
+                        </span>
+                      )}
+                    </For>
+                  </Show>
                   <Show when={isCoord()}>
                     <Show
                       when={(() => { const s = session(); return s && s.gitRepos.length > 0 ? s : undefined; })()}
@@ -509,16 +520,14 @@ const ProjectPanel: Component = () => {
                 </div>
               </div>
               <Show when={isLive()}>
-                <Show when={settingsStore.voiceEnabled}>
-                  <Show when={isRecording()}>
-                    <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
-                  </Show>
-                  <button
-                    class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""}`}
-                    onClick={handleMicClick}
-                    title={isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
-                  >&#x1F399;</button>
+                <Show when={isRecording()}>
+                  <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
                 </Show>
+                <button
+                  class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
+                  onClick={handleMicClick}
+                  title={!settingsStore.voiceEnabled ? "Enable voice-to-text in Settings and set a Gemini API key to use this." : isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
+                >&#x1F399;</button>
                 <button class="session-item-explorer" onClick={handleOpenExplorer} title="Open folder in explorer">&#x1F4C2;</button>
                 <button class="session-item-detach" onClick={handleDetach} title="Detach to own window">&#x29C9;</button>
                 <Show when={bridge()}>
@@ -639,7 +648,7 @@ const ProjectPanel: Component = () => {
                     const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
                     for (const wg of proj.workgroups) {
                       for (const replica of wg.agents) {
-                        if (isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName)) {
+                        if (replica.isCoordinator) {
                           result.push({ replica, wg });
                         }
                       }
@@ -650,7 +659,16 @@ const ProjectPanel: Component = () => {
                     <Show when={coordinators().length > 0}>
                       <div class="coord-quick-access">
                         <For each={coordinators()}>
-                          {(item) => renderReplicaItem(item.replica, item.wg, item.wg.name)}
+                          {(item) => {
+                            const runningPeers = createMemo(() =>
+                              item.wg.agents.filter((peer) => {
+                                if (peer.name === item.replica.name) return false;
+                                const dot = replicaDotClass(item.wg, peer);
+                                return dot === "running" || dot === "active";
+                              })
+                            );
+                            return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers);
+                          }}
                         </For>
                       </div>
                     </Show>

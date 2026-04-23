@@ -415,6 +415,25 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
         }
     }
 
+    fn strip_gemini_tokens(tokens: &mut Vec<String>, start: usize) {
+        if tokens
+            .get(start)
+            .is_some_and(|token| token.eq_ignore_ascii_case("--resume"))
+            && tokens
+                .get(start + 1)
+                .is_some_and(|token| token.eq_ignore_ascii_case("latest"))
+        {
+            tokens.remove(start);
+            tokens.remove(start);
+        } else if tokens
+            .get(start)
+            .is_some_and(|token| token.to_lowercase() == "--resume=latest")
+        {
+            tokens.remove(start);
+        }
+    }
+
+
     let is_claude = std::iter::once(shell)
         .chain(args.iter().flat_map(|s| s.split_whitespace()))
         .any(|t| {
@@ -434,7 +453,18 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
                 .eq_ignore_ascii_case("codex")
         });
 
-    if !is_claude && !is_codex {
+    let is_gemini = std::iter::once(shell)
+        .chain(args.iter().flat_map(|s| s.split_whitespace()))
+        .any(|t| {
+            std::path::Path::new(t)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(t)
+                .eq_ignore_ascii_case("gemini")
+        });
+
+
+    if !is_claude && !is_codex && !is_gemini {
         return args.to_vec();
     }
 
@@ -459,6 +489,15 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
                 strip_codex_tokens(&mut result, idx + 1);
             }
         }
+        if is_gemini {
+            if let Some(idx) = result
+                .iter()
+                .position(|arg| crate::commands::session::executable_basename(arg) == "gemini")
+            {
+                strip_gemini_tokens(&mut result, idx + 1);
+            }
+        }
+
 
         for arg in &mut result {
             let mut tokens: Vec<String> = arg
@@ -487,10 +526,30 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
                 }
             }
 
+            if is_gemini {
+                if let Some(idx) = tokens.iter().position(|token| {
+                    crate::commands::session::executable_basename(token) == "gemini"
+                }) {
+                    let before = tokens.len();
+                    strip_gemini_tokens(&mut tokens, idx + 1);
+                    changed |= tokens.len() != before;
+                }
+            }
+
+
             if changed {
                 *arg = tokens.join(" ");
             }
         }
+        if is_gemini {
+            if let Some(idx) = result
+                .iter()
+                .position(|arg| crate::commands::session::executable_basename(arg) == "gemini")
+            {
+                strip_gemini_tokens(&mut result, idx + 1);
+            }
+        }
+
 
         result
     } else {
@@ -518,6 +577,29 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
             {
                 continue;
             }
+
+            if is_gemini && idx == 0 {
+                if a.eq_ignore_ascii_case("--resume") {
+                    if args
+                        .get(1)
+                        .is_some_and(|next| next.eq_ignore_ascii_case("latest"))
+                    {
+                        continue;
+                    }
+                } else if a.to_lowercase() == "--resume=latest" {
+                    continue;
+                }
+            }
+            if is_gemini
+                && idx == 1
+                && args
+                    .first()
+                    .is_some_and(|first| first.eq_ignore_ascii_case("--resume"))
+                && a.eq_ignore_ascii_case("latest")
+            {
+                continue;
+            }
+
             if is_claude && a.eq_ignore_ascii_case("--continue") {
                 continue;
             }
@@ -553,6 +635,33 @@ pub async fn persist_current_state(mgr: &SessionManager) {
 #[cfg(test)]
 mod tests {
     use super::{strip_auto_injected_args, PersistedSession};
+
+    #[test]
+    fn strip_auto_injected_args_removes_direct_gemini_resume_latest() {
+        let stripped = strip_auto_injected_args(
+            "gemini",
+            &["--resume".to_string(), "latest".to_string(), "-m".to_string(), "gpt-5".to_string()],
+        );
+        assert_eq!(stripped, vec!["-m".to_string(), "gpt-5".to_string()]);
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_cmd_gemini_resume_latest() {
+        let stripped = strip_auto_injected_args(
+            "cmd.exe",
+            &["/C".to_string(), "gemini".to_string(), "--resume".to_string(), "latest".to_string(), "-m".to_string(), "gpt-5".to_string()],
+        );
+        assert_eq!(stripped, vec!["/C".to_string(), "gemini".to_string(), "-m".to_string(), "gpt-5".to_string()]);
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_embedded_cmd_gemini_resume_latest() {
+        let stripped = strip_auto_injected_args(
+            "cmd.exe",
+            &["/K".to_string(), "git pull && gemini --resume latest -m gpt-5".to_string()],
+        );
+        assert_eq!(stripped, vec!["/K".to_string(), "git pull && gemini -m gpt-5".to_string()]);
+    }
 
     #[test]
     fn strip_auto_injected_args_removes_direct_claude_continue() {

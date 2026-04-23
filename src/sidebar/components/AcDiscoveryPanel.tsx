@@ -43,26 +43,6 @@ const AcDiscoveryPanel: Component = () => {
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
 
-  /** Check if a replica is the coordinator of any team. Two-pass: exact match first,
-   * suffix fallback for missing originProject (mirrors backend suffix rule at
-   * ac_discovery.rs:666-684). */
-  const isReplicaCoord = (replica: AcAgentReplica): boolean => {
-    if (replica.originProject) {
-      const ref = `${replica.originProject}/${replica.name}`;
-      if (teams().some((t) => t.coordinator === ref)) return true;
-    }
-    const suffixHit = teams().some(
-      (t) => t.coordinator?.split("/").pop() === replica.name
-    );
-    if (suffixHit && !replica.originProject) {
-      console.warn(
-        "[AcDiscoveryPanel] replica treated as coordinator via suffix fallback; originProject missing",
-        replica.path
-      );
-    }
-    return suffixHit;
-  };
-
   const handleAgentClick = (agent: AcAgentMatrix) => {
     if (!agent.preferredAgentId) {
       setPendingLaunch({ path: agent.path, sessionName: agent.name, gitRepos: [] });
@@ -305,7 +285,6 @@ const AcDiscoveryPanel: Component = () => {
                     </div>
                     <For each={wg.agents}>
                       {(replica) => {
-                        const coord = () => isReplicaCoord(replica);
                         return (
                           <div
                             class="replica-item"
@@ -316,7 +295,10 @@ const AcDiscoveryPanel: Component = () => {
                             <div class="replica-item-info">
                               <span class="replica-item-name">{replica.name}</span>
                               <div class="ac-discovery-badges">
-                                <Show when={coord()}>
+                                <Show when={replica.isCoordinator}>
+                                  <span class="ac-discovery-badge coord">C</span>
+                                </Show>
+                                <Show when={replica.isCoordinator}>
                                   <Show when={replica.repoPaths.length === 1 && replica.repoBranch}>
                                     <span class="ac-discovery-badge branch">
                                       {(() => {

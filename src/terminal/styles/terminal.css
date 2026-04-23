@@ -257,6 +257,12 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
+  min-width: 0;
+  /* flex: 0 1 auto — shrink but don't grow past content width, so short commands
+     render at natural size. max-width caps the section at 50% of the statusbar,
+     reserving at least 50% for the right-side controls. */
+  flex: 0 1 auto;
+  max-width: 50%;
 }
 
 .status-bar-item {
@@ -267,6 +273,18 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
 
 .status-bar-accent {
   color: var(--statusbar-accent);
+}
+
+/* Full launch command in status bar: ellipsis + tooltip on overflow.
+   Option A (per grinch §9.1): apply ellipsis directly to the command wrapper
+   as a plain block (overrides inherited display:flex from .status-bar-item).
+   Single-element ellipsis is more predictable than nested flex+inline-block. */
+.status-bar-command {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-bar-detached {
@@ -367,6 +385,18 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
 .status-bar-btn-mic.processing {
   color: var(--statusbar-accent);
   opacity: 0.5;
+}
+
+/* Disabled mic: voice-to-text not configured. Clickable (opens Settings) but
+   visually de-emphasized. `help` cursor signals "hover me to learn more". */
+.status-bar-btn-mic.disabled {
+  opacity: 0.4;
+  cursor: help;
+}
+
+.status-bar-btn-mic.disabled:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--statusbar-fg);
 }
 
 .status-bar-btn-mic-cancel {

@@ -44,6 +44,7 @@ impl SessionManager {
             name,
             shell,
             shell_args,
+            effective_shell_args: None,
             created_at: chrono::Utc::now(),
             working_directory,
             status: SessionStatus::Running,
@@ -240,6 +241,18 @@ impl SessionManager {
         }
     }
 
+    /// Register the effective arg vector actually handed to portable-pty
+    /// at spawn time. Called by `create_session_inner` immediately before
+    /// `pty_mgr.spawn`. Idempotent — callers write the final vec once per
+    /// session lifetime. Overwrites on re-call (defensive; not expected in
+    /// normal flow).
+    pub async fn set_effective_shell_args(&self, id: Uuid, args: Vec<String>) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.effective_shell_args = Some(args);
+        }
+    }
+
     /// Overwrite `git_repos` atomically. Bumps `git_repos_gen`. Invariant:
     /// callers preserve insertion order (replica config.json `repos` array order).
     pub async fn set_git_repos(&self, id: Uuid, repos: Vec<SessionRepo>) {
@@ -365,5 +378,82 @@ impl SessionManager {
             .values()
             .find(|s| s.token == token)
             .map(SessionInfo::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn set_effective_shell_args_writes_field() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude-mb".to_string(),
+                vec!["--dangerously-skip-permissions".to_string()],
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        assert!(session.effective_shell_args.is_none());
+
+        let effective = vec![
+            "--dangerously-skip-permissions".to_string(),
+            "--continue".to_string(),
+        ];
+        mgr.set_effective_shell_args(session.id, effective.clone())
+            .await;
+
+        let stored = mgr
+            .get_session(session.id)
+            .await
+            .expect("session should still exist");
+        assert_eq!(stored.effective_shell_args, Some(effective));
+    }
+
+    #[tokio::test]
+    async fn set_effective_shell_args_no_op_on_missing_session() {
+        let mgr = SessionManager::new();
+        let missing = Uuid::new_v4();
+        mgr.set_effective_shell_args(missing, vec!["--continue".to_string()])
+            .await;
+        assert!(mgr.get_session(missing).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_effective_shell_args_overwrites_on_recall() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude-mb".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        mgr.set_effective_shell_args(session.id, vec!["--continue".to_string()])
+            .await;
+        mgr.set_effective_shell_args(
+            session.id,
+            vec!["--continue".to_string(), "--debug".to_string()],
+        )
+        .await;
+
+        let stored = mgr.get_session(session.id).await.unwrap();
+        assert_eq!(
+            stored.effective_shell_args,
+            Some(vec!["--continue".to_string(), "--debug".to_string()])
+        );
     }
 }

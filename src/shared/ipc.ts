@@ -34,6 +34,14 @@ export interface CreateSessionOptions {
 
 export interface RestartSessionOptions {
   agentId?: string;
+  /**
+   * Forwarded to the backend `restart_session` command. Omit (or pass `true`)
+   * for a true user-intent restart that starts a fresh conversation. Pass
+   * `false` when waking a deferred session (PTY exited due to
+   * `startOnlyCoordinators: true`) to allow provider auto-resume
+   * (`claude --continue`, `codex resume --last`, `gemini --resume latest`).
+   */
+  skipAutoResume?: boolean;
 }
 
 export const SessionAPI = {
@@ -53,6 +61,7 @@ export const SessionAPI = {
     transport.invoke<Session>("restart_session", {
       id,
       agentId: opts?.agentId ?? null,
+      skipAutoResume: opts?.skipAutoResume ?? null,
     }),
 
   switch: (id: string) => transport.invoke<void>("switch_session", { id }),
@@ -377,6 +386,25 @@ export function onThemeChanged(
   callback: (data: { light: boolean }) => void
 ): Promise<UnlistenFn> {
   return transport.listen<{ light: boolean }>("theme_changed", callback);
+}
+
+// Open the Settings modal (handled by sidebar ActionBar). Emitted from any
+// window — e.g. a disabled mic button asking the user to configure voice.
+// `section` targets a specific tab in SettingsModal (e.g. "integrations").
+// Omit to open on the default tab.
+export function emitOpenSettings(section?: string): Promise<void> {
+  return transport.emit<{ section?: string }>(
+    "open_settings",
+    section ? { section } : {}
+  );
+}
+
+export function onOpenSettings(
+  callback: (section?: string) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ section?: string }>("open_settings", (data) =>
+    callback(data?.section)
+  );
 }
 
 export function onLastPrompt(

@@ -129,6 +129,74 @@ fn codex_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
     false
 }
 
+
+fn gemini_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
+    let mut idx = start;
+    while idx < tokens.len() {
+        let token = tokens[idx];
+        if token.eq_ignore_ascii_case("-c") || token.eq_ignore_ascii_case("--config") {
+            idx = advance_past_config_value(tokens, idx + 1);
+            continue;
+        }
+        if token.eq_ignore_ascii_case("--resume") || token.to_lowercase().starts_with("--resume=") {
+            return true;
+        }
+        idx += 1;
+    }
+    false
+}
+
+fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
+    match executable_basename(shell).as_str() {
+        "gemini" => {
+            let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
+            if gemini_tokens_have_resume(&tokens, 0) {
+                return false;
+            }
+            shell_args.insert(0, "--resume".to_string());
+            shell_args.insert(1, "latest".to_string());
+            true
+        }
+        "cmd" => {
+            if let Some(idx) = shell_args
+                .iter()
+                .position(|arg| executable_basename(arg) == "gemini")
+            {
+                let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
+                if gemini_tokens_have_resume(&tokens, idx + 1) {
+                    return false;
+                }
+                shell_args.insert(idx + 1, "--resume".to_string());
+                shell_args.insert(idx + 2, "latest".to_string());
+                return true;
+            }
+
+            for arg in shell_args.iter_mut() {
+                let mut tokens: Vec<String> = arg
+                    .split_whitespace()
+                    .map(|token| token.to_string())
+                    .collect();
+                if let Some(idx) = tokens
+                    .iter()
+                    .position(|token| executable_basename(token) == "gemini")
+                {
+                    let token_refs: Vec<&str> = tokens.iter().map(|token| token.as_str()).collect();
+                    if gemini_tokens_have_resume(&token_refs, idx + 1) {
+                        return false;
+                    }
+                    tokens.insert(idx + 1, "--resume".to_string());
+                    tokens.insert(idx + 2, "latest".to_string());
+                    *arg = tokens.join(" ");
+                    return true;
+                }
+            }
+
+            false
+        }
+        _ => false,
+    }
+}
+
 fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
     match executable_basename(shell).as_str() {
         "codex" => {
@@ -321,6 +389,15 @@ pub async fn create_session_inner(
         }
     }
 
+    if is_gemini && !skip_auto_resume {
+        if let Some(ref aid) = agent_id {
+            if inject_gemini_resume(&shell, &mut shell_args) {
+                log::info!("Auto-injected `gemini --resume latest` for agent '{}'", aid);
+            }
+        }
+    }
+
+
     let materialized_context_path = if let Some(target) = context_target {
         match crate::config::session_context::materialize_agent_context_file(&cwd, target) {
             Ok(context) => context,
@@ -364,6 +441,18 @@ pub async fn create_session_inner(
             }
         }
     }
+
+    // Capture the effective arg vector BEFORE spawn so SessionInfo::from(&session)
+    // (emitted at line ~439 as "session_created") carries the injected flags.
+    // Bind once, broadcast to two consumers: the store write is for later
+    // `mgr.get_session` callers; the local-clone write is for the imminent emit.
+    //
+    // DO NOT REMOVE OR GATE THIS CAPTURE. Issue #65 regression guard — removing
+    // or wrapping in a condition reintroduces the exact bug this plan fixes.
+    // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
+    let effective = shell_args.clone();
+    mgr.set_effective_shell_args(id, effective.clone()).await;
+    session.effective_shell_args = Some(effective);
 
     pty_mgr
         .lock()
@@ -669,9 +758,23 @@ pub async fn destroy_session(
     destroy_session_inner(&app, uuid).await
 }
 
+/// Resolves the effective `skip_auto_resume` flag for `restart_session`.
+/// Defaults to `true` (fresh conversation) to preserve existing restart-button semantics.
+/// `Some(false)` is used by the deferred-wake path (ProjectPanel.handleReplicaClick)
+/// to allow provider auto-resume and continue the prior conversation.
+fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
+    requested.unwrap_or(true)
+}
+
 /// Restart a session: destroy the existing one and recreate it with the same
-/// configuration but a fresh PTY (no provider auto-resume). The restarted session is
-/// automatically activated, Telegram bridges are re-attached, and state is persisted.
+/// configuration but a fresh PTY. By default suppresses provider auto-resume
+/// (true user-intent restart — fresh conversation). Callers that are instead
+/// *waking* a previously-deferred session (e.g. a non-coordinator replica whose
+/// PTY was Exited(0) at startup due to `startOnlyCoordinators: true`) pass
+/// `skip_auto_resume = Some(false)` to allow `claude --continue`,
+/// `codex resume --last`, or `gemini --resume latest` injection.
+/// The restarted session is automatically activated, Telegram bridges are
+/// re-attached, and state is persisted.
 #[tauri::command]
 pub async fn restart_session(
     app: AppHandle,
@@ -681,6 +784,7 @@ pub async fn restart_session(
     settings: State<'_, SettingsState>,
     id: String,
     agent_id: Option<String>,
+    skip_auto_resume: Option<bool>,
 ) -> Result<SessionInfo, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
@@ -737,7 +841,7 @@ pub async fn restart_session(
         agent_label,
         false, // skip_tooling_save
         git_repos,
-        true, // skip_auto_resume — the whole point of restart
+        effective_restart_skip_auto_resume(skip_auto_resume),
     )
     .await?;
 
@@ -1184,6 +1288,35 @@ mod tests {
     }
 
     #[test]
+    fn inject_gemini_resume_prefixes_direct_gemini_args() {
+        let mut args = vec!["-m".to_string(), "gpt-5".to_string()];
+        assert!(super::inject_gemini_resume("gemini", &mut args));
+        assert_eq!(args, vec!["--resume".to_string(), "latest".to_string(), "-m".to_string(), "gpt-5".to_string()]);
+    }
+
+    #[test]
+    fn inject_gemini_resume_inserts_into_cmd_tokenized_wrapper() {
+        let mut args = vec!["/C".to_string(), "gemini".to_string(), "-m".to_string(), "gpt-5".to_string()];
+        assert!(super::inject_gemini_resume("cmd.exe", &mut args));
+        assert_eq!(args, vec!["/C".to_string(), "gemini".to_string(), "--resume".to_string(), "latest".to_string(), "-m".to_string(), "gpt-5".to_string()]);
+    }
+
+    #[test]
+    fn inject_gemini_resume_inserts_into_embedded_cmd_wrapper() {
+        let mut args = vec!["/K".to_string(), "git pull && gemini -m gpt-5".to_string()];
+        assert!(super::inject_gemini_resume("cmd.exe", &mut args));
+        assert_eq!(args, vec!["/K".to_string(), "git pull && gemini --resume latest -m gpt-5".to_string()]);
+    }
+
+    #[test]
+    fn inject_gemini_resume_skips_existing_resume_tokens() {
+        let mut args = vec!["--resume".to_string(), "latest".to_string(), "gpt-5".to_string()];
+        assert!(!super::inject_gemini_resume("gemini", &mut args));
+        assert_eq!(args, vec!["--resume".to_string(), "latest".to_string(), "gpt-5".to_string()]);
+    }
+
+
+    #[test]
     fn inject_codex_resume_prefixes_direct_codex_args() {
         let mut args = vec![
             "-m".to_string(),
@@ -1392,5 +1525,27 @@ mod tests {
             resolved,
             (Some("claude".to_string()), Some("Claude Code".to_string()))
         );
+    }
+
+    #[test]
+    fn effective_restart_skip_auto_resume_defaults_to_true_for_none() {
+        // No explicit value → preserve legacy "fresh conversation" semantics
+        // used by SessionItem, ProjectPanel context menu, AcDiscoveryPanel.
+        assert!(super::effective_restart_skip_auto_resume(None));
+    }
+
+    #[test]
+    fn effective_restart_skip_auto_resume_respects_explicit_false() {
+        // Deferred-wake path (ProjectPanel.handleReplicaClick) MUST be able
+        // to opt in to provider auto-resume; otherwise gemini/codex/claude
+        // sessions re-open with a blank slate instead of continuing.
+        assert!(!super::effective_restart_skip_auto_resume(Some(false)));
+    }
+
+    #[test]
+    fn effective_restart_skip_auto_resume_respects_explicit_true() {
+        // Explicit true still works (future-proof against a caller that
+        // wants to be explicit rather than rely on the default).
+        assert!(super::effective_restart_skip_auto_resume(Some(true)));
     }
 }

@@ -9,6 +9,7 @@ export interface Session {
   name: string;
   shell: string;
   shellArgs: string[];
+  effectiveShellArgs: string[] | null;
   createdAt: string;
   workingDirectory: string;
   status: SessionStatus;
@@ -229,6 +230,7 @@ export interface AcAgentReplica {
   preferredAgentId?: string;
   repoPaths: string[];
   repoBranch?: string;
+  isCoordinator: boolean;
 }
 
 export interface AcWorkgroup {

@@ -31,6 +31,141 @@ pub struct ResponseWatcher {
     pub capturing: bool,
 }
 
+#[cfg(windows)]
+struct GitGuardEnv {
+    path: String,
+    pathext: String,
+    real_git: String,
+}
+
+#[cfg(windows)]
+fn resolve_real_git_path() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut cmd = std::process::Command::new("where.exe");
+    cmd.arg("git.exe").creation_flags(CREATE_NO_WINDOW);
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+#[cfg(windows)]
+fn ensure_git_guard_wrapper() -> Result<std::path::PathBuf, AppError> {
+    let config_dir = crate::config::config_dir()
+        .ok_or_else(|| AppError::Other("Could not resolve app config directory".to_string()))?;
+    let guard_dir = config_dir.join("git-guard");
+    std::fs::create_dir_all(&guard_dir)
+        .map_err(|e| AppError::Other(format!("Failed to create git-guard dir: {}", e)))?;
+
+    let cmd_path = guard_dir.join("git.cmd");
+    let ps1_path = guard_dir.join("git-guard.ps1");
+
+    let cmd_content = "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0git-guard.ps1\" %*\r\nexit /b %ERRORLEVEL%\r\n";
+    let ps1_content = r#"$ErrorActionPreference = 'Stop'
+$realGit = $env:AC_REAL_GIT
+if ([string]::IsNullOrWhiteSpace($realGit)) {
+  Write-Error 'AgentsCommander git guard: AC_REAL_GIT is not set.'
+  exit 1
+}
+
+$originalArgs = @($args)
+$target = (Get-Location).Path
+
+for ($i = 0; $i -lt $originalArgs.Count; $i++) {
+  $arg = [string]$originalArgs[$i]
+  if ($arg -eq '-C') {
+    if ($i + 1 -ge $originalArgs.Count) {
+      Write-Error 'AgentsCommander git guard: missing path after -C.'
+      exit 1
+    }
+
+    $next = [string]$originalArgs[$i + 1]
+    if ([System.IO.Path]::IsPathRooted($next)) {
+      $target = [System.IO.Path]::GetFullPath($next)
+    } else {
+      $target = [System.IO.Path]::GetFullPath((Join-Path -Path $target -ChildPath $next))
+    }
+    $i++
+    continue
+  }
+
+  if ($arg -eq '--git-dir' -or $arg -like '--git-dir=*' -or $arg -eq '--work-tree' -or $arg -like '--work-tree=*') {
+    Write-Error 'AgentsCommander git guard: --git-dir and --work-tree are not allowed in agent sessions.'
+    exit 1
+  }
+}
+
+function Test-AllowedGitTarget([string]$path) {
+  try {
+    $current = [System.IO.Path]::GetFullPath($path)
+  } catch {
+    return $false
+  }
+
+  while ($true) {
+    $name = [System.IO.Path]::GetFileName($current)
+    if ($name -like 'repo-*') {
+      return $true
+    }
+
+    $parent = Split-Path -Path $current -Parent
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $current) {
+      break
+    }
+    $current = $parent
+  }
+
+  return $false
+}
+
+if (-not (Test-AllowedGitTarget $target)) {
+  Write-Error ('AgentsCommander git guard: git is only allowed inside repo-* directories. Target path: ' + $target)
+  exit 1
+}
+
+& $realGit @originalArgs
+exit $LASTEXITCODE
+"#;
+
+    std::fs::write(&cmd_path, cmd_content)
+        .map_err(|e| AppError::Other(format!("Failed to write git.cmd guard: {}", e)))?;
+    std::fs::write(&ps1_path, ps1_content)
+        .map_err(|e| AppError::Other(format!("Failed to write git-guard.ps1: {}", e)))?;
+
+    Ok(guard_dir)
+}
+
+#[cfg(windows)]
+fn build_git_guard_env() -> Result<Option<GitGuardEnv>, AppError> {
+    let Some(real_git) = resolve_real_git_path() else {
+        log::warn!("[pty] git.exe not found; skipping PATH git guard wrapper");
+        return Ok(None);
+    };
+
+    let guard_dir = ensure_git_guard_wrapper()?;
+    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries: Vec<std::path::PathBuf> = vec![guard_dir];
+    path_entries.extend(std::env::split_paths(&current_path));
+    let path = std::env::join_paths(path_entries.iter())
+        .map_err(|e| AppError::Other(format!("Failed to join PATH for git guard: {}", e)))?
+        .to_string_lossy()
+        .to_string();
+
+    Ok(Some(GitGuardEnv {
+        path,
+        pathext: ".CMD;.BAT;.COM;.EXE".to_string(),
+        real_git,
+    }))
+}
+
 pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     output_senders: OutputSenderMap,
@@ -187,6 +322,22 @@ impl PtyManager {
         };
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
+        if let Some(git_ceiling_dirs) = crate::config::session_context::git_ceiling_directories_for_session_root(cwd) {
+            command.env("GIT_CEILING_DIRECTORIES", &git_ceiling_dirs);
+            log::info!(
+                "[pty] Applied GIT_CEILING_DIRECTORIES for session cwd {}: {}",
+                cwd,
+                git_ceiling_dirs
+            );
+
+            #[cfg(windows)]
+            if let Some(git_guard_env) = build_git_guard_env()? {
+                command.env("PATH", &git_guard_env.path);
+                command.env("PATHEXT", &git_guard_env.pathext);
+                command.env("AC_REAL_GIT", &git_guard_env.real_git);
+                log::info!("[pty] Enabled git guard wrapper for session cwd {}", cwd);
+            }
+        }
 
         let child = pair
             .slave

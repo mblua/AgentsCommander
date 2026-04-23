@@ -82,6 +82,11 @@ pub struct AcAgentReplica {
     pub repo_paths: Vec<String>,
     /// Git branch of the first repo (if exactly one repo), for sidebar display
     pub repo_branch: Option<String>,
+    /// True if this replica is a coordinator of any discovered team.
+    /// Computed at construction against a fresh `config::teams` snapshot;
+    /// covers WG-aware suffix matching that simple `originProject/name`
+    /// comparison on the frontend misses. See issue #69.
+    pub is_coordinator: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -558,6 +563,12 @@ pub async fn discover_ac_agents(
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
 ) -> Result<AcDiscoveryResult, String> {
     let cfg = settings.read().await;
+    // Discovery-wide team snapshot — used per-replica for is_coordinator
+    // and at the end for refresh_coordinator_flags. Computed once so a
+    // single discovery pass presents a coherent coordinator view.
+    // Lock-safe: discover_teams() reads settings from disk via load_settings()
+    // and does NOT acquire SettingsState; the read guard above stays valid.
+    let teams_snapshot = crate::config::teams::discover_teams();
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
     let mut teams: Vec<AcTeam> = Vec::new();
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
@@ -690,7 +701,17 @@ pub async fn discover_ac_agents(
                                 // Resolve identity to determine origin project
                                 let origin_project = identity_path.as_ref()
                                     .and_then(|rel| {
-                                        std::fs::canonicalize(wg_path.join(rel)).ok()
+                                        let target = wg_path.join(rel);
+                                        std::fs::canonicalize(&target)
+                                            .inspect_err(|e| {
+                                                log::warn!(
+                                                    "[ac-discovery] identity canonicalize failed — replica='{}' target='{}' err={}",
+                                                    wg_path.display(),
+                                                    target.display(),
+                                                    e
+                                                );
+                                            })
+                                            .ok()
                                             .and_then(|abs| extract_origin_project(&abs))
                                     })
                                     .or_else(|| Some(project_folder.clone()));
@@ -724,6 +745,13 @@ pub async fn discover_ac_agents(
                                     None
                                 };
 
+                                // WG-aware suffix match — covered by
+                                // teams::tests::is_coordinator_for_cwd_matches_wg_replica.
+                                let is_coordinator = crate::config::teams::is_any_coordinator(
+                                    &format!("{}/{}", dir_name, replica_name),
+                                    &teams_snapshot,
+                                );
+
                                 wg_agents.push(AcAgentReplica {
                                     name: replica_name,
                                     path: wg_path.to_string_lossy().to_string(),
@@ -732,6 +760,7 @@ pub async fn discover_ac_agents(
                                     preferred_agent_id,
                                     repo_paths,
                                     repo_branch,
+                                    is_coordinator,
                                 });
                             }
                         }
@@ -846,8 +875,7 @@ pub async fn discover_ac_agents(
         branch_watcher.update_replicas_for_project(proj, wgs);
     }
 
-    // Recompute coordinator flags on every live session against the fresh team snapshot.
-    let teams_snapshot = crate::config::teams::discover_teams();
+    // Recompute coordinator flags on every live session against the hoisted team snapshot.
     let changes = {
         let mgr = session_mgr.read().await;
         mgr.refresh_coordinator_flags(&teams_snapshot).await
@@ -969,6 +997,13 @@ pub async fn discover_project(
     // Opportunistic: ensure gitignore protects workgroup clones
     let _ = ensure_ac_new_gitignore(&ac_new_dir);
 
+    // Discovery-wide team snapshot — see discover_ac_agents for rationale.
+    // Lock-safe: discover_teams() reads settings from disk via load_settings()
+    // and does NOT acquire SettingsState; the read guard above stays valid.
+    // Placed AFTER the .ac-new-missing early return so non-AC folders don't
+    // pay a wasted filesystem scan (§15 Finding F1).
+    let teams_snapshot = crate::config::teams::discover_teams();
+
     let project_folder = base
         .file_name()
         .and_then(|n| n.to_str())
@@ -1058,7 +1093,17 @@ pub async fn discover_project(
                         // Resolve identity to determine origin project
                         let origin_project = identity_path.as_ref()
                             .and_then(|rel| {
-                                std::fs::canonicalize(wg_path.join(rel)).ok()
+                                let target = wg_path.join(rel);
+                                std::fs::canonicalize(&target)
+                                    .inspect_err(|e| {
+                                        log::warn!(
+                                            "[ac-discovery] identity canonicalize failed — replica='{}' target='{}' err={}",
+                                            wg_path.display(),
+                                            target.display(),
+                                            e
+                                        );
+                                    })
+                                    .ok()
                                     .and_then(|abs| extract_origin_project(&abs))
                             })
                             .or_else(|| Some(project_folder.clone()));
@@ -1088,6 +1133,13 @@ pub async fn discover_project(
                             None
                         };
 
+                        // WG-aware suffix match — covered by
+                        // teams::tests::is_coordinator_for_cwd_matches_wg_replica.
+                        let is_coordinator = crate::config::teams::is_any_coordinator(
+                            &format!("{}/{}", dir_name, replica_name),
+                            &teams_snapshot,
+                        );
+
                         wg_agents.push(AcAgentReplica {
                             name: replica_name,
                             path: wg_path.to_string_lossy().to_string(),
@@ -1096,6 +1148,7 @@ pub async fn discover_project(
                             preferred_agent_id,
                             repo_paths,
                             repo_branch,
+                            is_coordinator,
                         });
                     }
                 }
@@ -1197,8 +1250,7 @@ pub async fn discover_project(
     // Update the branch watcher for THIS project only.
     branch_watcher.update_replicas_for_project(&path, &workgroups);
 
-    // Recompute coordinator flags on every live session against the fresh team snapshot.
-    let teams_snapshot = crate::config::teams::discover_teams();
+    // Recompute coordinator flags on every live session against the hoisted team snapshot.
     let changes = {
         let mgr = session_mgr.read().await;
         mgr.refresh_coordinator_flags(&teams_snapshot).await

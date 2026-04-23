@@ -268,6 +268,10 @@ pub fn run() {
             // Git branch watcher: polls git branch for each session every 5s
             let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
             git_watcher.start(shutdown_for_setup.clone());
+            // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>`
+            // (e.g. `update_team`, `sync_workgroup_repos`). Must happen BEFORE the
+            // `PtyManager::new(..., git_watcher, ...)` move below.
+            app.manage(Arc::clone(&git_watcher));
 
             // Discovery branch watcher: polls git branch for discovered replicas every 15s
             let discovery_branch_watcher = DiscoveryBranchWatcher::new(

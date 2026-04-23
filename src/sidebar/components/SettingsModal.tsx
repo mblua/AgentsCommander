@@ -1,4 +1,4 @@
-import { Component, createSignal, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createEffect, For, Show, onMount } from "solid-js";
 import { createStore } from "solid-js/store";
 import { isTauri } from "../../shared/platform";
 import type {
@@ -28,7 +28,10 @@ const TABS: { key: SettingsTab; label: string }[] = [
   { key: "integrations", label: "Integrations" },
 ];
 
-const SettingsModal: Component<{ onClose: () => void }> = (props) => {
+const isValidSettingsTab = (s: string): s is SettingsTab =>
+  TABS.some((t) => t.key === s);
+
+const SettingsModal: Component<{ onClose: () => void; section?: string }> = (props) => {
   const [settings, setSettings] = createStore<{ data: AppSettings | null }>({ data: null });
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -37,7 +40,17 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     ok: boolean;
     msg?: string;
   } | null>(null);
-  const [activeTab, setActiveTab] = createSignal<SettingsTab>("general");
+  // `props.section` lets callers (e.g. disabled mic click) open on a specific
+  // tab. Invalid or absent → fall back to "general" default. The effect below
+  // also snaps to the requested section when props.section changes while the
+  // modal is already mounted (double-click on disabled mic re-targets).
+  const initialTab: SettingsTab =
+    props.section && isValidSettingsTab(props.section) ? props.section : "general";
+  const [activeTab, setActiveTab] = createSignal<SettingsTab>(initialTab);
+  createEffect(() => {
+    const s = props.section;
+    if (s && isValidSettingsTab(s)) setActiveTab(s);
+  });
 
   const [webServerRunning, setWebServerRunning] = createSignal(false);
   const [saveError, setSaveError] = createSignal("");

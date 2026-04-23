@@ -229,9 +229,32 @@ pub fn resolve_existing_message(
     messaging_dir: &Path,
     filename: &str,
 ) -> Result<PathBuf, MessagingError> {
-    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+    if filename.contains("..") {
         return Err(MessagingError::InvalidFilename(filename.to_string()));
     }
+
+    let normalized_owned: String;
+    let filename: &str = if filename.contains('/') || filename.contains('\\') {
+        let as_path = Path::new(filename);
+        let parent = as_path
+            .parent()
+            .ok_or_else(|| MessagingError::InvalidFilename(filename.to_string()))?;
+        let canon_msg_dir = std::fs::canonicalize(messaging_dir)
+            .map_err(|_| MessagingError::InvalidFilename(filename.to_string()))?;
+        let canon_parent = std::fs::canonicalize(parent)
+            .map_err(|_| MessagingError::InvalidFilename(filename.to_string()))?;
+        if canon_parent != canon_msg_dir {
+            return Err(MessagingError::InvalidFilename(filename.to_string()));
+        }
+        normalized_owned = as_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| MessagingError::InvalidFilename(filename.to_string()))?
+            .to_string();
+        &normalized_owned
+    } else {
+        filename
+    };
     if !filename.ends_with(".md") {
         return Err(MessagingError::InvalidFilename(filename.to_string()));
     }
@@ -319,6 +342,19 @@ fn sanitize(s: &str) -> String {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn unique_tmp(prefix: &str) -> PathBuf {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::process::id().hash(&mut h);
+        std::thread::current().id().hash(&mut h);
+        std::env::temp_dir().join(format!(
+            "{}-{}-{}",
+            prefix,
+            Utc::now().timestamp_nanos_opt().unwrap_or(0),
+            h.finish()
+        ))
+    }
 
     #[test]
     fn agent_short_name_wg() {
@@ -495,6 +531,104 @@ mod tests {
                 bad
             );
         }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_accepts_abs_path_inside_messaging_dir() {
+        let tmp = unique_tmp("ac-msg-abs-ok");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let ts = Utc.with_ymd_and_hms(2026, 4, 19, 14, 30, 52).unwrap();
+        let base = build_filename(ts, "wg7-a", "wg7-b", "abs-ok");
+        let (written_abs, f) = create_message_file(&tmp, &base).unwrap();
+        drop(f);
+
+        let abs_str = written_abs.to_string_lossy().to_string();
+        let resolved = resolve_existing_message(&tmp, &abs_str).unwrap();
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()).unwrap(),
+            base
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_rejects_abs_path_outside_messaging_dir() {
+        let tmp_msg = unique_tmp("ac-msg-abs-out");
+        let tmp_other = unique_tmp("ac-msg-abs-other");
+        std::fs::create_dir_all(&tmp_msg).unwrap();
+        std::fs::create_dir_all(&tmp_other).unwrap();
+
+        let ts = Utc.with_ymd_and_hms(2026, 4, 19, 14, 30, 52).unwrap();
+        let base = build_filename(ts, "wg7-a", "wg7-b", "other");
+        let bad_path = tmp_other.join(&base);
+        std::fs::write(&bad_path, b"x").unwrap();
+
+        let bad_abs = bad_path.to_string_lossy().to_string();
+        assert!(matches!(
+            resolve_existing_message(&tmp_msg, &bad_abs),
+            Err(MessagingError::InvalidFilename(_))
+        ));
+
+        let _ = std::fs::remove_dir_all(&tmp_msg);
+        let _ = std::fs::remove_dir_all(&tmp_other);
+    }
+
+    #[test]
+    fn resolve_rejects_abs_path_with_dotdot() {
+        let tmp_msg = unique_tmp("ac-msg-dd");
+        std::fs::create_dir_all(&tmp_msg).unwrap();
+
+        let sneaky = format!(
+            "{}/../{}/foo.md",
+            tmp_msg.display(),
+            tmp_msg.file_name().and_then(|n| n.to_str()).unwrap()
+        );
+        assert!(matches!(
+            resolve_existing_message(&tmp_msg, &sneaky),
+            Err(MessagingError::InvalidFilename(_))
+        ));
+
+        let _ = std::fs::remove_dir_all(&tmp_msg);
+    }
+
+    #[test]
+    fn resolve_rejects_abs_path_with_missing_parent() {
+        let tmp_msg = unique_tmp("ac-msg-missing");
+        std::fs::create_dir_all(&tmp_msg).unwrap();
+
+        let bogus = std::env::temp_dir()
+            .join("ac-no-such-dir-xyz-unlikely")
+            .join("20260419-143052-wg7-a-to-wg7-b-nope.md");
+        let bogus_abs = bogus.to_string_lossy().to_string();
+        assert!(matches!(
+            resolve_existing_message(&tmp_msg, &bogus_abs),
+            Err(MessagingError::InvalidFilename(_))
+        ));
+
+        let _ = std::fs::remove_dir_all(&tmp_msg);
+    }
+
+    #[test]
+    fn resolve_accepts_relative_path_inside_messaging_dir() {
+        let tmp = unique_tmp("ac-msg-rel");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let ts = Utc.with_ymd_and_hms(2026, 4, 19, 14, 30, 52).unwrap();
+        let base = build_filename(ts, "wg7-a", "wg7-b", "rel-ok");
+        let (abs_written, f) = create_message_file(&tmp, &base).unwrap();
+        drop(f);
+
+        let rel = format!("{}/./{}", tmp.display(), base);
+        let resolved = resolve_existing_message(&tmp, &rel).unwrap();
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()).unwrap(),
+            base
+        );
+        let _ = abs_written;
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -4,9 +4,15 @@ src-tauri/target/
 *.log
 .DS_Store
 .agentscommander/
+.husky/_
 
 .ac-new/wg-1-ac-devs/
 
 .ac-new/wg-2-ac-devs/
 
 .ac-new/wg-3-ac-devs/
+
+# Per-session agent context materialized by default_context()
+CLAUDE.md
+GEMINI.md
+AGENTS.md

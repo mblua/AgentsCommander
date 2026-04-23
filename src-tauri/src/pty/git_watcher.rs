@@ -174,6 +174,11 @@ impl GitWatcher {
         cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
             .current_dir(working_dir)
             .kill_on_drop(true);
+        if let Some(git_ceiling_dirs) =
+            crate::config::session_context::git_ceiling_directories_for_session_root(working_dir)
+        {
+            cmd.env("GIT_CEILING_DIRECTORIES", git_ceiling_dirs);
+        }
 
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);

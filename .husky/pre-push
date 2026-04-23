@@ -1,0 +1,18 @@
+# .husky/pre-push
+# Pre-push hook: validates every branch ref being pushed against the naming convention.
+# Bypass locally with `git push --no-verify` (server-side GitHub Action is authoritative).
+
+# stdin lines from git: "<local_ref> <local_oid> <remote_ref> <remote_oid>"
+while read -r local_ref local_oid remote_ref remote_oid; do
+  # Skip branch deletions (local_oid is all zeros)
+  if [ "$local_oid" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+  # Extract branch from refs/heads/<name>
+  case "$local_ref" in
+    refs/heads/*) branch="${local_ref#refs/heads/}" ;;
+    *) continue ;; # tags and other refs are not validated
+  esac
+  node scripts/validate-branch-name.mjs --branch "$branch" || exit 1
+done
+exit 0
