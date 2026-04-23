@@ -745,10 +745,13 @@ pub async fn discover_ac_agents(
                                     None
                                 };
 
-                                // WG-aware suffix match — covered by
-                                // teams::tests::is_coordinator_for_cwd_matches_wg_replica.
+                                // §AR2-strict: `is_coordinator` short-circuits on
+                                // unqualified names, so build the project-qualified FQN
+                                // (mirrors `agent_fqn_from_path`'s `<proj>:<wg>/<agent>`
+                                // shape). Covered by
+                                // teams::tests::is_any_coordinator_requires_qualified_fqn.
                                 let is_coordinator = crate::config::teams::is_any_coordinator(
-                                    &format!("{}/{}", dir_name, replica_name),
+                                    &format!("{}:{}/{}", project_folder, dir_name, replica_name),
                                     &teams_snapshot,
                                 );
 
@@ -1133,10 +1136,13 @@ pub async fn discover_project(
                             None
                         };
 
-                        // WG-aware suffix match — covered by
-                        // teams::tests::is_coordinator_for_cwd_matches_wg_replica.
+                        // §AR2-strict: `is_coordinator` short-circuits on
+                        // unqualified names, so build the project-qualified FQN
+                        // (mirrors `agent_fqn_from_path`'s `<proj>:<wg>/<agent>`
+                        // shape). Covered by
+                        // teams::tests::is_any_coordinator_requires_qualified_fqn.
                         let is_coordinator = crate::config::teams::is_any_coordinator(
-                            &format!("{}/{}", dir_name, replica_name),
+                            &format!("{}:{}/{}", project_folder, dir_name, replica_name),
                             &teams_snapshot,
                         );
 

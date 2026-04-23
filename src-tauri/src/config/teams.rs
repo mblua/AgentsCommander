@@ -825,6 +825,26 @@ mod tests {
         assert!(is_coordinator_for_cwd(coord_b_cwd, &teams));
     }
 
+    /// Issue #77 regression guard: `is_any_coordinator` is the hot path used by
+    /// `commands::ac_discovery` to populate `AcAgentReplica.isCoordinator`. The
+    /// §AR2-strict gate in `is_coordinator` requires a project-qualified FQN —
+    /// callers that pass an unqualified WG-local name will silently get `false`
+    /// (which is exactly the bug fixed in #77). This test pins the contract so
+    /// no future refactor can re-introduce the regression.
+    #[test]
+    fn is_any_coordinator_requires_qualified_fqn() {
+        let teams = vec![dev_team("foo")];
+
+        // 1. Project-qualified WG replica matching the team's project → true.
+        assert!(is_any_coordinator("foo:wg-1-dev-team/tech-lead", &teams));
+
+        // 2. Unqualified WG replica (legacy shape) → false. §AR2-strict guard.
+        assert!(!is_any_coordinator("wg-1-dev-team/tech-lead", &teams));
+
+        // 3. Cross-project qualified → false (project mismatch).
+        assert!(!is_any_coordinator("bar:wg-1-dev-team/tech-lead", &teams));
+    }
+
     /// §AR2-strict: unqualified `from` (legacy) MUST NOT grant coordinator
     /// authority even if the local part matches. Locks in the §DR8/§G13 call.
     #[test]
