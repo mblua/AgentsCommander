@@ -535,9 +535,12 @@ pub fn run() {
                             continue;
                         }
 
-                        // Defer non-coordinator team members when setting is enabled
+                        // Defer non-coordinator team members when setting is enabled.
+                        // §DR2: use `agent_fqn_from_path` so WG replicas get project-precise
+                        // team membership and coordinator checks. Strict `is_coordinator`
+                        // (§AR2-strict) requires the FQN to avoid cross-project flag leaks.
                         if start_only_coords {
-                            let agent_name = crate::config::teams::agent_name_from_path(&ps.working_directory);
+                            let agent_name = crate::config::teams::agent_fqn_from_path(&ps.working_directory);
                             let in_team = teams.iter().any(|t| crate::config::teams::is_in_team(&agent_name, t));
                             let is_coord = crate::config::teams::is_any_coordinator(&agent_name, &teams);
 

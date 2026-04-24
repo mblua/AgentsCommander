@@ -41,25 +41,10 @@ struct PeerInfo {
     coding_agents: HashMap<String, CodingAgentEntry>,
 }
 
-/// Strip `__agent_` and `_agent_` prefixes from agent directory names.
-fn strip_agent_prefix(name: &str) -> &str {
-    name.strip_prefix("__agent_")
-        .or_else(|| name.strip_prefix("_agent_"))
-        .unwrap_or(name)
-}
-
-/// Get the agent name (parent/repo) from a path, stripping agent prefixes.
-fn agent_name_from_path(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
-    if components.len() >= 2 {
-        let parent = components[components.len() - 2];
-        let last = strip_agent_prefix(components[components.len() - 1]);
-        format!("{}/{}", parent, last)
-    } else {
-        normalized
-    }
-}
+// Shadow `agent_name_from_path`/`strip_agent_prefix` removed — canonical
+// helpers live in `config::teams` (§AR2-order step 7 / §DR2). Origin agents
+// use `agent_name_from_path` (project/agent); WG replicas use
+// `agent_fqn_from_path` (project:wg-N/agent).
 
 /// Extract a role description from markdown content: finds the `## Role` section
 /// and returns up to 3 lines. Falls back to the first `fallback_lines` non-heading lines.
@@ -123,6 +108,9 @@ struct WgReplicaInfo {
     my_wg_name: String,
     my_wg_dir: PathBuf,
     ac_new_dir: PathBuf,
+    /// Project folder name (the dir containing `.ac-new/`). Forms the
+    /// LHS of the canonical FQN for WG replicas.
+    my_project: String,
 }
 
 /// Detect if `root` is a WG replica: path matches `*/.ac-new/wg-*/__agent_*/`.
@@ -151,11 +139,18 @@ fn detect_wg_replica(root: &str) -> Option<WgReplicaInfo> {
         return None;
     }
 
+    let my_project = ac_new_dir
+        .parent()?
+        .file_name()?
+        .to_str()?
+        .to_string();
+
     Some(WgReplicaInfo {
         my_agent_name,
         my_wg_name: wg_name.to_string(),
         my_wg_dir: wg_dir.to_path_buf(),
         ac_new_dir: ac_new_dir.to_path_buf(),
+        my_project,
     })
 }
 
@@ -277,7 +272,15 @@ fn read_wg_role(replica_dir: &Path) -> String {
 }
 
 /// Build a PeerInfo for a WG replica directory. Also bootstraps IPC dirs.
-fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path, reachable: bool) -> PeerInfo {
+/// `project` is the project folder name (dir containing `.ac-new/`) and forms
+/// the LHS of the canonical FQN.
+fn build_wg_peer(
+    project: &str,
+    agent_name: &str,
+    wg_name: &str,
+    agent_path: &Path,
+    reachable: bool,
+) -> PeerInfo {
     let replica_ac = agent_path.join(crate::config::agent_local_dir_name());
     let _ = std::fs::create_dir_all(replica_ac.join("inbox"));
     let _ = std::fs::create_dir_all(replica_ac.join("outbox"));
@@ -296,7 +299,7 @@ fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path, reachable: 
         .unwrap_or_default();
 
     PeerInfo {
-        name: format!("{}/{}", wg_name, agent_name),
+        name: format!("{}:{}/{}", project, wg_name, agent_name),
         path: agent_path.to_string_lossy().to_string(),
         status: status.to_string(),
         role: read_wg_role(agent_path),
@@ -311,7 +314,9 @@ fn build_wg_peer(agent_name: &str, wg_name: &str, agent_path: &Path, reachable: 
 fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
     let mut peers: Vec<PeerInfo> = Vec::new();
     let discovered = crate::config::teams::discover_teams();
-    let my_full_name = format!("{}/{}", wg.my_wg_name, wg.my_agent_name);
+    // Canonical FQN: `<project>:<wg>/<agent>`. All downstream routing checks
+    // (`can_communicate`) compare project-qualified strings.
+    let my_full_name = format!("{}:{}/{}", wg.my_project, wg.my_wg_name, wg.my_agent_name);
 
     let coordinator = resolve_wg_coordinator(&wg.ac_new_dir, &wg.my_wg_dir);
     let i_am_coordinator = coordinator.as_deref() == Some(wg.my_agent_name.as_str());
@@ -342,12 +347,19 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
         if *agent_name == wg.my_agent_name {
             continue;
         }
-        let peer_full_name = format!("{}/{}", wg.my_wg_name, agent_name);
+        let peer_full_name = format!("{}:{}/{}", wg.my_project, wg.my_wg_name, agent_name);
         let reachable = crate::config::teams::can_communicate(&my_full_name, &peer_full_name, &discovered);
-        peers.push(build_wg_peer(agent_name, &wg.my_wg_name, agent_path, reachable));
+        peers.push(build_wg_peer(
+            &wg.my_project,
+            agent_name,
+            &wg.my_wg_name,
+            agent_path,
+            reachable,
+        ));
     }
 
     // Coordinator also sees coordinators of OTHER WGs in the same .ac-new
+    // (same project, different WG — still qualified with `wg.my_project`).
     if i_am_coordinator {
         if let Ok(entries) = std::fs::read_dir(&wg.ac_new_dir) {
             for entry in entries.flatten() {
@@ -365,12 +377,18 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
                     if !coord_dir.is_dir() {
                         continue;
                     }
-                    let peer_name = format!("{}/{}", other_wg_name, other_coord);
+                    let peer_name = format!("{}:{}/{}", wg.my_project, other_wg_name, other_coord);
                     if peers.iter().any(|p| p.name == peer_name) {
                         continue;
                     }
                     let reachable = crate::config::teams::can_communicate(&my_full_name, &peer_name, &discovered);
-                    peers.push(build_wg_peer(&other_coord, &other_wg_name, &coord_dir, reachable));
+                    peers.push(build_wg_peer(
+                        &wg.my_project,
+                        &other_coord,
+                        &other_wg_name,
+                        &coord_dir,
+                        reachable,
+                    ));
                 }
             }
         }
@@ -410,7 +428,12 @@ pub fn execute(args: ListPeersArgs) -> i32 {
     }
 
     // ── Standard discovery-based peer listing ────────────────────────
-    let my_name = agent_name_from_path(&root);
+    //
+    // `execute` is the non-WG-replica path (WG replicas return early above).
+    // `root` is an origin matrix agent CWD → `agent_fqn_from_path` gives the
+    // origin form `project/agent` (identical to the legacy behavior for
+    // non-WG paths). Using the canonical helper eliminates the shadow.
+    let my_name = crate::config::teams::agent_fqn_from_path(&root);
     let discovered = crate::config::teams::discover_teams();
 
     let mut peers: Vec<PeerInfo> = Vec::new();
@@ -419,9 +442,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
     // Also: if I'm a coordinator, show other coordinators (cross-team).
     let i_am_coordinator = discovered.iter().any(|t| {
         crate::config::teams::is_in_team(&my_name, t)
-            && t.coordinator_name.as_deref().map_or(false, |cn| {
-                crate::config::teams::agent_name_from_path(cn) == my_name || cn == my_name
-            })
+            && t.coordinator_name.as_deref().is_some_and(|cn| cn == my_name)
     });
 
     for team in &discovered {
@@ -434,7 +455,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
         for (i, display_name) in team.agent_names.iter().enumerate() {
             let member_path = team.agent_paths.get(i).and_then(|p| p.as_ref());
             let peer_name = member_path
-                .map(|p| agent_name_from_path(&p.to_string_lossy()))
+                .map(|p| crate::config::teams::agent_fqn_from_path(&p.to_string_lossy()))
                 .unwrap_or_else(|| display_name.clone());
 
             // Skip ourselves
@@ -519,6 +540,11 @@ pub fn execute(args: ListPeersArgs) -> i32 {
             if !ac_new_dir.is_dir() {
                 continue;
             }
+            // Project folder name (parent of .ac-new) — LHS of the canonical FQN.
+            let project_folder = match repo_dir.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
             let wg_entries = match std::fs::read_dir(&ac_new_dir) {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -556,7 +582,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
                         .strip_prefix("__agent_")
                         .unwrap_or(&agent_dir)
                         .to_string();
-                    let peer_name = format!("{}/{}", wg_name, agent_short);
+                    let peer_name = format!("{}:{}/{}", project_folder, wg_name, agent_short);
 
                     // Skip self
                     if peer_name == my_name {
@@ -568,7 +594,13 @@ pub fn execute(args: ListPeersArgs) -> i32 {
                     }
 
                     let reachable = crate::config::teams::can_communicate(&my_name, &peer_name, &discovered);
-                    let mut peer = build_wg_peer(&agent_short, &wg_name, &agent_path, reachable);
+                    let mut peer = build_wg_peer(
+                        &project_folder,
+                        &agent_short,
+                        &wg_name,
+                        &agent_path,
+                        reachable,
+                    );
                     peer.teams = vec![wg_team.clone()];
                     peers.push(peer);
                 }

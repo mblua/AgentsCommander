@@ -64,25 +64,13 @@ pub struct SendArgs {
     pub outbox: Option<String>,
 }
 
-/// Strip `__agent_` and `_agent_` prefixes from directory names.
-pub(crate) fn strip_agent_prefix(name: &str) -> &str {
-    name.strip_prefix("__agent_")
-        .or_else(|| name.strip_prefix("_agent_"))
-        .unwrap_or(name)
-}
-
-/// Derive agent name from a path: last two components -> "parent/folder",
-/// stripping `__agent_`/`_agent_` prefixes for consistent WG replica naming.
+/// Derive agent FQN from a path. Delegates to the canonical
+/// `config::teams::agent_fqn_from_path` so WG replicas produce
+/// `<project>:<wg>/<agent>` and origin agents produce `<project>/<agent>`.
+///
+/// Single source of truth — keep as a thin wrapper rather than a shadow copy.
 pub(crate) fn agent_name_from_root(root: &str) -> String {
-    let normalized = root.replace('\\', "/");
-    let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
-    if components.len() >= 2 {
-        let parent = components[components.len() - 2];
-        let last = strip_agent_prefix(components[components.len() - 1]);
-        format!("{}/{}", parent, last)
-    } else {
-        normalized
-    }
+    crate::config::teams::agent_fqn_from_path(root)
 }
 
 pub fn execute(args: SendArgs) -> i32 {
@@ -116,17 +104,38 @@ pub fn execute(args: SendArgs) -> i32 {
         return 1;
     }
 
+    // ── Resolve --to against known projects (Decision 2 / §AR2-shared) ─────
+    //
+    // Qualified FQN → validated shape + existence. Unqualified WG-local →
+    // two-level scan, unambiguous → canonical FQN, ambiguous → reject with
+    // candidate list, unknown → reject. Origin/bare → pass through.
+    //
+    // CLI-side resolution is belt-and-braces (§DR1); the mailbox also
+    // canonicalizes on receive (§AR2-norm) so direct outbox writes cannot
+    // bypass the reject-on-ambiguity rule.
+    let settings = crate::config::settings::load_settings();
+    let resolved_to = match crate::config::teams::resolve_agent_target(
+        &args.to,
+        &settings.project_paths,
+    ) {
+        Ok(fqn) => fqn,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return 1;
+        }
+    };
+
     // ── Pre-validate routing ──────────────────────────────────────────────
 
     if !is_root {
         // Load discovered teams and check if sender can reach destination BEFORE
         // writing to outbox. Fail immediately with a clear error if not.
         let discovered = teams::discover_teams();
-        if !teams::can_communicate(&sender, &args.to, &discovered) {
+        if !teams::can_communicate(&sender, &resolved_to, &discovered) {
             eprintln!(
                 "Error: routing rejected — '{}' cannot reach '{}'. \
                  Check team membership and coordinator rules.",
-                sender, args.to
+                sender, resolved_to
             );
             return 1;
         }
@@ -228,7 +237,7 @@ pub fn execute(args: SendArgs) -> i32 {
         id: msg_id.clone(),
         token: args.token,
         from: sender.clone(),
-        to: args.to.clone(),
+        to: resolved_to,
         body: message_body,
         mode: args.mode,
         get_output: args.get_output,

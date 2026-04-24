@@ -58,6 +58,22 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
 
     let sender = agent_name_from_root(&root);
 
+    // Resolve --target against known projects (Decision 2 / §AR2-shared).
+    // Belt-and-braces alongside the mailbox-side resolver at handle_close_session
+    // entry (§AR2-G1). Fail-fast at the CLI gives users immediate feedback on
+    // ambiguous or unknown targets without writing to the outbox.
+    let settings = crate::config::settings::load_settings();
+    let resolved_target = match crate::config::teams::resolve_agent_target(
+        &args.target,
+        &settings.project_paths,
+    ) {
+        Ok(fqn) => fqn,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return 1;
+        }
+    };
+
     // Pre-validate coordinator authorization.
     // Check master token from LocalDir as additional bypass (independent of validate_cli_token).
     let is_master = is_root || {
@@ -74,11 +90,11 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
 
     if !is_master {
         let discovered = teams::discover_teams();
-        if discovered.is_empty() || !teams::is_coordinator_of(&sender, &args.target, &discovered) {
+        if discovered.is_empty() || !teams::is_coordinator_of(&sender, &resolved_target, &discovered) {
             eprintln!(
                 "Error: authorization denied — '{}' is not a coordinator of '{}'. \
                  Only coordinators can close sessions of their team agents.",
-                sender, args.target
+                sender, resolved_target
             );
             return 1;
         }
@@ -91,7 +107,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         id: msg_id.clone(),
         token: args.token,
         from: sender.clone(),
-        to: args.target.clone(),
+        to: resolved_target.clone(),
         body: String::new(),
         mode: String::new(),
         get_output: false,
@@ -102,7 +118,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         timestamp: chrono::Utc::now().to_rfc3339(),
         command: None,
         action: Some("close-session".to_string()),
-        target: Some(args.target.clone()),
+        target: Some(resolved_target),
         force: Some(args.force),
         timeout_secs: Some(args.timeout),
     };

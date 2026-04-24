@@ -23,6 +23,42 @@ struct RetryState {
 const MAX_DELIVERY_ATTEMPTS: u32 = 10;
 const ERR_UNRESOLVABLE_AGENT: &str = "Could not resolve inbox for agent";
 
+/// §DR5 anti-spoof accept rule. Outbox-sender check passes when `msg_from`
+/// equals `expected_from` exactly, OR when `msg_from` is unqualified (legacy)
+/// AND its local part matches `expected_from`'s local part. Qualified-but-
+/// wrong-project `msg_from` is always rejected.
+pub(crate) fn anti_spoof_accept(msg_from: &str, expected_from: &str) -> bool {
+    if msg_from == expected_from {
+        return true;
+    }
+    let (_, exp_local) = crate::config::teams::split_project_prefix(expected_from);
+    let (msg_proj, msg_local) = crate::config::teams::split_project_prefix(msg_from);
+    msg_proj.is_none() && exp_local == msg_local
+}
+
+/// §AR2-norm step (1): upgrade a legacy-unqualified `msg_from` to
+/// `expected_from` when expected_from is FQN. Returns true if the upgrade
+/// happened. No-op when msg_from is already qualified, expected_from is
+/// None, or expected_from itself is unqualified.
+pub(crate) fn canonicalize_msg_from_in_place(
+    msg_from: &mut String,
+    expected_from: Option<&str>,
+) -> bool {
+    let Some(exp) = expected_from else {
+        return false;
+    };
+    let (exp_proj, _) = crate::config::teams::split_project_prefix(exp);
+    if exp_proj.is_none() {
+        return false;
+    }
+    let (msg_proj, _) = crate::config::teams::split_project_prefix(msg_from);
+    if msg_proj.is_some() {
+        return false;
+    }
+    *msg_from = exp.to_string();
+    true
+}
+
 /// Decision made by `deliver_wake` for an existing session.
 #[derive(Debug, PartialEq)]
 pub(crate) enum WakeAction {
@@ -236,7 +272,11 @@ impl MailboxPoller {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read outbox file: {}", e))?;
 
-        let msg: OutboxMessage = serde_json::from_str(&content)
+        // `let mut msg`: §AR2-norm below mutates `msg.from` / `msg.to` in place
+        // as the SINGLE POINT OF TRUTH for canonicalization. Downstream code
+        // (routing, action dispatch, injection, archival) reads the canonical
+        // form without re-mutation.
+        let mut msg: OutboxMessage = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse outbox message: {}", e))?;
 
         log::info!(
@@ -249,21 +289,83 @@ impl MailboxPoller {
 
         // For repo outboxes (not app-outbox), validate that msg.from matches the outbox owner.
         // This prevents tokenless spoofing: a message in repo X's outbox must claim to be from repo X.
+        //
+        // §DR5 lenient fallback: if `msg.from` is unqualified (legacy) and its LOCAL
+        // part matches `expected_from`'s local part, accept — §AR2-norm below then
+        // upgrades `msg.from` to the canonical FQN. Cross-project qualified names
+        // are rejected (different `project:` prefix).
+        //
+        // `expected_from` is hoisted (§DR2-3) so §AR2-norm can upgrade `msg.from`
+        // even when this block has returned to outer scope.
+        let mut expected_from: Option<String> = None;
         if !is_app_outbox {
             let outbox_dir = path.parent().unwrap_or(Path::new(""));
             // outbox_dir is <repo>/.agentscommander/outbox — go up 2 levels to get the repo path
             if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
-                let expected_from = self.agent_name_from_path(&repo_path.to_string_lossy());
-                if expected_from != msg.from {
-                    return self.reject_message(
-                        path,
-                        &msg,
-                        &format!(
-                            "Outbox-sender mismatch: outbox belongs to '{}' but message claims '{}'",
-                            expected_from, msg.from
-                        ),
-                    )
-                    .await;
+                let derived = crate::config::teams::agent_fqn_from_path(
+                    &repo_path.to_string_lossy(),
+                );
+                if !anti_spoof_accept(&msg.from, &derived) {
+                    return self
+                        .reject_message(
+                            path,
+                            &msg,
+                            &format!(
+                                "Outbox-sender mismatch: outbox belongs to '{}' but message claims '{}'",
+                                derived, msg.from
+                            ),
+                        )
+                        .await;
+                }
+                expected_from = Some(derived);
+            }
+        }
+
+        // ── §AR2-norm — SINGLE POINT OF TRUTH: msg.from / msg.to canonicalization ──
+        //
+        // Runs AFTER anti-spoof and BEFORE token validation / routing / action dispatch.
+        // Every downstream read of msg.from / msg.to sees the canonical FQN (or bare
+        // legacy form when canonicalization wasn't possible). Downstream code MUST
+        // NOT re-mutate msg.from or msg.to.
+
+        // (1) Upgrade a legacy-unqualified msg.from to the anti-spoof-derived
+        // expected_from FQN (closes grinch §G5: resolve_repo_path(&msg.from)
+        // for response-dir lookup now sees a canonical input).
+        let original_from_for_log = msg.from.clone();
+        if canonicalize_msg_from_in_place(&mut msg.from, expected_from.as_deref()) {
+            log::info!(
+                "[mailbox] canonicalized legacy msg.from '{}' → '{}'",
+                original_from_for_log, msg.from
+            );
+        }
+
+        // (2) Canonicalize msg.to via the shared resolver. Empty `to` is allowed for
+        // action-dispatch paths (e.g. close-session may set an empty to); skip in
+        // that case. Reject-on-ambiguity semantics match the CLI (Decision 2 rule 2c).
+        if !msg.to.is_empty() {
+            let paths = {
+                let cfg = app.state::<SettingsState>();
+                let c = cfg.read().await;
+                c.project_paths.clone()
+            };
+            match crate::config::teams::resolve_agent_target(&msg.to, &paths) {
+                Ok(fqn) => {
+                    if fqn != msg.to {
+                        log::info!(
+                            "[mailbox] canonicalized msg.to '{}' → '{}'",
+                            msg.to, fqn
+                        );
+                        msg.to = fqn;
+                    }
+                }
+                Err(e) => {
+                    return self
+                        .reject_message(
+                            path,
+                            &msg,
+                            &format!("Unresolvable target: {}", e),
+                        )
+                        .await;
                 }
             }
         }
@@ -319,9 +421,13 @@ impl MailboxPoller {
                             }
                         }
                         Some(session) => {
-                            // Anti-spoofing: verify msg.from matches the token's session working_directory
-                            let session_name =
-                                self.agent_name_from_path(&session.working_directory);
+                            // Anti-spoofing: verify msg.from matches the token's session CWD.
+                            // Post-§AR2-norm, msg.from is canonical FQN (or legacy unqualified
+                            // if expected_from was unavailable). Session-derived name uses the
+                            // canonical helper; comparison is exact equality.
+                            let session_name = crate::config::teams::agent_fqn_from_path(
+                                &session.working_directory,
+                            );
                             if session_name != msg.from {
                                 log::warn!(
                                     "[mailbox] Token-root mismatch: token session='{}' but from='{}'",
@@ -505,7 +611,14 @@ impl MailboxPoller {
         // Resolve agent_id and label from lastCodingAgent config
         let (agent_id, agent_label) = self.resolve_agent_id_and_label(app, &cwd).await;
 
-        let session_name = msg.to.clone();
+        // §AR2-session-name: strip optional `<project>:` prefix from the display
+        // name so the sidebar label stays short (e.g. "wg-1-devs/tech-lead" not
+        // "proj-a:wg-1-devs/tech-lead"). The canonical FQN stays recoverable via
+        // `agent_fqn_from_path(&cwd)` at any list-sessions time.
+        let session_name = {
+            let (_, local) = crate::config::teams::split_project_prefix(&msg.to);
+            local.to_string()
+        };
 
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
@@ -913,15 +1026,15 @@ impl MailboxPoller {
                 .collect::<Vec<_>>()
         );
 
-        // Collect all CWD-matching sessions (also match via agent_name_from_path for WG replicas
-        // where CWD contains __agent_ prefix that doesn't appear in the logical agent name)
+        // §AR2-G2: exact-FQN filter. Post-§AR2-norm, `agent_name` is canonical
+        // (or a legacy form that genuinely matches only one project's CWD). The
+        // substring/suffix fuzziness from the pre-fix code is gone — cross-project
+        // leakage is impossible at this layer.
         let mut matches: Vec<&crate::session::session::SessionInfo> = sessions
             .iter()
             .filter(|s| {
-                let normalized = s.working_directory.replace('\\', "/");
-                self.agent_name_from_path(&s.working_directory) == agent_name
-                    || normalized.ends_with(agent_name)
-                    || normalized.contains(&format!("/{}", agent_name))
+                crate::config::teams::agent_fqn_from_path(&s.working_directory)
+                    == agent_name
             })
             .collect();
 
@@ -966,6 +1079,8 @@ impl MailboxPoller {
 
     /// Find ALL sessions matching an agent name (by working directory).
     /// Returns all matching session UUIDs, not just the "best" one.
+    ///
+    /// §AR2-G2: exact-FQN filter (same simplification as `find_active_session`).
     async fn find_all_sessions(&self, app: &tauri::AppHandle, agent_name: &str) -> Vec<Uuid> {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
@@ -974,26 +1089,53 @@ impl MailboxPoller {
         sessions
             .iter()
             .filter(|s| {
-                let normalized = s.working_directory.replace('\\', "/");
-                self.agent_name_from_path(&s.working_directory) == agent_name
-                    || normalized.ends_with(agent_name)
-                    || normalized.contains(&format!("/{}", agent_name))
+                crate::config::teams::agent_fqn_from_path(&s.working_directory)
+                    == agent_name
             })
             .filter_map(|s| Uuid::parse_str(&s.id).ok())
             .collect()
     }
 
     /// Handle close-session action: validate coordinator auth, find target sessions, destroy them.
+    ///
+    /// NEW ACTION HANDLERS: resolve user-supplied target fields via
+    /// `config::teams::resolve_agent_target` BEFORE privileged operations.
+    /// The outbox is a trust boundary — any new destructive action must
+    /// canonicalize its target here, not rely on CLI-side resolution.
     async fn handle_close_session(
         &self,
         app: &tauri::AppHandle,
         path: &std::path::Path,
         msg: &OutboxMessage,
     ) -> Result<(), String> {
-        let target = msg
+        let raw_target = msg
             .target
             .as_deref()
             .ok_or_else(|| "close-session requires 'target' field".to_string())?;
+
+        // §AR2-G1: resolve the target to a canonical FQN BEFORE authorization.
+        // Even if the CLI skipped resolution (direct outbox write, old client,
+        // hand-crafted JSON), the mailbox is the authoritative gate.
+        let resolved_target = {
+            let paths = {
+                let cfg = app.state::<SettingsState>();
+                let c = cfg.read().await;
+                c.project_paths.clone()
+            };
+            match crate::config::teams::resolve_agent_target(raw_target, &paths) {
+                Ok(fqn) => fqn,
+                Err(e) => {
+                    return self
+                        .reject_message(
+                            path,
+                            msg,
+                            &format!("close-session target unresolvable: {}", e),
+                        )
+                        .await;
+                }
+            }
+        };
+        let target = resolved_target.as_str();
 
         // Re-check master token for coordinator auth bypass (independent of routing bypass above)
         let is_master = if let Some(ref token_str) = msg.token {
@@ -1227,97 +1369,149 @@ impl MailboxPoller {
     }
 
     /// Resolve the full filesystem path for an agent name.
+    ///
+    /// §AR2-G4: collector pattern. For qualified inputs, an FQN matches at most
+    /// one CWD/path/team-member entry per iteration (by construction) — the
+    /// dedupe is defense-in-depth for redundant registrations. For unqualified
+    /// inputs (legacy), local-part matches across multiple projects return
+    /// `None` rather than arbitrarily picking one.
+    ///
+    /// §AR2-G3: WG fallback seed honors the target project filter. Combined
+    /// with §DR2-4 composition: `matches.push(...); break;` within a single
+    /// `rp` iteration (FQN can only match one replica dir per project) while
+    /// the outer loop continues so cross-project ambiguity is still detected.
     async fn resolve_repo_path(&self, agent_name: &str, app: &tauri::AppHandle) -> Option<String> {
-        // Check session CWDs first
+        let (target_project, target_local) =
+            crate::config::teams::split_project_prefix(agent_name);
+        let is_qualified = target_project.is_some();
+        let mut matches: Vec<String> = Vec::new();
+
+        let record_match = |path_str: &str, out: &mut Vec<String>| {
+            if !out.iter().any(|m| m == path_str) {
+                out.push(path_str.to_string());
+            }
+        };
+
+        let hits_agent = |cwd: &str| -> bool {
+            let path_fqn = crate::config::teams::agent_fqn_from_path(cwd);
+            if is_qualified {
+                path_fqn == agent_name
+            } else {
+                let (_, path_local) = crate::config::teams::split_project_prefix(&path_fqn);
+                path_local == target_local
+            }
+        };
+
+        // Loop 1: session CWDs
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_working_dirs().await;
-
         for (_, cwd) in &dirs {
-            let normalized = cwd.replace('\\', "/");
-            if self.agent_name_from_path(cwd) == agent_name
-                || normalized.ends_with(agent_name)
-                || normalized.contains(&format!("/{}", agent_name))
-            {
-                return Some(cwd.clone());
+            if hits_agent(cwd) {
+                record_match(cwd, &mut matches);
             }
         }
+        drop(mgr);
 
-        // Check settings project_paths
+        // Loop 2: settings project_paths
         let settings = app.state::<SettingsState>();
         let cfg = settings.read().await;
         for rp in &cfg.project_paths {
-            let normalized = rp.replace('\\', "/");
-            if self.agent_name_from_path(rp) == agent_name
-                || normalized.ends_with(agent_name)
-                || normalized.contains(&format!("/{}", agent_name))
-            {
-                return Some(rp.clone());
+            if hits_agent(rp) {
+                record_match(rp, &mut matches);
             }
         }
 
-        // Check discovered teams for member paths
+        // Loop 3: discovered team member paths. Short-circuit by project when
+        // the target is qualified (team.project matches target_project).
         let discovered_teams = teams::discover_teams();
         for team in &discovered_teams {
+            if let Some(want) = target_project {
+                if team.project != want {
+                    continue;
+                }
+            }
             for agent_path in team.agent_paths.iter().flatten() {
                 let path_str = agent_path.to_string_lossy().to_string();
-                let normalized = path_str.replace('\\', "/");
-                if self.agent_name_from_path(&path_str) == agent_name
-                    || normalized.ends_with(agent_name)
-                    || normalized.contains(&format!("/{}", agent_name))
-                {
-                    return Some(path_str);
+                if hits_agent(&path_str) {
+                    record_match(&path_str, &mut matches);
                 }
             }
         }
 
-        // Check WG replicas: "wg-name/agent" → scan project_paths for .ac-new/wg-name/__agent_agent/
-        if agent_name.starts_with("wg-") {
-            if let Some((wg_name, agent_short)) = agent_name.split_once('/') {
+        // Loop 4: WG replica fallback. Scan `.ac-new/<wg>/__agent_<short>` under
+        // project_paths (base + immediate non-dot children), honoring the target
+        // project filter. §DR2-4 composition: push + break within a single `rp`
+        // (an FQN matches at most one replica dir per project) but continue the
+        // outer loop so ambiguity across projects is detected.
+        if target_local.starts_with("wg-") {
+            if let Some((wg_name, agent_short)) = target_local.split_once('/') {
                 let replica_dir = format!("__agent_{}", agent_short);
+
+                let project_matches = |dir_name: &str| -> bool {
+                    match target_project {
+                        Some(want) => dir_name == want,
+                        None => true,
+                    }
+                };
+
                 for rp in &cfg.project_paths {
                     let base = std::path::Path::new(rp);
                     if !base.is_dir() {
                         continue;
                     }
-                    let mut dirs_to_check = vec![base.to_path_buf()];
+                    let base_name = base.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                    let mut dirs_to_check: Vec<std::path::PathBuf> = Vec::new();
+                    if project_matches(base_name) {
+                        dirs_to_check.push(base.to_path_buf());
+                    }
                     if let Ok(entries) = std::fs::read_dir(base) {
                         for entry in entries.flatten() {
                             let p = entry.path();
-                            if p.is_dir() {
-                                dirs_to_check.push(p);
+                            if !p.is_dir() {
+                                continue;
                             }
+                            let dir_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            if dir_name.starts_with('.') {
+                                continue;
+                            }
+                            if !project_matches(dir_name) {
+                                continue;
+                            }
+                            dirs_to_check.push(p);
                         }
                     }
+
                     for dir in dirs_to_check {
                         let candidate = dir.join(".ac-new").join(wg_name).join(&replica_dir);
                         if candidate.is_dir() {
-                            return Some(candidate.to_string_lossy().to_string());
+                            record_match(&candidate.to_string_lossy(), &mut matches);
+                            // Within a single `rp`, first hit is the unique hit —
+                            // an FQN matches one replica dir per project. Continue
+                            // OUTER loop to detect cross-project ambiguity (§DR2-4).
+                            break;
                         }
                     }
                 }
             }
         }
 
-        None
-    }
-
-    /// Derive agent name (parent/folder) from a path, stripping `__agent_`/`_agent_` prefixes.
-    fn agent_name_from_path(&self, path: &str) -> String {
-        let normalized = path.replace('\\', "/");
-        let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
-        if components.len() >= 2 {
-            let parent = components[components.len() - 2];
-            let last = components[components.len() - 1];
-            let stripped = last
-                .strip_prefix("__agent_")
-                .or_else(|| last.strip_prefix("_agent_"))
-                .unwrap_or(last);
-            format!("{}/{}", parent, stripped)
-        } else {
-            normalized
+        match matches.len() {
+            0 => None,
+            1 => Some(matches.pop().unwrap()),
+            _ => {
+                log::warn!(
+                    "[mailbox] resolve_repo_path('{}'): {} candidates, refusing arbitrary pick: {:?}",
+                    agent_name, matches.len(), matches
+                );
+                None
+            }
         }
     }
+
+    // Shadow `agent_name_from_path` removed — all mailbox call sites now use
+    // `crate::config::teams::agent_fqn_from_path` per §AR2 (§DR2 consolidation).
 
     /// Check if sender can reach destination via team membership.
     /// Only agents in the same team can communicate — no parent directory fallback.
@@ -1402,12 +1596,17 @@ impl MailboxPoller {
 
     /// Fallback path resolution for WG agents: find a sibling session in the same WG,
     /// derive the WG directory from its CWD, and construct the target agent path.
+    ///
+    /// §4.4: peel optional `<project>:` prefix before splitting the local part.
+    /// If the target is qualified, the returned candidate must also be in the
+    /// same project (checked via derived FQN).
     async fn resolve_wg_path_from_sessions(
         &self,
         app: &tauri::AppHandle,
         agent_name: &str,
     ) -> Option<String> {
-        let (wg_name, agent_short) = agent_name.split_once('/')?;
+        let (target_project, local) = crate::config::teams::split_project_prefix(agent_name);
+        let (wg_name, agent_short) = local.split_once('/')?;
         if !wg_name.starts_with("wg-") {
             return None;
         }
@@ -1424,6 +1623,16 @@ impl MailboxPoller {
                 let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
                 let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
                 if std::path::Path::new(&candidate).is_dir() {
+                    // If target is qualified, enforce same project on the candidate.
+                    if let Some(want) = target_project {
+                        let candidate_fqn =
+                            crate::config::teams::agent_fqn_from_path(&candidate);
+                        let (cand_project, _) =
+                            crate::config::teams::split_project_prefix(&candidate_fqn);
+                        if cand_project != Some(want) {
+                            continue;
+                        }
+                    }
                     log::info!(
                         "[mailbox] wake: resolved WG agent path from sibling session: {}",
                         candidate
@@ -1693,4 +1902,140 @@ mod tests {
             WakeAction::RespawnExited
         );
     }
+
+    // ── Anti-spoof / canonicalization pure-logic tests (AR2-tests 22, 23 + DR2-5) ──
+
+    /// §DR7 / AR2-tests #22: legacy-unqualified msg.from is accepted when its
+    /// local part matches the anti-spoof expected_from (local-only fallback).
+    #[test]
+    fn anti_spoof_legacy_msg_from_accepted_by_local_match() {
+        // expected_from derived from repo path (canonical FQN).
+        let expected = "proj-a:wg-1-devs/tech-lead";
+        // msg.from is legacy unqualified with same local part.
+        let msg_from = "wg-1-devs/tech-lead";
+        assert!(anti_spoof_accept(msg_from, expected));
+    }
+
+    /// §DR7 / AR2-tests #23: qualified-but-wrong-project msg.from is rejected.
+    /// A naïve suffix match would accept this — the LOCAL-only fallback rejects.
+    #[test]
+    fn anti_spoof_cross_project_qualified_msg_from_rejected() {
+        let expected = "proj-a:wg-1-devs/tech-lead";
+        let spoofed = "proj-b:wg-1-devs/tech-lead";
+        assert!(!anti_spoof_accept(spoofed, expected));
+    }
+
+    /// Exact-FQN match is trivially accepted (baseline).
+    #[test]
+    fn anti_spoof_exact_fqn_match_accepted() {
+        let expected = "proj-a:wg-1-devs/tech-lead";
+        assert!(anti_spoof_accept(expected, expected));
+    }
+
+    /// §DR2-5 / AR2-tests #25: §AR2-norm step (1) upgrades a legacy-unqualified
+    /// msg.from to the anti-spoof expected_from FQN. Without this upgrade,
+    /// grinch §G5's `resolve_repo_path(&msg.from)` response-dir lookup could
+    /// receive an ambiguous-local-part input.
+    #[test]
+    fn process_message_canonicalizes_legacy_msg_from() {
+        let mut msg_from = "wg-1-devs/tech-lead".to_string();
+        let expected_from = "proj-a:wg-1-devs/tech-lead";
+        let upgraded = canonicalize_msg_from_in_place(&mut msg_from, Some(expected_from));
+        assert!(upgraded);
+        assert_eq!(msg_from, "proj-a:wg-1-devs/tech-lead");
+    }
+
+    /// Already-qualified msg.from is NOT overwritten by canonicalization.
+    #[test]
+    fn canonicalize_noop_for_already_qualified_msg_from() {
+        let mut msg_from = "proj-a:wg-1-devs/tech-lead".to_string();
+        let upgraded = canonicalize_msg_from_in_place(
+            &mut msg_from,
+            Some("proj-b:wg-1-devs/tech-lead"), // different project — don't overwrite!
+        );
+        assert!(!upgraded);
+        assert_eq!(msg_from, "proj-a:wg-1-devs/tech-lead");
+    }
+
+    /// No expected_from (app outbox path) → canonicalization is a no-op.
+    #[test]
+    fn canonicalize_noop_when_expected_from_absent() {
+        let mut msg_from = "wg-1-devs/alice".to_string();
+        let upgraded = canonicalize_msg_from_in_place(&mut msg_from, None);
+        assert!(!upgraded);
+        assert_eq!(msg_from, "wg-1-devs/alice");
+    }
+
+    // ── Full mailbox-pipeline tests marked [INT] — placeholders for a future
+    // two-project fixture harness. Acknowledged to ship with the fix per
+    // tech-lead's must-apply directive; the pure-logic tests above cover the
+    // §G1, §G2, §G5 regression surface at the unit level, and §AR2-G1's
+    // close-session resolver gate is covered by the §AR2-shared resolver
+    // tests (config::teams::tests::resolve_agent_target_*). ──
+
+    /// §G9#1 / AR2-tests #17 — close-session with unqualified target from a
+    /// direct outbox write MUST NOT destroy sessions in an unauthorized
+    /// project. Covered at the resolver layer by
+    /// `resolve_agent_target_rejects_ambiguous` and
+    /// `resolve_agent_target_two_level_scan` in `config/teams.rs::tests`;
+    /// `handle_close_session`'s §AR2-G1 gate calls `resolve_agent_target`
+    /// before authorization, so rejecting Ambiguous at that layer blocks the
+    /// attack before any session is touched. Full end-to-end fixture needs a
+    /// Tauri `AppHandle` harness — follow-up.
+    #[test]
+    #[ignore = "integration: needs two-project Tauri AppHandle fixture"]
+    fn close_session_rejects_direct_outbox_write_with_unqualified_target() {
+        // Full-pipeline assertion stub; logic-layer coverage lives in:
+        //   - config::teams::tests::resolve_agent_target_rejects_ambiguous
+        //   - config::teams::tests::resolve_agent_target_two_level_scan
+        //   - config::teams::tests::is_coordinator_rejects_legacy_unqualified_from
+    }
+
+    /// §G9#2 / AR2-tests #18 — wake with ambiguous unqualified `to` MUST be
+    /// rejected, not silently routed. Covered at the resolver layer by the
+    /// same `resolve_agent_target_rejects_ambiguous` test; `process_message`
+    /// calls `resolve_agent_target` on `msg.to` at §AR2-norm before mode
+    /// dispatch, so ambiguous `msg.to` becomes a rejected outbox message.
+    /// Full end-to-end fixture needs an AppHandle harness.
+    #[test]
+    #[ignore = "integration: needs two-project Tauri AppHandle fixture"]
+    fn deliver_wake_rejects_unqualified_to_with_cross_project_matches() {
+        // Full-pipeline assertion stub; logic-layer coverage lives in:
+        //   - config::teams::tests::resolve_agent_target_rejects_ambiguous
+        //   - config::teams::tests::resolve_agent_target_two_level_scan
+    }
+
+    /// §G9#3 / AR2-tests #19 — `resolve_repo_path` WG fallback with a
+    /// qualified target honors `target_project` (no cross-project leak even
+    /// when the base dir `rp` is another project's root). Logic covered by
+    /// the `project_matches` closure + `dirs_to_check` seeding in the
+    /// §AR2-G3 block; a full fixture-based test needs filesystem setup
+    /// under an AppHandle harness.
+    #[test]
+    #[ignore = "integration: needs filesystem fixture + AppHandle"]
+    fn resolve_repo_path_wg_fallback_honors_target_project() {}
+
+    /// §G9#4 / AR2-tests #20 — `resolve_repo_path` with an unqualified target
+    /// matching multiple projects returns `None` (refuses arbitrary pick).
+    /// §AR2-G4 collector pattern logic is covered by inspection — the
+    /// `matches.len()` match arm returns None on `_`. Full integration test
+    /// needs AppHandle + session-CWDs fixture.
+    #[test]
+    #[ignore = "integration: needs filesystem fixture + AppHandle"]
+    fn resolve_repo_path_returns_none_on_ambiguous_unqualified() {}
+
+    /// §G9#8 / AR2-tests #21 — a session spawned by `deliver_wake` from an
+    /// FQN `msg.to` has a sidebar `Session.name` WITHOUT the `:` prefix.
+    /// §AR2-session-name handles this at mailbox.rs (spawn path) via
+    /// `split_project_prefix(&msg.to).1`. The logic is one line; a full
+    /// integration test needs a Tauri runtime.
+    #[test]
+    #[ignore = "integration: needs Tauri runtime + session manager fixture"]
+    fn deliver_wake_spawned_session_name_has_no_colon() {}
+
+    /// §G9#9 / AR2-tests #24 — full round-trip CLI send → mailbox route →
+    /// reply. Intentionally integration-level; no unit scaffolding.
+    #[test]
+    #[ignore = "integration: full CLI + mailbox + two-project fixture"]
+    fn resolve_to_target_round_trip_integration() {}
 }
