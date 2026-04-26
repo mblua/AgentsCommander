@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
+use crate::config::claude_settings::ensure_claude_md_excludes;
+use crate::config::settings::SettingsState;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
@@ -176,6 +178,7 @@ fn parse_role_frontmatter(content: &str) -> (Option<String>, Option<String>) {
 /// Create an agent matrix directory inside {project_path}/.ac-new/_agent_{name}/
 #[tauri::command]
 pub async fn create_agent_matrix(
+    settings: State<'_, SettingsState>,
     project_path: String,
     name: String,
     description: String,
@@ -213,6 +216,25 @@ pub async fn create_agent_matrix(
     // config.json
     std::fs::write(agent_dir.join("config.json"), "{\n  \"tooling\": {}\n}\n")
         .map_err(|e| format!("Failed to write config.json: {}", e))?;
+
+    // Issue #84 — auto-generate .claude/settings.local.json if any configured
+    // coding agent has `exclude_global_claude_md`. Inert for Codex/Gemini.
+    // Reads from in-memory SettingsState (kept in sync by `update_settings` in
+    // commands/config.rs:32-44). Avoids the disk-read race that load_settings()
+    // would have against a concurrent save_settings() (see plan §13.2).
+    let exclude_claude_md = {
+        let s = settings.read().await;
+        s.agents.iter().any(|a| a.exclude_global_claude_md)
+    };
+    if exclude_claude_md {
+        if let Err(e) = ensure_claude_md_excludes(&agent_dir) {
+            log::warn!(
+                "[entity_creation] Failed to write .claude/settings.local.json for {}: {}",
+                agent_dir.display(),
+                e
+            );
+        }
+    }
 
     let result_path = agent_dir.to_string_lossy().to_string();
     log::info!("[entity_creation] Created agent matrix: {}", result_path);
@@ -431,6 +453,7 @@ pub async fn create_team(
 pub async fn create_workgroup(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    settings: State<'_, SettingsState>,
     project_path: String,
     team_name: String,
 ) -> Result<WorkgroupCloneResult, String> {
@@ -511,6 +534,15 @@ pub async fn create_workgroup(
         }
     }
 
+    // Issue #84 — snapshot gate ONCE before the loop. Deliberate: all replicas
+    // in this workgroup creation must use the same gate value. Mid-loop
+    // toggles via update_settings are intentionally ignored — half-applied
+    // workgroups would be worse than a stale snapshot.
+    let exclude_claude_md = {
+        let s = settings.read().await;
+        s.agents.iter().any(|a| a.exclude_global_claude_md)
+    };
+
     // Create __agent_*/ replica dirs
     for agent_path in &team_agents {
         let agent_dir_name = Path::new(agent_path)
@@ -531,6 +563,17 @@ pub async fn create_workgroup(
         for sub in &["inbox", "outbox"] {
             std::fs::create_dir_all(replica_dir.join(sub))
                 .map_err(|e| format!("Failed to create {} for {}: {}", sub, agent_name, e))?;
+        }
+
+        // Issue #84 — write .claude/settings.local.json if any agent has the flag.
+        if exclude_claude_md {
+            if let Err(e) = ensure_claude_md_excludes(&replica_dir) {
+                log::warn!(
+                    "[entity_creation] Failed to write .claude/settings.local.json for replica {}: {}",
+                    replica_dir.display(),
+                    e
+                );
+            }
         }
 
         // Determine repos assigned to this agent (match by _agent_ name)

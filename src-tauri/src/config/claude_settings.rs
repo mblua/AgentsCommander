@@ -1,3 +1,10 @@
+// Callers of `ensure_claude_md_excludes` (must be kept in sync with any new
+// agent-creation flow — see issue #84 for the original miss):
+//   - commands/agent_creator.rs::write_claude_settings_local (Tauri cmd; frontend: NewAgentModal.tsx + SessionItem.tsx ctx-menu)
+//   - cli/create_agent.rs (CLI `create-agent --launch <id>`)
+//   - commands/entity_creation.rs::create_agent_matrix
+//   - commands/entity_creation.rs::create_workgroup (per-replica)
+
 use std::path::Path;
 
 /// Ensures `.claude/settings.local.json` in `dir` contains a `claudeMdExcludes`
