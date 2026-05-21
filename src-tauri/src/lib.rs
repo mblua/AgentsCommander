@@ -297,6 +297,13 @@ pub fn run() {
             // Make AppHandle available to idle detector callbacks
             let _ = app_handle_lock.set(app.handle().clone());
 
+            // #264 — spawn the background task that emits `error_log_event`
+            // pings to the UI when ERROR entries are captured. The task runs
+            // OUTSIDE the env_logger format closure (see §3.7 / B1). Entries
+            // logged before this point stay buffered; the frontend's first
+            // `drain_error_logs` call collects them.
+            crate::logging::spawn_error_emit_task(app.handle().clone());
+
             // Git branch watcher: polls git branch for each session every 5s
             let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
             git_watcher.start(shutdown_for_setup.clone());
@@ -999,6 +1006,7 @@ pub fn run() {
             commands::voice::voice_mark_recording,
             commands::voice::voice_had_typing,
             commands::config::save_debug_logs,
+            commands::config::drain_error_logs,
             commands::config::open_web_remote,
             commands::config::start_web_server,
             commands::config::stop_web_server,
