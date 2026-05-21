@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
+use crate::session::profile::IdleTuning;
 use crate::telegram::manager::OutputSenderMap;
 
 struct PtyInstance {
@@ -287,6 +288,7 @@ impl PtyManager {
         cols: u16,
         rows: u16,
         extra_env: &[(String, String)],
+        idle_tuning: IdleTuning,
         app_handle: AppHandle,
     ) -> Result<(), AppError> {
         let pty_system = native_pty_system();
@@ -381,6 +383,11 @@ impl PtyManager {
         };
 
         self.ptys.lock().unwrap().insert(id, instance);
+
+        // #260 — register with the idle detector. Seeds activity[id] (when the
+        // profile opts in) so an all-suppressed / escape-only session is still
+        // evaluated by the watcher. Must run before the read loop starts.
+        self.idle_detector.register_session(id, idle_tuning);
 
         // Initialize vt100 screen parser for this session (for WS replay)
         {

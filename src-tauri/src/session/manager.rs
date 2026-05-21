@@ -4,6 +4,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::session::{Session, SessionInfo, SessionRepo, SessionStatus};
+use super::profile::CodingAgentKind;
 use crate::config::settings::WindowGeometry;
 use crate::errors::AppError;
 
@@ -67,9 +68,7 @@ impl SessionManager {
             is_coordinator,
             git_repos_gen: 0,
             token: Uuid::new_v4(),
-            is_claude: false,
-            is_codex: false,
-            is_gemini: false,
+            agent_kind: None,
             was_detached: false,
             detached_geometry: None,
         };
@@ -323,24 +322,12 @@ impl SessionManager {
         }
     }
 
-    pub async fn set_is_claude(&self, id: Uuid, val: bool) {
+    /// Set the resolved coding-agent identity. Called once by
+    /// `create_session_inner` immediately after `CodingAgentKind::detect`.
+    pub async fn set_agent_kind(&self, id: Uuid, kind: Option<CodingAgentKind>) {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
-            s.is_claude = val;
-        }
-    }
-
-    pub async fn set_is_codex(&self, id: Uuid, val: bool) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
-            s.is_codex = val;
-        }
-    }
-
-    pub async fn set_is_gemini(&self, id: Uuid, val: bool) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
-            s.is_gemini = val;
+            s.agent_kind = kind;
         }
     }
 
@@ -755,5 +742,44 @@ mod tests {
 
         // Active pointer correctly reflects the selection.
         assert_eq!(mgr.get_active().await, Some(session.id));
+    }
+
+    /// #260 G1 — pins `mark_idle`'s contract: the terminal mutation the
+    /// idle-detector `on_idle` callback performs. NOTE: `create_session`
+    /// auto-activates the first session (status `Active`), and `mark_idle`
+    /// only transitions `Running → Idle` — so demote via `clear_active` first.
+    /// Without that step the status assertion below would be vacuous.
+    #[tokio::test]
+    async fn mark_idle_sets_waiting_for_input_and_running_to_idle() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                "C:\\proj".into(),
+                None,
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+        mgr.clear_active().await; // Active → Running
+        let before = mgr.get_session(session.id).await.unwrap();
+        assert_eq!(before.status, SessionStatus::Running);
+        assert!(!before.waiting_for_input);
+
+        mgr.mark_idle(session.id).await;
+
+        let after = mgr.get_session(session.id).await.unwrap();
+        assert!(
+            after.waiting_for_input,
+            "mark_idle must set waiting_for_input = true"
+        );
+        assert_eq!(
+            after.status,
+            SessionStatus::Idle,
+            "mark_idle must transition Running → Idle"
+        );
     }
 }

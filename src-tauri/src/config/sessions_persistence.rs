@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
+use crate::session::profile::CodingAgentKind;
 
 /// Minimal session data needed to restore a session on next app start.
 /// No UUID, just the "recipe" to re-create it.
@@ -408,9 +409,14 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     }
 
     fn strip_claude_tokens(tokens: &mut Vec<String>, start: usize) {
+        // #260 — Claude's resume flag from the CodingAgentProfile. resume_tokens
+        // is a 1-element const for Claude, so [0] is provably in bounds. The
+        // `--append-system-prompt-file` flag below is the context-file flag,
+        // NOT a resume token — intentionally kept as a literal.
+        let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
         let mut idx = start;
         while idx < tokens.len() {
-            if tokens[idx].eq_ignore_ascii_case("--continue") {
+            if tokens[idx].eq_ignore_ascii_case(continue_flag) {
                 tokens.remove(idx);
                 continue;
             }
@@ -427,12 +433,18 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     }
 
     fn strip_codex_tokens(tokens: &mut Vec<String>, start: usize) {
+        // #260 — resume tokens from the CodingAgentProfile. G6: slice-pattern
+        // destructure, never index; a wrong-arity slice no-ops gracefully.
+        let &[resume_subcmd, resume_flag] = CodingAgentKind::Codex.profile().resume_tokens else {
+            debug_assert!(false, "Codex resume_tokens must have exactly 2 elements");
+            return;
+        };
         if tokens
             .get(start)
-            .is_some_and(|token| token.eq_ignore_ascii_case("resume"))
+            .is_some_and(|token| token.eq_ignore_ascii_case(resume_subcmd))
             && tokens
                 .get(start + 1)
-                .is_some_and(|token| token.eq_ignore_ascii_case("--last"))
+                .is_some_and(|token| token.eq_ignore_ascii_case(resume_flag))
         {
             tokens.remove(start);
             tokens.remove(start);
@@ -440,56 +452,40 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     }
 
     fn strip_gemini_tokens(tokens: &mut Vec<String>, start: usize) {
+        // #260 — resume tokens from the CodingAgentProfile. G6: slice-pattern
+        // destructure, never index. The joined `--resume=latest` variant is
+        // derived from the same two tokens.
+        let &[resume_flag, resume_value] = CodingAgentKind::Gemini.profile().resume_tokens else {
+            debug_assert!(false, "Gemini resume_tokens must have exactly 2 elements");
+            return;
+        };
+        let joined = format!("{}={}", resume_flag, resume_value);
         if tokens
             .get(start)
-            .is_some_and(|token| token.eq_ignore_ascii_case("--resume"))
+            .is_some_and(|token| token.eq_ignore_ascii_case(resume_flag))
             && tokens
                 .get(start + 1)
-                .is_some_and(|token| token.eq_ignore_ascii_case("latest"))
+                .is_some_and(|token| token.eq_ignore_ascii_case(resume_value))
         {
             tokens.remove(start);
             tokens.remove(start);
         } else if tokens
             .get(start)
-            .is_some_and(|token| token.to_lowercase() == "--resume=latest")
+            .is_some_and(|token| token.to_lowercase() == joined)
         {
             tokens.remove(start);
         }
     }
 
-    let is_claude = std::iter::once(shell)
-        .chain(args.iter().flat_map(|s| s.split_whitespace()))
-        .any(|t| {
-            std::path::Path::new(t)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(t)
-                .to_ascii_lowercase()
-                .starts_with("claude")
-        });
-    let is_codex = std::iter::once(shell)
-        .chain(args.iter().flat_map(|s| s.split_whitespace()))
-        .any(|t| {
-            std::path::Path::new(t)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(t)
-                .eq_ignore_ascii_case("codex")
-        });
-
-    let is_gemini = std::iter::once(shell)
-        .chain(args.iter().flat_map(|s| s.split_whitespace()))
-        .any(|t| {
-            std::path::Path::new(t)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(t)
-                .eq_ignore_ascii_case("gemini")
-        });
-
-    if !is_claude && !is_codex && !is_gemini {
-        return args.to_vec();
-    }
+    // #260 — consult the single detector (session/profile.rs) instead of
+    // re-deriving agent identity here. Guarantees this stripper agrees with
+    // the `agent_kind` that `create_session_inner` stamped on the session.
+    let (is_claude, is_codex, is_gemini) = match CodingAgentKind::detect(shell, args) {
+        Some(CodingAgentKind::Claude) => (true, false, false),
+        Some(CodingAgentKind::Codex) => (false, true, false),
+        Some(CodingAgentKind::Gemini) => (false, false, true),
+        None => return args.to_vec(),
+    };
 
     let is_cmd = crate::commands::session::executable_basename(shell) == "cmd";
 

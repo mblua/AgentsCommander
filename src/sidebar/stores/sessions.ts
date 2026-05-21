@@ -54,6 +54,7 @@ function makeInactiveEntry(name: string, path: string): Session {
     workgroupBrief: null,
     isCoordinator: false,
     token: "",
+    agentKind: null,
   };
 }
 

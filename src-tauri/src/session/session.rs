@@ -4,6 +4,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::config::settings::WindowGeometry;
+use crate::session::profile::CodingAgentKind;
 
 /// Mangle a CWD path the same way Claude Code does for its project directories.
 /// Non-alphanumeric, non-hyphen characters are replaced with '-'.
@@ -86,18 +87,13 @@ pub struct Session {
     pub git_repos_gen: u64,
     /// Unique token for CLI authentication. Agent PTY children receive it via per-child `AGENTSCOMMANDER_TOKEN` env at spawn.
     pub token: Uuid,
-    /// True if this session runs Claude Code (detected at creation time).
-    /// Used by the Telegram bridge to choose JSONL watcher vs PTY pipeline.
+    /// Resolved coding-agent identity, or `None` for a plain shell. Set once
+    /// by `create_session_inner` via `CodingAgentKind::detect`. The single
+    /// source of truth that replaced the #258 `is_claude`/`is_codex`/
+    /// `is_gemini` triple (#260). Drives idle tuning, resume-arg injection,
+    /// and Telegram reader selection.
     #[serde(default)]
-    pub is_claude: bool,
-    /// True if this session runs Codex CLI (detected at creation time).
-    /// Used by the Telegram bridge to choose the Codex JSONL watcher.
-    #[serde(default)]
-    pub is_codex: bool,
-    /// True if this session runs Gemini CLI (detected at creation time).
-    /// Used by the Telegram bridge to choose the Gemini JSONL watcher.
-    #[serde(default)]
-    pub is_gemini: bool,
+    pub agent_kind: Option<CodingAgentKind>,
     /// True while this session has a live detached window (or is marked to re-spawn
     /// one on next launch). Source of truth for persistence — `snapshot_sessions`
     /// reads this directly, NOT from `DetachedSessionsState`.
@@ -185,11 +181,7 @@ pub struct SessionInfo {
     pub is_coordinator: bool,
     pub token: String,
     #[serde(default)]
-    pub is_claude: bool,
-    #[serde(default)]
-    pub is_codex: bool,
-    #[serde(default)]
-    pub is_gemini: bool,
+    pub agent_kind: Option<CodingAgentKind>,
     #[serde(default)]
     pub was_detached: bool,
     /// Not serialized to the frontend — internal carrier for `snapshot_sessions`
@@ -219,9 +211,7 @@ impl From<&Session> for SessionInfo {
             workgroup_brief: read_workgroup_brief_for_cwd(&s.working_directory),
             is_coordinator: s.is_coordinator,
             token: s.token.to_string(),
-            is_claude: s.is_claude,
-            is_codex: s.is_codex,
-            is_gemini: s.is_gemini,
+            agent_kind: s.agent_kind,
             was_detached: s.was_detached,
             detached_geometry: s.detached_geometry.clone(),
         }
@@ -251,9 +241,7 @@ mod tests {
             is_coordinator: false,
             git_repos_gen: 0,
             token: Uuid::nil(),
-            is_claude: false,
-            is_codex: false,
-            is_gemini: false,
+            agent_kind: None,
             was_detached: false,
             detached_geometry: None,
         }

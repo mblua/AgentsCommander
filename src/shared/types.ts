@@ -22,12 +22,12 @@ export interface Session {
   workgroupBrief: string | null;
   isCoordinator: boolean;
   token: string;
-  isClaude: boolean;
-  isCodex: boolean;
-  isGemini: boolean;
+  agentKind: CodingAgentKind | null;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
+
+export type CodingAgentKind = "claude" | "codex" | "gemini";
 
 export interface SessionGroup {
   id: string;

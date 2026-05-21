@@ -2403,9 +2403,7 @@ mod tests {
             workgroup_brief: None,
             is_coordinator: false,
             token: "t".into(),
-            is_claude: true,
-            is_codex: false,
-            is_gemini: false,
+            agent_kind: Some(crate::session::profile::CodingAgentKind::Claude),
             was_detached: false,
             detached_geometry: None,
         }
