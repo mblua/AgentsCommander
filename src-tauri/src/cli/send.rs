@@ -11,7 +11,7 @@ DELIVERY MODES:\n  \
   wake            Inject into PTY. If no session exists, spawn a persistent one; if Exited, respawn. Always delivers.\n\n\
 ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
 membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
-DISCOVERY: Use `list-peers` to get valid agent names for --to. The \"name\" field in the JSON output \
+DISCOVERY: Use `list-peers-lean` to get valid agent names for --to. The \"name\" field in the JSON output \
 is the value to use.\n\n\
 FILE-BASED MESSAGING: --send <filename> delivers the file at <workgroup-root>/messaging/<filename> \
 to the recipient. The PTY only carries a short notification pointing to the absolute path; the \
@@ -24,7 +24,7 @@ pub struct SendArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Destination agent name (e.g., "repos/my-project"). Use `list-peers` to discover valid names
+    /// Destination agent name (e.g., "repos/my-project"). Use `list-peers-lean` to discover valid names
     #[arg(long)]
     pub to: String,
 
