@@ -1301,7 +1301,7 @@ The CLI `--help` output documents every subcommand, flag, and accepted value. Us
 ```
 "<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
 "<AGENTSCOMMANDER_BINARY_PATH>" send --help             # Full docs for sending messages
-"<AGENTSCOMMANDER_BINARY_PATH>" list-peers --help       # Full docs for discovering peers
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help  # Full docs for discovering peers
 ```
 
 **RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly.
