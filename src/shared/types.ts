@@ -349,3 +349,19 @@ export interface ProjectRegistration {
   created: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Error-log modal (#264)
+// Mirrors src-tauri/src/logging.rs::ErrorLogEntry.
+// ---------------------------------------------------------------------------
+
+export interface ErrorLogEntry {
+  /** Local timestamp string, e.g. "2026-05-21 15:56:11.123". */
+  timestamp: string;
+  /** Always "ERROR" today — kept for forward-compat and copy output. */
+  level: string;
+  /** Log target, e.g. "agentscommander_lib::commands::entity_creation". */
+  target: string;
+  /** Full message; may contain newlines (multi-line git errors etc.). */
+  message: string;
+}
+

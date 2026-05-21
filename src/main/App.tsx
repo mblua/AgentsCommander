@@ -10,6 +10,7 @@ import TerminalApp from "../terminal/App";
 import Titlebar from "../sidebar/components/Titlebar";
 import QuitConfirmModal from "./components/QuitConfirmModal";
 import RtkBanner from "./components/RtkBanner";
+import ErrorModal from "./components/ErrorModal";
 import { wireHomeListeners } from "./listeners-home";
 import "./styles/main.css";
 
@@ -244,6 +245,7 @@ const MainApp: Component = () => {
           onQuit={onModalQuit}
         />
       </Show>
+      <ErrorModal />
     </div>
   );
 };
