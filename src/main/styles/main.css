@@ -410,3 +410,128 @@ html.light-theme .rtk-banner-btn-secondary:hover:not(:disabled) {
 
 html.light-theme .home-markdown code { background: rgba(0, 0, 0, 0.06); }
 html.light-theme .home-markdown pre { background: rgba(0, 0, 0, 0.05); }
+
+/* --- Error modal (#264) --------------------------------------------------
+ * Queued modal surfacing ERROR-level backend log events. One at a time; the
+ * "N" counter shows queue depth. z-index sits above the quit-confirm modal
+ * (10000) so a coincident error is visually dominant — and, via
+ * stopImmediatePropagation in ErrorModal's keydown handler, owns the keyboard.
+ * Variables fall back to literals so the modal renders before theme hydration.
+ */
+.error-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+}
+.error-modal {
+  background: var(--bg-modal, #14141a);
+  color: var(--fg-primary, #e8e8e8);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  min-width: 440px;
+  max-width: 640px;
+  padding: 20px 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  font-family: "Geist", "Outfit", "General Sans", sans-serif;
+}
+.error-modal-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.error-modal-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: #ff6b80;
+}
+.error-modal-counter {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-secondary, rgba(255, 255, 255, 0.6));
+}
+.error-modal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg-secondary, rgba(255, 255, 255, 0.55));
+  margin-bottom: 8px;
+}
+.error-modal-message {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 4px;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 20px;
+}
+.error-modal-message:focus-visible {
+  outline: 2px solid var(--focus-ring, #00d4ff);
+  outline-offset: -2px;
+}
+.error-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.error-modal-btn {
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+}
+.error-modal-btn-copy {
+  background: transparent;
+  color: var(--fg-secondary, rgba(255, 255, 255, 0.7));
+  border-color: var(--border-subtle, rgba(255, 255, 255, 0.15));
+}
+.error-modal-btn-copy:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-primary, #e8e8e8);
+}
+.error-modal-btn-dismiss {
+  background: var(--btn-primary-bg, rgba(0, 212, 255, 0.2));
+  color: var(--btn-primary-fg, #00d4ff);
+  border-color: var(--btn-primary-border, rgba(0, 212, 255, 0.4));
+}
+.error-modal-btn-dismiss:hover {
+  background: rgba(0, 212, 255, 0.3);
+}
+.error-modal-btn:focus-visible {
+  outline: 2px solid var(--focus-ring, #00d4ff);
+  outline-offset: 2px;
+}
+html.light-theme .error-modal {
+  background: #f7f7f9;
+  color: #1a1a1e;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+html.light-theme .error-modal-message {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+html.light-theme .error-modal-btn-copy {
+  color: rgba(0, 0, 0, 0.65);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+html.light-theme .error-modal-btn-copy:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #1a1a1e;
+}
