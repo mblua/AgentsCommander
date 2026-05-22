@@ -17,6 +17,7 @@ import type {
   BriefUpdateResult,
   WorkgroupBriefUpdatedEvent,
   ProjectRegistration,
+  ErrorLogEntry,
 } from "./types";
 
 export interface SessionRepoInput {
@@ -204,7 +205,18 @@ export const VoiceAPI = {
 export const DebugAPI = {
   saveLogs: (content: string) =>
     transport.invoke<void>("save_debug_logs", { content }),
+  /** #264 — read-and-clear the backend's buffered ERROR-level log entries. */
+  drainErrorLogs: () =>
+    transport.invoke<ErrorLogEntry[]>("drain_error_logs"),
 };
+
+// #264 — content-free ping fired when a new ERROR-level log entry is captured.
+// The listener responds by calling DebugAPI.drainErrorLogs().
+export function onErrorLogEvent(
+  callback: () => void
+): Promise<UnlistenFn> {
+  return transport.listen<unknown>("error_log_event", () => callback());
+}
 
 // Window API
 export const WindowAPI = {

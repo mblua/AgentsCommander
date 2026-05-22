@@ -42,6 +42,15 @@ pub async fn save_debug_logs(content: String) -> Result<(), String> {
     Ok(())
 }
 
+/// #264 — read-and-clear the buffered ERROR-level log entries for the UI error
+/// modal. The frontend calls this once on `ErrorModal` mount (to collect errors
+/// logged before the webview was listening) and again on every `error_log_event`
+/// ping. Sync (no I/O, no `.await`) — a sub-microsecond mutex take.
+#[tauri::command]
+pub fn drain_error_logs() -> Vec<crate::logging::ErrorLogEntry> {
+    crate::logging::error_sink().drain()
+}
+
 #[tauri::command]
 pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<AppSettings, String> {
     let s = settings.read().await;
