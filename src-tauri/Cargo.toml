@@ -1,6 +1,6 @@
 [package]
 name = "agentscommander-new"
-version = "0.8.35"
+version = "0.8.36"
 edition = "2021"
 
 [dependencies]
