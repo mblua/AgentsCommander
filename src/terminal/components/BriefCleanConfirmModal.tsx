@@ -35,6 +35,17 @@ const BriefCleanConfirmModal: Component<BriefCleanConfirmModalProps> = (props) =
         const focusables = [cancelBtnRef, confirmBtnRef].filter(Boolean) as HTMLElement[];
         if (focusables.length < 2) return;
         const idx = focusables.indexOf(document.activeElement as HTMLElement);
+        // #272: activeElement can be outside the trap entirely — e.g. blurred
+        // to <body> after a click on the modal's non-focusable backdrop /
+        // header / padding. idx is -1 then; without this guard the forward
+        // branch's `idx === length - 1` is false, preventDefault is skipped,
+        // and native Tab escapes the modal — here, into the live xterm PTY
+        // <textarea> rendered directly behind it.
+        if (idx === -1) {
+          e.preventDefault();
+          (e.shiftKey ? focusables[focusables.length - 1] : focusables[0]).focus();
+          return;
+        }
         if (e.shiftKey) {
           if (idx <= 0) {
             e.preventDefault();
