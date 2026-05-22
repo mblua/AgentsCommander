@@ -71,7 +71,7 @@ does not take a token; it reads `sessions.json` from the binary's config directo
 directly and never contacts the daemon mailbox.\n\n\
 EXIT CODES: All subcommands return 0 on success, 1 on error.\n\n\
 AGENT NAMES: Agents are identified by their path-based name (e.g., \"repos/my-project\"). \
-Use `list-peers` to discover valid agent names before sending messages.")]
+Use `list-peers-lean` to discover valid agent names before sending messages.")]
 pub struct Cli {
     /// Launch the GUI application
     #[arg(long)]

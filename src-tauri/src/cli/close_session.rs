@@ -79,7 +79,7 @@ BEHAVIOR: By default, graceful shutdown is used — an exit command is injected 
 the agent's PTY (e.g., /exit for Claude Code) and the system waits for clean exit. \
 If the agent doesn't exit within --timeout seconds, it falls back to force-kill. \
 Use --force to skip graceful shutdown and kill immediately.\n\n\
-DISCOVERY: Use `list-peers` to get valid agent names. The `name` field of \
+DISCOVERY: Use `list-peers-lean` to get valid agent names. The `name` field of \
 each entry is the canonical FQN to pass to --target.")]
 pub struct CloseSessionArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
@@ -91,9 +91,9 @@ pub struct CloseSessionArgs {
     #[arg(long)]
     pub root: Option<String>,
 
-    /// Target agent name to close. Use `list-peers` to discover valid names.
+    /// Target agent name to close. Use `list-peers-lean` to discover valid names.
     /// Accepts FQN form (e.g., "myproject:wg-1-ac-devs/dev-rust" — preferred,
-    /// matches the `name` field returned by `list-peers`) or WG-local form
+    /// matches the `name` field returned by `list-peers-lean`) or WG-local form
     /// (e.g., "wg-1-ac-devs/dev-rust" — auto-resolved when unambiguous across
     /// your project paths).
     #[arg(long)]

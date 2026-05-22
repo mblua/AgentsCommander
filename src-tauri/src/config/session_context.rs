@@ -1301,7 +1301,7 @@ The CLI `--help` output documents every subcommand, flag, and accepted value. Us
 ```
 "<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
 "<AGENTSCOMMANDER_BINARY_PATH>" send --help             # Full docs for sending messages
-"<AGENTSCOMMANDER_BINARY_PATH>" list-peers --help       # Full docs for discovering peers
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help  # Full docs for discovering peers
 ```
 
 **RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly.
@@ -1318,14 +1318,14 @@ Your agent root is your current working directory.
 
 ### Send a message to another agent
 
-**MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers`. Never guess agent names.
+**MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers-lean`. Never guess agent names.
 
-**Peer name format** (canonical FQN, exactly what `list-peers` emits in the `name` field):
+**Peer name format** (canonical FQN, exactly what `list-peers-lean` emits in the `name` field):
 
 - **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/dev-rust`.
 - **Origin agents**: `<project>/<agent>` — e.g. `agentscommander/architect`.
 
-**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk paths only — they are not peer names. The `list-peers` JSON `name` field is the only authoritative source. If `list-peers` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk — that produces invalid `--to` values. Stop and report the empty result instead.
+**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk paths only — they are not peer names. The `list-peers-lean` JSON `name` field is the only authoritative source. If `list-peers-lean` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk — that produces invalid `--to` values. Stop and report the empty result instead.
 
 Messaging is **file-based** to avoid PTY truncation. Two steps:
 
@@ -1355,7 +1355,7 @@ wait for the reply.
 ### List available peers
 
 ```
-"<AGENTSCOMMANDER_BINARY_PATH>" list-peers --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>"
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>"
 ```
 "#,
         agent_root = agent_root,
@@ -1416,7 +1416,7 @@ mod tests {
         // Explicit prohibition of filesystem-directory names as --to values.
         assert!(out.contains("filesystem directory name is NEVER"));
         assert!(out.contains("__agent_"));
-        assert!(out.contains("list-peers"));
+        assert!(out.contains("list-peers-lean"));
     }
 
     #[test]
