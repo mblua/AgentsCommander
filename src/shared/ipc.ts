@@ -18,6 +18,7 @@ import type {
   WorkgroupBriefUpdatedEvent,
   ProjectRegistration,
   ErrorLogEntry,
+  RoleTemplateMeta,
 } from "./types";
 
 export interface SessionRepoInput {
@@ -451,10 +452,25 @@ export const ProjectAPI = {
     transport.invoke<ProjectRegistration>("new_project", { path }),
 };
 
+// Role template picker (#271)
+export const RoleTemplateAPI = {
+  list: () => transport.invoke<RoleTemplateMeta[]>("list_role_templates"),
+};
+
 // Entity Creation API (agents, teams, workgroups)
 export const EntityAPI = {
-  createAgentMatrix: (projectPath: string, name: string, description: string) =>
-    transport.invoke<void>("create_agent_matrix", { projectPath, name, description }),
+  createAgentMatrix: (
+    projectPath: string,
+    name: string,
+    description: string,
+    roleTemplateId?: string | null,
+  ) =>
+    transport.invoke<void>("create_agent_matrix", {
+      projectPath,
+      name,
+      description,
+      roleTemplateId: roleTemplateId ?? null,
+    }),
 
   deleteAgentMatrix: (projectPath: string, agentName: string) =>
     transport.invoke<void>("delete_agent_matrix", { projectPath, agentName }),
