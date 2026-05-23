@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
-use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 use crate::session::profile::CodingAgentKind;
+use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
 /// Minimal session data needed to restore a session on next app start.
 /// No UUID, just the "recipe" to re-create it.
@@ -35,6 +35,9 @@ pub struct PersistedSession {
     /// Recomputed on restore; persisted for forward-compat only.
     #[serde(default)]
     pub is_coordinator: bool,
+    /// True for the global Root Agent session. Defaults false for old sessions.json.
+    #[serde(default)]
+    pub is_root_agent: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,10 +94,38 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
     let total = sessions.len();
     let mut name_index: HashMap<String, usize> = HashMap::new();
     let mut cwd_index: HashMap<String, usize> = HashMap::new();
+    let mut root_index: Option<usize> = None;
     let mut result: Vec<PersistedSession> = Vec::with_capacity(total);
 
     for session in sessions {
         let norm_cwd = session.working_directory.replace('\\', "/").to_lowercase();
+        let is_root_agent = session.is_root_agent
+            || crate::config::root_agent::is_root_agent_path(&session.working_directory);
+
+        if is_root_agent {
+            if let Some(idx) = root_index {
+                log::warn!(
+                    "[sessions] Dropping duplicate root agent session '{}' at '{}'",
+                    session.name,
+                    session.working_directory
+                );
+                if !result[idx].was_active || session.was_active {
+                    let old_cwd = result[idx]
+                        .working_directory
+                        .replace('\\', "/")
+                        .to_lowercase();
+                    name_index.remove(&result[idx].name);
+                    cwd_index.remove(&old_cwd);
+                    name_index.insert(session.name.clone(), idx);
+                    cwd_index.insert(norm_cwd, idx);
+                    result[idx] = session;
+                    result[idx].is_root_agent = true;
+                } else {
+                    result[idx].is_root_agent = true;
+                }
+                continue;
+            }
+        }
 
         // Check name-based duplicate
         if let Some(&idx) = name_index.get(&session.name) {
@@ -136,7 +167,15 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
         // New unique session
         name_index.insert(session.name.clone(), result.len());
         cwd_index.insert(norm_cwd, result.len());
+        if is_root_agent {
+            root_index = Some(result.len());
+        }
         result.push(session);
+        if is_root_agent {
+            if let Some(last) = result.last_mut() {
+                last.is_root_agent = true;
+            }
+        }
     }
 
     if result.len() < total {
@@ -346,6 +385,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             was_active: active_id.as_deref() == Some(&s.id),
             git_repos: s.git_repos.clone(),
             is_coordinator: s.is_coordinator,
+            is_root_agent: s.is_root_agent,
             agent_id: s.agent_id.clone(),
             agent_label: s.agent_label.clone(),
             // Fix A: read detach state directly from the Session (via SessionInfo). The
@@ -699,6 +739,7 @@ mod tests {
             was_active: false,
             git_repos: vec![],
             is_coordinator: false,
+            is_root_agent: false,
             agent_id: Some("aid-1".into()),
             agent_label: Some("Claude Code".into()),
             was_detached: false,
@@ -746,6 +787,7 @@ mod tests {
             was_active: false,
             git_repos: vec![],
             is_coordinator: false,
+            is_root_agent: false,
             agent_id: None,
             agent_label: None,
             was_detached: false,
@@ -765,7 +807,6 @@ mod tests {
         assert!(twice.created_at.is_none());
         assert_eq!(twice.name, "bob");
     }
-
 
     #[test]
     fn strip_auto_injected_args_removes_direct_gemini_resume_latest() {
@@ -1005,6 +1046,7 @@ mod tests {
             was_active: false,
             git_repos: vec![],
             is_coordinator: false,
+            is_root_agent: false,
             agent_id: None,
             agent_label: None,
             was_detached: false,
@@ -1054,6 +1096,7 @@ mod tests {
                 was_active: true,
                 git_repos: vec![],
                 is_coordinator: true,
+                is_root_agent: false,
                 agent_id: Some("aid-arch".into()),
                 agent_label: Some("Architect".into()),
                 was_detached: false,
@@ -1071,6 +1114,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn is_root_agent_defaults_false_for_legacy_json() {
+        let json = r#"{
+            "name": "legacy",
+            "shell": "cmd",
+            "shellArgs": [],
+            "workingDirectory": "C:/x"
+        }"#;
+
+        let back: PersistedSession = serde_json::from_str(json).expect("deserialize");
+
+        assert!(!back.is_root_agent);
+    }
+
+    #[test]
+    fn is_root_agent_round_trips_true() {
+        let ps = PersistedSession {
+            name: "Root Agent".into(),
+            shell: "codex".into(),
+            shell_args: vec![],
+            working_directory: "C:/tools/.agentscommander/ac-root-agent".into(),
+            is_root_agent: true,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&ps).expect("serialize");
+        assert_eq!(json["isRootAgent"], true);
+        let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
+        assert!(back.is_root_agent);
+    }
+
     /// Legacy "multi-repo" prefix → git_repos stays empty; legacy fields cleared.
     #[test]
     fn legacy_migration_multi_repo_shape() {
@@ -1082,6 +1156,7 @@ mod tests {
             was_active: false,
             git_repos: vec![],
             is_coordinator: false,
+            is_root_agent: false,
             agent_id: None,
             agent_label: None,
             was_detached: false,

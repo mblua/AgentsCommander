@@ -123,6 +123,14 @@ fn resolve_skill_owner_root(agent_root: &str, replica_matrix_root: Option<&str>)
             .or_else(|| Some(display_path(agent_path)));
     }
 
+    if super::root_agent::is_root_agent_dir_name(agent_root) {
+        let agent_path = Path::new(agent_root);
+        return std::fs::canonicalize(agent_path)
+            .map(|p| display_path(&p))
+            .ok()
+            .or_else(|| Some(display_path(agent_path)));
+    }
+
     None
 }
 
@@ -814,7 +822,9 @@ fn is_canonical_agent_matrix_dir(cwd: &str) -> bool {
 }
 
 fn is_agent_dir(cwd: &str) -> bool {
-    is_replica_agent_dir(cwd) || is_canonical_agent_matrix_dir(cwd)
+    is_replica_agent_dir(cwd)
+        || is_canonical_agent_matrix_dir(cwd)
+        || super::root_agent::is_root_agent_dir_name(cwd)
 }
 
 /// Build the GIT_CEILING_DIRECTORIES value for agent sessions rooted in `.ac-new`.
@@ -1111,6 +1121,18 @@ fn resolve_session_context_content(cwd: &str) -> Result<Option<String>, String> 
                 combined_path
             }
             Ok(None) => ensure_session_context(cwd)?,
+            Err(e) => return Err(e),
+        }
+    } else if super::root_agent::is_root_agent_dir_name(cwd) {
+        match build_replica_context(cwd) {
+            Ok(Some(combined_path)) => {
+                log::info!(
+                    "Using root-agent combined context for agent session: {}",
+                    combined_path
+                );
+                combined_path
+            }
+            Ok(None) => return Ok(None),
             Err(e) => return Err(e),
         }
     } else if is_canonical_agent_matrix_dir(cwd) {
@@ -2005,6 +2027,25 @@ mod tests {
             &matrix_root.join("skills").join("runtime").join("SKILL.md")
         )));
         assert!(!content.contains("DIRECT_BODY_SHOULD_NOT_RENDER"));
+    }
+
+    #[test]
+    fn materialize_agent_context_file_includes_root_context_and_role() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        crate::config::root_agent::ensure_root_agent_dir_at(&root).expect("ensure root agent dir");
+
+        let materialized =
+            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex)
+                .expect("materialize context")
+                .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("# AgentsCommander Context"));
+        assert!(content.contains("You are the AgentsCommander Root Agent"));
+        assert!(content.contains("Direct file-based workgroup messaging is not available"));
     }
 
     #[test]

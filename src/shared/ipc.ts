@@ -63,6 +63,10 @@ export interface RestartSessionOptions {
   skipAutoResume?: boolean;
 }
 
+export interface CreateRootAgentOptions {
+  agentId?: string;
+}
+
 export const SessionAPI = {
   create: (opts?: CreateSessionOptions) =>
     transport.invoke<Session>("create_session", {
@@ -95,8 +99,10 @@ export const SessionAPI = {
   setLastPrompt: (id: string, text: string) =>
     transport.invoke<void>("set_last_prompt", { id, text }),
 
-  createRootAgent: () =>
-    transport.invoke<Session>("create_root_agent_session"),
+  createRootAgent: (opts?: CreateRootAgentOptions) =>
+    transport.invoke<Session>("create_root_agent_session", {
+      agentId: opts?.agentId ?? null,
+    }),
 };
 
 export const PtyAPI = {

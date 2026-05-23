@@ -53,6 +53,7 @@ function makeInactiveEntry(name: string, path: string): Session {
     gitRepos: [],
     workgroupBrief: null,
     isCoordinator: false,
+    isRootAgent: false,
     token: "",
     agentKind: null,
   };

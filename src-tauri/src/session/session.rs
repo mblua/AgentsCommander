@@ -79,6 +79,9 @@ pub struct Session {
     /// Controls repo-badge visibility on the sidebar. Recomputed after every discovery.
     #[serde(default)]
     pub is_coordinator: bool,
+    /// Whether this is the global Root Agent / Agents Commander session.
+    #[serde(default)]
+    pub is_root_agent: bool,
     /// Monotonic generation counter for `git_repos`. Bumped on every refresh/watcher write.
     /// Used for compare-and-swap in `set_git_repos_if_gen` so an in-flight watcher poll
     /// cannot overwrite a refresh that landed during its detection window. Runtime-only;
@@ -179,6 +182,8 @@ pub struct SessionInfo {
     pub workgroup_brief: Option<String>,
     #[serde(default)]
     pub is_coordinator: bool,
+    #[serde(default)]
+    pub is_root_agent: bool,
     pub token: String,
     #[serde(default)]
     pub agent_kind: Option<CodingAgentKind>,
@@ -210,6 +215,7 @@ impl From<&Session> for SessionInfo {
             git_repos: s.git_repos.clone(),
             workgroup_brief: read_workgroup_brief_for_cwd(&s.working_directory),
             is_coordinator: s.is_coordinator,
+            is_root_agent: s.is_root_agent,
             token: s.token.to_string(),
             agent_kind: s.agent_kind,
             was_detached: s.was_detached,
@@ -239,6 +245,7 @@ mod tests {
             agent_label: None,
             git_repos: Vec::new(),
             is_coordinator: false,
+            is_root_agent: false,
             git_repos_gen: 0,
             token: Uuid::nil(),
             agent_kind: None,
