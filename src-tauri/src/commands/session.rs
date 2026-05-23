@@ -20,6 +20,70 @@ pub(crate) fn root_agent_session_lock() -> &'static tokio::sync::Mutex<()> {
     ROOT_AGENT_SESSION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingRootAction {
+    ReuseLive,
+    WakeDormant,
+    DiscardMissingPty,
+}
+
+fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRootAction {
+    if matches!(status, SessionStatus::Exited(_)) {
+        ExistingRootAction::WakeDormant
+    } else if has_pty {
+        ExistingRootAction::ReuseLive
+    } else {
+        ExistingRootAction::DiscardMissingPty
+    }
+}
+
+async fn rollback_pre_created_session(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    id: Uuid,
+    reason: &str,
+) {
+    log::warn!(
+        "[session] Rolling back pre-created session {} after setup failure: {}",
+        id,
+        reason
+    );
+
+    if let Err(e) = pty_mgr.lock().unwrap().kill(id) {
+        log::warn!(
+            "[session] Failed to clean PTY state while rolling back {}: {}",
+            id,
+            e
+        );
+    }
+
+    let mgr = session_mgr.read().await;
+    let was_active = mgr.get_active().await == Some(id);
+    match mgr.destroy_session(id).await {
+        Ok(Some(new_id)) => {
+            let _ = app.emit(
+                "session_switched",
+                serde_json::json!({ "id": new_id.to_string() }),
+            );
+        }
+        Ok(None) if was_active => {
+            let _ = app.emit(
+                "session_switched",
+                serde_json::json!({ "id": serde_json::Value::Null }),
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!(
+                "[session] Failed to remove pre-created session {} after setup failure: {}",
+                id,
+                e
+            );
+        }
+    }
+}
+
 fn token_has_unclosed_quote(token: &str, quote: char) -> bool {
     token.chars().filter(|c| *c == quote).count() % 2 == 1
 }
@@ -702,9 +766,11 @@ pub async fn create_session_inner(
     }
 
     if let Some(name) = session_name {
-        mgr.rename_session(session.id, name.clone())
-            .await
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = mgr.rename_session(session.id, name.clone()).await {
+            let err = e.to_string();
+            rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
+            return Err(err);
+        }
         session.name = name;
     }
 
@@ -798,13 +864,7 @@ pub async fn create_session_inner(
                     .message(&dialog_msg)
                     .title("Context File Error")
                     .show(|_| {});
-                let mgr2 = session_mgr.read().await;
-                if let Ok(Some(new_id)) = mgr2.destroy_session(id).await {
-                    let _ = app.emit(
-                        "session_switched",
-                        serde_json::json!({ "id": new_id.to_string() }),
-                    );
-                }
+                rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
                 return Err(e);
             }
         }
@@ -849,10 +909,8 @@ pub async fn create_session_inner(
         Vec::new()
     };
 
-    pty_mgr
-        .lock()
-        .unwrap()
-        .spawn(
+    let spawn_result = {
+        pty_mgr.lock().unwrap().spawn(
             id,
             &shell,
             &shell_args,
@@ -863,7 +921,12 @@ pub async fn create_session_inner(
             crate::session::profile::idle_tuning_for(agent_kind),
             app.clone(),
         )
-        .map_err(|e| e.to_string())?;
+    };
+    if let Err(e) = spawn_result {
+        let err = e.to_string();
+        rollback_pre_created_session(app, session_mgr, pty_mgr, id, &err).await;
+        return Err(err);
+    }
 
     // Auto-inject optional non-credential bootstrap text for agent sessions
     // after PTY spawn. Credentials are already present in child environment
@@ -1140,10 +1203,7 @@ pub async fn destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), St
     destroy_session_inner_with_options(app, uuid, false).await
 }
 
-pub(crate) async fn force_destroy_session_inner(
-    app: &AppHandle,
-    uuid: Uuid,
-) -> Result<(), String> {
+pub(crate) async fn force_destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), String> {
     destroy_session_inner_with_options(app, uuid, true).await
 }
 
@@ -1197,8 +1257,12 @@ async fn destroy_session_inner_with_options(
         mgr.set_is_root_agent(uuid, true).await;
         mgr.mark_exited(uuid, 0).await;
         mgr.clear_active_if(uuid).await;
+        let dormant_info = mgr.get_session(uuid).await.map(|s| SessionInfo::from(&s));
 
         let _ = app.emit("session_destroyed", serde_json::json!({ "id": id }));
+        if let Some(info) = dormant_info {
+            let _ = app.emit("session_created", info);
+        }
 
         let detached_label = format!("terminal-{}", id.replace('-', ""));
         if let Some(detached_win) = app.get_webview_window(&detached_label) {
@@ -1852,9 +1916,7 @@ pub(crate) async fn create_root_agent_inner(
             s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
         })
     };
-    let waking_existing = existing
-        .as_ref()
-        .is_some_and(|s| matches!(s.status, SessionStatus::Exited(_)));
+    let mut waking_existing = false;
 
     if let Some(existing) = existing {
         let uuid = Uuid::parse_str(&existing.id).map_err(|e| e.to_string())?;
@@ -1863,25 +1925,38 @@ pub(crate) async fn create_root_agent_inner(
             mgr.set_is_root_agent(uuid, true).await;
         }
 
-        if !matches!(existing.status, SessionStatus::Exited(_)) {
-            log::info!(
-                "[root-agent] Reusing existing live session {} at {}",
-                existing.id,
-                existing.working_directory
-            );
-            let mgr = session_mgr.read().await;
-            if let Some(updated) = mgr.get_session(uuid).await {
-                persist_current_state(&mgr).await;
-                return Ok(SessionInfo::from(&updated));
+        let has_pty = pty_mgr.lock().unwrap().has_session(uuid);
+        match classify_existing_root(&existing.status, has_pty) {
+            ExistingRootAction::ReuseLive => {
+                log::info!(
+                    "[root-agent] Reusing existing live session {} at {}",
+                    existing.id,
+                    existing.working_directory
+                );
+                let mgr = session_mgr.read().await;
+                if let Some(updated) = mgr.get_session(uuid).await {
+                    persist_current_state(&mgr).await;
+                    return Ok(SessionInfo::from(&updated));
+                }
+                return Ok(existing);
             }
-            return Ok(existing);
+            ExistingRootAction::WakeDormant => {
+                waking_existing = true;
+                log::info!(
+                    "[root-agent] Waking dormant root session {} with provider resume",
+                    existing.id
+                );
+                force_destroy_session_inner(app, uuid).await?;
+            }
+            ExistingRootAction::DiscardMissingPty => {
+                log::warn!(
+                    "[root-agent] Discarding root session {} because it has status {:?} but no PTY",
+                    existing.id,
+                    existing.status
+                );
+                force_destroy_session_inner(app, uuid).await?;
+            }
         }
-
-        log::info!(
-            "[root-agent] Waking dormant root session {} with provider resume",
-            existing.id
-        );
-        force_destroy_session_inner(app, uuid).await?;
     }
 
     let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
@@ -1995,10 +2070,11 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        inject_codex_resume, resolve_actual_agent, resolve_root_agent_command,
-        should_inject_continue,
+        classify_existing_root, inject_codex_resume, resolve_actual_agent,
+        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings};
+    use crate::session::session::SessionStatus;
     use std::path::PathBuf;
 
     fn test_settings() -> AppSettings {
@@ -2078,6 +2154,22 @@ mod tests {
         assert_eq!(args, vec!["-NoLogo".to_string()]);
         assert!(agent_id.is_none());
         assert!(label.is_none());
+    }
+
+    #[test]
+    fn existing_root_classifier_discards_live_record_without_pty() {
+        assert_eq!(
+            classify_existing_root(&SessionStatus::Running, false),
+            ExistingRootAction::DiscardMissingPty
+        );
+        assert_eq!(
+            classify_existing_root(&SessionStatus::Active, true),
+            ExistingRootAction::ReuseLive
+        );
+        assert_eq!(
+            classify_existing_root(&SessionStatus::Exited(0), false),
+            ExistingRootAction::WakeDormant
+        );
     }
 
     #[test]

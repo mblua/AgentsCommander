@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
+import type { SessionStatus } from "../shared/types";
 import {
   SessionAPI,
   SettingsAPI,
@@ -46,6 +47,10 @@ interface SidebarAppProps {
    * initializers; those are main-window concerns.
    */
   embedded?: boolean;
+}
+
+function isExitedStatus(status: SessionStatus): boolean {
+  return typeof status === "object" && status !== null && "exited" in status;
 }
 
 const SidebarApp: Component<SidebarAppProps> = (props) => {
@@ -157,7 +162,10 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       await onSessionCreated((session) => {
         sessionsStore.addSession(session);
         // New session is auto-activated if it's the first one
-        if (sessionsStore.sessions.length === 1) {
+        if (
+          sessionsStore.sessions.length === 1 &&
+          !isExitedStatus(session.status)
+        ) {
           sessionsStore.setActiveId(session.id);
         }
       })
