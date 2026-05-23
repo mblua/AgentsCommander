@@ -5,6 +5,7 @@ import { SessionAPI, WindowAPI } from "../../shared/ipc";
 import { sessionsStore } from "../stores/sessions";
 import type { Session, SessionStatus } from "../../shared/types";
 import AgentPickerModal from "./AgentPickerModal";
+import { rootAgentCodingAgentAction } from "./root-agent-action";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -157,16 +158,15 @@ const RootAgentBanner: Component = () => {
     if (busy()) return;
     setBusy(true);
     try {
-      const r = rootSession();
-      if (!r) {
-        const session = await SessionAPI.createRootAgent({ agentId });
-        await SessionAPI.switch(session.id);
-        await focusTerminal(session.id);
-      } else {
-        const session = await SessionAPI.restart(r.id, { agentId });
-        await SessionAPI.switch(session.id);
-        await focusTerminal(session.id);
-      }
+      const action = rootAgentCodingAgentAction(rootSession(), agentId);
+      const session = action.kind === "create"
+        ? await SessionAPI.createRootAgent({ agentId: action.agentId })
+        : await SessionAPI.restart(action.id, {
+            agentId: action.agentId,
+            skipAutoResume: action.skipAutoResume,
+          });
+      await SessionAPI.switch(session.id);
+      await focusTerminal(session.id);
     } catch (e) {
       console.error("[RootAgentBanner] coding-agent change failed:", e);
     } finally {

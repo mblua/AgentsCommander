@@ -79,8 +79,11 @@ const wgReplicaMemo = createMemo(() => {
 });
 
 const filteredSessionsMemo = createMemo(() => {
+  // Root agent renders exclusively in RootAgentBanner; never list it as a generic session.
+  const nonRootSessions = state.sessions.filter((s) => !s.isRootAgent);
+
   const activeSessions = (() => {
-    if (!state.teamFilter) return state.sessions;
+    if (!state.teamFilter) return nonRootSessions;
 
     let matches: (normalizedPath: string) => boolean;
 
@@ -89,12 +92,12 @@ const filteredSessionsMemo = createMemo(() => {
       matches = (p) => !allPaths.has(p);
     } else {
       const team = state.teams.find((t) => t.id === state.teamFilter);
-      if (!team) return state.sessions;
+      if (!team) return nonRootSessions;
       const paths = new Set(team.members.map((m) => normalizePath(m.path)));
       matches = (p) => paths.has(p);
     }
 
-    return state.sessions.filter((s) => {
+    return nonRootSessions.filter((s) => {
       if (!s.workingDirectory) return state.teamFilter === NO_TEAM;
       return matches(normalizePath(s.workingDirectory));
     });
