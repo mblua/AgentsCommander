@@ -190,8 +190,11 @@ fn agent_matches(team_agent_entry: &str, agent_name: &str) -> bool {
 }
 
 /// Parse YAML frontmatter from a Role.md file.
-/// Returns (name, description) if found.
+/// Returns (name, description) if found. Strips a leading UTF-8 BOM first so a
+/// `Role.md` saved as UTF-8-with-BOM still yields its display name/description
+/// — mirrors `role_templates::parse_template_frontmatter`.
 fn parse_role_frontmatter(content: &str) -> (Option<String>, Option<String>) {
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
     if !content.starts_with("---") {
         return (None, None);
     }
@@ -310,8 +313,21 @@ fn build_role_content(
     template: Option<&crate::commands::role_templates::ResolvedRoleTemplate>,
 ) -> String {
     let desc_yaml = description.replace('\'', "''");
+    // Plan §7.2: imported template body is fenced by HTML-comment delimiters so
+    // the section boundary stays machine-detectable (and the opening tag
+    // records provenance via the template id). Pre-release maintainer review
+    // (§10.2) screens template bodies for the literal closing delimiter to
+    // prevent a body from "escaping" the fenced section.
     let profile = match template {
-        Some(t) => format!("\n## Role Profile\n\n{}\n", t.body.trim()),
+        Some(t) => format!(
+            "\n## Role Profile\n\n\
+             <!-- ac:role-profile source=\"{}\" — imported template body; \
+             the AC sections below are mandatory and must stay last -->\n\n\
+             {}\n\n\
+             <!-- ac:role-profile:end -->\n",
+            t.id,
+            t.body.trim(),
+        ),
         None => String::new(),
     };
     format!(
@@ -368,8 +384,12 @@ pub async fn create_agent_matrix(
     }
 
     // #271 — resolve the picked template BEFORE any disk mutation so an unknown
-    // / unreadable id fails fast and no half-built matrix is left on disk. A
-    // missing config dir degrades to "no template" rather than erroring out.
+    // / unreadable id fails fast and no half-built matrix is left on disk. If
+    // the user picked a template but the config dir is unresolvable, hard-error
+    // (plan §4.2.2) rather than silently producing a no-template agent — that
+    // would be a contract violation. Distinct from `list_role_templates`, where
+    // a missing config dir can degrade to "agency-only" since no selection has
+    // been made yet.
     let resolved_template: Option<crate::commands::role_templates::ResolvedRoleTemplate> =
         match role_template_id
             .as_deref()
@@ -378,22 +398,13 @@ pub async fn create_agent_matrix(
         {
             Some(id) => {
                 let settings_snapshot = settings.read().await.clone();
-                match crate::config::config_dir() {
-                    Some(config_dir) => {
-                        Some(crate::commands::role_templates::resolve_role_template(
-                            id,
-                            &settings_snapshot,
-                            &config_dir,
-                        )?)
-                    }
-                    None => {
-                        log::warn!(
-                            "[entity_creation] cannot resolve config dir; role template '{}' ignored",
-                            id
-                        );
-                        None
-                    }
-                }
+                let config_dir = crate::config::config_dir()
+                    .ok_or_else(|| "Could not determine config directory".to_string())?;
+                Some(crate::commands::role_templates::resolve_role_template(
+                    id,
+                    &settings_snapshot,
+                    &config_dir,
+                )?)
             }
             None => None,
         };
@@ -2552,7 +2563,9 @@ mod tests {
 
     /// Test #22 — supplying a resolved template inserts the `## Role Profile`
     /// section between the heading/description and the Source of Truth section,
-    /// using the template body verbatim (post-trim).
+    /// using the template body verbatim (post-trim). Body must be fenced by the
+    /// plan §7.2 HTML-comment delimiters with the opening tag carrying the
+    /// resolved template id as `source="…"`.
     #[test]
     fn build_role_content_with_template_inserts_role_profile() {
         let template = crate::commands::role_templates::ResolvedRoleTemplate {
@@ -2574,6 +2587,18 @@ mod tests {
             out.contains("Template body line two."),
             "must include subsequent template body lines"
         );
+        // Plan §7.2: opening delimiter carries provenance via source="<id>".
+        assert!(
+            out.contains("<!-- ac:role-profile source=\"agency:my-test\""),
+            "must include opening ac:role-profile delimiter with template id: {}",
+            out
+        );
+        // Plan §7.2: closing delimiter fences the imported body.
+        assert!(
+            out.contains("<!-- ac:role-profile:end -->"),
+            "must include closing ac:role-profile:end delimiter: {}",
+            out
+        );
         // Role Profile must come BEFORE Source of Truth in the file.
         let profile_idx = out.find("## Role Profile").expect("Role Profile present");
         let sot_idx = out
@@ -2582,6 +2607,26 @@ mod tests {
         assert!(
             profile_idx < sot_idx,
             "Role Profile must precede Source of Truth"
+        );
+        // Delimiters must bracket the body — opening before, closing after.
+        let open_idx = out
+            .find("<!-- ac:role-profile source=")
+            .expect("opening delimiter present");
+        let close_idx = out
+            .find("<!-- ac:role-profile:end -->")
+            .expect("closing delimiter present");
+        let body_idx = out
+            .find("Template body line one.")
+            .expect("template body present");
+        assert!(
+            open_idx < body_idx && body_idx < close_idx,
+            "delimiters must bracket the imported body"
+        );
+        // Closing delimiter must come BEFORE the mandatory AC sections so the
+        // AC sections remain outside the fenced template region.
+        assert!(
+            close_idx < sot_idx,
+            "closing delimiter must precede Source of Truth (mandatory AC sections stay last)"
         );
     }
 
