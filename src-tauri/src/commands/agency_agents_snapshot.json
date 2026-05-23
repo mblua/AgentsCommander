@@ -1,0 +1,24 @@
+{
+  "source": "https://github.com/msitarzewski/agency-agents",
+  "ref": "PLACEHOLDER",
+  "commit": "PLACEHOLDER-DO-NOT-RELEASE",
+  "templateCount": 2,
+  "templates": [
+    {
+      "id": "agency:placeholder-example-one",
+      "name": "Placeholder Example One",
+      "description": "Placeholder template - replaced by the real vendored snapshot before release.",
+      "category": "Placeholder",
+      "color": null,
+      "body": "# Placeholder One\n\nPlaceholder body. Not a real agency template."
+    },
+    {
+      "id": "agency:placeholder-example-two",
+      "name": "Placeholder Example Two",
+      "description": "Second placeholder so id-uniqueness and sort tests have >1 row.",
+      "category": "Placeholder",
+      "color": null,
+      "body": "# Placeholder Two\n\nPlaceholder body. Not a real agency template."
+    }
+  ]
+}

@@ -8,6 +8,7 @@ pub mod entity_creation;
 pub mod phone;
 pub mod pty;
 pub mod repos;
+pub mod role_templates;
 pub mod session;
 pub mod telegram;
 pub mod voice;

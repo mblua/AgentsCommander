@@ -293,11 +293,60 @@ fn build_brief_content(_wg_name: &str, brief: Option<String>) -> String {
     }
 }
 
+/// Build the Role.md body written by `create_agent_matrix`. Kept as a separate
+/// pure helper so the legacy (no-template) format can be unit-tested without
+/// touching the Tauri command surface. `template` is the resolved template; when
+/// `None`, output is byte-identical to the pre-#271 inline `format!`.
+///
+/// When a template is supplied, its body is inserted as a `## Role Profile`
+/// section between the title/description and the mandatory `## Source of Truth`
+/// / `## Agent Memory Rule` sections (plan §7) — the mandatory sections always
+/// land last so a template body cannot push them off, and Role-Profile content
+/// inherits the picker's display order (the section header makes the source of
+/// the imported text obvious to a human reader of Role.md).
+fn build_role_content(
+    safe_name: &str,
+    description: &str,
+    template: Option<&crate::commands::role_templates::ResolvedRoleTemplate>,
+) -> String {
+    let desc_yaml = description.replace('\'', "''");
+    let profile = match template {
+        Some(t) => format!("\n## Role Profile\n\n{}\n", t.body.trim()),
+        None => String::new(),
+    };
+    format!(
+        "---\nname: '{name}'\ndescription: '{desc_yaml}'\ntype: agent\n---\n\n\
+         # {name}\n\n\
+         {description}\n\
+         {profile}\n\
+         ## Source of Truth\n\n\
+         This role is defined in Role.md of your Agent Matrix at: .ac-new/_agent_{name}/\n\
+         If you are running as a replica, this file was generated from that source.\n\
+         Always use memory/, plans/, and skills/ from your Agent Matrix, and treat Role.md \
+         there as the canonical role definition. Never use external memory systems.\n\n\
+         ## Agent Memory Rule\n\n\
+         If you are running as a replica, the single source of truth for persistent knowledge \
+         is your Agent Matrix's memory/, plans/, skills/, and Role.md. Use your replica folder \
+         only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use \
+         external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
+        name = safe_name,
+        desc_yaml = desc_yaml,
+        description = description,
+        profile = profile,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
 /// Create an agent matrix directory inside {project_path}/.ac-new/_agent_{name}/
+///
+/// `role_template_id` is the picker selection from `list_role_templates`; when
+/// `Some`, the resolved template's body is inserted as a `## Role Profile`
+/// section and (if the template ships one) its `skills/` are copied into the
+/// new matrix. `None` (or a missing arg from older callers) preserves the
+/// pre-#271 behavior exactly.
 #[tauri::command]
 pub async fn create_agent_matrix(
     settings: State<'_, SettingsState>,
@@ -305,6 +354,7 @@ pub async fn create_agent_matrix(
     project_path: String,
     name: String,
     description: String,
+    role_template_id: Option<String>,
 ) -> Result<CreatedEntityResult, String> {
     let safe_name = sanitize_name(&name)?;
     let base = Path::new(&project_path).join(".ac-new");
@@ -317,21 +367,69 @@ pub async fn create_agent_matrix(
         return Err(format!("Agent '{}' already exists", safe_name));
     }
 
+    // #271 — resolve the picked template BEFORE any disk mutation so an unknown
+    // / unreadable id fails fast and no half-built matrix is left on disk. A
+    // missing config dir degrades to "no template" rather than erroring out.
+    let resolved_template: Option<crate::commands::role_templates::ResolvedRoleTemplate> =
+        match role_template_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(id) => {
+                let settings_snapshot = settings.read().await.clone();
+                match crate::config::config_dir() {
+                    Some(config_dir) => {
+                        Some(crate::commands::role_templates::resolve_role_template(
+                            id,
+                            &settings_snapshot,
+                            &config_dir,
+                        )?)
+                    }
+                    None => {
+                        log::warn!(
+                            "[entity_creation] cannot resolve config dir; role template '{}' ignored",
+                            id
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
     // Create directory structure. The helper owns both root and subdir creation.
     create_agent_matrix_layout(&agent_dir).map_err(|(sub, e)| match sub {
         "agent_dir" => format!("Failed to create agent directory: {}", e),
         _ => format!("Failed to create {} directory: {}", sub, e),
     })?;
 
-    // Role.md with YAML frontmatter (single-quoted values for safe YAML)
-    let desc_yaml = description.replace('\'', "''");
-    let role_content = format!(
-        "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac-new/_agent_{}/\nIf you are running as a replica, this file was generated from that source.\nAlways use memory/, plans/, and skills/ from your Agent Matrix, and treat Role.md there as the canonical role definition. Never use external memory systems.\n\n## Agent Memory Rule\n\nIf you are running as a replica, the single source of truth for persistent knowledge is your Agent Matrix's memory/, plans/, skills/, and Role.md. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
-        safe_name, desc_yaml, safe_name, description, safe_name
-    );
+    // Role.md with YAML frontmatter (single-quoted values for safe YAML).
+    let role_content = build_role_content(&safe_name, &description, resolved_template.as_ref());
 
     std::fs::write(agent_dir.join("Role.md"), &role_content)
         .map_err(|e| format!("Failed to write Role.md: {}", e))?;
+
+    // #271 — best-effort copy of the template's skills/ AFTER the layout exists.
+    // Failures here are non-fatal: the matrix is still usable, the user can
+    // re-add skills manually, and partial-copy state is just files inside an
+    // otherwise valid matrix directory. Surfaced via log::error! → ErrorModal.
+    if let Some(ref t) = resolved_template {
+        if let Some(ref src) = t.skills_src {
+            let dst = agent_dir.join("skills");
+            let failures = crate::commands::role_templates::copy_dir_recursive(src, &dst);
+            if !failures.is_empty() {
+                log::error!(
+                    "[entity_creation] some files from template '{}' skills/ could not be \
+                     copied into {} ({} failure(s)): {}",
+                    t.id,
+                    dst.display(),
+                    failures.len(),
+                    failures.join("; ")
+                );
+            }
+        }
+    }
 
     // config.json
     std::fs::write(agent_dir.join("config.json"), "{\n  \"tooling\": {}\n}\n")
@@ -2427,5 +2525,126 @@ mod tests {
         assert_eq!(determine_next_wg_number(tmp.path(), "team"), 2);
         // For team `dev-team`: only `wg-1-dev-team` counts. Next free is 2.
         assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 2);
+    }
+
+    // ── #271 — build_role_content (Role.md template merge) ──
+
+    /// Test #21 — byte-for-byte parity with the pre-#271 inline `format!`
+    /// so callers that pass no template see the legacy file. The legacy
+    /// format string is reproduced verbatim here (NOT imported from the
+    /// helper) so the two transcriptions can cross-check each other —
+    /// any drift in `build_role_content` instantly fails this test.
+    #[test]
+    fn build_role_content_no_template_matches_legacy() {
+        let safe_name = "alpha";
+        let description = "Test agent description.";
+        let desc_yaml = description.replace('\'', "''");
+        let legacy = format!(
+            "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac-new/_agent_{}/\nIf you are running as a replica, this file was generated from that source.\nAlways use memory/, plans/, and skills/ from your Agent Matrix, and treat Role.md there as the canonical role definition. Never use external memory systems.\n\n## Agent Memory Rule\n\nIf you are running as a replica, the single source of truth for persistent knowledge is your Agent Matrix's memory/, plans/, skills/, and Role.md. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
+            safe_name, desc_yaml, safe_name, description, safe_name
+        );
+        let actual = build_role_content(safe_name, description, None);
+        assert_eq!(
+            actual, legacy,
+            "no-template Role.md must be byte-identical to the pre-#271 format"
+        );
+    }
+
+    /// Test #22 — supplying a resolved template inserts the `## Role Profile`
+    /// section between the heading/description and the Source of Truth section,
+    /// using the template body verbatim (post-trim).
+    #[test]
+    fn build_role_content_with_template_inserts_role_profile() {
+        let template = crate::commands::role_templates::ResolvedRoleTemplate {
+            id: "agency:my-test".into(),
+            body: "Template body line one.\nTemplate body line two.".into(),
+            skills_src: None,
+        };
+        let out = build_role_content("alpha", "Test description.", Some(&template));
+        assert!(
+            out.contains("## Role Profile"),
+            "must add a Role Profile section: {}",
+            out
+        );
+        assert!(
+            out.contains("Template body line one."),
+            "must include the template body verbatim"
+        );
+        assert!(
+            out.contains("Template body line two."),
+            "must include subsequent template body lines"
+        );
+        // Role Profile must come BEFORE Source of Truth in the file.
+        let profile_idx = out.find("## Role Profile").expect("Role Profile present");
+        let sot_idx = out
+            .find("## Source of Truth")
+            .expect("Source of Truth present");
+        assert!(
+            profile_idx < sot_idx,
+            "Role Profile must precede Source of Truth"
+        );
+    }
+
+    /// Test #23 — mandatory sections are always last, even when a template body
+    /// itself contains a heading that LOOKS like a mandatory section. The
+    /// template is inserted between description and the mandatory block, never
+    /// after it; the actual `## Source of Truth` and `## Agent Memory Rule`
+    /// added by the helper must therefore appear AFTER the template body.
+    #[test]
+    fn build_role_content_keeps_mandatory_sections_last() {
+        let template = crate::commands::role_templates::ResolvedRoleTemplate {
+            id: "agency:tricky".into(),
+            body: "Body before.\n\n## Source of Truth\n\nLook-alike heading inside template.\n\n## Agent Memory Rule\n\nLook-alike heading.\n\nBody after.".into(),
+            skills_src: None,
+        };
+        let out = build_role_content("alpha", "desc", Some(&template));
+        // The mandatory block's exact opening line appears in both the template
+        // body AND the helper's tail — so `rfind` must point at the helper's
+        // copy, which has to sit AFTER the entire template body.
+        let last_sot = out
+            .rfind("## Source of Truth")
+            .expect("Source of Truth heading present");
+        let last_memory_rule = out
+            .rfind("## Agent Memory Rule")
+            .expect("Agent Memory Rule heading present");
+        let body_after = out.find("Body after.").expect("template body retained");
+        assert!(
+            last_sot > body_after,
+            "the helper's `## Source of Truth` must come AFTER the template body"
+        );
+        assert!(
+            last_memory_rule > last_sot,
+            "`## Agent Memory Rule` must come last"
+        );
+        // And the helper's tail content must still be present verbatim.
+        assert!(
+            out.contains("This role is defined in Role.md of your Agent Matrix"),
+            "mandatory Source of Truth body must still be appended"
+        );
+        assert!(
+            out.contains("NEVER use external memory systems from the coding agent"),
+            "mandatory Agent Memory Rule body must still be appended"
+        );
+    }
+
+    /// Test #24 — single quotes in the description are doubled inside the YAML
+    /// frontmatter `description:` value so the file stays valid YAML, while the
+    /// human-readable body keeps the original character.
+    #[test]
+    fn build_role_content_escapes_single_quote_in_description() {
+        let desc = "Don't break the YAML 'header'.";
+        let out = build_role_content("alpha", desc, None);
+        // YAML line uses single-quoted value with doubled apostrophes.
+        assert!(
+            out.contains("description: 'Don''t break the YAML ''header''.'"),
+            "YAML description must double-escape single quotes; got:\n{}",
+            out
+        );
+        // Body keeps the original (un-doubled) description.
+        assert!(
+            out.contains("Don't break the YAML 'header'."),
+            "human-readable description body must keep the original characters; got:\n{}",
+            out
+        );
     }
 }
