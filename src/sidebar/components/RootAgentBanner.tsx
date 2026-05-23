@@ -325,6 +325,13 @@ const RootAgentBanner: Component = () => {
     e.stopPropagation();
     const r = rootSession();
     if (!r) return;
+    // Cancel local capture before destroy: backend marks the root dormant,
+    // which hides the in-banner cancel control and leaves MediaRecorder +
+    // mic stream running. cancel() also detaches onstop so a pending
+    // transcription doesn't write to the now-dormant session.
+    if (voiceRecorder.recordingSessionId() === r.id) {
+      voiceRecorder.cancel();
+    }
     // Root destroy is special: backend kills PTY and marks dormant rather
     // than removing the session record (see destroy_session_inner_with_options
     // in commands/session.rs). The banner stays visible and can re-wake.
@@ -440,7 +447,10 @@ const RootAgentBanner: Component = () => {
         </div>
 
         <Show when={rootSession()}>
-          <Show when={isRecording() && hasLivePty()}>
+          {/* Cancel-recording is local cleanup (MediaRecorder + mic stream),
+              not PTY-dependent — keep it visible even when the root is
+              dormant so any in-flight recording can still be torn down. */}
+          <Show when={isRecording()}>
             <button
               class="session-item-mic-cancel"
               onClick={handleCancelRecording}
