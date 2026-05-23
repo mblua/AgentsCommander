@@ -1404,7 +1404,7 @@ mod tests {
         let cmd = crate::cli::Cli::command();
         let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
         assert!(
-            names.iter().any(|n| *n == "list-peers-lean"),
+            names.contains(&"list-peers-lean"),
             "list-peers-lean should be a registered subcommand; got: {:?}",
             names
         );

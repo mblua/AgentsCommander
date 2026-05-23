@@ -1,7 +1,6 @@
 use futures::future::join_all;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -229,28 +228,6 @@ fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     s.strip_prefix(r"\\?\")
         .map(PathBuf::from)
         .unwrap_or_else(|| p.to_path_buf())
-}
-
-/// Read BRIEF.md at most 256 KiB, strip a UTF-8 BOM if present, trim, and
-/// return None on empty / read-error / file-missing. Bigger files are
-/// truncated; we do NOT attempt to stream the whole file through Tauri IPC.
-fn read_brief_capped(brief_path: &Path) -> Option<String> {
-    const MAX_BYTES: u64 = 256 * 1024;
-    let file = std::fs::File::open(brief_path).ok()?;
-    let mut buf = String::new();
-    if file.take(MAX_BYTES).read_to_string(&mut buf).is_err() {
-        return None;
-    }
-    let trimmed = buf
-        .strip_prefix('\u{FEFF}')
-        .unwrap_or(&buf)
-        .trim()
-        .to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }
 
 /// Detect git branch synchronously for a given directory path.
@@ -1724,6 +1701,18 @@ pub async fn new_project(
     Ok(result)
 }
 
+type BriefFields = (Option<String>, Option<String>);
+
+fn read_brief_fields(wg_path: &Path) -> BriefFields {
+    let brief_path = wg_path.join("BRIEF.md");
+    let Ok(content) = std::fs::read_to_string(&brief_path) else {
+        return (None, None);
+    };
+    let brief = extract_brief_first_line(&content);
+    let brief_title = crate::commands::entity_creation::parse_brief_title(&content);
+    (brief, brief_title)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1833,15 +1822,4 @@ mod tests {
             Some("Body line".to_string())
         );
     }
-}
-
-type BriefFields = (Option<String>, Option<String>);
-fn read_brief_fields(wg_path: &std::path::Path) -> BriefFields {
-    let brief_path = wg_path.join("BRIEF.md");
-    let Ok(content) = std::fs::read_to_string(&brief_path) else {
-        return (None, None);
-    };
-    let brief = extract_brief_first_line(&content);
-    let brief_title = crate::commands::entity_creation::parse_brief_title(&content);
-    (brief, brief_title)
 }
