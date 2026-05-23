@@ -5,6 +5,7 @@ import type { RepoMatch, Session, SessionRepo, SessionsState, Team, TeamSessionG
 import { projectStore } from "./project";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
+import { isRuntimeStringStatus, upsertSessionList } from "./sessions-helpers";
 
 const [toggleInFlight, setToggleInFlight] = createSignal(false);
 
@@ -283,9 +284,7 @@ export const sessionsStore = {
   },
 
   addSession(session: Session) {
-    setState("sessions", (prev) =>
-      prev.some((s) => s.id === session.id) ? prev : [...prev, session]
-    );
+    setState("sessions", (prev) => upsertSessionList(prev, session));
   },
 
   removeSession(id: string) {
@@ -296,7 +295,16 @@ export const sessionsStore = {
     const prev = state.activeId;
     console.log(`[idle-fe] setActiveId: ${id?.slice(0,8)} (prev: ${prev?.slice(0,8)})`);
     setState("activeId", id);
-    setState("sessions", (s) => s.id === id, "status", "active");
+    // Promote selected session to "active" only when its status is a runtime
+    // string. Exited({ exited: N }) is preserved so dormant roots keep the
+    // status the banner reads (typeof status !== "string") to choose
+    // restart(..., { skipAutoResume: false }).
+    setState(
+      "sessions",
+      (s) => s.id === id && isRuntimeStringStatus(s.status),
+      "status",
+      "active"
+    );
     setState("sessions", (s) => s.id === id, "pendingReview", false);
     setState(
       "sessions",

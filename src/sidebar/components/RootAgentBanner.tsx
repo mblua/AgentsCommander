@@ -112,10 +112,16 @@ const RootAgentBanner: Component = () => {
       const r = rootSession();
       if (!r) {
         const session = await SessionAPI.createRootAgent();
+        // Hydrate the store: backend may reuse an existing live root and
+        // therefore NOT emit session_created (see ReuseLive in
+        // commands/session.rs). addSession upserts, so it's safe to call
+        // even when session_created later races in.
+        sessionsStore.addSession(session);
         await SessionAPI.switch(session.id);
         await focusTerminal(session.id);
       } else if (typeof r.status !== "string") {
         const session = await SessionAPI.restart(r.id, { skipAutoResume: false });
+        sessionsStore.addSession(session);
         await SessionAPI.switch(session.id);
         await focusTerminal(session.id);
       } else {
@@ -138,6 +144,7 @@ const RootAgentBanner: Component = () => {
     setBusy(true);
     try {
       const session = await SessionAPI.restart(r.id);
+      sessionsStore.addSession(session);
       await SessionAPI.switch(session.id);
       await focusTerminal(session.id);
     } catch (e) {
@@ -165,6 +172,7 @@ const RootAgentBanner: Component = () => {
             agentId: action.agentId,
             skipAutoResume: action.skipAutoResume,
           });
+      sessionsStore.addSession(session);
       await SessionAPI.switch(session.id);
       await focusTerminal(session.id);
     } catch (e) {
