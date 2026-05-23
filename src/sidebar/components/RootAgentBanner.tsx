@@ -42,6 +42,15 @@ const RootAgentBanner: Component = () => {
     return !!r && sessionsStore.activeId === r.id;
   });
 
+  // Dormant root has status as `{ exited: number }` (not a string). Backend
+  // marks root exited/dormant instead of removing the record so the banner can
+  // re-wake — but PTY-dependent actions (mic, detach, telegram, close) must be
+  // hidden because there is no live PTY to receive input or attach to.
+  const hasLivePty = createMemo(() => {
+    const r = rootSession();
+    return !!r && typeof r.status === "string";
+  });
+
   const dotClass = createMemo(() => {
     const r = rootSession();
     if (!r) return "offline";
@@ -340,7 +349,27 @@ const RootAgentBanner: Component = () => {
       <div
         class="root-agent-banner"
         classList={{ active: isActive(), disabled: busy() }}
+        role="button"
+        tabIndex={busy() ? -1 : 0}
+        aria-disabled={busy()}
+        aria-label={
+          rootSession()
+            ? typeof rootSession()!.status === "string"
+              ? "Open Root Agent session"
+              : "Wake Root Agent session"
+            : "Create Root Agent session"
+        }
         onClick={handleClick}
+        onKeyDown={(e) => {
+          // Only intercept keys aimed at the banner itself — when focus is on
+          // a child action button, that button's native handler runs and the
+          // event still bubbles here, so we must skip to avoid double-firing.
+          if (e.currentTarget !== e.target) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleClick();
+          }
+        }}
         onContextMenu={handleContextMenu}
         title={
           rootSession()
@@ -411,7 +440,7 @@ const RootAgentBanner: Component = () => {
         </div>
 
         <Show when={rootSession()}>
-          <Show when={isRecording()}>
+          <Show when={isRecording() && hasLivePty()}>
             <button
               class="session-item-mic-cancel"
               onClick={handleCancelRecording}
@@ -420,23 +449,25 @@ const RootAgentBanner: Component = () => {
               &#x2715;
             </button>
           </Show>
-          <button
-            class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
-            onClick={handleMicClick}
-            title={
-              !settingsStore.voiceEnabled
-                ? "Enable voice-to-text in Settings and set a Gemini API key to use this."
-                : isRecording()
-                  ? "Stop recording"
-                  : isProcessing()
-                    ? "Transcribing..."
-                    : voiceRecorder.micError()
-                      ? voiceRecorder.micError()!
-                      : "Voice to text"
-            }
-          >
-            &#x1F399;
-          </button>
+          <Show when={hasLivePty()}>
+            <button
+              class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
+              onClick={handleMicClick}
+              title={
+                !settingsStore.voiceEnabled
+                  ? "Enable voice-to-text in Settings and set a Gemini API key to use this."
+                  : isRecording()
+                    ? "Stop recording"
+                    : isProcessing()
+                      ? "Transcribing..."
+                      : voiceRecorder.micError()
+                        ? voiceRecorder.micError()!
+                        : "Voice to text"
+              }
+            >
+              &#x1F399;
+            </button>
+          </Show>
           <button
             class="session-item-explorer"
             onClick={handleOpenExplorer}
@@ -444,47 +475,49 @@ const RootAgentBanner: Component = () => {
           >
             &#x1F4C2;
           </button>
-          <button
-            class="session-item-detach"
-            classList={{ attached: isDetached() }}
-            onClick={handleDetachToggle}
-            title={isDetached() ? "Re-attach to main window" : "Open in new window"}
-            innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
-          />
-
-          <Show when={bridge()}>
-            <div
-              class="session-item-bridge-dot"
-              style={{ background: bridge()!.color }}
-              title={`Telegram: ${bridge()!.botLabel}`}
+          <Show when={hasLivePty()}>
+            <button
+              class="session-item-detach"
+              classList={{ attached: isDetached() }}
+              onClick={handleDetachToggle}
+              title={isDetached() ? "Re-attach to main window" : "Open in new window"}
+              innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
             />
+
+            <Show when={bridge()}>
+              <div
+                class="session-item-bridge-dot"
+                style={{ background: bridge()!.color }}
+                title={`Telegram: ${bridge()!.botLabel}`}
+              />
+            </Show>
+            <button
+              class={`session-item-telegram ${bridge() ? "active" : ""}`}
+              onClick={handleTelegramClick}
+              title={bridge() ? "Detach Telegram" : "Attach Telegram"}
+              style={bridge() ? { color: bridge()!.color } : {}}
+            >
+              T
+            </button>
+            <Show when={showBotMenu()}>
+              <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
+                <For each={availableBots()}>
+                  {(bot) => (
+                    <button
+                      class="session-item-bot-option"
+                      onClick={() => handleBotSelect(bot.id)}
+                    >
+                      <span class="settings-color-dot" style={{ background: bot.color }} />
+                      {bot.label}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+            <button class="session-item-close" onClick={handleClose} title="Close session">
+              &#x2715;
+            </button>
           </Show>
-          <button
-            class={`session-item-telegram ${bridge() ? "active" : ""}`}
-            onClick={handleTelegramClick}
-            title={bridge() ? "Detach Telegram" : "Attach Telegram"}
-            style={bridge() ? { color: bridge()!.color } : {}}
-          >
-            T
-          </button>
-          <Show when={showBotMenu()}>
-            <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
-              <For each={availableBots()}>
-                {(bot) => (
-                  <button
-                    class="session-item-bot-option"
-                    onClick={() => handleBotSelect(bot.id)}
-                  >
-                    <span class="settings-color-dot" style={{ background: bot.color }} />
-                    {bot.label}
-                  </button>
-                )}
-              </For>
-            </div>
-          </Show>
-          <button class="session-item-close" onClick={handleClose} title="Close session">
-            &#x2715;
-          </button>
         </Show>
       </div>
       <Show when={showAgentPicker()}>
@@ -518,13 +551,15 @@ const RootAgentBanner: Component = () => {
               Coding Agent
             </button>
             <Show when={rootSession()}>
-              <div class="context-separator" />
-              <button
-                class="session-context-option"
-                onClick={handleContextDetachToggle}
-              >
-                {isDetached() ? "Re-attach to main" : "Open in new window"}
-              </button>
+              <Show when={hasLivePty()}>
+                <div class="context-separator" />
+                <button
+                  class="session-context-option"
+                  onClick={handleContextDetachToggle}
+                >
+                  {isDetached() ? "Re-attach to main" : "Open in new window"}
+                </button>
+              </Show>
               <Show when={hasClaude()}>
                 <div class="context-separator" />
                 <button class="session-context-option" onClick={handleExcludeClaudeMd}>

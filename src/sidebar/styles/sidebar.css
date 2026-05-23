@@ -790,6 +790,9 @@ html, body, #root {
   text-align: left;
   font-family: var(--font-ui);
   transition: background var(--transition-fast);
+  /* Containing block for the absolutely-positioned bot picker
+     (.session-item-bot-menu uses right:0; top:100%). Mirrors .session-item. */
+  position: relative;
 }
 
 .root-agent-banner:hover {
