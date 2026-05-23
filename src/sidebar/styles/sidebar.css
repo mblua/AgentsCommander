@@ -796,9 +796,25 @@ html, body, #root {
   background: rgba(0, 212, 255, 0.08);
 }
 
-.root-agent-banner:disabled {
+.root-agent-banner:disabled,
+.root-agent-banner.disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* The text column flexes so action buttons sit on the right edge,
+   mirroring .session-item-info inside .session-item. */
+.root-agent-banner .root-agent-text {
+  flex: 1;
+}
+
+/* Mirror SessionItem's hover-reveal for action buttons. */
+.root-agent-banner:hover .session-item-mic,
+.root-agent-banner:hover .session-item-explorer,
+.root-agent-banner:hover .session-item-detach,
+.root-agent-banner:hover .session-item-telegram,
+.root-agent-banner:hover .session-item-close {
+  display: flex;
 }
 
 .root-agent-avatar {
