@@ -35,3 +35,14 @@ export function slugifyTemplateName(name: string): string {
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+
+/**
+ * Human-readable "SOURCE: …" label rendered in the picker's source badge.
+ * Agency templates point at the upstream repo so users can audit them; local
+ * templates state they come from the user's own templates folder.
+ */
+export function sourceLabel(template: Pick<RoleTemplateMeta, "source">): string {
+  return template.source === "agency"
+    ? "SOURCE: https://github.com/msitarzewski/agency-agents"
+    : "SOURCE: LOCAL AGENT-TEMPLATES";
+}

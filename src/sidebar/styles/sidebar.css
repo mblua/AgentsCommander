@@ -4654,6 +4654,8 @@ html.light-theme .onboarding-card.selected {
 .tpl-picker-item-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 4px;
   gap: var(--spacing-xs);
 }
 
@@ -4683,6 +4685,32 @@ html.light-theme .onboarding-card.selected {
   border-radius: 3px;
   padding: 0 4px;
   flex-shrink: 0;
+}
+
+/* Source badge — visually distinguished from the category badge so the
+   origin (upstream agency repo vs. user's local agent-templates folder) is
+   identifiable at a glance. Letter-case is preserved because the agency URL
+   is case-sensitive; the row's flex-wrap (above) lets the badge flow onto a
+   second line when the head can't fit it next to the category. */
+.tpl-picker-item-src {
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  color: var(--sidebar-fg-dim);
+  background: rgba(0, 212, 255, 0.06);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 3px;
+  padding: 0 4px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-basis: auto;
+  flex-shrink: 1;
+}
+
+.tpl-picker-item-src.src-local {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .tpl-picker-item-desc {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterRoleTemplates, slugifyTemplateName } from "./role-templates";
+import { filterRoleTemplates, slugifyTemplateName, sourceLabel } from "./role-templates";
 import type { RoleTemplateMeta } from "./types";
 
 const meta = (over: Partial<RoleTemplateMeta>): RoleTemplateMeta => ({
@@ -126,5 +126,26 @@ describe("slugifyTemplateName", () => {
 
   it("preserves_digits", () => {
     expect(slugifyTemplateName("Agent 007")).toBe("agent-007");
+  });
+});
+
+describe("sourceLabel", () => {
+  it("returns_agency_upstream_url_for_agency_templates", () => {
+    expect(sourceLabel({ source: "agency" })).toBe(
+      "SOURCE: https://github.com/msitarzewski/agency-agents",
+    );
+  });
+
+  it("returns_local_templates_label_for_local_templates", () => {
+    expect(sourceLabel({ source: "local" })).toBe("SOURCE: LOCAL AGENT-TEMPLATES");
+  });
+
+  it("accepts_full_template_meta", () => {
+    expect(sourceLabel(meta({ source: "local", id: "local:foo" }))).toBe(
+      "SOURCE: LOCAL AGENT-TEMPLATES",
+    );
+    expect(sourceLabel(meta({ source: "agency" }))).toBe(
+      "SOURCE: https://github.com/msitarzewski/agency-agents",
+    );
   });
 });

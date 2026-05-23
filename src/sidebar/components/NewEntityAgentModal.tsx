@@ -1,7 +1,11 @@
 import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
 import { EntityAPI, RoleTemplateAPI } from "../../shared/ipc";
 import type { RoleTemplateMeta } from "../../shared/types";
-import { filterRoleTemplates, slugifyTemplateName } from "../../shared/role-templates";
+import {
+  filterRoleTemplates,
+  slugifyTemplateName,
+  sourceLabel,
+} from "../../shared/role-templates";
 import { projectStore } from "../stores/project";
 
 const NewEntityAgentModal: Component<{
@@ -217,6 +221,16 @@ const NewEntityAgentModal: Component<{
                       <Show when={t.hasSkills}>
                         <span class="tpl-picker-item-cat">skills</span>
                       </Show>
+                      <span
+                        class="tpl-picker-item-src"
+                        classList={{
+                          "src-agency": t.source === "agency",
+                          "src-local": t.source === "local",
+                        }}
+                        title={sourceLabel(t)}
+                      >
+                        {sourceLabel(t)}
+                      </span>
                     </div>
                     <Show when={t.description}>
                       <div class="tpl-picker-item-desc">{t.description}</div>
