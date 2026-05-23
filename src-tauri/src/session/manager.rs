@@ -66,6 +66,7 @@ impl SessionManager {
             agent_label,
             git_repos,
             is_coordinator,
+            is_root_agent: false,
             git_repos_gen: 0,
             token: Uuid::new_v4(),
             agent_kind: None,
@@ -216,6 +217,13 @@ impl SessionManager {
             .iter()
             .filter_map(|id| sessions.get(id).map(SessionInfo::from))
             .collect()
+    }
+
+    pub async fn set_is_root_agent(&self, id: Uuid, value: bool) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(&id) {
+            session.is_root_agent = value;
+        }
     }
 
     pub async fn get_active(&self) -> Option<Uuid> {

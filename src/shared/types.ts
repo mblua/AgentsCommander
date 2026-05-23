@@ -21,6 +21,7 @@ export interface Session {
   gitRepos: SessionRepo[];
   workgroupBrief: string | null;
   isCoordinator: boolean;
+  isRootAgent: boolean;
   token: string;
   agentKind: CodingAgentKind | null;
 }

@@ -2402,6 +2402,7 @@ mod tests {
             git_repos: vec![],
             workgroup_brief: None,
             is_coordinator: false,
+            is_root_agent: false,
             token: "t".into(),
             agent_kind: Some(crate::session::profile::CodingAgentKind::Claude),
             was_detached: false,

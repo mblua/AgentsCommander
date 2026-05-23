@@ -5,6 +5,7 @@ import type { RepoMatch, Session, SessionRepo, SessionsState, Team, TeamSessionG
 import { projectStore } from "./project";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
+import { isRuntimeStringStatus, upsertSessionList } from "./sessions-helpers";
 
 const [toggleInFlight, setToggleInFlight] = createSignal(false);
 
@@ -53,6 +54,7 @@ function makeInactiveEntry(name: string, path: string): Session {
     gitRepos: [],
     workgroupBrief: null,
     isCoordinator: false,
+    isRootAgent: false,
     token: "",
     agentKind: null,
   };
@@ -78,8 +80,11 @@ const wgReplicaMemo = createMemo(() => {
 });
 
 const filteredSessionsMemo = createMemo(() => {
+  // Root agent renders exclusively in RootAgentBanner; never list it as a generic session.
+  const nonRootSessions = state.sessions.filter((s) => !s.isRootAgent);
+
   const activeSessions = (() => {
-    if (!state.teamFilter) return state.sessions;
+    if (!state.teamFilter) return nonRootSessions;
 
     let matches: (normalizedPath: string) => boolean;
 
@@ -88,12 +93,12 @@ const filteredSessionsMemo = createMemo(() => {
       matches = (p) => !allPaths.has(p);
     } else {
       const team = state.teams.find((t) => t.id === state.teamFilter);
-      if (!team) return state.sessions;
+      if (!team) return nonRootSessions;
       const paths = new Set(team.members.map((m) => normalizePath(m.path)));
       matches = (p) => paths.has(p);
     }
 
-    return state.sessions.filter((s) => {
+    return nonRootSessions.filter((s) => {
       if (!s.workingDirectory) return state.teamFilter === NO_TEAM;
       return matches(normalizePath(s.workingDirectory));
     });
@@ -279,9 +284,7 @@ export const sessionsStore = {
   },
 
   addSession(session: Session) {
-    setState("sessions", (prev) =>
-      prev.some((s) => s.id === session.id) ? prev : [...prev, session]
-    );
+    setState("sessions", (prev) => upsertSessionList(prev, session));
   },
 
   removeSession(id: string) {
@@ -292,7 +295,16 @@ export const sessionsStore = {
     const prev = state.activeId;
     console.log(`[idle-fe] setActiveId: ${id?.slice(0,8)} (prev: ${prev?.slice(0,8)})`);
     setState("activeId", id);
-    setState("sessions", (s) => s.id === id, "status", "active");
+    // Promote selected session to "active" only when its status is a runtime
+    // string. Exited({ exited: N }) is preserved so dormant roots keep the
+    // status the banner reads (typeof status !== "string") to choose
+    // restart(..., { skipAutoResume: false }).
+    setState(
+      "sessions",
+      (s) => s.id === id && isRuntimeStringStatus(s.status),
+      "status",
+      "active"
+    );
     setState("sessions", (s) => s.id === id, "pendingReview", false);
     setState(
       "sessions",
