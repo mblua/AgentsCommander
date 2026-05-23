@@ -510,10 +510,12 @@ html, body, #root {
 .session-item-status.offline { background: var(--status-offline); }
 /* .pending = agent finished but user hasn't focused yet (yellow) */
 .session-item .session-item-status.pending,
-.replica-item .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
+.replica-item .session-item-status.pending,
+.root-agent-banner .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
 /* .waiting must override all other status colors (active, running, idle, exited) */
 .session-item .session-item-status.waiting,
-.replica-item .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
+.replica-item .session-item-status.waiting,
+.root-agent-banner .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
 
 /* Inactive team member (no active session) */
 .session-item.inactive-member {
@@ -4526,3 +4528,14 @@ html.light-theme .onboarding-card.selected {
   color: var(--sidebar-fg-dim);
   text-align: center;
 }
+
+/* =============================================================================
+   Root Agent Banner — active state
+   Placed at end-of-file so source order beats per-sidebar-style background
+   overrides (which match equal specificity 0,2,0). var(--sidebar-active) is
+   defined per style, so this one rule works across all 7 sidebar styles.
+   ============================================================================= */
+.root-agent-banner.active {
+  background: var(--sidebar-active);
+}
+
