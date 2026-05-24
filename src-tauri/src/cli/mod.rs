@@ -8,6 +8,7 @@ pub mod list_sessions;
 pub mod new_project;
 pub mod open_project;
 pub mod send;
+pub mod telegram_send_image;
 
 use clap::{Parser, Subcommand};
 
@@ -103,6 +104,8 @@ pub enum Commands {
     OpenProject(open_project::OpenProjectArgs),
     /// Create an AC project (mkdir .ac-new if missing) and register it in settings
     NewProject(new_project::NewProjectArgs),
+    /// Send a local image/file to a configured Telegram bot (no GUI required)
+    TelegramSendImage(telegram_send_image::TelegramSendImageArgs),
 }
 
 /// Attach to parent console (or allocate a new one) ONLY if both stdout and stderr
@@ -218,6 +221,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::BriefAppendBody(args) => brief_append_body::execute(args),
         Commands::OpenProject(args) => open_project::execute(args),
         Commands::NewProject(args) => new_project::execute(args),
+        Commands::TelegramSendImage(args) => telegram_send_image::execute(args),
     };
 
     flush_outputs();

@@ -37,6 +37,8 @@ PEER FILTER (--peer):\n  \
   (reachable=false) are still returned when their name matches —\n  \
   filtering is by name only.\n\n\
 NOTES:\n  \
+  - Canonical Root Agent roots return verified WG coordinator replicas only.\n    \
+    Origin coordinators and non-coordinator WG replicas are omitted for Root Agent discovery in #277.\n  \
   - Working-state visibility is bound to the binary instance writing\n    \
     sessions.json. Peers running under a different AgentsCommander binary\n    \
     (e.g. agentscommander_mb_wg-20.exe vs agentscommander_mb.exe) will\n    \
@@ -92,7 +94,9 @@ EXCLUDED VS list-peers: path, role (full), codingAgents, lastCodingAgent,\n\
 sessionId, exitCode, legacy status. Use `list-peers` if any of those are\n\
 needed.\n\n\
 PEER SET: identical to `list-peers` for the same --root. The two verbs\n\
-share a single discovery function (see issue #252).\n\n\
+share a single discovery function (see issue #252). For canonical Root Agent\n\
+roots this set contains verified WG coordinator replicas only; origin\n\
+coordinators and non-coordinator WG replicas are omitted in #277.\n\n\
 PEER FILTER (--peer):\n  \
   Repeat `--peer <FQN>` to return only the named peers. Matching is by\n  \
   exact canonical FQN (no substring, no case-folding). Duplicate values\n  \
@@ -184,10 +188,7 @@ const ROLE_SUMMARY_MAX: usize = 80;
 /// back to — which may not be a true role description. Treat the field as
 /// a hint, not authoritative.
 fn lean_role_summary(role: &str) -> String {
-    const NO_ROLE_SENTINELS: &[&str] = &[
-        "No role description available.",
-        "WG replica agent.",
-    ];
+    const NO_ROLE_SENTINELS: &[&str] = &["No role description available.", "WG replica agent."];
     // Standard AgentsCommander preamble openings. These appear verbatim in
     // every replica's CLAUDE.md by design, so when they surface through the
     // `extract_role_section` fallback they carry no discriminating signal —
@@ -272,7 +273,6 @@ struct PeerInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
     // ────────────────────────────────────────────────────────────────
-
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     coding_agents: HashMap<String, CodingAgentEntry>,
 }
@@ -330,13 +330,6 @@ fn read_role(repo_path: &str) -> String {
         Ok(content) => extract_role_section(&content, 5, "No role description available."),
         Err(_) => "No role description available.".to_string(),
     }
-}
-
-/// Canonicalize a path, stripping `\\?\` UNC prefix on Windows.
-fn canon_str(path: &Path) -> Option<String> {
-    let canon = std::fs::canonicalize(path).ok()?;
-    let s = canon.to_string_lossy().to_string();
-    Some(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string())
 }
 
 // ── Issue #206: working-state derivation from sessions.json ──────────
@@ -527,94 +520,8 @@ fn detect_wg_replica(root: &str) -> Option<WgReplicaInfo> {
 /// paths against the team coordinator path in `.ac-new/_team_*/config.json`.
 /// Only checks the team whose name matches the WG suffix (e.g. `wg-1-ac-devs` → `_team_ac-devs`).
 fn resolve_wg_coordinator(ac_new_dir: &Path, wg_dir: &Path) -> Option<String> {
-    // Derive expected team dir from WG name: "wg-1-ac-devs" → "_team_ac-devs"
-    let wg_name = wg_dir.file_name()?.to_str()?;
-    let team_suffix = wg_name
-        .strip_prefix("wg-")
-        .and_then(|s| s.split_once('-').map(|(_, rest)| rest))?;
-    let expected_team_dir = format!("_team_{}", team_suffix);
-
-    let entries = match std::fs::read_dir(ac_new_dir) {
-        Ok(e) => e,
-        Err(_) => return None,
-    };
-
-    for entry in entries.flatten() {
-        let team_dir = entry.path();
-        if !team_dir.is_dir() {
-            continue;
-        }
-        match team_dir.file_name().and_then(|n| n.to_str()) {
-            Some(n) if n == expected_team_dir => {}
-            _ => continue,
-        }
-
-        let team_config: serde_json::Value =
-            match std::fs::read_to_string(team_dir.join("config.json"))
-                .ok()
-                .and_then(|c| serde_json::from_str(&c).ok())
-            {
-                Some(v) => v,
-                None => continue,
-            };
-
-        let coordinator_ref = match team_config.get("coordinator").and_then(|c| c.as_str()) {
-            Some(c) => c.to_string(),
-            None => continue,
-        };
-
-        let coordinator_abs = match canon_str(&team_dir.join(&coordinator_ref)) {
-            Some(s) => s,
-            None => continue,
-        };
-
-        // Check each replica in the WG for identity match
-        let replica_entries = match std::fs::read_dir(wg_dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for replica_entry in replica_entries.flatten() {
-            let replica_dir = replica_entry.path();
-            if !replica_dir.is_dir() {
-                continue;
-            }
-            let dir_name = match replica_dir.file_name().and_then(|n| n.to_str()) {
-                Some(n) if n.starts_with("__agent_") => n,
-                _ => continue,
-            };
-
-            let config: serde_json::Value =
-                match std::fs::read_to_string(replica_dir.join("config.json"))
-                    .ok()
-                    .and_then(|c| serde_json::from_str(&c).ok())
-                {
-                    Some(v) => v,
-                    None => continue,
-                };
-
-            let identity_ref = match config.get("identity").and_then(|i| i.as_str()) {
-                Some(i) => i.to_string(),
-                None => continue,
-            };
-
-            let identity_abs = match canon_str(&replica_dir.join(&identity_ref)) {
-                Some(s) => s,
-                None => continue,
-            };
-
-            if identity_abs == coordinator_abs {
-                return Some(
-                    dir_name
-                        .strip_prefix("__agent_")
-                        .unwrap_or(dir_name)
-                        .to_string(),
-                );
-            }
-        }
-    }
-
-    None
+    crate::config::teams::resolve_wg_coordinator_replica(ac_new_dir, wg_dir)
+        .map(|replica| replica.agent_name)
 }
 
 /// Read role from a WG replica's identity matrix Role.md, falling back to CLAUDE.md.
@@ -982,6 +889,81 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
     peers
 }
 
+fn discover_root_coordinator_peers() -> Vec<PeerInfo> {
+    let settings = crate::config::settings::load_settings();
+    discover_root_coordinator_peers_from_project_paths(&settings.project_paths)
+}
+
+fn discover_root_coordinator_peers_from_project_paths(project_paths: &[String]) -> Vec<PeerInfo> {
+    let session_index = build_session_index();
+    let mut peers: Vec<PeerInfo> = Vec::new();
+
+    for base_path in project_paths {
+        let base = Path::new(base_path);
+        if !base.is_dir() {
+            continue;
+        }
+
+        let mut dirs_to_check = vec![base.to_path_buf()];
+        if let Ok(entries) = std::fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_dir() {
+                    continue;
+                }
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.starts_with('.') {
+                    dirs_to_check.push(p);
+                }
+            }
+        }
+
+        for repo_dir in dirs_to_check {
+            let ac_new_dir = repo_dir.join(".ac-new");
+            if !ac_new_dir.is_dir() {
+                continue;
+            }
+
+            let wg_entries = match std::fs::read_dir(&ac_new_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for wg_entry in wg_entries.flatten() {
+                let wg_path = wg_entry.path();
+                if !wg_path.is_dir() {
+                    continue;
+                }
+                match wg_path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) if n.starts_with("wg-") => {}
+                    _ => continue,
+                }
+
+                let Some(coord) =
+                    crate::config::teams::resolve_wg_coordinator_replica(&ac_new_dir, &wg_path)
+                else {
+                    continue;
+                };
+                let peer_name = format!("{}:{}/{}", coord.project, coord.wg_name, coord.agent_name);
+                if peers.iter().any(|p| p.name == peer_name) {
+                    continue;
+                }
+                let mut peer = build_wg_peer(
+                    &coord.project,
+                    &coord.agent_name,
+                    &coord.wg_name,
+                    &coord.replica_dir,
+                    true,
+                    &session_index,
+                );
+                peer.teams = vec![coord.team];
+                peers.push(peer);
+            }
+        }
+    }
+
+    peers
+}
+
 /// Apply the `--peer` filter to a discovered peer list.
 ///
 /// Consumes `peers` by value so filtering does not require `PeerInfo: Clone`.
@@ -1005,10 +987,8 @@ fn apply_peer_filter(
     // name and we don't need PeerInfo: Clone. Discovery never produces
     // duplicate names (see `discover_origin_peers` / `discover_wg_peers`),
     // so this collapse is lossless.
-    let mut by_name: HashMap<String, PeerInfo> = peers
-        .into_iter()
-        .map(|p| (p.name.clone(), p))
-        .collect();
+    let mut by_name: HashMap<String, PeerInfo> =
+        peers.into_iter().map(|p| (p.name.clone(), p)).collect();
 
     let unknown: Vec<String> = unique
         .iter()
@@ -1045,7 +1025,9 @@ fn report_unknown_peers(unknown: &[String], available: &[String]) -> i32 {
 /// origin-agent path otherwise. Factored so `execute` and `execute_lean`
 /// share the dispatch.
 fn discover_peers(root: &str) -> Vec<PeerInfo> {
-    if let Some(wg) = detect_wg_replica(root) {
+    if crate::config::root_agent::is_root_agent_path(root) {
+        discover_root_coordinator_peers()
+    } else if let Some(wg) = detect_wg_replica(root) {
         discover_wg_peers(wg)
     } else {
         discover_origin_peers(root)
@@ -1171,6 +1153,87 @@ mod tests {
             waiting_for_input: Some(false),
             ..Default::default()
         }
+    }
+
+    fn make_root_discovery_fixture(
+        spoofed_coordinator_identity: bool,
+    ) -> (tempfile::TempDir, Vec<String>) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let ac_new = project.join(".ac-new");
+        let team_dir = ac_new.join("_team_dev-team");
+        let origin_tech_lead = ac_new.join("_agent_tech-lead");
+        let origin_dev_rust = ac_new.join("_agent_dev-rust");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+        let tech_lead_replica = wg_dir.join("__agent_tech-lead");
+        let dev_rust_replica = wg_dir.join("__agent_dev-rust");
+
+        for dir in [
+            &team_dir,
+            &origin_tech_lead,
+            &origin_dev_rust,
+            &tech_lead_replica,
+            &dev_rust_replica,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        let tech_lead_identity = if spoofed_coordinator_identity {
+            "../../_agent_dev-rust"
+        } else {
+            "../../_agent_tech-lead"
+        };
+        std::fs::write(
+            tech_lead_replica.join("config.json"),
+            format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+        )
+        .unwrap();
+        std::fs::write(
+            dev_rust_replica.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust"}"#,
+        )
+        .unwrap();
+
+        let paths = vec![temp.path().to_string_lossy().to_string()];
+        (temp, paths)
+    }
+
+    #[test]
+    fn discover_root_coordinator_peers_from_lists_identity_verified_coordinator_only() {
+        let (_temp, paths) = make_root_discovery_fixture(false);
+
+        let peers = discover_root_coordinator_peers_from_project_paths(&paths);
+        let names: Vec<&str> = peers.iter().map(|p| p.name.as_str()).collect();
+
+        assert_eq!(names, vec!["proj-a:wg-1-dev-team/tech-lead"]);
+        assert!(peers[0].reachable);
+        assert_eq!(peers[0].teams, vec!["dev-team"]);
+    }
+
+    #[test]
+    fn discover_root_coordinator_peers_from_omits_spoofed_coordinator_dir_name() {
+        let (_temp, paths) = make_root_discovery_fixture(true);
+
+        let peers = discover_root_coordinator_peers_from_project_paths(&paths);
+
+        assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn discover_root_coordinator_peers_from_omits_origin_coordinator() {
+        let (_temp, paths) = make_root_discovery_fixture(false);
+
+        let peers = discover_root_coordinator_peers_from_project_paths(&paths);
+
+        assert!(!peers.iter().any(|p| p.name == "proj-a/tech-lead"));
+        assert!(!peers
+            .iter()
+            .any(|p| p.name == "proj-a:wg-1-dev-team/dev-rust"));
     }
 
     // ── norm_path / canon_or_norm ────────────────────────────────────
@@ -1404,7 +1467,7 @@ mod tests {
         let cmd = crate::cli::Cli::command();
         let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
         assert!(
-            names.iter().any(|n| *n == "list-peers-lean"),
+            names.contains(&"list-peers-lean"),
             "list-peers-lean should be a registered subcommand; got: {:?}",
             names
         );
@@ -1443,7 +1506,12 @@ mod tests {
             "\"teams\":",
             "\"roleSummary\":",
         ] {
-            assert!(json.contains(kept), "lean JSON missing {} — got {}", kept, json);
+            assert!(
+                json.contains(kept),
+                "lean JSON missing {} — got {}",
+                kept,
+                json
+            );
         }
     }
 
@@ -1527,8 +1595,11 @@ mod tests {
             sample_peer_info("project:wg-1-team/architect"),
         ];
 
-        let lean_names: Vec<String> =
-            peers.iter().map(LeanPeerInfo::from).map(|l| l.name).collect();
+        let lean_names: Vec<String> = peers
+            .iter()
+            .map(LeanPeerInfo::from)
+            .map(|l| l.name)
+            .collect();
         let full_names: Vec<String> = peers.iter().map(|p| p.name.clone()).collect();
 
         assert_eq!(lean_names, full_names);
@@ -1686,8 +1757,7 @@ mod tests {
             sample_peer_info("project:wg-1-team/arch"),
             sample_peer_info("project/origin-a"),
         ];
-        let result =
-            apply_peer_filter(peers, &["project:wg-1-team/arch".to_string()]).expect("Ok");
+        let result = apply_peer_filter(peers, &["project:wg-1-team/arch".to_string()]).expect("Ok");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "project:wg-1-team/arch");
     }
@@ -1727,7 +1797,7 @@ mod tests {
         let requested = vec![
             "project:wg-1-team/dev".to_string(),
             "project:wg-1-team/arch".to_string(),
-            "project:wg-1-team/dev".to_string(), // duplicate
+            "project:wg-1-team/dev".to_string(),  // duplicate
             "project:wg-1-team/arch".to_string(), // duplicate
         ];
         let result = apply_peer_filter(peers, &requested).expect("Ok");
@@ -1801,14 +1871,17 @@ mod tests {
         let result =
             apply_peer_filter(peers, &["project:wg-1-team/unreachable".to_string()]).expect("Ok");
         assert_eq!(result.len(), 1);
-        assert!(!result[0].reachable, "unreachable peer must survive the filter");
+        assert!(
+            !result[0].reachable,
+            "unreachable peer must survive the filter"
+        );
     }
 
     #[test]
     fn peer_filter_against_empty_discovery_errors_with_all_unknowns() {
         // No peers discovered, any --peer is unknown → fail fast.
-        let err = apply_peer_filter(Vec::new(), &["project/anything".to_string()])
-            .expect_err("must Err");
+        let err =
+            apply_peer_filter(Vec::new(), &["project/anything".to_string()]).expect_err("must Err");
         assert_eq!(err, vec!["project/anything".to_string()]);
     }
 
@@ -1838,7 +1911,10 @@ mod tests {
         let filtered = apply_peer_filter(peers, &requested).expect("Ok");
         let lean: Vec<LeanPeerInfo> = filtered.iter().map(LeanPeerInfo::from).collect();
         let lean_names: Vec<&str> = lean.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(lean_names, vec!["project/origin-a", "project:wg-1-team/dev"]);
+        assert_eq!(
+            lean_names,
+            vec!["project/origin-a", "project:wg-1-team/dev"]
+        );
 
         // Verify the lean schema is still applied to filtered entries
         // (verbose fields absent, essential fields present).
@@ -1940,10 +2016,7 @@ mod tests {
             .get_subcommands()
             .find(|c| c.get_name() == "list-peers")
             .expect("list-peers subcommand");
-        let after = lp
-            .get_after_help()
-            .expect("after_help present")
-            .to_string();
+        let after = lp.get_after_help().expect("after_help present").to_string();
         assert!(
             after.contains("PEER FILTER"),
             "list-peers after_help must document --peer"
@@ -1960,10 +2033,7 @@ mod tests {
             .get_subcommands()
             .find(|c| c.get_name() == "list-peers-lean")
             .expect("list-peers-lean subcommand");
-        let after = lp
-            .get_after_help()
-            .expect("after_help present")
-            .to_string();
+        let after = lp.get_after_help().expect("after_help present").to_string();
         assert!(after.contains("PEER FILTER"));
         assert!(after.contains("--peer"));
     }

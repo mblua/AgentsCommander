@@ -134,6 +134,18 @@ pub(crate) fn should_wake_on_restore(
     }
 }
 
+pub(crate) fn should_wake_root_agent_on_restore(
+    persisted_status: Option<&crate::session::session::SessionStatus>,
+) -> bool {
+    match persisted_status {
+        Some(crate::session::session::SessionStatus::Exited(_)) => false,
+        Some(crate::session::session::SessionStatus::Active)
+        | Some(crate::session::session::SessionStatus::Running)
+        | Some(crate::session::session::SessionStatus::Idle)
+        | None => true,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
@@ -304,6 +316,9 @@ pub fn run() {
             // `drain_error_logs` call collects them.
             crate::logging::spawn_error_emit_task(app.handle().clone());
 
+            // #271 — seed `<config_dir>/agent-templates/` + README on startup.
+            crate::commands::role_templates::ensure_default_templates_dir_at_config();
+
             // Git branch watcher: polls git branch for each session every 5s
             let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
             git_watcher.start(shutdown_for_setup.clone());
@@ -458,8 +473,13 @@ pub fn run() {
                 });
             }
 
+            if let Err(e) = crate::config::root_agent::ensure_root_agent_dir() {
+                log::error!("[root-agent] Failed to provision root agent directory: {}", e);
+            }
+
             // §224 A.2.5 / G-IMPL-1 — Set restore_in_progress=TRUE BEFORE the
-            // mailbox poller starts, when persisted sessions will be restored.
+            // mailbox poller starts. The restore task now also owns the root-agent
+            // first-start path, so it must run even with no persisted sessions.
             //
             // SEQUENCE-CRITICAL: `MailboxPoller::start()` spawns a tokio worker
             // task that runs its first poll WITHOUT delay (mailbox.rs:200-204)
@@ -479,20 +499,15 @@ pub fn run() {
             // completes (or panics).
             //
             // The matching `load_sessions()` call at the original site is
-            // removed; `persisted` is reused below by `if !persisted.is_empty()`.
+            // removed; `persisted` is reused by the restore task below.
             let persisted = sessions_persistence::load_sessions();
-            if !persisted.is_empty() {
-                let restore_flag = app
-                    .state::<Arc<RestoreInProgress>>()
-                    .inner()
-                    .clone();
-                restore_flag
-                    .0
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-            // If persisted.is_empty(), the flag stays at its init value of
-            // false (lib.rs:258) — no restore task will spawn, so the race-
-            // guard wait would be pointless.
+            let restore_flag = app
+                .state::<Arc<RestoreInProgress>>()
+                .inner()
+                .clone();
+            restore_flag
+                .0
+                .store(true, std::sync::atomic::Ordering::SeqCst);
 
             // Start the mailbox poller for inter-agent message delivery
             let mailbox_poller = phone::mailbox::MailboxPoller::new();
@@ -652,10 +667,12 @@ pub fn run() {
             // §224 G-IMPL-1 — `persisted` and `restore_flag` are hoisted above
             // mailbox_poller.start() (see comment block there). `persisted` is
             // reused here; the flag is already TRUE when we enter this block.
-            if !persisted.is_empty() {
+            {
                 use tauri::Manager;
                 let session_mgr_clone = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>().inner().clone();
                 let pty_mgr_clone = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+                let tg_mgr_clone = app.state::<TelegramBridgeState>().inner().clone();
+                let settings_state_clone = app.state::<SettingsState>().inner().clone();
                 let app_handle = app.handle().clone();
 
                 // #248 — read the new setting and always discover teams (the coord check
@@ -705,7 +722,248 @@ pub fn run() {
                     let mut n_woken: usize = 0;
                     let mut n_deferred: usize = 0;
 
+                    let root_agent_path = match crate::config::root_agent::ensure_root_agent_dir() {
+                        Ok(path) => Some(path),
+                        Err(e) => {
+                            log::error!("[root-agent] Failed to provision root agent during restore: {}", e);
+                            None
+                        }
+                    };
+                    let root_ps = persisted
+                        .iter()
+                        .find(|ps| {
+                            ps.is_root_agent
+                                || crate::config::root_agent::is_root_agent_path(
+                                    &ps.working_directory,
+                                )
+                        })
+                        .cloned();
+
+                    if let Some(root_path) = root_agent_path.clone() {
+                        match root_ps.as_ref() {
+                            None => {
+                                match commands::session::create_root_agent_inner(
+                                    &app_handle,
+                                    &session_mgr_clone,
+                                    &pty_mgr_clone,
+                                    &tg_mgr_clone,
+                                    &settings_state_clone,
+                                    None,
+                                    true,
+                                )
+                                .await
+                                {
+                                    Ok(_) => n_woken += 1,
+                                    Err(e) => log::error!(
+                                        "[root-agent] Failed to auto-create root session: {}",
+                                        e
+                                    ),
+                                }
+                            }
+                            Some(ps)
+                                if should_wake_root_agent_on_restore(ps.status.as_ref()) =>
+                            {
+                                let _root_guard =
+                                    commands::session::root_agent_session_lock().lock().await;
+                                let existing_root = {
+                                    let mgr = session_mgr_clone.read().await;
+                                    mgr.list_sessions().await.into_iter().find(|s| {
+                                        s.is_root_agent
+                                            || crate::config::root_agent::is_root_agent_path(
+                                                &s.working_directory,
+                                            )
+                                    })
+                                };
+                                let mut should_create = true;
+                                if let Some(existing) = existing_root {
+                                    if matches!(
+                                        existing.status,
+                                        crate::session::session::SessionStatus::Exited(_)
+                                    ) {
+                                        if let Ok(uuid) = uuid::Uuid::parse_str(&existing.id) {
+                                            if let Err(e) =
+                                                commands::session::force_destroy_session_inner(
+                                                    &app_handle,
+                                                    uuid,
+                                                )
+                                                .await
+                                            {
+                                                log::warn!(
+                                                    "[root-agent] Failed to force-destroy stale dormant root during restore: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        if ps.was_active {
+                                            active_id = Some(existing.id.clone());
+                                        }
+                                        n_woken += 1;
+                                        should_create = false;
+                                    }
+                                }
+                                if should_create {
+                                    match commands::session::create_session_inner(
+                                        &app_handle,
+                                        &session_mgr_clone,
+                                        &pty_mgr_clone,
+                                        ps.shell.clone(),
+                                        ps.shell_args.clone(),
+                                        root_path.clone(),
+                                        Some(ps.name.clone()),
+                                        ps.agent_id.clone(),
+                                        ps.agent_label.clone(),
+                                        false,
+                                        ps.git_repos.clone(),
+                                        false,
+                                    )
+                                    .await
+                                    {
+                                        Ok(info) => {
+                                            if ps.was_active {
+                                                active_id = Some(info.id.clone());
+                                            }
+                                            n_woken += 1;
+
+                                            if ps.was_detached {
+                                                if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                                    {
+                                                        let mgr = session_mgr_clone.read().await;
+                                                        mgr.set_was_detached(uuid, true).await;
+                                                        if let Some(ref geo) = ps.detached_geometry
+                                                        {
+                                                            mgr.set_detached_geometry(
+                                                                uuid,
+                                                                geo.clone(),
+                                                            )
+                                                            .await;
+                                                        }
+                                                    }
+
+                                                    let detached_state =
+                                                        app_handle.state::<DetachedSessionsState>();
+                                                    let detached_result =
+                                                        commands::window::detach_terminal_inner(
+                                                            &app_handle,
+                                                            &session_mgr_clone,
+                                                            detached_state.inner(),
+                                                            &info.id,
+                                                            ps.detached_geometry.clone(),
+                                                            true,
+                                                        )
+                                                        .await;
+                                                    if let Err(e) = detached_result {
+                                                        log::warn!(
+                                                            "[restore] detach_terminal_inner failed for root agent '{}': {} — session stays live (attached)",
+                                                            ps.name,
+                                                            e
+                                                        );
+                                                    } else {
+                                                        let mgr = session_mgr_clone.read().await;
+                                                        mgr.clear_active_if(uuid).await;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!(
+                                                "[root-agent] Failed to restore root session '{}': {}",
+                                                ps.name,
+                                                e
+                                            );
+                                            failed_recoverable.push(ps.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            Some(ps) => {
+                                let _root_guard =
+                                    commands::session::root_agent_session_lock().lock().await;
+                                let existing_root = {
+                                    let mgr = session_mgr_clone.read().await;
+                                    mgr.list_sessions().await.into_iter().find(|s| {
+                                        s.is_root_agent
+                                            || crate::config::root_agent::is_root_agent_path(
+                                                &s.working_directory,
+                                            )
+                                    })
+                                };
+                                if let Some(existing) = existing_root {
+                                    if ps.was_active {
+                                        active_id = Some(existing.id.clone());
+                                    }
+                                    n_deferred += 1;
+                                } else {
+                                    let mgr = session_mgr_clone.read().await;
+                                    match mgr
+                                        .create_session(
+                                            ps.shell.clone(),
+                                            ps.shell_args.clone(),
+                                            root_path,
+                                            ps.agent_id.clone(),
+                                            ps.agent_label.clone(),
+                                            ps.git_repos.clone(),
+                                            false,
+                                        )
+                                        .await
+                                    {
+                                        Ok(session) => {
+                                            mgr.rename_session(session.id, ps.name.clone())
+                                                .await
+                                                .ok();
+                                            mgr.set_is_root_agent(session.id, true).await;
+                                            if ps.was_detached {
+                                                mgr.set_was_detached(session.id, true).await;
+                                            }
+                                            if let Some(ref geo) = ps.detached_geometry {
+                                                mgr.set_detached_geometry(session.id, geo.clone())
+                                                    .await;
+                                            }
+                                            mgr.mark_exited(session.id, 0).await;
+                                            mgr.clear_active_if(session.id).await;
+                                            if let Some(updated) =
+                                                mgr.get_session(session.id).await
+                                            {
+                                                let info =
+                                                    crate::session::session::SessionInfo::from(
+                                                        &updated,
+                                                    );
+                                                let _ = tauri::Emitter::emit(
+                                                    &app_handle,
+                                                    "session_created",
+                                                    info,
+                                                );
+                                            }
+                                            if ps.was_active {
+                                                active_id = Some(session.id.to_string());
+                                            }
+                                            n_deferred += 1;
+                                        }
+                                        Err(e) => {
+                                            log::error!(
+                                                "[root-agent] Failed to create dormant root session '{}': {}",
+                                                ps.name,
+                                                e
+                                            );
+                                            failed_recoverable.push(ps.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some(ps) = root_ps.as_ref() {
+                        failed_recoverable.push(ps.clone());
+                    }
+
                     for ps in &persisted {
+                        if ps.is_root_agent
+                            || crate::config::root_agent::is_root_agent_path(
+                                &ps.working_directory,
+                            )
+                        {
+                            continue;
+                        }
+
                         // Skip sessions whose CWD no longer exists (permanent failure)
                         if !std::path::Path::new(&ps.working_directory).exists() {
                             log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
@@ -990,6 +1248,7 @@ pub fn run() {
             commands::telegram::telegram_list_bridges,
             commands::telegram::telegram_get_bridge,
             commands::telegram::telegram_send_test,
+            commands::telegram::telegram_send_image,
             commands::window::detach_terminal,
             commands::window::attach_terminal,
             commands::window::list_detached_sessions,
@@ -1034,6 +1293,7 @@ pub fn run() {
             commands::entity_creation::create_workgroup,
             commands::entity_creation::delete_workgroup,
             commands::entity_creation::sync_workgroup_repos,
+            commands::role_templates::list_role_templates,
         ])
         .build(tauri::generate_context!())
         .expect("error while building application")
@@ -1117,35 +1377,87 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::should_wake_on_restore;
+    use super::{should_wake_on_restore, should_wake_root_agent_on_restore};
     use crate::session::session::SessionStatus;
 
     #[test]
     fn setting_off_always_defers() {
-        assert!(!should_wake_on_restore(false, true, Some(&SessionStatus::Running)));
+        assert!(!should_wake_on_restore(
+            false,
+            true,
+            Some(&SessionStatus::Running)
+        ));
         assert!(!should_wake_on_restore(false, false, None));
     }
 
     #[test]
     fn non_coord_always_defers_when_on() {
-        assert!(!should_wake_on_restore(true, false, Some(&SessionStatus::Running)));
+        assert!(!should_wake_on_restore(
+            true,
+            false,
+            Some(&SessionStatus::Running)
+        ));
     }
 
     #[test]
     fn coord_awake_at_shutdown_wakes_when_on() {
-        assert!(should_wake_on_restore(true, true, Some(&SessionStatus::Running)));
-        assert!(should_wake_on_restore(true, true, Some(&SessionStatus::Idle)));
-        assert!(should_wake_on_restore(true, true, Some(&SessionStatus::Active)));
+        assert!(should_wake_on_restore(
+            true,
+            true,
+            Some(&SessionStatus::Running)
+        ));
+        assert!(should_wake_on_restore(
+            true,
+            true,
+            Some(&SessionStatus::Idle)
+        ));
+        assert!(should_wake_on_restore(
+            true,
+            true,
+            Some(&SessionStatus::Active)
+        ));
     }
 
     #[test]
     fn coord_asleep_at_shutdown_defers_when_on() {
-        assert!(!should_wake_on_restore(true, true, Some(&SessionStatus::Exited(0))));
-        assert!(!should_wake_on_restore(true, true, Some(&SessionStatus::Exited(137))));
+        assert!(!should_wake_on_restore(
+            true,
+            true,
+            Some(&SessionStatus::Exited(0))
+        ));
+        assert!(!should_wake_on_restore(
+            true,
+            true,
+            Some(&SessionStatus::Exited(137))
+        ));
     }
 
     #[test]
     fn coord_unknown_status_fails_open_when_on() {
         assert!(should_wake_on_restore(true, true, None));
+    }
+
+    #[test]
+    fn root_agent_live_or_legacy_status_wakes() {
+        assert!(should_wake_root_agent_on_restore(Some(
+            &SessionStatus::Running
+        )));
+        assert!(should_wake_root_agent_on_restore(Some(
+            &SessionStatus::Idle
+        )));
+        assert!(should_wake_root_agent_on_restore(Some(
+            &SessionStatus::Active
+        )));
+        assert!(should_wake_root_agent_on_restore(None));
+    }
+
+    #[test]
+    fn root_agent_exited_status_stays_dormant() {
+        assert!(!should_wake_root_agent_on_restore(Some(
+            &SessionStatus::Exited(0)
+        )));
+        assert!(!should_wake_root_agent_on_restore(Some(
+            &SessionStatus::Exited(137)
+        )));
     }
 }

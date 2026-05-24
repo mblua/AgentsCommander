@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -8,10 +9,80 @@ use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
-use crate::session::session::{SessionInfo, SessionRepo};
 use crate::session::profile::CodingAgentKind;
+use crate::session::session::{SessionInfo, SessionRepo, SessionStatus};
 use crate::telegram::manager::TelegramBridgeState;
 use crate::DetachedSessionsState;
+
+static ROOT_AGENT_SESSION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+pub(crate) fn root_agent_session_lock() -> &'static tokio::sync::Mutex<()> {
+    ROOT_AGENT_SESSION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingRootAction {
+    ReuseLive,
+    WakeDormant,
+    DiscardMissingPty,
+}
+
+fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRootAction {
+    if matches!(status, SessionStatus::Exited(_)) {
+        ExistingRootAction::WakeDormant
+    } else if has_pty {
+        ExistingRootAction::ReuseLive
+    } else {
+        ExistingRootAction::DiscardMissingPty
+    }
+}
+
+async fn rollback_pre_created_session(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    id: Uuid,
+    reason: &str,
+) {
+    log::warn!(
+        "[session] Rolling back pre-created session {} after setup failure: {}",
+        id,
+        reason
+    );
+
+    if let Err(e) = pty_mgr.lock().unwrap().kill(id) {
+        log::warn!(
+            "[session] Failed to clean PTY state while rolling back {}: {}",
+            id,
+            e
+        );
+    }
+
+    let mgr = session_mgr.read().await;
+    let was_active = mgr.get_active().await == Some(id);
+    match mgr.destroy_session(id).await {
+        Ok(Some(new_id)) => {
+            let _ = app.emit(
+                "session_switched",
+                serde_json::json!({ "id": new_id.to_string() }),
+            );
+        }
+        Ok(None) if was_active => {
+            let _ = app.emit(
+                "session_switched",
+                serde_json::json!({ "id": serde_json::Value::Null }),
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!(
+                "[session] Failed to remove pre-created session {} after setup failure: {}",
+                id,
+                e
+            );
+        }
+    }
+}
 
 fn token_has_unclosed_quote(token: &str, quote: char) -> bool {
     token.chars().filter(|c| *c == quote).count() % 2 == 1
@@ -673,6 +744,7 @@ pub async fn create_session_inner(
     // every caller of create_session_inner gets the same computation.
     let teams = crate::config::teams::discover_teams();
     let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
+    let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
 
     let mgr = session_mgr.read().await;
     let mut session = mgr
@@ -688,10 +760,17 @@ pub async fn create_session_inner(
         .await
         .map_err(|e| e.to_string())?;
 
+    if is_root_agent {
+        mgr.set_is_root_agent(session.id, true).await;
+        session.is_root_agent = true;
+    }
+
     if let Some(name) = session_name {
-        mgr.rename_session(session.id, name.clone())
-            .await
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = mgr.rename_session(session.id, name.clone()).await {
+            let err = e.to_string();
+            rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
+            return Err(err);
+        }
         session.name = name;
     }
 
@@ -785,13 +864,7 @@ pub async fn create_session_inner(
                     .message(&dialog_msg)
                     .title("Context File Error")
                     .show(|_| {});
-                let mgr2 = session_mgr.read().await;
-                if let Ok(Some(new_id)) = mgr2.destroy_session(id).await {
-                    let _ = app.emit(
-                        "session_switched",
-                        serde_json::json!({ "id": new_id.to_string() }),
-                    );
-                }
+                rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
                 return Err(e);
             }
         }
@@ -836,10 +909,8 @@ pub async fn create_session_inner(
         Vec::new()
     };
 
-    pty_mgr
-        .lock()
-        .unwrap()
-        .spawn(
+    let spawn_result = {
+        pty_mgr.lock().unwrap().spawn(
             id,
             &shell,
             &shell_args,
@@ -850,7 +921,12 @@ pub async fn create_session_inner(
             crate::session::profile::idle_tuning_for(agent_kind),
             app.clone(),
         )
-        .map_err(|e| e.to_string())?;
+    };
+    if let Err(e) = spawn_result {
+        let err = e.to_string();
+        rollback_pre_created_session(app, session_mgr, pty_mgr, id, &err).await;
+        return Err(err);
+    }
 
     // Auto-inject optional non-credential bootstrap text for agent sessions
     // after PTY spawn. Credentials are already present in child environment
@@ -1124,7 +1200,28 @@ pub async fn create_session(
 /// Core session destruction logic shared by the Tauri command and the MailboxPoller.
 /// Kills PTY, detaches Telegram bridge, removes from SessionManager, persists, and emits events.
 pub async fn destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), String> {
+    destroy_session_inner_with_options(app, uuid, false).await
+}
+
+pub(crate) async fn force_destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), String> {
+    destroy_session_inner_with_options(app, uuid, true).await
+}
+
+async fn destroy_session_inner_with_options(
+    app: &AppHandle,
+    uuid: Uuid,
+    force_destroy_root: bool,
+) -> Result<(), String> {
     let id = uuid.to_string();
+    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let mgr = session_mgr.read().await;
+    let existing = mgr
+        .get_session(uuid)
+        .await
+        .ok_or_else(|| "Session not found".to_string())?;
+    let is_root_agent = existing.is_root_agent
+        || crate::config::root_agent::is_root_agent_path(&existing.working_directory);
+    let was_active = matches!(existing.status, SessionStatus::Active);
 
     // Remove from detached set
     {
@@ -1156,8 +1253,54 @@ pub async fn destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), St
             .map_err(|e| e.to_string())?;
     }
 
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-    let mgr = session_mgr.read().await;
+    if is_root_agent && !force_destroy_root {
+        mgr.set_is_root_agent(uuid, true).await;
+        mgr.mark_exited(uuid, 0).await;
+        mgr.clear_active_if(uuid).await;
+        let dormant_info = mgr.get_session(uuid).await.map(|s| SessionInfo::from(&s));
+
+        let _ = app.emit("session_destroyed", serde_json::json!({ "id": id }));
+        if let Some(info) = dormant_info {
+            let _ = app.emit("session_created", info);
+        }
+
+        let detached_label = format!("terminal-{}", id.replace('-', ""));
+        if let Some(detached_win) = app.get_webview_window(&detached_label) {
+            let _ = detached_win.destroy();
+        }
+
+        if was_active {
+            let sessions = mgr.list_sessions().await;
+            let fallback = {
+                let detached = app.state::<DetachedSessionsState>();
+                let set = detached.lock().unwrap();
+                sessions.iter().find_map(|s| {
+                    if s.id == id || matches!(s.status, SessionStatus::Exited(_)) {
+                        return None;
+                    }
+                    Uuid::parse_str(&s.id).ok().filter(|u| !set.contains(u))
+                })
+            };
+            if let Some(fb) = fallback {
+                let _ = mgr.switch_session(fb).await;
+                let _ = app.emit(
+                    "session_switched",
+                    serde_json::json!({ "id": fb.to_string() }),
+                );
+            } else {
+                mgr.clear_active().await;
+                let _ = app.emit(
+                    "session_switched",
+                    serde_json::json!({ "id": serde_json::Value::Null }),
+                );
+            }
+        }
+
+        persist_current_state(&mgr).await;
+
+        return Ok(());
+    }
+
     let new_active = mgr.destroy_session(uuid).await.map_err(|e| e.to_string())?;
 
     // Persist after destruction
@@ -1285,7 +1428,16 @@ pub async fn restart_session(
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
     // 1. Read config from existing session BEFORE destroying it
-    let (shell, shell_args, cwd, name, stored_agent_id, stored_agent_label, git_repos) = {
+    let (
+        shell,
+        shell_args,
+        cwd,
+        name,
+        stored_agent_id,
+        stored_agent_label,
+        git_repos,
+        is_root_agent,
+    ) = {
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
         (
@@ -1296,7 +1448,20 @@ pub async fn restart_session(
             session.agent_id.clone(),
             session.agent_label.clone(),
             session.git_repos.clone(),
+            session.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&session.working_directory),
         )
+    };
+
+    let _root_guard = if is_root_agent {
+        Some(root_agent_session_lock().lock().await)
+    } else {
+        None
+    };
+    let cwd = if is_root_agent {
+        crate::config::root_agent::ensure_root_agent_dir()?
+    } else {
+        cwd
     };
 
     // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
@@ -1314,7 +1479,11 @@ pub async fn restart_session(
     };
 
     // 3. Destroy the old session (resolves all State<> internally from app)
-    destroy_session_inner(&app, uuid).await?;
+    if is_root_agent {
+        force_destroy_session_inner(&app, uuid).await?;
+    } else {
+        destroy_session_inner(&app, uuid).await?;
+    }
 
     // 4. Create new session with same config, or switch to the selected coding agent.
     let session_info = create_session_inner(
@@ -1548,6 +1717,88 @@ fn resolve_agent_command(
     }
 }
 
+fn split_agent_command(command: &str) -> Option<(String, Vec<String>)> {
+    let parts: Vec<String> = command.split_whitespace().map(|s| s.to_string()).collect();
+    parts
+        .split_first()
+        .map(|(cmd, args)| (cmd.clone(), args.to_vec()))
+}
+
+fn resolve_root_agent_command(
+    settings: &AppSettings,
+    requested_agent_id: Option<&str>,
+    last_coding_agent: Option<&str>,
+) -> (String, Vec<String>, Option<String>, Option<String>) {
+    let resolve_configured =
+        |agent_id: &str| settings.agents.iter().find(|agent| agent.id == agent_id);
+
+    if let Some(agent_id) = requested_agent_id {
+        if let Some(agent) = resolve_configured(agent_id) {
+            if let Some((shell, shell_args)) = split_agent_command(&agent.command) {
+                return (
+                    shell,
+                    shell_args,
+                    Some(agent.id.clone()),
+                    Some(agent.label.clone()),
+                );
+            }
+            log::warn!(
+                "[root-agent] Requested coding agent '{}' has an empty command; falling back",
+                agent_id
+            );
+        } else {
+            log::warn!(
+                "[root-agent] Requested coding agent '{}' no longer exists; falling back",
+                agent_id
+            );
+        }
+    }
+
+    if let Some(agent_id) = last_coding_agent {
+        if let Some(agent) = resolve_configured(agent_id) {
+            if let Some((shell, shell_args)) = split_agent_command(&agent.command) {
+                return (
+                    shell,
+                    shell_args,
+                    Some(agent.id.clone()),
+                    Some(agent.label.clone()),
+                );
+            }
+            log::warn!(
+                "[root-agent] lastCodingAgent '{}' has an empty command; falling back",
+                agent_id
+            );
+        } else {
+            log::warn!(
+                "[root-agent] lastCodingAgent '{}' no longer exists; falling back",
+                agent_id
+            );
+        }
+    }
+
+    if let Some(agent) = settings.agents.first() {
+        if let Some((shell, shell_args)) = split_agent_command(&agent.command) {
+            return (
+                shell,
+                shell_args,
+                Some(agent.id.clone()),
+                Some(agent.label.clone()),
+            );
+        }
+        log::warn!(
+            "[root-agent] First configured coding agent '{}' has an empty command; using default shell",
+            agent.id
+        );
+    }
+
+    (
+        settings.default_shell.clone(),
+        settings.default_shell_args.clone(),
+        None,
+        None,
+    )
+}
+
 fn resolve_agent_label(agent_id: &str, settings: &AppSettings) -> Option<String> {
     settings
         .agents
@@ -1645,115 +1896,104 @@ pub async fn get_active_session(
     Ok(Some(active_id.to_string()))
 }
 
-/// Create or reuse a root agent session.
-/// Derives the root agent path from the current binary name:
-///   {exe_dir}/.{binary_name}/ac-root-agent
-/// If a session already exists at that path, switches to it instead.
-/// Uses the first configured coding agent from settings.
-/// Starts the root agent with per-child credential env when a configured coding agent is launched.
-#[tauri::command]
-pub async fn create_root_agent_session(
-    app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
-    tg_mgr: State<'_, TelegramBridgeState>,
-    settings: State<'_, SettingsState>,
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_root_agent_inner(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    tg_mgr: &TelegramBridgeState,
+    settings: &SettingsState,
+    requested_agent_id: Option<String>,
+    skip_auto_resume_for_new_session: bool,
 ) -> Result<SessionInfo, String> {
-    // Derive root agent path from binary name
-    let exe_path =
-        std::env::current_exe().map_err(|e| format!("Failed to get current exe path: {}", e))?;
-    let binary_name = exe_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or("Failed to extract binary name")?
-        .to_string();
+    let _guard = root_agent_session_lock().lock().await;
+    let root_agent_path = crate::config::root_agent::ensure_root_agent_dir()?;
 
-    let exe_dir = exe_path
-        .parent()
-        .ok_or("Failed to get exe parent directory")?;
-    let root_agent_path = exe_dir
-        .join(format!(".{}", binary_name))
-        .join("ac-root-agent")
-        .to_string_lossy()
-        .to_string();
-
-    // Check if a session already exists at this path — reuse it
-    {
+    let existing = {
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
-        if let Some(existing) = sessions
-            .iter()
-            .find(|s| s.working_directory == root_agent_path)
+        sessions.into_iter().find(|s| {
+            s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+        })
+    };
+    let mut waking_existing = false;
+
+    if let Some(existing) = existing {
+        let uuid = Uuid::parse_str(&existing.id).map_err(|e| e.to_string())?;
         {
-            log::info!(
-                "[root-agent] Reusing existing session {} at {}",
-                existing.id,
-                root_agent_path
-            );
-            return Ok(existing.clone());
+            let mgr = session_mgr.read().await;
+            mgr.set_is_root_agent(uuid, true).await;
+        }
+
+        let has_pty = pty_mgr.lock().unwrap().has_session(uuid);
+        match classify_existing_root(&existing.status, has_pty) {
+            ExistingRootAction::ReuseLive => {
+                log::info!(
+                    "[root-agent] Reusing existing live session {} at {}",
+                    existing.id,
+                    existing.working_directory
+                );
+                let mgr = session_mgr.read().await;
+                if let Some(updated) = mgr.get_session(uuid).await {
+                    persist_current_state(&mgr).await;
+                    return Ok(SessionInfo::from(&updated));
+                }
+                return Ok(existing);
+            }
+            ExistingRootAction::WakeDormant => {
+                waking_existing = true;
+                log::info!(
+                    "[root-agent] Waking dormant root session {} with provider resume",
+                    existing.id
+                );
+                force_destroy_session_inner(app, uuid).await?;
+            }
+            ExistingRootAction::DiscardMissingPty => {
+                log::warn!(
+                    "[root-agent] Discarding root session {} because it has status {:?} but no PTY",
+                    existing.id,
+                    existing.status
+                );
+                force_destroy_session_inner(app, uuid).await?;
+            }
         }
     }
 
-    // Create directory if it doesn't exist
-    std::fs::create_dir_all(&root_agent_path)
-        .map_err(|e| format!("Failed to create root agent directory: {}", e))?;
-
-    // Get the first configured agent from settings
-    let cfg = settings.read().await;
-    let (agent_id, shell, shell_args, agent_label) = if let Some(agent) = cfg.agents.first() {
-        let parts: Vec<String> = agent
-            .command
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect();
-        if let Some((cmd, args)) = parts.split_first() {
-            (
-                Some(agent.id.clone()),
-                cmd.clone(),
-                args.to_vec(),
-                Some(agent.label.clone()),
-            )
-        } else {
-            (
-                None,
-                cfg.default_shell.clone(),
-                cfg.default_shell_args.clone(),
-                None,
-            )
-        }
-    } else {
-        (
-            None,
-            cfg.default_shell.clone(),
-            cfg.default_shell_args.clone(),
-            None,
+    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
+    let (shell, shell_args, agent_id, agent_label) = {
+        let cfg = settings.read().await;
+        resolve_root_agent_command(
+            &cfg,
+            requested_agent_id.as_deref(),
+            last_coding_agent.as_deref(),
         )
     };
-    drop(cfg);
 
     let info = create_session_inner(
-        &app,
-        session_mgr.inner(),
-        pty_mgr.inner(),
+        app,
+        session_mgr,
+        pty_mgr,
         shell,
         shell_args,
         root_agent_path.clone(),
-        Some("Root Agent".to_string()),
+        Some(crate::config::root_agent::ROOT_AGENT_SESSION_NAME.to_string()),
         agent_id,
         agent_label,
         false,
         Vec::new(),
-        true, // skip_auto_resume = true → fresh create, no `--continue` injection
+        if waking_existing {
+            false
+        } else {
+            skip_auto_resume_for_new_session
+        },
     )
     .await?;
 
-    // Persist after creation
     {
         let mgr = session_mgr.read().await;
         persist_current_state(&mgr).await;
     }
 
-    // Auto-attach Telegram bot if configured
     let id = Uuid::parse_str(&info.id).map_err(|e| format!("Invalid session UUID: {}", e))?;
     let config_path = std::path::Path::new(&root_agent_path)
         .join(crate::config::agent_local_dir_name())
@@ -1769,7 +2009,7 @@ pub async fn create_root_agent_session(
                     .cloned();
                 drop(cfg);
                 if let Some(bot) = bot {
-                    let pty_arc = pty_mgr.inner().clone();
+                    let pty_arc = Arc::clone(pty_mgr);
                     let reader = match crate::commands::telegram::derive_reader(
                         &info.shell,
                         &info.shell_args,
@@ -1790,7 +2030,6 @@ pub async fn create_root_agent_session(
                                     "error": err_msg,
                                 }),
                             );
-                            // Skip attach — do not silently fall back to PTY.
                             return Ok(info);
                         }
                     };
@@ -1803,15 +2042,39 @@ pub async fn create_root_agent_session(
         }
     }
 
-    // Credentials for resolved agent sessions are provided through the child process environment in PtyManager::spawn; no visible credential write occurs here.
-
     Ok(info)
+}
+
+/// Create, wake, or reuse a root agent session.
+#[tauri::command]
+pub async fn create_root_agent_session(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    tg_mgr: State<'_, TelegramBridgeState>,
+    settings: State<'_, SettingsState>,
+    agent_id: Option<String>,
+) -> Result<SessionInfo, String> {
+    create_root_agent_inner(
+        &app,
+        session_mgr.inner(),
+        pty_mgr.inner(),
+        tg_mgr.inner(),
+        settings.inner(),
+        agent_id,
+        true, // skip_auto_resume = true → fresh create, no `--continue` injection
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{inject_codex_resume, resolve_actual_agent, should_inject_continue};
+    use super::{
+        classify_existing_root, inject_codex_resume, resolve_actual_agent,
+        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
+    };
     use crate::config::settings::{AgentConfig, AppSettings};
+    use crate::session::session::SessionStatus;
     use std::path::PathBuf;
 
     fn test_settings() -> AppSettings {
@@ -1836,6 +2099,77 @@ mod tests {
             ],
             ..AppSettings::default()
         }
+    }
+
+    #[test]
+    fn resolve_root_agent_command_prefers_valid_explicit_agent() {
+        let settings = test_settings();
+
+        let (shell, args, agent_id, label) =
+            resolve_root_agent_command(&settings, Some("codex"), Some("claude"));
+
+        assert_eq!(shell, "codex");
+        assert!(args.is_empty());
+        assert_eq!(agent_id.as_deref(), Some("codex"));
+        assert_eq!(label.as_deref(), Some("Codex"));
+    }
+
+    #[test]
+    fn resolve_root_agent_command_uses_last_coding_agent_when_explicit_missing() {
+        let settings = test_settings();
+
+        let (shell, _args, agent_id, label) =
+            resolve_root_agent_command(&settings, None, Some("codex"));
+
+        assert_eq!(shell, "codex");
+        assert_eq!(agent_id.as_deref(), Some("codex"));
+        assert_eq!(label.as_deref(), Some("Codex"));
+    }
+
+    #[test]
+    fn resolve_root_agent_command_falls_back_to_first_configured_agent() {
+        let settings = test_settings();
+
+        let (shell, _args, agent_id, label) =
+            resolve_root_agent_command(&settings, Some("stale"), Some("also-stale"));
+
+        assert_eq!(shell, "claude");
+        assert_eq!(agent_id.as_deref(), Some("claude"));
+        assert_eq!(label.as_deref(), Some("Claude Code"));
+    }
+
+    #[test]
+    fn resolve_root_agent_command_falls_back_to_default_shell_without_agents() {
+        let mut settings = AppSettings {
+            default_shell: "pwsh".to_string(),
+            default_shell_args: vec!["-NoLogo".to_string()],
+            ..AppSettings::default()
+        };
+        settings.agents.clear();
+
+        let (shell, args, agent_id, label) =
+            resolve_root_agent_command(&settings, Some("stale"), Some("also-stale"));
+
+        assert_eq!(shell, "pwsh");
+        assert_eq!(args, vec!["-NoLogo".to_string()]);
+        assert!(agent_id.is_none());
+        assert!(label.is_none());
+    }
+
+    #[test]
+    fn existing_root_classifier_discards_live_record_without_pty() {
+        assert_eq!(
+            classify_existing_root(&SessionStatus::Running, false),
+            ExistingRootAction::DiscardMissingPty
+        );
+        assert_eq!(
+            classify_existing_root(&SessionStatus::Active, true),
+            ExistingRootAction::ReuseLive
+        );
+        assert_eq!(
+            classify_existing_root(&SessionStatus::Exited(0), false),
+            ExistingRootAction::WakeDormant
+        );
     }
 
     #[test]

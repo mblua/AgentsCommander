@@ -510,10 +510,12 @@ html, body, #root {
 .session-item-status.offline { background: var(--status-offline); }
 /* .pending = agent finished but user hasn't focused yet (yellow) */
 .session-item .session-item-status.pending,
-.replica-item .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
+.replica-item .session-item-status.pending,
+.root-agent-banner .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }
 /* .waiting must override all other status colors (active, running, idle, exited) */
 .session-item .session-item-status.waiting,
-.replica-item .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
+.replica-item .session-item-status.waiting,
+.root-agent-banner .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
 
 /* Inactive team member (no active session) */
 .session-item.inactive-member {
@@ -788,15 +790,34 @@ html, body, #root {
   text-align: left;
   font-family: var(--font-ui);
   transition: background var(--transition-fast);
+  /* Containing block for the absolutely-positioned bot picker
+     (.session-item-bot-menu uses right:0; top:100%). Mirrors .session-item. */
+  position: relative;
 }
 
 .root-agent-banner:hover {
   background: rgba(0, 212, 255, 0.08);
 }
 
-.root-agent-banner:disabled {
+.root-agent-banner:disabled,
+.root-agent-banner.disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* The text column flexes so action buttons sit on the right edge,
+   mirroring .session-item-info inside .session-item. */
+.root-agent-banner .root-agent-text {
+  flex: 1;
+}
+
+/* Mirror SessionItem's hover-reveal for action buttons. */
+.root-agent-banner:hover .session-item-mic,
+.root-agent-banner:hover .session-item-explorer,
+.root-agent-banner:hover .session-item-detach,
+.root-agent-banner:hover .session-item-telegram,
+.root-agent-banner:hover .session-item-close {
+  display: flex;
 }
 
 .root-agent-avatar {
@@ -4525,4 +4546,184 @@ html.light-theme .onboarding-card.selected {
   font-size: 10px;
   color: var(--sidebar-fg-dim);
   text-align: center;
+}
+
+/* =============================================================================
+   Root Agent Banner — active state
+   Placed at end-of-file so source order beats per-sidebar-style background
+   overrides (which match equal specificity 0,2,0). var(--sidebar-active) is
+   defined per style, so this one rule works across all 7 sidebar styles.
+   ============================================================================= */
+.root-agent-banner.active {
+  background: var(--sidebar-active);
+}
+
+/* ===== Role template picker (#271) ===== */
+
+/* Let the New Agent form body scroll instead of clipping the footer when the
+   template picker pushes the modal past `.agent-modal { max-height:80vh }`.
+   Scoped via a modifier class — other `.new-agent-form` users are untouched.
+   `min-height:0` is REQUIRED: without it the flex item keeps its content height,
+   re-inflates the modal, and `.agent-modal { overflow:hidden }` clips the footer. */
+.new-agent-form-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tpl-picker {
+  gap: var(--spacing-xs);
+}
+
+.tpl-picker-search {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  background: var(--sidebar-hover);
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  border-radius: var(--radius-md);
+  padding: 0 var(--spacing-sm);
+  height: 32px;
+}
+
+.tpl-picker-search:focus-within {
+  border-color: var(--sidebar-accent);
+}
+
+.tpl-picker-search-icon {
+  flex-shrink: 0;
+  color: var(--sidebar-fg-dim);
+}
+
+.tpl-picker-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+}
+
+.tpl-picker-search-input::placeholder {
+  color: var(--sidebar-fg-dim);
+}
+
+.tpl-picker-list {
+  margin-top: var(--spacing-xs);
+  max-height: 168px;
+  overflow-y: auto;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+}
+
+.tpl-picker-item {
+  /* Rows are <button>s; reset the UA button styling. */
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--sidebar-border);
+  padding: 6px var(--spacing-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.tpl-picker-item:last-child {
+  border-bottom: none;
+}
+
+.tpl-picker-item:hover {
+  background: var(--sidebar-hover);
+}
+
+.tpl-picker-item:focus-visible {
+  outline: none;
+  background: var(--sidebar-hover);
+  box-shadow: inset 0 0 0 1px var(--sidebar-accent);
+}
+
+.tpl-picker-item.selected {
+  background: rgba(0, 212, 255, 0.1);
+  box-shadow: inset 2px 0 0 var(--sidebar-accent);
+}
+
+.tpl-picker-item-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  gap: var(--spacing-xs);
+}
+
+.tpl-picker-color-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tpl-picker-item-name {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tpl-picker-item-cat {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--sidebar-fg-dim);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 3px;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+
+/* Source badge — visually distinguished from the category badge so the
+   origin (upstream agency repo vs. user's local agent-templates folder) is
+   identifiable at a glance. Letter-case is preserved because the agency URL
+   is case-sensitive; the row's flex-wrap (above) lets the badge flow onto a
+   second line when the head can't fit it next to the category. */
+.tpl-picker-item-src {
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  color: var(--sidebar-fg-dim);
+  background: rgba(0, 212, 255, 0.06);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 3px;
+  padding: 0 4px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-basis: auto;
+  flex-shrink: 1;
+}
+
+.tpl-picker-item-src.src-local {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tpl-picker-item-desc {
+  font-size: var(--font-size-xs, 11px);
+  color: var(--sidebar-fg-dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tpl-picker-empty {
+  padding: 8px var(--spacing-sm);
+  font-size: var(--font-size-xs, 11px);
+  color: var(--sidebar-fg-dim);
 }

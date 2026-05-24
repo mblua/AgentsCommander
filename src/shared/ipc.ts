@@ -18,6 +18,7 @@ import type {
   WorkgroupBriefUpdatedEvent,
   ProjectRegistration,
   ErrorLogEntry,
+  RoleTemplateMeta,
 } from "./types";
 
 export interface SessionRepoInput {
@@ -63,6 +64,10 @@ export interface RestartSessionOptions {
   skipAutoResume?: boolean;
 }
 
+export interface CreateRootAgentOptions {
+  agentId?: string;
+}
+
 export const SessionAPI = {
   create: (opts?: CreateSessionOptions) =>
     transport.invoke<Session>("create_session", {
@@ -95,8 +100,10 @@ export const SessionAPI = {
   setLastPrompt: (id: string, text: string) =>
     transport.invoke<void>("set_last_prompt", { id, text }),
 
-  createRootAgent: () =>
-    transport.invoke<Session>("create_root_agent_session"),
+  createRootAgent: (opts?: CreateRootAgentOptions) =>
+    transport.invoke<Session>("create_root_agent_session", {
+      agentId: opts?.agentId ?? null,
+    }),
 };
 
 export const PtyAPI = {
@@ -296,6 +303,11 @@ export const TelegramAPI = {
 
   sendTest: (token: string) =>
     transport.invoke<number>("telegram_send_test", { token }),
+
+  // #282 — send an existing local file to the bot's configured chat.
+  // ≤ 10 MB jpg/jpeg/png/webp ⇒ sendPhoto; otherwise sendDocument up to 50 MB.
+  sendImage: (botId: string, path: string, caption?: string) =>
+    transport.invoke<void>("telegram_send_image", { botId, path, caption }),
 };
 
 export function onPtyResized(
@@ -445,10 +457,25 @@ export const ProjectAPI = {
     transport.invoke<ProjectRegistration>("new_project", { path }),
 };
 
+// Role template picker (#271)
+export const RoleTemplateAPI = {
+  list: () => transport.invoke<RoleTemplateMeta[]>("list_role_templates"),
+};
+
 // Entity Creation API (agents, teams, workgroups)
 export const EntityAPI = {
-  createAgentMatrix: (projectPath: string, name: string, description: string) =>
-    transport.invoke<void>("create_agent_matrix", { projectPath, name, description }),
+  createAgentMatrix: (
+    projectPath: string,
+    name: string,
+    description: string,
+    roleTemplateId?: string | null,
+  ) =>
+    transport.invoke<void>("create_agent_matrix", {
+      projectPath,
+      name,
+      description,
+      roleTemplateId: roleTemplateId ?? null,
+    }),
 
   deleteAgentMatrix: (projectPath: string, agentName: string) =>
     transport.invoke<void>("delete_agent_matrix", { projectPath, agentName }),

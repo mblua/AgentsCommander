@@ -21,6 +21,7 @@ export interface Session {
   gitRepos: SessionRepo[];
   workgroupBrief: string | null;
   isCoordinator: boolean;
+  isRootAgent: boolean;
   token: string;
   agentKind: CodingAgentKind | null;
 }
@@ -162,6 +163,7 @@ export interface AppSettings {
   injectRtkHook: boolean;
   rtkPromptDismissed: boolean;
   autoGenerateBriefTitle: boolean;
+  agentTemplatesPath: string | null;
 }
 
 // Team grouping for sidebar
@@ -363,5 +365,24 @@ export interface ErrorLogEntry {
   target: string;
   /** Full message; may contain newlines (multi-line git errors etc.). */
   message: string;
+}
+
+// ---------------------------------------------------------------------------
+// Role template picker (#271)
+// Mirrors src-tauri/src/commands/role_templates.rs::RoleTemplateMeta.
+// ---------------------------------------------------------------------------
+
+export interface RoleTemplateMeta {
+  /** Source-qualified id: "agency:<stem>" or "local:<folder>". */
+  id: string;
+  /** "agency" | "local". */
+  source: "agency" | "local";
+  name: string;
+  description: string;
+  /** Display grouping label, e.g. "Engineering" or "Local". */
+  category: string;
+  color?: string | null;
+  emoji?: string | null;
+  hasSkills: boolean;
 }
 
