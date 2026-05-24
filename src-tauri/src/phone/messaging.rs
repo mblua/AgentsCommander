@@ -10,6 +10,8 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MESSAGING_DIR_NAME: &str = "messaging";
 pub const PTY_SAFE_MAX: usize = 1024;
+pub const FILE_NOTIFICATION_PREFIX: &str = "Nuevo mensaje: ";
+pub const FILE_NOTIFICATION_SUFFIX: &str = ". Lee este archivo.";
 
 const MAX_SLUG_LEN: usize = 50;
 const MAX_COLLISION_SUFFIX: u32 = 99;
@@ -25,6 +27,61 @@ pub const PTY_WRAP_FIXED: usize = "\n[Message from ] \n\r".len();
 /// the test before the clamp accounting can drift.
 pub fn format_pty_wrap(from: &str, body: &str) -> String {
     format!("\n[Message from {}] {}\n\r", from, body)
+}
+
+pub fn format_file_notification(abs_path: &str) -> String {
+    format!(
+        "{}{}{}",
+        FILE_NOTIFICATION_PREFIX, abs_path, FILE_NOTIFICATION_SUFFIX
+    )
+}
+
+pub fn parse_file_notification(body: &str) -> Option<&str> {
+    body.strip_prefix(FILE_NOTIFICATION_PREFIX)
+        .and_then(|rest| rest.strip_suffix(FILE_NOTIFICATION_SUFFIX))
+        .filter(|path| !path.is_empty())
+}
+
+pub fn notification_filename(path: &str) -> Option<&str> {
+    path.rsplit(['/', '\\'])
+        .next()
+        .filter(|filename| !filename.is_empty())
+}
+
+pub fn validate_root_notification_filename(filename: &str) -> Result<(), MessagingError> {
+    validate_filename_only(filename)?;
+
+    let stem = filename
+        .strip_suffix(".md")
+        .ok_or_else(|| MessagingError::InvalidShape(filename.to_string()))?;
+    let stem = match stem.rfind('.') {
+        Some(dot_pos) => {
+            let suffix = &stem[dot_pos + 1..];
+            let is_collision_suffix = !suffix.is_empty()
+                && suffix.len() <= 2
+                && suffix.chars().all(|c| c.is_ascii_digit());
+            if is_collision_suffix {
+                let n: u32 = suffix
+                    .parse()
+                    .map_err(|_| MessagingError::InvalidShape(filename.to_string()))?;
+                if n == 0 {
+                    return Err(MessagingError::InvalidShape(filename.to_string()));
+                }
+                &stem[..dot_pos]
+            } else {
+                stem
+            }
+        }
+        None => stem,
+    };
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.get(2) == Some(&crate::config::root_agent::ROOT_AGENT_SHORT_NAME)
+        && parts.get(3) == Some(&"to")
+    {
+        Ok(())
+    } else {
+        Err(MessagingError::InvalidShape(filename.to_string()))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -655,6 +712,25 @@ mod tests {
 
         assert_eq!(name, "20260524-040000-root-to-wg1-tech-lead-smoke.md");
         assert!(validate_filename_only(&name).is_ok());
+    }
+
+    #[test]
+    fn root_notification_filename_rejects_non_root_sender_shape() {
+        let name = "20260524-040000-wg1-dev-rust-to-wg1-tech-lead-smoke.md";
+
+        assert!(validate_root_notification_filename(name).is_err());
+    }
+
+    #[test]
+    fn file_notification_round_trips_path() {
+        let path = r"C:\tmp\ac-root-agent\messaging\20260524-040000-root-to-wg1-tech-lead-smoke.md";
+        let body = format_file_notification(path);
+
+        assert_eq!(parse_file_notification(&body), Some(path));
+        assert_eq!(
+            notification_filename(path),
+            Some("20260524-040000-root-to-wg1-tech-lead-smoke.md")
+        );
     }
 
     #[test]

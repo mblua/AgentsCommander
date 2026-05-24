@@ -43,6 +43,7 @@ pub struct SendArgs {
     pub get_output: bool,
 
     /// Remote command to execute on the agent's PTY [possible values: clear, compact].
+    /// Not available from the Root Agent; Root Agent messaging is file-based.
     /// The agent must be idle. Cannot be combined with --send
     #[arg(long)]
     pub command: Option<String>,
@@ -86,6 +87,17 @@ fn root_agent_target_allowed(target: &str, project_paths: &[String]) -> bool {
     crate::config::teams::verified_wg_coordinator_target(target, project_paths).is_some()
 }
 
+fn validate_root_agent_delivery_kind(
+    root_is_root_agent: bool,
+    command: Option<&str>,
+) -> Result<(), &'static str> {
+    if root_is_root_agent && command.is_some() {
+        Err("Root Agent messaging is file-based; use --send with a root-to-coordinator Markdown file, not --command")
+    } else {
+        Ok(())
+    }
+}
+
 /// If `root` lives inside `<project_dir>/.ac-new/wg-<N>-*/__agent_*/`,
 /// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
 /// inside a WG-replica shape OR if the resulting `project_dir` is not valid
@@ -125,6 +137,14 @@ pub fn execute(args: SendArgs) -> i32 {
             return 1;
         }
     };
+    let root_is_root_agent = crate::config::root_agent::is_root_agent_path(&root);
+    if let Err(reason) =
+        validate_root_agent_delivery_kind(root_is_root_agent, args.command.as_deref())
+    {
+        eprintln!("Error: {}", reason);
+        return 1;
+    }
+
     // Validate token before proceeding
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_token, root)) => root,
@@ -134,7 +154,6 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     };
 
-    let root_is_root_agent = crate::config::root_agent::is_root_agent_path(&root);
     let sender = sender_for_root(&root, root_is_root_agent);
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
@@ -265,7 +284,7 @@ pub fn execute(args: SendArgs) -> i32 {
         // UNC-strip only at the single emission site (plan §13.4).
         let abs_str = abs.to_string_lossy();
         let abs_display = abs_str.trim_start_matches(r"\\?\");
-        let body = format!("Nuevo mensaje: {}. Lee este archivo.", abs_display);
+        let body = crate::phone::messaging::format_file_notification(abs_display);
 
         // Pre-wrap long-body warn (plan §13.4 §7.9).
         if body.len() > 200 {
@@ -543,6 +562,24 @@ mod tests {
             "proj-a:wg-1-dev-team/tech-lead",
             &paths
         ));
+    }
+
+    #[test]
+    fn root_agent_command_clear_and_compact_are_rejected_before_outbox_write() {
+        for command in ["clear", "compact"] {
+            assert_eq!(
+                validate_root_agent_delivery_kind(true, Some(command)),
+                Err("Root Agent messaging is file-based; use --send with a root-to-coordinator Markdown file, not --command")
+            );
+        }
+    }
+
+    #[test]
+    fn non_root_command_behavior_is_unchanged() {
+        assert_eq!(
+            validate_root_agent_delivery_kind(false, Some("compact")),
+            Ok(())
+        );
     }
 
     #[test]

@@ -48,6 +48,60 @@ fn validate_root_sender_route(
     Ok(())
 }
 
+fn validate_root_sender_payload(msg: &OutboxMessage) -> Result<(), String> {
+    let root_dir = crate::config::root_agent::root_agent_dir()?;
+    validate_root_sender_payload_with_root_dir(msg, Path::new(&root_dir))
+}
+
+fn validate_root_sender_payload_with_root_dir(
+    msg: &OutboxMessage,
+    root_agent_dir: &Path,
+) -> Result<(), String> {
+    if msg.command.is_some() {
+        return Err("Root Agent messages must use --send; remote commands are not allowed".into());
+    }
+    if msg.action.is_some() {
+        return Err("Root Agent messages must use --send; action messages are not allowed".into());
+    }
+
+    let notification_path = crate::phone::messaging::parse_file_notification(&msg.body)
+        .ok_or_else(|| "Root Agent messages must be canonical file notifications".to_string())?;
+    let filename = crate::phone::messaging::notification_filename(notification_path)
+        .ok_or_else(|| "Root Agent file notification must point to a Markdown file".to_string())?;
+    crate::phone::messaging::validate_root_notification_filename(filename)
+        .map_err(|e| format!("Root Agent file notification is invalid: {}", e))?;
+
+    let notification_path = Path::new(notification_path);
+    if !notification_path.is_absolute() {
+        return Err("Root Agent file notification must use an absolute path".into());
+    }
+    let canon_file = std::fs::canonicalize(notification_path)
+        .map_err(|e| format!("Root Agent file notification target is not readable: {}", e))?;
+    if !canon_file
+        .metadata()
+        .map_err(|e| format!("Root Agent file notification target is not readable: {}", e))?
+        .is_file()
+    {
+        return Err("Root Agent file notification target is not a regular file".into());
+    }
+
+    let root_messaging_dir = root_agent_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+    let canon_root_messaging_dir = std::fs::canonicalize(&root_messaging_dir).map_err(|e| {
+        format!(
+            "Root Agent messaging directory is not readable at {}: {}",
+            root_messaging_dir.display(),
+            e
+        )
+    })?;
+    if canon_file.parent() != Some(canon_root_messaging_dir.as_path()) {
+        return Err(
+            "Root Agent file notification must point inside ac-root-agent/messaging".into(),
+        );
+    }
+
+    Ok(())
+}
+
 /// If `outbox_file` lives at
 /// `<project_dir>/.ac-new/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
 /// return `project_dir` as a UTF-8 `String`. Otherwise, `None`.
@@ -735,6 +789,9 @@ impl MailboxPoller {
                 token_belongs_to_root_agent,
             ) {
                 return self.reject_message(path, &msg, reason).await;
+            }
+            if let Err(reason) = validate_root_sender_payload(&msg) {
+                return self.reject_message(path, &msg, &reason).await;
             }
             log::info!(
                 "[mailbox] Root Agent routing check passed: '{}' -> '{}'",
@@ -2528,6 +2585,28 @@ mod tests {
         (temp, paths)
     }
 
+    fn root_outbox_message(body: String, command: Option<String>) -> OutboxMessage {
+        OutboxMessage {
+            id: "msg-root".into(),
+            token: None,
+            from: crate::config::root_agent::ROOT_AGENT_SENDER.into(),
+            to: "proj-a:wg-1-dev-team/tech-lead".into(),
+            body,
+            mode: "wake".into(),
+            get_output: false,
+            request_id: None,
+            sender_agent: None,
+            preferred_agent: "auto".into(),
+            priority: "normal".into(),
+            timestamp: "2026-05-24T00:00:00Z".into(),
+            command,
+            action: None,
+            target: None,
+            force: None,
+            timeout_secs: None,
+        }
+    }
+
     #[test]
     fn sender_name_for_session_cwd_with_root_flag_uses_root_sender() {
         assert_eq!(
@@ -2609,6 +2688,84 @@ mod tests {
             validate_root_sender_route("proj-a/tech-lead", &paths, true, false, false),
             Err("Root Agent can only message verified WG coordinator replicas")
         );
+    }
+
+    #[test]
+    fn root_sender_payload_rejects_hand_written_command_json() {
+        let raw = serde_json::json!({
+            "id": "msg-root-command",
+            "from": crate::config::root_agent::ROOT_AGENT_SENDER,
+            "to": "proj-a:wg-1-dev-team/tech-lead",
+            "body": "",
+            "mode": "wake",
+            "timestamp": "2026-05-24T00:00:00Z",
+            "command": "compact"
+        });
+        let msg: OutboxMessage = serde_json::from_value(raw).unwrap();
+
+        assert_eq!(
+            validate_root_sender_payload_with_root_dir(&msg, Path::new("unused-root")),
+            Err("Root Agent messages must use --send; remote commands are not allowed".into())
+        );
+    }
+
+    #[test]
+    fn root_sender_payload_rejects_hand_written_non_file_body_json() {
+        let raw = serde_json::json!({
+            "id": "msg-root-body",
+            "from": crate::config::root_agent::ROOT_AGENT_SENDER,
+            "to": "proj-a:wg-1-dev-team/tech-lead",
+            "body": "please do this directly",
+            "mode": "wake",
+            "timestamp": "2026-05-24T00:00:00Z"
+        });
+        let msg: OutboxMessage = serde_json::from_value(raw).unwrap();
+
+        assert_eq!(
+            validate_root_sender_payload_with_root_dir(&msg, Path::new("unused-root")),
+            Err("Root Agent messages must be canonical file notifications".into())
+        );
+    }
+
+    #[test]
+    fn root_sender_payload_accepts_valid_root_file_notification() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root_dir = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let messaging_dir = root_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&messaging_dir).unwrap();
+        let filename = "20260524-040000-root-to-wg1-tech-lead-smoke.md";
+        let message_file = messaging_dir.join(filename);
+        std::fs::write(&message_file, "root message").unwrap();
+        let body =
+            crate::phone::messaging::format_file_notification(&message_file.to_string_lossy());
+        let msg = root_outbox_message(body, None);
+
+        assert_eq!(
+            validate_root_sender_payload_with_root_dir(&msg, &root_dir),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn root_sender_payload_rejects_existing_non_root_message_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root_dir = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let messaging_dir = root_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&messaging_dir).unwrap();
+        let filename = "20260524-040000-wg1-dev-rust-to-wg1-tech-lead-smoke.md";
+        let message_file = messaging_dir.join(filename);
+        std::fs::write(&message_file, "not root-shaped").unwrap();
+        let body =
+            crate::phone::messaging::format_file_notification(&message_file.to_string_lossy());
+        let msg = root_outbox_message(body, None);
+
+        assert!(validate_root_sender_payload_with_root_dir(&msg, &root_dir)
+            .unwrap_err()
+            .contains("Root Agent file notification is invalid"));
     }
 
     /// §224 regression: an idle session with `waiting_for_input=true` (the bug
