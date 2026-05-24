@@ -303,6 +303,11 @@ export const TelegramAPI = {
 
   sendTest: (token: string) =>
     transport.invoke<number>("telegram_send_test", { token }),
+
+  // #282 — send an existing local file to the bot's configured chat.
+  // ≤ 10 MB jpg/jpeg/png/webp ⇒ sendPhoto; otherwise sendDocument up to 50 MB.
+  sendImage: (botId: string, path: string, caption?: string) =>
+    transport.invoke<void>("telegram_send_image", { botId, path, caption }),
 };
 
 export function onPtyResized(
