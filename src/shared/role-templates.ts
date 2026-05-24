@@ -46,3 +46,33 @@ export function sourceLabel(template: Pick<RoleTemplateMeta, "source">): string 
     ? "SOURCE: https://github.com/msitarzewski/agency-agents"
     : "SOURCE: LOCAL AGENT-TEMPLATES";
 }
+
+/**
+ * Decide the next {name, description} when a template is selected. A template's
+ * defaults overwrite the current values UNLESS the user has manually edited the
+ * field (the caller flips `nameDirty`/`descriptionDirty` in its onInput
+ * handlers). Values that the previous template selection wrote stay
+ * non-dirty, so a second template click freely replaces them — fixing #278
+ * where the highlighted row moved but the form fields stuck on the first pick.
+ *
+ * The Name is slugified (display names are free text that the modal's
+ * canCreate() would reject for spaces or punctuation); the Description is
+ * clamped to 250 because the textarea's maxLength only limits typing, not
+ * programmatic writes.
+ */
+export function applyTemplatePrefill(
+  template: Pick<RoleTemplateMeta, "name" | "description">,
+  current: {
+    name: string;
+    description: string;
+    nameDirty: boolean;
+    descriptionDirty: boolean;
+  },
+): { name: string; description: string } {
+  return {
+    name: current.nameDirty ? current.name : slugifyTemplateName(template.name),
+    description: current.descriptionDirty
+      ? current.description
+      : template.description.slice(0, 250),
+  };
+}
