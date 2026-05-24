@@ -287,6 +287,19 @@ fn detect_git_branch_sync(dir: &str) -> Option<String> {
 const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// #280 §3.3 — per-path counter for `detect_branch` timeouts. Mirrors the
+/// `git_watcher.rs` helper but lives in a separate module-local map so the
+/// two watchers track their own paths independently (different scan sets).
+fn note_discovery_timeout(path: &str) -> u64 {
+    use std::sync::OnceLock;
+    static TIMEOUT_COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    let map = TIMEOUT_COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
+    let count = g.entry(path.to_string()).or_insert(0);
+    *count += 1;
+    *count
+}
+
 #[derive(Clone)]
 struct ReplicaBranchEntry {
     replica_path: String,
@@ -796,11 +809,19 @@ impl DiscoveryBranchWatcher {
         match tokio::time::timeout(DETECT_TIMEOUT, Self::detect_branch(working_dir)).await {
             Ok(result) => result,
             Err(_) => {
-                log::warn!(
-                    "[DiscoveryBranchWatcher] detect_branch timed out for {} (>{}s); treating as no-branch",
-                    working_dir,
-                    DETECT_TIMEOUT.as_secs()
-                );
+                let n = note_discovery_timeout(working_dir);
+                // #280 §3.3 — same dampening policy as git_watcher.rs: log
+                // first sighting + every 50th. Module tag remains
+                // `[DiscoveryBranchWatcher]` so the two watchers stay
+                // distinguishable in app.log.
+                if n == 1 || n.is_multiple_of(50) {
+                    log::warn!(
+                        "[DiscoveryBranchWatcher] detect_branch timed out for {} (>{}s); occurrence={} (logging 1st + every 50th)",
+                        working_dir,
+                        DETECT_TIMEOUT.as_secs(),
+                        n
+                    );
+                }
                 None
             }
         }
@@ -1833,6 +1854,19 @@ mod tests {
             Some("Body line".to_string())
         );
     }
+
+    /// #280 §3.3 — `note_discovery_timeout` is a monotonic per-path
+    /// counter, mirroring `git_watcher::note_timeout` but isolated to the
+    /// discovery watcher's path set. Two paths get independent counters.
+    #[test]
+    fn note_discovery_timeout_counts_per_path() {
+        let p1 = "/test-280-3-3/ac-discovery/path-a";
+        let p2 = "/test-280-3-3/ac-discovery/path-b";
+        assert_eq!(note_discovery_timeout(p1), 1);
+        assert_eq!(note_discovery_timeout(p1), 2);
+        assert_eq!(note_discovery_timeout(p2), 1);
+        assert_eq!(note_discovery_timeout(p1), 3);
+    }
 }
 
 type BriefFields = (Option<String>, Option<String>);
@@ -1845,3 +1879,4 @@ fn read_brief_fields(wg_path: &std::path::Path) -> BriefFields {
     let brief_title = crate::commands::entity_creation::parse_brief_title(&content);
     (brief, brief_title)
 }
+

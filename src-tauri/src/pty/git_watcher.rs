@@ -12,6 +12,21 @@ use crate::session::session::SessionRepo;
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// #280 §3.3 — per-path counter for `detect_branch` timeouts. Used to dampen
+/// the WARN storm by logging only the first occurrence per path plus every
+/// 50th thereafter. Process-local: counts reset on restart. Bounded by the
+/// number of distinct repo paths (~150 in production observations), so no
+/// GC is needed.
+fn note_timeout(path: &str) -> u64 {
+    use std::sync::OnceLock;
+    static TIMEOUT_COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    let map = TIMEOUT_COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
+    let count = g.entry(path.to_string()).or_insert(0);
+    *count += 1;
+    *count
+}
+
 pub struct GitWatcher {
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     app_handle: AppHandle,
@@ -156,11 +171,20 @@ impl GitWatcher {
         match tokio::time::timeout(DETECT_TIMEOUT, Self::detect_branch(working_dir)).await {
             Ok(result) => result,
             Err(_) => {
-                log::warn!(
-                    "[GitWatcher] detect_branch timed out for {} (>{}s); treating as no-branch",
-                    working_dir,
-                    DETECT_TIMEOUT.as_secs()
-                );
+                let n = note_timeout(working_dir);
+                // #280 §3.3 — throttle the per-path WARN. Observed rate is
+                // ~120 timeouts/day/path; logging every one floods app.log.
+                // Log the first sighting (heartbeat) and every 50th
+                // thereafter (still ~2-3 WARN/day/path) — enough signal to
+                // notice persistent slowness without spamming.
+                if n == 1 || n.is_multiple_of(50) {
+                    log::warn!(
+                        "[GitWatcher] detect_branch timed out for {} (>{}s); occurrence={} (logging 1st + every 50th)",
+                        working_dir,
+                        DETECT_TIMEOUT.as_secs(),
+                        n
+                    );
+                }
                 None
             }
         }
@@ -270,5 +294,22 @@ mod tests {
             )
             .await;
         assert!(wrote2, "current gen must succeed");
+    }
+
+    /// #280 §3.3 — `note_timeout` is a monotonic per-path counter so the
+    /// caller can throttle WARN emissions to "first + every Nth". Two
+    /// independent paths get independent counters.
+    #[test]
+    fn note_timeout_counts_per_path() {
+        // Process-global state: use unique-per-test path strings to avoid
+        // collisions with other tests that may exercise this helper.
+        let p1 = "/test-280-3-3/git-watcher/path-a";
+        let p2 = "/test-280-3-3/git-watcher/path-b";
+        assert_eq!(note_timeout(p1), 1);
+        assert_eq!(note_timeout(p1), 2);
+        assert_eq!(note_timeout(p1), 3);
+        // Independent counter for a different path.
+        assert_eq!(note_timeout(p2), 1);
+        assert_eq!(note_timeout(p1), 4);
     }
 }

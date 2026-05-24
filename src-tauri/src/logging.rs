@@ -14,9 +14,170 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 static INIT: OnceLock<()> = OnceLock::new();
+
+/// #280 §2 — size cap per `app.log` file. Above this, the file is rotated.
+/// 50 MB chosen so a single file is still grep-able in a text editor while
+/// keeping the combined retention cap below ~300 MB total per binary instance.
+const APP_LOG_MAX_BYTES: u64 = 50 * 1024 * 1024;
+
+/// #280 §2 — number of rotated files to keep (`app.log.1` … `app.log.<KEEP>`).
+/// Combined with `APP_LOG_MAX_BYTES` this caps total log disk usage at
+/// roughly `APP_LOG_MAX_BYTES * (APP_LOG_KEEP + 1)` bytes per binary instance
+/// (active file + KEEP rotated). Rotation walks `(KEEP - 1) ..= 1` so the
+/// highest rename is `.(KEEP - 1) → .KEEP`, atomically evicting the prior
+/// `.KEEP` via `std::fs::rename`'s replace semantics — see `rotate()`.
+const APP_LOG_KEEP: u32 = 5;
+
+/// #280 §2 — log file plus a bookkeeping counter for size-based rotation.
+/// `bytes` is read/written with `Relaxed` ordering: it's a best-effort cap
+/// counter, not a synchronization primitive. A small over-shoot at the
+/// rotation boundary is acceptable.
+struct AppLogFile {
+    file: Mutex<std::fs::File>,
+    bytes: AtomicU64,
+    path: PathBuf,
+}
+
+/// #280 §2 — rotate `path` → `path.1` and shift existing `path.<i>` to
+/// `path.<i+1>`. The walk runs `(KEEP - 1) ..= 1` so the highest rename is
+/// `.(KEEP - 1) → .KEEP`; the existing `.KEEP` is implicitly evicted by
+/// `std::fs::rename`'s atomic-replace semantics (G-HIGH-1 fix). Caller must
+/// have observed `bytes >= APP_LOG_MAX_BYTES`; we re-check under the lock
+/// (G-MED-1 fix) to keep concurrent invocations idempotent — only one
+/// thread actually rotates.
+///
+/// On any IO error inside rotation, we log to stderr (NOT `log::*` — that
+/// would re-enter the format closure) and continue. Worst case: the file
+/// grows somewhat past the cap before a successful rotation.
+fn rotate(state: &AppLogFile) {
+    let mut file_guard = match state.file.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+
+    // #280 G-MED-1 — re-check the byte counter under the lock. If another
+    // thread already rotated (their `bytes.store(0)` ran), nothing to do.
+    if state.bytes.load(Ordering::Relaxed) < APP_LOG_MAX_BYTES {
+        return;
+    }
+
+    let base = state.path.as_path();
+    let parent = match base.parent() {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "[log] rotate: cannot resolve parent for {} — skipping",
+                base.display()
+            );
+            return;
+        }
+    };
+    let stem = match base.file_name().and_then(|n| n.to_str()) {
+        Some(s) => s,
+        None => {
+            eprintln!(
+                "[log] rotate: cannot extract file name for {} — skipping",
+                base.display()
+            );
+            return;
+        }
+    };
+
+    let numbered = |i: u32| parent.join(format!("{stem}.{i}"));
+
+    // Walk descending from KEEP - 1 down to 1. Each rename atomically
+    // replaces the destination, so the old `.<KEEP>` is dropped when the
+    // first iteration renames `.<KEEP - 1>` over it (G-HIGH-1 fix).
+    if APP_LOG_KEEP >= 2 {
+        for i in (1..=APP_LOG_KEEP - 1).rev() {
+            let from = numbered(i);
+            if !from.exists() {
+                continue;
+            }
+            let to = numbered(i + 1);
+            if let Err(e) = std::fs::rename(&from, &to) {
+                eprintln!(
+                    "[log] rotate: failed to rename {} → {}: {} (continuing)",
+                    from.display(),
+                    to.display(),
+                    e
+                );
+            }
+        }
+    } else {
+        // KEEP == 1 (or 0): no shift needed; `.1` will be overwritten below.
+        // KEEP == 0 is degenerate but harmless — `app.log` gets truncated
+        // to a fresh file with no retained history.
+    }
+
+    // Shift the active file into the `.1` slot.
+    if APP_LOG_KEEP >= 1 {
+        let one = numbered(1);
+        if let Err(e) = std::fs::rename(base, &one) {
+            eprintln!(
+                "[log] rotate: failed to rename {} → {}: {} — leaving active file in place",
+                base.display(),
+                one.display(),
+                e
+            );
+            // Active file stays — next writes append to it; cap will be
+            // breached temporarily.
+            return;
+        }
+    } else if let Err(e) = std::fs::remove_file(base) {
+        eprintln!(
+            "[log] rotate: KEEP=0 and failed to remove {}: {} — leaving active file in place",
+            base.display(),
+            e
+        );
+        return;
+    }
+
+    // Open a fresh active file. `create_new(true)` so we don't inherit a
+    // stale fd or content if something else raced.
+    let fresh = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(base)
+        .or_else(|e| {
+            // Fallback: another process already created it. Open append-mode
+            // so we don't truncate their content. Log to stderr for visibility.
+            eprintln!(
+                "[log] rotate: create_new failed for {} ({}); falling back to append",
+                base.display(),
+                e
+            );
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(base)
+        });
+
+    match fresh {
+        Ok(f) => {
+            *file_guard = f;
+            state.bytes.store(0, Ordering::Relaxed);
+        }
+        Err(e) => {
+            eprintln!(
+                "[log] rotate: failed to open fresh active file at {}: {}",
+                base.display(),
+                e
+            );
+            // Counter NOT reset — next writes will see "over cap" and try
+            // rotating again. Active fd in `file_guard` is now stale (the
+            // file on disk was renamed). Subsequent writes silently fail at
+            // the OS level on Unix; on Windows the file handle remains
+            // valid via the moved inode. Either way, no log is lost on
+            // stderr.
+        }
+    }
+}
 
 /// Install the global `log` backend. Safe to call from any entry point and
 /// safe to call multiple times.
@@ -34,21 +195,34 @@ pub fn init_logger() {
 }
 
 fn init_logger_inner() {
-    let log_file: Option<std::sync::Mutex<std::fs::File>> =
-        crate::config::config_dir().and_then(|dir| {
-            let _ = std::fs::create_dir_all(&dir);
-            let path = dir.join("app.log");
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .ok()
-                .map(|f| {
-                    eprintln!("[log] file logging to {}", path.display());
-                    std::sync::Mutex::new(f)
+    let log_state: Option<Arc<AppLogFile>> = crate::config::config_dir().and_then(|dir| {
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("app.log");
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok()
+            .map(|f| {
+                eprintln!("[log] file logging to {}", path.display());
+                let initial_bytes = f.metadata().map(|m| m.len()).unwrap_or(0);
+                Arc::new(AppLogFile {
+                    file: Mutex::new(f),
+                    bytes: AtomicU64::new(initial_bytes),
+                    path,
                 })
-        });
-    let log_file = std::sync::Arc::new(log_file);
+            })
+    });
+
+    // #280 §2.6 — first-time migration. Existing users may have multi-GB
+    // app.log from before the rotation rollout; rotate immediately so this
+    // run starts on a fresh file instead of appending to it.
+    if let Some(ref state) = log_state {
+        if state.bytes.load(Ordering::Relaxed) >= APP_LOG_MAX_BYTES {
+            rotate(state);
+        }
+    }
+    let log_state = Arc::new(log_state);
 
     // #93 precedence: RUST_LOG env > settings.logLevel > "agentscommander=info" default.
     // - read_log_level_only is read-only and side-effect-free: does NOT trigger
@@ -68,7 +242,7 @@ fn init_logger_inner() {
     env_logger::Builder::from_env(env_logger::Env::default())
         .parse_filters(&resolved_filter)
         .format({
-            let log_file = std::sync::Arc::clone(&log_file);
+            let log_state = Arc::clone(&log_state);
             move |buf, record| {
                 let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
                 let line = format!(
@@ -78,12 +252,12 @@ fn init_logger_inner() {
                     record.target(),
                     record.args()
                 );
-                // #280 §1.4 — universal secret scrub before the line
-                // reaches stderr or app.log. Defends against new call sites
-                // and third-party crate errors that may have bypassed
-                // api.rs's and voice.rs's redaction. Near-zero cost when
-                // the line contains no "/bot" or "key=" substring
-                // (early-return inside redact()).
+                // #280 — universal secret scrub before the line reaches
+                // stderr or app.log. Defends against new call sites and
+                // third-party crate errors that may have bypassed api.rs's
+                // and voice.rs's redaction. Near-zero cost when the line
+                // contains no "/bot" or "key=" substring (early-return
+                // inside redact()).
                 let line = crate::telegram::redact::redact(&line);
                 // #264 — tee ERROR-level entries from AgentsCommander's own
                 // targets into the process-wide sink for the UI error modal.
@@ -94,9 +268,16 @@ fn init_logger_inner() {
                     error_sink().capture(ErrorLogEntry::from_record(ts.to_string(), record));
                 }
                 buf.write_all(line.as_bytes())?;
-                if let Some(ref file_mtx) = *log_file {
-                    if let Ok(mut f) = file_mtx.lock() {
+                if let Some(ref state) = *log_state {
+                    if let Ok(mut f) = state.file.lock() {
                         let _ = f.write_all(line.as_bytes());
+                    }
+                    let new_total = state
+                        .bytes
+                        .fetch_add(line.len() as u64, Ordering::Relaxed)
+                        + line.len() as u64;
+                    if new_total >= APP_LOG_MAX_BYTES {
+                        rotate(state);
                     }
                 }
                 Ok(())
@@ -129,10 +310,10 @@ impl ErrorLogEntry {
     /// Factored out of the format closure so it is unit-testable with a
     /// synthetic `Record` — the closure itself cannot be invoked from a test.
     fn from_record(timestamp: String, record: &log::Record) -> Self {
-        // #280 §1.4 — the error modal is exposed to the UI; scrub the
-        // message so a leaked bot token / Gemini key cannot reach the
-        // frontend payload. Source-side redaction in api.rs / voice.rs is
-        // the first line of defense; this is defense-in-depth.
+        // #280 — the error modal is exposed to the UI; scrub the message
+        // so a leaked bot token / Gemini key cannot reach the frontend
+        // payload. Source-side redaction in api.rs / voice.rs is the
+        // first line of defense; this is defense-in-depth.
         let message = crate::telegram::redact::redact(&record.args().to_string());
         Self {
             timestamp,
@@ -302,10 +483,10 @@ mod tests {
         assert_eq!(built.message, "line one\nline two");
     }
 
-    /// #280 §1.4 — the error modal payload reaches the UI; secrets must
-    /// be scrubbed at `from_record` time so even a future caller that
-    /// bypassed the source-side redaction in api.rs cannot leak a token
-    /// into the frontend.
+    /// #280 — the error modal payload reaches the UI; secrets must be
+    /// scrubbed at `from_record` time so even a future caller that bypassed
+    /// the source-side redaction in api.rs cannot leak a token into the
+    /// frontend.
     #[test]
     fn from_record_redacts_telegram_token_in_message() {
         let fake_url = "error sending request for url \
@@ -385,6 +566,132 @@ mod tests {
         assert_eq!(
             drained[ERROR_BUFFER_CAP - 1].message,
             (ERROR_BUFFER_CAP + overflow - 1).to_string()
+        );
+    }
+
+    // ── #280 §2 — app.log rotation tests ──────────────────────────────
+
+    /// Build a synthetic `AppLogFile` rooted at `dir`. `bytes` is preloaded
+    /// so the tests can drive `rotate()` directly without needing to write
+    /// `APP_LOG_MAX_BYTES` worth of data first.
+    fn build_app_log(dir: &std::path::Path, bytes: u64) -> Arc<AppLogFile> {
+        let path = dir.join("app.log");
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open active log");
+        Arc::new(AppLogFile {
+            file: Mutex::new(f),
+            bytes: AtomicU64::new(bytes),
+            path,
+        })
+    }
+
+    /// Seed `app.log.<i>` with the given marker content so a successful
+    /// rotation can be observed by reading back which marker now lives
+    /// where.
+    fn seed_numbered(dir: &std::path::Path, i: u32, marker: &str) {
+        let p = dir.join(format!("app.log.{i}"));
+        std::fs::write(p, marker).expect("seed numbered");
+    }
+
+    fn read_marker(dir: &std::path::Path, name: &str) -> Option<String> {
+        std::fs::read_to_string(dir.join(name)).ok()
+    }
+
+    #[test]
+    fn rotate_renames_active_to_dot_1_and_creates_fresh() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let state = build_app_log(tmp.path(), APP_LOG_MAX_BYTES);
+        // Put a marker in the active file so we can verify it moved to .1.
+        std::fs::write(&state.path, b"ACTIVE").expect("seed active");
+
+        rotate(&state);
+
+        assert_eq!(read_marker(tmp.path(), "app.log.1").as_deref(), Some("ACTIVE"));
+        // Fresh active file exists and is empty.
+        let active = std::fs::read(tmp.path().join("app.log")).expect("read active");
+        assert!(active.is_empty(), "active file should be empty after rotate");
+        // Counter reset.
+        assert_eq!(state.bytes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn rotate_shifts_existing_numbered_files() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let state = build_app_log(tmp.path(), APP_LOG_MAX_BYTES);
+        std::fs::write(&state.path, b"ACTIVE").expect("seed active");
+        seed_numbered(tmp.path(), 1, "ONE");
+        seed_numbered(tmp.path(), 2, "TWO");
+
+        rotate(&state);
+
+        assert_eq!(read_marker(tmp.path(), "app.log.1").as_deref(), Some("ACTIVE"));
+        assert_eq!(read_marker(tmp.path(), "app.log.2").as_deref(), Some("ONE"));
+        assert_eq!(read_marker(tmp.path(), "app.log.3").as_deref(), Some("TWO"));
+    }
+
+    /// G-HIGH-1 — the rotation walks `(KEEP - 1) ..= 1`, so the highest
+    /// rename is `.<KEEP - 1> → .<KEEP>`. The old `.<KEEP>` is evicted
+    /// atomically. No `.<KEEP + 1>` is ever created.
+    #[test]
+    fn rotate_caps_total_file_count_at_keep_plus_one() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let state = build_app_log(tmp.path(), APP_LOG_MAX_BYTES);
+        std::fs::write(&state.path, b"ACTIVE").expect("seed active");
+        // Pre-seed every retention slot.
+        for i in 1..=APP_LOG_KEEP {
+            seed_numbered(tmp.path(), i, &format!("DOT_{i}"));
+        }
+
+        rotate(&state);
+
+        // After rotation: active + KEEP numbered files = KEEP + 1.
+        let count = std::fs::read_dir(tmp.path())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name == "app.log" || name.starts_with("app.log.")
+            })
+            .count();
+        assert_eq!(count, (APP_LOG_KEEP + 1) as usize);
+
+        // `.<KEEP + 1>` must NOT exist.
+        let overflow = tmp.path().join(format!("app.log.{}", APP_LOG_KEEP + 1));
+        assert!(!overflow.exists(), "overflow file should not exist: {:?}", overflow);
+
+        // Oldest retained slot (.<KEEP>) is the former .<KEEP - 1> content
+        // (because we walked descending and renamed .<KEEP - 1> over the
+        // prior .<KEEP>, evicting it).
+        let oldest = read_marker(tmp.path(), &format!("app.log.{}", APP_LOG_KEEP));
+        assert_eq!(oldest.as_deref(), Some(format!("DOT_{}", APP_LOG_KEEP - 1).as_str()));
+    }
+
+    /// G-MED-1 — under concurrent invocation, `rotate()` re-checks the
+    /// byte counter inside the lock. After the first rotation resets the
+    /// counter to 0, the second call must return early without shifting
+    /// the just-rotated files.
+    #[test]
+    fn rotate_is_idempotent_under_concurrent_invocations() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let state = build_app_log(tmp.path(), APP_LOG_MAX_BYTES);
+        std::fs::write(&state.path, b"ACTIVE").expect("seed active");
+
+        // First rotation: shifts ACTIVE → .1.
+        rotate(&state);
+        assert_eq!(read_marker(tmp.path(), "app.log.1").as_deref(), Some("ACTIVE"));
+        assert_eq!(state.bytes.load(Ordering::Relaxed), 0);
+
+        // Second rotation with bytes already reset: must be a no-op. If it
+        // wasn't idempotent, the (now-empty) active file would shift to
+        // .1, evicting the real backup.
+        rotate(&state);
+        assert_eq!(read_marker(tmp.path(), "app.log.1").as_deref(), Some("ACTIVE"));
+        assert!(
+            read_marker(tmp.path(), "app.log.2").is_none(),
+            "no second-slot file should exist after idempotent second rotation"
         );
     }
 }
