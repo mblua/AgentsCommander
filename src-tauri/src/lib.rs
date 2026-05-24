@@ -1240,6 +1240,7 @@ pub fn run() {
             commands::config::set_inject_rtk_hook,
             commands::config::set_rtk_prompt_dismissed,
             commands::config::set_sounds_enabled,
+            commands::config::set_theme_light,
             commands::config::sweep_rtk_hook,
             commands::config::get_rtk_startup_status,
             commands::repos::search_repos,

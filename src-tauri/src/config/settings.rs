@@ -189,6 +189,11 @@ pub struct AppSettings {
     /// `<config_dir>/`. Absolute ⇒ used as-is.
     #[serde(default)]
     pub agent_templates_path: Option<String>,
+    /// When true, the app uses the light theme; when false, the dark theme.
+    /// Defaults to `true` so existing settings files without the field stay on
+    /// the legacy light-mode behavior. Issue #289.
+    #[serde(default = "default_true")]
+    pub theme_light: bool,
 }
 
 fn default_true() -> bool {
@@ -272,6 +277,7 @@ impl Default for AppSettings {
             rtk_prompt_dismissed: false,
             auto_generate_brief_title: true,
             agent_templates_path: None,
+            theme_light: true,
         }
     }
 }
@@ -824,6 +830,76 @@ mod tests {
         assert!(s.sounds_enabled);
         // Existing per-feature toggle is honored as-is.
         assert!(!s.team_idle_beep_enabled);
+    }
+
+    #[test]
+    fn theme_light_round_trips_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(s.theme_light);
+        s.theme_light = false;
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"themeLight\":false"));
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(!back.theme_light);
+    }
+
+    #[test]
+    fn theme_light_defaults_true_when_missing_from_json() {
+        // Old settings.json without the new field must deserialize with
+        // theme_light = true so existing users stay on the legacy light-mode
+        // behavior until they explicitly switch to dark.
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": [],
+            "startOnlyCoordinators": true,
+            "sidebarAlwaysOnTop": false,
+            "raiseTerminalOnClick": true,
+            "voiceToTextEnabled": false,
+            "geminiApiKey": "",
+            "geminiModel": "gemini-2.5-flash",
+            "voiceAutoExecute": true,
+            "voiceAutoExecuteDelay": 15,
+            "sidebarZoom": 1.0,
+            "terminalZoom": 1.0,
+            "mainZoom": 1.0,
+            "guideZoom": 1.0,
+            "darkfactoryZoom": 1.0,
+            "sidebarGeometry": null,
+            "terminalGeometry": null,
+            "mainGeometry": null,
+            "mainSidebarWidth": 280.0,
+            "mainSidebarSide": "right",
+            "mainAlwaysOnTop": false,
+            "webServerEnabled": false,
+            "webServerPort": 7777,
+            "webServerBind": "127.0.0.1",
+            "projectPath": null,
+            "projectPaths": [],
+            "sidebarStyle": "noir-minimal",
+            "onboardingDismissed": false,
+            "coordSortByActivity": false
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(s.theme_light);
+    }
+
+    #[test]
+    fn theme_light_explicit_false_survives_round_trip() {
+        // Once a user explicitly disables light mode, the value must survive
+        // serialize/deserialize without reverting to the `default_true` default.
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "themeLight": false
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize");
+        assert!(!s.theme_light);
+        let out = serde_json::to_string(&s).expect("serialize");
+        let back: AppSettings = serde_json::from_str(&out).expect("re-deserialize");
+        assert!(!back.theme_light);
     }
 
     #[test]

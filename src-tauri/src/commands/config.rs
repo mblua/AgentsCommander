@@ -238,6 +238,25 @@ pub async fn set_sounds_enabled(
     Ok(())
 }
 
+/// Narrow setter — flips ONLY `theme_light`. Same lock-held-through-save
+/// pattern as `set_sounds_enabled` (issue #289). Lets the UI persist the
+/// user's light/dark mode choice without going through `update_settings`,
+/// which could clobber unrelated fields from a stale snapshot. The
+/// `update_settings` caveat documented on `set_inject_rtk_hook` applies here
+/// too.
+#[tauri::command]
+pub async fn set_theme_light(
+    settings: State<'_, SettingsState>,
+    value: bool,
+) -> Result<(), String> {
+    let mut s = settings.write().await;
+    s.theme_light = value;
+    let snapshot = s.clone();
+    save_settings(&snapshot)?;
+    drop(s); // explicit; lock released AFTER the disk write completes
+    Ok(())
+}
+
 /// Sweep every AC-managed agent directory and apply
 /// `ensure_rtk_pretool_hook(dir, enabled)`. Best-effort per directory:
 /// per-dir failures are logged + appended to `errors` and the sweep
