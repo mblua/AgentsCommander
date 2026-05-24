@@ -183,6 +183,12 @@ pub struct AppSettings {
     /// See plan `_plans/107-auto-brief-title.md`.
     #[serde(default = "default_true")]
     pub auto_generate_brief_title: bool,
+    /// Optional override for the local agent-templates directory used by the
+    /// New Agent role-template picker (#271). Empty/missing ⇒ default
+    /// `<config_dir>/agent-templates/`. Relative ⇒ resolved against
+    /// `<config_dir>/`. Absolute ⇒ used as-is.
+    #[serde(default)]
+    pub agent_templates_path: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -265,6 +271,7 @@ impl Default for AppSettings {
             inject_rtk_hook: false,
             rtk_prompt_dismissed: false,
             auto_generate_brief_title: true,
+            agent_templates_path: None,
         }
     }
 }
