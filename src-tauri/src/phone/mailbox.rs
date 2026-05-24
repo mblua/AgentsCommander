@@ -14,6 +14,40 @@ use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
 use crate::{AppOutbox, MasterToken};
 
+fn sender_name_for_session_cwd_with_root_flag(
+    working_directory: &str,
+    is_root_agent: bool,
+) -> String {
+    if is_root_agent {
+        crate::config::root_agent::ROOT_AGENT_SENDER.to_string()
+    } else {
+        crate::config::teams::agent_fqn_from_path(working_directory)
+    }
+}
+
+fn sender_name_for_session_cwd(working_directory: &str) -> String {
+    let is_root_agent = crate::config::root_agent::is_root_agent_path(working_directory);
+    sender_name_for_session_cwd_with_root_flag(working_directory, is_root_agent)
+}
+
+fn validate_root_sender_route(
+    to: &str,
+    project_paths: &[String],
+    is_master: bool,
+    saw_session_token: bool,
+    token_belongs_to_root_agent: bool,
+) -> Result<(), &'static str> {
+    if !is_master && (!saw_session_token || !token_belongs_to_root_agent) {
+        return Err("Root Agent sender requires the live root session token");
+    }
+
+    if crate::config::teams::verified_wg_coordinator_target(to, project_paths).is_none() {
+        return Err("Root Agent can only message verified WG coordinator replicas");
+    }
+
+    Ok(())
+}
+
 /// If `outbox_file` lives at
 /// `<project_dir>/.ac-new/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
 /// return `project_dir` as a UTF-8 `String`. Otherwise, `None`.
@@ -496,8 +530,7 @@ impl MailboxPoller {
             let outbox_dir = path.parent().unwrap_or(Path::new(""));
             // outbox_dir is <repo>/.agentscommander/outbox — go up 2 levels to get the repo path
             if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
-                let derived =
-                    crate::config::teams::agent_fqn_from_path(&repo_path.to_string_lossy());
+                let derived = sender_name_for_session_cwd(&repo_path.to_string_lossy());
                 if !anti_spoof_accept(&msg.from, &derived) {
                     return self
                         .reject_message(
@@ -590,13 +623,11 @@ impl MailboxPoller {
             false
         };
 
-        if is_master {
-            log::info!(
-                "[mailbox] Master token used — bypassing team validation for {} → {}",
-                msg.from,
-                msg.to
-            );
-        } else {
+        let root_agent_claim = msg.from == crate::config::root_agent::ROOT_AGENT_SENDER;
+        let mut token_belongs_to_root_agent = false;
+        let mut saw_session_token = false;
+
+        if !is_master {
             // Validate session token if present (anti-spoofing)
             if let Some(ref token_str) = msg.token {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -625,12 +656,18 @@ impl MailboxPoller {
                                 .await;
                         }
                         Some(session) => {
+                            saw_session_token = true;
+                            token_belongs_to_root_agent = session.is_root_agent
+                                || crate::config::root_agent::is_root_agent_path(
+                                    &session.working_directory,
+                                );
                             // Anti-spoofing: verify msg.from matches the token's session CWD.
                             // Post-§AR2-norm, msg.from is canonical FQN (or legacy unqualified
                             // if expected_from was unavailable). Session-derived name uses the
                             // canonical helper; comparison is exact equality.
-                            let session_name = crate::config::teams::agent_fqn_from_path(
+                            let session_name = sender_name_for_session_cwd_with_root_flag(
                                 &session.working_directory,
+                                token_belongs_to_root_agent,
                             );
                             if session_name != msg.from {
                                 log::warn!(
@@ -669,8 +706,48 @@ impl MailboxPoller {
                         .await;
                 }
             }
+        }
 
-            // Validate peer visibility (team membership) — skipped for master token
+        if root_agent_claim {
+            let mut paths = {
+                let cfg = app.state::<SettingsState>();
+                let c = cfg.read().await;
+                c.project_paths.clone()
+            };
+            if let Some(root_project) = derive_project_from_outbox_path(path) {
+                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+                let already_present = paths.iter().any(|p| match &canon_root_project {
+                    Some(canon_target) => {
+                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
+                    }
+                    None => p == &root_project,
+                });
+                if !already_present {
+                    paths.push(root_project);
+                }
+            }
+
+            if let Err(reason) = validate_root_sender_route(
+                &msg.to,
+                &paths,
+                is_master,
+                saw_session_token,
+                token_belongs_to_root_agent,
+            ) {
+                return self.reject_message(path, &msg, reason).await;
+            }
+            log::info!(
+                "[mailbox] Root Agent routing check passed: '{}' -> '{}'",
+                msg.from,
+                msg.to
+            );
+        } else if is_master {
+            log::info!(
+                "[mailbox] Master token used — bypassing team validation for {} -> {}",
+                msg.from,
+                msg.to
+            );
+        } else {
             let discovered_teams = teams::discover_teams();
             if !self.can_reach(&msg.from, &msg.to, &discovered_teams) {
                 log::warn!(
@@ -683,7 +760,7 @@ impl MailboxPoller {
                     .await;
             }
             log::info!(
-                "[mailbox] Routing check passed: '{}' → '{}'",
+                "[mailbox] Routing check passed: '{}' -> '{}'",
                 msg.from,
                 msg.to
             );
@@ -699,7 +776,9 @@ impl MailboxPoller {
                     // path). That derived path lands under
                     // <config_dir>/instances/<id>/responses/ which the CLI
                     // never polls, so writing there leaks orphan JSON files.
-                    return self.handle_close_session(app, path, &msg, is_app_outbox).await;
+                    return self
+                        .handle_close_session(app, path, &msg, is_app_outbox)
+                        .await;
                 }
                 _ => {
                     return self
@@ -1509,10 +1588,7 @@ impl MailboxPoller {
         let mut restore_in_progress_result = false;
         if session_ids.is_empty() {
             let restore_flag = app.state::<Arc<crate::RestoreInProgress>>();
-            if restore_flag
-                .0
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
+            if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 let poll = std::time::Duration::from_millis(100);
                 // We can't pass `self.find_all_sessions(...)` as a closure
@@ -1521,10 +1597,7 @@ impl MailboxPoller {
                 // The helper's logic is unit-tested separately (D.5a).
                 loop {
                     if std::time::Instant::now() >= deadline {
-                        if restore_flag
-                            .0
-                            .load(std::sync::atomic::Ordering::SeqCst)
-                        {
+                        if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
                             restore_in_progress_result = true;
                         }
                         break;
@@ -1534,10 +1607,7 @@ impl MailboxPoller {
                     if !session_ids.is_empty() {
                         break;
                     }
-                    if !restore_flag
-                        .0
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                    {
+                    if !restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
                         // Flag cleared mid-wait. One final probe (the restore
                         // task may have just inserted our target as its last
                         // act before the guard dropped), then fall through.
@@ -2408,6 +2478,137 @@ mod tests {
             was_detached: false,
             detached_geometry: None,
         }
+    }
+
+    fn make_root_route_fixture(
+        spoofed_coordinator_identity: bool,
+    ) -> (tempfile::TempDir, Vec<String>) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let ac_new = project.join(".ac-new");
+        let team_dir = ac_new.join("_team_dev-team");
+        let origin_tech_lead = ac_new.join("_agent_tech-lead");
+        let origin_dev_rust = ac_new.join("_agent_dev-rust");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+        let tech_lead_replica = wg_dir.join("__agent_tech-lead");
+        let dev_rust_replica = wg_dir.join("__agent_dev-rust");
+
+        for dir in [
+            &team_dir,
+            &origin_tech_lead,
+            &origin_dev_rust,
+            &tech_lead_replica,
+            &dev_rust_replica,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        let tech_lead_identity = if spoofed_coordinator_identity {
+            "../../_agent_dev-rust"
+        } else {
+            "../../_agent_tech-lead"
+        };
+        std::fs::write(
+            tech_lead_replica.join("config.json"),
+            format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+        )
+        .unwrap();
+        std::fs::write(
+            dev_rust_replica.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust"}"#,
+        )
+        .unwrap();
+
+        let paths = vec![temp.path().to_string_lossy().to_string()];
+        (temp, paths)
+    }
+
+    #[test]
+    fn sender_name_for_session_cwd_with_root_flag_uses_root_sender() {
+        assert_eq!(
+            sender_name_for_session_cwd_with_root_flag("C:/tmp/ac-root-agent", true),
+            crate::config::root_agent::ROOT_AGENT_SENDER
+        );
+        assert_eq!(
+            sender_name_for_session_cwd_with_root_flag(
+                "C:/tmp/proj-a/.ac-new/wg-1-dev-team/__agent_tech-lead",
+                false
+            ),
+            "proj-a:wg-1-dev-team/tech-lead"
+        );
+    }
+
+    #[test]
+    fn root_agent_claim_accepts_live_root_uuid_to_verified_wg_coordinator() {
+        let (_temp, paths) = make_root_route_fixture(false);
+
+        assert_eq!(
+            validate_root_sender_route("proj-a:wg-1-dev-team/tech-lead", &paths, false, true, true,),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn root_agent_claim_rejects_non_root_uuid_claiming_root_sender() {
+        let (_temp, paths) = make_root_route_fixture(false);
+
+        assert_eq!(
+            validate_root_sender_route(
+                "proj-a:wg-1-dev-team/tech-lead",
+                &paths,
+                false,
+                true,
+                false,
+            ),
+            Err("Root Agent sender requires the live root session token")
+        );
+    }
+
+    #[test]
+    fn root_agent_claim_rejects_origin_coordinator_target() {
+        let (_temp, paths) = make_root_route_fixture(false);
+
+        assert_eq!(
+            validate_root_sender_route("proj-a/tech-lead", &paths, false, true, true),
+            Err("Root Agent can only message verified WG coordinator replicas")
+        );
+    }
+
+    #[test]
+    fn root_agent_claim_rejects_spoofed_wg_coordinator_dir_name() {
+        let (_temp, paths) = make_root_route_fixture(true);
+
+        assert_eq!(
+            validate_root_sender_route("proj-a:wg-1-dev-team/tech-lead", &paths, false, true, true,),
+            Err("Root Agent can only message verified WG coordinator replicas")
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_message_stale_uuid_still_rejected() {
+        let mgr = SessionManager::new();
+
+        assert!(mgr.find_by_token(Uuid::new_v4()).await.is_none());
+    }
+
+    #[test]
+    fn ordinary_message_malformed_uuid_still_rejected() {
+        assert!(Uuid::parse_str("not-a-session-uuid").is_err());
+    }
+
+    #[test]
+    fn master_root_sender_still_restricted_to_verified_wg_coordinator() {
+        let (_temp, paths) = make_root_route_fixture(false);
+
+        assert_eq!(
+            validate_root_sender_route("proj-a/tech-lead", &paths, true, false, false),
+            Err("Root Agent can only message verified WG coordinator replicas")
+        );
     }
 
     /// §224 regression: an idle session with `waiting_for_input=true` (the bug

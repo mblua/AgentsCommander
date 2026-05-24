@@ -13,11 +13,11 @@ ROUTING: Before delivery, the CLI validates that the sender can reach the destin
 membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
 DISCOVERY: Use `list-peers-lean` to get valid agent names for --to. The \"name\" field in the JSON output \
 is the value to use.\n\n\
-FILE-BASED MESSAGING: --send <filename> delivers the file at <workgroup-root>/messaging/<filename> \
-to the recipient. The PTY only carries a short notification pointing to the absolute path; the \
-recipient reads the file via filesystem, bypassing PTY truncation. Sender MUST write the file before \
-invoking this command. Filename must exist in the messaging directory and match the canonical shape: \
-YYYYMMDD-HHMMSS-<wgN>-<from>-to-<wgN>-<to>-<slug>[.N].md.")]
+FILE-BASED MESSAGING: --send <filename> delivers a Markdown file. For WG \
+replicas the file is resolved from <workgroup-root>/messaging/<filename>. \
+For the Root Agent the file is resolved from <root-agent-dir>/messaging/<filename>. \
+`--send` is a filename only, never a path. Root Agent --to targets must be \
+verified WG coordinator replica names returned by list-peers-lean.")]
 pub struct SendArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
@@ -74,6 +74,18 @@ pub(crate) fn agent_name_from_root(root: &str) -> String {
     crate::config::teams::agent_fqn_from_path(root)
 }
 
+pub(crate) fn sender_for_root(root: &str, root_is_root_agent: bool) -> String {
+    if root_is_root_agent {
+        crate::config::root_agent::ROOT_AGENT_SENDER.to_string()
+    } else {
+        agent_name_from_root(root)
+    }
+}
+
+fn root_agent_target_allowed(target: &str, project_paths: &[String]) -> bool {
+    crate::config::teams::verified_wg_coordinator_target(target, project_paths).is_some()
+}
+
 /// If `root` lives inside `<project_dir>/.ac-new/wg-<N>-*/__agent_*/`,
 /// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
 /// inside a WG-replica shape OR if the resulting `project_dir` is not valid
@@ -122,7 +134,8 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     };
 
-    let sender = agent_name_from_root(&root);
+    let root_is_root_agent = crate::config::root_agent::is_root_agent_path(&root);
+    let sender = sender_for_root(&root, root_is_root_agent);
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
     // Validate mode — "queue" is no longer supported
@@ -158,10 +171,12 @@ pub fn execute(args: SendArgs) -> i32 {
         // ago inside `derive_root_project_dir`), fall back to string-equality
         // rather than a broken `None == None` match.
         let canon_root_project = std::fs::canonicalize(&root_project).ok();
-        let already_present = effective_project_paths.iter().any(|p| match &canon_root_project {
-            Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
-            None => p == &root_project,
-        });
+        let already_present = effective_project_paths
+            .iter()
+            .any(|p| match &canon_root_project {
+                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                None => p == &root_project,
+            });
         if !already_present {
             effective_project_paths.push(root_project);
         }
@@ -177,7 +192,15 @@ pub fn execute(args: SendArgs) -> i32 {
 
     // ── Pre-validate routing ──────────────────────────────────────────────
 
-    if !is_root {
+    if root_is_root_agent {
+        if !root_agent_target_allowed(&resolved_to, &effective_project_paths) {
+            eprintln!(
+                "Error: root-agent routing rejected — '{}' is not a verified WG coordinator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
+                resolved_to
+            );
+            return 1;
+        }
+    } else if !is_root {
         // Load discovered teams and check if sender can reach destination BEFORE
         // writing to outbox. Fail immediately with a clear error if not.
         let discovered = teams::discover_teams();
@@ -199,22 +222,36 @@ pub fn execute(args: SendArgs) -> i32 {
 
     // Resolve message body from --send (file-based messaging per plan §4.1 [r2])
     let message_body = if let Some(ref filename) = args.send {
+        if let Err(e) = crate::phone::messaging::validate_filename_only(filename) {
+            eprintln!("Error: {}", e);
+            return 1;
+        }
         let agent_root_path = std::path::Path::new(&root);
-        let wg_root = match crate::phone::messaging::workgroup_root(agent_root_path) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!(
-                    "Error: --send requires --root under a wg-<N>-* ancestor; {}",
-                    e
-                );
-                return 1;
+        let msg_dir = if root_is_root_agent {
+            match crate::phone::messaging::root_messaging_dir(agent_root_path) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Error: failed to resolve root messaging dir: {}", e);
+                    return 1;
+                }
             }
-        };
-        let msg_dir = match crate::phone::messaging::messaging_dir(&wg_root) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("Error: failed to resolve messaging dir: {}", e);
-                return 1;
+        } else {
+            let wg_root = match crate::phone::messaging::workgroup_root(agent_root_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!(
+                        "Error: --send requires --root under a wg-<N>-* ancestor unless --root is the canonical Root Agent directory; {}",
+                        e
+                    );
+                    return 1;
+                }
+            };
+            match crate::phone::messaging::messaging_dir(&wg_root) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Error: failed to resolve messaging dir: {}", e);
+                    return 1;
+                }
             }
         };
         let abs = match crate::phone::messaging::resolve_existing_message(&msg_dir, filename) {
@@ -423,6 +460,90 @@ pub fn execute(args: SendArgs) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_verified_coordinator_fixture() -> (tempfile::TempDir, Vec<String>) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let ac_new = project.join(".ac-new");
+        let team_dir = ac_new.join("_team_dev-team");
+        let origin_tech_lead = ac_new.join("_agent_tech-lead");
+        let origin_dev_rust = ac_new.join("_agent_dev-rust");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+        let tech_lead_replica = wg_dir.join("__agent_tech-lead");
+        let dev_rust_replica = wg_dir.join("__agent_dev-rust");
+
+        for dir in [
+            &team_dir,
+            &origin_tech_lead,
+            &origin_dev_rust,
+            &tech_lead_replica,
+            &dev_rust_replica,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tech_lead_replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dev_rust_replica.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust"}"#,
+        )
+        .unwrap();
+
+        let paths = vec![temp.path().to_string_lossy().to_string()];
+        (temp, paths)
+    }
+
+    #[test]
+    fn root_agent_sender_uses_reserved_constant() {
+        assert_eq!(
+            sender_for_root("C:/tmp/agentscommander/ac-root-agent", true),
+            crate::config::root_agent::ROOT_AGENT_SENDER
+        );
+        assert_ne!(
+            sender_for_root("C:/tmp/agentscommander/_agent_root-agent", false),
+            crate::config::root_agent::ROOT_AGENT_SENDER
+        );
+    }
+
+    #[test]
+    fn root_agent_routing_rejects_origin_coordinator() {
+        let (_temp, paths) = make_verified_coordinator_fixture();
+
+        assert!(!root_agent_target_allowed("proj-a/tech-lead", &paths));
+    }
+
+    #[test]
+    fn send_rejects_send_path_for_wg() {
+        let filename = r"messaging\20260524-040000-wg1-a-to-wg1-b-x.md";
+
+        assert!(crate::phone::messaging::validate_filename_only(filename).is_err());
+    }
+
+    #[test]
+    fn send_rejects_send_path_for_root() {
+        let filename = r"messaging\20260524-040000-root-to-wg1-tech-lead-x.md";
+
+        assert!(crate::phone::messaging::validate_filename_only(filename).is_err());
+    }
+
+    #[test]
+    fn root_agent_send_accepts_verified_wg_coordinator() {
+        let (_temp, paths) = make_verified_coordinator_fixture();
+
+        assert!(root_agent_target_allowed(
+            "proj-a:wg-1-dev-team/tech-lead",
+            &paths
+        ));
+    }
 
     #[test]
     fn derive_root_project_dir_walks_up_wg_replica_path() {

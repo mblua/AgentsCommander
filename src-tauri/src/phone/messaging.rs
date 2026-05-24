@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub const MESSAGING_DIR_NAME: &str = "messaging";
 pub const PTY_SAFE_MAX: usize = 1024;
@@ -67,6 +67,12 @@ pub fn workgroup_root(agent_root: &Path) -> Result<PathBuf, MessagingError> {
 /// Messaging directory for a workgroup root. Creates the directory if missing.
 pub fn messaging_dir(wg_root: &Path) -> Result<PathBuf, MessagingError> {
     let dir = wg_root.join(MESSAGING_DIR_NAME);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+pub fn root_messaging_dir(root_agent_dir: &Path) -> Result<PathBuf, MessagingError> {
+    let dir = root_agent_dir.join(MESSAGING_DIR_NAME);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -228,40 +234,25 @@ pub fn create_message_file(
 ///
 /// Rejects path separators, `..`, non-`.md`, off-tree symlinks, and
 /// directories. Shape is also hard-enforced.
+pub fn validate_filename_only(filename: &str) -> Result<(), MessagingError> {
+    let has_non_normal_component = Path::new(filename)
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)));
+    if filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains(':')
+        || has_non_normal_component
+    {
+        return Err(MessagingError::InvalidFilename(filename.to_string()));
+    }
+    validate_filename_shape(filename)
+}
+
 pub fn resolve_existing_message(
     messaging_dir: &Path,
     filename: &str,
 ) -> Result<PathBuf, MessagingError> {
-    if filename.contains("..") {
-        return Err(MessagingError::InvalidFilename(filename.to_string()));
-    }
-
-    let normalized_owned: String;
-    let filename: &str = if filename.contains('/') || filename.contains('\\') {
-        let as_path = Path::new(filename);
-        let parent = as_path
-            .parent()
-            .ok_or_else(|| MessagingError::InvalidFilename(filename.to_string()))?;
-        let canon_msg_dir = std::fs::canonicalize(messaging_dir)
-            .map_err(|_| MessagingError::InvalidFilename(filename.to_string()))?;
-        let canon_parent = std::fs::canonicalize(parent)
-            .map_err(|_| MessagingError::InvalidFilename(filename.to_string()))?;
-        if canon_parent != canon_msg_dir {
-            return Err(MessagingError::InvalidFilename(filename.to_string()));
-        }
-        normalized_owned = as_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| MessagingError::InvalidFilename(filename.to_string()))?
-            .to_string();
-        &normalized_owned
-    } else {
-        filename
-    };
-    if !filename.ends_with(".md") {
-        return Err(MessagingError::InvalidFilename(filename.to_string()));
-    }
-    validate_filename_shape(filename)?;
+    validate_filename_only(filename)?;
 
     let candidate = messaging_dir.join(filename);
     if !candidate.exists() {
@@ -536,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_accepts_abs_path_inside_messaging_dir() {
+    fn resolve_rejects_abs_path_inside_messaging_dir() {
         let tmp = unique_tmp("ac-msg-abs-ok");
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -546,8 +537,10 @@ mod tests {
         drop(f);
 
         let abs_str = written_abs.to_string_lossy().to_string();
-        let resolved = resolve_existing_message(&tmp, &abs_str).unwrap();
-        assert_eq!(resolved.file_name().and_then(|n| n.to_str()).unwrap(), base);
+        assert!(matches!(
+            resolve_existing_message(&tmp, &abs_str),
+            Err(MessagingError::InvalidFilename(_))
+        ));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -610,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_accepts_relative_path_inside_messaging_dir() {
+    fn resolve_rejects_relative_path_inside_messaging_dir() {
         let tmp = unique_tmp("ac-msg-rel");
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -620,11 +613,48 @@ mod tests {
         drop(f);
 
         let rel = format!("{}/./{}", tmp.display(), base);
-        let resolved = resolve_existing_message(&tmp, &rel).unwrap();
-        assert_eq!(resolved.file_name().and_then(|n| n.to_str()).unwrap(), base);
+        assert!(matches!(
+            resolve_existing_message(&tmp, &rel),
+            Err(MessagingError::InvalidFilename(_))
+        ));
         let _ = abs_written;
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn validate_filename_only_rejects_windows_drive_prefix() {
+        let bad = r"C:\tmp\20260419-143052-wg7-a-to-wg7-b-nope.md";
+
+        assert!(matches!(
+            validate_filename_only(bad),
+            Err(MessagingError::InvalidFilename(_))
+        ));
+    }
+
+    #[test]
+    fn root_messaging_dir_creates_child_dir() {
+        let tmp = unique_tmp("ac-root-msg-dir");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let dir = root_messaging_dir(&tmp).unwrap();
+
+        assert_eq!(dir, tmp.join(MESSAGING_DIR_NAME));
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn root_filename_shape_is_accepted() {
+        let name = build_filename(
+            Utc.with_ymd_and_hms(2026, 5, 24, 4, 0, 0).unwrap(),
+            crate::config::root_agent::ROOT_AGENT_SHORT_NAME,
+            "wg1-tech-lead",
+            "smoke",
+        );
+
+        assert_eq!(name, "20260524-040000-root-to-wg1-tech-lead-smoke.md");
+        assert!(validate_filename_only(&name).is_ok());
     }
 
     #[test]
