@@ -10,7 +10,7 @@ use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::telegram::bridge::SessionReaderKind;
 use crate::telegram::manager::TelegramBridgeState;
-use crate::telegram::types::BridgeInfo;
+use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 use crate::session::profile::CodingAgentKind;
 
 /// Derive which session-reader pipeline to spawn for a given session.
@@ -303,23 +303,16 @@ fn truncate_caption(input: &str) -> String {
 ///     both at the metadata check and at the read/allocation boundary.
 ///   - `caption` is trimmed and clamped to `CAPTION_MAX_UTF16_UNITS` UTF-16
 ///     code units (Telegram's true unit). Empty captions are dropped.
-#[tauri::command]
-pub async fn telegram_send_image(
-    settings: State<'_, SettingsState>,
-    bot_id: String,
-    path: String,
-    caption: Option<String>,
+///
+/// Pure helper — does NOT depend on `tauri::State`. Shared by the Tauri
+/// command `telegram_send_image` and the `telegram-send-image` CLI verb so
+/// validation/multipart logic lives in exactly one place.
+pub(crate) async fn perform_send_image(
+    bot: &TelegramBotConfig,
+    path: &str,
+    caption: Option<&str>,
 ) -> Result<(), String> {
-    let cfg = settings.read().await;
-    let bot = cfg
-        .telegram_bots
-        .iter()
-        .find(|b| b.id == bot_id)
-        .ok_or_else(|| format!("Bot not found: {}", bot_id))?
-        .clone();
-    drop(cfg);
-
-    let p = Path::new(&path);
+    let p = Path::new(path);
     let lmeta = tokio::fs::symlink_metadata(p)
         .await
         .map_err(|e| format!("stat failed: {}", e))?;
@@ -366,7 +359,7 @@ pub async fn telegram_send_image(
         }
     };
 
-    let caption_trimmed: Option<String> = caption.as_deref().map(truncate_caption);
+    let caption_trimmed: Option<String> = caption.map(truncate_caption);
     let caption_ref: Option<&str> = caption_trimmed.as_deref().filter(|s| !s.is_empty());
 
     let ext = p
@@ -379,7 +372,7 @@ pub async fn telegram_send_image(
 
     log::info!(
         "telegram_send_image: bot={} path={} size={} ext={} endpoint={:?} mime={}",
-        bot_id, path, size, ext, endpoint, mime
+        bot.id, path, size, ext, endpoint, mime
     );
 
     let client = reqwest::Client::builder()
@@ -416,6 +409,25 @@ pub async fn telegram_send_image(
         log::error!("telegram_send_image failed: {}", e);
     }
     result
+}
+
+#[tauri::command]
+pub async fn telegram_send_image(
+    settings: State<'_, SettingsState>,
+    bot_id: String,
+    path: String,
+    caption: Option<String>,
+) -> Result<(), String> {
+    let cfg = settings.read().await;
+    let bot = cfg
+        .telegram_bots
+        .iter()
+        .find(|b| b.id == bot_id)
+        .ok_or_else(|| format!("Bot not found: {}", bot_id))?
+        .clone();
+    drop(cfg);
+
+    perform_send_image(&bot, &path, caption.as_deref()).await
 }
 
 #[cfg(test)]
