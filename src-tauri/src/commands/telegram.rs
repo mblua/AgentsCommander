@@ -227,7 +227,7 @@ const CAPTION_MAX_UTF16_UNITS: usize = 1024;
 const PHOTO_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Endpoint {
+enum Endpoint {
     Photo,
     Document,
 }
@@ -235,7 +235,7 @@ pub(crate) enum Endpoint {
 /// Deterministic endpoint selection. Photo path requires BOTH size <= 10 MB
 /// AND a known photo extension; everything else routes to document.
 /// `ext` must already be lowercased by the caller.
-pub(crate) fn choose_endpoint(size: u64, ext: &str) -> Endpoint {
+fn choose_endpoint(size: u64, ext: &str) -> Endpoint {
     if size <= SEND_PHOTO_MAX_BYTES && PHOTO_EXTENSIONS.contains(&ext) {
         Endpoint::Photo
     } else {
@@ -245,7 +245,7 @@ pub(crate) fn choose_endpoint(size: u64, ext: &str) -> Endpoint {
 
 /// Map a (lowercased) file extension to the explicit `Content-Type` we pass
 /// to Telegram. Unknown extensions fall back to `application/octet-stream`.
-pub(crate) fn extension_to_mime(ext: &str) -> &'static str {
+fn extension_to_mime(ext: &str) -> &'static str {
     match ext {
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
@@ -255,11 +255,31 @@ pub(crate) fn extension_to_mime(ext: &str) -> &'static str {
     }
 }
 
+/// True if `meta` describes a symlink or — on Windows — ANY reparse point
+/// (junction, mount point, …). Mirrors the helper in `commands/role_templates.rs`;
+/// keep both in sync. `FileType::is_symlink()` does not flag Windows junctions
+/// or file-typed reparse points, so the raw `FILE_ATTRIBUTE_REPARSE_POINT`
+/// (0x400) bit is checked as well.
+fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 /// Trim leading/trailing whitespace, then truncate to Telegram's 1024
 /// UTF-16-code-unit cap. If the cut lands inside a surrogate pair, drop the
 /// dangling high surrogate so `String::from_utf16_lossy` does not emit
 /// `U+FFFD`.
-pub(crate) fn truncate_caption(input: &str) -> String {
+fn truncate_caption(input: &str) -> String {
     let t = input.trim();
     let units: Vec<u16> = t.encode_utf16().collect();
     if units.len() <= CAPTION_MAX_UTF16_UNITS {
@@ -276,7 +296,8 @@ pub(crate) fn truncate_caption(input: &str) -> String {
 /// Send a local image (or generic file) through a configured Telegram bot.
 ///
 /// v1 contract:
-///   - `path` must point to an existing regular file; symlinks are rejected.
+///   - `path` must point to an existing regular file; symlinks and (on Windows)
+///     reparse points / junctions are rejected.
 ///   - Files <= 10 MB with extension in `PHOTO_EXTENSIONS` use `sendPhoto`.
 ///   - Everything else uses `sendDocument`, up to a 50 MB hard cap enforced
 ///     both at the metadata check and at the read/allocation boundary.
@@ -302,8 +323,11 @@ pub async fn telegram_send_image(
     let lmeta = tokio::fs::symlink_metadata(p)
         .await
         .map_err(|e| format!("stat failed: {}", e))?;
-    if lmeta.file_type().is_symlink() {
-        return Err(format!("Symlinks are not supported in v1: {}", path));
+    if is_link_or_reparse(&lmeta) {
+        return Err(format!(
+            "Symlinks and reparse points are not supported in v1: {}",
+            path
+        ));
     }
     if !lmeta.is_file() {
         return Err(format!("Not a regular file: {}", path));
