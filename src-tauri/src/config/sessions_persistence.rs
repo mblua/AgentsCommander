@@ -1,11 +1,118 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
+
+/// #280 §3.1 — diagnostic context captured when an atomic rename exhausts
+/// its retry budget. Surfaced in the caller's error string so a single
+/// ERROR line carries enough state to investigate the AV / Indexer / second
+/// instance contention pattern.
+#[derive(Debug)]
+struct RenameDiagnostics {
+    op_id: u64,
+    pid: u32,
+    instance_id: String,
+    tmp_exists_before: bool,
+    final_exists_before: bool,
+    attempts: u32,
+    last_os_error: Option<i32>,
+    duration: std::time::Duration,
+}
+
+/// #280 §3.1 — number of `std::fs::rename` attempts. With the
+/// `BACKOFFS_MS = [10, 50, 200]` schedule below, this gives a worst-case
+/// 260 ms blocking window before surfacing the error. G-MED-2 fix:
+/// 4 attempts so all three backoff entries are actually used (with
+/// `ATTEMPTS = 3` the 200 ms entry would be dead code).
+const RENAME_ATTEMPTS: u32 = 4;
+
+/// #280 §3.1 — backoff schedule between rename attempts in milliseconds.
+/// Tuned for Windows AV / Indexer holds which typically clear within
+/// ~50 ms but occasionally take >100 ms on cold caches. The terminal
+/// attempt has no backoff (we already failed `RENAME_ATTEMPTS - 1` times).
+const RENAME_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
+
+/// Atomic rename with bounded retries. Returns the diagnostic context so
+/// the caller can fold it into a single ERROR line. Successful retries are
+/// logged at INFO (low-frequency, useful signal that the race is
+/// happening). Intermediate failures log at DEBUG.
+///
+/// Risk note (deliberately accepted for #280 scope): this uses
+/// `std::thread::sleep`, which blocks the calling tokio worker thread for
+/// up to `sum(RENAME_BACKOFFS_MS)` = 260 ms during a contended rename.
+/// `save_sessions` is invoked from async Tauri command handlers, but the
+/// surrounding code (`std::fs::write`, `std::fs::rename`) is already sync,
+/// so this does not introduce a new class of blocking — only enlarges an
+/// existing one. The clean fix (`tokio::task::spawn_blocking` for the
+/// whole persistence block) is a wider signature/caller refactor and is
+/// out of scope for #280 (observability hardening, not concurrency
+/// rework). File a follow-up if the 260 ms tail latency becomes
+/// user-perceptible.
+fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, RenameDiagnostics)> {
+    static OP_ID: AtomicU64 = AtomicU64::new(0);
+    let op_id = OP_ID.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let instance_id = crate::config::agent_local_dir_name();
+    let start = std::time::Instant::now();
+    let tmp_exists_before = tmp.exists();
+    let final_exists_before = dst.exists();
+
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..RENAME_ATTEMPTS {
+        match std::fs::rename(tmp, dst) {
+            Ok(()) => {
+                if attempt > 0 {
+                    log::info!(
+                        "[sessions] rename succeeded after retry — op_id={} pid={} instance={} attempt={}/{} duration={:?}",
+                        op_id,
+                        pid,
+                        instance_id,
+                        attempt + 1,
+                        RENAME_ATTEMPTS,
+                        start.elapsed()
+                    );
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                log::debug!(
+                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} kind={:?}",
+                    attempt + 1,
+                    RENAME_ATTEMPTS,
+                    op_id,
+                    pid,
+                    e.raw_os_error(),
+                    e.kind()
+                );
+                last_err = Some(e);
+                let backoff_idx = attempt as usize;
+                if backoff_idx < RENAME_BACKOFFS_MS.len() {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        RENAME_BACKOFFS_MS[backoff_idx],
+                    ));
+                }
+            }
+        }
+    }
+
+    let e = last_err.expect("RENAME_ATTEMPTS >= 1, so the loop runs at least once");
+    let diag = RenameDiagnostics {
+        op_id,
+        pid,
+        instance_id,
+        tmp_exists_before,
+        final_exists_before,
+        attempts: RENAME_ATTEMPTS,
+        last_os_error: e.raw_os_error(),
+        duration: start.elapsed(),
+    };
+    Err((e.to_string(), diag))
+}
 
 /// Minimal session data needed to restore a session on next app start.
 /// No UUID, just the "recipe" to re-create it.
@@ -351,8 +458,26 @@ pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
     let tmp_path = dir.join("sessions.json.tmp");
     std::fs::write(&tmp_path, &json)
         .map_err(|e| format!("Failed to write temp sessions file: {}", e))?;
-    std::fs::rename(&tmp_path, &path)
-        .map_err(|e| format!("Failed to rename sessions file: {}", e))?;
+
+    // #280 §3.1 — atomic rename with bounded retries to absorb transient
+    // AV / Indexer / second-instance contention. On exhaustion, fold the
+    // diagnostic context into the error so the upstream `log::error!` in
+    // `persist_*` is self-contained for forensics.
+    if let Err((err_msg, d)) = rename_with_retry(&tmp_path, &path) {
+        return Err(format!(
+            "Failed to rename sessions file: {} [op_id={} pid={} instance={} attempts={} \
+             tmp_existed_before={} final_existed_before={} os_error={:?} duration={:?}]",
+            err_msg,
+            d.op_id,
+            d.pid,
+            d.instance_id,
+            d.attempts,
+            d.tmp_exists_before,
+            d.final_exists_before,
+            d.last_os_error,
+            d.duration
+        ));
+    }
 
     log::info!("Saved {} sessions to {:?}", sessions.len(), path);
     Ok(())
@@ -724,7 +849,10 @@ pub async fn persist_current_state(mgr: &SessionManager) {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_failed_recoverable, strip_auto_injected_args, PersistedSession};
+    use super::{
+        rename_with_retry, sanitize_failed_recoverable, strip_auto_injected_args, PersistedSession,
+        RENAME_ATTEMPTS,
+    };
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt.
@@ -1185,5 +1313,40 @@ mod tests {
         assert!(ps.git_repos.is_empty());
         assert!(ps.git_branch_source.is_none());
         assert!(ps.git_branch_prefix.is_none());
+    }
+
+    /// #280 §3.1 — happy path: rename a real tmp file over a real dst.
+    /// Must succeed on the first attempt (no INFO emission, no diagnostic
+    /// context returned).
+    #[test]
+    fn rename_with_retry_succeeds_on_first_attempt() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let src = tmp.path().join("a.tmp");
+        let dst = tmp.path().join("a");
+        std::fs::write(&src, b"payload").expect("seed src");
+        assert!(rename_with_retry(&src, &dst).is_ok());
+        assert!(dst.exists());
+        assert!(!src.exists());
+    }
+
+    /// #280 §3.1 — the retry loop exhausts all attempts and returns the
+    /// diagnostic context. We force consistent failure by pointing `tmp`
+    /// at a non-existent path (`NotFound` on both Windows and Unix).
+    #[test]
+    fn rename_with_retry_returns_diagnostics_after_exhaustion() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let src = tmp.path().join("does-not-exist.tmp");
+        let dst = tmp.path().join("dst");
+        let result = rename_with_retry(&src, &dst);
+        let (msg, diag) = result.expect_err("should fail every attempt");
+        assert!(!msg.is_empty(), "error message must not be empty");
+        assert_eq!(diag.attempts, RENAME_ATTEMPTS);
+        assert_eq!(diag.pid, std::process::id());
+        assert!(!diag.tmp_exists_before);
+        assert!(!diag.final_exists_before);
+        // Worst-case duration is bounded by the sum of backoffs (260 ms +
+        // syscall noise). Generous upper bound to keep the test stable on
+        // slow CI.
+        assert!(diag.duration < std::time::Duration::from_secs(2));
     }
 }
