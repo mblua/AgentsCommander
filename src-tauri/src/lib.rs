@@ -316,6 +316,9 @@ pub fn run() {
             // `drain_error_logs` call collects them.
             crate::logging::spawn_error_emit_task(app.handle().clone());
 
+            // #271 — seed `<config_dir>/agent-templates/` + README on startup.
+            crate::commands::role_templates::ensure_default_templates_dir_at_config();
+
             // Git branch watcher: polls git branch for each session every 5s
             let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
             git_watcher.start(shutdown_for_setup.clone());
@@ -1289,6 +1292,7 @@ pub fn run() {
             commands::entity_creation::create_workgroup,
             commands::entity_creation::delete_workgroup,
             commands::entity_creation::sync_workgroup_repos,
+            commands::role_templates::list_role_templates,
         ])
         .build(tauri::generate_context!())
         .expect("error while building application")
