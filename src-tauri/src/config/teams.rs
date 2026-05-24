@@ -189,6 +189,111 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WgCoordinatorReplica {
+    pub project: String,
+    pub team: String,
+    pub wg_name: String,
+    pub agent_name: String,
+    pub replica_dir: PathBuf,
+}
+
+fn canonical_path_string(path: &Path) -> Option<String> {
+    let canon = std::fs::canonicalize(path).ok()?;
+    let s = canon.to_string_lossy().to_string();
+    Some(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string())
+}
+
+pub fn resolve_wg_coordinator_replica(
+    ac_new_dir: &Path,
+    wg_dir: &Path,
+) -> Option<WgCoordinatorReplica> {
+    let project = ac_new_dir.parent()?.file_name()?.to_str()?.to_string();
+    let wg_name = wg_dir.file_name()?.to_str()?.to_string();
+    let team = wg_name
+        .strip_prefix("wg-")
+        .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
+
+    let team_dir = ac_new_dir.join(format!("_team_{}", team));
+    let team_config: serde_json::Value = std::fs::read_to_string(team_dir.join("config.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())?;
+    let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
+    let coordinator_abs = canonical_path_string(&team_dir.join(coordinator_ref))?;
+
+    for replica_entry in std::fs::read_dir(wg_dir).ok()?.flatten() {
+        let replica_dir = replica_entry.path();
+        if !replica_dir.is_dir() {
+            continue;
+        }
+        let dir_name = match replica_dir.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.starts_with("__agent_") => n,
+            _ => continue,
+        };
+        let config: serde_json::Value =
+            match std::fs::read_to_string(replica_dir.join("config.json"))
+                .ok()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+            {
+                Some(v) => v,
+                None => continue,
+            };
+        let identity_ref = match config.get("identity").and_then(|i| i.as_str()) {
+            Some(i) => i,
+            None => continue,
+        };
+        let identity_abs = match canonical_path_string(&replica_dir.join(identity_ref)) {
+            Some(path) => path,
+            None => continue,
+        };
+        if identity_abs == coordinator_abs {
+            return Some(WgCoordinatorReplica {
+                project,
+                team,
+                wg_name,
+                agent_name: dir_name
+                    .strip_prefix("__agent_")
+                    .unwrap_or(dir_name)
+                    .to_string(),
+                replica_dir,
+            });
+        }
+    }
+
+    None
+}
+
+pub fn verified_wg_coordinator_target(
+    target: &str,
+    project_paths: &[String],
+) -> Option<WgCoordinatorReplica> {
+    let (Some(project), local) = split_project_prefix(target) else {
+        return None;
+    };
+    if !is_valid_wg_local_shape(local) {
+        return None;
+    }
+    let (wg_name, agent_name) = local.split_once('/')?;
+
+    for (project_name, project_dir) in enumerate_project_dirs(project_paths) {
+        if project_name != project {
+            continue;
+        }
+        let ac_new_dir = project_dir.join(".ac-new");
+        let wg_dir = ac_new_dir.join(wg_name);
+        if !wg_dir.is_dir() {
+            continue;
+        }
+        if let Some(resolved) = resolve_wg_coordinator_replica(&ac_new_dir, &wg_dir) {
+            if resolved.agent_name == agent_name {
+                return Some(resolved);
+            }
+        }
+    }
+
+    None
+}
+
 /// Resolve an agent target to a canonical FQN.
 ///
 /// Accepts:
@@ -875,6 +980,104 @@ mod tests {
         }
         let paths = vec![tmp.path().to_string_lossy().to_string()];
         (tmp, paths)
+    }
+
+    fn make_coordinator_fixture(spoofed_coordinator_identity: bool) -> (FixtureRoot, Vec<String>) {
+        let tmp = FixtureRoot::new("teams-coord-fixture");
+        let project = tmp.path().join("proj-a");
+        let ac_new = project.join(".ac-new");
+        let team_dir = ac_new.join("_team_dev-team");
+        let origin_tech_lead = ac_new.join("_agent_tech-lead");
+        let origin_dev_rust = ac_new.join("_agent_dev-rust");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+        let tech_lead_replica = wg_dir.join("__agent_tech-lead");
+        let dev_rust_replica = wg_dir.join("__agent_dev-rust");
+
+        for dir in [
+            &team_dir,
+            &origin_tech_lead,
+            &origin_dev_rust,
+            &tech_lead_replica,
+            &dev_rust_replica,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        let tech_lead_identity = if spoofed_coordinator_identity {
+            "../../_agent_dev-rust"
+        } else {
+            "../../_agent_tech-lead"
+        };
+        std::fs::write(
+            tech_lead_replica.join("config.json"),
+            format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+        )
+        .unwrap();
+        std::fs::write(
+            dev_rust_replica.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust"}"#,
+        )
+        .unwrap();
+
+        let paths = vec![tmp.path().to_string_lossy().to_string()];
+        (tmp, paths)
+    }
+
+    #[test]
+    fn resolve_wg_coordinator_replica_uses_identity_not_dir_name() {
+        let (tmp, _paths) = make_coordinator_fixture(false);
+        let ac_new = tmp.path().join("proj-a").join(".ac-new");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+
+        let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir).expect("coordinator");
+
+        assert_eq!(resolved.project, "proj-a");
+        assert_eq!(resolved.team, "dev-team");
+        assert_eq!(resolved.wg_name, "wg-1-dev-team");
+        assert_eq!(resolved.agent_name, "tech-lead");
+        assert_eq!(
+            canonical_path_string(&resolved.replica_dir),
+            canonical_path_string(&wg_dir.join("__agent_tech-lead"))
+        );
+    }
+
+    #[test]
+    fn resolve_wg_coordinator_replica_rejects_spoofed_name() {
+        let (tmp, _paths) = make_coordinator_fixture(true);
+        let ac_new = tmp.path().join("proj-a").join(".ac-new");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+
+        assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
+    }
+
+    #[test]
+    fn verified_wg_coordinator_target_rejects_origin_coordinator() {
+        let (_tmp, paths) = make_coordinator_fixture(false);
+
+        assert!(verified_wg_coordinator_target("proj-a/tech-lead", &paths).is_none());
+    }
+
+    #[test]
+    fn verified_wg_coordinator_target_rejects_wrong_wg_member() {
+        let (_tmp, paths) = make_coordinator_fixture(false);
+
+        assert!(verified_wg_coordinator_target("proj-a:wg-1-dev-team/dev-rust", &paths).is_none());
+    }
+
+    #[test]
+    fn verified_wg_coordinator_target_accepts_identity_verified_coordinator() {
+        let (_tmp, paths) = make_coordinator_fixture(false);
+
+        let resolved = verified_wg_coordinator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
+            .expect("verified coordinator");
+
+        assert_eq!(resolved.agent_name, "tech-lead");
+        assert_eq!(resolved.team, "dev-team");
     }
 
     #[test]
