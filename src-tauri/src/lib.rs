@@ -1248,6 +1248,7 @@ pub fn run() {
             commands::telegram::telegram_list_bridges,
             commands::telegram::telegram_get_bridge,
             commands::telegram::telegram_send_test,
+            commands::telegram::telegram_send_image,
             commands::window::detach_terminal,
             commands::window::attach_terminal,
             commands::window::list_detached_sessions,
