@@ -170,11 +170,14 @@ fn rotate(state: &AppLogFile) {
                 e
             );
             // Counter NOT reset — next writes will see "over cap" and try
-            // rotating again. Active fd in `file_guard` is now stale (the
-            // file on disk was renamed). Subsequent writes silently fail at
-            // the OS level on Unix; on Windows the file handle remains
-            // valid via the moved inode. Either way, no log is lost on
-            // stderr.
+            // rotating again. Active fd in `file_guard` is now stale: on
+            // both Unix and Windows the open handle survives `rename()` and
+            // continues to point at the moved file, so subsequent writes
+            // land in the renamed `.1` rather than a fresh `app.log`. The
+            // next rotation may then shift that file again (LOW-5 hazard,
+            // documented in the round-2 review). Stderr writes are
+            // unaffected, so no log is silently dropped. Recovery is a
+            // logger re-init (process restart).
         }
     }
 }
@@ -481,6 +484,35 @@ mod tests {
         );
         // The embedded newline survives verbatim (multi-line git errors etc.).
         assert_eq!(built.message, "line one\nline two");
+    }
+
+    /// #280 LOW-3 — companion to `from_record_redacts_telegram_token_in_message`
+    /// for the Gemini `?key=` shape. The voice.rs source-side fix moves
+    /// the API key out of the URL entirely, but this defense-in-depth
+    /// scrub catches any future caller that re-introduces the query
+    /// param (or a third-party crate that prints request URLs).
+    #[test]
+    fn from_record_redacts_gemini_key_in_message() {
+        let fake_url = "error sending request for url \
+            (https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyFakeKeyForTesting1234567890)";
+        let built = ErrorLogEntry::from_record(
+            "2026-05-21 12:00:00.000".to_string(),
+            &log::Record::builder()
+                .level(log::Level::Error)
+                .target("agentscommander_lib::commands::voice")
+                .args(format_args!("Gemini API request failed: {}", fake_url))
+                .build(),
+        );
+        assert!(
+            built.message.contains("?key=***"),
+            "expected redacted shape; got: {}",
+            built.message
+        );
+        assert!(
+            !built.message.contains("AIzaSyFakeKeyForTesting"),
+            "key leaked into message: {}",
+            built.message
+        );
     }
 
     /// #280 — the error modal payload reaches the UI; secrets must be

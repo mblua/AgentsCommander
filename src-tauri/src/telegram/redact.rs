@@ -19,6 +19,13 @@
 //!   adversarial review (G-HIGH-2). The Gemini key leak is arguably worse
 //!   than the Telegram one: error strings flow through `bridge.rs` to a
 //!   remote chat user, not just the local log file.
+//!   - **Policy:** any non-empty `[?&]key=<value>` is masked, with no
+//!     minimum length floor (the plan §0 spec listed `{20,}` for parity
+//!     with real Gemini key lengths; the impl is deliberately stronger as
+//!     defense-in-depth). Real keys are always scrubbed; the trade-off is
+//!     that an unrelated `?key=ok` style debug log is also masked. See
+//!     `redact()`'s inline note and the
+//!     `redacts_short_query_key_values_intentionally` test.
 //!
 //! Implementation notes:
 //!
@@ -82,6 +89,15 @@ pub fn redact(input: &str) -> String {
         // Gemini API key: `?key=<value>` or `&key=<value>`
         // The leading byte (`?` or `&`) is consumed verbatim, then we replace
         // the value after `key=`.
+        //
+        // #280 LOW-2 — the plan §0 specified a 20-char floor (matching the
+        // 32-char real Gemini key length minus slack). We deliberately
+        // accept ANY non-empty value here as defense-in-depth: real keys
+        // are still scrubbed, and a future debug log printing
+        // `?key=short_test_value` is also masked. The cost is cosmetic
+        // (operator surprise when a non-secret short value is masked).
+        // See `redacts_short_query_key_values_intentionally` test for the
+        // contract.
         if has_key && i + 5 <= bytes.len() {
             let starts_query = bytes[i] == b'?' || bytes[i] == b'&';
             if starts_query && &bytes[i + 1..i + 5] == b"key=" {
@@ -291,6 +307,29 @@ mod tests {
         // copy. Multi-byte characters must round-trip verbatim.
         let s = "café and /bot1:x is short — also résumé and 中文";
         assert_eq!(redact(s), s);
+    }
+
+    /// #280 LOW-2 — the implementation deliberately deviates from the
+    /// plan's 20-char floor for Gemini `?key=<value>` matches: any
+    /// non-empty value is masked. This is safer than the spec (real keys
+    /// are still scrubbed), at the cost of masking unrelated short query
+    /// values in debug logs. Locked in so a future refactor that
+    /// re-introduces the floor must update this test (and the docstring)
+    /// rather than silently weaken the contract.
+    #[test]
+    fn redacts_short_query_key_values_intentionally() {
+        // 2-char value, well below the spec's 20-char floor.
+        assert_eq!(redact("?key=ok"), "?key=***");
+        // Ampersand variant.
+        assert_eq!(redact("&key=ab"), "&key=***");
+        // Inside a longer URL; surrounding text preserved.
+        let got = redact("https://example.test/v1/x?alt=json&key=hi&foo=bar");
+        assert!(got.contains("&key=***"), "got: {got}");
+        assert!(got.contains("?alt=json"), "lost prefix: {got}");
+        assert!(got.contains("foo=bar"), "lost suffix: {got}");
+        // Empty-value contract (`?key=` followed by `&` / end) is the
+        // only case that escapes — guarded separately by
+        // `does_not_match_empty_query_value`.
     }
 
     #[test]
