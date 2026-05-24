@@ -2,8 +2,8 @@ import { Component, createSignal, createMemo, For, Show, onMount } from "solid-j
 import { EntityAPI, RoleTemplateAPI } from "../../shared/ipc";
 import type { RoleTemplateMeta } from "../../shared/types";
 import {
+  applyTemplatePrefill,
   filterRoleTemplates,
-  slugifyTemplateName,
   sourceLabel,
 } from "../../shared/role-templates";
 import { projectStore } from "../stores/project";
@@ -16,6 +16,12 @@ const NewEntityAgentModal: Component<{
   const [description, setDescription] = createSignal("");
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
+
+  // #278 — distinguish user-edited fields from template-populated ones so a
+  // second template click can overwrite the first template's values without
+  // clobbering anything the user typed by hand.
+  const [nameDirty, setNameDirty] = createSignal(false);
+  const [descriptionDirty, setDescriptionDirty] = createSignal(false);
 
   // #271 — template picker state.
   const [templates, setTemplates] = createSignal<RoleTemplateMeta[]>([]);
@@ -41,11 +47,14 @@ const NewEntityAgentModal: Component<{
   const selectTemplate = (t: RoleTemplateMeta | null) => {
     setSelectedTemplateId(t ? t.id : null);
     if (t) {
-      // Prefill ONLY when the field is currently empty. Name is slugified
-      // (display names are free text that canCreate() would reject); Description
-      // is clamped to 250 (textarea maxLength only limits typing, not set()).
-      if (name().trim() === "") setName(slugifyTemplateName(t.name));
-      if (description().trim() === "") setDescription(t.description.slice(0, 250));
+      const next = applyTemplatePrefill(t, {
+        name: name(),
+        description: description(),
+        nameDirty: nameDirty(),
+        descriptionDirty: descriptionDirty(),
+      });
+      setName(next.name);
+      setDescription(next.description);
       setError("");
     }
   };
@@ -252,6 +261,7 @@ const NewEntityAgentModal: Component<{
               value={name()}
               onInput={(e) => {
                 setName(e.currentTarget.value);
+                setNameDirty(true);
                 setError("");
               }}
               placeholder="my-agent"
@@ -264,7 +274,10 @@ const NewEntityAgentModal: Component<{
             <textarea
               class="entity-textarea"
               value={description()}
-              onInput={(e) => setDescription(e.currentTarget.value)}
+              onInput={(e) => {
+                setDescription(e.currentTarget.value);
+                setDescriptionDirty(true);
+              }}
               placeholder="What does this agent do? (optional, max 250 chars)"
               maxLength={250}
               rows={3}
