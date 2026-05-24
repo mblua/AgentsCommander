@@ -97,11 +97,19 @@ pub fn redact(input: &str) -> String {
             }
         }
 
-        // No match at this position — copy the byte verbatim. UTF-8 safe
-        // because we only branch on ASCII byte values, and the rest are
-        // passed through unchanged.
-        out.push(bytes[i] as char);
-        i += 1;
+        // No match at this position — copy a full UTF-8 char. Casting
+        // `bytes[i] as char` is UNSAFE for multi-byte chars: a continuation
+        // byte (e.g. 0xC3 0xA9 for "é") would each map to a different
+        // Unicode scalar (U+00C3 U+00A9 = "Ã©"). `i` is always at a char
+        // boundary here: i=0 starts at one, the match-branch advances
+        // (`chars_end`, `val_end`) only walk ASCII-byte predicates, and
+        // this branch advances by `len_utf8()` of the current char.
+        let ch = input[i..]
+            .chars()
+            .next()
+            .expect("non-empty bytes must yield a char at boundary i");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -268,5 +276,35 @@ mod tests {
         // be redacted. This avoids accidentally redacting arbitrary text.
         let s = "some_field key=hello world";
         assert_eq!(redact(s), s);
+    }
+
+    /// #280 /feature-dev review G-HIGH — the byte-walking fallback used
+    /// `out.push(bytes[i] as char)` which corrupts UTF-8 continuation
+    /// bytes whenever the scanner runs (i.e., when `/bot` or `key=` is
+    /// present somewhere in the input). DiagLogger pipes raw agent PTY
+    /// output through `redact()`, so any Spanish/Italian/CJK message
+    /// containing one of those markers would have been corrupted.
+    #[test]
+    fn preserves_non_ascii_chars_when_scanner_runs() {
+        // `/bot` substring triggers the scanner; the `/bot1:short` match
+        // attempt below the 10-char floor falls through to the no-match
+        // copy. Multi-byte characters must round-trip verbatim.
+        let s = "café and /bot1:x is short — also résumé and 中文";
+        assert_eq!(redact(s), s);
+    }
+
+    #[test]
+    fn redacts_telegram_token_surrounded_by_non_ascii() {
+        let s = format!(
+            "résumé /bot{}/sendMessage 中文 ñ",
+            FAKE_TG_TOKEN
+        );
+        let got = redact(&s);
+        assert!(got.contains("/bot***/sendMessage"), "got: {got}");
+        assert!(!got.contains(FAKE_TG_TOKEN), "token leaked: {got}");
+        // Non-ASCII surrounding text preserved verbatim.
+        assert!(got.contains("résumé"), "lost résumé: {got}");
+        assert!(got.contains("中文"), "lost 中文: {got}");
+        assert!(got.contains("ñ"), "lost ñ: {got}");
     }
 }

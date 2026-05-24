@@ -815,7 +815,15 @@ pub(super) async fn flush_buffer(
         diag.log_sent(&chunk);
 
         if let Err(e) = api::send_message(client, token, chat_id, &chunk).await {
-            let msg = e.to_string();
+            // #280 — defense-in-depth scrub before `msg` reaches the
+            // `telegram_bridge_error` Tauri event payload (which bypasses
+            // the env_logger format closure that protects stderr/app.log).
+            // The reqwest error sites inside api.rs already wrap with
+            // `redact`, but body.description / future call sites could
+            // construct an `AppError::Telegram` carrying an unscrubbed
+            // URL. Idempotent on already-redacted strings; near-zero cost
+            // when no secret marker is present.
+            let msg = crate::telegram::redact::redact(&e.to_string());
             let kind = TelegramErrKind::classify(&msg);
             let pid = std::process::id();
             // `token_prefix` is the numeric bot user id (e.g. "8336197840"),
