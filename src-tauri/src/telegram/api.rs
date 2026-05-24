@@ -1,4 +1,5 @@
 use crate::errors::AppError;
+use crate::telegram::redact::redact;
 
 #[derive(Debug, serde::Deserialize)]
 struct TelegramResponse<T> {
@@ -63,12 +64,12 @@ pub async fn send_message(
         }))
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     let body: TelegramResponse<serde_json::Value> = resp
         .json()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -95,12 +96,12 @@ pub async fn get_updates(
         ])
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     let body: TelegramResponse<Vec<Update>> = resp
         .json()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -158,12 +159,12 @@ pub async fn get_file(
         .query(&[("file_id", file_id)])
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     let body: TelegramResponse<serde_json::Value> = resp
         .json()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -187,7 +188,7 @@ pub async fn download_file(
         .get(&url)
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     if !resp.status().is_success() {
         return Err(AppError::Telegram(format!(
@@ -199,5 +200,5 @@ pub async fn download_file(
     resp.bytes()
         .await
         .map(|b| b.to_vec())
-        .map_err(|e| AppError::Telegram(e.to_string()))
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))
 }

@@ -55,6 +55,10 @@ impl BridgeLogger {
             } else {
                 text.to_string()
             };
+            // #280 §1.6 — telegram-bridge.log lives outside env_logger's
+            // sink scrub. Scrub here so secret-bearing error strings from
+            // any future caller cannot land in the bridge log.
+            let preview = crate::telegram::redact::redact(&preview);
             let _ = writeln!(
                 f,
                 "[{}] {} sid={} | {}",
@@ -105,6 +109,11 @@ impl DiagLogger {
     pub(super) fn log_raw(&mut self, text: &str) {
         if let Some(ref mut f) = self.raw_file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
+            // #280 §1.6 — diag-raw.log lives outside env_logger's sink
+            // scrub. Scrub here so secret-bearing content (agent output
+            // containing a Telegram URL, or any future call site that
+            // bypassed api.rs) cannot land in the diag log.
+            let text = crate::telegram::redact::redact(text);
             let _ = writeln!(f, "--- [{}] ---", now);
             let _ = writeln!(f, "{}", text);
             let _ = f.flush();
@@ -115,6 +124,9 @@ impl DiagLogger {
     pub(super) fn log_sent(&mut self, text: &str) {
         if let Some(ref mut f) = self.sent_file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
+            // #280 §1.6 — same scrub as log_raw; diag-sent.log bypasses
+            // env_logger.
+            let text = crate::telegram::redact::redact(text);
             let _ = writeln!(f, "--- [{}] ---", now);
             let _ = writeln!(f, "{}", text);
             let _ = f.flush();

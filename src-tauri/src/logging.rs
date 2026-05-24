@@ -78,6 +78,13 @@ fn init_logger_inner() {
                     record.target(),
                     record.args()
                 );
+                // #280 §1.4 — universal secret scrub before the line
+                // reaches stderr or app.log. Defends against new call sites
+                // and third-party crate errors that may have bypassed
+                // api.rs's and voice.rs's redaction. Near-zero cost when
+                // the line contains no "/bot" or "key=" substring
+                // (early-return inside redact()).
+                let line = crate::telegram::redact::redact(&line);
                 // #264 — tee ERROR-level entries from AgentsCommander's own
                 // targets into the process-wide sink for the UI error modal.
                 // Placed BEFORE the `?` writes below so a failing stderr/app.log
@@ -122,11 +129,16 @@ impl ErrorLogEntry {
     /// Factored out of the format closure so it is unit-testable with a
     /// synthetic `Record` — the closure itself cannot be invoked from a test.
     fn from_record(timestamp: String, record: &log::Record) -> Self {
+        // #280 §1.4 — the error modal is exposed to the UI; scrub the
+        // message so a leaked bot token / Gemini key cannot reach the
+        // frontend payload. Source-side redaction in api.rs / voice.rs is
+        // the first line of defense; this is defense-in-depth.
+        let message = crate::telegram::redact::redact(&record.args().to_string());
         Self {
             timestamp,
             level: record.level().to_string(),
             target: record.target().to_string(),
-            message: record.args().to_string(),
+            message,
         }
     }
 }
@@ -288,6 +300,34 @@ mod tests {
         );
         // The embedded newline survives verbatim (multi-line git errors etc.).
         assert_eq!(built.message, "line one\nline two");
+    }
+
+    /// #280 §1.4 — the error modal payload reaches the UI; secrets must
+    /// be scrubbed at `from_record` time so even a future caller that
+    /// bypassed the source-side redaction in api.rs cannot leak a token
+    /// into the frontend.
+    #[test]
+    fn from_record_redacts_telegram_token_in_message() {
+        let fake_url = "error sending request for url \
+            (https://api.telegram.org/bot987654321:FAKE_TOKEN_FOR_TESTING_xxxxxxxxxxxxxxx/getUpdates?offset=0)";
+        let built = ErrorLogEntry::from_record(
+            "2026-05-21 12:00:00.000".to_string(),
+            &log::Record::builder()
+                .level(log::Level::Error)
+                .target("agentscommander_lib::telegram::bridge")
+                .args(format_args!("Telegram poll error: {}", fake_url))
+                .build(),
+        );
+        assert!(
+            built.message.contains("/bot***/getUpdates"),
+            "expected redacted shape; got: {}",
+            built.message
+        );
+        assert!(
+            !built.message.contains("FAKE_TOKEN_FOR_TESTING"),
+            "token leaked into message: {}",
+            built.message
+        );
     }
 
     /// `ErrorLogEntry` crosses the Tauri IPC boundary, so the

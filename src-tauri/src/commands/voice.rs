@@ -53,17 +53,31 @@ pub async fn transcribe_audio(
         }]
     });
 
+    // #280 G-HIGH-2 — pass the API key as a header, not a URL query
+    // parameter. `reqwest::Error::Display` prints the request URL on
+    // transport failure, so `?key=<API_KEY>` would leak into error strings
+    // that flow to logs, the Telegram chat (bridge.rs:862), and the
+    // frontend. Google's REST API accepts the key via x-goog-api-key.
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        model, api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        model
     );
 
     let resp = client
         .post(&url)
+        .header("x-goog-api-key", api_key)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Gemini API request failed: {}", e))?;
+        .map_err(|e| {
+            // Defense in depth: even with the key out of the URL, scrub the
+            // error string before propagation in case reqwest's Display
+            // grows to include header values in a future version.
+            format!(
+                "Gemini API request failed: {}",
+                crate::telegram::redact::redact(&e.to_string())
+            )
+        })?;
 
     let status = resp.status();
     log::debug!(
