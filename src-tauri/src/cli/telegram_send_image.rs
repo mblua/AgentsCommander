@@ -85,7 +85,7 @@ fn resolve_bot<'a>(
             _ => Err(format!(
                 "Multiple Telegram bots share label '{}'; disambiguate with --bot-id. Candidates: {}",
                 label,
-                format_bot_list(&matches.into_iter().cloned().collect::<Vec<_>>())
+                format_bot_list(matches.iter().copied())
             )),
         };
     }
@@ -100,8 +100,8 @@ fn resolve_bot<'a>(
     }
 }
 
-fn format_bot_list(bots: &[TelegramBotConfig]) -> String {
-    bots.iter()
+fn format_bot_list<'a>(bots: impl IntoIterator<Item = &'a TelegramBotConfig>) -> String {
+    bots.into_iter()
         .map(|b| format!("{} (id={})", b.label, b.id))
         .collect::<Vec<_>>()
         .join(", ")
@@ -126,6 +126,13 @@ pub fn execute(args: TelegramSendImageArgs) -> i32 {
         }
     };
 
+    // INVARIANT: `perform_send_image` must use only the async `reqwest::Client`
+    // and `tokio::fs`; never `reqwest::blocking::*`. A blocking-reqwest call
+    // from inside `block_on` would try to spin a nested runtime on this same
+    // thread and panic with "Cannot start a runtime from within a runtime".
+    // `new_current_thread` is the right choice for a one-shot CLI verb (cheap,
+    // single-shot, no thread-pool overhead) but only as long as the helper
+    // stays fully async.
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -145,13 +152,13 @@ pub fn execute(args: TelegramSendImageArgs) -> i32 {
 
     match result {
         Ok(()) => {
-            crate::cli_println!("Sent: bot={} path={}", bot.id, args.path);
             log::info!(
                 "[cli] telegram-send-image: bot={} path={} caption_present={}",
                 bot.id,
                 args.path,
                 args.caption.is_some()
             );
+            crate::cli_println!("Sent: bot={} path={}", bot.id, args.path);
             0
         }
         Err(e) => {
@@ -241,6 +248,11 @@ mod tests {
         assert!(err.contains("Beta"));
     }
 
+    // Only covers the pre-settings empty-path early-exit (line 111 short-circuits
+    // before `load_settings_for_cli`). Do NOT extend with a non-empty path: a
+    // real path here would invoke `load_settings_for_cli()` and hit the
+    // developer's actual `settings.json` on disk. Path-validation belongs in
+    // tests of `perform_send_image` directly.
     #[test]
     fn execute_errors_on_empty_path() {
         let args = TelegramSendImageArgs {
