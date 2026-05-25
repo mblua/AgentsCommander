@@ -341,6 +341,10 @@ pub fn load_sessions() -> Vec<PersistedSession> {
 
 /// Save current sessions to the app config directory (see config_dir()).
 pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
+    save_sessions_to_config_dir(sessions)
+}
+
+fn save_sessions_to_config_dir(sessions: &[PersistedSession]) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     save_sessions_to_dir(&dir, sessions)
 }
@@ -369,11 +373,6 @@ fn save_sessions_to_dir(dir: &Path, sessions: &[PersistedSession]) -> Result<(),
 fn sessions_save_lock() -> &'static tokio::sync::Mutex<()> {
     static SAVE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     SAVE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-pub(crate) async fn save_sessions_serialized(sessions: &[PersistedSession]) -> Result<(), String> {
-    let _guard = sessions_save_lock().lock().await;
-    save_sessions(sessions)
 }
 
 /// Snapshot current live sessions into the persisted format.
@@ -711,6 +710,16 @@ pub async fn persist_merging_failed_result(
     mgr: &SessionManager,
     failed: &[PersistedSession],
 ) -> Result<(), String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    persist_merging_failed_to_dir_result(mgr, failed, &dir).await
+}
+
+async fn persist_merging_failed_to_dir_result(
+    mgr: &SessionManager,
+    failed: &[PersistedSession],
+    dir: &Path,
+) -> Result<(), String> {
+    let _guard = sessions_save_lock().lock().await;
     let mut snapshot = snapshot_sessions(mgr).await;
     // §224 — strip stale runtime fields (`id`, `status`, `waiting_for_input`,
     // `created_at`) from failed-recoverable entries. Without this, the prior
@@ -731,7 +740,7 @@ pub async fn persist_merging_failed_result(
     // as a follow-up.
     snapshot.extend(failed.iter().map(sanitize_failed_recoverable));
     let snapshot = deduplicate(snapshot);
-    save_sessions_serialized(&snapshot).await
+    save_sessions_to_dir(dir, &snapshot)
 }
 
 pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSession]) {
@@ -742,8 +751,17 @@ pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSes
 
 /// Convenience: snapshot and save in one call. Logs errors but never fails.
 pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    persist_current_state_to_dir_result(mgr, &dir).await
+}
+
+async fn persist_current_state_to_dir_result(
+    mgr: &SessionManager,
+    dir: &Path,
+) -> Result<(), String> {
+    let _guard = sessions_save_lock().lock().await;
     let snapshot = snapshot_sessions(mgr).await;
-    save_sessions_serialized(&snapshot).await
+    save_sessions_to_dir(dir, &snapshot)
 }
 
 pub async fn persist_current_state(mgr: &SessionManager) {
@@ -755,10 +773,12 @@ pub async fn persist_current_state(mgr: &SessionManager) {
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_current_state_result, sanitize_failed_recoverable, save_sessions_to_dir,
-        snapshot_sessions, strip_auto_injected_args, PersistedSession,
+        persist_current_state_result, persist_current_state_to_dir_result,
+        sanitize_failed_recoverable, save_sessions_to_dir, sessions_save_lock, snapshot_sessions,
+        strip_auto_injected_args, PersistedSession,
     };
     use crate::session::manager::SessionManager;
+    use std::time::Duration;
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt.
@@ -898,6 +918,45 @@ mod tests {
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[tokio::test]
+    async fn persist_current_state_captures_snapshot_inside_save_lock() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let stale_snapshot = snapshot_sessions(&mgr).await;
+        assert!(stale_snapshot[0].telegram_bot_id.is_none());
+
+        let guard = sessions_save_lock().lock().await;
+        let mut persist = Box::pin(persist_current_state_to_dir_result(&mgr, temp.path()));
+        let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut persist)
+            .await
+            .is_err();
+        assert!(timed_out, "persistence should wait for the save lock");
+
+        mgr.set_telegram_bot_id(session.id, Some("bot-1".into()))
+            .await;
+        drop(guard);
+        persist.await.expect("persist current state");
+
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].telegram_bot_id.as_deref(), Some("bot-1"));
     }
 
     #[test]

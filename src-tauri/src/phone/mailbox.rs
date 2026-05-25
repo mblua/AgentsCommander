@@ -1759,19 +1759,12 @@ impl MailboxPoller {
         // (see `persist_merging_failed` docstring); A.7 just introduces a
         // new caller outside lifecycle events. Accepted.
         if session_ids.is_empty() && !restore_in_progress_result {
-            // §224 review fix: snapshot under the read guard, drop the guard,
-            // THEN write to disk. Avoids holding the outer SessionManager
-            // RwLock across the blocking `std::fs::rename` inside
-            // `save_sessions`, which would block any writer (destroy_session,
-            // create_session, restore-loop spawn) for the duration of the
-            // disk I/O.
+            // Persist through the serialized snapshot+write path so this cleanup
+            // cannot replay a stale snapshot after a completed Telegram toggle.
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let snapshot = {
-                let mgr = session_mgr.read().await;
-                crate::config::sessions_persistence::snapshot_sessions(&mgr).await
-            };
+            let mgr = session_mgr.read().await;
             if let Err(e) =
-                crate::config::sessions_persistence::save_sessions_serialized(&snapshot).await
+                crate::config::sessions_persistence::persist_current_state_result(&mgr).await
             {
                 log::warn!(
                     "[mailbox] close-session: failed to persist cleaned sessions.json after no_match: {}",
