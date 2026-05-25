@@ -1079,7 +1079,7 @@ pub async fn create_session(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
-    tg_mgr: State<'_, TelegramBridgeState>,
+    _tg_mgr: State<'_, TelegramBridgeState>,
     settings: State<'_, SettingsState>,
     shell: Option<String>,
     shell_args: Option<Vec<String>>,
@@ -1145,56 +1145,156 @@ pub async fn create_session(
 
     // Auto-attach Telegram bot if repo has .agentscommander/config.json
     let id = Uuid::parse_str(&info.id).unwrap();
-    let config_path = std::path::Path::new(&cwd)
-        .join(crate::config::agent_local_dir_name())
-        .join("config.json");
-    if let Ok(contents) = tokio::fs::read_to_string(&config_path).await {
-        if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&contents) {
-            if let Some(bot_label) = local_config.tooling.telegram_bot {
-                let cfg = settings.read().await;
-                let bot = cfg
-                    .telegram_bots
-                    .iter()
-                    .find(|b| b.label == bot_label)
-                    .cloned();
-                drop(cfg);
-
-                if let Some(bot) = bot {
-                    let pty_arc = pty_mgr.inner().clone();
-                    let reader = match crate::commands::telegram::derive_reader(
-                        &info.shell,
-                        &info.shell_args,
-                        &cwd,
-                        info.agent_kind,
-                    ) {
-                        Ok(r) => r,
-                        Err(reason) => {
-                            let err_msg = format!(
-                                "Telegram bridge: {} for session {} (shell={:?}). Bridge inactive.",
-                                reason, id, info.shell
-                            );
-                            log::error!("{}", err_msg);
-                            let _ = app.emit(
-                                "telegram_bridge_error",
-                                serde_json::json!({
-                                    "sessionId": info.id,
-                                    "error": err_msg,
-                                }),
-                            );
-                            // Skip attach — do not silently fall back to PTY.
-                            return Ok(info);
-                        }
-                    };
-                    let mut tg = tg_mgr.lock().await;
-                    if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone(), reader) {
-                        let _ = app.emit("telegram_bridge_attached", bridge_info);
-                    }
-                }
-            }
-        }
-    }
+    attach_local_config_telegram_if_any(&app, id, &cwd).await;
 
     Ok(info)
+}
+
+pub(crate) async fn attach_persisted_telegram_if_configured(
+    app: &AppHandle,
+    session_id: Uuid,
+    bot_id: Option<&str>,
+) {
+    let Some(bot_id) = bot_id else {
+        return;
+    };
+
+    let settings = app.state::<SettingsState>();
+    let exists = {
+        let cfg = settings.read().await;
+        cfg.telegram_bots.iter().any(|b| b.id == bot_id)
+    };
+
+    if !exists {
+        log::warn!(
+            "[telegram] Persisted bot '{}' for session {} no longer exists in settings; leaving bridge OFF",
+            bot_id,
+            session_id
+        );
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        mgr.set_telegram_bot_id(session_id, None).await;
+        persist_current_state(&mgr).await;
+        return;
+    }
+
+    let already_attached = {
+        let tg_mgr = app.state::<TelegramBridgeState>();
+        let tg = tg_mgr.lock().await;
+        tg.get_bridge(session_id)
+    };
+    if let Some(info) = already_attached {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        if info.bot_id == bot_id {
+            mgr.set_telegram_bot_id(session_id, Some(bot_id.to_string()))
+                .await;
+        } else {
+            log::warn!(
+                "[telegram] Session {} already has Telegram bot '{}' attached; persisted bot '{}' will be cleared",
+                session_id,
+                info.bot_id,
+                bot_id
+            );
+            mgr.set_telegram_bot_id(session_id, None).await;
+        }
+        persist_current_state(&mgr).await;
+        return;
+    }
+
+    if let Err(e) =
+        crate::commands::telegram::attach_telegram_bot_by_id(app, session_id, bot_id).await
+    {
+        log::warn!(
+            "[telegram] Failed to restore persisted bot '{}' for session {}: {}",
+            bot_id,
+            session_id,
+            e
+        );
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        mgr.set_telegram_bot_id(session_id, None).await;
+        persist_current_state(&mgr).await;
+    }
+}
+
+pub(crate) async fn preserve_deferred_telegram_intent_if_valid(
+    mgr: &SessionManager,
+    settings: &SettingsState,
+    session_id: Uuid,
+    session_name: &str,
+    bot_id: Option<&str>,
+) {
+    let Some(bot_id) = bot_id else {
+        return;
+    };
+
+    let exists = {
+        let cfg = settings.read().await;
+        cfg.telegram_bots.iter().any(|b| b.id == bot_id)
+    };
+
+    if exists {
+        mgr.set_telegram_bot_id(session_id, Some(bot_id.to_string()))
+            .await;
+    } else {
+        log::warn!(
+            "[telegram] Persisted bot '{}' for deferred session '{}' no longer exists in settings; leaving bridge OFF",
+            bot_id,
+            session_name
+        );
+        mgr.set_telegram_bot_id(session_id, None).await;
+    }
+}
+
+pub(crate) async fn attach_local_config_telegram_if_any(
+    app: &AppHandle,
+    session_id: Uuid,
+    cwd: &str,
+) {
+    let config_path = std::path::Path::new(cwd)
+        .join(crate::config::agent_local_dir_name())
+        .join("config.json");
+
+    let Some(bot_label) = tokio::fs::read_to_string(&config_path)
+        .await
+        .ok()
+        .and_then(|contents| serde_json::from_str::<AgentLocalConfig>(&contents).ok())
+        .and_then(|local_config| local_config.tooling.telegram_bot)
+    else {
+        return;
+    };
+
+    let settings = app.state::<SettingsState>();
+    let bot_id = {
+        let cfg = settings.read().await;
+        cfg.telegram_bots
+            .iter()
+            .find(|b| b.label == bot_label)
+            .map(|b| b.id.clone())
+    };
+
+    match bot_id {
+        Some(bot_id) => {
+            if let Err(e) =
+                crate::commands::telegram::attach_telegram_bot_by_id(app, session_id, &bot_id).await
+            {
+                log::warn!(
+                    "[telegram] Failed to auto-attach configured bot '{}' for session {}: {}",
+                    bot_label,
+                    session_id,
+                    e
+                );
+            }
+        }
+        None => {
+            log::warn!(
+                "[telegram] Configured bot label '{}' for session {} no longer exists in settings; leaving bridge OFF",
+                bot_label,
+                session_id
+            );
+        }
+    }
 }
 
 /// Core session destruction logic shared by the Tauri command and the MailboxPoller.
@@ -1236,6 +1336,7 @@ async fn destroy_session_inner_with_options(
         let mut tg = tg_mgr.lock().await;
         if tg.has_bridge(uuid) {
             let _ = tg.detach(uuid);
+            mgr.set_telegram_bot_id(uuid, None).await;
             let _ = app.emit(
                 "telegram_bridge_detached",
                 serde_json::json!({ "sessionId": id }),
@@ -1419,7 +1520,7 @@ pub async fn restart_session(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
-    tg_mgr: State<'_, TelegramBridgeState>,
+    _tg_mgr: State<'_, TelegramBridgeState>,
     settings: State<'_, SettingsState>,
     id: String,
     agent_id: Option<String>,
@@ -1437,6 +1538,7 @@ pub async fn restart_session(
         stored_agent_label,
         git_repos,
         is_root_agent,
+        telegram_bot_id,
     ) = {
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
@@ -1450,6 +1552,7 @@ pub async fn restart_session(
             session.git_repos.clone(),
             session.is_root_agent
                 || crate::config::root_agent::is_root_agent_path(&session.working_directory),
+            session.telegram_bot_id.clone(),
         )
     };
 
@@ -1516,61 +1619,11 @@ pub async fn restart_session(
         serde_json::json!({ "id": session_info.id, "userInitiated": true }),
     );
 
-    // 6. Re-attach Telegram bridge if the repo config has one
-    let config_path = std::path::Path::new(&cwd)
-        .join(crate::config::agent_local_dir_name())
-        .join("config.json");
-    if let Ok(contents) = tokio::fs::read_to_string(&config_path).await {
-        if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&contents) {
-            if let Some(bot_label) = local_config.tooling.telegram_bot {
-                let cfg = settings.read().await;
-                let bot = cfg
-                    .telegram_bots
-                    .iter()
-                    .find(|b| b.label == bot_label)
-                    .cloned();
-                drop(cfg);
-
-                if let Some(bot) = bot {
-                    let pty_arc = pty_mgr.inner().clone();
-                    let reader = match crate::commands::telegram::derive_reader(
-                        &session_info.shell,
-                        &session_info.shell_args,
-                        &cwd,
-                        session_info.agent_kind,
-                    ) {
-                        Ok(r) => r,
-                        Err(reason) => {
-                            let err_msg = format!(
-                                "Telegram bridge: {} for session {} (shell={:?}). Bridge inactive.",
-                                reason, new_uuid, session_info.shell
-                            );
-                            log::error!("{}", err_msg);
-                            let _ = app.emit(
-                                "telegram_bridge_error",
-                                serde_json::json!({
-                                    "sessionId": session_info.id,
-                                    "error": err_msg,
-                                }),
-                            );
-                            // Skip attach — do not silently fall back to PTY.
-                            // Persist + return the new session info so restart still succeeds
-                            // semantically (the user explicitly restarted; only the bridge fails).
-                            {
-                                let mgr = session_mgr.read().await;
-                                persist_current_state(&mgr).await;
-                            }
-                            return Ok(session_info);
-                        }
-                    };
-                    let mut tg = tg_mgr.lock().await;
-                    if let Ok(bridge_info) = tg.attach(new_uuid, &bot, pty_arc, app.clone(), reader)
-                    {
-                        let _ = app.emit("telegram_bridge_attached", bridge_info);
-                    }
-                }
-            }
-        }
+    // 6. Re-attach Telegram bridge from live persisted intent, or fall back to repo config.
+    if telegram_bot_id.is_some() {
+        attach_persisted_telegram_if_configured(&app, new_uuid, telegram_bot_id.as_deref()).await;
+    } else {
+        attach_local_config_telegram_if_any(&app, new_uuid, &cwd).await;
     }
 
     // 7. Persist state — create_session_inner does NOT persist
@@ -1901,7 +1954,7 @@ pub(crate) async fn create_root_agent_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
-    tg_mgr: &TelegramBridgeState,
+    _tg_mgr: &TelegramBridgeState,
     settings: &SettingsState,
     requested_agent_id: Option<String>,
     skip_auto_resume_for_new_session: bool,
@@ -1917,6 +1970,7 @@ pub(crate) async fn create_root_agent_inner(
         })
     };
     let mut waking_existing = false;
+    let mut restored_telegram_bot_id: Option<String> = None;
 
     if let Some(existing) = existing {
         let uuid = Uuid::parse_str(&existing.id).map_err(|e| e.to_string())?;
@@ -1942,6 +1996,7 @@ pub(crate) async fn create_root_agent_inner(
             }
             ExistingRootAction::WakeDormant => {
                 waking_existing = true;
+                restored_telegram_bot_id = existing.telegram_bot_id.clone();
                 log::info!(
                     "[root-agent] Waking dormant root session {} with provider resume",
                     existing.id
@@ -1995,51 +2050,10 @@ pub(crate) async fn create_root_agent_inner(
     }
 
     let id = Uuid::parse_str(&info.id).map_err(|e| format!("Invalid session UUID: {}", e))?;
-    let config_path = std::path::Path::new(&root_agent_path)
-        .join(crate::config::agent_local_dir_name())
-        .join("config.json");
-    if let Ok(contents) = tokio::fs::read_to_string(&config_path).await {
-        if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&contents) {
-            if let Some(bot_label) = local_config.tooling.telegram_bot {
-                let cfg = settings.read().await;
-                let bot = cfg
-                    .telegram_bots
-                    .iter()
-                    .find(|b| b.label == bot_label)
-                    .cloned();
-                drop(cfg);
-                if let Some(bot) = bot {
-                    let pty_arc = Arc::clone(pty_mgr);
-                    let reader = match crate::commands::telegram::derive_reader(
-                        &info.shell,
-                        &info.shell_args,
-                        &root_agent_path,
-                        info.agent_kind,
-                    ) {
-                        Ok(r) => r,
-                        Err(reason) => {
-                            let err_msg = format!(
-                                "Telegram bridge: {} for session {} (shell={:?}). Bridge inactive.",
-                                reason, id, info.shell
-                            );
-                            log::error!("{}", err_msg);
-                            let _ = app.emit(
-                                "telegram_bridge_error",
-                                serde_json::json!({
-                                    "sessionId": info.id,
-                                    "error": err_msg,
-                                }),
-                            );
-                            return Ok(info);
-                        }
-                    };
-                    let mut tg = tg_mgr.lock().await;
-                    if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone(), reader) {
-                        let _ = app.emit("telegram_bridge_attached", bridge_info);
-                    }
-                }
-            }
-        }
+    if restored_telegram_bot_id.is_some() {
+        attach_persisted_telegram_if_configured(app, id, restored_telegram_bot_id.as_deref()).await;
+    } else {
+        attach_local_config_telegram_if_any(app, id, &root_agent_path).await;
     }
 
     Ok(info)

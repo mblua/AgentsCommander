@@ -97,6 +97,10 @@ pub struct Session {
     /// and Telegram reader selection.
     #[serde(default)]
     pub agent_kind: Option<CodingAgentKind>,
+    /// Telegram bot id that should be attached whenever this session has a live PTY.
+    /// None means the Telegram toggle is OFF for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram_bot_id: Option<String>,
     /// True while this session has a live detached window (or is marked to re-spawn
     /// one on next launch). Source of truth for persistence — `snapshot_sessions`
     /// reads this directly, NOT from `DetachedSessionsState`.
@@ -187,6 +191,10 @@ pub struct SessionInfo {
     pub token: String,
     #[serde(default)]
     pub agent_kind: Option<CodingAgentKind>,
+    /// Internal carrier for sessions persistence. Not part of the frontend contract;
+    /// the UI uses BridgeInfo events/listing for live bridge state.
+    #[serde(skip)]
+    pub telegram_bot_id: Option<String>,
     #[serde(default)]
     pub was_detached: bool,
     /// Not serialized to the frontend — internal carrier for `snapshot_sessions`
@@ -218,6 +226,7 @@ impl From<&Session> for SessionInfo {
             is_root_agent: s.is_root_agent,
             token: s.token.to_string(),
             agent_kind: s.agent_kind,
+            telegram_bot_id: s.telegram_bot_id.clone(),
             was_detached: s.was_detached,
             detached_geometry: s.detached_geometry.clone(),
         }
@@ -249,6 +258,7 @@ mod tests {
             git_repos_gen: 0,
             token: Uuid::nil(),
             agent_kind: None,
+            telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
         }
@@ -282,6 +292,26 @@ mod tests {
         let s = sample_session(Some(Vec::new()));
         let info = SessionInfo::from(&s);
         assert_eq!(info.effective_shell_args, Some(Vec::new()));
+    }
+
+    #[test]
+    fn session_info_from_session_copies_telegram_bot_id_internally() {
+        let mut s = sample_session(None);
+        s.telegram_bot_id = Some("bot-1".to_string());
+
+        let info = SessionInfo::from(&s);
+
+        assert_eq!(info.telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[test]
+    fn session_info_serialization_does_not_expose_telegram_bot_id() {
+        let mut s = sample_session(None);
+        s.telegram_bot_id = Some("bot-1".to_string());
+
+        let json = serde_json::to_value(SessionInfo::from(&s)).expect("serialize SessionInfo");
+
+        assert!(json.get("telegramBotId").is_none());
     }
 
     // ── find_workgroup_brief_path_for_cwd — issue #107 ──

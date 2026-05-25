@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use super::session::{Session, SessionInfo, SessionRepo, SessionStatus};
 use super::profile::CodingAgentKind;
+use super::session::{Session, SessionInfo, SessionRepo, SessionStatus};
 use crate::config::settings::WindowGeometry;
 use crate::errors::AppError;
 
@@ -70,6 +70,7 @@ impl SessionManager {
             git_repos_gen: 0,
             token: Uuid::new_v4(),
             agent_kind: None,
+            telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
         };
@@ -339,6 +340,15 @@ impl SessionManager {
         }
     }
 
+    /// Persisted Telegram ON/OFF state for the session. Some(bot_id) means the
+    /// bridge should be reattached when the session is restored or woken.
+    pub async fn set_telegram_bot_id(&self, id: Uuid, bot_id: Option<String>) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.telegram_bot_id = bot_id;
+        }
+    }
+
     /// Set `was_detached` on the session. Authoritative store for persistence under
     /// Fix A (plan §A3.2). Mutated ONLY by `detach_terminal_inner` (→true) and
     /// `attach_terminal` (→false). See plan §10 rule — the `WindowEvent::Destroyed`
@@ -545,6 +555,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_telegram_bot_id_writes_and_clears_field() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        mgr.set_telegram_bot_id(session.id, Some("bot-1".to_string()))
+            .await;
+        assert_eq!(
+            mgr.get_session(session.id)
+                .await
+                .unwrap()
+                .telegram_bot_id
+                .as_deref(),
+            Some("bot-1")
+        );
+
+        mgr.set_telegram_bot_id(session.id, None).await;
+        assert!(mgr
+            .get_session(session.id)
+            .await
+            .unwrap()
+            .telegram_bot_id
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn set_effective_shell_args_overwrites_on_recall() {
         let mgr = SessionManager::new();
         let session = mgr
@@ -675,7 +721,15 @@ mod tests {
     async fn set_active_only_demotes_previously_active() {
         let mgr = SessionManager::new();
         let live = mgr
-            .create_session("c".into(), vec![], "C:\\a".into(), None, None, vec![], false)
+            .create_session(
+                "c".into(),
+                vec![],
+                "C:\\a".into(),
+                None,
+                None,
+                vec![],
+                false,
+            )
             .await
             .unwrap();
         // First session auto-activates → status = Active, active_session = live.id
@@ -685,7 +739,15 @@ mod tests {
 
         // Create + mark-exited a second session for the dormant-select scenario.
         let dormant = mgr
-            .create_session("c".into(), vec![], "C:\\b".into(), None, None, vec![], false)
+            .create_session(
+                "c".into(),
+                vec![],
+                "C:\\b".into(),
+                None,
+                None,
+                vec![],
+                false,
+            )
             .await
             .unwrap();
         mgr.mark_exited(dormant.id, 0).await;

@@ -959,6 +959,7 @@ impl MailboxPoller {
         // loop only. See plan §4.5.a / round-1 G7 / round-3 R3.2.
         let mut spawn_with_resume = false;
         let mut pending_exited_destroy: Option<Uuid> = None;
+        let mut pending_exited_telegram_bot_id: Option<String> = None;
         // HIGH-1 (Step-7 review): symmetric AC5 protection. Tracks whether
         // every iter'd Inject candidate hit the `err_is_pty_session_missing`
         // race arm — if so, the post-loop fall-through must still promote
@@ -1028,6 +1029,14 @@ impl MailboxPoller {
                     // semantic.
                     if pending_exited_destroy.is_none() {
                         pending_exited_destroy = Some(session_id);
+                        pending_exited_telegram_bot_id = {
+                            let session_mgr =
+                                app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                            let mgr = session_mgr.read().await;
+                            mgr.get_session(session_id)
+                                .await
+                                .and_then(|s| s.telegram_bot_id.clone())
+                        };
                         spawn_with_resume = true;
                         log::info!(
                             "[mailbox] wake: deferring Exited destroy for {} (status={:?}) pending later Inject success",
@@ -1169,6 +1178,15 @@ impl MailboxPoller {
 
         let session_id =
             Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {}", e))?;
+
+        if pending_exited_telegram_bot_id.is_some() {
+            crate::commands::session::attach_persisted_telegram_if_configured(
+                app,
+                session_id,
+                pending_exited_telegram_bot_id.as_deref(),
+            )
+            .await;
+        }
 
         // Wait for agent to boot and become idle (ready for input)
         let max_wait = std::time::Duration::from_secs(90);
@@ -1913,18 +1931,13 @@ impl MailboxPoller {
         // (see `persist_merging_failed` docstring); A.7 just introduces a
         // new caller outside lifecycle events. Accepted.
         if session_ids.is_empty() && !restore_in_progress_result {
-            // §224 review fix: snapshot under the read guard, drop the guard,
-            // THEN write to disk. Avoids holding the outer SessionManager
-            // RwLock across the blocking `std::fs::rename` inside
-            // `save_sessions`, which would block any writer (destroy_session,
-            // create_session, restore-loop spawn) for the duration of the
-            // disk I/O.
+            // Persist through the serialized snapshot+write path so this cleanup
+            // cannot replay a stale snapshot after a completed Telegram toggle.
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let snapshot = {
-                let mgr = session_mgr.read().await;
-                crate::config::sessions_persistence::snapshot_sessions(&mgr).await
-            };
-            if let Err(e) = crate::config::sessions_persistence::save_sessions(&snapshot) {
+            let mgr = session_mgr.read().await;
+            if let Err(e) =
+                crate::config::sessions_persistence::persist_current_state_result(&mgr).await
+            {
                 log::warn!(
                     "[mailbox] close-session: failed to persist cleaned sessions.json after no_match: {}",
                     e
@@ -2704,6 +2717,7 @@ mod tests {
             is_root_agent: false,
             token: "t".into(),
             agent_kind: Some(crate::session::profile::CodingAgentKind::Claude),
+            telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
         }
@@ -3573,6 +3587,23 @@ mod tests {
         //   3. Assert destroy_session_inner ran for the exited id.
         //   4. Assert create_session_inner ran with skip_auto_resume=false
         //      (spawn_with_resume=true → wake_spawn_skip_auto_resume(true)=false).
+    }
+
+    /// Issue #295 — deferred Telegram intent must survive the mailbox wake
+    /// respawn path, which destroys the dormant Session before creating the
+    /// replacement live PTY.
+    #[test]
+    #[ignore = "integration: needs Tauri AppHandle + Session/Pty/Telegram fixtures"]
+    fn deliver_wake_respawns_exited_deferred_session_preserving_telegram_intent() {
+        // Fixture shape:
+        //   1. SessionManager has one record: status=Exited(0), no PtyManager
+        //      entry, telegram_bot_id=Some("bot-1").
+        //   2. Call deliver_wake(msg{to=agent}).
+        //   3. Assert the replacement session calls
+        //      attach_persisted_telegram_if_configured() before idle wait or
+        //      injection waits begin.
+        //   4. Assert a missing persisted bot id logs and clears the replacement
+        //      session carrier rather than failing delivery.
     }
 
     /// Issue #223 — HIGH-1 (Step-7 review): symmetric to the phantoms-only

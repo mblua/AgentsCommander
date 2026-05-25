@@ -191,6 +191,10 @@ pub struct PersistedSession {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_label: Option<String>,
+    /// Telegram bot id that was ON for this session at the last successful
+    /// bridge attach. None means Telegram was OFF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram_bot_id: Option<String>,
 
     /// True if the session was detached into its own window at snapshot time.
     /// Phase 3 restore re-spawns a detached window for every persisted row with
@@ -505,6 +509,10 @@ pub fn load_sessions() -> Vec<PersistedSession> {
 ///   next session-lifecycle event re-persists. See §224 G-IMPL-4 in
 ///   `phone/mailbox.rs` for the documented behavior.
 pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
+    save_sessions_to_config_dir(sessions)
+}
+
+fn save_sessions_to_config_dir(sessions: &[PersistedSession]) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     save_sessions_to_dir(&dir, sessions)
 }
@@ -573,6 +581,11 @@ fn save_sessions_to_dir(dir: &Path, sessions: &[PersistedSession]) -> Result<(),
     Ok(())
 }
 
+fn sessions_save_lock() -> &'static tokio::sync::Mutex<()> {
+    static SAVE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    SAVE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Snapshot current live sessions into the persisted format.
 /// Strips auto-injected resume flags so they are re-evaluated on next restore.
 pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
@@ -603,6 +616,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             is_root_agent: s.is_root_agent,
             agent_id: s.agent_id.clone(),
             agent_label: s.agent_label.clone(),
+            telegram_bot_id: s.telegram_bot_id.clone(),
             // Fix A: read detach state directly from the Session (via SessionInfo). The
             // `DetachedSessionsState` set is NOT consulted at persist time — the Destroyed
             // handler clears the set before `RunEvent::Exit` runs the final persist.
@@ -903,7 +917,20 @@ pub(crate) fn sanitize_failed_recoverable(ps: &PersistedSession) -> PersistedSes
 /// restore. Stripped recipes survive on disk only until the next
 /// `persist_current_state` call (any session-lifecycle event) overwrites the
 /// snapshot — so retry-on-next-startup is best-effort. §224 G5/G8.
-pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSession]) {
+pub async fn persist_merging_failed_result(
+    mgr: &SessionManager,
+    failed: &[PersistedSession],
+) -> Result<(), String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    persist_merging_failed_to_dir_result(mgr, failed, &dir).await
+}
+
+async fn persist_merging_failed_to_dir_result(
+    mgr: &SessionManager,
+    failed: &[PersistedSession],
+    dir: &Path,
+) -> Result<(), String> {
+    let _guard = sessions_save_lock().lock().await;
     let mut snapshot = snapshot_sessions(mgr).await;
     // §224 — strip stale runtime fields (`id`, `status`, `waiting_for_input`,
     // `created_at`) from failed-recoverable entries. Without this, the prior
@@ -924,15 +951,32 @@ pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSes
     // as a follow-up.
     snapshot.extend(failed.iter().map(sanitize_failed_recoverable));
     let snapshot = deduplicate(snapshot);
-    if let Err(e) = save_sessions(&snapshot) {
+    save_sessions_to_dir(dir, &snapshot)
+}
+
+pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSession]) {
+    if let Err(e) = persist_merging_failed_result(mgr, failed).await {
         log::error!("Failed to persist sessions (with merge): {}", e);
     }
 }
 
 /// Convenience: snapshot and save in one call. Logs errors but never fails.
-pub async fn persist_current_state(mgr: &SessionManager) {
+pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    persist_current_state_to_dir_result(mgr, &dir).await
+}
+
+async fn persist_current_state_to_dir_result(
+    mgr: &SessionManager,
+    dir: &Path,
+) -> Result<(), String> {
+    let _guard = sessions_save_lock().lock().await;
     let snapshot = snapshot_sessions(mgr).await;
-    if let Err(e) = save_sessions(&snapshot) {
+    save_sessions_to_dir(dir, &snapshot)
+}
+
+pub async fn persist_current_state(mgr: &SessionManager) {
+    if let Err(e) = persist_current_state_result(mgr).await {
         log::error!("Failed to persist sessions: {}", e);
     }
 }
@@ -940,9 +984,12 @@ pub async fn persist_current_state(mgr: &SessionManager) {
 #[cfg(test)]
 mod tests {
     use super::{
-        rename_with_retry, sanitize_failed_recoverable, strip_auto_injected_args, PersistedSession,
-        RENAME_ATTEMPTS,
+        persist_current_state_result, persist_current_state_to_dir_result, rename_with_retry,
+        sanitize_failed_recoverable, save_sessions_to_dir, sessions_save_lock, snapshot_sessions,
+        strip_auto_injected_args, PersistedSession, RENAME_ATTEMPTS,
     };
+    use crate::session::manager::SessionManager;
+    use std::time::Duration;
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt.
@@ -960,6 +1007,7 @@ mod tests {
             is_root_agent: false,
             agent_id: Some("aid-1".into()),
             agent_label: Some("Claude Code".into()),
+            telegram_bot_id: Some("bot-1".into()),
             was_detached: false,
             detached_geometry: None,
             git_branch_source: None,
@@ -989,6 +1037,7 @@ mod tests {
         assert_eq!(clean.working_directory, ps.working_directory);
         assert_eq!(clean.agent_id.as_deref(), Some("aid-1"));
         assert_eq!(clean.agent_label.as_deref(), Some("Claude Code"));
+        assert_eq!(clean.telegram_bot_id.as_deref(), Some("bot-1"));
         assert!(!clean.was_active);
         assert!(!clean.was_detached);
     }
@@ -1008,6 +1057,7 @@ mod tests {
             is_root_agent: false,
             agent_id: None,
             agent_label: None,
+            telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
             git_branch_source: None,
@@ -1024,6 +1074,134 @@ mod tests {
         assert!(twice.waiting_for_input.is_none());
         assert!(twice.created_at.is_none());
         assert_eq!(twice.name, "bob");
+    }
+
+    #[test]
+    fn telegram_bot_id_defaults_none_for_legacy_json() {
+        let json = r#"{
+            "name": "legacy",
+            "shell": "cmd",
+            "shellArgs": [],
+            "workingDirectory": "C:/x"
+        }"#;
+
+        let back: PersistedSession = serde_json::from_str(json).expect("deserialize");
+        assert!(back.telegram_bot_id.is_none());
+    }
+
+    #[test]
+    fn telegram_bot_id_round_trips_when_present() {
+        let ps = PersistedSession {
+            name: "telegram-on".into(),
+            shell: "codex".into(),
+            shell_args: vec![],
+            working_directory: "C:/x".into(),
+            telegram_bot_id: Some("bot-1".into()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&ps).expect("serialize");
+        assert_eq!(json["telegramBotId"], "bot-1");
+        let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_sessions_preserves_telegram_bot_id() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        mgr.set_telegram_bot_id(session.id, Some("bot-1".into()))
+            .await;
+
+        let snapshot = snapshot_sessions(&mgr).await;
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[tokio::test]
+    async fn persist_current_state_captures_snapshot_inside_save_lock() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let stale_snapshot = snapshot_sessions(&mgr).await;
+        assert!(stale_snapshot[0].telegram_bot_id.is_none());
+
+        let guard = sessions_save_lock().lock().await;
+        let mut persist = Box::pin(persist_current_state_to_dir_result(&mgr, temp.path()));
+        let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut persist)
+            .await
+            .is_err();
+        assert!(timed_out, "persistence should wait for the save lock");
+
+        mgr.set_telegram_bot_id(session.id, Some("bot-1".into()))
+            .await;
+        drop(guard);
+        persist.await.expect("persist current state");
+
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[test]
+    fn save_sessions_to_dir_returns_create_dir_error_for_file_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("not-a-dir");
+        std::fs::write(&file_path, "already a file").expect("write file target");
+
+        let err = save_sessions_to_dir(&file_path, &[]).expect_err("file target should fail");
+
+        assert!(
+            err.contains("Failed to create config directory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_current_state_result_succeeds_for_simple_manager() {
+        let mgr = SessionManager::new();
+        mgr.create_session(
+            "powershell.exe".to_string(),
+            Vec::new(),
+            "C:\\tmp".to_string(),
+            None,
+            None,
+            Vec::new(),
+            false,
+        )
+        .await
+        .expect("create_session should succeed");
+
+        persist_current_state_result(&mgr)
+            .await
+            .expect("persist_current_state_result should succeed");
     }
 
     #[test]
@@ -1267,6 +1445,7 @@ mod tests {
             is_root_agent: false,
             agent_id: None,
             agent_label: None,
+            telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
             git_branch_source: Some("C:/repos/agentscommander".into()),
@@ -1317,6 +1496,7 @@ mod tests {
                 is_root_agent: false,
                 agent_id: Some("aid-arch".into()),
                 agent_label: Some("Architect".into()),
+                telegram_bot_id: None,
                 was_detached: false,
                 detached_geometry: None,
                 git_branch_source: None,
@@ -1377,6 +1557,7 @@ mod tests {
             is_root_agent: false,
             agent_id: None,
             agent_label: None,
+            telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
             git_branch_source: None,
@@ -1552,7 +1733,11 @@ mod tests {
         assert_eq!(back[0].name, "solo");
 
         for entry in std::fs::read_dir(tmp.path()).expect("readdir") {
-            let name = entry.expect("entry").file_name().to_string_lossy().into_owned();
+            let name = entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
             assert!(
                 !name.ends_with(".tmp"),
                 "found leftover temp file: {}",
