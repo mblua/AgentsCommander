@@ -3,13 +3,14 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
+use crate::config::sessions_persistence::persist_current_state_result;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::profile::CodingAgentKind;
 use crate::telegram::bridge::SessionReaderKind;
 use crate::telegram::manager::TelegramBridgeState;
 use crate::telegram::types::BridgeInfo;
-use crate::session::profile::CodingAgentKind;
 
 /// Derive which session-reader pipeline to spawn for a given session.
 ///
@@ -74,26 +75,22 @@ pub(crate) fn derive_reader(
     }
 }
 
-#[tauri::command]
-pub async fn telegram_attach(
-    app: AppHandle,
-    tg_mgr: State<'_, TelegramBridgeState>,
-    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
-    settings: State<'_, SettingsState>,
-    session_id: String,
-    bot_id: String,
+pub(crate) async fn attach_telegram_bot_by_id(
+    app: &AppHandle,
+    session_id: Uuid,
+    bot_id: &str,
 ) -> Result<BridgeInfo, String> {
-    let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+    let tg_mgr = app.state::<TelegramBridgeState>();
+    let settings = app.state::<SettingsState>();
 
-    // Extract the fields the resolver needs and drop the SessionManager read guard
-    // BEFORE invoking `derive_reader` — the resolver does blocking filesystem I/O
-    // (`which::which` walks `%PATH%`, opens wrapper scripts) that can take hundreds
-    // of milliseconds. Holding a `tokio::sync::RwLock` read guard across that would
-    // starve concurrent writers (create_session, restart_session, switch_session).
     let (agent_kind, shell, shell_args, working_directory) = {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
-        let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
+        let session = mgr
+            .get_session(session_id)
+            .await
+            .ok_or_else(|| "Session not found".to_string())?;
         (
             session.agent_kind,
             session.shell.clone(),
@@ -107,13 +104,13 @@ pub async fn telegram_attach(
         Err(reason) => {
             let err_msg = format!(
                 "Telegram bridge: {} for session {} (shell={:?}). Bridge inactive.",
-                reason, uuid, shell
+                reason, session_id, shell
             );
             log::error!("{}", err_msg);
             let _ = app.emit(
                 "telegram_bridge_error",
                 serde_json::json!({
-                    "sessionId": session_id,
+                    "sessionId": session_id.to_string(),
                     "error": err_msg,
                 }),
             );
@@ -121,24 +118,65 @@ pub async fn telegram_attach(
         }
     };
 
-    let cfg = settings.read().await;
-    let bot = cfg
-        .telegram_bots
-        .iter()
-        .find(|b| b.id == bot_id)
-        .ok_or_else(|| format!("Bot not found: {}", bot_id))?
-        .clone();
-    drop(cfg);
+    let bot = {
+        let cfg = settings.read().await;
+        cfg.telegram_bots
+            .iter()
+            .find(|b| b.id == bot_id)
+            .cloned()
+            .ok_or_else(|| format!("Bot not found: {}", bot_id))?
+    };
 
-    let pty_arc = pty_mgr.inner().clone();
-    let mut tg = tg_mgr.lock().await;
-    let info = tg
-        .attach(uuid, &bot, pty_arc, app.clone(), reader)
-        .map_err(|e| e.to_string())?;
+    let info = {
+        let mgr = session_mgr.read().await;
+        let mut tg = tg_mgr.lock().await;
+        let info = tg
+            .attach(
+                session_id,
+                &bot,
+                pty_mgr.inner().clone(),
+                app.clone(),
+                reader,
+            )
+            .map_err(|e| e.to_string())?;
+
+        mgr.set_telegram_bot_id(session_id, Some(bot.id.clone()))
+            .await;
+        if let Err(e) = persist_current_state_result(&mgr).await {
+            mgr.set_telegram_bot_id(session_id, None).await;
+            let _ = tg.detach(session_id);
+            let err_msg = format!(
+                "Telegram bridge attached but sessions.json could not be persisted; rolled back live bridge for session {}: {}",
+                session_id, e
+            );
+            log::error!("{}", err_msg);
+            let _ = app.emit(
+                "telegram_bridge_error",
+                serde_json::json!({
+                    "sessionId": session_id.to_string(),
+                    "error": err_msg,
+                }),
+            );
+            return Err(err_msg);
+        }
+        info
+    };
 
     let _ = app.emit("telegram_bridge_attached", info.clone());
-
     Ok(info)
+}
+
+#[tauri::command]
+pub async fn telegram_attach(
+    app: AppHandle,
+    _tg_mgr: State<'_, TelegramBridgeState>,
+    _pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    _settings: State<'_, SettingsState>,
+    session_id: String,
+    bot_id: String,
+) -> Result<BridgeInfo, String> {
+    let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    attach_telegram_bot_by_id(&app, uuid, &bot_id).await
 }
 
 #[tauri::command]
@@ -149,8 +187,29 @@ pub async fn telegram_detach(
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-    let mut tg = tg_mgr.lock().await;
-    tg.detach(uuid).map_err(|e| e.to_string())?;
+    {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let mut tg = tg_mgr.lock().await;
+
+        tg.detach(uuid).map_err(|e| e.to_string())?;
+        mgr.set_telegram_bot_id(uuid, None).await;
+        if let Err(e) = persist_current_state_result(&mgr).await {
+            let err_msg = format!(
+                "Telegram bridge detached live, but sessions.json could not be persisted for session {}: {}",
+                uuid, e
+            );
+            log::error!("{}", err_msg);
+            let _ = app.emit(
+                "telegram_bridge_error",
+                serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "error": err_msg,
+                }),
+            );
+            return Err(err_msg);
+        }
+    }
 
     let _ = app.emit(
         "telegram_bridge_detached",
@@ -176,6 +235,29 @@ pub async fn telegram_get_bridge(
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     let tg = tg_mgr.lock().await;
     Ok(tg.get_bridge(uuid))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Issue #295 — full command regression needs a Tauri AppHandle fixture with
+    /// managed SessionManager/PtyManager/TelegramBridgeState and an injectable
+    /// sessions.json failure path. Keep the harness shape next to the command
+    /// code so the ordering contract is explicit until such a fixture exists.
+    #[test]
+    #[ignore = "integration: needs Tauri AppHandle + injectable sessions persistence failure"]
+    fn telegram_attach_detach_persistence_ordering_harness_note() {
+        // Fixture shape:
+        //   1. Start with a live session and one configured Telegram bot.
+        //   2. Make attach persistence fail after TelegramBridgeManager::attach
+        //      succeeds; assert telegram_attach returns Err, emits
+        //      telegram_bridge_error, rolls back the live bridge, and clears
+        //      Session.telegram_bot_id.
+        //   3. Let attach persist successfully, then start detach after attach
+        //      returns Ok; assert telegram_detach returns Ok only after the
+        //      serialized snapshot no longer contains telegramBotId.
+        //   4. Assert the final bridge list is empty and the final persisted
+        //      row has no telegramBotId.
+    }
 }
 
 /// Test bot connection: discovers chat_id from the latest message sent to the bot,

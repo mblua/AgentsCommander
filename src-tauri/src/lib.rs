@@ -799,6 +799,14 @@ pub fn run() {
                                             active_id = Some(existing.id.clone());
                                         }
                                         n_woken += 1;
+                                        if let Ok(uuid) = uuid::Uuid::parse_str(&existing.id) {
+                                            commands::session::attach_persisted_telegram_if_configured(
+                                                &app_handle,
+                                                uuid,
+                                                ps.telegram_bot_id.as_deref(),
+                                            )
+                                            .await;
+                                        }
                                         should_create = false;
                                     }
                                 }
@@ -824,6 +832,14 @@ pub fn run() {
                                                 active_id = Some(info.id.clone());
                                             }
                                             n_woken += 1;
+                                            if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                                commands::session::attach_persisted_telegram_if_configured(
+                                                    &app_handle,
+                                                    uuid,
+                                                    ps.telegram_bot_id.as_deref(),
+                                                )
+                                                .await;
+                                            }
 
                                             if ps.was_detached {
                                                 if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
@@ -889,6 +905,17 @@ pub fn run() {
                                     })
                                 };
                                 if let Some(existing) = existing_root {
+                                    if let Ok(uuid) = uuid::Uuid::parse_str(&existing.id) {
+                                        let mgr = session_mgr_clone.read().await;
+                                        commands::session::preserve_deferred_telegram_intent_if_valid(
+                                            &mgr,
+                                            &settings_state_clone,
+                                            uuid,
+                                            &ps.name,
+                                            ps.telegram_bot_id.as_deref(),
+                                        )
+                                        .await;
+                                    }
                                     if ps.was_active {
                                         active_id = Some(existing.id.clone());
                                     }
@@ -919,6 +946,14 @@ pub fn run() {
                                                 mgr.set_detached_geometry(session.id, geo.clone())
                                                     .await;
                                             }
+                                            commands::session::preserve_deferred_telegram_intent_if_valid(
+                                                &mgr,
+                                                &settings_state_clone,
+                                                session.id,
+                                                &ps.name,
+                                                ps.telegram_bot_id.as_deref(),
+                                            )
+                                            .await;
                                             mgr.mark_exited(session.id, 0).await;
                                             mgr.clear_active_if(session.id).await;
                                             if let Some(updated) =
@@ -1005,6 +1040,14 @@ pub fn run() {
                                     if let Some(ref geo) = ps.detached_geometry {
                                         mgr.set_detached_geometry(session.id, geo.clone()).await;
                                     }
+                                    commands::session::preserve_deferred_telegram_intent_if_valid(
+                                        &mgr,
+                                        &settings_state_clone,
+                                        session.id,
+                                        &ps.name,
+                                        ps.telegram_bot_id.as_deref(),
+                                    )
+                                    .await;
 
                                     mgr.mark_exited(session.id, 0).await;
                                     mgr.clear_active_if(session.id).await;
@@ -1060,6 +1103,14 @@ pub fn run() {
                                     active_id = Some(info.id.clone());
                                 }
                                 n_woken += 1;
+                                if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                    commands::session::attach_persisted_telegram_if_configured(
+                                        &app_handle,
+                                        uuid,
+                                        ps.telegram_bot_id.as_deref(),
+                                    )
+                                    .await;
+                                }
 
                                 // Phase 3 restore: reconstruct detach state for the live session.
                                 // Deferred sessions (handled above with a `continue`) never reach
