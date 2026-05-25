@@ -164,6 +164,7 @@ export interface AppSettings {
   rtkPromptDismissed: boolean;
   autoGenerateBriefTitle: boolean;
   agentTemplatesPath: string | null;
+  themeLight: boolean;
 }
 
 // Team grouping for sidebar

@@ -18,8 +18,23 @@ const ActionBar: Component = () => {
   const [pendingSection, setPendingSection] = createSignal<string | undefined>(undefined, { equals: false });
   const [confirmPath, setConfirmPath] = createSignal<string | null>(null);
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
-  const [isLight, setIsLight] = createSignal(true);
   const [isPendingDialog, setIsPendingDialog] = createSignal(false);
+  // #289 — local synchronous mirror of the persisted theme. Drives the button
+  // glyph directly so rapid double-clicks each see the freshly-toggled value
+  // (a getter that reads settingsStore.current?.themeLight would see the
+  // pre-write value until fire-and-forget refresh() resolves, so clicks 2+ in
+  // a quick burst would all flip from the same stale state). createEffect
+  // syncs in when the store loads or changes externally (SettingsModal, the
+  // peer window's theme_changed event, etc.). Default true mirrors
+  // AppSettings::default for the brief window before load() resolves on mount.
+  const [localThemeLight, setLocalThemeLight] = createSignal(
+    settingsStore.current?.themeLight ?? true,
+  );
+  createEffect(() => {
+    const t = settingsStore.current?.themeLight;
+    if (t !== undefined) setLocalThemeLight(t);
+  });
+  const isLight = (): boolean => localThemeLight();
   let dropdownRef: HTMLDivElement | undefined;
 
   // Click-away to close dropdown
@@ -124,6 +139,36 @@ const ActionBar: Component = () => {
     }
   };
 
+  // #289 — flip the DOM class optimistically (snappy UI), persist, and roll
+  // back both DOM and toast on failure. Mirrors handleToggleMute: the user
+  // intent in clicking is to *see* the new theme immediately, so the visual
+  // swap precedes the IPC roundtrip. emitThemeChanged keeps the other window
+  // in sync; on rollback we re-emit the previous value so it follows back.
+  const applyThemeClass = (light: boolean) => {
+    if (light) {
+      document.documentElement.classList.add("light-theme");
+    } else {
+      document.documentElement.classList.remove("light-theme");
+    }
+  };
+  const handleToggleTheme = async () => {
+    const previousValue = isLight();
+    const newValue = !previousValue;
+    setLocalThemeLight(newValue);
+    applyThemeClass(newValue);
+    emitThemeChanged(newValue).catch(console.error);
+    try {
+      await SettingsAPI.setThemeLight(newValue);
+      settingsStore.refresh();
+    } catch (err) {
+      setLocalThemeLight(previousValue);
+      applyThemeClass(previousValue);
+      emitThemeChanged(previousValue).catch(console.error);
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Failed to switch to ${newValue ? "light" : "dark"} theme: ${msg}`);
+    }
+  };
+
   return (
     <>
       <div class="action-bar">
@@ -188,16 +233,8 @@ const ActionBar: Component = () => {
           </button>
           <button
             class="toolbar-gear-btn"
-            onClick={() => {
-              const next = !isLight();
-              setIsLight(next);
-              if (next) {
-                document.documentElement.classList.add("light-theme");
-              } else {
-                document.documentElement.classList.remove("light-theme");
-              }
-              emitThemeChanged(next).catch(console.error);
-            }}
+            disabled={!settingsStore.current}
+            onClick={handleToggleTheme}
             title="Toggle theme"
           >
             {isLight() ? "\u2600\uFE0F" : "\uD83C\uDF19"}
