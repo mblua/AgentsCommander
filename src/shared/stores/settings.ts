@@ -26,6 +26,8 @@ export const settingsStore = {
   },
 
   refresh() {
-    void settingsStore.load();
+    settingsStore.load().catch((err) => {
+      console.error("settingsStore.refresh() failed:", err);
+    });
   },
 };
