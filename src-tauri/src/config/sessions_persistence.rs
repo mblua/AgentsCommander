@@ -2,11 +2,45 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
+
+/// #291 — in-process mutex serializing all `save_sessions` calls.
+///
+/// The historical race: two concurrent callers both wrote to the shared
+/// `sessions.json.tmp`, then both tried to `rename` it. The first rename
+/// consumed the temp file, the second rename returned Windows
+/// `ERROR_FILE_NOT_FOUND` (os error 2), and the second caller's snapshot
+/// silently failed to persist.
+///
+/// The fix is twofold:
+///   1. This mutex serializes the write+rename window so the order of saves
+///      matches the order of `lock()` acquisition. "Last writer wins."
+///   2. Per-call unique temp filenames (`sessions.json.<pid>.<op_id>.tmp`)
+///      provide defense-in-depth: even if a future caller forgets the lock,
+///      two callers can never collide on the same temp filename.
+///
+/// Lock window: held only across the synchronous serialize + write + rename
+/// inside `save_sessions_to_dir` (no await points). Worst-case contention
+/// per waiter is bounded by `RENAME_ATTEMPTS * max(RENAME_BACKOFFS_MS)`
+/// (~260 ms), same as the existing rename window.
+///
+/// Poisoning is tolerated via `into_inner()`: a poisoned lock means a prior
+/// holder panicked mid-write, but the persisted file is atomic (tmp+rename),
+/// so picking up the lock cleanly is safe.
+static SAVE_SESSIONS_LOCK: Mutex<()> = Mutex::new(());
+
+/// #291 — counter feeding the per-call unique temp filename for
+/// `save_sessions`. Combined with the PID it makes the temp filename
+/// `sessions.json.<pid>.<op_id>.tmp` distinct from any concurrent in-process
+/// or cross-process save, and from any leftover temp file written by a
+/// prior crashed run. Kept separate from `rename_with_retry`'s `OP_ID` so
+/// the two counters can be reasoned about independently in diagnostics.
+static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// #280 §3.1 — diagnostic context captured when an atomic rename exhausts
 /// its retry budget. Surfaced in the caller's error string so a single
@@ -41,6 +75,14 @@ const RENAME_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
 /// the caller can fold it into a single ERROR line. Successful retries are
 /// logged at INFO (low-frequency, useful signal that the race is
 /// happening). Intermediate failures log at DEBUG.
+///
+/// This retry loop targets *cross-process* contention on the destination
+/// (`sessions.json`): AV scanners, the Windows Indexer, or a second AC
+/// instance briefly holding the file. It is NOT the mitigation for #291,
+/// which was an in-process race on a shared *temp* filename — that one is
+/// solved upstream in `save_sessions_to_dir` by a per-call unique temp
+/// name plus `SAVE_SESSIONS_LOCK`, so by the time we get here the source
+/// path is guaranteed unique to this save.
 ///
 /// Risk note (deliberately accepted for #280 scope): this uses
 /// `std::thread::sleep`, which blocks the calling tokio worker thread for
@@ -443,27 +485,75 @@ pub fn load_sessions() -> Vec<PersistedSession> {
 }
 
 /// Save current sessions to the app config directory (see config_dir()).
+///
+/// Concurrency model (#291):
+/// - **In-process callers are serialized** by `SAVE_SESSIONS_LOCK`; the
+///   rename order matches the order of `lock()` acquisition, so "last
+///   writer wins" deterministically.
+/// - **Per-call unique temp filenames** (`sessions.json.<pid>.<op_id>.tmp`)
+///   prevent two callers from ever colliding on a shared `.tmp`, which was
+///   the historical Windows `ERROR_FILE_NOT_FOUND` (os error 2) race.
+/// - **Cross-process contention** on the destination (a second AC instance,
+///   AV, or the Indexer) is absorbed by `rename_with_retry`. Per-call temp
+///   names also keep cross-process callers from colliding on `.tmp`.
+///
+/// What this does NOT solve (out of scope for #291):
+/// - **Snapshot freshness races.** Callers usually call
+///   `snapshot_sessions(&mgr).await` and then `save_sessions(&snapshot)`
+///   non-atomically. A concurrent `SessionManager` mutation between the
+///   two can leave the snapshot stale by the time it lands on disk. The
+///   next session-lifecycle event re-persists. See §224 G-IMPL-4 in
+///   `phone/mailbox.rs` for the documented behavior.
 pub fn save_sessions(sessions: &[PersistedSession]) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    save_sessions_to_dir(&dir, sessions)
+}
+
+/// Path-injected core of `save_sessions`. Same concurrency guarantees as
+/// `save_sessions`; the explicit `dir` parameter lets tests drive the
+/// persistence path through a `tempfile::tempdir()` without touching the
+/// process-wide `config_dir()` once-cell.
+fn save_sessions_to_dir(dir: &Path, sessions: &[PersistedSession]) -> Result<(), String> {
+    // #291 — serialize in-process saves. Recover from poison: a prior
+    // panic inside the critical section is rare (the body is sync std::fs
+    // + serde), and the on-disk file is atomic (tmp+rename), so the next
+    // caller can safely proceed.
+    let _guard = SAVE_SESSIONS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let path = dir.join("sessions.json");
 
-    std::fs::create_dir_all(&dir)
+    std::fs::create_dir_all(dir)
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
 
     let json = serde_json::to_string_pretty(sessions)
         .map_err(|e| format!("Failed to serialize sessions: {}", e))?;
 
-    // Atomic write: write to .tmp then rename, so a crash mid-write
-    // cannot corrupt the existing sessions.json.
-    let tmp_path = dir.join("sessions.json.tmp");
-    std::fs::write(&tmp_path, &json)
-        .map_err(|e| format!("Failed to write temp sessions file: {}", e))?;
+    // #291 — unique temp filename per save. Combined with the mutex above,
+    // this kills the shared-`sessions.json.tmp` race: even cross-process
+    // concurrent saves cannot race on the temp file, and any leftover
+    // `.tmp` from a prior crashed run cannot be mistaken for ours.
+    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let tmp_path = dir.join(format!("sessions.json.{}.{}.tmp", pid, op_id));
+
+    if let Err(e) = std::fs::write(&tmp_path, &json) {
+        // Best-effort cleanup: the partial write may have created the file
+        // even though the write returned Err (e.g. ENOSPC mid-stream).
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write temp sessions file: {}", e));
+    }
 
     // #280 §3.1 — atomic rename with bounded retries to absorb transient
     // AV / Indexer / second-instance contention. On exhaustion, fold the
     // diagnostic context into the error so the upstream `log::error!` in
     // `persist_*` is self-contained for forensics.
     if let Err((err_msg, d)) = rename_with_retry(&tmp_path, &path) {
+        // #291 — best-effort cleanup of our unique temp file so we don't
+        // accumulate `.tmp` litter across failed saves. The mutex + unique
+        // name guarantee this remove only touches OUR own temp file.
+        let _ = std::fs::remove_file(&tmp_path);
         return Err(format!(
             "Failed to rename sessions file: {} [op_id={} pid={} instance={} attempts={} \
              tmp_existed_before={} final_existed_before={} os_error={:?} duration={:?}]",
@@ -1348,5 +1438,126 @@ mod tests {
         // syscall noise). Generous upper bound to keep the test stable on
         // slow CI.
         assert!(diag.duration < std::time::Duration::from_secs(2));
+    }
+
+    /// #291 — direct regression for the shared-`sessions.json.tmp` race.
+    ///
+    /// An `Arc<Barrier>` forces all writer threads to enter the
+    /// write+rename critical section simultaneously, maximizing the
+    /// chance that the old buggy code (shared temp filename, no mutex)
+    /// would interleave such that one caller's rename consumed the temp
+    /// file before another caller's rename could run, surfacing as
+    /// Windows `ERROR_FILE_NOT_FOUND` (os error 2). With the fix
+    /// (mutex + per-call unique temp filenames):
+    ///   1. every concurrent save returns Ok,
+    ///   2. the final file is a valid full snapshot (not torn JSON), and
+    ///   3. no `.tmp` files are left behind.
+    ///
+    /// Without the barrier this test would have a much weaker race-
+    /// detection signal: on fast SSDs each thread's write+rename can
+    /// complete before the next thread is even scheduled, so the
+    /// pre-fix code might pass by accident.
+    #[test]
+    fn save_sessions_concurrent_calls_all_succeed_with_valid_snapshot_and_no_stragglers() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let tmp = tempfile::tempdir().expect("tmp");
+        let dir = Arc::new(tmp.path().to_path_buf());
+
+        let writers = 16;
+        let barrier = Arc::new(Barrier::new(writers));
+        let mut handles = Vec::with_capacity(writers);
+        for i in 0..writers {
+            let dir = Arc::clone(&dir);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let sessions = vec![PersistedSession {
+                    name: format!("sess-{}", i),
+                    shell: "cmd".into(),
+                    shell_args: vec![],
+                    working_directory: format!("C:/x/{}", i),
+                    ..Default::default()
+                }];
+                // Synchronize: all threads enter the critical section together,
+                // maximizing the chance of catching the historical race.
+                barrier.wait();
+                super::save_sessions_to_dir(&dir, &sessions)
+            }));
+        }
+
+        // Drain all join handles before asserting so the tempdir is not
+        // dropped while threads are still writing into it.
+        let mut results = Vec::with_capacity(writers);
+        for h in handles {
+            results.push(h.join().expect("thread panicked"));
+        }
+
+        // (1) Every concurrent save returns Ok.
+        for (i, r) in results.iter().enumerate() {
+            assert!(r.is_ok(), "writer {} failed: {:?}", i, r.as_ref().err());
+        }
+
+        // (2) The final file is a valid full snapshot from exactly one
+        //     writer (last-writer-wins under the mutex's serialization).
+        let final_path = dir.join("sessions.json");
+        assert!(final_path.exists(), "sessions.json must exist after writes");
+        let contents = std::fs::read_to_string(&final_path).expect("read final");
+        let parsed: Vec<PersistedSession> =
+            serde_json::from_str(&contents).expect("final file must be valid JSON, not torn");
+        assert_eq!(parsed.len(), 1, "snapshot must contain exactly one session");
+        assert!(
+            parsed[0].name.starts_with("sess-"),
+            "final session name must be one of the writers' inputs, got '{}'",
+            parsed[0].name
+        );
+
+        // (3) No stranded `.tmp` files. Each save consumed its own unique
+        //     temp filename via rename; failure paths would have run the
+        //     best-effort `remove_file` cleanup.
+        let mut stragglers = Vec::new();
+        for entry in std::fs::read_dir(dir.as_path()).expect("readdir") {
+            let entry = entry.expect("entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".tmp") {
+                stragglers.push(name);
+            }
+        }
+        assert!(
+            stragglers.is_empty(),
+            "expected no .tmp stragglers after concurrent saves, found {:?}",
+            stragglers
+        );
+    }
+
+    /// #291 — a single save round-trips: file lands at `sessions.json`,
+    /// deserializes back to the input, and no `.tmp` file is left behind.
+    #[test]
+    fn save_sessions_to_dir_round_trips_and_cleans_up_temp() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let sessions = vec![PersistedSession {
+            name: "solo".into(),
+            shell: "claude".into(),
+            shell_args: vec!["--print".into()],
+            working_directory: "C:/proj".into(),
+            ..Default::default()
+        }];
+
+        super::save_sessions_to_dir(tmp.path(), &sessions).expect("save");
+
+        let path = tmp.path().join("sessions.json");
+        let contents = std::fs::read_to_string(&path).expect("read");
+        let back: Vec<PersistedSession> = serde_json::from_str(&contents).expect("parse");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].name, "solo");
+
+        for entry in std::fs::read_dir(tmp.path()).expect("readdir") {
+            let name = entry.expect("entry").file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.ends_with(".tmp"),
+                "found leftover temp file: {}",
+                name
+            );
+        }
     }
 }
