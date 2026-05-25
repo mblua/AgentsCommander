@@ -39,6 +39,11 @@ PEER FILTER (--peer):\n  \
 NOTES:\n  \
   - Canonical Root Agent roots return verified WG coordinator replicas only.\n    \
     Origin coordinators and non-coordinator WG replicas are omitted for Root Agent discovery in #277.\n  \
+  - Identity-verified WG coordinator replicas additionally see a synthetic\n    \
+    peer with `name=agentscommander://root-agent`, representing the Root\n    \
+    Agent reply target. Pass that name verbatim to `send --to` when replying\n    \
+    to a root-originated message. Other replicas do not see this entry.\n    \
+    See issue #293.\n  \
   - Working-state visibility is bound to the binary instance writing\n    \
     sessions.json. Peers running under a different AgentsCommander binary\n    \
     (e.g. agentscommander_mb_wg-20.exe vs agentscommander_mb.exe) will\n    \
@@ -111,6 +116,11 @@ PEER FILTER (--peer):\n  \
 NOTES:\n  \
   - Working-state visibility is bound to the binary instance that wrote\n    \
     sessions.json (same caveat as `list-peers`).\n  \
+  - Identity-verified WG coordinator replicas additionally see a synthetic\n    \
+    peer with `name=agentscommander://root-agent`, representing the Root\n    \
+    Agent reply target. Pass that name verbatim to `send --to` when replying\n    \
+    to a root-originated message. Other replicas do not see this entry.\n    \
+    See issue #293.\n  \
   - Side effect: discovering WG peers creates `inbox/` and `outbox/`\n    \
     subdirectories under each peer's local config dir (inherited from\n    \
     `list-peers`). The verb is read-only w.r.t. the daemon mailbox, NOT\n    \
@@ -688,6 +698,32 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
         }
     }
 
+    // #293 — synthetic Root Agent reply peer (identity-verified coordinators
+    // only). Augment `settings.project_paths` with the caller's own project
+    // dir so `verified_wg_coordinator_target` sees the replica even when the
+    // project isn't in settings. Mirrors `cli/send.rs::effective_project_paths`
+    // (send.rs `derive_root_project_dir` augmentation) and the mailbox
+    // root-recipient arm's `derive_project_from_outbox_path` augmentation.
+    let mut effective_paths = crate::config::settings::load_settings()
+        .project_paths
+        .clone();
+    if let Some(project_dir) = wg.ac_new_dir.parent() {
+        if let Some(project_str) = project_dir.to_str() {
+            let p = project_str.to_string();
+            let canon_p = std::fs::canonicalize(&p).ok();
+            let already_present = effective_paths.iter().any(|x| match &canon_p {
+                Some(c) => std::fs::canonicalize(x).ok().as_ref() == Some(c),
+                None => x == &p,
+            });
+            if !already_present {
+                effective_paths.push(p);
+            }
+        }
+    }
+    if let Some(root_peer) = build_root_agent_synthetic_peer(&wg, &effective_paths) {
+        peers.push(root_peer);
+    }
+
     peers
 }
 
@@ -964,6 +1000,48 @@ fn discover_root_coordinator_peers_from_project_paths(project_paths: &[String]) 
     peers
 }
 
+/// Build a synthetic `PeerInfo` for the canonical Root Agent reply target,
+/// or `None` if the caller is not an identity-verified WG coordinator (the
+/// only relationship that can address the Root Agent — see #293 §3).
+///
+/// `wg` is the caller's WG-replica detection result (already computed by
+/// `discover_peers`); `project_paths` is the effective settings slice the
+/// caller scanned.
+fn build_root_agent_synthetic_peer(
+    wg: &WgReplicaInfo,
+    project_paths: &[String],
+) -> Option<PeerInfo> {
+    // The caller is a coordinator iff `verified_wg_coordinator_target`
+    // accepts its own FQN. Re-uses the same identity-cross-reference path
+    // (#277 §2.3) used by the root-sender side.
+    let my_fqn = format!(
+        "{}:{}/{}",
+        wg.my_project, wg.my_wg_name, wg.my_agent_name
+    );
+    crate::config::teams::verified_wg_coordinator_target(&my_fqn, project_paths)?;
+
+    let root_dir = crate::config::root_agent::root_agent_dir().ok()?;
+    Some(PeerInfo {
+        name: crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
+        path: root_dir,
+        // `status`/`session_status` reflect "we don't track it from here".
+        // The root session is in a different working-directory namespace
+        // than this verb scans — its working state is invisible to
+        // `compute_peer_status`.
+        status: "unknown".to_string(),
+        role: "AgentsCommander Root Agent (canonical reply target).".to_string(),
+        teams: Vec::new(),
+        reachable: true,
+        last_coding_agent: None,
+        working: false,
+        session_status: "none".to_string(),
+        session_id: None,
+        waiting_for_input: false,
+        exit_code: None,
+        coding_agents: std::collections::HashMap::new(),
+    })
+}
+
 /// Apply the `--peer` filter to a discovered peer list.
 ///
 /// Consumes `peers` by value so filtering does not require `PeerInfo: Clone`.
@@ -1234,6 +1312,91 @@ mod tests {
         assert!(!peers
             .iter()
             .any(|p| p.name == "proj-a:wg-1-dev-team/dev-rust"));
+    }
+
+    #[test]
+    fn build_root_agent_synthetic_peer_emits_peer_for_verified_coordinator() {
+        let (_temp, paths) = make_root_discovery_fixture(false);
+        let wg = WgReplicaInfo {
+            my_agent_name: "tech-lead".to_string(),
+            my_wg_name: "wg-1-dev-team".to_string(),
+            my_wg_dir: PathBuf::from("ignored-for-this-test"),
+            ac_new_dir: PathBuf::from("ignored-for-this-test"),
+            my_project: "proj-a".to_string(),
+        };
+        let peer = build_root_agent_synthetic_peer(&wg, &paths)
+            .expect("verified coordinator should see synthetic root peer");
+        assert_eq!(peer.name, crate::config::root_agent::ROOT_AGENT_SENDER);
+        assert!(peer.reachable);
+        assert_eq!(peer.session_status, "none");
+        assert!(peer.teams.is_empty());
+    }
+
+    #[test]
+    fn build_root_agent_synthetic_peer_skips_non_coordinator() {
+        let (_temp, paths) = make_root_discovery_fixture(false);
+        let wg = WgReplicaInfo {
+            my_agent_name: "dev-rust".to_string(),
+            my_wg_name: "wg-1-dev-team".to_string(),
+            my_wg_dir: PathBuf::from("ignored-for-this-test"),
+            ac_new_dir: PathBuf::from("ignored-for-this-test"),
+            my_project: "proj-a".to_string(),
+        };
+        assert!(build_root_agent_synthetic_peer(&wg, &paths).is_none());
+    }
+
+    #[test]
+    fn build_root_agent_synthetic_peer_skips_spoofed_coordinator_identity() {
+        let (_temp, paths) = make_root_discovery_fixture(true);
+        let wg = WgReplicaInfo {
+            my_agent_name: "tech-lead".to_string(),
+            my_wg_name: "wg-1-dev-team".to_string(),
+            my_wg_dir: PathBuf::from("ignored-for-this-test"),
+            ac_new_dir: PathBuf::from("ignored-for-this-test"),
+            my_project: "proj-a".to_string(),
+        };
+        assert!(build_root_agent_synthetic_peer(&wg, &paths).is_none());
+    }
+
+    #[test]
+    fn build_root_agent_synthetic_peer_emits_peer_with_project_absent_from_settings() {
+        // grinch §12.2 regression: a verified coordinator running in a WG
+        // replica whose project is NOT in `settings.project_paths` must still
+        // see the synthetic root peer via the §5.2 augmentation pattern (parity
+        // with cli/send.rs::effective_project_paths).
+        let (temp, _seeded_paths) = make_root_discovery_fixture(false);
+        let project_dir = temp.path().join("proj-a");
+        let ac_new_dir = project_dir.join(".ac-new");
+        let wg = WgReplicaInfo {
+            my_agent_name: "tech-lead".to_string(),
+            my_wg_name: "wg-1-dev-team".to_string(),
+            my_wg_dir: ac_new_dir.join("wg-1-dev-team"),
+            ac_new_dir: ac_new_dir.clone(),
+            my_project: "proj-a".to_string(),
+        };
+
+        // Sanity check: with EMPTY settings, the helper returns None — proves
+        // the augmentation matters and we're not just trivially passing.
+        let empty: Vec<String> = vec![];
+        assert!(
+            build_root_agent_synthetic_peer(&wg, &empty).is_none(),
+            "without augmentation, helper must reject (otherwise this test is trivial)"
+        );
+
+        // Replicate the call-site augmentation: walk up `wg.ac_new_dir.parent()`.
+        let mut augmented = empty.clone();
+        let project_str = wg
+            .ac_new_dir
+            .parent()
+            .and_then(|d| d.to_str())
+            .expect("fixture project dir is utf-8")
+            .to_string();
+        augmented.push(project_str);
+
+        let peer = build_root_agent_synthetic_peer(&wg, &augmented)
+            .expect("with project-dir augmentation, helper must emit synthetic root peer");
+        assert_eq!(peer.name, crate::config::root_agent::ROOT_AGENT_SENDER);
+        assert!(peer.reachable);
     }
 
     // ── norm_path / canon_or_norm ────────────────────────────────────
