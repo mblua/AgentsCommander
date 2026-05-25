@@ -323,6 +323,15 @@ pub fn resolve_agent_target(
     target: &str,
     project_paths: &[String],
 ) -> Result<String, ResolutionError> {
+    // Canonical Root Agent reply target. Symmetric with `ROOT_AGENT_SENDER`
+    // appearing as `msg.from` on root-originated messages. See #293.
+    // Identity-verified-coordinator gating happens later (CLI:
+    // `coordinator_to_root_target_allowed`; mailbox:
+    // `validate_coordinator_to_root_route`).
+    if crate::config::root_agent::is_root_agent_target(target) {
+        return Ok(target.to_string());
+    }
+
     // Basic shape guard.
     if target.is_empty() || target.contains('\0') {
         return Err(ResolutionError::InvalidShape(target.to_string()));
@@ -1247,6 +1256,24 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn resolve_agent_target_accepts_root_agent_uri_verbatim() {
+        let paths: Vec<String> = vec![];
+        assert_eq!(
+            resolve_agent_target(crate::config::root_agent::ROOT_AGENT_SENDER, &paths).unwrap(),
+            crate::config::root_agent::ROOT_AGENT_SENDER
+        );
+    }
+
+    #[test]
+    fn resolve_agent_target_still_rejects_other_multi_colon_strings() {
+        let paths: Vec<String> = vec![];
+        assert!(matches!(
+            resolve_agent_target("a:b:wg-1/x", &paths),
+            Err(ResolutionError::InvalidShape(_))
+        ));
     }
 
     /// Validation #16: `is_coordinator_for_cwd` correctness guard.

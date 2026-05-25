@@ -7,6 +7,15 @@ pub const ROOT_AGENT_SESSION_NAME: &str = "Root Agent";
 pub const ROOT_AGENT_SENDER: &str = "agentscommander://root-agent";
 pub const ROOT_AGENT_SHORT_NAME: &str = "root";
 
+/// Returns `true` iff `target` is the canonical Root Agent reply name.
+///
+/// Symmetric with `ROOT_AGENT_SENDER` (the `msg.from` value the Root Agent
+/// writes when it sends): any peer that received that value as `from` MUST
+/// be able to round-trip it back as `--to`.
+pub fn is_root_agent_target(target: &str) -> bool {
+    target == ROOT_AGENT_SENDER
+}
+
 const OLD_DEFERRED_MESSAGING_PARAGRAPH: &str = "Direct file-based workgroup messaging is not available from the root-agent directory yet: `send --send` currently requires a workgroup replica root. Do not claim that you can autonomously message workgroup peers until a future root messaging feature adds explicit root-aware send instructions.";
 
 const ROOT_COORDINATION_MESSAGING_PARAGRAPH: &str = r#"You may message verified workgroup coordinator replicas only. Before sending, run `list-peers-lean` with your `AGENTSCOMMANDER_*` credentials and use only the `name` values it returns. In Root Agent sessions this list omits origin coordinators and non-coordinator replicas.
@@ -21,7 +30,9 @@ Root messaging is file-based:
 "<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>" --to "<coordinator_name>" --send <filename> --mode wake
 ```
 
-Never send to origin coordinators or non-coordinator specialist/member agents from this root session."#;
+Never send to origin coordinators or non-coordinator specialist/member agents from this root session.
+
+Coordinators may reply by sending to `agentscommander://root-agent`; their replies appear in this session as standard file notifications."#;
 
 const OLD_ROOT_ROLE_MD: &str = r#"---
 name: 'agents-commander'
@@ -353,6 +364,21 @@ mod tests {
             ROOT_AGENT_SENDER,
             crate::config::teams::agent_fqn_from_path("C:/tmp/agentscommander/_agent_root-agent")
         );
+    }
+
+    #[test]
+    fn is_root_agent_target_recognizes_canonical_uri() {
+        assert!(is_root_agent_target(ROOT_AGENT_SENDER));
+        assert!(is_root_agent_target("agentscommander://root-agent"));
+    }
+
+    #[test]
+    fn is_root_agent_target_rejects_partial_or_wrong_uris() {
+        assert!(!is_root_agent_target(""));
+        assert!(!is_root_agent_target("agentscommander://root"));
+        assert!(!is_root_agent_target("root-agent"));
+        assert!(!is_root_agent_target("agentscommander/root-agent"));
+        assert!(!is_root_agent_target("agentscommander://ROOT-AGENT"));
     }
 
     #[test]
