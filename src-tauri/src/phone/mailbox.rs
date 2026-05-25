@@ -48,6 +48,16 @@ fn validate_root_sender_route(
     Ok(())
 }
 
+fn validate_coordinator_to_root_route(
+    from: &str,
+    project_paths: &[String],
+) -> Result<(), &'static str> {
+    if crate::config::teams::verified_wg_coordinator_target(from, project_paths).is_none() {
+        return Err("Only verified WG coordinator replicas may message the Root Agent");
+    }
+    Ok(())
+}
+
 fn validate_root_sender_payload(msg: &OutboxMessage) -> Result<(), String> {
     let root_dir = crate::config::root_agent::root_agent_dir()?;
     validate_root_sender_payload_with_root_dir(msg, Path::new(&root_dir))
@@ -242,6 +252,27 @@ pub(crate) fn wake_spawn_skip_auto_resume(spawn_with_resume: bool) -> bool {
 pub(crate) fn is_viable_wake_candidate(status: &SessionStatus, has_pty: bool) -> bool {
     match status {
         SessionStatus::Exited(_) => true,
+        SessionStatus::Active | SessionStatus::Running | SessionStatus::Idle => has_pty,
+    }
+}
+
+/// Decide whether a `SessionInfo` candidate is a viable Root Agent recipient
+/// for delivery. Stricter than `is_viable_wake_candidate`: rejects
+/// `SessionStatus::Exited(_)` outright.
+///
+/// The Root Agent is user-launched and never auto-respawned (#293 §3 contract).
+/// `deliver_wake`'s deferred-destroy block fires for any candidate that hit
+/// the `RespawnExited` arm, which would silently destroy the user's Root
+/// Agent session record before the no-spawn guard fires. Returning `false`
+/// for Exited keeps the record in place so the user sees it in the sidebar
+/// exactly as they left it.
+///
+/// Exhaustive `match` (not `matches!`) — a future `SessionStatus` variant
+/// forces a deliberate compile-error decision. Same pattern as
+/// `is_viable_wake_candidate`.
+pub(crate) fn is_viable_root_recipient(status: &SessionStatus, has_pty: bool) -> bool {
+    match status {
+        SessionStatus::Exited(_) => false,
         SessionStatus::Active | SessionStatus::Running | SessionStatus::Idle => has_pty,
     }
 }
@@ -678,6 +709,7 @@ impl MailboxPoller {
         };
 
         let root_agent_claim = msg.from == crate::config::root_agent::ROOT_AGENT_SENDER;
+        let root_agent_recipient = crate::config::root_agent::is_root_agent_target(&msg.to);
         let mut token_belongs_to_root_agent = false;
         let mut saw_session_token = false;
 
@@ -798,6 +830,42 @@ impl MailboxPoller {
                 msg.from,
                 msg.to
             );
+        } else if root_agent_recipient {
+            // #293 — coordinator → root recipient.
+            //
+            // Build the same effective_project_paths slice the root-sender
+            // branch uses (settings + the outbox file's WG-replica project
+            // walk-up) so verified_wg_coordinator_target sees the project
+            // where the outbox lives.
+            let mut paths = {
+                let cfg = app.state::<SettingsState>();
+                let c = cfg.read().await;
+                c.project_paths.clone()
+            };
+            if let Some(root_project) = derive_project_from_outbox_path(path) {
+                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+                let already_present = paths.iter().any(|p| match &canon_root_project {
+                    Some(canon_target) => {
+                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
+                    }
+                    None => p == &root_project,
+                });
+                if !already_present {
+                    paths.push(root_project);
+                }
+            }
+
+            // Master/root token does NOT bypass the verified-coordinator check
+            // for root-recipient: the URI is meaningful only when paired with
+            // a real coordinator identity, and the verified check is cheap.
+            if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
+                return self.reject_message(path, &msg, reason).await;
+            }
+            log::info!(
+                "[mailbox] Coordinator→Root routing check passed: '{}' -> '{}'",
+                msg.from,
+                msg.to
+            );
         } else if is_master {
             log::info!(
                 "[mailbox] Master token used — bypassing team validation for {} -> {}",
@@ -906,7 +974,21 @@ impl MailboxPoller {
         // phantom no longer blocks delivery to the live Idle recipient at the
         // same CWD; defer Exited destroys until later Inject attempts fail
         // (grinch G.H1) — preserves AC5's "first Exited wins respawn slot".
-        let (candidates, had_any_match) = self.find_live_candidates(app, &msg.to).await;
+        //
+        // #293: Root Agent recipient uses the `is_root_agent` flag lookup,
+        // not CWD-FQN match, since `agent_fqn_from_path(ac-root-agent)` does
+        // not produce `ROOT_AGENT_SENDER`. Exited records are filtered out by
+        // `find_root_session_candidate` so the deferred-destroy block never
+        // fires on a user-launched session.
+        let (candidates, had_any_match) =
+            if crate::config::root_agent::is_root_agent_target(&msg.to) {
+                match self.find_root_session_candidate(app).await {
+                    Some(pair) => (vec![pair], true),
+                    None => (Vec::new(), false),
+                }
+            } else {
+                self.find_live_candidates(app, &msg.to).await
+            };
 
         for &(session_id, ref status) in &candidates {
             log::info!(
@@ -1011,6 +1093,35 @@ impl MailboxPoller {
             "[mailbox] wake: no active session for '{}', spawning persistent session",
             msg.to
         );
+
+        // #293: Root Agent is user-launched; never auto-spawn or destroy a
+        // root session implicitly via this path. Reject with an explicit
+        // message instead. The Exited filter in `find_root_session_candidate`
+        // already preserves the user's session record (the deferred-destroy
+        // block above does not fire because the Exited candidate was never
+        // returned).
+        if crate::config::root_agent::is_root_agent_target(&msg.to) {
+            // Soft-handle the daemon-restart window: if the SessionManager is
+            // still restoring sessions, the root may be on its way back. We
+            // do NOT pin this rejection as `ERR_UNRESOLVABLE_AGENT`-class, so
+            // the retry tracker keeps cycling and the message redelivers on
+            // the next poll once the root session reappears.
+            let restoring = app
+                .state::<Arc<crate::RestoreInProgress>>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst);
+            return if restoring {
+                Err(format!(
+                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
+                    msg.to
+                ))
+            } else {
+                Err(format!(
+                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
+                    msg.to
+                ))
+            };
+        }
 
         let agent_command = self.resolve_agent_command(app, msg).await;
         let (shell, shell_args) = agent_command.ok_or_else(|| {
@@ -1550,6 +1661,67 @@ impl MailboxPoller {
                 .collect::<Vec<_>>(),
         );
         (viable, had_any_match)
+    }
+
+    /// Locate the live Root Agent session for routing `msg.to == ROOT_AGENT_SENDER`.
+    ///
+    /// Returns the first match by `SessionManager` iteration order. Persistence
+    /// dedup (`config/sessions_persistence.rs:242-329`) converges to a single
+    /// root session at steady state, but multiple records may exist transiently
+    /// during concurrent spawns — a defensive log fires when more than one
+    /// matches so future code does not silently rely on "exactly one" as a
+    /// structural invariant.
+    ///
+    /// Filters via `is_viable_root_recipient` (stricter than
+    /// `is_viable_wake_candidate`) — Exited records are returned as `None` so
+    /// the caller's no-spawn guard sees `(empty, false)` instead of triggering
+    /// the destroy-and-respawn path on a user-launched session.
+    async fn find_root_session_candidate(
+        &self,
+        app: &tauri::AppHandle,
+    ) -> Option<(Uuid, SessionStatus)> {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+
+        let mgr = session_mgr.read().await;
+        let sessions = mgr.list_sessions().await;
+
+        let matches: Vec<_> = sessions
+            .iter()
+            .filter(|s| {
+                s.is_root_agent
+                    || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+            })
+            .collect();
+        if matches.len() > 1 {
+            log::warn!(
+                "[mailbox] root recipient: {} root sessions found ({}); routing to first. Persistence dedup should converge.",
+                matches.len(),
+                matches
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+        let candidate = matches.into_iter().next()?;
+
+        let id = Uuid::parse_str(&candidate.id).ok()?;
+        let pty = pty_mgr.lock().unwrap();
+        let has_pty = pty.has_session(id);
+        drop(pty);
+
+        if !is_viable_root_recipient(&candidate.status, has_pty) {
+            log::warn!(
+                "[mailbox] root recipient: not viable (id={} status={:?} has_pty={}); preserving record, no destroy",
+                id,
+                candidate.status,
+                has_pty
+            );
+            return None;
+        }
+
+        Some((id, candidate.status.clone()))
     }
 
     /// Find ALL sessions matching an agent name (by working directory).
@@ -2780,6 +2952,113 @@ mod tests {
         assert!(validate_root_sender_payload_with_root_dir(&msg, &root_dir)
             .unwrap_err()
             .contains("Root Agent file notification is invalid"));
+    }
+
+    #[test]
+    fn validate_coordinator_to_root_route_accepts_verified_coordinator() {
+        let (_temp, paths) = make_root_route_fixture(false);
+        assert_eq!(
+            validate_coordinator_to_root_route("proj-a:wg-1-dev-team/tech-lead", &paths),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn validate_coordinator_to_root_route_rejects_non_coordinator_replica() {
+        let (_temp, paths) = make_root_route_fixture(false);
+        assert_eq!(
+            validate_coordinator_to_root_route("proj-a:wg-1-dev-team/dev-rust", &paths),
+            Err("Only verified WG coordinator replicas may message the Root Agent")
+        );
+    }
+
+    #[test]
+    fn validate_coordinator_to_root_route_rejects_spoofed_identity() {
+        let (_temp, paths) = make_root_route_fixture(true);
+        assert_eq!(
+            validate_coordinator_to_root_route("proj-a:wg-1-dev-team/tech-lead", &paths),
+            Err("Only verified WG coordinator replicas may message the Root Agent")
+        );
+    }
+
+    #[test]
+    fn is_viable_root_recipient_rejects_exited_regardless_of_pty() {
+        // §12.1 regression: Exited(_) must never be a viable candidate, with
+        // or without PTY. If this fails, `find_root_session_candidate` would
+        // return an Exited candidate, the deferred-destroy block at
+        // mailbox.rs:982-998 would fire, and the user's Root Agent session
+        // record would be silently destroyed.
+        assert!(!is_viable_root_recipient(
+            &crate::session::session::SessionStatus::Exited(0),
+            true
+        ));
+        assert!(!is_viable_root_recipient(
+            &crate::session::session::SessionStatus::Exited(0),
+            false
+        ));
+        assert!(!is_viable_root_recipient(
+            &crate::session::session::SessionStatus::Exited(127),
+            true
+        ));
+    }
+
+    #[test]
+    fn is_viable_root_recipient_requires_pty_for_live_states() {
+        use crate::session::session::SessionStatus;
+        for status in [
+            SessionStatus::Active,
+            SessionStatus::Running,
+            SessionStatus::Idle,
+        ] {
+            assert!(
+                is_viable_root_recipient(&status, true),
+                "{:?}+pty should be viable",
+                status
+            );
+            assert!(
+                !is_viable_root_recipient(&status, false),
+                "{:?}+no-pty must be a phantom",
+                status
+            );
+        }
+    }
+
+    /// #293 regression: a coordinator sends to `ROOT_AGENT_SENDER`; the
+    /// mailbox accepts the route and the recipient lookup finds the
+    /// session marked `is_root_agent`. No auto-spawn, no can_communicate
+    /// fallback.
+    #[test]
+    fn coordinator_to_root_uri_route_accepts_and_locates_session_by_flag() {
+        let (_temp, paths) = make_root_route_fixture(false);
+
+        // Sender route: coordinator → root.
+        assert_eq!(
+            validate_coordinator_to_root_route("proj-a:wg-1-dev-team/tech-lead", &paths),
+            Ok(())
+        );
+
+        // Recipient lookup predicate: any session with `is_root_agent==true`
+        // matches, regardless of CWD or FQN. Use the same predicate that
+        // `find_root_session_candidate` applies.
+        let pool = vec![make_session_info(
+            "root-uuid",
+            "root",
+            "C:/cfg/ac-root-agent",
+            crate::session::session::SessionStatus::Idle,
+            true,
+        )];
+        let mut root_session = pool[0].clone();
+        root_session.is_root_agent = true;
+        let predicate = |s: &crate::session::session::SessionInfo| {
+            s.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+        };
+        assert!(predicate(&root_session));
+        assert_eq!(
+            filter_sessions_by_fqn(&pool, "proj-a:wg-1-dev-team/tech-lead").len(),
+            0,
+            "agent_fqn_from_path must NOT resolve the root URI — the lookup is by `is_root_agent` flag"
+        );
     }
 
     /// §224 regression: an idle session with `waiting_for_input=true` (the bug

@@ -80,7 +80,14 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
   };
 
   onMount(async () => {
-    document.documentElement.classList.add("light-theme");
+    // #289 — optimistic light-mode first paint (legacy default); the
+    // settingsStore.load() corrective step below restores dark for users
+    // who persisted that preference. Guarded with !props.embedded because
+    // MainApp owns the documentElement classList when this is mounted inside
+    // the unified layout — same pattern as zoom/geometry/onThemeChanged below.
+    if (!props.embedded) {
+      document.documentElement.classList.add("light-theme");
+    }
     shortcutHandler = registerShortcuts();
 
     // Register destroy listener FIRST to catch any destroy event fired
@@ -135,7 +142,13 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
         cleanupGeometry = await initWindowGeometry("terminal");
       }
     }
-    settingsStore.load();
+    await settingsStore.load();
+    // #289 — restore persisted theme. Awaited above (vs. fire-and-forget)
+    // so themeLight is known before the corrective remove runs. Embedded
+    // children skip per the convention above.
+    if (!props.embedded && !settingsStore.current?.themeLight) {
+      document.documentElement.classList.remove("light-theme");
+    }
     await loadActiveSession();
 
     if (!props.lockedSessionId) {

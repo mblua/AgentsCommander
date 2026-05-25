@@ -1,6 +1,6 @@
 [package]
 name = "agentscommander-new"
-version = "0.8.38"
+version = "0.8.42"
 edition = "2021"
 
 [dependencies]
@@ -18,7 +18,7 @@ env_logger = "0.11"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 dirs = "6"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
 base64 = "0.22"
 tokio-util = "0.7"
 vt100 = "0.15"

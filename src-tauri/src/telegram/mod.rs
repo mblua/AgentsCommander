@@ -5,4 +5,5 @@ pub mod codex_watcher;
 pub mod gemini_watcher;
 pub mod jsonl_kernel;
 pub mod manager;
+pub mod redact;
 pub mod types;

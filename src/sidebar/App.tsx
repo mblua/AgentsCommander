@@ -86,7 +86,15 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   };
 
   onMount(async () => {
-    document.documentElement.classList.add("light-theme");
+    // #289 — optimistically paint in light mode (the historic default and the
+    // AppSettings default) to keep first paint flash-free for the common case.
+    // The persisted-preference check after SettingsAPI.get() below overrides
+    // back to dark for users who chose it last session. Guarded with
+    // !props.embedded because MainApp owns the documentElement classList when
+    // this is mounted inside the unified layout — same pattern as zoom/geometry.
+    if (!props.embedded) {
+      document.documentElement.classList.add("light-theme");
+    }
     shortcutHandler = registerShortcuts();
     if (!props.embedded) {
       cleanupZoom = await initZoom("sidebar");
@@ -95,6 +103,9 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
     // Apply window settings
     const appSettings = await SettingsAPI.get();
+    if (!props.embedded && !appSettings.themeLight) {
+      document.documentElement.classList.remove("light-theme");
+    }
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
     sessionsStore.setCoordSortByActivity(appSettings.coordSortByActivity ?? false);
     // Apply sidebar style from settings (remap removed themes to default)

@@ -17,7 +17,10 @@ FILE-BASED MESSAGING: --send <filename> delivers a Markdown file. For WG \
 replicas the file is resolved from <workgroup-root>/messaging/<filename>. \
 For the Root Agent the file is resolved from <root-agent-dir>/messaging/<filename>. \
 `--send` is a filename only, never a path. Root Agent --to targets must be \
-verified WG coordinator replica names returned by list-peers-lean.")]
+verified WG coordinator replica names returned by list-peers-lean. \
+Coordinator --to targets may include the Root Agent canonical name \
+`agentscommander://root-agent`; only identity-verified WG coordinator \
+replicas may use it.")]
 pub struct SendArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
@@ -85,6 +88,10 @@ pub(crate) fn sender_for_root(root: &str, root_is_root_agent: bool) -> String {
 
 fn root_agent_target_allowed(target: &str, project_paths: &[String]) -> bool {
     crate::config::teams::verified_wg_coordinator_target(target, project_paths).is_some()
+}
+
+fn coordinator_to_root_target_allowed(sender: &str, project_paths: &[String]) -> bool {
+    crate::config::teams::verified_wg_coordinator_target(sender, project_paths).is_some()
 }
 
 fn validate_root_agent_delivery_kind(
@@ -216,6 +223,20 @@ pub fn execute(args: SendArgs) -> i32 {
             eprintln!(
                 "Error: root-agent routing rejected — '{}' is not a verified WG coordinator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
                 resolved_to
+            );
+            return 1;
+        }
+    } else if crate::config::root_agent::is_root_agent_target(&resolved_to) {
+        // #293 — coordinator → root. Only identity-verified WG coordinators
+        // are allowed to address the Root Agent. Master/root token still goes
+        // through this gate intentionally: the URI is meaningful only when
+        // paired with a real coordinator identity, and the verified check is
+        // cheap.
+        if !coordinator_to_root_target_allowed(&sender, &effective_project_paths) {
+            eprintln!(
+                "Error: routing rejected — '{}' is not a verified WG coordinator replica and cannot message '{}'. Replies to the Root Agent are reserved for verified WG coordinators.",
+                sender,
+                crate::config::root_agent::ROOT_AGENT_SENDER
             );
             return 1;
         }
@@ -560,6 +581,33 @@ mod tests {
 
         assert!(root_agent_target_allowed(
             "proj-a:wg-1-dev-team/tech-lead",
+            &paths
+        ));
+    }
+
+    #[test]
+    fn coordinator_to_root_target_allowed_accepts_verified_coordinator() {
+        let (_temp, paths) = make_verified_coordinator_fixture();
+        assert!(coordinator_to_root_target_allowed(
+            "proj-a:wg-1-dev-team/tech-lead",
+            &paths
+        ));
+    }
+
+    #[test]
+    fn coordinator_to_root_target_allowed_rejects_non_coordinator() {
+        let (_temp, paths) = make_verified_coordinator_fixture();
+        assert!(!coordinator_to_root_target_allowed(
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths
+        ));
+    }
+
+    #[test]
+    fn coordinator_to_root_target_allowed_rejects_origin_agent() {
+        let (_temp, paths) = make_verified_coordinator_fixture();
+        assert!(!coordinator_to_root_target_allowed(
+            "proj-a/tech-lead",
             &paths
         ));
     }

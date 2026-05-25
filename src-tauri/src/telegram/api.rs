@@ -1,4 +1,5 @@
 use crate::errors::AppError;
+use crate::telegram::redact::redact;
 
 #[derive(Debug, serde::Deserialize)]
 struct TelegramResponse<T> {
@@ -63,12 +64,12 @@ pub async fn send_message(
         }))
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     let body: TelegramResponse<serde_json::Value> = resp
         .json()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -95,12 +96,12 @@ pub async fn get_updates(
         ])
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     let body: TelegramResponse<Vec<Update>> = resp
         .json()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -158,12 +159,12 @@ pub async fn get_file(
         .query(&[("file_id", file_id)])
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     let body: TelegramResponse<serde_json::Value> = resp
         .json()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -187,7 +188,7 @@ pub async fn download_file(
         .get(&url)
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
 
     if !resp.status().is_success() {
         return Err(AppError::Telegram(format!(
@@ -199,5 +200,106 @@ pub async fn download_file(
     resp.bytes()
         .await
         .map(|b| b.to_vec())
-        .map_err(|e| AppError::Telegram(e.to_string()))
+        .map_err(|e| AppError::Telegram(redact(&e.to_string())))
+}
+
+/// Telegram `sendPhoto`. Used for static images <= 10 MB whose extension
+/// indicates a format Telegram renders inline (`jpg`/`jpeg`/`png`/`webp`).
+/// Caller is responsible for size + extension gating and for supplying the
+/// matching `mime` string; this primitive is dumb on purpose so callers can
+/// swap to `send_document` for the fallback path without redoing validation.
+pub async fn send_photo(
+    client: &reqwest::Client,
+    token: &str,
+    chat_id: i64,
+    bytes: Vec<u8>,
+    filename: &str,
+    mime: &str,
+    caption: Option<&str>,
+) -> Result<(), AppError> {
+    let url = format!("https://api.telegram.org/bot{}/sendPhoto", token);
+
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename.to_string())
+        .mime_str(mime)
+        .map_err(|e| AppError::Telegram(e.to_string()))?;
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .part("photo", part);
+
+    if let Some(c) = caption {
+        form = form.text("caption", c.to_string());
+    }
+
+    let resp = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| AppError::Telegram(e.to_string()))?;
+
+    let body: TelegramResponse<serde_json::Value> = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Telegram(e.to_string()))?;
+
+    if !body.ok {
+        return Err(AppError::Telegram(
+            body.description
+                .unwrap_or_else(|| "sendPhoto failed".to_string()),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Telegram `sendDocument`. Used as the fallback for files that exceed the
+/// 10 MB `sendPhoto` limit or carry an extension Telegram will not render
+/// as a photo. Hard upper bound (50 MB) is enforced by the caller; this
+/// primitive will happily forward whatever the caller passes.
+pub async fn send_document(
+    client: &reqwest::Client,
+    token: &str,
+    chat_id: i64,
+    bytes: Vec<u8>,
+    filename: &str,
+    mime: &str,
+    caption: Option<&str>,
+) -> Result<(), AppError> {
+    let url = format!("https://api.telegram.org/bot{}/sendDocument", token);
+
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename.to_string())
+        .mime_str(mime)
+        .map_err(|e| AppError::Telegram(e.to_string()))?;
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .part("document", part);
+
+    if let Some(c) = caption {
+        form = form.text("caption", c.to_string());
+    }
+
+    let resp = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| AppError::Telegram(e.to_string()))?;
+
+    let body: TelegramResponse<serde_json::Value> = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Telegram(e.to_string()))?;
+
+    if !body.ok {
+        return Err(AppError::Telegram(
+            body.description
+                .unwrap_or_else(|| "sendDocument failed".to_string()),
+        ));
+    }
+
+    Ok(())
 }

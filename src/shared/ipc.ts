@@ -151,6 +151,8 @@ export const SettingsAPI = {
     transport.invoke<void>("set_rtk_prompt_dismissed", { value }),
   setSoundsEnabled: (value: boolean) =>
     transport.invoke<void>("set_sounds_enabled", { value }),
+  setThemeLight: (value: boolean) =>
+    transport.invoke<void>("set_theme_light", { value }),
   sweepRtkHook: (enabled: boolean) =>
     transport.invoke<RtkSweepResult>("sweep_rtk_hook", { enabled }),
   getRtkStartupStatus: () =>
@@ -303,6 +305,11 @@ export const TelegramAPI = {
 
   sendTest: (token: string) =>
     transport.invoke<number>("telegram_send_test", { token }),
+
+  // #282 — send an existing local file to the bot's configured chat.
+  // ≤ 10 MB jpg/jpeg/png/webp ⇒ sendPhoto; otherwise sendDocument up to 50 MB.
+  sendImage: (botId: string, path: string, caption?: string) =>
+    transport.invoke<void>("telegram_send_image", { botId, path, caption }),
 };
 
 export function onPtyResized(

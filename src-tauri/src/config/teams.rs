@@ -1,6 +1,19 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+/// #280 §3.4 — record whether the missing-config one-shot INFO has already
+/// fired for a given `(project, team_dir)` pair this process. Returns
+/// `true` on the first call for that pair, `false` thereafter. Resets on
+/// process restart. Process-local because the dedup is per-instance.
+fn note_missing_team_config(project: &str, team_dir: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
+    let m = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+    g.insert((project.to_string(), team_dir.to_string()))
+}
+
 /// A team discovered from `_team_*/config.json` in `.ac-new/` project directories.
 #[derive(Debug, Clone)]
 pub struct DiscoveredTeam {
@@ -310,6 +323,15 @@ pub fn resolve_agent_target(
     target: &str,
     project_paths: &[String],
 ) -> Result<String, ResolutionError> {
+    // Canonical Root Agent reply target. Symmetric with `ROOT_AGENT_SENDER`
+    // appearing as `msg.from` on root-originated messages. See #293.
+    // Identity-verified-coordinator gating happens later (CLI:
+    // `coordinator_to_root_target_allowed`; mailbox:
+    // `validate_coordinator_to_root_route`).
+    if crate::config::root_agent::is_root_agent_target(target) {
+        return Ok(target.to_string());
+    }
+
     // Basic shape guard.
     if target.is_empty() || target.contains('\0') {
         return Err(ResolutionError::InvalidShape(target.to_string()));
@@ -776,13 +798,39 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
         let raw = match std::fs::read_to_string(&config_path) {
             Ok(s) => s,
             Err(e) => {
-                log::warn!(
-                    "[teams] dropped team — project='{}' team_dir='{}' reason='read_failed' err='{}' path='{}'",
-                    project_folder,
-                    dir_name,
-                    e,
-                    config_path.display()
-                );
+                // #280 §3.4 — NotFound is an expected state for half-installed
+                // team dirs (`_team_foo/` created but no `config.json` yet).
+                // Logging WARN at every discovery sweep spams app.log; downgrade
+                // NotFound to DEBUG and emit a one-shot INFO per (project,
+                // team_dir) per process so the operator still sees the visit.
+                // Unexpected IO errors stay at WARN.
+                match e.kind() {
+                    std::io::ErrorKind::NotFound => {
+                        if note_missing_team_config(&project_folder, dir_name) {
+                            log::info!(
+                                "[teams] team config missing (logged once per startup) — project='{}' team_dir='{}' path='{}'",
+                                project_folder,
+                                dir_name,
+                                config_path.display()
+                            );
+                        }
+                        log::debug!(
+                            "[teams] dropped team — project='{}' team_dir='{}' reason='not_found' path='{}'",
+                            project_folder,
+                            dir_name,
+                            config_path.display()
+                        );
+                    }
+                    _ => {
+                        log::warn!(
+                            "[teams] dropped team — project='{}' team_dir='{}' reason='read_failed' err='{}' path='{}'",
+                            project_folder,
+                            dir_name,
+                            e,
+                            config_path.display()
+                        );
+                    }
+                }
                 continue;
             }
         };
@@ -1210,6 +1258,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resolve_agent_target_accepts_root_agent_uri_verbatim() {
+        let paths: Vec<String> = vec![];
+        assert_eq!(
+            resolve_agent_target(crate::config::root_agent::ROOT_AGENT_SENDER, &paths).unwrap(),
+            crate::config::root_agent::ROOT_AGENT_SENDER
+        );
+    }
+
+    #[test]
+    fn resolve_agent_target_still_rejects_other_multi_colon_strings() {
+        let paths: Vec<String> = vec![];
+        assert!(matches!(
+            resolve_agent_target("a:b:wg-1/x", &paths),
+            Err(ResolutionError::InvalidShape(_))
+        ));
+    }
+
     /// Validation #16: `is_coordinator_for_cwd` correctness guard.
     /// Live sessions always run inside WG replica dirs (`wg-*/__agent_*`); the function
     /// consumes those via `agent_name_from_path` + WG-aware `is_coordinator`.
@@ -1334,5 +1400,23 @@ mod tests {
         assert!(!is_coordinator("wg-1-dev-team/tech-lead", &teams[0]));
         // For completeness, the fully-qualified form DOES grant authority.
         assert!(is_coordinator("proj-a:wg-1-dev-team/tech-lead", &teams[0]));
+    }
+
+    /// #280 §3.4 — `note_missing_team_config` is a process-local one-shot
+    /// dedup keyed on `(project, team_dir)`. First sighting returns true so
+    /// the caller emits the INFO; later sightings return false so the WARN
+    /// storm collapses to a single line per unique pair per process.
+    #[test]
+    fn note_missing_team_config_returns_true_first_time_only() {
+        // Use unique pair to avoid collisions with other tests' state — the
+        // helper's HashSet is process-global.
+        let project = "proj-test-280-3-4";
+        let dir = "_team_foo_test_280_3_4";
+        assert!(note_missing_team_config(project, dir));
+        assert!(!note_missing_team_config(project, dir));
+        // A different pair is independent.
+        let dir2 = "_team_bar_test_280_3_4";
+        assert!(note_missing_team_config(project, dir2));
+        assert!(!note_missing_team_config(project, dir2));
     }
 }

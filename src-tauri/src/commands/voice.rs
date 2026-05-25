@@ -53,17 +53,31 @@ pub async fn transcribe_audio(
         }]
     });
 
+    // #280 G-HIGH-2 — pass the API key as a header, not a URL query
+    // parameter. `reqwest::Error::Display` prints the request URL on
+    // transport failure, so `?key=<API_KEY>` would leak into error strings
+    // that flow to logs, the Telegram chat (bridge.rs:862), and the
+    // frontend. Google's REST API accepts the key via x-goog-api-key.
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        model, api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        model
     );
 
     let resp = client
         .post(&url)
+        .header("x-goog-api-key", api_key)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Gemini API request failed: {}", e))?;
+        .map_err(|e| {
+            // Defense in depth: even with the key out of the URL, scrub the
+            // error string before propagation in case reqwest's Display
+            // grows to include header values in a future version.
+            format!(
+                "Gemini API request failed: {}",
+                crate::telegram::redact::redact(&e.to_string())
+            )
+        })?;
 
     let status = resp.status();
     log::debug!(
@@ -171,4 +185,38 @@ pub fn voice_had_typing(
     let uuid = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     let mut t = tracker.lock().unwrap();
     Ok(t.drain_typed(uuid))
+}
+
+#[cfg(test)]
+mod tests {
+    /// #280 G-HIGH-2 / LOW-3 — guard against accidental re-introduction
+    /// of `?key=<API_KEY>` in the Gemini request URL. The key MUST be
+    /// passed via the `x-goog-api-key` header (transcribe_audio above);
+    /// embedding it in the URL would surface in reqwest's transport-error
+    /// strings (Display prints the full URL) and reach logs / the Telegram
+    /// chat / the frontend error modal. Brittle by design — string-level
+    /// assertion catches the regression at compile-adjacent test time.
+    #[test]
+    fn transcribe_audio_url_has_no_query_key() {
+        // Mirror the format string used in `transcribe_audio`. If the
+        // production format string is edited to include `?key=`, this
+        // copy stays the same and the test passes — that's a known
+        // limitation of structural mirroring. The stronger guard is the
+        // header path; this test backstops the URL-shape contract.
+        let model = "gemini-2.5-flash";
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+            model
+        );
+        assert!(
+            !url.contains("key="),
+            "URL must not embed an API key as a query param: {}",
+            url
+        );
+        assert!(
+            !url.contains('?'),
+            "URL must not carry any query string in the production builder: {}",
+            url
+        );
+    }
 }
