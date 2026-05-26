@@ -716,7 +716,9 @@ pub async fn create_session_inner(
 
     // Recompute is_coordinator from the current team snapshot. One source of truth —
     // every caller of create_session_inner gets the same computation.
-    let teams = crate::config::teams::discover_teams();
+    let teams = tokio::task::spawn_blocking(crate::config::teams::discover_teams)
+        .await
+        .map_err(|e| e.to_string())?;
     let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
     let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
 
@@ -742,6 +744,7 @@ pub async fn create_session_inner(
     if let Some(name) = session_name {
         if let Err(e) = mgr.rename_session(session.id, name.clone()).await {
             let err = e.to_string();
+            drop(mgr);
             rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
             return Err(err);
         }
@@ -838,6 +841,7 @@ pub async fn create_session_inner(
                     .message(&dialog_msg)
                     .title("Context File Error")
                     .show(|_| {});
+                drop(mgr);
                 rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
                 return Err(e);
             }
@@ -898,6 +902,7 @@ pub async fn create_session_inner(
     };
     if let Err(e) = spawn_result {
         let err = e.to_string();
+        drop(mgr);
         rollback_pre_created_session(app, session_mgr, pty_mgr, id, &err).await;
         return Err(err);
     }
