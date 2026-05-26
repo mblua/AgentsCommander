@@ -2712,7 +2712,7 @@ mod tests {
             agent_id: None,
             agent_label: None,
             git_repos: vec![],
-            workgroup_brief: None,
+            workgroup_task: None,
             is_coordinator: false,
             is_root_agent: false,
             token: "t".into(),

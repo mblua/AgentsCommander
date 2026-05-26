@@ -18,7 +18,7 @@ function mkRoot(status: SessionStatus): Session {
     agentId: null,
     agentLabel: null,
     gitRepos: [],
-    workgroupBrief: null,
+    workgroupTask: null,
     isCoordinator: false,
     isRootAgent: true,
     token: "",

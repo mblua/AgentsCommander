@@ -21,9 +21,9 @@ import {
   onTelegramBridgeError,
   onTerminalDetached,
   onTerminalAttached,
-  onWorkgroupBriefUpdated,
+  onWorkgroupTaskUpdated,
 } from "../shared/ipc";
-import { briefFirstLine } from "../shared/markdown";
+import { taskFirstLine } from "../shared/markdown";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
 import { initZoom } from "../shared/zoom";
 import { initWindowGeometry } from "../shared/window-geometry";
@@ -247,10 +247,10 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     );
 
     unlisteners.push(
-      await onWorkgroupBriefUpdated((data) => {
+      await onWorkgroupTaskUpdated((data) => {
         const wgPath = data.workgroupPath || data.workgroupRoot;
         if (wgPath) {
-          projectStore.updateWorkgroupBrief(wgPath, briefFirstLine(data.brief), data.briefTitle);
+          projectStore.updateWorkgroupTask(wgPath, taskFirstLine(data.task), data.taskTitle);
         }
       })
     );

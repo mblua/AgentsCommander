@@ -1462,7 +1462,7 @@ mod tests {
         std::fs::create_dir(&unrelated).expect("create docs");
         // A regular file at WG root — should still appear in the result, just
         // after the dirs.
-        std::fs::write(wg_dir.join("BRIEF.md"), "# t\n").expect("write BRIEF.md");
+        std::fs::write(wg_dir.join("TASK.md"), "# t\n").expect("write TASK.md");
 
         let result = collect_files_to_probe(&wg_dir);
 
@@ -1505,7 +1505,7 @@ mod tests {
         std::fs::create_dir(&wg_dir).expect("create wg_dir");
         let repo_dir = wg_dir.join("repo-foo");
         std::fs::create_dir(&repo_dir).expect("create repo-foo");
-        std::fs::write(wg_dir.join("BRIEF.md"), "# t\n").expect("write BRIEF.md");
+        std::fs::write(wg_dir.join("TASK.md"), "# t\n").expect("write TASK.md");
         std::fs::write(repo_dir.join("README.md"), "x").expect("write README.md");
 
         let result = collect_files_to_probe(&wg_dir);

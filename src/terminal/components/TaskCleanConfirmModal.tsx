@@ -1,11 +1,11 @@
 import { Component, onMount, onCleanup } from "solid-js";
 
-export interface BriefCleanConfirmModalProps {
+export interface TaskCleanConfirmModalProps {
   onCancel: () => void;
   onConfirm: () => void;
 }
 
-const BriefCleanConfirmModal: Component<BriefCleanConfirmModalProps> = (props) => {
+const TaskCleanConfirmModal: Component<TaskCleanConfirmModalProps> = (props) => {
   let cancelBtnRef: HTMLButtonElement | undefined;
   let confirmBtnRef: HTMLButtonElement | undefined;
   let previouslyFocused: HTMLElement | null = null;
@@ -35,12 +35,6 @@ const BriefCleanConfirmModal: Component<BriefCleanConfirmModalProps> = (props) =
         const focusables = [cancelBtnRef, confirmBtnRef].filter(Boolean) as HTMLElement[];
         if (focusables.length < 2) return;
         const idx = focusables.indexOf(document.activeElement as HTMLElement);
-        // #272: activeElement can be outside the trap entirely — e.g. blurred
-        // to <body> after a click on the modal's non-focusable backdrop /
-        // header / padding. idx is -1 then; without this guard the forward
-        // branch's `idx === length - 1` is false, preventDefault is skipped,
-        // and native Tab escapes the modal — here, into the live xterm PTY
-        // <textarea> rendered directly behind it.
         if (idx === -1) {
           e.preventDefault();
           (e.shiftKey ? focusables[focusables.length - 1] : focusables[0]).focus();
@@ -73,16 +67,16 @@ const BriefCleanConfirmModal: Component<BriefCleanConfirmModalProps> = (props) =
       class="quit-confirm-backdrop"
       role="alertdialog"
       aria-modal="true"
-      aria-labelledby="brief-clean-title"
-      aria-describedby="brief-clean-body"
+      aria-labelledby="task-clean-title"
+      aria-describedby="task-clean-body"
       onClick={onBackdropClick}
     >
       <div class="quit-confirm-modal">
-        <h2 id="brief-clean-title" class="quit-confirm-title">Clean BRIEF?</h2>
-        <p id="brief-clean-body" class="quit-confirm-body">
-          This <strong>resets</strong> the workgroup BRIEF.md — all frontmatter fields
+        <h2 id="task-clean-title" class="quit-confirm-title">Clean TASK?</h2>
+        <p id="task-clean-body" class="quit-confirm-body">
+          This <strong>resets</strong> the workgroup TASK.md — all frontmatter fields
           and body content are replaced with <code>title: 'Clean'</code> and body
-          <code>Ready to start a new topic</code>. If a BRIEF.md exists, a timestamped
+          <code>Ready to start a new topic</code>. If a TASK.md exists, a timestamped
           backup is saved alongside it. Continue?
         </p>
         <div class="quit-confirm-actions">
@@ -108,4 +102,4 @@ const BriefCleanConfirmModal: Component<BriefCleanConfirmModalProps> = (props) =
   );
 };
 
-export default BriefCleanConfirmModal;
+export default TaskCleanConfirmModal;

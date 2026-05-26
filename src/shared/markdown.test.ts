@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripFrontmatter, briefFirstLine } from './markdown';
+import { stripFrontmatter, taskFirstLine } from './markdown';
 
 describe('stripFrontmatter', () => {
   it('empty_input_returns_empty', () => {
@@ -64,33 +64,33 @@ describe('stripFrontmatter', () => {
   });
 });
 
-describe('briefFirstLine', () => {
+describe('taskFirstLine', () => {
   it('null_input_returns_null', () => {
-    expect(briefFirstLine(null)).toBeNull();
+    expect(taskFirstLine(null)).toBeNull();
   });
 
   it('undefined_input_returns_null', () => {
-    expect(briefFirstLine(undefined)).toBeNull();
+    expect(taskFirstLine(undefined)).toBeNull();
   });
 
   it('empty_input_returns_null', () => {
-    expect(briefFirstLine('')).toBeNull();
+    expect(taskFirstLine('')).toBeNull();
   });
 
   it('whitespace_only_returns_null', () => {
-    expect(briefFirstLine('   \n\n\t\r\n')).toBeNull();
+    expect(taskFirstLine('   \n\n\t\r\n')).toBeNull();
   });
 
   it('returns_first_non_empty_line', () => {
-    expect(briefFirstLine('Hello\nworld')).toBe('Hello');
+    expect(taskFirstLine('Hello\nworld')).toBe('Hello');
   });
 
   it('skips_leading_blank_lines', () => {
-    expect(briefFirstLine('\n\n  \nFirst content\nSecond')).toBe('First content');
+    expect(taskFirstLine('\n\n  \nFirst content\nSecond')).toBe('First content');
   });
 
   it('strips_single_heading_marker', () => {
-    expect(briefFirstLine('# Title')).toBe('Title');
+    expect(taskFirstLine('# Title')).toBe('Title');
   });
 
   // §9.2 — greedy strip: matches Rust's `trim_start_matches("# ")`. A naive
@@ -98,34 +98,34 @@ describe('briefFirstLine', () => {
   // discover_project's value and producing two write paths with different
   // results.
   it('strips_repeated_heading_markers_greedily', () => {
-    expect(briefFirstLine('# # Title')).toBe('Title');
-    expect(briefFirstLine('# # # Deep Title')).toBe('Deep Title');
+    expect(taskFirstLine('# # Title')).toBe('Title');
+    expect(taskFirstLine('# # # Deep Title')).toBe('Deep Title');
   });
 
   it('does_not_strip_heading_marker_without_trailing_space', () => {
     // `# ` with the trailing space is the prefix; `#Title` is not stripped.
-    expect(briefFirstLine('#NoSpace')).toBe('#NoSpace');
+    expect(taskFirstLine('#NoSpace')).toBe('#NoSpace');
   });
 
   it('strips_frontmatter_before_extracting_line', () => {
     const input = "---\ntitle: 'Foo'\n---\n\n# Real Title\nbody";
-    expect(briefFirstLine(input)).toBe('Real Title');
+    expect(taskFirstLine(input)).toBe('Real Title');
   });
 
   it('handles_crlf_line_endings', () => {
-    expect(briefFirstLine('# Windows\r\nbody')).toBe('Windows');
+    expect(taskFirstLine('# Windows\r\nbody')).toBe('Windows');
   });
 
   it('handles_utf8_bom_via_stripFrontmatter', () => {
     const bom = String.fromCharCode(0xfeff);
-    expect(briefFirstLine(`${bom}# Title`)).toBe('Title');
+    expect(taskFirstLine(`${bom}# Title`)).toBe('Title');
   });
 
   it('frontmatter_only_returns_null', () => {
-    expect(briefFirstLine("---\ntitle: x\n---\n")).toBeNull();
+    expect(taskFirstLine("---\ntitle: x\n---\n")).toBeNull();
   });
 
   it('trims_surrounding_whitespace_on_picked_line', () => {
-    expect(briefFirstLine('   # Title   \nrest')).toBe('Title');
+    expect(taskFirstLine('   # Title   \nrest')).toBe('Title');
   });
 });

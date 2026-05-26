@@ -2371,7 +2371,7 @@ html.light-theme .root-agent-avatar {
   flex: 1;
 }
 
-.coord-brief-title {
+.coord-task-title {
   font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--sidebar-fg);
@@ -2380,14 +2380,14 @@ html.light-theme .root-agent-avatar {
   text-overflow: ellipsis;
 }
 
-.coord-quick-access .replica-item-info .coord-brief-title {
+.coord-quick-access .replica-item-info .coord-task-title {
   /* Title is the primary identifier on a Coordinator card. */
   font-weight: 700;
   color: var(--sidebar-fg);
   opacity: 1;
 }
 
-.coord-quick-access .replica-item:has(.ac-discovery-badge.coord) .replica-item-info:has(.coord-brief-title) .replica-item-name {
+.coord-quick-access .replica-item:has(.ac-discovery-badge.coord) .replica-item-info:has(.coord-task-title) .replica-item-name {
   /* When a title is shown, demote the replica name to the secondary line. */
   font-weight: 400;
   font-size: var(--font-size-xs, 10px);
@@ -2512,7 +2512,7 @@ html.light-theme .ac-discovery-badge.running-peer {
   letter-spacing: 0.05em;
 }
 
-.ac-wg-brief {
+.ac-wg-task {
   font-size: 10px;
   color: var(--sidebar-fg-dim);
   opacity: 0.6;
@@ -2928,7 +2928,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
   letter-spacing: 0.06em;
 }
 
-[data-sidebar-style="command-center"] .ac-wg-brief {
+[data-sidebar-style="command-center"] .ac-wg-task {
   font-style: italic;
 }
 

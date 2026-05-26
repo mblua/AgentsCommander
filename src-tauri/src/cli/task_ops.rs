@@ -1,9 +1,9 @@
-//! Pure logic for the `brief-set-title` and `brief-append-body` CLI verbs.
+//! Pure logic for the `task-set-title` and `task-append-body` CLI verbs.
 //!
-//! This module owns the BRIEF.md parser/renderer, edit application, advisory
+//! This module owns the TASK.md parser/renderer, edit application, advisory
 //! filesystem lock, atomic publish, and timestamped backup. It contains NO
 //! clap surface and NO authorization — the per-verb modules
-//! (`brief_set_title`, `brief_append_body`) handle those concerns and call
+//! (`task_set_title`, `task_append_body`) handle those concerns and call
 //! into [`perform`].
 //!
 //! Trust model: caller honestly reports their own `--root` and `--token`.
@@ -34,7 +34,7 @@ const LOCK_STALE_AFTER_5M: Duration = Duration::from_secs(300);
 
 /// Edit operation requested by a verb.
 #[derive(Debug, Clone)]
-pub enum BriefOp {
+pub enum TaskOp {
     /// Replace or insert the YAML-frontmatter `title:` field.
     SetTitle(String),
     /// Append a body paragraph (frontmatter untouched).
@@ -59,23 +59,23 @@ pub enum EditOutcome {
 /// Errors emitted by [`perform`]. `Display` impls match the §3 error matrix
 /// of plan #137 verbatim.
 #[derive(Debug, thiserror::Error)]
-pub enum BriefOpError {
-    #[error("BRIEF.md is locked by another writer (5s timeout). Try again.")]
+pub enum TaskOpError {
+    #[error("TASK.md is locked by another writer (5s timeout). Try again.")]
     LockTimeout,
-    #[error("failed to acquire BRIEF.md lock at {}: {}. Aborting; BRIEF.md left unchanged.", .0.display(), .1)]
+    #[error("failed to acquire TASK.md lock at {}: {}. Aborting; TASK.md left unchanged.", .0.display(), .1)]
     LockIo(PathBuf, std::io::Error),
-    #[error("failed to read BRIEF.md at {}: {}", .0.display(), .1)]
+    #[error("failed to read TASK.md at {}: {}", .0.display(), .1)]
     ReadFailed(PathBuf, std::io::Error),
-    #[error("failed to write backup at {}: {}. Aborting; BRIEF.md left unchanged.", .0.display(), .1)]
+    #[error("failed to write backup at {}: {}. Aborting; TASK.md left unchanged.", .0.display(), .1)]
     BackupFailed(PathBuf, std::io::Error),
-    #[error("failed to write backup at {}: 100 collision retries exhausted in the same second. Aborting; BRIEF.md left unchanged.", .0.display())]
+    #[error("failed to write backup at {}: 100 collision retries exhausted in the same second. Aborting; TASK.md left unchanged.", .0.display())]
     BackupExhausted(PathBuf),
-    #[error("failed to write {}: {}. Aborting; BRIEF.md left unchanged.", .0.display(), .1)]
+    #[error("failed to write {}: {}. Aborting; TASK.md left unchanged.", .0.display(), .1)]
     TmpWriteFailed(PathBuf, std::io::Error),
-    #[error("BRIEF.md was modified externally between read and write; aborting. Backup at {} retains the externally-modified state.", .0.display())]
+    #[error("TASK.md was modified externally between read and write; aborting. Backup at {} retains the externally-modified state.", .0.display())]
     ExternalWrite(PathBuf),
     /// Custom Display below: `Some(p)` → "Backup at <p> retains the prior state.";
-    /// `None` → "No backup (BRIEF.md did not exist before)." (§H.4 / NIT-2 in plan).
+    /// `None` → "No backup (TASK.md did not exist before)." (§H.4 / NIT-2 in plan).
     #[error("{}", format_rename_failed(.0, .1))]
     RenameFailed(std::io::Error, Option<PathBuf>),
 }
@@ -83,12 +83,12 @@ pub enum BriefOpError {
 fn format_rename_failed(io_err: &std::io::Error, backup: &Option<PathBuf>) -> String {
     match backup {
         Some(p) => format!(
-            "failed to publish BRIEF.md (rename): {}. Backup at {} retains the prior state.",
+            "failed to publish TASK.md (rename): {}. Backup at {} retains the prior state.",
             io_err,
             p.display()
         ),
         None => format!(
-            "failed to publish BRIEF.md (rename): {}. No backup (BRIEF.md did not exist before).",
+            "failed to publish TASK.md (rename): {}. No backup (TASK.md did not exist before).",
             io_err
         ),
     }
@@ -96,14 +96,14 @@ fn format_rename_failed(io_err: &std::io::Error, backup: &Option<PathBuf>) -> St
 
 /// Production entry point. Captures `chrono::Utc::now` for backup-name
 /// timestamping and delegates to [`perform_inner`].
-pub fn perform(wg_root: &Path, op: BriefOp) -> Result<EditOutcome, BriefOpError> {
+pub fn perform(wg_root: &Path, op: TaskOp) -> Result<EditOutcome, TaskOpError> {
     perform_inner(wg_root, op, Utc::now)
 }
 
 // ── Parsed-frontmatter shape ────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ParsedBrief {
+pub(crate) struct ParsedTask {
     /// Input started with U+FEFF (HIGH-3): preserve+re-emit at render time.
     pub bom: bool,
     /// Dominant line ending in the input (LOW-3). Used for frontmatter delimiter +
@@ -116,7 +116,7 @@ pub(crate) struct ParsedBrief {
     pub body: String,
 }
 
-pub(crate) fn parse_brief(s_in: &str) -> ParsedBrief {
+pub(crate) fn parse_task(s_in: &str) -> ParsedTask {
     // ── BOM peel (HIGH-3) ──────────────────────────────────────────────────
     let (bom, s) = match s_in.strip_prefix('\u{FEFF}') {
         Some(rest) => (true, rest),
@@ -136,7 +136,7 @@ pub(crate) fn parse_brief(s_in: &str) -> ParsedBrief {
     let opening = match iter.next() {
         Some(line) if line.trim() == "---" => line,
         _ => {
-            return ParsedBrief {
+            return ParsedTask {
                 bom,
                 line_ending,
                 has_frontmatter: false,
@@ -162,7 +162,7 @@ pub(crate) fn parse_brief(s_in: &str) -> ParsedBrief {
 
     if !closed {
         // Malformed frontmatter — preserve whole post-BOM input as body.
-        return ParsedBrief {
+        return ParsedTask {
             bom,
             line_ending,
             has_frontmatter: false,
@@ -172,7 +172,7 @@ pub(crate) fn parse_brief(s_in: &str) -> ParsedBrief {
     }
 
     let body = s[consumed..].to_string();
-    ParsedBrief {
+    ParsedTask {
         bom,
         line_ending,
         has_frontmatter: true,
@@ -181,7 +181,7 @@ pub(crate) fn parse_brief(s_in: &str) -> ParsedBrief {
     }
 }
 
-pub(crate) fn render(parsed: &ParsedBrief) -> String {
+pub(crate) fn render(parsed: &ParsedTask) -> String {
     let eol = parsed.line_ending;
     let mut out = String::with_capacity(parsed.body.len() + 64);
     if parsed.bom {
@@ -203,15 +203,15 @@ pub(crate) fn render(parsed: &ParsedBrief) -> String {
     out
 }
 
-pub(crate) fn apply_edit(parsed: &ParsedBrief, op: &BriefOp) -> ParsedBrief {
+pub(crate) fn apply_edit(parsed: &ParsedTask, op: &TaskOp) -> ParsedTask {
     match op {
-        BriefOp::SetTitle(title) => apply_set_title(parsed, title),
-        BriefOp::AppendBody(text) => apply_append_body(parsed, text),
-        BriefOp::Clean => apply_clean(parsed),
+        TaskOp::SetTitle(title) => apply_set_title(parsed, title),
+        TaskOp::AppendBody(text) => apply_append_body(parsed, text),
+        TaskOp::Clean => apply_clean(parsed),
     }
 }
 
-fn apply_set_title(parsed: &ParsedBrief, title: &str) -> ParsedBrief {
+fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
     let escaped = title.replace('\'', "''");
     let new_title_line = format!("title: '{}'", escaped);
 
@@ -222,7 +222,7 @@ fn apply_set_title(parsed: &ParsedBrief, title: &str) -> ParsedBrief {
     // tripping this brand-new shortcut and stripping the BOM (LOW-1, plan §5
     // row 2 — HIGH-3 byte-exact round-trip).
     if !parsed.has_frontmatter && parsed.body.is_empty() && !parsed.bom {
-        return ParsedBrief {
+        return ParsedTask {
             bom: false,
             line_ending: "\n",
             has_frontmatter: true,
@@ -233,7 +233,7 @@ fn apply_set_title(parsed: &ParsedBrief, title: &str) -> ParsedBrief {
 
     // No frontmatter, body has content: prepend a fresh frontmatter block.
     if !parsed.has_frontmatter {
-        return ParsedBrief {
+        return ParsedTask {
             bom: parsed.bom,
             line_ending: parsed.line_ending,
             has_frontmatter: true,
@@ -250,7 +250,7 @@ fn apply_set_title(parsed: &ParsedBrief, title: &str) -> ParsedBrief {
         .count();
     if title_count > 1 {
         log::warn!(
-            "BRIEF.md frontmatter contains {} title: lines; replacing the first only — \
+            "TASK.md frontmatter contains {} title: lines; replacing the first only — \
              downstream YAML parsers may pick a different one",
             title_count
         );
@@ -275,7 +275,7 @@ fn apply_set_title(parsed: &ParsedBrief, title: &str) -> ParsedBrief {
         }
     }
 
-    ParsedBrief {
+    ParsedTask {
         bom: parsed.bom,
         line_ending: parsed.line_ending,
         has_frontmatter: true,
@@ -284,7 +284,7 @@ fn apply_set_title(parsed: &ParsedBrief, title: &str) -> ParsedBrief {
     }
 }
 
-fn apply_append_body(parsed: &ParsedBrief, text: &str) -> ParsedBrief {
+fn apply_append_body(parsed: &ParsedTask, text: &str) -> ParsedTask {
     let trimmed_text = text.trim_end();
     let new_body = if parsed.body.trim().is_empty() {
         format!("{}\n", trimmed_text)
@@ -294,7 +294,7 @@ fn apply_append_body(parsed: &ParsedBrief, text: &str) -> ParsedBrief {
         // the appended chunk ends with a single "\n".
         format!("{}\n\n{}\n", parsed.body.trim_end(), trimmed_text)
     };
-    ParsedBrief {
+    ParsedTask {
         bom: parsed.bom,
         line_ending: parsed.line_ending,
         has_frontmatter: parsed.has_frontmatter,
@@ -306,11 +306,11 @@ fn apply_append_body(parsed: &ParsedBrief, text: &str) -> ParsedBrief {
 /// Replace frontmatter title and body with the canonical Clean form.
 /// Preserves the file's BOM and dominant line ending for the frontmatter;
 /// the body is always LF canonical (`"Ready to start a new topic\n"`). For
-/// an empty input (`parse_brief("")`), `parsed.bom == false` and
+/// an empty input (`parse_task("")`), `parsed.bom == false` and
 /// `parsed.line_ending == "\n"`, so the output is the canonical LF/no-BOM
 /// Clean form — no special case needed.
-fn apply_clean(parsed: &ParsedBrief) -> ParsedBrief {
-    ParsedBrief {
+fn apply_clean(parsed: &ParsedTask) -> ParsedTask {
+    ParsedTask {
         bom: parsed.bom,
         line_ending: parsed.line_ending,
         has_frontmatter: true,
@@ -322,7 +322,7 @@ fn apply_clean(parsed: &ParsedBrief) -> ParsedBrief {
 /// Extract the YAML-decoded value of the first `title:` line in the
 /// frontmatter, for the semantic idempotence short-circuit (MED-3). Returns
 /// `None` when the frontmatter has no title-shaped line.
-pub(crate) fn title_value_of(parsed: &ParsedBrief) -> Option<String> {
+pub(crate) fn title_value_of(parsed: &ParsedTask) -> Option<String> {
     parsed
         .frontmatter
         .iter()
@@ -367,7 +367,7 @@ impl LockGuard {
         path: &Path,
         timeout: Duration,
         stale_after: Duration,
-    ) -> Result<Self, BriefOpError> {
+    ) -> Result<Self, TaskOpError> {
         let start = Instant::now();
         loop {
             match OpenOptions::new().write(true).create_new(true).open(path) {
@@ -394,17 +394,17 @@ impl LockGuard {
                             .map(|d| d > stale_after)
                             .unwrap_or(false)
                         {
-                            log::warn!("[brief] removing stale lock at {}", path.display());
+                            log::warn!("[task] removing stale lock at {}", path.display());
                             let _ = std::fs::remove_file(path);
                             continue;
                         }
                     }
                     if start.elapsed() >= timeout {
-                        return Err(BriefOpError::LockTimeout);
+                        return Err(TaskOpError::LockTimeout);
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(e) => return Err(BriefOpError::LockIo(path.to_path_buf(), e)),
+                Err(e) => return Err(TaskOpError::LockIo(path.to_path_buf(), e)),
             }
         }
     }
@@ -420,25 +420,25 @@ impl Drop for LockGuard {
 
 pub(crate) fn perform_inner<F>(
     wg_root: &Path,
-    op: BriefOp,
+    op: TaskOp,
     now: F,
-) -> Result<EditOutcome, BriefOpError>
+) -> Result<EditOutcome, TaskOpError>
 where
     F: FnOnce() -> DateTime<Utc>,
 {
-    let brief_path = wg_root.join("BRIEF.md");
-    let lock_path = wg_root.join("BRIEF.md.lock");
+    let task_path = wg_root.join("TASK.md");
+    let lock_path = wg_root.join("TASK.md.lock");
     // Per-PID tmp suffix eliminates the tmp-collision race during stale-lock
     // recovery (HIGH-2).
-    let tmp_path = wg_root.join(format!("BRIEF.md.tmp.{}", std::process::id()));
+    let tmp_path = wg_root.join(format!("TASK.md.tmp.{}", std::process::id()));
 
     let _lock = LockGuard::acquire(&lock_path, LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M)?;
 
     // ── 2. Read existing content ───────────────────────────────────────────
-    let (existing, file_existed) = match std::fs::read_to_string(&brief_path) {
+    let (existing, file_existed) = match std::fs::read_to_string(&task_path) {
         Ok(s) => (s, true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
-        Err(e) => return Err(BriefOpError::ReadFailed(brief_path, e)),
+        Err(e) => return Err(TaskOpError::ReadFailed(task_path, e)),
     };
 
     // ── 2a. Capture pre-edit sentinel (HIGH-4) ────────────────────────────
@@ -448,7 +448,7 @@ where
     // read: that would introduce an unbounded write-between-snapshot-and-read
     // window. The sentinel covers the realistic editor-save case (seconds apart).
     let pre_sentinel: Option<(u64, Option<SystemTime>)> = if file_existed {
-        match std::fs::metadata(&brief_path) {
+        match std::fs::metadata(&task_path) {
             Ok(m) => Some((m.len(), m.modified().ok())),
             Err(_) => None,
         }
@@ -457,7 +457,7 @@ where
     };
 
     // ── 3-4. Parse + apply edit ───────────────────────────────────────────
-    let parsed = parse_brief(&existing);
+    let parsed = parse_task(&existing);
     let new_parsed = apply_edit(&parsed, &op);
 
     // ── 5. Idempotence short-circuit ──────────────────────────────────────
@@ -467,11 +467,11 @@ where
     //   body byte-match the pre-edit shape (covers repeated clean clicks).
     // AppendBody: never NoOp.
     let is_noop = match op {
-        BriefOp::SetTitle(_) => title_value_of(&new_parsed) == title_value_of(&parsed),
-        BriefOp::Clean => {
+        TaskOp::SetTitle(_) => title_value_of(&new_parsed) == title_value_of(&parsed),
+        TaskOp::Clean => {
             new_parsed.frontmatter == parsed.frontmatter && new_parsed.body == parsed.body
         }
-        BriefOp::AppendBody(_) => false,
+        TaskOp::AppendBody(_) => false,
     };
     if is_noop {
         return Ok(EditOutcome::NoOp);
@@ -488,9 +488,9 @@ where
         let mut chosen: Option<PathBuf> = None;
         for n in 0..=99u32 {
             let candidate = if n == 0 {
-                wg_root.join(format!("BRIEF.{}.bak.md", ts))
+                wg_root.join(format!("TASK.{}.bak.md", ts))
             } else {
-                wg_root.join(format!("BRIEF.{}.{}.bak.md", ts, n))
+                wg_root.join(format!("TASK.{}.{}.bak.md", ts, n))
             };
             match OpenOptions::new()
                 .write(true)
@@ -503,18 +503,18 @@ where
                     break;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(BriefOpError::BackupFailed(candidate, e)),
+                Err(e) => return Err(TaskOpError::BackupFailed(candidate, e)),
             }
         }
         let bp = chosen.ok_or_else(|| {
-            BriefOpError::BackupExhausted(wg_root.join(format!("BRIEF.{}.bak.md", ts)))
+            TaskOpError::BackupExhausted(wg_root.join(format!("TASK.{}.bak.md", ts)))
         })?;
-        match std::fs::copy(&brief_path, &bp) {
+        match std::fs::copy(&task_path, &bp) {
             Ok(_) => Some(bp),
             Err(copy_err) => {
                 // §C.1: fs::copy makes NO guarantee of partial-file cleanup.
                 let _ = std::fs::remove_file(&bp);
-                return Err(BriefOpError::BackupFailed(bp, copy_err));
+                return Err(TaskOpError::BackupFailed(bp, copy_err));
             }
         }
     } else {
@@ -525,7 +525,7 @@ where
     if let Err(e) = std::fs::write(&tmp_path, &new_content) {
         // MED-6 cleanup
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(BriefOpError::TmpWriteFailed(tmp_path, e));
+        return Err(TaskOpError::TmpWriteFailed(tmp_path, e));
     }
 
     // 7a. Sentinel check — see HIGH-4. Realistic editor-save case caught;
@@ -533,7 +533,7 @@ where
     // FAT32 mtime granularity is 2 s — for typical AC layouts (NTFS / EXT4 / APFS,
     // sub-second), this is not a concern.
     if let Some((pre_len, pre_mtime)) = pre_sentinel {
-        match std::fs::metadata(&brief_path) {
+        match std::fs::metadata(&task_path) {
             Ok(now_meta) => {
                 let now_mtime = now_meta.modified().ok();
                 let len_changed = now_meta.len() != pre_len;
@@ -546,7 +546,7 @@ where
                     let bp = backup_path
                         .clone()
                         .expect("file_existed ⇒ backup_path is Some");
-                    return Err(BriefOpError::ExternalWrite(bp));
+                    return Err(TaskOpError::ExternalWrite(bp));
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -558,7 +558,7 @@ where
                 let bp = backup_path
                     .clone()
                     .expect("file_existed ⇒ backup_path is Some");
-                return Err(BriefOpError::ExternalWrite(bp));
+                return Err(TaskOpError::ExternalWrite(bp));
             }
             Err(_) => { /* other transient FS error — let rename surface the real error */ }
         }
@@ -567,7 +567,7 @@ where
     // 7b. Rename with retry on Windows AV/Explorer transient holds (MED-4).
     let do_rename = || -> Result<(), std::io::Error> {
         for attempt in 0..=2u32 {
-            match std::fs::rename(&tmp_path, &brief_path) {
+            match std::fs::rename(&tmp_path, &task_path) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     let retry = e.kind() == std::io::ErrorKind::PermissionDenied
@@ -585,9 +585,9 @@ where
     };
 
     if let Err(e) = do_rename() {
-        // MED-1 cleanup — keeps I20's "no BRIEF.md.tmp.* litter" assertion holding.
+        // MED-1 cleanup — keeps I20's "no TASK.md.tmp.* litter" assertion holding.
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(BriefOpError::RenameFailed(e, backup_path));
+        return Err(TaskOpError::RenameFailed(e, backup_path));
     }
 
     Ok(EditOutcome::Wrote {
@@ -641,49 +641,49 @@ mod tests {
         Utc.with_ymd_and_hms(year, month, day, h, m, s).unwrap()
     }
 
-    // ── U1-U6: parse_brief ──────────────────────────────────────────────
+    // ── U1-U6: parse_task ──────────────────────────────────────────────
 
     #[test]
-    fn parse_brief_no_frontmatter() {
-        let p = parse_brief("# Body");
+    fn parse_task_no_frontmatter() {
+        let p = parse_task("# Body");
         assert!(!p.has_frontmatter);
         assert_eq!(p.body, "# Body");
     }
 
     #[test]
-    fn parse_brief_empty_string() {
-        let p = parse_brief("");
+    fn parse_task_empty_string() {
+        let p = parse_task("");
         assert!(!p.has_frontmatter);
         assert_eq!(p.body, "");
     }
 
     #[test]
-    fn parse_brief_well_formed_frontmatter() {
-        let p = parse_brief("---\ntitle: x\n---\nbody");
+    fn parse_task_well_formed_frontmatter() {
+        let p = parse_task("---\ntitle: x\n---\nbody");
         assert!(p.has_frontmatter);
         assert_eq!(p.frontmatter, vec!["title: x".to_string()]);
         assert_eq!(p.body, "body");
     }
 
     #[test]
-    fn parse_brief_frontmatter_no_title_field() {
-        let p = parse_brief("---\nfoo: bar\n---\nbody");
+    fn parse_task_frontmatter_no_title_field() {
+        let p = parse_task("---\nfoo: bar\n---\nbody");
         assert!(p.has_frontmatter);
         assert_eq!(p.frontmatter, vec!["foo: bar".to_string()]);
     }
 
     #[test]
-    fn parse_brief_unclosed_frontmatter_treated_as_body() {
+    fn parse_task_unclosed_frontmatter_treated_as_body() {
         let input = "---\ntitle: x\n(no closer)\n";
-        let p = parse_brief(input);
+        let p = parse_task(input);
         assert!(!p.has_frontmatter);
         assert_eq!(p.body, input);
     }
 
     #[test]
-    fn parse_brief_tolerates_crlf() {
+    fn parse_task_tolerates_crlf() {
         // CRIT-1 strict pin: body must be exactly "body" with no leading "\n".
-        let p = parse_brief("---\r\ntitle: x\r\n---\r\nbody");
+        let p = parse_task("---\r\ntitle: x\r\n---\r\nbody");
         assert!(p.has_frontmatter);
         assert_eq!(p.body, "body");
         assert_eq!(p.line_ending, "\r\n");
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn apply_set_title_creates_frontmatter_when_absent() {
-        let parsed = parse_brief("");
+        let parsed = parse_task("");
         let p = apply_set_title(&parsed, "X");
         let out = render(&p);
         assert_eq!(out, "---\ntitle: 'X'\n---\n");
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn apply_set_title_replaces_existing_title_value() {
-        let parsed = parse_brief("---\ntitle: old\n---\nbody\n");
+        let parsed = parse_task("---\ntitle: old\n---\nbody\n");
         let p = apply_set_title(&parsed, "new");
         assert_eq!(p.frontmatter, vec!["title: 'new'".to_string()]);
         assert_eq!(p.body, "body\n");
@@ -709,7 +709,7 @@ mod tests {
 
     #[test]
     fn apply_set_title_inserts_into_existing_frontmatter() {
-        let parsed = parse_brief("---\nfoo: bar\n---\nbody\n");
+        let parsed = parse_task("---\nfoo: bar\n---\nbody\n");
         let p = apply_set_title(&parsed, "x");
         assert_eq!(
             p.frontmatter,
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn apply_set_title_preserves_other_frontmatter_fields() {
-        let parsed = parse_brief("---\nfoo: 1\ntitle: old\nbar: 2\n---\nbody");
+        let parsed = parse_task("---\nfoo: 1\ntitle: old\nbar: 2\n---\nbody");
         let p = apply_set_title(&parsed, "new");
         assert_eq!(
             p.frontmatter,
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn apply_set_title_yaml_escapes_single_quote() {
-        let parsed = parse_brief("");
+        let parsed = parse_task("");
         let p = apply_set_title(&parsed, "won't");
         let out = render(&p);
         assert!(out.contains("title: 'won''t'"));
@@ -743,23 +743,23 @@ mod tests {
     #[test]
     fn apply_set_title_yaml_safe_with_colon_and_hash() {
         let title = "v1.0: stable #release";
-        let parsed = parse_brief("");
+        let parsed = parse_task("");
         let p = apply_set_title(&parsed, title);
         let out = render(&p);
         // Round-trip via parser
-        let re = parse_brief(&out);
+        let re = parse_task(&out);
         assert_eq!(title_value_of(&re).as_deref(), Some(title));
     }
 
     #[test]
     fn apply_set_title_idempotent_when_value_matches() {
-        let fix = FixtureRoot::new("brief-u13");
+        let fix = FixtureRoot::new("task-u13");
         let wg = fix.path().join("wg-1-test");
         std::fs::create_dir_all(&wg).unwrap();
         // Seed file
-        std::fs::write(wg.join("BRIEF.md"), "---\ntitle: 'X'\n---\nbody\n").unwrap();
+        std::fs::write(wg.join("TASK.md"), "---\ntitle: 'X'\n---\nbody\n").unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
-        let r = perform_inner(&wg, BriefOp::SetTitle("X".into()), now).unwrap();
+        let r = perform_inner(&wg, TaskOp::SetTitle("X".into()), now).unwrap();
         match r {
             EditOutcome::NoOp => {}
             other => panic!("expected NoOp, got {:?}", other),
@@ -770,14 +770,14 @@ mod tests {
 
     #[test]
     fn apply_append_body_to_empty_file() {
-        let parsed = parse_brief("");
+        let parsed = parse_task("");
         let p = apply_append_body(&parsed, "hello");
         assert_eq!(p.body, "hello\n");
     }
 
     #[test]
     fn apply_append_body_preserves_prior_content() {
-        let parsed = parse_brief("---\ntitle: x\n---\nold\n");
+        let parsed = parse_task("---\ntitle: x\n---\nold\n");
         let p = apply_append_body(&parsed, "new");
         let out = render(&p);
         assert_eq!(out, "---\ntitle: x\n---\nold\n\nnew\n");
@@ -786,7 +786,7 @@ mod tests {
     #[test]
     fn apply_append_body_normalizes_blank_line_separator() {
         // Body with multiple trailing newlines: collapses to exactly one blank line.
-        let parsed = ParsedBrief {
+        let parsed = ParsedTask {
             bom: false,
             line_ending: "\n",
             has_frontmatter: false,
@@ -799,14 +799,14 @@ mod tests {
 
     #[test]
     fn apply_append_body_does_not_touch_frontmatter() {
-        let parsed = parse_brief("---\ntitle: x\n---\nold\n");
+        let parsed = parse_task("---\ntitle: x\n---\nold\n");
         let p = apply_append_body(&parsed, "new");
         assert_eq!(p.frontmatter, parsed.frontmatter);
     }
 
     #[test]
     fn apply_append_body_strips_trailing_whitespace_from_text() {
-        let parsed = parse_brief("");
+        let parsed = parse_task("");
         let p = apply_append_body(&parsed, "hello   \n\n");
         assert_eq!(p.body, "hello\n");
     }
@@ -815,8 +815,8 @@ mod tests {
 
     #[test]
     fn lock_guard_creates_and_removes_lockfile() {
-        let fix = FixtureRoot::new("brief-u19");
-        let lock_path = fix.path().join("BRIEF.md.lock");
+        let fix = FixtureRoot::new("task-u19");
+        let lock_path = fix.path().join("TASK.md.lock");
         {
             let _g = LockGuard::acquire(&lock_path, LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M).unwrap();
             assert!(lock_path.exists());
@@ -826,11 +826,11 @@ mod tests {
 
     #[test]
     fn lock_guard_blocks_concurrent_acquisition() {
-        let fix = FixtureRoot::new("brief-u20");
-        let lock_path = fix.path().join("BRIEF.md.lock");
+        let fix = FixtureRoot::new("task-u20");
+        let lock_path = fix.path().join("TASK.md.lock");
         let _held = LockGuard::acquire(&lock_path, LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M).unwrap();
         let res = LockGuard::acquire(&lock_path, Duration::from_millis(100), LOCK_STALE_AFTER_5M);
-        assert!(matches!(res, Err(BriefOpError::LockTimeout)));
+        assert!(matches!(res, Err(TaskOpError::LockTimeout)));
     }
 
     #[test]
@@ -840,8 +840,8 @@ mod tests {
         // sleep ~30 ms, then call acquire with a small `stale_after` (e.g. 10 ms).
         // The production constant is LOCK_STALE_AFTER_5M (300 s); the test uses
         // a smaller value because std-only Rust cannot fake file mtimes.
-        let fix = FixtureRoot::new("brief-u21");
-        let lock_path = fix.path().join("BRIEF.md.lock");
+        let fix = FixtureRoot::new("task-u21");
+        let lock_path = fix.path().join("TASK.md.lock");
         {
             let f = OpenOptions::new()
                 .write(true)
@@ -864,47 +864,47 @@ mod tests {
 
     #[test]
     fn atomic_publish_via_rename_round_trip() {
-        let fix = FixtureRoot::new("brief-u22");
+        let fix = FixtureRoot::new("task-u22");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
-        let _r = perform_inner(&wg, BriefOp::SetTitle("X".into()), now).unwrap();
+        let _r = perform_inner(&wg, TaskOp::SetTitle("X".into()), now).unwrap();
         // After success, no per-PID tmp file remains.
-        let pid_tmp = wg.join(format!("BRIEF.md.tmp.{}", std::process::id()));
+        let pid_tmp = wg.join(format!("TASK.md.tmp.{}", std::process::id()));
         assert!(!pid_tmp.exists());
-        // No stray BRIEF.md.tmp.* either.
+        // No stray TASK.md.tmp.* either.
         for entry in std::fs::read_dir(&wg).unwrap().flatten() {
             let n = entry.file_name();
             let name = n.to_string_lossy();
             assert!(
-                !name.starts_with("BRIEF.md.tmp."),
+                !name.starts_with("TASK.md.tmp."),
                 "leftover tmp file: {}",
                 name
             );
         }
         // Lock file must also be gone.
-        assert!(!wg.join("BRIEF.md.lock").exists());
+        assert!(!wg.join("TASK.md.lock").exists());
     }
 
     // ── U23: backup filename format ─────────────────────────────────────
 
     #[test]
     fn backup_filename_uses_utc_timestamp_format() {
-        let fix = FixtureRoot::new("brief-u23");
+        let fix = FixtureRoot::new("task-u23");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
-        std::fs::write(wg.join("BRIEF.md"), "old\n").unwrap();
+        std::fs::write(wg.join("TASK.md"), "old\n").unwrap();
         let now = || fixed_now_at(2026, 1, 1, 12, 34, 56);
-        let r = perform_inner(&wg, BriefOp::SetTitle("X".into()), now).unwrap();
+        let r = perform_inner(&wg, TaskOp::SetTitle("X".into()), now).unwrap();
         let bp = match r {
             EditOutcome::Wrote { backup: Some(bp) } => bp,
             other => panic!("expected Wrote with backup, got {:?}", other),
         };
         let name = bp.file_name().unwrap().to_string_lossy().into_owned();
-        // Pattern: BRIEF.YYYYMMDD-HHMMSS(.N)?.bak.md
+        // Pattern: TASK.YYYYMMDD-HHMMSS(.N)?.bak.md
         assert!(
-            name == "BRIEF.20260101-123456.bak.md"
-                || name.starts_with("BRIEF.20260101-123456.") && name.ends_with(".bak.md"),
+            name == "TASK.20260101-123456.bak.md"
+                || name.starts_with("TASK.20260101-123456.") && name.ends_with(".bak.md"),
             "unexpected backup filename: {}",
             name
         );
@@ -913,7 +913,7 @@ mod tests {
     // ── U24, U30: backup-failure path ───────────────────────────────────
 
     #[test]
-    fn backup_failure_aborts_write_and_preserves_brief() {
+    fn backup_failure_aborts_write_and_preserves_task() {
         // Per plan §9 U24, the test pins "backup failure aborts cleanly" — either
         // BackupExhausted (loop exhausts 100 collisions) or BackupFailed (a
         // create_new error other than AlreadyExists). On Windows, attempting to
@@ -921,59 +921,59 @@ mod tests {
         // PermissionDenied (not AlreadyExists), so we get BackupFailed; on Unix,
         // the same returns IsADirectory (also not AlreadyExists). Both are
         // graceful failures; the assertion accepts either variant.
-        let fix = FixtureRoot::new("brief-u24");
+        let fix = FixtureRoot::new("task-u24");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
-        let brief = wg.join("BRIEF.md");
-        std::fs::write(&brief, "old\n").unwrap();
-        let original = std::fs::read(&brief).unwrap();
+        let task = wg.join("TASK.md");
+        std::fs::write(&task, "old\n").unwrap();
+        let original = std::fs::read(&task).unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
         // Pre-create directories at every candidate path so create_new fails
         // for all of them.
         for n in 0..=99u32 {
             let candidate = if n == 0 {
-                wg.join("BRIEF.20260101-000000.bak.md")
+                wg.join("TASK.20260101-000000.bak.md")
             } else {
-                wg.join(format!("BRIEF.20260101-000000.{}.bak.md", n))
+                wg.join(format!("TASK.20260101-000000.{}.bak.md", n))
             };
             std::fs::create_dir(&candidate).unwrap();
         }
-        let result = perform_inner(&wg, BriefOp::SetTitle("x".into()), now);
+        let result = perform_inner(&wg, TaskOp::SetTitle("x".into()), now);
         assert!(
             matches!(
                 result,
-                Err(BriefOpError::BackupExhausted(_)) | Err(BriefOpError::BackupFailed(_, _))
+                Err(TaskOpError::BackupExhausted(_)) | Err(TaskOpError::BackupFailed(_, _))
             ),
             "expected backup-class failure, got {:?}",
             result
         );
-        // BRIEF.md unchanged.
-        assert_eq!(std::fs::read(&brief).unwrap(), original);
+        // TASK.md unchanged.
+        assert_eq!(std::fs::read(&task).unwrap(), original);
         // U30: lock cleaned up.
-        assert!(!wg.join("BRIEF.md.lock").exists());
+        assert!(!wg.join("TASK.md.lock").exists());
         // No tmp file written (we abort before the tmp-write).
-        let pid_tmp = wg.join(format!("BRIEF.md.tmp.{}", std::process::id()));
+        let pid_tmp = wg.join(format!("TASK.md.tmp.{}", std::process::id()));
         assert!(!pid_tmp.exists());
     }
 
     #[test]
     fn backup_failure_releases_lockfile() {
         // Companion to U24: assert lock file cleaned even on backup failure.
-        let fix = FixtureRoot::new("brief-u30");
+        let fix = FixtureRoot::new("task-u30");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
-        std::fs::write(wg.join("BRIEF.md"), "old\n").unwrap();
+        std::fs::write(wg.join("TASK.md"), "old\n").unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
         for n in 0..=99u32 {
             let candidate = if n == 0 {
-                wg.join("BRIEF.20260101-000000.bak.md")
+                wg.join("TASK.20260101-000000.bak.md")
             } else {
-                wg.join(format!("BRIEF.20260101-000000.{}.bak.md", n))
+                wg.join(format!("TASK.20260101-000000.{}.bak.md", n))
             };
             std::fs::create_dir(&candidate).unwrap();
         }
-        let _ = perform_inner(&wg, BriefOp::SetTitle("x".into()), now);
-        assert!(!wg.join("BRIEF.md.lock").exists());
+        let _ = perform_inner(&wg, TaskOp::SetTitle("x".into()), now);
+        assert!(!wg.join("TASK.md.lock").exists());
     }
 
     // ── U25: concurrent set-title + append-body ─────────────────────────
@@ -983,7 +983,7 @@ mod tests {
         // MED-2: synchronize via Barrier so threads contend at the same instant.
         // Without the barrier the test would pass for the wrong reason.
         for _iter in 0..10 {
-            let fix = FixtureRoot::new("brief-u25");
+            let fix = FixtureRoot::new("task-u25");
             let wg = fix.path().join("wg-1");
             std::fs::create_dir_all(&wg).unwrap();
             let barrier = Arc::new(Barrier::new(2));
@@ -994,20 +994,20 @@ mod tests {
 
             let h1 = thread::spawn(move || {
                 b1.wait();
-                perform(&wg_clone1, BriefOp::SetTitle("X".into()))
+                perform(&wg_clone1, TaskOp::SetTitle("X".into()))
             });
             let h2 = thread::spawn(move || {
                 b2.wait();
-                perform(&wg_clone2, BriefOp::AppendBody("appended body line".into()))
+                perform(&wg_clone2, TaskOp::AppendBody("appended body line".into()))
             });
             let r1 = h1.join().unwrap();
             let r2 = h2.join().unwrap();
             // At least one must succeed; whichever lost the lock may LockTimeout
             // (unlikely with the 5 s window), but we don't strictly require both.
-            assert!(r1.is_ok() || matches!(r1, Err(BriefOpError::LockTimeout)));
-            assert!(r2.is_ok() || matches!(r2, Err(BriefOpError::LockTimeout)));
+            assert!(r1.is_ok() || matches!(r1, Err(TaskOpError::LockTimeout)));
+            assert!(r2.is_ok() || matches!(r2, Err(TaskOpError::LockTimeout)));
             if r1.is_ok() && r2.is_ok() {
-                let final_content = std::fs::read_to_string(wg.join("BRIEF.md")).unwrap();
+                let final_content = std::fs::read_to_string(wg.join("TASK.md")).unwrap();
                 assert!(final_content.contains("title: 'X'"));
                 assert!(final_content.contains("appended body line"));
             }
@@ -1017,25 +1017,25 @@ mod tests {
     // ── U26-U28: parser/applier edge cases ──────────────────────────────
 
     #[test]
-    fn parse_brief_tolerates_trailing_space_on_markers() {
-        let p = parse_brief("--- \ntitle: x\n--- \nbody");
+    fn parse_task_tolerates_trailing_space_on_markers() {
+        let p = parse_task("--- \ntitle: x\n--- \nbody");
         assert!(p.has_frontmatter);
         assert_eq!(p.frontmatter, vec!["title: x".to_string()]);
         assert_eq!(p.body, "body");
     }
 
     #[test]
-    fn parse_brief_unicode_in_body_preserved_byte_for_byte() {
+    fn parse_task_unicode_in_body_preserved_byte_for_byte() {
         let body = "café\n🎉\n";
         let input = format!("---\ntitle: x\n---\n{}", body);
-        let p = parse_brief(&input);
+        let p = parse_task(&input);
         assert!(p.has_frontmatter);
         assert_eq!(p.body, body);
     }
 
     #[test]
     fn apply_set_title_preserves_indentation_of_existing_title_line() {
-        let parsed = parse_brief("---\n  title: old\n---\n");
+        let parsed = parse_task("---\n  title: old\n---\n");
         let p = apply_set_title(&parsed, "new");
         assert_eq!(p.frontmatter, vec!["  title: 'new'".to_string()]);
     }
@@ -1044,17 +1044,17 @@ mod tests {
 
     #[test]
     fn backup_collision_within_same_second_does_not_clobber_prior_backup() {
-        let fix = FixtureRoot::new("brief-u29");
+        let fix = FixtureRoot::new("task-u29");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
-        std::fs::write(wg.join("BRIEF.md"), "first\n").unwrap();
+        std::fs::write(wg.join("TASK.md"), "first\n").unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
-        // First call → BRIEF.20260101-000000.bak.md
-        let _ = perform_inner(&wg, BriefOp::AppendBody("a".into()), now).unwrap();
-        // Second call same second → BRIEF.20260101-000000.1.bak.md
-        let _ = perform_inner(&wg, BriefOp::AppendBody("b".into()), now).unwrap();
-        let bk0 = wg.join("BRIEF.20260101-000000.bak.md");
-        let bk1 = wg.join("BRIEF.20260101-000000.1.bak.md");
+        // First call → TASK.20260101-000000.bak.md
+        let _ = perform_inner(&wg, TaskOp::AppendBody("a".into()), now).unwrap();
+        // Second call same second → TASK.20260101-000000.1.bak.md
+        let _ = perform_inner(&wg, TaskOp::AppendBody("b".into()), now).unwrap();
+        let bk0 = wg.join("TASK.20260101-000000.bak.md");
+        let bk1 = wg.join("TASK.20260101-000000.1.bak.md");
         assert!(bk0.exists(), "first backup should exist");
         assert!(
             bk1.exists(),
@@ -1067,9 +1067,9 @@ mod tests {
     // ── U31: BOM round-trip ─────────────────────────────────────────────
 
     #[test]
-    fn parse_brief_strips_and_re_emits_leading_bom() {
+    fn parse_task_strips_and_re_emits_leading_bom() {
         let input = "\u{FEFF}---\ntitle: x\n---\nbody";
-        let p = parse_brief(input);
+        let p = parse_task(input);
         assert!(p.bom);
         assert!(p.has_frontmatter);
         assert_eq!(p.frontmatter, vec!["title: x".to_string()]);
@@ -1083,7 +1083,7 @@ mod tests {
     #[test]
     fn set_title_round_trip_preserves_crlf_no_extra_blank_line() {
         let input = "---\r\ntitle: old\r\n---\r\nbody\r\n";
-        let parsed = parse_brief(input);
+        let parsed = parse_task(input);
         assert_eq!(parsed.line_ending, "\r\n");
         let edited = apply_set_title(&parsed, "new");
         let out = render(&edited);
@@ -1100,10 +1100,10 @@ mod tests {
     // ── U33: line-ending preservation ───────────────────────────────────
 
     #[test]
-    fn parse_brief_preserves_dominant_line_ending() {
-        let crlf = parse_brief("---\r\ntitle: x\r\n---\r\n");
+    fn parse_task_preserves_dominant_line_ending() {
+        let crlf = parse_task("---\r\ntitle: x\r\n---\r\n");
         assert_eq!(crlf.line_ending, "\r\n");
-        let lf = parse_brief("---\ntitle: x\n---\n");
+        let lf = parse_task("---\ntitle: x\n---\n");
         assert_eq!(lf.line_ending, "\n");
         let edited = apply_set_title(&crlf, "y");
         let out = render(&edited);
@@ -1117,7 +1117,7 @@ mod tests {
         // Pins the §5 row-510 trade-off: existing body's internal CRLF is preserved
         // byte-for-byte, but the body's trailing CRLF gets trim_end'd and replaced
         // by an LF separator + LF terminator.
-        let parsed = ParsedBrief {
+        let parsed = ParsedTask {
             bom: false,
             line_ending: "\r\n",
             has_frontmatter: false,
@@ -1133,13 +1133,13 @@ mod tests {
 
     #[test]
     fn apply_set_title_preserves_bom_on_bom_only_existing_file() {
-        // BOM-only file (e.g. coordinator opened BRIEF.md in Notepad on
+        // BOM-only file (e.g. coordinator opened TASK.md in Notepad on
         // Windows, which writes \xEF\xBB\xBF, then saved). The brand-new
         // branch must NOT fire — that would strip the BOM and violate the
         // HIGH-3 byte-exact round-trip guarantee. The fix gates the
         // brand-new branch on !parsed.bom so this case falls through to the
         // "no frontmatter, preserve bom/eol" branch.
-        let parsed = parse_brief("\u{FEFF}");
+        let parsed = parse_task("\u{FEFF}");
         let p = apply_set_title(&parsed, "X");
         assert_eq!(render(&p), "\u{FEFF}---\ntitle: 'X'\n---\n");
     }
@@ -1148,27 +1148,27 @@ mod tests {
 
     #[test]
     fn title_value_of_canonical_single_quoted() {
-        let p = parse_brief("---\ntitle: 'won''t'\n---\n");
+        let p = parse_task("---\ntitle: 'won''t'\n---\n");
         assert_eq!(title_value_of(&p).as_deref(), Some("won't"));
     }
 
     #[test]
     fn title_value_of_bare_scalar() {
-        let p = parse_brief("---\ntitle: bare\n---\n");
+        let p = parse_task("---\ntitle: bare\n---\n");
         assert_eq!(title_value_of(&p).as_deref(), Some("bare"));
     }
 
     #[test]
     fn title_value_of_absent() {
-        let p = parse_brief("---\nfoo: bar\n---\n");
+        let p = parse_task("---\nfoo: bar\n---\n");
         assert_eq!(title_value_of(&p), None);
     }
 
-    // ── U36-U41: BriefOp::Clean ─────────────────────────────────────────
+    // ── U36-U41: TaskOp::Clean ─────────────────────────────────────────
 
     #[test]
     fn apply_clean_creates_canonical_clean_for_empty_file() {
-        let parsed = parse_brief("");
+        let parsed = parse_task("");
         let p = apply_clean(&parsed);
         let out = render(&p);
         assert_eq!(
@@ -1183,7 +1183,7 @@ mod tests {
         // indentation — a coordinator-edited `  title: 'X'` (two-space
         // indent) becomes unindented `"title: 'Clean'"`. Idempotence
         // check in §3.1.4 will treat this as write-worthy.
-        let parsed = parse_brief("---\ntitle: 'Old'\nfoo: bar\n---\nold body\n");
+        let parsed = parse_task("---\ntitle: 'Old'\nfoo: bar\n---\nold body\n");
         let p = apply_clean(&parsed);
         // Frontmatter is REPLACED entirely (foo: bar is dropped — Clean
         // is a hard reset, not a merge).
@@ -1199,7 +1199,7 @@ mod tests {
         // write-worthy diff. This matches `apply_append_body`'s pinned
         // trade-off (test U34).
         let input = "\u{FEFF}---\r\ntitle: old\r\nx: 1\r\n---\r\nbody\r\n";
-        let parsed = parse_brief(input);
+        let parsed = parse_task(input);
         let p = apply_clean(&parsed);
         assert!(p.bom);
         assert_eq!(p.line_ending, "\r\n");
@@ -1211,16 +1211,16 @@ mod tests {
 
     #[test]
     fn perform_clean_idempotent_on_canonical_clean() {
-        let fix = FixtureRoot::new("brief-u39");
+        let fix = FixtureRoot::new("task-u39");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
         std::fs::write(
-            wg.join("BRIEF.md"),
+            wg.join("TASK.md"),
             "---\ntitle: 'Clean'\n---\nReady to start a new topic\n",
         )
         .unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
-        let r = perform_inner(&wg, BriefOp::Clean, now).unwrap();
+        let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
         match r {
             EditOutcome::NoOp => {}
             other => panic!("expected NoOp, got {:?}", other),
@@ -1241,13 +1241,13 @@ mod tests {
         // regression where the backup file gets the post-clean (Clean)
         // bytes instead of the prior state would be silently shipped
         // without this assertion.
-        let fix = FixtureRoot::new("brief-u40");
+        let fix = FixtureRoot::new("task-u40");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
         let pre_clean = "---\ntitle: stale\n---\nstale body\n";
-        std::fs::write(wg.join("BRIEF.md"), pre_clean).unwrap();
+        std::fs::write(wg.join("TASK.md"), pre_clean).unwrap();
         let now = || fixed_now_at(2026, 5, 7, 12, 0, 0);
-        let r = perform_inner(&wg, BriefOp::Clean, now).unwrap();
+        let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
         let backup_path = match &r {
             EditOutcome::Wrote { backup: Some(bp) } => bp.clone(),
             other => panic!("expected Wrote with backup, got {:?}", other),
@@ -1255,7 +1255,7 @@ mod tests {
         // HIGH-2 assertion: backup bytes must equal the pre-clean file.
         let backup_content = std::fs::read_to_string(&backup_path).unwrap();
         assert_eq!(backup_content, pre_clean);
-        let final_content = std::fs::read_to_string(wg.join("BRIEF.md")).unwrap();
+        let final_content = std::fs::read_to_string(wg.join("TASK.md")).unwrap();
         assert_eq!(
             final_content,
             "---\ntitle: 'Clean'\n---\nReady to start a new topic\n"
@@ -1263,20 +1263,20 @@ mod tests {
     }
 
     #[test]
-    fn perform_clean_creates_brief_when_file_missing() {
-        // Round 2 (Grinch LOW-3): brand-new workgroup, no BRIEF.md.
+    fn perform_clean_creates_task_when_file_missing() {
+        // Round 2 (Grinch LOW-3): brand-new workgroup, no TASK.md.
         // Implementation handles this via the `if file_existed` gate at
-        // brief_ops.rs:455 — Clean writes the canonical form with no
+        // task_ops.rs:455 — Clean writes the canonical form with no
         // backup. Pin the behavior here so a future refactor that
         // reorders the gate doesn't regress silently.
-        let fix = FixtureRoot::new("brief-u41");
+        let fix = FixtureRoot::new("task-u41");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
-        let r = perform_inner(&wg, BriefOp::Clean, now).unwrap();
+        let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
         assert!(matches!(r, EditOutcome::Wrote { backup: None }));
         assert_eq!(
-            std::fs::read_to_string(wg.join("BRIEF.md")).unwrap(),
+            std::fs::read_to_string(wg.join("TASK.md")).unwrap(),
             "---\ntitle: 'Clean'\n---\nReady to start a new topic\n"
         );
         let bak_count = std::fs::read_dir(&wg)

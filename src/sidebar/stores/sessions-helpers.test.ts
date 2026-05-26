@@ -19,7 +19,7 @@ function mkSession(id: string, status: SessionStatus, overrides: Partial<Session
     agentId: null,
     agentLabel: null,
     gitRepos: [],
-    workgroupBrief: null,
+    workgroupTask: null,
     isCoordinator: false,
     isRootAgent: false,
     token: "",

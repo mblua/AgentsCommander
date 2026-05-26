@@ -1,6 +1,6 @@
 //! Integration tests for issue #224 — close-session CLI exit-code contract.
 //!
-//! Strategy: spawn the binary in a subprocess (per the `cli_brief_logger.rs`
+//! Strategy: spawn the binary in a subprocess (per the `cli_task_logger.rs`
 //! pattern — copied into a per-test tmp dir so `config_dir()` is isolated)
 //! with master-token bypass, and simulate the daemon's mailbox response by
 //! writing the expected `delivered/` and `responses/` files from a sibling

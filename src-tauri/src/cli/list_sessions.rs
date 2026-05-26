@@ -93,25 +93,49 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
         match crate::config::daemon_pid::detect_daemon_state() {
             crate::config::daemon_pid::DaemonState::Running { .. } => {}
             crate::config::daemon_pid::DaemonState::NoPidFile => {
-                eprintln!(
-                    "[WARN] sessions.json may be stale — no AgentsCommander daemon detected \
-                     (no daemon.pid file). list-sessions reads the file directly; results may \
-                     not reflect current state."
-                );
+                if std::env::var("AC_MACHINE_OUTPUT").is_err() {
+                    eprintln!(
+                        "[WARN] sessions.json may be stale — no AgentsCommander daemon detected \
+                         (no daemon.pid file). list-sessions reads the file directly; results may \
+                         not reflect current state."
+                    );
+                } else {
+                    log::warn!(
+                        "sessions.json may be stale — no AgentsCommander daemon detected \
+                         (no daemon.pid file). list-sessions reads the file directly; results may \
+                         not reflect current state."
+                    );
+                }
             }
             crate::config::daemon_pid::DaemonState::StalePidFile { pid } => {
-                eprintln!(
-                    "[WARN] sessions.json may be stale — AgentsCommander daemon pid {} is not \
-                     running (stale daemon.pid file). list-sessions reads the file directly; \
-                     results reflect the daemon's last persisted state.",
-                    pid
-                );
+                if std::env::var("AC_MACHINE_OUTPUT").is_err() {
+                    eprintln!(
+                        "[WARN] sessions.json may be stale — AgentsCommander daemon pid {} is not \
+                         running (stale daemon.pid file). list-sessions reads the file directly; \
+                         results reflect the daemon's last persisted state.",
+                        pid
+                    );
+                } else {
+                    log::warn!(
+                        "sessions.json may be stale — AgentsCommander daemon pid {} is not \
+                         running (stale daemon.pid file). list-sessions reads the file directly; \
+                         results reflect the daemon's last persisted state.",
+                        pid
+                    );
+                }
             }
             crate::config::daemon_pid::DaemonState::MalformedPidFile => {
-                eprintln!(
-                    "[WARN] sessions.json may be stale — daemon.pid file is malformed. \
-                     list-sessions reads the file directly; results may not reflect current state."
-                );
+                if std::env::var("AC_MACHINE_OUTPUT").is_err() {
+                    eprintln!(
+                        "[WARN] sessions.json may be stale — daemon.pid file is malformed. \
+                         list-sessions reads the file directly; results may not reflect current state."
+                    );
+                } else {
+                    log::warn!(
+                        "sessions.json may be stale — daemon.pid file is malformed. \
+                         list-sessions reads the file directly; results may not reflect current state."
+                    );
+                }
             }
         }
     }

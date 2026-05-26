@@ -179,10 +179,10 @@ pub struct AppSettings {
     pub rtk_prompt_dismissed: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
     /// agent to add a YAML frontmatter `title:` line to its workgroup
-    /// `BRIEF.md` (only if the brief is non-empty and has no `title:` yet).
+    /// `TASK.md` (only if the brief is non-empty and has no `title:` yet).
     /// See plan `_plans/107-auto-brief-title.md`.
     #[serde(default = "default_true")]
-    pub auto_generate_brief_title: bool,
+    pub auto_generate_task_title: bool,
     /// Optional override for the local agent-templates directory used by the
     /// New Agent role-template picker (#271). Empty/missing ⇒ default
     /// `<config_dir>/agent-templates/`. Relative ⇒ resolved against
@@ -275,7 +275,7 @@ impl Default for AppSettings {
             log_level: None,
             inject_rtk_hook: false,
             rtk_prompt_dismissed: false,
-            auto_generate_brief_title: true,
+            auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: true,
         }

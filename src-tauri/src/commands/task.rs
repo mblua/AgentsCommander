@@ -1,4 +1,4 @@
-//! Tauri commands wrapping `cli::brief_ops::perform` for the BRIEF panel
+//! Tauri commands wrapping `cli::task_ops::perform` for the BRIEF panel
 //! action buttons (issue #162).
 //!
 //! Trust model: these commands run inside the GUI process under the
@@ -13,21 +13,21 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use crate::cli::brief_ops::{self, BriefOp};
+use crate::cli::task_ops::{self, TaskOp};
 use crate::session::manager::SessionManager;
-use crate::session::session::find_workgroup_brief_path_for_cwd;
+use crate::session::session::find_workgroup_task_path_for_cwd;
 
-/// Payload returned to the frontend after a successful brief mutation.
+/// Payload returned to the frontend after a successful task mutation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BriefUpdateResult {
-    /// Absolute path of the workgroup root the BRIEF.md belongs to.
+pub struct TaskUpdateResult {
+    /// Absolute path of the workgroup root the TASK.md belongs to.
     /// Stripped of the Windows `\\?\` extended-length prefix when present.
     pub workgroup_root: String,
-    /// Trimmed BRIEF.md content as displayed by the panel. `None` when the
+    /// Trimmed TASK.md content as displayed by the panel. `None` when the
     /// file is empty or missing post-edit (defensive — should not happen
     /// after a successful Wrote, but possible on race-deletion).
-    pub brief: Option<String>,
+    pub task: Option<String>,
 }
 
 /// Resolve the workgroup root for a session id, returning a user-facing
@@ -46,11 +46,11 @@ async fn resolve_wg_root(
         .ok_or_else(|| format!("session {} not found", session_id))?;
     drop(mgr);
 
-    let brief_path = find_workgroup_brief_path_for_cwd(&cwd)
+    let task_path = find_workgroup_task_path_for_cwd(&cwd)
         .ok_or_else(|| format!("session {} is not under a wg-* ancestor", session_id))?;
-    let wg_root = brief_path
+    let wg_root = task_path
         .parent()
-        .ok_or_else(|| "workgroup BRIEF.md path has no parent".to_string())?
+        .ok_or_else(|| "workgroup TASK.md path has no parent".to_string())?
         .to_path_buf();
     Ok(wg_root)
 }
@@ -60,53 +60,53 @@ fn strip_unc(p: &Path) -> String {
     raw.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(raw)
 }
 
-fn emit_brief_updated(app: &AppHandle, wg_root: &Path, brief: &Option<String>) {
+fn emit_task_updated(app: &AppHandle, wg_root: &Path, task: &Option<String>) {
     let _ = app.emit(
-        "workgroup_brief_updated",
+        "workgroup_task_updated",
         serde_json::json!({
             "workgroupRoot": strip_unc(wg_root),
-            "brief": brief.clone(),
+            "task": task.clone(),
         }),
     );
 }
 
-fn read_brief_at(wg_root: &Path) -> Option<String> {
-    std::fs::read_to_string(wg_root.join("BRIEF.md"))
+fn read_task_at(wg_root: &Path) -> Option<String> {
+    std::fs::read_to_string(wg_root.join("TASK.md"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
 /// Read the current YAML-frontmatter `title:` value of the workgroup
-/// BRIEF.md for the given session. Returns `None` when there is no
+/// TASK.md for the given session. Returns `None` when there is no
 /// frontmatter or no `title:` line.
 #[tauri::command]
-pub async fn brief_get_title(
+pub async fn task_get_title(
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     session_id: String,
 ) -> Result<Option<String>, String> {
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
-    let brief_path = wg_root.join("BRIEF.md");
-    let content = match std::fs::read_to_string(&brief_path) {
+    let task_path = wg_root.join("TASK.md");
+    let content = match std::fs::read_to_string(&task_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("read BRIEF.md: {}", e)),
+        Err(e) => return Err(format!("read TASK.md: {}", e)),
     };
-    let parsed = brief_ops::parse_brief(&content);
-    Ok(brief_ops::title_value_of(&parsed))
+    let parsed = task_ops::parse_task(&content);
+    Ok(task_ops::title_value_of(&parsed))
 }
 
-/// Set the YAML-frontmatter `title:` field of the workgroup BRIEF.md for
-/// the given session. Returns the new (post-edit) trimmed BRIEF.md
-/// content for direct local refresh, AND emits `workgroup_brief_updated`
+/// Set the YAML-frontmatter `title:` field of the workgroup TASK.md for
+/// the given session. Returns the new (post-edit) trimmed TASK.md
+/// content for direct local refresh, AND emits `workgroup_task_updated`
 /// for sibling sessions/windows.
 #[tauri::command]
-pub async fn brief_set_title(
+pub async fn task_set_title(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     session_id: String,
     title: String,
-) -> Result<BriefUpdateResult, String> {
+) -> Result<TaskUpdateResult, String> {
     if title.trim().is_empty() {
         return Err("title cannot be empty".to_string());
     }
@@ -125,38 +125,44 @@ pub async fn brief_set_title(
     }
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
     let outcome =
-        brief_ops::perform(&wg_root, BriefOp::SetTitle(title)).map_err(|e| e.to_string())?;
+        task_ops::perform(&wg_root, TaskOp::SetTitle(title)).map_err(|e| e.to_string())?;
     log::info!(
-        "[brief] set_title for session {} -> {:?}",
+        "[task] set_title for session {} -> {:?}",
         session_id,
         outcome
     );
-    let brief = read_brief_at(&wg_root);
-    let result = BriefUpdateResult {
+    let task = read_task_at(&wg_root);
+    let result = TaskUpdateResult {
         workgroup_root: strip_unc(&wg_root),
-        brief: brief.clone(),
+        task: task.clone(),
     };
-    emit_brief_updated(&app, &wg_root, &brief);
+    emit_task_updated(&app, &wg_root, &task);
     Ok(result)
 }
 
-/// Replace the workgroup BRIEF.md with the canonical Clean form
-/// (`title: 'Clean'` + body `Ready to start a new topic`). Returns the
-/// new content and emits `workgroup_brief_updated`.
+
+/// Clear the workgroup TASK.md for the given session to the canonical Clean state.
+/// Returns the new (post-edit) trimmed TASK.md content for direct local refresh,
+/// AND emits `workgroup_task_updated` for sibling sessions/windows.
 #[tauri::command]
-pub async fn brief_clean(
+pub async fn task_clean(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     session_id: String,
-) -> Result<BriefUpdateResult, String> {
+) -> Result<TaskUpdateResult, String> {
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
-    let outcome = brief_ops::perform(&wg_root, BriefOp::Clean).map_err(|e| e.to_string())?;
-    log::info!("[brief] clean for session {} -> {:?}", session_id, outcome);
-    let brief = read_brief_at(&wg_root);
-    let result = BriefUpdateResult {
+    let outcome =
+        task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
+    log::info!(
+        "[task] clean for session {} -> {:?}",
+        session_id,
+        outcome
+    );
+    let task = read_task_at(&wg_root);
+    let result = TaskUpdateResult {
         workgroup_root: strip_unc(&wg_root),
-        brief: brief.clone(),
+        task: task.clone(),
     };
-    emit_brief_updated(&app, &wg_root, &brief);
+    emit_task_updated(&app, &wg_root, &task);
     Ok(result)
 }

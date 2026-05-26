@@ -1,6 +1,6 @@
-pub mod brief_append_body;
-pub mod brief_ops;
-pub mod brief_set_title;
+pub mod task_append_body;
+pub mod task_ops;
+pub mod task_set_title;
 pub mod close_session;
 pub mod create_agent;
 pub mod list_peers;
@@ -63,7 +63,7 @@ TOKEN VALIDATION MODEL: The CLI validates token SHAPE only (root token, master t
 or any valid UUID). Per-session tokens are authoritative at the daemon mailbox boundary, \
 not in the CLI. A UUID issued by a different binary instance will pass the CLI's shape \
 check but will be REJECTED by the daemon's mailbox (write-path verbs like `send`, \
-`close-session`, `brief-set-title`, `brief-append-body`). Read-only verb `list-peers` \
+`close-session`, `task-set-title`, `task-append-body`). Read-only verb `list-peers` \
 REQUIRES a token but accepts ANY UUID-shaped value at the CLI boundary — the token value \
 is not consulted for authorization at the CLI. It reads disk state directly (from \
 `--root` and the binary's per-binary config directory); authorization of any specific \
@@ -96,10 +96,10 @@ pub enum Commands {
     CreateAgent(create_agent::CreateAgentArgs),
     /// Close all sessions for a target agent (coordinator authorization required)
     CloseSession(close_session::CloseSessionArgs),
-    /// Set the title field in the workgroup BRIEF.md frontmatter (coordinator-only)
-    BriefSetTitle(brief_set_title::BriefSetTitleArgs),
-    /// Append text to the body of the workgroup BRIEF.md (coordinator-only)
-    BriefAppendBody(brief_append_body::BriefAppendBodyArgs),
+    /// Set the title field in the workgroup TASK.md frontmatter (coordinator-only)
+    TaskSetTitle(task_set_title::TaskSetTitleArgs),
+    /// Append text to the body of the workgroup TASK.md (coordinator-only)
+    TaskAppendBody(task_append_body::TaskAppendBodyArgs),
     /// Register an existing AC project (.ac-new must already exist) in settings
     OpenProject(open_project::OpenProjectArgs),
     /// Create an AC project (mkdir .ac-new if missing) and register it in settings
@@ -217,8 +217,8 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::ListSessions(args) => list_sessions::execute(args),
         Commands::CreateAgent(args) => create_agent::execute(args),
         Commands::CloseSession(args) => close_session::execute(args),
-        Commands::BriefSetTitle(args) => brief_set_title::execute(args),
-        Commands::BriefAppendBody(args) => brief_append_body::execute(args),
+        Commands::TaskSetTitle(args) => task_set_title::execute(args),
+        Commands::TaskAppendBody(args) => task_append_body::execute(args),
         Commands::OpenProject(args) => open_project::execute(args),
         Commands::NewProject(args) => new_project::execute(args),
         Commands::TelegramSendImage(args) => telegram_send_image::execute(args),

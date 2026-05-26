@@ -225,7 +225,7 @@ fn parse_role_frontmatter(content: &str) -> (Option<String>, Option<String>) {
 ///
 /// Best-effort frontmatter detection — NOT a YAML implementation. Suitable
 /// only for the narrow case of one optional scalar field at the top of
-/// BRIEF.md.
+/// TASK.md.
 ///
 /// Returns `Some(title)` when:
 ///   - `content` starts with `---`,
@@ -242,7 +242,7 @@ fn parse_role_frontmatter(content: &str) -> (Option<String>, Option<String>) {
 /// Mirrors `parse_role_frontmatter`'s shape — both speak the same on-disk
 /// format. See plan `_plans/107-auto-brief-title.md` §6 for why we do not
 /// pull in `serde_yaml`.
-pub(crate) fn parse_brief_title(content: &str) -> Option<String> {
+pub(crate) fn parse_task_title(content: &str) -> Option<String> {
     let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
     if !content.starts_with("---") {
         return None;
@@ -276,24 +276,14 @@ pub(crate) fn parse_brief_title(content: &str) -> Option<String> {
     None
 }
 
-/// BRIEF.md content for a brand-new workgroup.
+/// TASK.md content for a brand-new workgroup.
 ///
-/// - User-supplied brief → written verbatim with a single trailing newline.
-/// - Nothing supplied → empty file.
-///
-/// Issue #107: do not auto-template the brief. Empty briefs are a valid state
-/// and signal "no title-gen yet" to the Coordinator-spawn flow in
-/// `commands/session.rs` (which skips title-gen on empty briefs).
-fn build_brief_content(_wg_name: &str, brief: Option<String>) -> String {
-    let trimmed = brief
-        .as_deref()
-        .map(str::trim)
-        .filter(|content| !content.is_empty());
-
-    match trimmed {
-        Some(content) => format!("{}\n", content),
-        None => String::new(),
-    }
+/// Workgroups now start with an explicit task title, so there is no follow-up
+/// auto-title prompt. Store the title in the same frontmatter shape used by
+/// the title editor.
+fn build_task_content(task_title: &str) -> String {
+    let escaped = task_title.trim().replace('\'', "''");
+    format!("---\ntitle: '{}'\n---\n", escaped)
 }
 
 /// Build the Role.md body written by `create_agent_matrix`. Kept as a separate
@@ -706,9 +696,21 @@ pub async fn create_workgroup(
     sweep_lock: State<'_, crate::RtkSweepLockState>,
     project_path: String,
     team_name: String,
-    brief: Option<String>,
+    task_title: String,
 ) -> Result<WorkgroupCloneResult, String> {
     let safe_team = sanitize_name(&team_name)?;
+    let task_title = task_title.trim().to_string();
+    if task_title.is_empty() {
+        return Err("Task title cannot be empty".to_string());
+    }
+    if task_title.chars().any(|c| c.is_control() && c != '\t') {
+        return Err("Task title must be a single line of printable characters \
+             (control characters other than tab are not allowed)"
+            .to_string());
+    }
+    if task_title.chars().count() > 256 {
+        return Err("Task title is too long (max 256 characters)".to_string());
+    }
     let base = Path::new(&project_path).join(".ac-new");
     if !base.is_dir() {
         return Err(format!(".ac-new directory not found in {}", project_path));
@@ -747,10 +749,10 @@ pub async fn create_workgroup(
     std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
         .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
 
-    // BRIEF.md: use the user-provided brief when present, otherwise seed a template.
-    let brief_content = build_brief_content(&wg_name, brief);
-    std::fs::write(wg_dir.join("BRIEF.md"), &brief_content)
-        .map_err(|e| format!("Failed to write BRIEF.md: {}", e))?;
+    // TASK.md: every new workgroup starts with an explicit task title.
+    let task_content = build_task_content(&task_title);
+    std::fs::write(wg_dir.join("TASK.md"), &task_content)
+        .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
 
     // Parse team agents and repos
     let team_agents: Vec<String> = team_config
@@ -1048,7 +1050,7 @@ pub async fn delete_workgroup(
     // BEFORE remove_dir_all. NTFS rename requires DELETE access on every open
     // handle to the dir or any descendant; if any blocker holds a handle without
     // FILE_SHARE_DELETE (terminal cwd, VSCode workspace open, file watcher,
-    // memory-mapped BRIEF.md), the rename fails atomically — no files touched —
+    // memory-mapped TASK.md), the rename fails atomically — no files touched —
     // and we run the diagnostic on the still-intact tree. On success the dir is
     // re-parented to a sentinel name and removed; the user-visible WG is gone.
     match try_atomic_delete_wg(&wg_dir) {
@@ -1968,7 +1970,7 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
 mod tests {
     //! Tests for Agent Matrix/replica layout invariants, the preflight-rename
     //! `delete_workgroup` helper added in the #113 follow-up dispatch, plus
-    //! the #107 helper `parse_brief_title`.
+    //! the #107 helper `parse_task_title`.
 
     use super::*;
 
@@ -2102,7 +2104,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let wg_dir = tmp.path().join("wg-1-test");
         std::fs::create_dir(&wg_dir).expect("create wg_dir");
-        std::fs::write(wg_dir.join("BRIEF.md"), "# test\n").expect("write BRIEF.md");
+        std::fs::write(wg_dir.join("TASK.md"), "# test\n").expect("write TASK.md");
         std::fs::create_dir(wg_dir.join("repo-foo")).expect("create repo-foo");
         std::fs::write(wg_dir.join("repo-foo").join("README.md"), "x").expect("write inside");
 
@@ -2269,120 +2271,120 @@ mod tests {
         );
     }
 
-    // ── parse_brief_title — dev-rust R7 cases ──
+    // ── parse_task_title — dev-rust R7 cases ──
 
     #[test]
-    fn parse_brief_title_returns_some_for_canonical_frontmatter() {
+    fn parse_task_title_returns_some_for_canonical_frontmatter() {
         assert_eq!(
-            parse_brief_title("---\ntitle: Hello world\n---\n\nbody\n"),
+            parse_task_title("---\ntitle: Hello world\n---\n\nbody\n"),
             Some("Hello world".to_string())
         );
     }
 
     #[test]
-    fn parse_brief_title_strips_double_quotes() {
+    fn parse_task_title_strips_double_quotes() {
         assert_eq!(
-            parse_brief_title("---\ntitle: \"Quoted\"\n---\n"),
+            parse_task_title("---\ntitle: \"Quoted\"\n---\n"),
             Some("Quoted".to_string())
         );
     }
 
     #[test]
-    fn parse_brief_title_strips_single_quotes() {
+    fn parse_task_title_strips_single_quotes() {
         assert_eq!(
-            parse_brief_title("---\ntitle: 'Quoted'\n---\n"),
+            parse_task_title("---\ntitle: 'Quoted'\n---\n"),
             Some("Quoted".to_string())
         );
     }
 
     #[test]
-    fn parse_brief_title_returns_none_when_no_frontmatter() {
-        assert_eq!(parse_brief_title("# Heading\n\nbody\n"), None);
+    fn parse_task_title_returns_none_when_no_frontmatter() {
+        assert_eq!(parse_task_title("# Heading\n\nbody\n"), None);
     }
 
     #[test]
-    fn parse_brief_title_returns_none_for_empty_value() {
-        assert_eq!(parse_brief_title("---\ntitle:\n---\n"), None);
+    fn parse_task_title_returns_none_for_empty_value() {
+        assert_eq!(parse_task_title("---\ntitle:\n---\n"), None);
     }
 
     #[test]
-    fn parse_brief_title_returns_none_when_closing_delimiter_missing() {
-        assert_eq!(parse_brief_title("---\ntitle: foo\nbody only\n"), None);
+    fn parse_task_title_returns_none_when_closing_delimiter_missing() {
+        assert_eq!(parse_task_title("---\ntitle: foo\nbody only\n"), None);
     }
 
     #[test]
-    fn parse_brief_title_returns_none_when_title_field_absent() {
-        assert_eq!(parse_brief_title("---\nname: foo\n---\n"), None);
+    fn parse_task_title_returns_none_when_title_field_absent() {
+        assert_eq!(parse_task_title("---\nname: foo\n---\n"), None);
     }
 
     #[test]
-    fn parse_brief_title_preserves_inner_colon() {
+    fn parse_task_title_preserves_inner_colon() {
         assert_eq!(
-            parse_brief_title("---\ntitle: a: b\n---\n"),
+            parse_task_title("---\ntitle: a: b\n---\n"),
             Some("a: b".to_string())
         );
     }
 
     #[test]
-    fn parse_brief_title_handles_indented_key() {
+    fn parse_task_title_handles_indented_key() {
         assert_eq!(
-            parse_brief_title("---\n  title: foo\n---\n"),
+            parse_task_title("---\n  title: foo\n---\n"),
             Some("foo".to_string())
         );
     }
 
-    // ── parse_brief_title — dev-rust-grinch G3 / G13 case-insensitivity ──
+    // ── parse_task_title — dev-rust-grinch G3 / G13 case-insensitivity ──
 
     #[test]
-    fn parse_brief_title_handles_capital_t() {
+    fn parse_task_title_handles_capital_t() {
         assert_eq!(
-            parse_brief_title("---\nTitle: Foo\n---\n"),
+            parse_task_title("---\nTitle: Foo\n---\n"),
             Some("Foo".to_string())
         );
     }
 
     #[test]
-    fn parse_brief_title_handles_all_caps_key() {
+    fn parse_task_title_handles_all_caps_key() {
         assert_eq!(
-            parse_brief_title("---\nTITLE: Foo\n---\n"),
+            parse_task_title("---\nTITLE: Foo\n---\n"),
             Some("Foo".to_string())
         );
     }
 
     #[test]
-    fn parse_brief_title_handles_mixed_case_key() {
+    fn parse_task_title_handles_mixed_case_key() {
         assert_eq!(
-            parse_brief_title("---\ntItLe: Foo\n---\n"),
+            parse_task_title("---\ntItLe: Foo\n---\n"),
             Some("Foo".to_string())
         );
     }
 
     #[test]
-    fn parse_brief_title_value_remains_case_sensitive() {
+    fn parse_task_title_value_remains_case_sensitive() {
         // The key match is case-insensitive; the value MUST round-trip
         // verbatim (it is user-visible content, not a structural marker).
         assert_eq!(
-            parse_brief_title("---\nTitle: MixedCASE Value\n---\n"),
+            parse_task_title("---\nTitle: MixedCASE Value\n---\n"),
             Some("MixedCASE Value".to_string())
         );
     }
 
-    // ── parse_brief_title — UTF-8 BOM (grinch MEDIUM) ──
-    // Mirrors `cli/brief_ops.rs::parse_brief` which already strips the BOM.
-    // Without this, BRIEF.md saved as "UTF-8 with BOM" breaks gate-4
+    // ── parse_task_title — UTF-8 BOM (grinch MEDIUM) ──
+    // Mirrors `cli/task_ops.rs::parse_task` which already strips the BOM.
+    // Without this, TASK.md saved as "UTF-8 with BOM" breaks gate-4
     // idempotency and risks silent overwrite of a user-edited title.
 
     #[test]
-    fn parse_brief_title_strips_utf8_bom() {
+    fn parse_task_title_strips_utf8_bom() {
         assert_eq!(
-            parse_brief_title("\u{FEFF}---\ntitle: Foo\n---\n"),
+            parse_task_title("\u{FEFF}---\ntitle: Foo\n---\n"),
             Some("Foo".to_string())
         );
     }
 
     #[test]
-    fn parse_brief_title_returns_none_for_bom_without_frontmatter() {
-        assert_eq!(parse_brief_title("\u{FEFF}# Heading\n\nbody\n"), None);
+    fn parse_task_title_returns_none_for_bom_without_frontmatter() {
+        assert_eq!(parse_task_title("\u{FEFF}# Heading\n\nbody\n"), None);
     }
 
     // ── #177 — determine_next_wg_number lowest-free reuse ──

@@ -144,11 +144,11 @@ export const projectStore = {
     );
   },
 
-  /** Update a workgroup's BRIEF.md fields from the discovery watcher. */
-  updateWorkgroupBrief(
+  /** Update a workgroup's TASK.md fields from the discovery watcher. */
+  updateWorkgroupTask(
     workgroupPath: string,
-    brief: string | null,
-    briefTitle: string | undefined
+    task: string | null,
+    taskTitle: string | undefined
   ) {
 
     const normalized = normalizePath(workgroupPath);
@@ -157,7 +157,7 @@ export const projectStore = {
         ...proj,
         workgroups: proj.workgroups.map((wg) =>
           normalizePath(wg.path) === normalized
-            ? { ...wg, brief: brief ?? undefined, briefTitle }
+            ? { ...wg, task, taskTitle }
 
             : wg
         ),

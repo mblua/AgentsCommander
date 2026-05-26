@@ -11,11 +11,11 @@ const NewWorkgroupModal: Component<{
   const [selectedTeam, setSelectedTeam] = createSignal(
     props.teams.length === 1 ? props.teams[0].name : ""
   );
-  const [brief, setBrief] = createSignal("");
+  const [taskTitle, setTaskTitle] = createSignal("");
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
 
-  const canCreate = createMemo(() => selectedTeam() !== "");
+  const canCreate = createMemo(() => selectedTeam() !== "" && taskTitle().trim() !== "");
 
   const handleCreate = async () => {
     if (!canCreate() || creating()) return;
@@ -25,7 +25,7 @@ const NewWorkgroupModal: Component<{
       await EntityAPI.createWorkgroup(
         props.projectPath,
         selectedTeam(),
-        brief().trim() || undefined
+        taskTitle().trim()
       );
       await projectStore.reloadProject(props.projectPath);
       props.onClose();
@@ -75,18 +75,17 @@ const NewWorkgroupModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Brief (optional)</label>
-            <textarea
-              class="entity-textarea"
-              value={brief()}
-              onInput={(e) => setBrief(e.currentTarget.value)}
-              placeholder="Describe the task for this workgroup..."
-              rows={4}
+            <label class="new-agent-label">Task Title</label>
+            <input
+              type="text"
+              class="entity-input"
+              value={taskTitle()}
+              onInput={(e) => setTaskTitle(e.currentTarget.value)}
+              placeholder="Task title (required)"
               autofocus
-              aria-describedby="brief-keyhint"
             />
             <div class="entity-textarea-meta">
-              <span id="brief-keyhint" class="entity-textarea-hint">Enter to create · Shift+Enter for newline</span>
+              <span id="task-keyhint" class="entity-textarea-hint">Enter to create · Shift+Enter for newline</span>
             </div>
           </div>
 

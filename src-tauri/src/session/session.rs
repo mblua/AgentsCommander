@@ -131,10 +131,10 @@ pub enum SessionStatus {
 }
 
 /// Walk up from `cwd` to the first ancestor directory whose name starts with
-/// `wg-`, and return that directory's `BRIEF.md` path. Returns `None` if no
+/// `wg-`, and return that directory's `TASK.md` path. Returns `None` if no
 /// such ancestor exists (does NOT check that the file exists on disk — caller
 /// decides how to handle a missing file).
-pub(crate) fn find_workgroup_brief_path_for_cwd(cwd: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn find_workgroup_task_path_for_cwd(cwd: &str) -> Option<std::path::PathBuf> {
     let mut current = Some(Path::new(cwd));
     while let Some(path) = current {
         let is_workgroup_dir = path
@@ -142,15 +142,15 @@ pub(crate) fn find_workgroup_brief_path_for_cwd(cwd: &str) -> Option<std::path::
             .and_then(|n| n.to_str())
             .is_some_and(|name| name.starts_with("wg-"));
         if is_workgroup_dir {
-            return Some(path.join("BRIEF.md"));
+            return Some(path.join("TASK.md"));
         }
         current = path.parent();
     }
     None
 }
 
-pub(crate) fn read_workgroup_brief_for_cwd(cwd: &str) -> Option<String> {
-    let path = find_workgroup_brief_path_for_cwd(cwd)?;
+pub(crate) fn read_workgroup_task_for_cwd(cwd: &str) -> Option<String> {
+    let path = find_workgroup_task_path_for_cwd(cwd)?;
     std::fs::read_to_string(&path)
         .ok()
         .map(|content| content.trim().to_string())
@@ -183,7 +183,7 @@ pub struct SessionInfo {
     #[serde(default)]
     pub git_repos: Vec<SessionRepo>,
     #[serde(default)]
-    pub workgroup_brief: Option<String>,
+    pub workgroup_task: Option<String>,
     #[serde(default)]
     pub is_coordinator: bool,
     #[serde(default)]
@@ -221,7 +221,7 @@ impl From<&Session> for SessionInfo {
             agent_id: s.agent_id.clone(),
             agent_label: s.agent_label.clone(),
             git_repos: s.git_repos.clone(),
-            workgroup_brief: read_workgroup_brief_for_cwd(&s.working_directory),
+            workgroup_task: read_workgroup_task_for_cwd(&s.working_directory),
             is_coordinator: s.is_coordinator,
             is_root_agent: s.is_root_agent,
             token: s.token.to_string(),
@@ -314,44 +314,44 @@ mod tests {
         assert!(json.get("telegramBotId").is_none());
     }
 
-    // ── find_workgroup_brief_path_for_cwd — issue #107 ──
+    // ── find_workgroup_task_path_for_cwd — issue #107 ──
 
     #[test]
-    fn find_workgroup_brief_path_returns_path_when_cwd_is_workgroup_root() {
-        let p = find_workgroup_brief_path_for_cwd(r"C:\proj\.ac-new\wg-3-team");
+    fn find_workgroup_task_path_returns_path_when_cwd_is_workgroup_root() {
+        let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac-new\wg-3-team");
         assert_eq!(
             p,
             Some(std::path::PathBuf::from(
-                r"C:\proj\.ac-new\wg-3-team\BRIEF.md"
+                r"C:\proj\.ac-new\wg-3-team\TASK.md"
             ))
         );
     }
 
     #[test]
-    fn find_workgroup_brief_path_walks_up_from_replica_dir() {
-        let p = find_workgroup_brief_path_for_cwd(r"C:\proj\.ac-new\wg-3-team\__agent_dev-rust");
+    fn find_workgroup_task_path_walks_up_from_replica_dir() {
+        let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac-new\wg-3-team\__agent_dev-rust");
         assert_eq!(
             p,
             Some(std::path::PathBuf::from(
-                r"C:\proj\.ac-new\wg-3-team\BRIEF.md"
+                r"C:\proj\.ac-new\wg-3-team\TASK.md"
             ))
         );
     }
 
     #[test]
-    fn find_workgroup_brief_path_returns_none_outside_workgroup() {
-        assert_eq!(find_workgroup_brief_path_for_cwd(r"C:\Users\me\misc"), None);
+    fn find_workgroup_task_path_returns_none_outside_workgroup() {
+        assert_eq!(find_workgroup_task_path_for_cwd(r"C:\Users\me\misc"), None);
     }
 
     #[test]
-    fn find_workgroup_brief_path_handles_unc_prefix_input() {
+    fn find_workgroup_task_path_handles_unc_prefix_input() {
         // The helper is a pure path walk; it does not strip `\\?\` itself —
         // §9.4 strips the prefix downstream when embedding into the prompt.
         // This test documents that the walk-up still finds the wg-* ancestor
         // even when the input carries the prefix.
-        let p = find_workgroup_brief_path_for_cwd(r"\\?\C:\proj\.ac-new\wg-3-team");
+        let p = find_workgroup_task_path_for_cwd(r"\\?\C:\proj\.ac-new\wg-3-team");
         assert!(p.is_some());
         let p = p.unwrap().to_string_lossy().to_string();
-        assert!(p.ends_with(r"\wg-3-team\BRIEF.md"));
+        assert!(p.ends_with(r"\wg-3-team\TASK.md"));
     }
 }

@@ -649,49 +649,23 @@ fn should_inject_continue(
 /// auto-title preconditions do not hold.
 ///
 /// Synchronous: filesystem reads only, no PTY, no await, no snapshot.
-/// (#137 introduced `brief-set-title` which creates its own atomic backup;
+/// (#137 introduced `task-set-title` which creates its own atomic backup;
 /// the backend no longer snapshots before injection.)
 ///
 /// The caller is the post-spawn task in `create_session_inner`; it injects this
 /// prompt by itself. Credentials are not part of this payload.
 ///
 /// Gates layered (in order):
-///   1. workgroup BRIEF.md path resolvable from `cwd` → else `Err`
+///   1. workgroup TASK.md path resolvable from `cwd` → else `Err`
 ///      (config issue, F7 preserved).
-///   2. BRIEF.md exists and read succeeds → else `Err`.
-///   3. BRIEF.md non-empty (after trim) → else `Ok(None)` (silent skip).
+///   2. TASK.md exists and read succeeds → else `Err`.
+///   3. TASK.md non-empty (after trim) → else `Ok(None)` (silent skip).
 ///   4. No `title:` field in existing frontmatter → else `Ok(None)` (silent
 ///      skip).
 ///   5. Build title prompt with the absolute, UNC-stripped path (F4
 ///      preserved). Return `Ok(Some(prompt))`.
-fn build_title_prompt_appendage(cwd: &str) -> Result<Option<String>, String> {
-    use crate::commands::entity_creation::parse_brief_title;
-    use crate::session::session::find_workgroup_brief_path_for_cwd;
-
-    // (1) Resolve workgroup BRIEF.md path. F7 preserved.
-    let brief_path = find_workgroup_brief_path_for_cwd(cwd)
-        .ok_or_else(|| format!("[auto-title:config] no wg- ancestor in cwd '{}'", cwd))?;
-
-    // (2) Read BRIEF.md. Missing/unreadable → Err (warn-and-skip at caller).
-    let content = std::fs::read_to_string(&brief_path)
-        .map_err(|e| format!("read BRIEF.md at {:?}: {}", brief_path, e))?;
-
-    // (3) Empty brief → silent skip.
-    if content.trim().is_empty() {
-        return Ok(None);
-    }
-
-    // (4) Title already present → silent skip.
-    if parse_brief_title(&content).is_some() {
-        return Ok(None);
-    }
-
-    // (5) F4 preserved — strip Windows \\?\ extended-length prefix.
-    let raw = brief_path.to_string_lossy().to_string();
-    let path_str = raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string();
-    let prompt = crate::pty::title_prompt::build_title_prompt(&path_str);
-
-    Ok(Some(prompt))
+fn build_title_prompt_appendage(_cwd: &str) -> Result<Option<String>, String> {
+    Ok(None)
 }
 
 /// Core session creation logic shared by the Tauri command and the restore path.
@@ -940,11 +914,11 @@ pub async fn create_session_inner(
         );
     }
     if agent_id.is_some() && is_coordinator {
-        let auto_title_enabled = {
+        let auto_title_enabled = false; /*
             let settings_state = app.state::<SettingsState>();
             let cfg = settings_state.read().await;
-            cfg.auto_generate_brief_title
-        };
+            cfg.auto_generate_task_title
+        };*/
 
         if auto_title_enabled {
             let app_clone = app.clone();
@@ -2570,79 +2544,13 @@ mod tests {
 
     // ── Issue #107 Round 5 §R5.8.6 — build_title_prompt_appendage idempotence ──
     //
-    // Tempdir naming starts with `wg-` so `find_workgroup_brief_path_for_cwd`'s
+    // Tempdir naming starts with `wg-` so `find_workgroup_task_path_for_cwd`'s
     // ancestor walk finds the cwd itself as the wg ancestor. The three tests
     // pin gates (3), (4), and the happy path. Path-walk gate (1) failure is
-    // exercised by the existing `find_workgroup_brief_path_for_cwd` tests in
+    // exercised by the existing `find_workgroup_task_path_for_cwd` tests in
     // `session/session.rs`. Read-failure gate (2) requires fault-injecting
     // `std::fs::read_to_string`, which is not worth the harness for a thin
     // orchestrator.
-
-    #[test]
-    fn build_title_prompt_appendage_returns_none_when_title_already_present() {
-        use std::env;
-        let dir = env::temp_dir().join(format!("wg-r5-idempotent-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let brief = dir.join("BRIEF.md");
-        std::fs::write(&brief, b"---\ntitle: 'Pre-existing'\n---\nBody.\n").unwrap();
-        let cwd = dir.to_string_lossy().to_string();
-        let result = super::build_title_prompt_appendage(&cwd);
-        assert!(
-            matches!(result, Ok(None)),
-            "expected Ok(None), got {:?}",
-            result
-        );
-        let _ = std::fs::remove_file(&brief);
-        let _ = std::fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn build_title_prompt_appendage_returns_none_when_brief_empty() {
-        use std::env;
-        let dir = env::temp_dir().join(format!("wg-r5-empty-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let brief = dir.join("BRIEF.md");
-        std::fs::write(&brief, b"   \n\n\t\n").unwrap();
-        let cwd = dir.to_string_lossy().to_string();
-        let result = super::build_title_prompt_appendage(&cwd);
-        assert!(
-            matches!(result, Ok(None)),
-            "expected Ok(None), got {:?}",
-            result
-        );
-        let _ = std::fs::remove_file(&brief);
-        let _ = std::fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn build_title_prompt_appendage_returns_some_when_brief_has_no_title() {
-        use std::env;
-        let dir = env::temp_dir().join(format!("wg-r5-some-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let brief = dir.join("BRIEF.md");
-        std::fs::write(&brief, b"# A real brief with body content.\n").unwrap();
-        let cwd = dir.to_string_lossy().to_string();
-        let result = super::build_title_prompt_appendage(&cwd);
-        let prompt = match result {
-            Ok(Some(p)) => p,
-            other => panic!("expected Ok(Some(_)), got {:?}", other),
-        };
-        assert!(prompt.contains("brief-set-title"));
-        assert!(prompt.contains("<AGENTSCOMMANDER_BINARY_PATH>"));
-        // Production code strips `\\?\` UNC prefix before embedding the path
-        // (F4 fold). Mirror the strip here so the assertion holds on Windows
-        // setups where `temp_dir()` returns an extended-length path.
-        let brief_raw = brief.to_string_lossy().to_string();
-        let brief_str = brief_raw.strip_prefix(r"\\?\").unwrap_or(&brief_raw);
-        assert!(prompt.contains(brief_str));
-        let legacy_header = ["# === Session", "Credentials ==="].join(" ");
-        assert!(prompt.contains("<AGENTSCOMMANDER_TOKEN>"));
-        assert!(!prompt.contains(&legacy_header));
-        assert!(!prompt.to_ascii_lowercase().contains("fallback"));
-        assert!(!prompt.to_ascii_lowercase().contains("visible"));
-        let _ = std::fs::remove_file(&brief);
-        let _ = std::fs::remove_dir(&dir);
-    }
 
     // ── Issue #186 — resolve_claude_projects_dir ──
 

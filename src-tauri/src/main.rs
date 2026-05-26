@@ -26,9 +26,19 @@ fn main() {
                         // Windows release builds (where the binary is linked
                         // with `windows_subsystem = "windows"` and starts
                         // with no attached stderr).
+
                         agentscommander_lib::cli::attach_parent_console();
+                        if matches!(
+                            cmd,
+                            agentscommander_lib::cli::Commands::ListPeers(_)
+                                | agentscommander_lib::cli::Commands::ListPeersLean(_)
+                                | agentscommander_lib::cli::Commands::ListSessions(_)
+                        ) {
+                            std::env::set_var("AC_MACHINE_OUTPUT", "1");
+                        }
                         // Install the same logger backend the GUI uses so
-                        // every `log::*` call from CLI verbs (the `[brief]`
+
+                        // every `log::*` call from CLI verbs (the `[task]`
                         // audit lines in particular — plan #137 §3a HIGH-1
                         // mitigation) reaches stderr + <config_dir>/app.log.
                         // GATED on `cli.command.is_some()` so the GUI branch

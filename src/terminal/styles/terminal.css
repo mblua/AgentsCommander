@@ -192,7 +192,7 @@ html.light-theme .titlebar-version {
 }
 
 /* Terminal Context Panels */
-.workgroup-brief-panel,
+.workgroup-task-panel,
 .last-prompt-panel {
   padding: var(--spacing-sm) var(--spacing-md);
   background: rgba(255, 255, 255, 0.02);
@@ -203,18 +203,18 @@ html.light-theme .titlebar-version {
   overflow-y: auto;
 }
 
-.workgroup-brief-panel::-webkit-scrollbar,
+.workgroup-task-panel::-webkit-scrollbar,
 .last-prompt-panel::-webkit-scrollbar {
   width: 3px;
 }
 
-.workgroup-brief-panel::-webkit-scrollbar-thumb,
+.workgroup-task-panel::-webkit-scrollbar-thumb,
 .last-prompt-panel::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.08);
   border-radius: 2px;
 }
 
-.workgroup-brief-label,
+.workgroup-task-label,
 .last-prompt-label {
   font-size: 9px;
   font-weight: 600;
@@ -224,7 +224,7 @@ html.light-theme .titlebar-version {
   text-transform: uppercase;
 }
 
-.workgroup-brief-text,
+.workgroup-task-text,
 .last-prompt-text {
   font-size: var(--font-size-sm);
   color: var(--terminal-fg);
@@ -236,7 +236,7 @@ html.light-theme .titlebar-version {
 }
 
 /* Issue #162 — BRIEF panel action buttons + inline title editor */
-.workgroup-brief-header {
+.workgroup-task-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -244,7 +244,7 @@ html.light-theme .titlebar-version {
   margin-bottom: 4px;
 }
 
-.workgroup-brief-header .workgroup-brief-label {
+.workgroup-task-header .workgroup-task-label {
   margin-bottom: 0;
   flex: 1;
   min-width: 0;
@@ -253,7 +253,7 @@ html.light-theme .titlebar-version {
   white-space: nowrap;
 }
 
-.workgroup-brief-title {
+.workgroup-task-title {
   font-weight: 700;
   text-transform: none;
   letter-spacing: normal;
@@ -261,12 +261,12 @@ html.light-theme .titlebar-version {
   color: var(--terminal-fg);
 }
 
-.workgroup-brief-actions {
+.workgroup-task-actions {
   display: flex;
   gap: 4px;
 }
 
-.workgroup-brief-action {
+.workgroup-task-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -281,22 +281,22 @@ html.light-theme .titlebar-version {
   line-height: 1;
   cursor: pointer;
 }
-.workgroup-brief-action:hover:not(:disabled) {
+.workgroup-task-action:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);
   color: var(--terminal-fg);
 }
-.workgroup-brief-action:disabled {
+.workgroup-task-action:disabled {
   opacity: 0.35;
   cursor: not-allowed;
 }
 
-.workgroup-brief-title-edit {
+.workgroup-task-title-edit {
   display: flex;
   align-items: center;
   gap: 4px;
   margin-bottom: 6px;
 }
-.workgroup-brief-title-input {
+.workgroup-task-title-input {
   flex: 1;
   min-width: 0;
   padding: 2px 6px;
@@ -307,7 +307,7 @@ html.light-theme .titlebar-version {
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
   font-size: var(--font-size-sm);
 }
-.workgroup-brief-title-btn {
+.workgroup-task-title-btn {
   padding: 2px 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 3px;
@@ -316,36 +316,36 @@ html.light-theme .titlebar-version {
   font-size: 11px;
   cursor: pointer;
 }
-.workgroup-brief-title-btn:hover:not(:disabled) {
+.workgroup-task-title-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.10);
 }
-.workgroup-brief-title-btn:disabled {
+.workgroup-task-title-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.workgroup-brief-error {
+.workgroup-task-error {
   font-size: 11px;
   color: #ff6b6b;
   margin-bottom: 4px;
 }
 
 /* Light-theme overrides for #162 controls */
-html.light-theme .workgroup-brief-action {
+html.light-theme .workgroup-task-action {
   border-color: rgba(0, 0, 0, 0.10);
 }
-html.light-theme .workgroup-brief-action:hover:not(:disabled) {
+html.light-theme .workgroup-task-action:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.05);
 }
-html.light-theme .workgroup-brief-title-input {
+html.light-theme .workgroup-task-title-input {
   background: rgba(255, 255, 255, 0.6);
   border-color: rgba(0, 0, 0, 0.12);
 }
-html.light-theme .workgroup-brief-title-btn {
+html.light-theme .workgroup-task-title-btn {
   background: rgba(0, 0, 0, 0.04);
   border-color: rgba(0, 0, 0, 0.10);
 }
-html.light-theme .workgroup-brief-title-btn:hover:not(:disabled) {
+html.light-theme .workgroup-task-title-btn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.10);
 }
 
@@ -448,13 +448,13 @@ html.light-theme .quit-confirm-btn-quit:focus-visible {
 }
 
 /* Light-theme overrides for context panels */
-html.light-theme .workgroup-brief-panel,
+html.light-theme .workgroup-task-panel,
 html.light-theme .last-prompt-panel {
   background: rgba(0, 0, 0, 0.03);
   border-bottom-color: rgba(0, 0, 0, 0.08);
 }
 
-html.light-theme .workgroup-brief-panel::-webkit-scrollbar-thumb,
+html.light-theme .workgroup-task-panel::-webkit-scrollbar-thumb,
 html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.12);
 }

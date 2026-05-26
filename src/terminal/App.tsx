@@ -9,7 +9,7 @@ import {
   onSessionDestroyed,
   onSessionRenamed,
   onThemeChanged,
-  onWorkgroupBriefUpdated,
+  onWorkgroupTaskUpdated,
 } from "../shared/ipc";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
 import { initZoom } from "../shared/zoom";
@@ -18,7 +18,7 @@ import { settingsStore } from "../shared/stores/settings";
 import { terminalStore } from "./stores/terminal";
 import { homeStore } from "../main/stores/home";
 import Titlebar from "./components/Titlebar";
-import WorkgroupBrief from "./components/WorkgroupBrief";
+import WorkgroupTask from "./components/WorkgroupTask";
 import LastPrompt from "./components/LastPrompt";
 import TerminalView from "./components/TerminalView";
 import StatusBar from "./components/StatusBar";
@@ -58,7 +58,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       const sessions = await SessionAPI.list();
       const session = sessions.find((s) => s.id === props.lockedSessionId);
       if (session) {
-        terminalStore.setActiveSession(session.id, session.name, session.shell, session.effectiveShellArgs, session.workingDirectory, session.workgroupBrief ?? null);
+        terminalStore.setActiveSession(session.id, session.name, session.shell, session.effectiveShellArgs, session.workingDirectory, session.workgroupTask ?? null);
       } else {
         // Session no longer exists, close this window
         terminalStore.setActiveSession(null, "", "", null, "", null);
@@ -72,7 +72,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       const sessions = await SessionAPI.list();
       const active = sessions.find((s) => s.id === activeId);
       if (active) {
-        terminalStore.setActiveSession(active.id, active.name, active.shell, active.effectiveShellArgs, active.workingDirectory, active.workgroupBrief ?? null);
+        terminalStore.setActiveSession(active.id, active.name, active.shell, active.effectiveShellArgs, active.workingDirectory, active.workgroupTask ?? null);
       }
     } else {
       terminalStore.setActiveSession(null, "", "", null, "", null);
@@ -168,7 +168,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
               session.shell,
               session.effectiveShellArgs,
               session.workingDirectory,
-              session.workgroupBrief ?? null
+              session.workgroupTask ?? null
             );
           }
         })
@@ -183,7 +183,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
               session.shell,
               session.effectiveShellArgs,
               session.workingDirectory,
-              session.workgroupBrief ?? null
+              session.workgroupTask ?? null
             );
           }
         })
@@ -207,13 +207,13 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       return s.replace(/\\/g, "/").toLowerCase();
     };
     unlisteners.push(
-      await onWorkgroupBriefUpdated((data) => {
+      await onWorkgroupTaskUpdated((data) => {
         // #163: Poller (ac_discovery.rs) provides sessionIds
         if (data.sessionIds) {
           const targetId = props.lockedSessionId ?? terminalStore.activeSessionId;       
           if (!targetId) return;
           if (!data.sessionIds.includes(targetId)) return;
-          terminalStore.setActiveWorkgroupBrief(data.brief);
+          terminalStore.setActiveWorkgroupTask(data.task);
         } 
         // #162: Manual edits (brief.rs) provide workgroupRoot
         else if (data.workgroupRoot || data.workgroupPath) {
@@ -223,7 +223,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
           const cwdNorm = normalizePathForCompare(cwd);
           const wgNorm = normalizePathForCompare(wgRoot);
           if (cwdNorm === wgNorm || cwdNorm.startsWith(wgNorm + "/")) {
-            terminalStore.setActiveWorkgroupBrief(data.brief);
+            terminalStore.setActiveWorkgroupTask(data.task);
           }
         }
       })
@@ -256,7 +256,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       <Show when={!props.embedded}>
         <Titlebar detached={props.detached} lockedSessionId={props.lockedSessionId} />
       </Show>
-      <WorkgroupBrief />
+      <WorkgroupTask />
       <LastPrompt sessionId={props.lockedSessionId} />
       <div class="terminal-content-area">
         <Show
@@ -283,7 +283,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
         </Show>
       </div>
       <StatusBar detached={props.detached} />
-      {/* Home overlay (issue #164). Sibling of WorkgroupBrief/LastPrompt and
+      {/* Home overlay (issue #164). Sibling of WorkgroupTask/LastPrompt and
           .terminal-content-area inside .terminal-layout (the positioned
           containing block). Painted on top so it visually covers BRIEF /
           LAST PROMPT and the terminal area, but those panels remain mounted

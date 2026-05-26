@@ -1,14 +1,14 @@
-//! Plan #137 follow-up — pin runtime emission of `[brief]` audit log lines
+//! Plan #137 follow-up — pin runtime emission of `[task]` audit log lines
 //! from the CLI path.
 //!
 //! Pre-fix bug: `main.rs` jumped straight into `cli::handle_cli` without
-//! initializing any `log` backend, so every `log::info!("[brief] ...")` call
-//! in `brief_set_title` / `brief_append_body` was silently dropped. Plan #137
+//! initializing any `log` backend, so every `log::info!("[task] ...")` call
+//! in `task_set_title` / `task_append_body` was silently dropped. Plan #137
 //! §3a HIGH-1 risk acceptance was conditional on those lines being grep-able
 //! at `<config_dir>/app.log`.
 //!
 //! This test spawns the actual binary as a subprocess, exercises the happy
-//! path of `brief-set-title`, and asserts that a `[brief] set-title:` line
+//! path of `task-set-title`, and asserts that a `[task] set-title:` line
 //! lands in the file sink. Each invocation gets a freshly-copied binary in a
 //! per-test tmp dir so `config_dir()` (which keys off `current_exe()`)
 //! resolves to an isolated `<tmp>/.<stem>/` and cannot collide with sibling
@@ -72,8 +72,8 @@ fn make_wg_fixture(tmp: &Path) -> PathBuf {
 }
 
 #[test]
-fn brief_set_title_audit_line_reaches_file_sink() {
-    let tmp = Tmp::new("brief-logger");
+fn task_set_title_audit_line_reaches_file_sink() {
+    let tmp = Tmp::new("task-logger");
     let bin = copy_binary_into(tmp.path());
 
     let stem = bin
@@ -93,7 +93,7 @@ fn brief_set_title_audit_line_reaches_file_sink() {
 
     let out = Command::new(&bin)
         .args([
-            "brief-set-title",
+            "task-set-title",
             "--token",
             &master,
             "--root",
@@ -104,7 +104,7 @@ fn brief_set_title_audit_line_reaches_file_sink() {
         // Pin RUST_LOG so this assertion does not depend on the parent
         // (`cargo test`) shell's env. Without this, running
         // `RUST_LOG=warn cargo test --tests` filters out the `info!`
-        // audit line and the `[brief] set-title:` check below
+        // audit line and the `[task] set-title:` check below
         // false-fails — production behavior is unchanged.
         .env("RUST_LOG", "agentscommander=info")
         .output()
@@ -112,7 +112,7 @@ fn brief_set_title_audit_line_reaches_file_sink() {
 
     assert!(
         out.status.success(),
-        "brief-set-title exited non-zero ({:?})\nstdout: {}\nstderr: {}",
+        "task-set-title exited non-zero ({:?})\nstdout: {}\nstderr: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
@@ -126,24 +126,24 @@ fn brief_set_title_audit_line_reaches_file_sink() {
     // it). If this regresses, the inherited risk acceptance is built on a
     // non-functional foundation again.
     assert!(
-        log_contents.contains("[brief] set-title:"),
-        "app.log at {} did not contain a [brief] set-title line.\nstderr was:\n{}\nfile contents:\n{}",
+        log_contents.contains("[task] set-title:"),
+        "app.log at {} did not contain a [task] set-title line.\nstderr was:\n{}\nfile contents:\n{}",
         log_path.display(),
         String::from_utf8_lossy(&out.stderr),
         log_contents,
     );
 
-    // Cross-check: the BRIEF.md write actually happened, so the log line
+    // Cross-check: the TASK.md write actually happened, so the log line
     // we observed is from the live happy path (not a zombie line cached on
     // disk from a prior test run — we copied to a fresh tmp dir, but be
     // defensive about future test refactors).
-    let brief_path = agent_root
+    let task_path = agent_root
         .parent()
         .expect("agent root has wg parent")
-        .join("BRIEF.md");
+        .join("TASK.md");
     assert!(
-        brief_path.exists(),
-        "BRIEF.md was not created at {} — log line may be from an unrelated path",
-        brief_path.display(),
+        task_path.exists(),
+        "TASK.md was not created at {} — log line may be from an unrelated path",
+        task_path.display(),
     );
 }

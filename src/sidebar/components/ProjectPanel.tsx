@@ -1,7 +1,7 @@
 import { Component, For, Show, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, onAcWorkgroupBriefUpdated, emitOpenSettings } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, onAcWorkgroupTaskUpdated, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
@@ -79,20 +79,20 @@ function getActiveReplicasForWg(wg: AcWorkgroup): AcAgentReplica[] {
 }
 
 const ProjectPanel: Component = () => {
-  // Listen for replica branch and workgroup BRIEF.md updates from the discovery watcher.
+  // Listen for replica branch and workgroup TASK.md updates from the discovery watcher.
   let unlistenBranch: (() => void) | null = null;
-  let unlistenWgBrief: (() => void) | null = null;
+  let unlistenWgTask: (() => void) | null = null;
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
       projectStore.updateReplicaBranch(data.replicaPath, data.branch);
     });
-    unlistenWgBrief = await onAcWorkgroupBriefUpdated((data) => {
-      projectStore.updateWorkgroupBrief(data.workgroupPath, data.brief, data.briefTitle);
+    unlistenWgTask = await onAcWorkgroupTaskUpdated((data) => {
+      projectStore.updateWorkgroupTask(data.workgroupPath, data.task, data.taskTitle);
     });
   });
   onCleanup(() => {
     unlistenBranch?.();
-    unlistenWgBrief?.();
+    unlistenWgTask?.();
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
@@ -477,7 +477,7 @@ const ProjectPanel: Component = () => {
           wg: AcWorkgroup,
           extraBadge?: string,
           runningPeers?: () => AcAgentReplica[],
-          briefTitle?: string
+          taskTitle?: string
         ) => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
@@ -572,8 +572,8 @@ const ProjectPanel: Component = () => {
             >
               <div class={`session-item-status ${dotClass()}`} />
               <div class="replica-item-info">
-                <Show when={briefTitle}>
-                  <span class="coord-brief-title" title={briefTitle}>{briefTitle}</span>
+                <Show when={taskTitle}>
+                  <span class="coord-task-title" title={taskTitle}>{taskTitle}</span>
                 </Show>
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                 <div class="ac-discovery-badges">
@@ -786,7 +786,7 @@ const ProjectPanel: Component = () => {
                                 return dot === "running" || dot === "active";
                               })
                             );
-                            return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.briefTitle);
+                            return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.taskTitle);
                           }}
                         </For>
                       </div>
@@ -860,8 +860,8 @@ const ProjectPanel: Component = () => {
                                     </span>
                                     <div class="ac-wg-header-text">
                                       <span class="ac-wg-name">{wg.name}</span>
-                                      <Show when={wg.briefTitle?.trim() || stripFrontmatter(wg.brief ?? "").trim()}>
-                                        {(text) => <span class="ac-wg-brief">{text()}</span>}
+                                      <Show when={wg.taskTitle?.trim() || stripFrontmatter(wg.taskTitle ?? "").trim()}>
+                                        {(text) => <span class="ac-wg-task">{text()}</span>}
                                       </Show>
                                     </div>
                                   </div>

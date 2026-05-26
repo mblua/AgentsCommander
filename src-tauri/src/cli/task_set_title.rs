@@ -1,5 +1,5 @@
-//! `brief-set-title` CLI verb — set the YAML-frontmatter `title:` field of
-//! the workgroup BRIEF.md.
+//! `task-set-title` CLI verb — set the YAML-frontmatter `title:` field of
+//! the workgroup TASK.md.
 //!
 //! Trust model: caller honestly reports their own `--root` and `--token`.
 //! The same model is inherited from `send`/`close-session` and has a known
@@ -11,20 +11,20 @@
 use clap::Args;
 use std::path::Path;
 
-use super::brief_ops::{self, BriefOp, EditOutcome};
+use super::task_ops::{self, TaskOp, EditOutcome};
 use super::send::agent_name_from_root;
 
 #[derive(Args)]
 #[command(after_help = "\
-AUTHORIZATION: Only coordinators of any team in the caller's project can edit BRIEF.md. \
+AUTHORIZATION: Only coordinators of any team in the caller's project can edit TASK.md. \
 The master/root token bypasses this check. The verb writes ONLY to \
-<workgroup-root>/BRIEF.md and its *.bak.md siblings.\n\n\
+<workgroup-root>/TASK.md and its *.bak.md siblings.\n\n\
 INVARIANTS: A timestamped backup is created on every successful write that had a \
 prior file. Concurrent writes are serialized via an advisory lockfile (5s timeout). \
 External edits between our read and our write are detected and the verb aborts.\n\n\
 TITLE INPUT: --title is a single-line string. Embedded \\n / \\r / NUL / other \
 control characters (except tab) are rejected.")]
-pub struct BriefSetTitleArgs {
+pub struct TaskSetTitleArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
@@ -39,7 +39,7 @@ pub struct BriefSetTitleArgs {
     pub title: String,
 }
 
-pub fn execute(args: BriefSetTitleArgs) -> i32 {
+pub fn execute(args: TaskSetTitleArgs) -> i32 {
     let root = match args.root {
         Some(ref r) => r.clone(),
         None => {
@@ -90,7 +90,7 @@ pub fn execute(args: BriefSetTitleArgs) -> i32 {
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
                 "Error: authorization denied — '{}' is not a coordinator of any team. \
-                 Only coordinators can edit BRIEF.md.",
+                 Only coordinators can edit TASK.md.",
                 sender
             );
             return 1;
@@ -103,46 +103,46 @@ pub fn execute(args: BriefSetTitleArgs) -> i32 {
         Err(_) => {
             eprintln!(
                 "Error: --root is not under a wg-<N>-* ancestor; \
-                 cannot locate the workgroup BRIEF.md."
+                 cannot locate the workgroup TASK.md."
             );
             return 1;
         }
     };
 
-    // Hand off to brief_ops::perform.
+    // Hand off to task_ops::perform.
     // NIT-2: include `pid={}` so an auditor can cross-reference the AC process
     // tree. `sender=` and `wg=` are both caller-derived (--root) and a forged
     // --root produces a forged-but-consistent line; pid disambiguates.
-    match brief_ops::perform(&wg_root, BriefOp::SetTitle(args.title.clone())) {
+    match task_ops::perform(&wg_root, TaskOp::SetTitle(args.title.clone())) {
         Ok(EditOutcome::Wrote { backup: Some(bp) }) => {
             log::info!(
-                "[brief] set-title: sender={} wg={} pid={} backup={}",
+                "[task] set-title: sender={} wg={} pid={} backup={}",
                 sender,
                 wg_root.display(),
                 std::process::id(),
                 bp.display()
             );
-            crate::cli_println!("BRIEF.md title updated; backup: {}", bp.display());
+            crate::cli_println!("TASK.md title updated; backup: {}", bp.display());
             0
         }
         Ok(EditOutcome::Wrote { backup: None }) => {
             log::info!(
-                "[brief] set-title: sender={} wg={} pid={} backup=<no prior file>",
+                "[task] set-title: sender={} wg={} pid={} backup=<no prior file>",
                 sender,
                 wg_root.display(),
                 std::process::id()
             );
-            crate::cli_println!("BRIEF.md created; no prior content to back up");
+            crate::cli_println!("TASK.md created; no prior content to back up");
             0
         }
         Ok(EditOutcome::NoOp) => {
             log::info!(
-                "[brief] set-title (no-op): sender={} wg={} pid={} (title value already matches)",
+                "[task] set-title (no-op): sender={} wg={} pid={} (title value already matches)",
                 sender,
                 wg_root.display(),
                 std::process::id()
             );
-            crate::cli_println!("BRIEF.md unchanged (title value already matches)");
+            crate::cli_println!("TASK.md unchanged (title value already matches)");
             0
         }
         Err(e) => {
@@ -157,7 +157,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// Auto-cleaned temp dir; mirrors `cli::brief_ops::tests::FixtureRoot`.
+    /// Auto-cleaned temp dir; mirrors `cli::task_ops::tests::FixtureRoot`.
     struct FixtureRoot(PathBuf);
     impl Drop for FixtureRoot {
         fn drop(&mut self) {
@@ -199,8 +199,8 @@ mod tests {
         agent_root
     }
 
-    fn args_for(token: Option<String>, root: Option<String>, title: &str) -> BriefSetTitleArgs {
-        BriefSetTitleArgs {
+    fn args_for(token: Option<String>, root: Option<String>, title: &str) -> TaskSetTitleArgs {
+        TaskSetTitleArgs {
             token,
             root,
             title: title.to_string(),
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn set_title_rejects_non_coordinator_with_uuid_token() {
-        let fix = FixtureRoot::new("brief-i3");
+        let fix = FixtureRoot::new("task-i3");
         let agent_root = make_wg_fixture(fix.path());
         // No team config exists — discover_teams returns empty, so any caller
         // (root-token aside) is rejected as non-coordinator.
@@ -228,16 +228,16 @@ mod tests {
         );
         let code = execute(args);
         assert_eq!(code, 1);
-        // BRIEF.md was not created.
+        // TASK.md was not created.
         let wg_root = agent_root.parent().unwrap();
-        assert!(!wg_root.join("BRIEF.md").exists());
+        assert!(!wg_root.join("TASK.md").exists());
     }
 
     // ── I5: invalid token rejected ──────────────────────────────────────
 
     #[test]
     fn set_title_rejects_invalid_token() {
-        let fix = FixtureRoot::new("brief-i5");
+        let fix = FixtureRoot::new("task-i5");
         let agent_root = make_wg_fixture(fix.path());
         let args = args_for(
             Some("notauuid".into()),
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn set_title_rejects_unresolvable_root() {
-        let fix = FixtureRoot::new("brief-i6");
+        let fix = FixtureRoot::new("task-i6");
         // Path with no wg-<N>-* ancestor.
         let agent_root = fix.path().join("no-wg-here");
         std::fs::create_dir_all(&agent_root).unwrap();
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn set_title_rejects_embedded_newlines() {
-        let fix = FixtureRoot::new("brief-i17");
+        let fix = FixtureRoot::new("task-i17");
         let agent_root = make_wg_fixture(fix.path());
         let token = uuid::Uuid::new_v4().to_string();
         let args = args_for(
@@ -280,14 +280,14 @@ mod tests {
         );
         let code = execute(args);
         assert_eq!(code, 1);
-        // BRIEF.md untouched.
+        // TASK.md untouched.
         let wg_root = agent_root.parent().unwrap();
-        assert!(!wg_root.join("BRIEF.md").exists());
+        assert!(!wg_root.join("TASK.md").exists());
     }
 
     #[test]
     fn set_title_rejects_nul_byte_in_title() {
-        let fix = FixtureRoot::new("brief-i17b");
+        let fix = FixtureRoot::new("task-i17b");
         let agent_root = make_wg_fixture(fix.path());
         let token = uuid::Uuid::new_v4().to_string();
         let args = args_for(
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn set_title_rejects_when_root_is_workgroup_root_directly() {
-        let fix = FixtureRoot::new("brief-i18");
+        let fix = FixtureRoot::new("task-i18");
         let _agent_root = make_wg_fixture(fix.path());
         let wg_root = fix.path().join("proj").join(".ac-new").join("wg-1-test");
         // Coordinator running directly from the WG dir (no __agent_*) — the
@@ -325,7 +325,7 @@ mod tests {
         use clap::CommandFactory;
         let help = crate::cli::Cli::command().render_help().to_string();
         assert!(
-            help.contains("brief-set-title"),
+            help.contains("task-set-title"),
             "help missing verb name: {}",
             help
         );

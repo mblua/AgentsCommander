@@ -195,7 +195,7 @@ mod tests {
     use crate::config::settings::AppSettings;
     use std::path::Path;
 
-    /// Auto-cleaned temp dir; mirrors `cli::brief_ops::tests::FixtureRoot`.
+    /// Auto-cleaned temp dir; mirrors `cli::task_ops::tests::FixtureRoot`.
     struct FixtureRoot(PathBuf);
     impl Drop for FixtureRoot {
         fn drop(&mut self) {

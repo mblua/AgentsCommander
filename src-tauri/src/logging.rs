@@ -4,7 +4,7 @@
 //! call [`init_logger`] so every `log::*` invocation reaches a single sink:
 //! stderr **and** `<config_dir>/app.log`. Pre-#137-followup the CLI path
 //! skipped this and silently dropped every `log::*` call (including the
-//! `[brief]` audit lines), undermining plan #137 §3a's HIGH-1 mitigation.
+//! `[task]` audit lines), undermining plan #137 §3a's HIGH-1 mitigation.
 //!
 //! Idempotent via a process-wide [`OnceLock`]: calling more than once is a
 //! silent no-op. Defensive only — current call sites are mutually exclusive
@@ -207,7 +207,9 @@ fn init_logger_inner() {
             .open(&path)
             .ok()
             .map(|f| {
-                eprintln!("[log] file logging to {}", path.display());
+                if std::env::var("AC_MACHINE_OUTPUT").is_err() {
+                    eprintln!("[log] file logging to {}", path.display());
+                }
                 let initial_bytes = f.metadata().map(|m| m.len()).unwrap_or(0);
                 Arc::new(AppLogFile {
                     file: Mutex::new(f),
@@ -270,7 +272,9 @@ fn init_logger_inner() {
                 if should_capture(record) {
                     error_sink().capture(ErrorLogEntry::from_record(ts.to_string(), record));
                 }
-                buf.write_all(line.as_bytes())?;
+                if std::env::var("AC_MACHINE_OUTPUT").is_err() || record.level() == log::Level::Error {
+                    buf.write_all(line.as_bytes())?;
+                }
                 if let Some(ref state) = *log_state {
                     if let Ok(mut f) = state.file.lock() {
                         let _ = f.write_all(line.as_bytes());

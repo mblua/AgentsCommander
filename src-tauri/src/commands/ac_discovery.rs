@@ -111,10 +111,10 @@ pub struct AcWorkgroup {
     pub name: String,
     /// Absolute path to the workgroup directory
     pub path: String,
-    /// First line of BRIEF.md (if exists)
-    pub brief: Option<String>,
+    /// First line of TASK.md (if exists)
+    pub task: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub brief_title: Option<String>,
+    pub task_title: Option<String>,
     /// Replica agents inside this workgroup
     pub agents: Vec<AcAgentReplica>,
     /// Absolute path to the first repo-* directory found (for CWD)
@@ -177,14 +177,14 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
     }
 }
 
-/// Extract the first content line from a BRIEF.md-style markdown file,
+/// Extract the first content line from a TASK.md-style markdown file,
 /// skipping any YAML frontmatter block at the top (delimited by `---` on
 /// its own line). Leading `# ` heading markers are stripped from the result.
 ///
-/// Without this, a BRIEF.md that opens with `---` (frontmatter) sends the
-/// literal `---` to the sidebar — the `wg.brief` field then defeats the
+/// Without this, a TASK.md that opens with `---` (frontmatter) sends the
+/// literal `---` to the sidebar — the `wg.task` field then defeats the
 /// frontend's frontmatter-stripping renderer (issue #161).
-fn extract_brief_first_line(content: &str) -> Option<String> {
+fn extract_task_first_line(content: &str) -> Option<String> {
     // Strip a UTF-8 BOM if present — `read_to_string` does not, and `str::trim`
     // does not treat U+FEFF as whitespace, so without this the frontmatter opener
     // check below sees `\u{FEFF}---` instead of `---` and the heading-strip below
@@ -221,7 +221,7 @@ fn extract_brief_first_line(content: &str) -> Option<String> {
 /// path matches the form `discover_project` produces (which never has the
 /// prefix because it comes from a `read_dir` walk). The codebase already
 /// applies the same strip downstream when embedding paths into the agent
-/// init prompt — see the `find_workgroup_brief_path_handles_unc_prefix_input`
+/// init prompt — see the `find_workgroup_task_path_handles_unc_prefix_input`
 /// test note in `session.rs`.
 fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
@@ -308,19 +308,19 @@ struct StatSentinel {
 }
 
 #[derive(Clone)]
-struct BriefCacheEntry {
+struct TaskCacheEntry {
     sentinel: Option<StatSentinel>,
-    brief: Option<String>,
-    brief_title: Option<String>,
+    task: Option<String>,
+    task_title: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct BriefUpdatedPayload {
+struct TaskUpdatedPayload {
     workgroup_path: String,
-    brief: Option<String>,
+    task: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    brief_title: Option<String>,
+    task_title: Option<String>,
     session_ids: Vec<String>,
 }
 
@@ -339,13 +339,13 @@ pub struct DiscoveryBranchWatcher {
     /// `discovery_cache` so multi-repo replicas re-emit on per-repo drift even when the
     /// single-branch view stays None.
     repos_cache: Mutex<HashMap<String, Vec<SessionRepo>>>,
-    /// Per-workgroup-root cache for Gate C (brief detection). Keyed by the
+    /// Per-workgroup-root cache for Gate C (task detection). Keyed by the
     /// stripped (no `\\?\`) absolute path of the wg-* directory. Bounded
     /// implicitly by the union of (loaded-project replicas, active sessions);
     /// no explicit prune since entries are ~200B each and the upper bound is
     /// the user's project layout. A stale entry for a wg that no longer has
     /// sessions or replicas is harmless: next tick will simply not visit it.
-    brief_cache: Mutex<HashMap<PathBuf, BriefCacheEntry>>,
+    task_cache: Mutex<HashMap<PathBuf, TaskCacheEntry>>,
 }
 
 impl DiscoveryBranchWatcher {
@@ -359,7 +359,7 @@ impl DiscoveryBranchWatcher {
             replicas: Mutex::new(HashMap::new()),
             discovery_cache: Mutex::new(HashMap::new()),
             repos_cache: Mutex::new(HashMap::new()),
-            brief_cache: Mutex::new(HashMap::new()),
+            task_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -623,21 +623,21 @@ impl DiscoveryBranchWatcher {
             }
         }
 
-        // Gate C: BRIEF.md detection. Runs every tick whether or not Gate A/B
+        // Gate C: TASK.md detection. Runs every tick whether or not Gate A/B
         // had work to do — sessions in workgroups whose project is not loaded
         // still need brief updates.
-        self.poll_briefs(&entries).await;
+        self.poll_tasks(&entries).await;
     }
 
-    /// Gate C: detect BRIEF.md changes per unique workgroup root and emit
-    /// `workgroup_brief_updated` on change. Runs on every existing 15s tick
+    /// Gate C: detect TASK.md changes per unique workgroup root and emit
+    /// `workgroup_task_updated` on change. Runs on every existing 15s tick
     /// of `poll()`; no new thread, no new cadence.
-    async fn poll_briefs(&self, entries: &[ReplicaBranchEntry]) {
+    async fn poll_tasks(&self, entries: &[ReplicaBranchEntry]) {
         // Build the union of workgroup roots to watch:
         //   1. Replicas in loaded projects (from `entries`) — covers the
         //      sidebar `ProjectPanel` surface.
         //   2. Active sessions (walked up from cwd via the existing helper)
-        //      — covers the terminal `WorkgroupBrief` surface for sessions
+        //      — covers the terminal `WorkgroupTask` surface for sessions
         //      whose project is NOT loaded.
         // The map's value is the list of session UUIDs that resolve to this
         // wg-root (used for the event payload's `sessionIds`).
@@ -645,7 +645,7 @@ impl DiscoveryBranchWatcher {
 
         for entry in entries {
             // replica.path is `<wg-root>/__agent_<name>` — its parent IS the
-            // wg-root. We do NOT call `find_workgroup_brief_path_for_cwd`
+            // wg-root. We do NOT call `find_workgroup_task_path_for_cwd`
             // here because the parent is already the answer; calling it
             // would re-walk and add no information.
             if let Some(parent) = Path::new(&entry.replica_path).parent() {
@@ -658,10 +658,10 @@ impl DiscoveryBranchWatcher {
             mgr.get_sessions_working_dirs().await
         };
         for (id, cwd) in sessions {
-            if let Some(brief_path) =
-                crate::session::session::find_workgroup_brief_path_for_cwd(&cwd)
+            if let Some(task_path) =
+                crate::session::session::find_workgroup_task_path_for_cwd(&cwd)
             {
-                if let Some(parent) = brief_path.parent() {
+                if let Some(parent) = task_path.parent() {
                     wg_roots
                         .entry(strip_verbatim_prefix(parent))
                         .or_default()
@@ -675,17 +675,17 @@ impl DiscoveryBranchWatcher {
         }
 
         for (wg_root, session_ids) in wg_roots {
-            self.check_workgroup_brief(wg_root, session_ids).await;
+            self.check_workgroup_task(wg_root, session_ids).await;
         }
     }
 
     /// Per-workgroup brief check. Stat short-circuits unchanged files; on
     /// stat-change, reads (with size cap), re-stats (defends against torn
     /// in-place editor saves), and emits if content actually changed.
-    async fn check_workgroup_brief(&self, wg_root: PathBuf, session_ids: Vec<Uuid>) {
-        let brief_path = wg_root.join("BRIEF.md");
+    async fn check_workgroup_task(&self, wg_root: PathBuf, session_ids: Vec<Uuid>) {
+        let task_path = wg_root.join("TASK.md");
 
-        let now_sentinel = std::fs::metadata(&brief_path).ok().map(|m| StatSentinel {
+        let now_sentinel = std::fs::metadata(&task_path).ok().map(|m| StatSentinel {
             len: m.len(),
             mtime: m.modified().ok(),
         });
@@ -693,7 +693,7 @@ impl DiscoveryBranchWatcher {
         // Mutex held only for the duration of the get; released before any I/O.
         // CRITICAL: never hold std::sync::Mutex across an .await — it's not
         // tokio-aware and would deadlock under load.
-        let prev = self.brief_cache.lock().unwrap().get(&wg_root).cloned();
+        let prev = self.task_cache.lock().unwrap().get(&wg_root).cloned();
 
         // Stat-equality short-circuit — the steady-state path. Cost: one
         // metadata() call per wg per tick when nothing has changed.
@@ -703,48 +703,48 @@ impl DiscoveryBranchWatcher {
             }
         }
 
-        // Read with a 256 KiB cap. A bigger BRIEF.md is either accidental
+        // Read with a 256 KiB cap. A bigger TASK.md is either accidental
         // (someone catted /dev/urandom into it) or adversarial; either way,
         // we don't want it streamed through Tauri IPC every 15s. On overflow
         // we treat the file as effectively missing (None); the frontend
         // already handles `brief: null` (panel falls back to "...").
-        let (new_brief, new_title) = read_brief_fields(wg_root.as_path());
+        let (new_task, new_title) = read_task_fields(wg_root.as_path());
 
         // Re-stat. If the file changed during our read window (external
         // editor mid-save — Notepad does CreateFile(OPEN_EXISTING) +
         // SetEndOfFile + write, NOT atomic rename), the read may be torn.
         // Defer to the next tick when the stat has settled.
-        let post_sentinel = std::fs::metadata(&brief_path).ok().map(|m| StatSentinel {
+        let post_sentinel = std::fs::metadata(&task_path).ok().map(|m| StatSentinel {
             len: m.len(),
             mtime: m.modified().ok(),
         });
         if post_sentinel != now_sentinel {
             log::debug!(
                 "[DiscoveryBranchWatcher] stat changed during read of {} (likely torn — external editor mid-save); deferring to next tick",
-                brief_path.display()
+                task_path.display()
             );
             return;
         }
 
         let content_changed = match prev.as_ref() {
-            Some(p) => p.brief != new_brief || p.brief_title != new_title,
+            Some(p) => p.task != new_task || p.task_title != new_title,
             None => true,
         };
 
         // ALWAYS refresh the sentinel (next-tick short-circuit depends on
-        // it). Insert a placeholder `brief = prev.brief` so a failed emit
+        // it). Insert a placeholder `task = prev.task` so a failed emit
         // below leaves the cache holding the previously-shipped content,
         // not the new content — that way the next stat-change retries
         // emission instead of silently accepting the failed state.
         {
-            let mut cache = self.brief_cache.lock().unwrap();
+            let mut cache = self.task_cache.lock().unwrap();
             cache
                 .entry(wg_root.clone())
                 .and_modify(|e| e.sentinel = now_sentinel.clone())
-                .or_insert(BriefCacheEntry {
+                .or_insert(TaskCacheEntry {
                     sentinel: now_sentinel.clone(),
-                    brief: prev.as_ref().and_then(|p| p.brief.clone()),
-                    brief_title: prev.as_ref().and_then(|p| p.brief_title.clone()),
+                    task: prev.as_ref().and_then(|p| p.task.clone()),
+                    task_title: prev.as_ref().and_then(|p| p.task_title.clone()),
                 });
         }
 
@@ -752,29 +752,29 @@ impl DiscoveryBranchWatcher {
             return;
         }
 
-        let payload = BriefUpdatedPayload {
+        let payload = TaskUpdatedPayload {
             workgroup_path: wg_root.to_string_lossy().into_owned(),
-            brief: new_brief.clone(),
-            brief_title: new_title.clone(),
+            task: new_task.clone(),
+            task_title: new_title.clone(),
             session_ids: session_ids.iter().map(|u| u.to_string()).collect(),
         };
-        match self.app_handle.emit("workgroup_brief_updated", payload) {
+        match self.app_handle.emit("workgroup_task_updated", payload) {
             Ok(()) => {
                 // Commit shipped content. Mirrors GitWatcher's emit-then-cache
                 // ordering — invariant: the cache's `brief` field is the last
                 // value the FRONTEND has, not the last value we read.
-                self.brief_cache
+                self.task_cache
                     .lock()
                     .unwrap()
                     .entry(wg_root.clone())
                     .and_modify(|e| {
-                        e.brief = new_brief;
-                        e.brief_title = new_title;
+                        e.task = new_task;
+                        e.task_title = new_title;
                     });
             }
             Err(e) => {
                 log::warn!(
-                    "[DiscoveryBranchWatcher] brief emit failed for {} ({}); leaving cached brief stale so next stat-change retries",
+                    "[DiscoveryBranchWatcher] task emit failed for {} ({}); leaving cached task stale so next stat-change retries",
                     wg_root.display(),
                     e
                 );
@@ -935,7 +935,7 @@ pub async fn discover_ac_agents(
 
                 // Workgroups: wg-*
                 if dir_name.starts_with("wg-") {
-                    let (brief, brief_title) = read_brief_fields(&path);
+                    let (task, task_title) = read_task_fields(&path);
 
                     // Find first repo-* directory for CWD
                     let repo_path = std::fs::read_dir(&path)
@@ -1067,8 +1067,8 @@ pub async fn discover_ac_agents(
                     workgroups.push(AcWorkgroup {
                         name: dir_name.clone(),
                         path: path.to_string_lossy().to_string(),
-                        brief,
-                        brief_title,
+                        task,
+                        task_title,
                         agents: wg_agents,
                         repo_path,
                         team_name: None,
@@ -1367,7 +1367,7 @@ pub async fn discover_project(
 
         // Workgroups: wg-*
         if dir_name.starts_with("wg-") {
-            let (brief, brief_title) = read_brief_fields(&entry_path);
+            let (task, task_title) = read_task_fields(&entry_path);
 
             let repo_path = std::fs::read_dir(&entry_path)
                 .ok()
@@ -1491,8 +1491,8 @@ pub async fn discover_project(
             workgroups.push(AcWorkgroup {
                 name: dir_name.clone(),
                 path: entry_path.to_string_lossy().to_string(),
-                brief,
-                brief_title,
+                task,
+                task_title,
                 agents: wg_agents,
                 repo_path,
                 team_name: None,
@@ -1722,124 +1722,124 @@ pub async fn new_project(
     Ok(result)
 }
 
-type BriefFields = (Option<String>, Option<String>);
+type TaskFields = (Option<String>, Option<String>);
 
-fn read_brief_fields(wg_path: &Path) -> BriefFields {
-    let brief_path = wg_path.join("BRIEF.md");
-    let Ok(content) = std::fs::read_to_string(&brief_path) else {
+fn read_task_fields(wg_path: &Path) -> TaskFields {
+    let task_path = wg_path.join("TASK.md");
+    let Ok(content) = std::fs::read_to_string(&task_path) else {
         return (None, None);
     };
-    let brief = extract_brief_first_line(&content);
-    let brief_title = crate::commands::entity_creation::parse_brief_title(&content);
-    (brief, brief_title)
+    let task = extract_task_first_line(&content);
+    let task_title = crate::commands::entity_creation::parse_task_title(&content);
+    (task, task_title)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── extract_brief_first_line — issue #161 ──
+    // ── extract_task_first_line — issue #161 ──
 
     #[test]
-    fn brief_no_frontmatter_with_heading() {
+    fn task_no_frontmatter_with_heading() {
         assert_eq!(
-            extract_brief_first_line("# My Brief\n\nbody"),
+            extract_task_first_line("# My Brief\n\nbody"),
             Some("My Brief".to_string())
         );
     }
 
     #[test]
-    fn brief_no_frontmatter_plain() {
+    fn task_no_frontmatter_plain() {
         assert_eq!(
-            extract_brief_first_line("My Brief\nbody"),
+            extract_task_first_line("My Brief\nbody"),
             Some("My Brief".to_string())
         );
     }
 
     #[test]
-    fn brief_with_yaml_frontmatter() {
+    fn task_with_yaml_frontmatter() {
         let content = "---\ntitle: x\nauthor: y\n---\n# Real Title\nbody";
         assert_eq!(
-            extract_brief_first_line(content),
+            extract_task_first_line(content),
             Some("Real Title".to_string())
         );
     }
 
     #[test]
-    fn brief_with_frontmatter_then_blank_lines() {
+    fn task_with_frontmatter_then_blank_lines() {
         let content = "---\ntitle: x\n---\n\n\n# Real Title";
         assert_eq!(
-            extract_brief_first_line(content),
+            extract_task_first_line(content),
             Some("Real Title".to_string())
         );
     }
 
     #[test]
-    fn brief_empty_file() {
-        assert_eq!(extract_brief_first_line(""), None);
+    fn task_empty_file() {
+        assert_eq!(extract_task_first_line(""), None);
     }
 
     #[test]
-    fn brief_only_frontmatter_no_body() {
-        assert_eq!(extract_brief_first_line("---\nfoo: bar\n---\n"), None);
+    fn task_only_frontmatter_no_body() {
+        assert_eq!(extract_task_first_line("---\nfoo: bar\n---\n"), None);
     }
 
     #[test]
-    fn brief_unclosed_frontmatter_returns_none() {
+    fn task_unclosed_frontmatter_returns_none() {
         // Pathological: opener with no closer drains the iterator.
-        assert_eq!(extract_brief_first_line("---\nfoo: bar\nno closer"), None);
+        assert_eq!(extract_task_first_line("---\nfoo: bar\nno closer"), None);
     }
 
     #[test]
-    fn brief_leading_blank_no_frontmatter() {
+    fn task_leading_blank_no_frontmatter() {
         assert_eq!(
-            extract_brief_first_line("\n\n# Title"),
+            extract_task_first_line("\n\n# Title"),
             Some("Title".to_string())
         );
     }
 
     #[test]
-    fn brief_frontmatter_delimiter_tolerates_whitespace() {
+    fn task_frontmatter_delimiter_tolerates_whitespace() {
         // `---` lines may carry trailing/leading whitespace from editors.
         let content = "--- \ntitle: x\n  ---  \n# Body";
-        assert_eq!(extract_brief_first_line(content), Some("Body".to_string()));
+        assert_eq!(extract_task_first_line(content), Some("Body".to_string()));
     }
 
     #[test]
-    fn brief_with_bom_no_frontmatter() {
+    fn task_with_bom_no_frontmatter() {
         // Editors (notably Notepad) save UTF-8 with a BOM. Without the strip,
         // `trim_start_matches("# ")` leaves the BOM on the heading text.
         let content = "\u{FEFF}# My Brief\n\nbody";
         assert_eq!(
-            extract_brief_first_line(content),
+            extract_task_first_line(content),
             Some("My Brief".to_string())
         );
     }
 
     #[test]
-    fn brief_with_bom_and_frontmatter() {
+    fn task_with_bom_and_frontmatter() {
         // BOM in front of the `---` opener used to make the frontmatter check
         // fail (because `\u{FEFF}---` != `---`), exposing the literal frontmatter.
         let content = "\u{FEFF}---\ntitle: x\n---\n# Real Title\nbody";
         assert_eq!(
-            extract_brief_first_line(content),
+            extract_task_first_line(content),
             Some("Real Title".to_string())
         );
     }
 
     #[test]
-    fn brief_leading_blanks_before_frontmatter() {
+    fn task_leading_blanks_before_frontmatter() {
         // Regression: leading blank lines before `---` used to bypass the
         // frontmatter check and leak the literal `---` into the sidebar.
         let content = "\n\n---\ntitle: x\n---\n# Body";
-        assert_eq!(extract_brief_first_line(content), Some("Body".to_string()));
+        assert_eq!(extract_task_first_line(content), Some("Body".to_string()));
     }
 
     #[test]
-    fn brief_leading_blanks_no_frontmatter() {
+    fn task_leading_blanks_no_frontmatter() {
         let content = "\n\n# Body line";
         assert_eq!(
-            extract_brief_first_line(content),
+            extract_task_first_line(content),
             Some("Body line".to_string())
         );
     }

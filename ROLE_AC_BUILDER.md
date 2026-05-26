@@ -182,7 +182,7 @@ Workgroups are isolated working environments created when a team needs to work o
 
 ```
 .ac-new/wg-N-TEAMNAME/
-├── BRIEF.md                    # Objective, scope, and deliverables for this workgroup
+├── TASK.md                    # Objective, scope, and deliverables for this workgroup
 ├── __agent_NAME/               # Replica of _agent_NAME (double underscore)
 │   ├── config.json             # Points to parent agent's identity + local repo
 │   ├── Role.md                 # Optional override — if absent, uses parent's Role.md via config

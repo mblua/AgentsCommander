@@ -1,5 +1,5 @@
-//! `brief-append-body` CLI verb — append a body paragraph to the workgroup
-//! BRIEF.md without touching the YAML frontmatter.
+//! `task-append-body` CLI verb — append a body paragraph to the workgroup
+//! TASK.md without touching the YAML frontmatter.
 //!
 //! Trust model: caller honestly reports their own `--root` and `--token`.
 //! The same model is inherited from `send`/`close-session` and has a known
@@ -11,21 +11,21 @@
 use clap::Args;
 use std::path::Path;
 
-use super::brief_ops::{self, BriefOp, EditOutcome};
+use super::task_ops::{self, TaskOp, EditOutcome};
 use super::send::agent_name_from_root;
 
 #[derive(Args)]
 #[command(after_help = "\
-AUTHORIZATION: Only coordinators of any team in the caller's project can edit BRIEF.md. \
+AUTHORIZATION: Only coordinators of any team in the caller's project can edit TASK.md. \
 The master/root token bypasses this check. The verb writes ONLY to \
-<workgroup-root>/BRIEF.md and its *.bak.md siblings.\n\n\
+<workgroup-root>/TASK.md and its *.bak.md siblings.\n\n\
 INVARIANTS: A timestamped backup is created on every successful write that had a \
 prior file. Concurrent writes are serialized via an advisory lockfile (5s timeout). \
 External edits between our read and our write are detected and the verb aborts. \
 Frontmatter is never modified by this verb.\n\n\
 TEXT INPUT: --text accepts multi-line content. Newline (\\n), carriage return (\\r), \
 and tab (\\t) are permitted. NUL and other control characters are rejected.")]
-pub struct BriefAppendBodyArgs {
+pub struct TaskAppendBodyArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
@@ -40,7 +40,7 @@ pub struct BriefAppendBodyArgs {
     pub text: String,
 }
 
-pub fn execute(args: BriefAppendBodyArgs) -> i32 {
+pub fn execute(args: TaskAppendBodyArgs) -> i32 {
     let root = match args.root {
         Some(ref r) => r.clone(),
         None => {
@@ -95,7 +95,7 @@ pub fn execute(args: BriefAppendBodyArgs) -> i32 {
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
                 "Error: authorization denied — '{}' is not a coordinator of any team. \
-                 Only coordinators can edit BRIEF.md.",
+                 Only coordinators can edit TASK.md.",
                 sender
             );
             return 1;
@@ -107,7 +107,7 @@ pub fn execute(args: BriefAppendBodyArgs) -> i32 {
         Err(_) => {
             eprintln!(
                 "Error: --root is not under a wg-<N>-* ancestor; \
-                 cannot locate the workgroup BRIEF.md."
+                 cannot locate the workgroup TASK.md."
             );
             return 1;
         }
@@ -116,32 +116,32 @@ pub fn execute(args: BriefAppendBodyArgs) -> i32 {
     // NIT-2: include `pid={}` so an auditor can cross-reference the AC process
     // tree. `sender=` and `wg=` are both caller-derived (--root) and a forged
     // --root produces a forged-but-consistent line; pid disambiguates.
-    match brief_ops::perform(&wg_root, BriefOp::AppendBody(args.text.clone())) {
+    match task_ops::perform(&wg_root, TaskOp::AppendBody(args.text.clone())) {
         Ok(EditOutcome::Wrote { backup: Some(bp) }) => {
             log::info!(
-                "[brief] append-body: sender={} wg={} pid={} backup={}",
+                "[task] append-body: sender={} wg={} pid={} backup={}",
                 sender,
                 wg_root.display(),
                 std::process::id(),
                 bp.display()
             );
-            crate::cli_println!("BRIEF.md body appended; backup: {}", bp.display());
+            crate::cli_println!("TASK.md body appended; backup: {}", bp.display());
             0
         }
         Ok(EditOutcome::Wrote { backup: None }) => {
             log::info!(
-                "[brief] append-body: sender={} wg={} pid={} backup=<no prior file>",
+                "[task] append-body: sender={} wg={} pid={} backup=<no prior file>",
                 sender,
                 wg_root.display(),
                 std::process::id()
             );
-            crate::cli_println!("BRIEF.md created; no prior content to back up");
+            crate::cli_println!("TASK.md created; no prior content to back up");
             0
         }
         Ok(EditOutcome::NoOp) => {
             // append-body never produces NoOp (an append always changes the file).
             // Defensive: surface the same success line as a Wrote{None} would.
-            crate::cli_println!("BRIEF.md unchanged");
+            crate::cli_println!("TASK.md unchanged");
             0
         }
         Err(e) => {
@@ -195,8 +195,8 @@ mod tests {
         agent_root
     }
 
-    fn args_for(token: Option<String>, root: Option<String>, text: &str) -> BriefAppendBodyArgs {
-        BriefAppendBodyArgs {
+    fn args_for(token: Option<String>, root: Option<String>, text: &str) -> TaskAppendBodyArgs {
+        TaskAppendBodyArgs {
             token,
             root,
             text: text.to_string(),
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn append_body_rejects_non_coordinator_with_uuid_token() {
-        let fix = FixtureRoot::new("brief-ai4");
+        let fix = FixtureRoot::new("task-ai4");
         let agent_root = make_wg_fixture(fix.path());
         let token = uuid::Uuid::new_v4().to_string();
         let args = args_for(
@@ -218,20 +218,20 @@ mod tests {
         let code = execute(args);
         assert_eq!(code, 1);
         let wg_root = agent_root.parent().unwrap();
-        assert!(!wg_root.join("BRIEF.md").exists());
+        assert!(!wg_root.join("TASK.md").exists());
     }
 
     // ── (token rejection) ───────────────────────────────────────────────
     // Note: the substantive I19 guarantee ("--text preserves internal
     // newlines after a successful append") is covered at the apply layer by
-    // `brief_ops::tests::apply_append_body_preserves_internal_body_line_endings_and_documents_trailing_loss`.
+    // `task_ops::tests::apply_append_body_preserves_internal_body_line_endings_and_documents_trailing_loss`.
     // Reaching the apply layer through `execute` would require stubbing
     // team-config so the coordinator gate passes — the apply-layer test
     // gives the same byte-level guarantee at much lower cost.
 
     #[test]
     fn append_body_rejects_invalid_token() {
-        let fix = FixtureRoot::new("brief-ai-token");
+        let fix = FixtureRoot::new("task-ai-token");
         let agent_root = make_wg_fixture(fix.path());
         let args = args_for(
             Some("not-a-uuid".into()),
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn append_body_rejects_nul_byte_in_text() {
-        let fix = FixtureRoot::new("brief-ai-nul");
+        let fix = FixtureRoot::new("task-ai-nul");
         let agent_root = make_wg_fixture(fix.path());
         let token = uuid::Uuid::new_v4().to_string();
         let args = args_for(
@@ -263,7 +263,7 @@ mod tests {
         use clap::CommandFactory;
         let help = crate::cli::Cli::command().render_help().to_string();
         assert!(
-            help.contains("brief-append-body"),
+            help.contains("task-append-body"),
             "help missing verb name: {}",
             help
         );

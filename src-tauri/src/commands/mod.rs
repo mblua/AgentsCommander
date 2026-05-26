@@ -1,6 +1,6 @@
 pub mod ac_discovery;
 pub mod agent_creator;
-pub mod brief;
+pub mod task;
 pub mod codex_resolver;
 pub mod gemini_resolver;
 pub mod config;

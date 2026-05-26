@@ -14,8 +14,8 @@ import type {
   AcDiscoveryResult,
   TeamConfigResult,
   WindowGeometry,
-  BriefUpdateResult,
-  WorkgroupBriefUpdatedEvent,
+  TaskUpdateResult,
+  WorkgroupTaskUpdatedEvent,
   ProjectRegistration,
   ErrorLogEntry,
   RoleTemplateMeta,
@@ -279,15 +279,16 @@ export const WindowAPI = {
 };
 
 // Brief API (issue #162)
-export const BriefAPI = {
+export const TaskAPI = {
   getTitle: (sessionId: string) =>
-    transport.invoke<string | null>("brief_get_title", { sessionId }),
+    transport.invoke<string | null>("task_get_title", { sessionId }),
 
   setTitle: (sessionId: string, title: string) =>
-    transport.invoke<BriefUpdateResult>("brief_set_title", { sessionId, title }),
+    transport.invoke<TaskUpdateResult>("task_set_title", { sessionId, title }),
 
   clean: (sessionId: string) =>
-    transport.invoke<BriefUpdateResult>("brief_clean", { sessionId }),
+    transport.invoke<TaskUpdateResult>("task_clean", { sessionId }),
+
 };
 
 // Telegram Bridge API
@@ -363,18 +364,18 @@ export function onDiscoveryBranchUpdated(
   );
 }
 
-export function onAcWorkgroupBriefUpdated(
+export function onAcWorkgroupTaskUpdated(
   callback: (data: {
     workgroupPath: string;
-    brief: string | null;
-    briefTitle?: string;
+    task: string | null;
+    taskTitle?: string;
   }) => void
 ): Promise<UnlistenFn> {
   return transport.listen<{
     workgroupPath: string;
-    brief: string | null;
-    briefTitle?: string;
-  }>("ac_workgroup_brief_updated", callback);
+    task: string | null;
+    taskTitle?: string;
+  }>("ac_workgroup_task_updated", callback);
 }
 
 export function onSessionIdle(
@@ -512,11 +513,11 @@ export const EntityAPI = {
   getTeamConfig: (projectPath: string, teamName: string) =>
     transport.invoke<TeamConfigResult>("get_team_config", { projectPath, teamName }),
 
-  createWorkgroup: (projectPath: string, teamName: string, brief?: string) =>
+  createWorkgroup: (projectPath: string, teamName: string, taskTitle?: string) =>
     transport.invoke<void>("create_workgroup", {
       projectPath,
       teamName,
-      brief: brief ?? null,
+      taskTitle: taskTitle ?? null,
     }),
 
   deleteWorkgroup: (projectPath: string, workgroupName: string, force?: boolean) =>
@@ -607,12 +608,12 @@ export function onTelegramIncoming(
   );
 }
 
-export function onWorkgroupBriefUpdated(
-  callback: (data: WorkgroupBriefUpdatedEvent) => void
+export function onWorkgroupTaskUpdated(
+  callback: (data: WorkgroupTaskUpdatedEvent) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<WorkgroupBriefUpdatedEvent>(
+  return transport.listen<WorkgroupTaskUpdatedEvent>(
 
-    "workgroup_brief_updated",
+    "workgroup_task_updated",
     callback
   );
 }

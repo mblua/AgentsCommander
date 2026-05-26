@@ -19,7 +19,7 @@ export interface Session {
   agentId: string | null;
   agentLabel: string | null;
   gitRepos: SessionRepo[];
-  workgroupBrief: string | null;
+  workgroupTask: string | null;
   isCoordinator: boolean;
   isRootAgent: boolean;
   token: string;
@@ -162,7 +162,7 @@ export interface AppSettings {
   coordSortByActivity: boolean;
   injectRtkHook: boolean;
   rtkPromptDismissed: boolean;
-  autoGenerateBriefTitle: boolean;
+  autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
 }
@@ -259,8 +259,8 @@ export interface AcAgentReplica {
 export interface AcWorkgroup {
   name: string;
   path: string;
-  brief?: string;
-  briefTitle?: string;
+  task: string | null;
+  taskTitle?: string;
   agents: AcAgentReplica[];
   repoPath?: string;
   teamName?: string;
@@ -321,21 +321,21 @@ export interface BlockerReport {
 }
 
 // ---------------------------------------------------------------------------
-// Brief mutation result (issue #162 — BRIEF action buttons)
-// Mirrors src-tauri/src/commands/brief.rs::BriefUpdateResult.
+// Task mutation result
+// Mirrors src-tauri/src/commands/task.rs::TaskUpdateResult.
 // ---------------------------------------------------------------------------
 
-export interface BriefUpdateResult {
+export interface TaskUpdateResult {
   workgroupRoot: string;
-  brief: string | null;
+  task: string | null;
 }
 
-export interface WorkgroupBriefUpdatedEvent {
+export interface WorkgroupTaskUpdatedEvent {
   workgroupRoot?: string;
   workgroupPath?: string;
-  brief: string | null;
+  task: string | null;
   sessionIds?: string[];
-  briefTitle?: string;
+  taskTitle?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,4 +386,3 @@ export interface RoleTemplateMeta {
   emoji?: string | null;
   hasSkills: boolean;
 }
-

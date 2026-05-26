@@ -283,8 +283,8 @@ const AcDiscoveryPanel: Component = () => {
                   <div class="ac-wg-group">
                     <div class="ac-wg-header" title={wg.path}>
                       <span class="ac-wg-name">{wg.name}</span>
-                      <Show when={wg.briefTitle?.trim() || stripFrontmatter(wg.brief ?? "").trim()}>
-                        {(text) => <span class="ac-wg-brief">{text()}</span>}
+                      <Show when={wg.taskTitle?.trim() || stripFrontmatter(wg.task ?? "").trim()}>
+                        {(text) => <span class="ac-wg-task">{text()}</span>}
                       </Show>
                     </div>
                     <For each={wg.agents}>

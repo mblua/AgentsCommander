@@ -347,17 +347,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <input
             type="checkbox"
             class="settings-checkbox"
-            checked={settings.data!.autoGenerateBriefTitle}
-            onChange={(e) =>
-              updateField("autoGenerateBriefTitle", e.currentTarget.checked)
-            }
-          />
-          <span>Auto-generate workspace title from brief</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
             checked={settings.data!.sidebarAlwaysOnTop}
             onChange={(e) =>
               updateField("sidebarAlwaysOnTop", e.currentTarget.checked)

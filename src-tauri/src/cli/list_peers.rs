@@ -619,10 +619,17 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
     let i_am_coordinator = coordinator.as_deref() == Some(wg.my_agent_name.as_str());
 
     if coordinator.is_none() {
-        eprintln!(
-            "Warning: no coordinator found for WG '{}', showing all replicas",
-            wg.my_wg_name
-        );
+        if std::env::var("AC_MACHINE_OUTPUT").is_err() {
+            eprintln!(
+                "Warning: no coordinator found for WG '{}', showing all replicas",
+                wg.my_wg_name
+            );
+        } else {
+            log::warn!(
+                "Warning: no coordinator found for WG '{}', showing all replicas",
+                wg.my_wg_name
+            );
+        }
     }
 
     // Collect all replicas in my WG
