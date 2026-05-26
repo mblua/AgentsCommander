@@ -828,7 +828,7 @@ pub async fn create_session_inner(
     }
 
     let materialized_context_path = if let Some(target) = context_target {
-        match crate::config::session_context::materialize_agent_context_file(&cwd, target) {
+        match crate::config::session_context::materialize_agent_context_file(&cwd, target, is_coordinator) {
             Ok(context) => context,
             Err(e) => {
                 log::error!("Replica context validation failed: {}", e);
