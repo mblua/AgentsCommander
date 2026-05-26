@@ -1161,7 +1161,18 @@ fn resolve_session_context_content(cwd: &str, is_coordinator: bool) -> Result<Op
             - Contact silent or inactive assigned agents up to three total attempts.\n\
             - Require assigned agents to explicitly report completion, outcome, blockers, and verification.\n\
             - Not infer completion solely from files/logs/artifacts when the assigned agent has not reported the outcome.\n\
-            - Give recommendations to help an agent work better without removing or overriding that agent's role/scope.\n";
+            - Give recommendations to help an agent work better without removing or overriding that agent's role/scope.\n\n\
+            ## Sending Screenshots\n\
+            As a coordinator, you may need to send screenshots. Use the CLI subcommand:\n\
+                telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+            - --path is required. --caption is optional and limited to 1024 UTF-16 units.\n\
+            - If multiple Telegram bots are configured, use --bot-id or --bot-label.\n\
+            - jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB.\n\
+            - Symlinks/junctions are rejected.\n\n\
+            **Screenshot Capture Paths:**\n\
+            - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work. Important: cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+            - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels. In that case ask the user to capture with Greenshot, use latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+            - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n";
         content.push_str(coordinator_notice);
     }
 
