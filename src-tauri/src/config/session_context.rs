@@ -1151,9 +1151,17 @@ fn resolve_session_context_content(cwd: &str) -> Result<Option<String>, String> 
     let teams = crate::config::teams::discover_teams();
     if crate::config::teams::is_coordinator_for_cwd(cwd, &teams) {
         let coordinator_notice = "\n\n---\n\n# Coordinator Context\n\n\
-            You are the coordinator for your team. You must assume responsibility for receiving team work requests, \
-            coordinating the right team members, sequencing the work, keeping scope realistic, and driving the \
-            request to resolution.\n";
+            You are the coordinator for your team. This is an additional assignment, not a replacement for your base role.\n\
+            You must:\n\
+            - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
+            - Always route work to the team member best prepared for each part of the request based on role, skills, and current assignment.\n\
+            - Delegate work instead of absorbing technical work when a more specialized agent is available.\n\
+            - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+            - Follow up after assignment to verify the assigned agent is active and working.\n\
+            - Contact silent or inactive assigned agents up to three total attempts.\n\
+            - Require assigned agents to explicitly report completion, outcome, blockers, and verification.\n\
+            - Not infer completion solely from files/logs/artifacts when the assigned agent has not reported the outcome.\n\
+            - Give recommendations to help an agent work better without removing or overriding that agent's role/scope.\n";
         content.push_str(coordinator_notice);
     }
 
