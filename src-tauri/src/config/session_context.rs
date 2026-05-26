@@ -1141,12 +1141,22 @@ fn resolve_session_context_content(cwd: &str) -> Result<Option<String>, String> 
         return Ok(None);
     };
 
-    let content = std::fs::read_to_string(&context_path).map_err(|e| {
+    let mut content = std::fs::read_to_string(&context_path).map_err(|e| {
         format!(
             "Failed to read resolved session context {}: {}",
             context_path, e
         )
     })?;
+
+    let teams = crate::config::teams::discover_teams();
+    if crate::config::teams::is_coordinator_for_cwd(cwd, &teams) {
+        let coordinator_notice = "\n\n---\n\n# Coordinator Context\n\n\
+            You are the coordinator for your team. You must assume responsibility for receiving team work requests, \
+            coordinating the right team members, sequencing the work, keeping scope realistic, and driving the \
+            request to resolution.\n";
+        content.push_str(coordinator_notice);
+    }
+
     Ok(Some(content))
 }
 
