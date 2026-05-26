@@ -1,3 +1,0 @@
-- [Shipper deploy blocked — kill, don't ask](feedback_shipper_blocked_kill.md) — user wants shipper to kill blocking PIDs on deploy, not surface a round-trip
-- [Always merge to main via PR with --admin](feedback_always_pr_to_main.md) — "mandalo a main" = gh pr create + gh pr merge --admin --merge --delete-branch (admin is default during single-dev period)
-- [Workflow adapts to task scope](feedback_workflow_adapt_to_scope.md) — Step 0 triage picks lite path (skip architect+consensus) for pattern-mirroring/single-file changes, full path for architectural/cross-cutting work
