@@ -221,6 +221,18 @@ mod tests {
     }
 
     #[test]
+    fn read_task_fields_at_body_only_no_frontmatter_returns_body_and_no_title() {
+        // grinch LOW (PR #304 review): coverage gap — a file with body content
+        // but no YAML frontmatter must return (Some(body), None), not (None, _).
+        let dir = tempfile::tempdir().unwrap();
+        let content = "Just a body line\nmore body\n";
+        std::fs::write(dir.path().join("TASK.md"), content).unwrap();
+        let (task, title) = read_task_fields_at(dir.path());
+        assert_eq!(title, None);
+        assert_eq!(task.as_deref(), Some(content.trim()));
+    }
+
+    #[test]
     fn set_title_via_task_ops_round_trip_returns_title() {
         // End-to-end mirror of the task_set_title body: perform() then
         // read_task_fields_at(). Validates that the path the Tauri command

@@ -319,7 +319,10 @@ struct TaskCacheEntry {
 struct TaskUpdatedPayload {
     workgroup_path: String,
     task: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // Always serialize taskTitle, even when None, so the consumer receives an
+    // explicit signal (null) rather than `undefined`. Matches the manual-emit
+    // payload built by `commands::task::emit_task_updated`. Architect sign-off
+    // on PR #304: normalize both emitters to explicit-null.
     task_title: Option<String>,
     session_ids: Vec<String>,
 }
