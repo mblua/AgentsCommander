@@ -1,6 +1,8 @@
 # Agents Commander — Architecture Map
 
-> Auto-generated from codebase analysis. Version 0.4.6, branch `feature/agents-communication`.
+> Auto-generated from codebase analysis. Version 0.8.43, branch `main`.
+
+For developers exploring the codebase or contributing changes. Maps the backend, frontend, IPC, and PTY layers.
 
 ---
 
