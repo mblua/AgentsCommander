@@ -1,0 +1,102 @@
+name: Bug report
+description: Something that should work doesn't — a crash, a wrong result, a regression.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Before submitting, please search [existing issues](https://github.com/mblua/AgentsCommander/issues?q=is%3Aissue) to avoid duplicates.
+
+        For questions / "how do I" / "is this expected?", please use [Discussions](https://github.com/mblua/AgentsCommander/discussions) instead.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence describing what's wrong.
+      placeholder: "Sessions panel becomes unresponsive after 50+ sessions are created."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The minimum sequence of actions to trigger the bug. Numbered list preferred.
+      placeholder: |
+        1. Launch AgentsCommander.
+        2. Create a new workgroup with 3 agents.
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you thought would happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened. Include error messages verbatim if any.
+    validations:
+      required: true
+
+  - type: input
+    id: ac-version
+    attributes:
+      label: AgentsCommander version
+      description: From the titlebar, the **About** dialog, or `package.json` if running from source.
+      placeholder: "0.8.43"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux (specify distro in details)
+        - macOS (specify version in details)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-details
+    attributes:
+      label: OS version / distro
+      description: e.g. "Windows 11 23H2 build 22631", "Ubuntu 24.04", "macOS 14.5 Sonoma".
+
+  - type: dropdown
+    id: coding-agent
+    attributes:
+      label: Coding agent involved (if any)
+      options:
+        - "N/A — not coding-agent-specific"
+        - Claude Code
+        - Codex
+        - Gemini
+        - Other / multiple
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant log output from `app.log` (next to the binary) or the dev console. Wrap long pastes in ` ``` ` fences.
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Screenshots, GIFs, related issues, anything else useful.
