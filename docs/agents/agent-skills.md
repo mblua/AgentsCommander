@@ -1,4 +1,6 @@
-# Agent Skills Tutorial
+# Agent skills
+
+For developers ready to add reusable per-agent workflows. Skills are markdown documents AC discovers from each agent's canonical `skills/` directory.
 
 Agent skills are reusable instructions stored in an agent's canonical
 `skills/` folder. Use them for workflows that are too specific for a general
