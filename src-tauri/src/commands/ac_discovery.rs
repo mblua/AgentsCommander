@@ -1231,6 +1231,10 @@ pub(crate) fn ensure_ac_new_gitignore(ac_new_dir: &Path) -> Result<(), String> {
             "# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
         ),
         (
+            ".deleting-*/",
+            "# AgentsCommander: exclude temporary workgroup delete sentinels/orphans.",
+        ),
+        (
             "**/__agent_*/last_ac_context.md",
             "# AgentsCommander: exclude managed session context files inside replica agent folders.",
         ),
@@ -1740,6 +1744,43 @@ fn read_task_fields(wg_path: &Path) -> TaskFields {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ensure_ac_new_gitignore_includes_delete_sentinels_on_create() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_new = tmp.path().join(".ac-new");
+        std::fs::create_dir(&ac_new).expect("create .ac-new");
+
+        ensure_ac_new_gitignore(&ac_new).expect("ensure .ac-new/.gitignore");
+
+        let content =
+            std::fs::read_to_string(ac_new.join(".gitignore")).expect("read .ac-new/.gitignore");
+        assert!(
+            content.lines().any(|line| line.trim() == ".deleting-*/"),
+            ".ac-new/.gitignore must ignore workgroup delete sentinel directories"
+        );
+    }
+
+    #[test]
+    fn ensure_ac_new_gitignore_appends_delete_sentinels_to_existing_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_new = tmp.path().join(".ac-new");
+        std::fs::create_dir(&ac_new).expect("create .ac-new");
+        std::fs::write(ac_new.join(".gitignore"), "wg-*/\n").expect("write .gitignore");
+
+        ensure_ac_new_gitignore(&ac_new).expect("ensure .ac-new/.gitignore");
+
+        let content =
+            std::fs::read_to_string(ac_new.join(".gitignore")).expect("read .ac-new/.gitignore");
+        let count = content
+            .lines()
+            .filter(|line| line.trim() == ".deleting-*/")
+            .count();
+        assert_eq!(
+            count, 1,
+            ".ac-new/.gitignore should append the delete sentinel pattern exactly once"
+        );
+    }
 
     // ── extract_task_first_line — issue #161 ──
 

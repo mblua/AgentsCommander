@@ -8,6 +8,9 @@ src-tauri/gen/schemas/
 .husky/_
 _plans/
 
+# AgentsCommander delete sentinels/orphans.
+.deleting-*
+
 .ac-new/wg-1-ac-devs/
 
 .ac-new/wg-2-ac-devs/
