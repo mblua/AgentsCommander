@@ -1110,7 +1110,7 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
 
 /// Resolve the final session context content for an agent directory.
 /// Prefers replica config.json context[] and falls back to the per-agent default context.
-fn resolve_session_context_content(cwd: &str) -> Result<Option<String>, String> {
+fn resolve_session_context_content(cwd: &str, is_coordinator: bool) -> Result<Option<String>, String> {
     let context_path = if is_replica_agent_dir(cwd) {
         match build_replica_context(cwd) {
             Ok(Some(combined_path)) => {
@@ -1141,12 +1141,41 @@ fn resolve_session_context_content(cwd: &str) -> Result<Option<String>, String> 
         return Ok(None);
     };
 
-    let content = std::fs::read_to_string(&context_path).map_err(|e| {
+    let mut content = std::fs::read_to_string(&context_path).map_err(|e| {
         format!(
             "Failed to read resolved session context {}: {}",
             context_path, e
         )
     })?;
+
+    if is_coordinator {
+        let coordinator_notice = "\n\n---\n\n# Coordinator Context\n\n\
+            You are the coordinator for your team. You must:\n\
+            - Keep your base role; coordination is an additional assignment, not a replacement.\n\
+            - Receive team work requests.\n\
+            - Clarify scope, outcome, constraints, and acceptance criteria.\n\
+            - Always route work to the team member best prepared for each part of the request based on role, skills, and current assignment.\n\
+            - Delegate work instead of absorbing technical work when a more specialized agent is available.\n\
+            - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+            - Follow up after assignment to verify the assigned agent is active and working.\n\
+            - Contact silent or inactive assigned agents up to three total attempts.\n\
+            - Require assigned agents to explicitly report completion, outcome, blockers, and verification.\n\
+            - Not infer completion solely from files/logs/artifacts when the assigned agent has not reported the outcome.\n\
+            - Give recommendations to help an agent work better without removing or overriding that agent's role/scope.\n\n\
+            ## Sending Screenshots\n\
+            As a coordinator, you may need to send screenshots. Use the CLI subcommand:\n\
+                telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+            - --path is required. --caption is optional and limited to 1024 UTF-16 units.\n\
+            - If multiple Telegram bots are configured, use --bot-id or --bot-label.\n\
+            - jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB.\n\
+            - Symlinks/junctions are rejected.\n\n\
+            **Screenshot Capture Paths:**\n\
+            - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work. Important: cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+            - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels. In that case ask the user to capture with Greenshot, use latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+            - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n";
+        content.push_str(coordinator_notice);
+    }
+
     Ok(Some(content))
 }
 
@@ -1156,8 +1185,9 @@ fn resolve_session_context_content(cwd: &str) -> Result<Option<String>, String> 
 pub fn materialize_agent_context_file(
     cwd: &str,
     target: ManagedContextTarget,
+    is_coordinator: bool,
 ) -> Result<Option<String>, String> {
-    let content = match resolve_session_context_content(cwd)? {
+    let content = match resolve_session_context_content(cwd, is_coordinator)? {
         Some(content) => content,
         None => return Ok(None),
     };
@@ -2062,6 +2092,7 @@ mod tests {
         let materialized = materialize_agent_context_file(
             &path_string(&replica_root),
             ManagedContextTarget::Codex,
+            false,
         )
         .expect("materialize context")
         .expect("context path");
@@ -2086,7 +2117,7 @@ mod tests {
         );
 
         let materialized =
-            materialize_agent_context_file(&path_string(&matrix_root), ManagedContextTarget::Codex)
+            materialize_agent_context_file(&path_string(&matrix_root), ManagedContextTarget::Codex, false)
                 .expect("materialize context")
                 .expect("context path");
         let materialized_path = PathBuf::from(&materialized);
@@ -2116,7 +2147,7 @@ mod tests {
         crate::config::root_agent::ensure_root_agent_dir_at(&root).expect("ensure root agent dir");
 
         let materialized =
-            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex)
+            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
                 .expect("materialize context")
                 .expect("context path");
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
@@ -2139,6 +2170,7 @@ mod tests {
         let materialized = materialize_agent_context_file(
             &path_string(&standalone_root),
             ManagedContextTarget::Codex,
+            false,
         )
         .expect("materialize context should not error");
 
