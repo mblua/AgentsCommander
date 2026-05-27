@@ -2,7 +2,7 @@
 
 The command center for AI coding agents.
 
-- Run Claude Code, Codex, and OpenCode in parallel
+- Run Claude Code, Codex, and Gemini in parallel
 - Instant idle detection - know which agent needs you
 - Dictate prompts by voice
 - Detach sessions into independent windows
@@ -12,18 +12,18 @@ Built with **Tauri 2.x** (Rust) + **SolidJS** (TypeScript) + **xterm.js** (WebGL
 
 ## Features
 
-- **Agent launcher** - Run Claude Code, Codex, OpenCode, and other CLI agents from a single dashboard
+- **Agent launcher** - Run Claude Code, Codex, Gemini, and other CLI agents from a single dashboard
 - **Idle detection** - Visual indicator (green dot) when an agent is done and waiting for you
 - **Voice-to-text** - Dictate prompts via Gemini transcription (push-to-talk in terminal, toggle in sidebar) with auto-execute and cancel support
 - **Detached windows** - Pop any session out into its own dedicated terminal window
 - **Best practices hints** - Contextual tips to sharpen your coding agent workflow
-- **Decoupled multi-window** - Sidebar and Terminal are independent windows, not tabs in a single frame
+- **Unified main window with detachable sessions** - One main window with a sidebar list and a terminal viewport; pop any session out into its own dedicated window when you want to keep watching it
 - **Full PTY emulation** - Real terminal via ConPTY (portable-pty), not a command runner
 - **xterm.js with WebGL** - Hardware-accelerated rendering with canvas fallback
 - **Session management** - Create, rename, switch, destroy sessions from the sidebar
 - **Team filter** - Filter sessions by team in the sidebar dropdown
 - **Telegram bridge** - Attach a Telegram bot to a session for remote monitoring
-- **Settings UI** - Tabbed settings modal (General, Coding Agents, Integrations, Dark Factory) accessible from the top bar
+- **Settings UI** - Tabbed settings modal (General, Coding Agents, Integrations, Teams) accessible from the top bar
 - **Zoom support** - Ctrl+Scroll, Ctrl++/-, Ctrl+0 on any window, with per-window zoom level persistence
 - **Window geometry persistence** - Windows reopen at the same position and size as when you last closed the app
 - **Keyboard shortcuts** - New session, close, switch, voice toggle (Ctrl+Shift+R)
@@ -113,8 +113,8 @@ The production binary is at `src-tauri/target/release/agentscommander` (`.exe` o
 Releases are automated via GitHub Actions. Push a tag to trigger a build:
 
 ```bash
-git tag v0.4.9
-git push origin v0.4.9
+git tag v0.8.43
+git push origin v0.8.43
 ```
 
 This creates a draft release with auto-generated changelog and installers for Windows, macOS (ARM + Intel), and Ubuntu.
