@@ -364,20 +364,6 @@ export function onDiscoveryBranchUpdated(
   );
 }
 
-export function onAcWorkgroupTaskUpdated(
-  callback: (data: {
-    workgroupPath: string;
-    task: string | null;
-    taskTitle?: string;
-  }) => void
-): Promise<UnlistenFn> {
-  return transport.listen<{
-    workgroupPath: string;
-    task: string | null;
-    taskTitle?: string;
-  }>("ac_workgroup_task_updated", callback);
-}
-
 export function onSessionIdle(
   callback: (data: { id: string }) => void
 ): Promise<UnlistenFn> {

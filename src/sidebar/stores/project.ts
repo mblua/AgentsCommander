@@ -148,7 +148,7 @@ export const projectStore = {
   updateWorkgroupTask(
     workgroupPath: string,
     task: string | null,
-    taskTitle: string | undefined
+    taskTitle: string | null | undefined
   ) {
 
     const normalized = normalizePath(workgroupPath);

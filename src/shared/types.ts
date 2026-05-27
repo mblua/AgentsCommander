@@ -260,7 +260,7 @@ export interface AcWorkgroup {
   name: string;
   path: string;
   task: string | null;
-  taskTitle?: string;
+  taskTitle?: string | null;
   agents: AcAgentReplica[];
   repoPath?: string;
   teamName?: string;
@@ -335,7 +335,7 @@ export interface WorkgroupTaskUpdatedEvent {
   workgroupPath?: string;
   task: string | null;
   sessionIds?: string[];
-  taskTitle?: string;
+  taskTitle?: string | null;
 }
 
 // ---------------------------------------------------------------------------

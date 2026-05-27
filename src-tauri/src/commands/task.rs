@@ -60,21 +60,38 @@ fn strip_unc(p: &Path) -> String {
     raw.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(raw)
 }
 
-fn emit_task_updated(app: &AppHandle, wg_root: &Path, task: &Option<String>) {
+fn emit_task_updated(
+    app: &AppHandle,
+    wg_root: &Path,
+    task: &Option<String>,
+    task_title: &Option<String>,
+) {
     let _ = app.emit(
         "workgroup_task_updated",
         serde_json::json!({
             "workgroupRoot": strip_unc(wg_root),
             "task": task.clone(),
+            "taskTitle": task_title.clone(),
         }),
     );
 }
 
-fn read_task_at(wg_root: &Path) -> Option<String> {
-    std::fs::read_to_string(wg_root.join("TASK.md"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// Read TASK.md once and return both the trimmed full body and the parsed
+/// YAML `title:` value. Returning both from one read avoids torn results when
+/// an external writer races us between two reads. Caller emits both fields so
+/// the sidebar can update its title without waiting for the next 15s poll.
+fn read_task_fields_at(wg_root: &Path) -> (Option<String>, Option<String>) {
+    let Ok(content) = std::fs::read_to_string(wg_root.join("TASK.md")) else {
+        return (None, None);
+    };
+    let task_title = crate::commands::entity_creation::parse_task_title(&content);
+    let trimmed = content.trim();
+    let task = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
+    (task, task_title)
 }
 
 /// Read the current YAML-frontmatter `title:` value of the workgroup
@@ -131,12 +148,12 @@ pub async fn task_set_title(
         session_id,
         outcome
     );
-    let task = read_task_at(&wg_root);
+    let (task, task_title) = read_task_fields_at(&wg_root);
     let result = TaskUpdateResult {
         workgroup_root: strip_unc(&wg_root),
         task: task.clone(),
     };
-    emit_task_updated(&app, &wg_root, &task);
+    emit_task_updated(&app, &wg_root, &task, &task_title);
     Ok(result)
 }
 
@@ -158,11 +175,86 @@ pub async fn task_clean(
         session_id,
         outcome
     );
-    let task = read_task_at(&wg_root);
+    let (task, task_title) = read_task_fields_at(&wg_root);
     let result = TaskUpdateResult {
         workgroup_root: strip_unc(&wg_root),
         task: task.clone(),
     };
-    emit_task_updated(&app, &wg_root, &task);
+    emit_task_updated(&app, &wg_root, &task, &task_title);
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Covers the helper that issue #301 turns on: read_task_fields_at must
+    //! return BOTH the trimmed body and the parsed YAML title from a single
+    //! read of TASK.md, so the immediate emit on save/clean carries the title
+    //! and the sidebar does not flicker until the next 15s poll.
+    use super::read_task_fields_at;
+    use crate::cli::task_ops::{perform, TaskOp};
+
+    #[test]
+    fn read_task_fields_at_missing_file_returns_none_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let (task, title) = read_task_fields_at(dir.path());
+        assert_eq!(task, None);
+        assert_eq!(title, None);
+    }
+
+    #[test]
+    fn read_task_fields_at_empty_file_returns_none_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("TASK.md"), "").unwrap();
+        let (task, title) = read_task_fields_at(dir.path());
+        assert_eq!(task, None);
+        assert_eq!(title, None);
+    }
+
+    #[test]
+    fn read_task_fields_at_parses_frontmatter_title_and_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\ntitle: 'My Brief'\n---\nbody line\n";
+        std::fs::write(dir.path().join("TASK.md"), content).unwrap();
+        let (task, title) = read_task_fields_at(dir.path());
+        assert_eq!(title.as_deref(), Some("My Brief"));
+        assert_eq!(task.as_deref(), Some(content.trim()));
+    }
+
+    #[test]
+    fn read_task_fields_at_body_only_no_frontmatter_returns_body_and_no_title() {
+        // grinch LOW (PR #304 review): coverage gap — a file with body content
+        // but no YAML frontmatter must return (Some(body), None), not (None, _).
+        let dir = tempfile::tempdir().unwrap();
+        let content = "Just a body line\nmore body\n";
+        std::fs::write(dir.path().join("TASK.md"), content).unwrap();
+        let (task, title) = read_task_fields_at(dir.path());
+        assert_eq!(title, None);
+        assert_eq!(task.as_deref(), Some(content.trim()));
+    }
+
+    #[test]
+    fn set_title_via_task_ops_round_trip_returns_title() {
+        // End-to-end mirror of the task_set_title body: perform() then
+        // read_task_fields_at(). Validates that the path the Tauri command
+        // takes ends up with a non-empty taskTitle in the payload.
+        let dir = tempfile::tempdir().unwrap();
+        perform(dir.path(), TaskOp::SetTitle("Hello World".to_string()))
+            .expect("set title");
+        let (task, title) = read_task_fields_at(dir.path());
+        assert_eq!(title.as_deref(), Some("Hello World"));
+        assert!(task.is_some(), "task body should not be empty after set-title");
+    }
+
+    #[test]
+    fn clean_via_task_ops_round_trip_returns_clean_title() {
+        // After Clean, the canonical title is "Clean" (see TaskOp::Clean
+        // docs). The important thing for issue #301 is the payload carries
+        // the title at all (no None → no undefined → no spread-clobber).
+        let dir = tempfile::tempdir().unwrap();
+        perform(dir.path(), TaskOp::SetTitle("Old Title".to_string()))
+            .expect("set initial title");
+        perform(dir.path(), TaskOp::Clean).expect("clean");
+        let (_task, title) = read_task_fields_at(dir.path());
+        assert_eq!(title.as_deref(), Some("Clean"));
+    }
 }
