@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a new capability or improvement.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to propose a feature. Before submitting, please:
+
+        - Search [existing issues](https://github.com/mblua/AgentsCommander/issues?q=is%3Aissue) and the [Roadmap](../../blob/main/ROADMAP.md) to see if it's already tracked.
+        - Consider opening a [Discussion under "Ideas"](https://github.com/mblua/AgentsCommander/discussions/categories/ideas) first if you want to talk through the shape of the feature before filing.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that AgentsCommander makes hard or impossible today? Describe the underlying goal, not the proposed solution.
+      placeholder: "I run 10 agents at once and I can't tell at a glance which one finished its turn most recently."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like AgentsCommander to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways you considered solving the problem (workarounds, third-party tools, manual processes).
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Use cases, mockups, links to similar features in other tools, anything else useful.

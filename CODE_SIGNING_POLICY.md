@@ -30,14 +30,7 @@ Get-AuthenticodeSignature "Agents Commander_x64-setup.exe"
 
 ## Privacy
 
-This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
-
-Optional features that transmit data when explicitly enabled by the user:
-
-- **Telegram Bridge**: Sends terminal output to the Telegram Bot API when the user attaches a bot to a session
-- **Voice-to-Text**: Sends audio recordings to the Google Gemini API for transcription when the user activates voice input
-
-See [PRIVACY.md](PRIVACY.md) for full details.
+This program does not transmit data to any networked system unless the user enables an opt-in feature (Telegram Bridge, Voice-to-Text). See [PRIVACY.md](PRIVACY.md) for the canonical statement and data flow.
 
 ## Attribution
 
