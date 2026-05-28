@@ -22,7 +22,7 @@ The table tells one story. The trade-offs below tell the rest.
 LangGraph is a Python DSL for stateful agent workflows. You write the DAG; LangGraph drives the LLM calls.
 
 **Where AC wins**:
-- Zero framework lock-in. AC orchestrates Claude Code, Codex, and Gemini — the tools you already use day-to-day. No Python runtime required, no LangChain dependency.
+- Zero framework lock-in. AC orchestrates Claude Code, Codex, and Gemini, the tools you already use day-to-day. No Python runtime required, no LangChain dependency.
 - You watch real PTY output. There is no trace ID to copy into a separate observability dashboard.
 - Files as the message bus. Every coordination step is `git diff`-able.
 
@@ -35,7 +35,7 @@ LangGraph is a Python DSL for stateful agent workflows. You write the DAG; LangG
 AutoGen (and the community fork AG2) is Microsoft's multi-agent conversational framework. Agents are Python objects that exchange messages.
 
 **Where AC wins**:
-- Heterogeneous coding agents in the same workgroup. Claude Code on architecture, Codex on dev, Gemini on review — without writing a single adapter.
+- Heterogeneous coding agents in the same workgroup. Claude Code on architecture, Codex on dev, Gemini on review, without writing a single adapter.
 - Visible, observable, no Python runtime.
 
 **Where AutoGen wins**:
@@ -44,7 +44,7 @@ AutoGen (and the community fork AG2) is Microsoft's multi-agent conversational f
 
 ## Versus CrewAI
 
-CrewAI defines role-based agent teams with hierarchical processes — in Python.
+CrewAI defines role-based agent teams with hierarchical processes. In Python.
 
 **Where AC wins**:
 - Ships as a desktop app with a portable installer. You can demo it in 60 seconds.
@@ -64,7 +64,7 @@ Aider is a TUI coding assistant that edits files via diffs.
 
 **Where Aider wins**:
 - More polished single-agent UX for solo work.
-- Strong git-diff editing model — Aider's diff handling is well-tuned.
+- Strong git-diff editing model: Aider's diff handling is well-tuned.
 
 ## Versus Claude Code alone (or Codex, Gemini alone)
 
@@ -82,7 +82,7 @@ AC runs Claude Code as a session inside it. So the question is: should you launc
 
 ## Honest concessions
 
-- **Windows-first.** Every release is built and tested on Windows. Linux works. macOS needs help — see [issue #320](https://github.com/mblua/AgentsCommander/issues/320).
+- **Windows-first.** Every release is built and tested on Windows. Linux works. macOS needs help; see [issue #320](https://github.com/mblua/AgentsCommander/issues/320).
 - **You bring the coding agents.** AC does not ship Claude Code, Codex, or Gemini. Install whichever you want; AC will detect them.
 - **Single-agent flows are not the sweet spot.** If you only run one agent, you are paying for a Tauri shell. The value is multi-agent coordination.
 

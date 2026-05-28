@@ -32,7 +32,7 @@ On every AC startup AC probes `PATH` for the `rtk` binary and runs one of these 
 
 | `rtk` on PATH? | `injectRtkHook` setting | `rtkPromptDismissed` | Behavior |
 |---|---|---|---|
-| Yes | `false` | `false` | Emits `rtk_startup_status mode=prompt-enable` — the sidebar banner offers to enable injection. |
+| Yes | `false` | `false` | Emits `rtk_startup_status mode=prompt-enable`; the sidebar banner offers to enable injection. |
 | Yes | `true` | any | Mode `active`. Sweeps every managed agent dir and (re)writes the `.claude/settings.local.json` inside each managed agent directory with the RTK `PreToolUse` hook. |
 | No | `true` | any | Mode `auto-disabled`. Persists `injectRtkHook=false`, then sweeps to remove any stale hooks. |
 | No | `false` | any | Mode `silent`. No-op. |
@@ -41,7 +41,7 @@ The sweep loop is idempotent and serialized under an internal lock so concurrent
 
 ## What gets written
 
-For each managed agent directory, AC writes (or removes) the following block in `<agent-dir>/.claude/settings.local.json` (the per-agent settings file under each managed agent directory in the matrix — **not** the user's global `~/.claude/`):
+For each managed agent directory, AC writes (or removes) the following block in `<agent-dir>/.claude/settings.local.json` (the per-agent settings file under each managed agent directory in the matrix, **not** the user's global `~/.claude/`):
 
 ```json
 {
@@ -58,9 +58,9 @@ For each managed agent directory, AC writes (or removes) the following block in 
 }
 ```
 
-The `command` is a self-contained `node -e "..."` one-liner — no external script, no companion file on disk. The snippet reads Claude Code's tool input on stdin, prepends `rtk ` to any Bash invocation that does not already start with it (skipping shell built-ins like `cd`, `export`, `source`), and emits the rewritten command back to Claude Code in the v2 hook output schema (`hookSpecificOutput.updatedInput`).
+The `command` is a self-contained `node -e "..."` one-liner: no external script, no companion file on disk. The snippet reads Claude Code's tool input on stdin, prepends `rtk ` to any Bash invocation that does not already start with it (skipping shell built-ins like `cd`, `export`, `source`), and emits the rewritten command back to Claude Code in the v2 hook output schema (`hookSpecificOutput.updatedInput`).
 
-The leading `'@ac-rtk-marker-v2'` string literal is a JS no-op that AC uses as an identity marker. Every sweep matches on the marker substring, then decides whether to refresh, leave alone, or remove the hook — which preserves any user-customized rewriter body across AC upgrades. The canonical command text lives in `RTK_REWRITER_COMMAND` (`src-tauri/src/config/claude_settings.rs:52`) and is verified byte-identical to `repo-AgentsCommander/.claude/settings.json` by a source-of-truth test.
+The leading `'@ac-rtk-marker-v2'` string literal is a JS no-op that AC uses as an identity marker. Every sweep matches on the marker substring, then decides whether to refresh, leave alone, or remove the hook, which preserves any user-customized rewriter body across AC upgrades. The canonical command text lives in `RTK_REWRITER_COMMAND` (`src-tauri/src/config/claude_settings.rs:52`) and is verified byte-identical to `repo-AgentsCommander/.claude/settings.json` by a source-of-truth test.
 
 You do not have to change agent prompts, install any rewriter script, or run any RTK init command. AC injects everything Claude Code needs.
 
@@ -80,7 +80,7 @@ From that point on, AC injects the hook into every managed agent directory at st
 
 ## Scope
 
-The integration today covers **Claude Code** only. RTK works with other agents in principle, but the hook protocol (`PreToolUse`) is Claude Code's. Generalising the hook injection to Codex and Gemini is on the [roadmap](../../ROADMAP.md) under "AC Harness — deterministic command execution".
+The integration today covers **Claude Code** only. RTK works with other agents in principle, but the hook protocol (`PreToolUse`) is Claude Code's. Generalising the hook injection to Codex and Gemini is on the [roadmap](../../ROADMAP.md) under "AC Harness: deterministic command execution".
 
 ## Credit
 
@@ -89,5 +89,5 @@ RTK is built and maintained by the team at [https://github.com/rtk-ai/rtk](https
 ## See also
 
 - [RTK upstream](https://github.com/rtk-ai/rtk)
-- [`README.md` — Acknowledgments](../../README.md#acknowledgments)
-- [`plugins/rtk.md`](../../plugins/rtk.md) — the in-repo RTK plugin notes
+- [`README.md`: Acknowledgments](../../README.md#acknowledgments)
+- [`plugins/rtk.md`](../../plugins/rtk.md): the in-repo RTK plugin notes

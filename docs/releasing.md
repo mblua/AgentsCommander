@@ -2,7 +2,7 @@
 
 For maintainers cutting a new AgentsCommander release. Three phases: bump version → push tag → verify the draft release.
 
-This page is the canonical version-bumping procedure. Do not edit the version locations by hand — the script keeps the five files in sync.
+This page is the canonical version-bumping procedure. Do not edit the version locations by hand; the script keeps the five files in sync.
 
 ## 1. Bump the version
 
@@ -25,7 +25,7 @@ The script writes the same version to every checked location:
 | `src-tauri/Cargo.lock` | `agentscommander` entry version |
 | `src-tauri/tauri.conf.json` | `version` |
 
-The frontend titlebar reads its version from `tauri.conf.json` at build time, so bumping that one file is enough to update what users see — no source files need manual edits.
+The frontend titlebar reads its version from `tauri.conf.json` at build time, so bumping that one file is enough to update what users see; no source files need manual edits.
 
 ## 2. Verify the bump
 
@@ -46,7 +46,7 @@ git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock
 git commit -m "chore: bump version to X.Y.Z"
 ```
 
-The branch-naming rule in [`CONTRIBUTING.md`](../CONTRIBUTING.md) applies. For a public release this commit lands on `main` through a PR (or directly if you have permissions) — never `--no-verify`.
+The branch-naming rule in [`CONTRIBUTING.md`](../CONTRIBUTING.md) applies. For a public release this commit lands on `main` through a PR (or directly if you have permissions). Never `--no-verify`.
 
 ## 4. Push the tag
 
@@ -62,7 +62,7 @@ This creates a **draft release** with:
 - Auto-generated changelog (from commits since the previous tag)
 - Windows installers (signed by SignPath via the release workflow)
 - Linux `.AppImage`
-- macOS `.dmg` (Apple Silicon + Intel) — unsigned today
+- macOS `.dmg` (Apple Silicon + Intel), unsigned today
 
 The workflow file is `.github/workflows/release.yml`.
 
@@ -93,7 +93,7 @@ src-tauri/target/release/agentscommander.exe                # canonical
 src-tauri/target/release/agentscommander_standalone_wg-N.exe # workgroup build
 ```
 
-**Hard rule**: a workgroup build **never overwrites** the bare `agentscommander_standalone.exe`. The shipper's Step 8 enforces this. If you see the bare exe being replaced by a wg-N build, the shipper's workflow is misconfigured — stop and fix it before publishing.
+**Hard rule**: a workgroup build **never overwrites** the bare `agentscommander_standalone.exe`. The shipper's Step 8 enforces this. If you see the bare exe being replaced by a wg-N build, the shipper's workflow is misconfigured. Stop and fix it before publishing.
 
 ## Hotfixes
 
@@ -106,6 +106,6 @@ For an urgent fix on an already-released line:
 
 ## See also
 
-- [`CONTRIBUTING.md`](../CONTRIBUTING.md) — branch naming and Husky hook
-- [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md) — SignPath chain
+- [`CONTRIBUTING.md`](../CONTRIBUTING.md): branch naming and Husky hook
+- [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md): SignPath chain
 - [`CHANGELOG.md`](../CHANGELOG.md)

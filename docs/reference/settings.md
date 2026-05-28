@@ -82,10 +82,10 @@ A minimal `settings.json`:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `id` | string | — | Stable internal id. Used by `create-agent --launch <id>`. |
-| `label` | string | — | Display name in the launcher dropdown. |
-| `command` | string | — | Binary to spawn. Resolved against PATH unless absolute. |
-| `color` | string | — | CSS hex color for sidebar accent. |
+| `id` | string | - | Stable internal id. Used by `create-agent --launch <id>`. |
+| `label` | string | - | Display name in the launcher dropdown. |
+| `command` | string | - | Binary to spawn. Resolved against PATH unless absolute. |
+| `color` | string | - | CSS hex color for sidebar accent. |
 | `gitPullBefore` | bool | `false` | Run `git pull` in the working directory before launching. |
 | `excludeGlobalClaudeMd` | bool | `false` | Claude-specific: auto-write `.claude/settings.local.json` with `claudeMdExcludes` on agent creation. |
 
@@ -124,7 +124,7 @@ A minimal `settings.json`:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `voiceToTextEnabled` | bool | `false` | Master switch for the mic button. |
-| `geminiApiKey` | string | `""` | Gemini API key. Plaintext — protect your account. |
+| `geminiApiKey` | string | `""` | Gemini API key. Plaintext; protect your account. |
 | `geminiModel` | string | `gemini-2.5-flash` | Transcription model. |
 | `voiceAutoExecute` | bool | `true` | Press Enter automatically after transcription. |
 | `voiceAutoExecuteDelay` | u32 | `15` | Seconds to wait before pressing Enter. |
@@ -152,7 +152,7 @@ See [Telegram bridge setup](../integrations/telegram.md).
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `injectRtkHook` | bool | `false` | Inject the RTK `PreToolUse` hook into every managed agent's `.claude/settings.local.json` at startup. |
-| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected — enable hook injection?" banner for the lifetime of this settings file. |
+| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected: enable hook injection?" banner for the lifetime of this settings file. |
 
 See [RTK integration](../features/rtk-integration.md).
 
@@ -203,6 +203,6 @@ Use any JSON validator. AC will refuse to start if the file is not valid JSON an
 
 ## See also
 
-- [Portable instances](../features/portable-instances.md) — per-instance config rules
-- [CLI reference](cli.md) — verbs that read/write this file
-- [`PRIVACY.md`](../../PRIVACY.md) — what credentials live here and how they are transmitted
+- [Portable instances](../features/portable-instances.md): per-instance config rules
+- [CLI reference](cli.md): verbs that read/write this file
+- [`PRIVACY.md`](../../PRIVACY.md): what credentials live here and how they are transmitted

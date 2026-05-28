@@ -1,6 +1,6 @@
 # Portable instances
 
-For developers who want isolated AgentsCommander instances on the same machine — for example a `prod` config and a `team-a` config side by side.
+For developers who want isolated AgentsCommander instances on the same machine, for example a `prod` config and a `team-a` config side by side.
 
 AgentsCommander is fully portable. The binary carries everything it needs; no installation is required. Two copies of the binary in different folders, or with different filenames, run as completely independent applications.
 
@@ -65,5 +65,5 @@ Delete the binary and its `.agentscommander_<suffix>/` directory. AC keeps no gl
 
 ## See also
 
-- [Settings reference](../reference/settings.md) — what lives in `settings.json`
-- [`PRIVACY.md`](../../PRIVACY.md) — what data each instance writes to disk
+- [Settings reference](../reference/settings.md): what lives in `settings.json`
+- [`PRIVACY.md`](../../PRIVACY.md): what data each instance writes to disk

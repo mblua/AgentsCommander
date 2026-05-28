@@ -6,11 +6,11 @@ By the end of this guide you will have AgentsCommander installed, an AC project 
 
 ## Prerequisites
 
-- One of [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and authenticated on your machine. You can install more than one — AC will let you pick per agent.
+- One of [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and authenticated on your machine. You can install more than one; AC will let you pick per agent.
 - Git installed.
 - A repo you want the agents to work on (it can be empty).
 
-You do **not** need Node.js or Rust to run AgentsCommander. Those are only needed if you want to build from source — see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+You do **not** need Node.js or Rust to run AgentsCommander. Those are only needed if you want to build from source; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## 1. Download and install
 
@@ -28,7 +28,7 @@ Run the installer, or drop the portable `.exe` into any folder and double-click.
 
 An **AC project** is a folder with an `.ac-new/` workspace inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable.
 
-In the sidebar, click **New Project** and point at any folder — empty or an existing repo. AC creates `.ac-new/` with a sensible `.gitignore` and registers the project in your sidebar.
+In the sidebar, click **New Project** and point at any folder, empty or an existing repo. AC creates `.ac-new/` with a sensible `.gitignore` and registers the project in your sidebar.
 
 > CLI equivalent: `agentscommander new-project /path/to/folder`
 
@@ -37,7 +37,7 @@ In the sidebar, click **New Project** and point at any folder — empty or an ex
 Open the Teams pane. A **Team** is one coordinator plus one or more worker agents working toward a shared goal.
 
 1. Click **+ Team** and give it a name (for example `feature-x`).
-2. Add the **coordinator** — give the agent a directory name (for example `tech-lead`), pick a role template from the [Agents Agency picker](integrations/coding-agents.md#role-template-picker), and finish.
+2. Add the **coordinator**: give the agent a directory name (for example `tech-lead`), pick a role template from the [Agents Agency picker](integrations/coding-agents.md#role-template-picker), and finish.
 3. Add one **worker** the same way (for example `dev-rust` with the *Rust developer* template).
 4. Mark the first agent as **coordinator**.
 
@@ -61,8 +61,8 @@ That's the loop. Every message is a file you can `cat`, `git diff`, and audit.
 
 ## Next steps
 
-- [Concepts](concepts.md) — the vocabulary (agent, team, workgroup, coordinator, brief).
-- [Teams and workgroups](agents/teams-and-workgroups.md) — coordinator authority, brief writing, recovery.
-- [Inter-agent messaging](agents/inter-agent-messaging.md) — the file protocol and the `send` CLI.
-- [Use cases](use-cases.md) — recipes other people are running.
-- [Troubleshooting](troubleshooting.md) — when something does not work.
+- [Concepts](concepts.md): the vocabulary (agent, team, workgroup, coordinator, brief).
+- [Teams and workgroups](agents/teams-and-workgroups.md): coordinator authority, brief writing, recovery.
+- [Inter-agent messaging](agents/inter-agent-messaging.md): the file protocol and the `send` CLI.
+- [Use cases](use-cases.md): recipes other people are running.
+- [Troubleshooting](troubleshooting.md): when something does not work.

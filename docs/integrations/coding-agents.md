@@ -20,9 +20,9 @@ The full enum is in `session/profile.rs::CodingAgentKind`.
 
 AC does not install the coding-agent binaries. Use the upstream installers:
 
-- **Claude Code** — [docs.claude.com/en/docs/claude-code](https://docs.claude.com/en/docs/claude-code)
-- **Codex** — [github.com/openai/codex](https://github.com/openai/codex)
-- **Gemini** — [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli)
+- **Claude Code**: [docs.claude.com/en/docs/claude-code](https://docs.claude.com/en/docs/claude-code)
+- **Codex**: [github.com/openai/codex](https://github.com/openai/codex)
+- **Gemini**: [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli)
 
 After install, each CLI authenticates itself (login flow, API key, or both). AC does not touch those credentials.
 
@@ -62,8 +62,8 @@ You can change the choice for a session later: right-click → **Launch with…*
 
 When you create a new agent through the UI you can pick a role template. The picker shows two sources:
 
-1. **Agency templates** — read from the vendored snapshot at `src-tauri/src/commands/agency_agents_snapshot.json`, regenerated via `scripts/generate-agency-snapshot.mjs`.
-2. **Local templates** — read from `<config-dir>/agent-templates/<folder>/` (override the path via `settings.agentTemplatesPath`).
+1. **Agency templates**: read from the vendored snapshot at `src-tauri/src/commands/agency_agents_snapshot.json`, regenerated via `scripts/generate-agency-snapshot.mjs`.
+2. **Local templates**: read from `<config-dir>/agent-templates/<folder>/` (override the path via `settings.agentTemplatesPath`).
 
 Each template provides metadata (name, description, category, accent color) and a markdown role body. AC writes the body into the new agent's `Role.md` and `CLAUDE.md`.
 
@@ -77,7 +77,7 @@ To make AC recognise a new CLI (e.g. a custom wrapper) under the **Coding Agents
 2. Fill in `id`, `label`, `command`, and accent `color`.
 3. Save.
 
-The new entry appears in the launcher dropdown immediately. AC will spawn the binary as-is — no resume tokens are injected unless the binary's basename starts with `claude`, `codex`, or `gemini`.
+The new entry appears in the launcher dropdown immediately. AC will spawn the binary as-is; no resume tokens are injected unless the binary's basename starts with `claude`, `codex`, or `gemini`.
 
 For deeper integration (a new `CodingAgentKind` with its own resume tokens and idle tuning), you need to add a profile to `src-tauri/src/session/profile.rs` and rebuild. Track the OpenCode integration on the [roadmap](../../ROADMAP.md) for the canonical example of how this is done.
 
@@ -91,11 +91,11 @@ AC does not store coding-agent credentials. Each CLI manages its own:
 | Codex | `~/.codex/` |
 | Gemini | `~/.gemini/` |
 
-If you use the AC-managed agent directories, AC may write minimal `.claude/settings.local.json` files (for RTK integration, `claudeMdExcludes`) — these contain configuration only, not credentials.
+If you use the AC-managed agent directories, AC may write minimal `.claude/settings.local.json` files (for RTK integration, `claudeMdExcludes`); these contain configuration only, not credentials.
 
 ## See also
 
-- [Creating agents](../agents/creating-agents.md) — make a new agent dir
-- [Settings reference](../reference/settings.md) — full schema for `agents[]`
-- [RTK integration](../features/rtk-integration.md) — Claude Code Bash-tool compression
-- [Roadmap — coding agents](../../ROADMAP.md) — OpenCode, Nvidia agent, more
+- [Creating agents](../agents/creating-agents.md): make a new agent dir
+- [Settings reference](../reference/settings.md): full schema for `agents[]`
+- [RTK integration](../features/rtk-integration.md): Claude Code Bash-tool compression
+- [Roadmap: coding agents](../../ROADMAP.md): OpenCode, Nvidia agent, more

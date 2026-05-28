@@ -22,7 +22,7 @@ The bridge is per session. You can attach different bots to different sessions, 
 ## When not to use it
 
 - High-volume real-time PTY output. Telegram rate-limits and chunking add latency; bursty TUI output may be heavily filtered before it reaches the chat.
-- Sensitive content. Telegram is not end-to-end encrypted by default (only Secret Chats are). The bridge sends terminal output through Telegram's servers — see [`PRIVACY.md`](../../PRIVACY.md).
+- Sensitive content. Telegram is not end-to-end encrypted by default (only Secret Chats are). The bridge sends terminal output through Telegram's servers; see [`PRIVACY.md`](../../PRIVACY.md).
 - Untrusted networks. The bot token grants control of the bot's chats; if you commit `settings.json` by accident you must rotate.
 
 ## Coding-agent reader modes
@@ -55,7 +55,7 @@ Spinners, progress bars, and chrome are filtered out. Only "stable" output rows 
 
 Plain text. Your message is written verbatim into the session's PTY as if you typed it on the keyboard, followed by a newline. Multi-line messages are sent line by line.
 
-There is no slash-command syntax — anything you would type in the terminal works.
+There is no slash-command syntax: anything you would type in the terminal works.
 
 ## State and indicators
 
@@ -79,5 +79,5 @@ For the data-flow detail, see [`PRIVACY.md`](../../PRIVACY.md).
 
 ## See also
 
-- [Telegram setup](../integrations/telegram.md) — step-by-step
-- [`docs/troubleshooting.md#telegram-bridge`](../troubleshooting.md#telegram-bridge) — common failures
+- [Telegram setup](../integrations/telegram.md): step-by-step
+- [`docs/troubleshooting.md#telegram-bridge`](../troubleshooting.md#telegram-bridge): common failures

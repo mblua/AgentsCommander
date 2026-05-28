@@ -11,7 +11,7 @@ In any Telegram client, talk to [@BotFather](https://t.me/BotFather):
 1. Send `/newbot`.
 2. Pick a display name (e.g. *My AC Bot*).
 3. Pick a username ending in `bot` (e.g. *my_ac_bot*).
-4. BotFather replies with a **bot token** — a string like `1234567890:ABCDEF...`.
+4. BotFather replies with a **bot token**, a string like `1234567890:ABCDEF...`.
 
 Save the token. Anyone with it can control the bot.
 
@@ -33,13 +33,13 @@ In AgentsCommander:
 1. Open **Settings → Integrations → Telegram**.
 2. Click **+ Bot**.
 3. Fill in:
-   - **Label** — a human-friendly name (e.g. *Personal bot*).
-   - **Token** — the BotFather token from step 1.
-   - **Chat ID** — the integer from step 2.
+   - **Label**: a human-friendly name (e.g. *Personal bot*).
+   - **Token**: the BotFather token from step 1.
+   - **Chat ID**: the integer from step 2.
 4. Click **Test** to fire a hello message. If your phone buzzes, you are configured.
 5. **Save**.
 
-The bot configuration is stored locally in `settings.json` under `telegramBots[]`. The token is in plaintext — protect access to your user account.
+The bot configuration is stored locally in `settings.json` under `telegramBots[]`. The token is in plaintext; protect access to your user account.
 
 ## 4. Attach to a session
 
@@ -76,7 +76,7 @@ Useful for ending an overnight run with a screenshot of the test report.
 
 ## Privacy
 
-The bridge sends terminal output through Telegram's servers — see [`PRIVACY.md`](../../PRIVACY.md). Telegram is not end-to-end encrypted outside Secret Chats. If you handle sensitive data, do not attach a bot to those sessions.
+The bridge sends terminal output through Telegram's servers; see [`PRIVACY.md`](../../PRIVACY.md). Telegram is not end-to-end encrypted outside Secret Chats. If you handle sensitive data, do not attach a bot to those sessions.
 
 ## Troubleshooting
 
@@ -91,6 +91,6 @@ More: [`docs/troubleshooting.md#telegram-bridge`](../troubleshooting.md#telegram
 
 ## See also
 
-- [Telegram bridge — feature page](../features/telegram-bridge.md)
-- [CLI reference — `telegram-send-image`](../reference/cli.md#telegram-send-image)
-- [Settings reference — `telegramBots`](../reference/settings.md)
+- [Telegram bridge: feature page](../features/telegram-bridge.md)
+- [CLI reference: `telegram-send-image`](../reference/cli.md#telegram-send-image)
+- [Settings reference: `telegramBots`](../reference/settings.md)

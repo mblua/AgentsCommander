@@ -1,6 +1,6 @@
 # Voice-to-text
 
-For developers who want to dictate prompts to a coding agent instead of typing — useful for long prompts or hands-busy moments.
+For developers who want to dictate prompts to a coding agent instead of typing, useful for long prompts or hands-busy moments.
 
 For end-to-end setup (getting a Gemini API key, configuring AC, picking a model) see [`docs/integrations/voice.md`](../integrations/voice.md). This page describes how the feature works and what to expect.
 
@@ -46,11 +46,11 @@ Press **Ctrl+Shift+R** anywhere in the app to toggle voice recording on the acti
 
 Only the audio blob plus your model + API key go to `generativelanguage.googleapis.com`. No PTY output, no session metadata, no AC version. Transcribed text comes back; AC writes it locally and the round-trip ends.
 
-The Gemini API's privacy policy applies to the audio AC transmits — see [Google's terms](https://policies.google.com/privacy).
+The Gemini API's privacy policy applies to the audio AC transmits; see [Google's terms](https://policies.google.com/privacy).
 
 ## Cost
 
-Voice transcription uses the Gemini Files / Generate API. Pricing depends on the model and audio length — Google publishes current rates on their developer pricing page. Switching from `gemini-2.5-flash` to `gemini-1.5-pro` typically costs more per second of audio.
+Voice transcription uses the Gemini Files / Generate API. Pricing depends on the model and audio length; Google publishes current rates on their developer pricing page. Switching from `gemini-2.5-flash` to `gemini-1.5-pro` typically costs more per second of audio.
 
 ## Failure modes
 
@@ -65,5 +65,5 @@ More cases: [`docs/troubleshooting.md#voice-to-text`](../troubleshooting.md#voic
 
 ## See also
 
-- [Voice setup](../integrations/voice.md) — get a Gemini key and wire it in
-- [`PRIVACY.md`](../../PRIVACY.md) — what leaves your machine and when
+- [Voice setup](../integrations/voice.md): get a Gemini key and wire it in
+- [`PRIVACY.md`](../../PRIVACY.md): what leaves your machine and when

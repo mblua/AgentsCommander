@@ -1,4 +1,4 @@
-# Role: AC Builder — Creating Agents, Teams & Workgroups in AgentsCommander
+# Role: AC Builder, Creating Agents, Teams & Workgroups in AgentsCommander
 
 This document is the definitive guide for any AI agent tasked with creating or modifying the agent/team/workgroup structure in an AgentsCommander project. It captures the conventions, file formats, and pitfalls learned from building real multi-agent teams.
 
@@ -8,7 +8,7 @@ This document is the definitive guide for any AI agent tasked with creating or m
 
 | Concept | Prefix | Location | Purpose |
 |---|---|---|---|
-| **Agent** | `_agent_` | `.ac-new/_agent_NAME/` | A role definition — who this agent is, what it does, what it must never do |
+| **Agent** | `_agent_` | `.ac-new/_agent_NAME/` | A role definition: who this agent is, what it does, what it must never do |
 | **Team** | `_team_` | `.ac-new/_team_NAME/` | A grouping of agents that can message each other via `list-peers` / `send` |
 | **Workgroup** | `wg-` | `.ac-new/wg-N-TEAMNAME/` | An isolated working environment with cloned agents + cloned repo for parallel work |
 | **Workgroup Agent** | `__agent_` | `.ac-new/wg-N-TEAMNAME/__agent_NAME/` | A replica of a project-level agent inside a workgroup (double underscore) |
@@ -19,19 +19,19 @@ This document is the definitive guide for any AI agent tasked with creating or m
 
 ## 1. Creating a Project-Level Agent (`_agent_*`)
 
-Project-level agents appear in the **AGENTS** section of the AgentsCommander sidebar. They are the canonical definitions — workgroup agents are replicas of these.
+Project-level agents appear in the **AGENTS** section of the AgentsCommander sidebar. They are the canonical definitions; workgroup agents are replicas of these.
 
 ### Folder Structure
 
 ```
 .ac-new/_agent_NAME/
-├── Role.md          # REQUIRED — the agent's identity, responsibilities, and rules
-├── inbox/           # Created by AC on first use — incoming messages
-├── outbox/          # Created by AC on first use — outgoing messages
-├── memory/          # Created by AC on first use — persistent agent memory
-├── plans/           # Created by AC on first use — plan files
-├── skills/          # Created by AC on first use — reusable workflows
-└── .agentscommander_mb/   # Created by AC — internal runtime state
+├── Role.md          # REQUIRED: the agent's identity, responsibilities, and rules
+├── inbox/           # Created by AC on first use: incoming messages
+├── outbox/          # Created by AC on first use: outgoing messages
+├── memory/          # Created by AC on first use: persistent agent memory
+├── plans/           # Created by AC on first use: plan files
+├── skills/          # Created by AC on first use: reusable workflows
+└── .agentscommander_mb/   # Created by AC: internal runtime state
     └── config.json        # Runtime config (tooling, session tracking)
 ```
 
@@ -46,7 +46,7 @@ description: 'One-line description of what this agent does'
 type: agent
 ---
 
-# Role: Display Name — Project Context
+# Role: Display Name, Project Context
 
 ## Source of Truth
 
@@ -77,16 +77,16 @@ systems from the coding agent (e.g., ~/.claude/projects/memory/).
 
 ## [Domain-Specific Sections]
 
-[Architecture, workflow, standards — whatever this agent needs to know]
+[Architecture, workflow, standards: whatever this agent needs to know]
 
 ---
 
 ## What You Must NEVER Do
 
-[Hard rules — the guardrails that prevent disasters]
+[Hard rules: the guardrails that prevent disasters]
 ```
 
-### Role.md Anatomy — What Makes a Good Role
+### Role.md Anatomy: What Makes a Good Role
 
 A Role.md is NOT a job description. It's an **operational manual** that an AI agent reads cold and must be able to act on immediately. Every section must pass the test: "Could an agent who has never seen this project before do the right thing after reading this?"
 
@@ -94,7 +94,7 @@ A Role.md is NOT a job description. It's an **operational manual** that an AI ag
 
 | Section | Purpose | Bad Example | Good Example |
 |---|---|---|---|
-| Core Responsibility | What you do and DON'T do | "Help with the project" | "Design XPath modification plans. You are a planner, not an implementer — you never write XML yourself." |
+| Core Responsibility | What you do and DON'T do | "Help with the project" | "Design XPath modification plans. You are a planner, not an implementer; you never write XML yourself." |
 | Project Context | Domain knowledge | "It's a game mod" | Repo URL, mod scope, what systems exist, what the goal is |
 | Domain Knowledge | Technical reference | "Use XML" | XPath syntax with examples, file structure, game systems table |
 | Workflow | Where you fit in the pipeline | "Work with the team" | "Step 2: You receive a requirement from the tech-lead. You produce a plan in `_plans/`. The dev implements it." |
@@ -112,7 +112,7 @@ A Role.md is NOT a job description. It's an **operational manual** that an AI ag
 
 5. **State the negative space.** "What You Must NEVER Do" is as important as the responsibilities. Without explicit guardrails, agents drift into doing things they shouldn't (merging to main, modifying files outside their scope, skipping review steps).
 
-6. **Include the WHY.** Don't just say "never push to origin." Say "never push to origin — the merge/push decision belongs to the user, not to agents." The WHY helps the agent make judgment calls in edge cases.
+6. **Include the WHY.** Don't just say "never push to origin." Say "never push to origin: the merge/push decision belongs to the user, not to agents." The WHY helps the agent make judgment calls in edge cases.
 
 ---
 
@@ -124,9 +124,9 @@ Teams define which agents can communicate with each other via `list-peers` and `
 
 ```
 .ac-new/_team_NAME/
-├── config.json      # REQUIRED — defines members, coordinator, and repos
-├── conventions.md   # Optional — shared conventions across the team
-└── memory/          # Optional — shared team memory
+├── config.json      # REQUIRED: defines members, coordinator, and repos
+├── conventions.md   # Optional: shared conventions across the team
+└── memory/          # Optional: shared team memory
 ```
 
 ### config.json Format
@@ -166,7 +166,7 @@ Teams define which agents can communicate with each other via `list-peers` and `
 
 2. **Agents must exist.** Every path in the `agents` array must point to an existing `_agent_*` folder with a `Role.md`. If the folder doesn't exist, the agent won't appear.
 
-3. **Don't reference external projects.** If you're building a team for project A, the agents must be `_agent_*` folders inside project A's `.ac-new/`. Referencing agents from project B (e.g., `C:\repos\other-project\.ac-new\_agent_foo`) makes them appear as `@other-project` in the sidebar — they belong to the wrong project.
+3. **Don't reference external projects.** If you're building a team for project A, the agents must be `_agent_*` folders inside project A's `.ac-new/`. Referencing agents from project B (e.g., `C:\repos\other-project\.ac-new\_agent_foo`) makes them appear as `@other-project` in the sidebar; they belong to the wrong project.
 
 4. **The coordinator must be in the agents list.** The coordinator path must also appear in the `agents` array.
 
@@ -185,7 +185,7 @@ Workgroups are isolated working environments created when a team needs to work o
 ├── TASK.md                    # Objective, scope, and deliverables for this workgroup
 ├── __agent_NAME/               # Replica of _agent_NAME (double underscore)
 │   ├── config.json             # Points to parent agent's identity + local repo
-│   ├── Role.md                 # Optional override — if absent, uses parent's Role.md via config
+│   ├── Role.md                 # Optional override: if absent, uses parent's Role.md via config
 │   ├── inbox/
 │   ├── outbox/
 │   └── .agentscommander_mb/
@@ -217,14 +217,14 @@ Workgroups are isolated working environments created when a team needs to work o
 | Field | Description |
 |---|---|
 | `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` and `$REPOS_WORKSPACE_INFO` are AC-injected variables. The third entry is the path to the Role.md that defines this agent's personality. |
-| `identity` | Path to the parent agent folder. This is the canonical identity — the workgroup agent is a replica of this. |
+| `identity` | Path to the parent agent folder. This is the canonical identity; the workgroup agent is a replica of this. |
 | `repos` | Relative paths to the repo clones inside this workgroup. |
 
 ### Key Conventions
 
 1. **Naming:** `wg-N-TEAMNAME` where N is sequential (1, 2, 3...) and TEAMNAME matches the team.
 2. **Double underscore:** Workgroup agents use `__agent_` (two underscores) to distinguish from project-level `_agent_` (one underscore).
-3. **Repo prefix:** Cloned repos inside workgroups use `repo-` prefix (e.g., `repo-AgentsCommander`). This is critical — the golden rule allows write access only to `repo-*` folders.
+3. **Repo prefix:** Cloned repos inside workgroups use `repo-` prefix (e.g., `repo-AgentsCommander`). This is critical: the golden rule allows write access only to `repo-*` folders.
 4. **Context paths:** Use relative paths (`../../_agent_NAME/Role.md`) so the workgroup is portable.
 5. **Role.md override:** If you place a Role.md inside the `__agent_*` folder, it overrides the parent's role. To use the parent's role, reference it in `context` instead.
 6. **.gitignore:** The `.ac-new/.gitignore` MUST exclude `wg-*/` to prevent the parent repo's git operations from corrupting workgroup clones.
@@ -279,7 +279,7 @@ This is non-negotiable. Without it, `git checkout` or `git reset` on the parent 
 
 When creating a full agent team for a new project:
 
-### Step 1 — Create `.ac-new/` structure
+### Step 1: Create `.ac-new/` structure
 
 ```
 .ac-new/
@@ -299,25 +299,25 @@ When creating a full agent team for a new project:
     └── memory/                   # Shared memory (optional)
 ```
 
-### Step 2 — Verify each agent has Role.md with frontmatter
+### Step 2: Verify each agent has Role.md with frontmatter
 
 ```yaml
 ---
 name: 'agent-name'
-description: 'What this agent does — one line'
+description: 'What this agent does, one line'
 type: agent
 ---
 ```
 
-### Step 3 — Verify team config uses absolute paths to local agents
+### Step 3: Verify team config uses absolute paths to local agents
 
 All paths in `_team_*/config.json` must point to `_agent_*` folders **inside the same project's `.ac-new/`**. Never reference agents from other projects.
 
-### Step 4 — Verify in AgentsCommander
+### Step 4: Verify in AgentsCommander
 
 After setup, all agents should appear in the **AGENTS** section of the sidebar (not just under WORKGROUPS). If an agent appears as `@other-project`, its team config is pointing to an external path.
 
-### Step 5 — Test peer discovery
+### Step 5: Test peer discovery
 
 From any agent session, run:
 ```bash
@@ -373,7 +373,7 @@ These are proven team compositions. Adapt to your project's domain.
 | **tech-lead** | Coordinator | Breaks requirements into tasks, delegates, verifies, reports |
 | **architect** | Planner | Designs implementation plans, maps affected files, flags cascading effects |
 | **dev** | Implementer | Writes code, runs checks, commits to feature branches |
-| **grinch** | Reviewer | Adversarial review — finds bugs, edge cases, security issues |
+| **grinch** | Reviewer | Adversarial review: finds bugs, edge cases, security issues |
 | **shipper** | Deployer | Builds, validates, packages, deploys |
 
 ### Minimal Team (small projects)

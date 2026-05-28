@@ -2,12 +2,12 @@
 
 ## Reporting a vulnerability
 
-Please report security issues **privately** — do not open a public GitHub issue.
+Please report security issues **privately**; do not open a public GitHub issue.
 
 Two equally good options:
 
-1. **GitHub Security Advisory** — preferred. From the repo, open **Security → Advisories → Report a vulnerability**. This creates a private discussion thread between you and the maintainers.
-2. **Email** — `mariano.blua@gmail.com`. Use the subject line `[AC SECURITY]` so it doesn't get lost. Encryption optional; if you need a key, request one in your first message.
+1. **GitHub Security Advisory:** preferred. From the repo, open **Security → Advisories → Report a vulnerability**. This creates a private discussion thread between you and the maintainers.
+2. **Email:** `mariano.blua@gmail.com`. Use the subject line `[AC SECURITY]` so it doesn't get lost. Encryption optional; if you need a key, request one in your first message.
 
 Please include:
 
@@ -20,9 +20,9 @@ Please include:
 
 | Version | Status |
 |---|---|
-| Latest minor release (currently `0.8.x`) | Supported — security fixes shipped on the next patch release |
-| Previous minor release | Best-effort — security fixes if backporting is straightforward |
-| Older | Unsupported — please upgrade |
+| Latest minor release (currently `0.8.x`) | Supported: security fixes shipped on the next patch release |
+| Previous minor release | Best-effort: security fixes if backporting is straightforward |
+| Older | Unsupported: please upgrade |
 
 ## Disclosure policy
 
@@ -44,7 +44,7 @@ If a fix lands sooner, we publish sooner. If the fix needs more than 90 days (e.
 
 ## Privacy and data-flow concerns
 
-If your report concerns user data (telemetry, network egress, third-party services), see [PRIVACY.md](PRIVACY.md) first — many concerns are answered by the no-telemetry stance and the per-feature opt-in model.
+If your report concerns user data (telemetry, network egress, third-party services), see [PRIVACY.md](PRIVACY.md) first. Many concerns are answered by the no-telemetry stance and the per-feature opt-in model.
 
 ## Credit
 

@@ -1,4 +1,4 @@
-# Agents Commander — Architecture Map
+# Agents Commander: Architecture Map
 
 > Auto-generated from codebase analysis. Version 0.8.43, branch `main`.
 
@@ -76,7 +76,7 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph "lib.rs — App Bootstrap"
+    subgraph "lib.rs: App Bootstrap"
         BOOTSTRAP["State init<br/>Window creation<br/>Command registration<br/>Session restore"]
     end
 
@@ -251,7 +251,7 @@ graph LR
 
 ---
 
-## 4. IPC Contract — All Commands
+## 4. IPC Contract: All Commands
 
 ```mermaid
 graph LR
@@ -296,7 +296,7 @@ graph LR
 
 ---
 
-## 5. Events — Backend to Frontend
+## 5. Events: Backend to Frontend
 
 ```mermaid
 graph LR
@@ -493,7 +493,7 @@ graph TD
 
 ---
 
-## 8. Persistence — Files on Disk
+## 8. Persistence: Files on Disk
 
 ```mermaid
 graph TD
@@ -567,8 +567,8 @@ graph TD
 | `lib.rs` | App bootstrap, state init, window creation, session restore, command registration |
 | `errors.rs` | `AppError` enum (thiserror) |
 | `session/session.rs` | `Session`, `SessionInfo`, `SessionStatus` structs |
-| `session/manager.rs` | `SessionManager` — CRUD, ordering, active tracking |
-| `pty/manager.rs` | `PtyManager` — spawn, read loop, write, resize, kill |
+| `session/manager.rs` | `SessionManager`: CRUD, ordering, active tracking |
+| `pty/manager.rs` | `PtyManager`: spawn, read loop, write, resize, kill |
 | `pty/idle_detector.rs` | 700ms silence detection, idle/busy events |
 | `pty/git_watcher.rs` | 5s branch polling via `git rev-parse` |
 | `telegram/types.rs` | `TelegramBotConfig`, `BridgeInfo`, `BridgeStatus` |
@@ -577,7 +577,7 @@ graph TD
 | `telegram/bridge.rs` | vt100 pipeline, `RowTracker`, `ClaudeCodeFilter`, output/poll tasks |
 | `phone/types.rs` | `PhoneMessage`, `Conversation`, `AgentInfo` |
 | `phone/manager.rs` | `can_communicate()`, `send_message()`, `get_inbox()`, `ack_messages()` |
-| `config/mod.rs` | `config_dir()` — `-dev` suffix in debug |
+| `config/mod.rs` | `config_dir()`: `-dev` suffix in debug |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/dark_factory.rs` | `DarkFactoryConfig`, `Team`, `TeamMember`, `sync_agent_configs()` |
 | `config/sessions_persistence.rs` | `PersistedSession`, snapshot/restore |
@@ -603,7 +603,7 @@ graph TD
 | `shared/voice-recorder.ts` | Mic recording → Gemini → PTY inject |
 | `shared/console-capture.ts` | Console monkey-patch, 500 entries buffer |
 | `shared/stores/settings.ts` | Global `AppSettings` signal + `voiceEnabled` |
-| `sidebar/App.tsx` | Sidebar root — events, shortcuts, bridge subs |
+| `sidebar/App.tsx` | Sidebar root: events, shortcuts, bridge subs |
 | `sidebar/stores/sessions.ts` | `sessions[]` + `activeId` reactive store |
 | `sidebar/stores/bridges.ts` | `bridges[]` reactive store |
 | `sidebar/components/Titlebar.tsx` | Drag region, icon, version, controls |
@@ -612,7 +612,7 @@ graph TD
 | `sidebar/components/Toolbar.tsx` | Open Agent + New Session + Settings gear |
 | `sidebar/components/SettingsModal.tsx` | 4-tab settings: General, Agents, Integrations, Dark Factory |
 | `sidebar/components/OpenAgentModal.tsx` | Repo search → agent picker → launch |
-| `terminal/App.tsx` | Terminal root — session switching, detached mode |
+| `terminal/App.tsx` | Terminal root: session switching, detached mode |
 | `terminal/stores/terminal.ts` | `activeSessionId`, `name`, `shell`, `shellArgs`, `workingDirectory` signals |
 | `terminal/components/TerminalView.tsx` | xterm.js multi-session container, WebGL, FitAddon |
 | `terminal/components/Titlebar.tsx` | Session name, shell, DETACHED badge |

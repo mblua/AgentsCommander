@@ -44,7 +44,7 @@ This is enforced at the daemon mailbox boundary. Non-coordinator attempts return
 
 ### One agent, many teams
 
-The same agent matrix can belong to multiple teams. Each team that includes the agent gets its own replica when a workgroup activates — replicas are independent working copies, so the agent runs separately in each team's workgroup.
+The same agent matrix can belong to multiple teams. Each team that includes the agent gets its own replica when a workgroup activates; replicas are independent working copies, so the agent runs separately in each team's workgroup.
 
 ## Workgroup
 
@@ -70,7 +70,7 @@ The integer `<N>` is sequential per project. Multiple workgroups for the same te
 | Holds `memory/`, `plans/`, `skills/`, `Role.md` | ✅ Canonical | Read-only mirror |
 | Holds session scratch, inbox/outbox | ❌ | ✅ |
 | Persists across workgroups | ✅ | ❌ (one per workgroup) |
-| Edit directly? | ✅ | ❌ — write through the matrix |
+| Edit directly? | ✅ | ❌ (write through the matrix) |
 
 Agents running in a replica should treat the canonical matrix as their source of truth and the replica as a session-local working copy.
 
@@ -119,7 +119,7 @@ You then write the brief and the coordinator takes over.
 
 Right-click the workgroup → **Close**. All sessions terminate cleanly and the directory stays on disk. Messages, briefs, and conversations are preserved.
 
-If you want to delete a workgroup entirely, do it from your shell — AC will not delete files for you.
+If you want to delete a workgroup entirely, do it from your shell; AC will not delete files for you.
 
 ## Recovery
 
@@ -129,6 +129,6 @@ See [`docs/troubleshooting.md`](../troubleshooting.md) for what to do when a wor
 
 ## See also
 
-- [Inter-agent messaging](inter-agent-messaging.md) — the file protocol coordinators use
-- [Creating agents](creating-agents.md) — what to build before forming a team
-- [CLI reference](../reference/cli.md) — full coordinator-only verbs
+- [Inter-agent messaging](inter-agent-messaging.md): the file protocol coordinators use
+- [Creating agents](creating-agents.md): what to build before forming a team
+- [CLI reference](../reference/cli.md): full coordinator-only verbs

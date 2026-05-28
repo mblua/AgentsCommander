@@ -6,8 +6,8 @@ For developers debugging AgentsCommander or chasing an intermittent issue. How A
 
 AC picks its filter at startup from this chain (first match wins):
 
-1. **`RUST_LOG` environment variable** — used as the filter expression. Preferred for ad-hoc debugging from a terminal.
-2. **`settings.logLevel` in `~/.agentscommander*/settings.json`** — used as the filter expression. Persistent across restarts and survives Windows GUI launches (shortcut, double-click).
+1. **`RUST_LOG` environment variable:** used as the filter expression. Preferred for ad-hoc debugging from a terminal.
+2. **`settings.logLevel` in `~/.agentscommander*/settings.json`:** used as the filter expression. Persistent across restarts and survives Windows GUI launches (shortcut, double-click).
 3. **Default**: `agentscommander=info`.
 
 Filter expressions follow standard [`env_logger`](https://docs.rs/env_logger/) syntax. Examples:
@@ -50,7 +50,7 @@ Open `settings.json` (see [Settings reference](settings.md) for the path), add:
 }
 ```
 
-Save, restart AC. The setting persists across launches — useful when you double-click the GUI from Explorer and have no terminal to set `RUST_LOG`.
+Save, restart AC. The setting persists across launches; useful when you double-click the GUI from Explorer and have no terminal to set `RUST_LOG`.
 
 To revert, set `"logLevel": null` (or delete the field) and restart.
 
@@ -66,7 +66,7 @@ Attach `debug-logs.txt` to any bug report.
 
 ## ⚠ Malformed filters silently suppress logs
 
-If the filter does not parse as a valid `env_logger` expression — a typo, an unrecognized level keyword, a single `:` instead of `::` — `env_logger` produces no directives for AC's targets and **every** `agentscommander*` log line is suppressed at runtime.
+If the filter does not parse as a valid `env_logger` expression (a typo, an unrecognized level keyword, a single `:` instead of `::`), `env_logger` produces no directives for AC's targets and **every** `agentscommander*` log line is suppressed at runtime.
 
 This is the same behavior the binary had before settings-level filter support landed. It will bite you the same way.
 
@@ -76,7 +76,7 @@ This is the same behavior the binary had before settings-level filter support la
 RUST_LOG="<your-candidate-filter>" agentscommander.exe
 ```
 
-If AC prints normal log lines, the filter parses. If AC is silent, the filter is malformed — fix it before pasting into `settings.json`.
+If AC prints normal log lines, the filter parses. If AC is silent, the filter is malformed; fix it before pasting into `settings.json`.
 
 ## Future work
 
@@ -87,6 +87,6 @@ Neither phase has shipped yet. Phase 1 (settings-level filter + `RUST_LOG` overr
 
 ## See also
 
-- [Settings reference — `logLevel`](settings.md)
-- [`env_logger` filter syntax](https://docs.rs/env_logger/latest/env_logger/#filtering-events) — upstream docs
-- [Issue #93](https://github.com/mblua/AgentsCommander/issues/93) — the umbrella issue
+- [Settings reference: `logLevel`](settings.md)
+- [`env_logger` filter syntax](https://docs.rs/env_logger/latest/env_logger/#filtering-events): upstream docs
+- [Issue #93](https://github.com/mblua/AgentsCommander/issues/93): the umbrella issue

@@ -4,7 +4,7 @@ For developers building or operating multi-agent workflows. The full file-based 
 
 ## Why files
 
-Messages between agents are plain markdown files. Files are inspectable with `cat`, version-controllable with `git`, and arbitrarily large — PTY truncation never applies because the recipient reads the file from disk, not from a PTY injection.
+Messages between agents are plain markdown files. Files are inspectable with `cat`, version-controllable with `git`, and arbitrarily large; PTY truncation never applies because the recipient reads the file from disk, not from a PTY injection.
 
 > Every coordination step is a `git diff` you can audit.
 
@@ -55,7 +55,7 @@ Sending a message is always two steps:
 `--send` takes the **filename only**, never a path. The CLI resolves it against `<workgroup-root>/messaging/`:
 
 ```bash
-# bad — triggers "filename contains path separators or traversal"
+# bad: triggers "filename contains path separators or traversal"
 agentscommander send ... --send "C:/.../messaging/20260527-150000-wg1-a-to-wg1-b-hi.md"
 
 # good
@@ -126,7 +126,7 @@ Build your turn-by-turn loop around that: send a message, wait for a notificatio
 
 ## Conversation files
 
-Beyond `messaging/`, AC also persists a per-peer conversation snapshot at `<config-dir>/conversations/<NNNN>-<from>_<to>.json`. This is a structured copy of the back-and-forth, useful for offline analysis. It is **not** the canonical source — the messaging files are.
+Beyond `messaging/`, AC also persists a per-peer conversation snapshot at `<config-dir>/conversations/<NNNN>-<from>_<to>.json`. This is a structured copy of the back-and-forth, useful for offline analysis. It is **not** the canonical source; the messaging files are.
 
 ## Remote slash commands
 
@@ -139,7 +139,7 @@ agentscommander send --to <peer> --command compact --mode wake
 
 Whitelist: `clear`, `compact`. The recipient must be idle (green dot); the command is rejected otherwise.
 
-This is for housekeeping (clear the screen, compact the context) — not for content delivery.
+This is for housekeeping (clear the screen, compact the context), not for content delivery.
 
 ## Common errors
 
@@ -155,5 +155,5 @@ More cases: [`docs/troubleshooting.md#inter-agent-messaging`](../troubleshooting
 ## See also
 
 - [Teams and workgroups](teams-and-workgroups.md)
-- [CLI reference — `send`](../reference/cli.md#send)
-- [Security model — inter-agent routing](../security.md#inter-agent-routing)
+- [CLI reference: `send`](../reference/cli.md#send)
+- [Security model: inter-agent routing](../security.md#inter-agent-routing)

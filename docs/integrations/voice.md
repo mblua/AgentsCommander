@@ -20,14 +20,14 @@ In AgentsCommander:
 2. Toggle **Voice-to-text** on.
 3. Paste the Gemini API key into the **Gemini API key** field.
 4. Pick a model:
-   - **gemini-2.5-flash** (default) — faster, cheaper, good for clean audio.
-   - **gemini-1.5-pro** — slower, more accurate, useful for noisy or accented audio.
+   - **gemini-2.5-flash** (default): faster, cheaper, good for clean audio.
+   - **gemini-1.5-pro**: slower, more accurate, useful for noisy or accented audio.
 5. (Optional) Configure **Auto-execute**:
-   - **Auto-execute** — when on, AC presses Enter after transcription so the agent receives the prompt without you switching to the keyboard.
-   - **Delay before auto-execute** — seconds AC waits before pressing Enter (default 15s). Gives you time to read the transcription and cancel if wrong.
+   - **Auto-execute**: when on, AC presses Enter after transcription so the agent receives the prompt without you switching to the keyboard.
+   - **Delay before auto-execute**: seconds AC waits before pressing Enter (default 15s). Gives you time to read the transcription and cancel if wrong.
 6. **Save**.
 
-The key is stored locally in `settings.json` under `geminiApiKey`. Plaintext — protect your user account.
+The key is stored locally in `settings.json` under `geminiApiKey`. Plaintext; protect your user account.
 
 ## 3. Try it
 
@@ -50,7 +50,7 @@ Keyboard shortcut: **Ctrl+Shift+R** toggles voice recording on the active sessio
 
 | Step | Where data goes |
 |---|---|
-| Audio capture | Local — your microphone via `MediaRecorder` |
+| Audio capture | Local: your microphone via `MediaRecorder` |
 | Transcription request | `generativelanguage.googleapis.com` (Gemini API) |
 | Response | Back to AC; written to the local PTY |
 | Storage | Audio is **not** persisted locally; only the transcribed text reaches the PTY |
@@ -71,6 +71,6 @@ More: [`docs/troubleshooting.md#voice-to-text`](../troubleshooting.md#voice-to-t
 
 ## See also
 
-- [Voice-to-text — feature page](../features/voice-to-text.md)
-- [Settings reference — voice fields](../reference/settings.md)
-- [`PRIVACY.md`](../../PRIVACY.md) — what leaves your machine
+- [Voice-to-text: feature page](../features/voice-to-text.md)
+- [Settings reference: voice fields](../reference/settings.md)
+- [`PRIVACY.md`](../../PRIVACY.md): what leaves your machine

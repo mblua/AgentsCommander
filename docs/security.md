@@ -27,7 +27,7 @@ When you launch a session, the coding agent inherits:
 - The environment variables of the AC process (including `PATH`, `HOME`, and any keys you may have exported).
 - The user-level filesystem and network permissions you yourself have.
 
-This is the same surface area the coding agent has when you launch it from your own terminal. AC adds visibility and coordination — it does **not** add a sandbox. If the underlying agent can `rm -rf ~/`, AC will let it.
+This is the same surface area the coding agent has when you launch it from your own terminal. AC adds visibility and coordination; it does **not** add a sandbox. If the underlying agent can `rm -rf ~/`, AC will let it.
 
 If you need stricter isolation, run AC inside a virtualized environment (WSL2, Linux VM, devcontainer) and limit the VM's network and filesystem access there.
 
@@ -45,13 +45,13 @@ Token validation:
 - The daemon mailbox validates **identity**: per-session token bound to the live session set.
 - A valid UUID from a different binary instance will pass the CLI's shape check but be rejected at the mailbox.
 
-The current trust model accepts the caller's self-reported `--root` and per-session UUID — see the in-source notes in `task-set-title` and `task-append-body` for the known weakness and the follow-up issue this points to.
+The current trust model accepts the caller's self-reported `--root` and per-session UUID. See the in-source notes in `task-set-title` and `task-append-body` for the known weakness and the follow-up issue this points to.
 
 ## RTK (Rust Token Killer) injection
 
 When [RTK integration](features/rtk-integration.md) is enabled, AC writes a `PreToolUse` hook into each managed agent directory's `.claude/settings.local.json`. This is a Claude-only Bash-tool rewrite hook; it does not exfiltrate output and does not run untrusted code. AC re-sweeps every managed dir on startup so an obsolete hook is removed cleanly.
 
-You can turn the integration off at any time via **Settings → General → RTK** — the next startup sweep removes every hook AC added.
+You can turn the integration off at any time via **Settings → General → RTK**; the next startup sweep removes every hook AC added.
 
 ## Code signing
 

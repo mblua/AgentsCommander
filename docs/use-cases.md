@@ -1,6 +1,6 @@
 # Use cases
 
-For developers deciding whether AgentsCommander fits their workflow. Four worked examples — pick the one closest to your problem and adapt.
+For developers deciding whether AgentsCommander fits their workflow. Four worked examples. Pick the one closest to your problem and adapt.
 
 Every example assumes you have the [Quickstart](quickstart.md) finished: a project with an `.ac-new/` workspace and at least one coding agent (Claude Code, Codex, or Gemini) installed.
 
@@ -10,7 +10,7 @@ Every example assumes you have the [Quickstart](quickstart.md) finished: a proje
 
 ```
 wg-1-feature-x/
-  __agent_tech-lead/         # coordinator — Claude Code
+  __agent_tech-lead/         # coordinator: Claude Code
   __agent_dev-backend/       # backend module
   __agent_dev-frontend/      # frontend module
 ```
@@ -30,7 +30,7 @@ You watch all three terminals at once. When the green dot lights up on the coord
 
 ```
 wg-2-review/
-  __agent_shipper/           # opens the PR — Codex
+  __agent_shipper/           # opens the PR: Codex
   __agent_reviewer-claude/   # Claude Code
   __agent_reviewer-gemini/   # Gemini
 ```
@@ -40,7 +40,7 @@ Workflow:
 1. Shipper commits and opens the PR with `gh pr create`.
 2. Coordinator (or you) sends the two reviewers a message with the PR URL.
 3. Each reviewer pulls the diff (`gh pr diff`), reads it in its own terminal, and writes a markdown review to messaging.
-4. You read both reviews side by side. Different model, different lens — disagreements are the interesting cases.
+4. You read both reviews side by side. Different model, different lens: disagreements are the interesting cases.
 
 ## 3. Autonomous refactor crew
 
@@ -48,7 +48,7 @@ Workflow:
 
 ```
 wg-3-refactor-auth/
-  __agent_arch/              # coordinator — Claude Code, runs for hours
+  __agent_arch/              # coordinator: Claude Code, runs for hours
   __agent_dev-1/             # worker
   __agent_dev-2/             # worker
   __agent_dev-3/             # worker
@@ -74,7 +74,7 @@ Workflow:
 3. Send the agent a long-running prompt from your phone: *"Run the full integration suite, fix any failures, commit, push."*
 4. The agent's PTY output streams to Telegram (filtered, rate-limited, vt100-cleaned). Reply from your phone if it asks a question.
 
-Variant — voice-to-text: with [Gemini voice transcription](features/voice-to-text.md) enabled, hold the mic button on a session and dictate your prompt. Useful for long prompts while making coffee.
+Variant (voice-to-text): with [Gemini voice transcription](features/voice-to-text.md) enabled, hold the mic button on a session and dictate your prompt. Useful for long prompts while making coffee.
 
 ---
 
@@ -82,7 +82,7 @@ Variant — voice-to-text: with [Gemini voice transcription](features/voice-to-t
 
 A few configurations that look reasonable but cause pain:
 
-- **One agent doing everything.** AC's value is multi-agent. If you only have one agent, you are paying for a Tauri shell around the coding agent CLI you already have — use the CLI directly.
+- **One agent doing everything.** AC's value is multi-agent. If you only have one agent, you are paying for a Tauri shell around the coding agent CLI you already have; use the CLI directly.
 - **Two role prompts in one directory.** Forbidden. The second agent will read the first one's role file and lose its identity. One agent = one directory.
 - **Sharing `TASK.md` across teams.** Each workgroup has its own brief. Sharing one brief across teams will produce coordinator conflicts on the YAML frontmatter title.
 - **Cross-coordinator messaging via shared files.** Coordinators on different teams cannot send each other messages directly. Use the Root Agent (workspace-level) if you need a top-level coordinator.

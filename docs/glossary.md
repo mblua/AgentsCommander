@@ -52,7 +52,7 @@ A folder containing an `.ac-new/` workspace. AC manages all agents, teams, and w
 
 ## PTY
 
-Pseudo-terminal. Each AC session runs in a real PTY (ConPTY on Windows, Unix PTY elsewhere) — not a command runner. Full vt100, interactive prompts, color, the lot.
+Pseudo-terminal. Each AC session runs in a real PTY (ConPTY on Windows, Unix PTY elsewhere), not a command runner. Full vt100, interactive prompts, color, the lot.
 
 ## Replica
 

@@ -1,4 +1,4 @@
-# RTK (Rust Token Killer) — Plugin Notes
+# RTK (Rust Token Killer): Plugin Notes
 
 ## What is RTK?
 
@@ -6,7 +6,7 @@ RTK is a CLI proxy installed on this machine that compresses verbose command out
 
 - **Repo:** [https://github.com/rtk-ai/rtk](https://github.com/rtk-ai/rtk)
 - RTK only compresses output from Bash tool calls, not native Claude Code tools (Read, Grep, Glob).
-- If RTK has a dedicated filter for a command, it compresses the output. If not, it passes through unchanged — RTK is always safe to use.
+- If RTK has a dedicated filter for a command, it compresses the output. If not, it passes through unchanged. RTK is always safe to use.
 
 ## How AC integrates RTK
 
@@ -29,13 +29,13 @@ For each managed agent directory `<agent-dir>`, AC writes a single `PreToolUse.B
 }
 ```
 
-The `command` is a self-contained `node -e "..."` one-liner — no companion shell script, no `jq` dependency, no file on disk. It reads Claude Code's tool input on stdin, prepends `rtk ` to any Bash invocation that does not already start with it (skipping shell built-ins like `cd`, `export`, `source`), and emits the rewritten command back to Claude Code in the v2 hook output schema (`hookSpecificOutput.updatedInput`).
+The `command` is a self-contained `node -e "..."` one-liner: no companion shell script, no `jq` dependency, no file on disk. It reads Claude Code's tool input on stdin, prepends `rtk ` to any Bash invocation that does not already start with it (skipping shell built-ins like `cd`, `export`, `source`), and emits the rewritten command back to Claude Code in the v2 hook output schema (`hookSpecificOutput.updatedInput`).
 
-The leading `'@ac-rtk-marker-v2'` string is a JS no-op identity marker. Every sweep matches on the marker substring, then decides whether to refresh, leave alone, or remove the hook — preserving any user-customized rewriter body across AC upgrades.
+The leading `'@ac-rtk-marker-v2'` string is a JS no-op identity marker. Every sweep matches on the marker substring, then decides whether to refresh, leave alone, or remove the hook, preserving any user-customized rewriter body across AC upgrades.
 
 **Canonical source:** the full command string lives in `RTK_REWRITER_COMMAND` (`src-tauri/src/config/claude_settings.rs:52`) and is verified byte-identical to `repo-AgentsCommander/.claude/settings.json` by a source-of-truth test.
 
-For the full user-facing description — startup probe, sweep modes, settings toggle, removal flow — see [`docs/features/rtk-integration.md`](../docs/features/rtk-integration.md).
+For the full user-facing description (startup probe, sweep modes, settings toggle, removal flow), see [`docs/features/rtk-integration.md`](../docs/features/rtk-integration.md).
 
 ## Setup for AC users
 
@@ -62,7 +62,7 @@ Overall average: **60-90% token reduction** on common development operations.
 
 ## Optional: CLAUDE.md fallback instruction block
 
-AC's auto-injected hook is what makes the integration work — the block below is **not** required. It is an optional manual fallback for two cases:
+AC's auto-injected hook is what makes the integration work; the block below is **not** required. It is an optional manual fallback for two cases:
 
 - You have AC's auto-injection disabled (Settings → General → RTK → Inject hook = off) but still want RTK behavior.
 - You want to also remind the agent in-context, as belt-and-suspenders alongside the injected hook.
@@ -86,7 +86,7 @@ Meta: `rtk gain` to view token savings statistics, `rtk discover` to find missed
 <!-- /rtk-instructions -->
 ```
 
-AC does **not** write this block into managed agents — it's purely user-authored. The injected `PreToolUse` hook is the source of truth for command rewriting; this block is just an in-context reminder.
+AC does **not** write this block into managed agents; it's purely user-authored. The injected `PreToolUse` hook is the source of truth for command rewriting; this block is just an in-context reminder.
 
 ## Notes
 

@@ -38,11 +38,11 @@ All new branches **must** follow this pattern and reference an **open GitHub Iss
 - `bug/101-missing-idle-callback`
 
 **Invalid**:
-- `wip/63-foo` — `wip` is not a recognized type (see Branch type prefixes table)
-- `feature/63_branch_name` — underscores not allowed
-- `feature/63-Branch-Name` — uppercase not allowed
-- `feature/63--doubledash` — consecutive dashes not allowed
-- `feature/0-foo` — leading zero / issue `#0`
+- `wip/63-foo`: `wip` is not a recognized type (see Branch type prefixes table)
+- `feature/63_branch_name`: underscores not allowed
+- `feature/63-Branch-Name`: uppercase not allowed
+- `feature/63--doubledash`: consecutive dashes not allowed
+- `feature/0-foo`: leading zero / issue `#0`
 
 ### Exempt branches
 
@@ -57,17 +57,17 @@ The following prefixes skip validation:
 
 ### Grandfather rule
 
-Only branches whose history **does not yet contain** the enforcement-cutoff commit are skipped. The cutoff SHA is stored in `.github/branch-name-enforcement.cutoff.sha` on `main`. Old branches stay grandfathered until they are rebased onto (or merged with) current `main` — at which point the cutoff enters their ancestry and enforcement kicks in. This is intentional: once a branch catches up with main, its new name must comply.
+Only branches whose history **does not yet contain** the enforcement-cutoff commit are skipped. The cutoff SHA is stored in `.github/branch-name-enforcement.cutoff.sha` on `main`. Old branches stay grandfathered until they are rebased onto (or merged with) current `main`, at which point the cutoff enters their ancestry and enforcement kicks in. This is intentional: once a branch catches up with main, its new name must comply.
 
 ## Enforcement
 
-### Layer 1 — local pre-push hook (fast feedback)
+### Layer 1: local pre-push hook (fast feedback)
 
 Runs automatically on `git push` via [Husky](https://typicode.github.io/husky/). Installed for you when you run `npm install` (no extra steps).
 
 - Validates the branch name format and the slug length.
 - Does **not** verify the issue is open (that happens server-side).
-- Bypass with `git push --no-verify` if you really need to — the server-side check is authoritative.
+- Bypass with `git push --no-verify` if you really need to. The server-side check is authoritative.
 
 #### Windows tooling note
 
@@ -75,7 +75,7 @@ The pre-push hook is a POSIX shell script. Husky v9 invokes it via `sh`. On Wind
 
 **Recommended**: install [Git for Windows](https://gitforwindows.org/) and make sure its `bin/` is on your PATH. Verify with `sh --version`.
 
-### Layer 2 — GitHub Action (authoritative, not bypassable by non-owners)
+### Layer 2: GitHub Action (authoritative, not bypassable by non-owners)
 
 `.github/workflows/validate-branch-name.yml` runs on every push to a non-exempt branch. It:
 
@@ -88,7 +88,7 @@ The workflow publishes a status check named `validate-branch-name` on the branch
 
 ## If your push is rejected
 
-1. Read the error message — it says exactly what is wrong.
+1. Read the error message: it says exactly what is wrong.
 2. Find (or open) an issue that describes the work.
 3. Rename the local branch:
    ```bash
@@ -109,12 +109,12 @@ The workflow publishes a status check named `validate-branch-name` on the branch
 
 The runtime log filter is resolved at startup via this chain:
 
-1. `RUST_LOG` environment variable (if set) — used as the filter expression. Backwards compatible; preferred for ad-hoc debugging from a terminal.
-2. `settings.logLevel` field in `~/.agentscommander*/settings.json` (if `Some`) — used as the filter expression. Persistent across restarts, survives Windows GUI launches (shortcut/double-click).
+1. `RUST_LOG` environment variable (if set): used as the filter expression. Backwards compatible; preferred for ad-hoc debugging from a terminal.
+2. `settings.logLevel` field in `~/.agentscommander*/settings.json` (if `Some`): used as the filter expression. Persistent across restarts, survives Windows GUI launches (shortcut/double-click).
 3. Default: `agentscommander=info`.
 
 Filter expressions follow standard `env_logger` syntax (e.g. `info,agentscommander_lib::config::teams=trace`).
 
-⚠️ **Caveat — malformed filters silently suppress agentscommander logs.** If the value does not parse as a valid env_logger filter (e.g., typo, unrecognized level keyword, single `:` instead of `::`), no matching directives are produced for `agentscommander*` targets and all `agentscommander*` logs are suppressed at runtime. Verify your filter once with `RUST_LOG=<filter> agentscommander_mb.exe` from a terminal before persisting it in `settings.json`. This is the same behavior the binary had pre-#93 for malformed `RUST_LOG` values — Phase 1 of #93 does not change this.
+⚠️ **Caveat: malformed filters silently suppress agentscommander logs.** If the value does not parse as a valid env_logger filter (e.g., typo, unrecognized level keyword, single `:` instead of `::`), no matching directives are produced for `agentscommander*` targets and all `agentscommander*` logs are suppressed at runtime. Verify your filter once with `RUST_LOG=<filter> agentscommander_mb.exe` from a terminal before persisting it in `settings.json`. This is the same behavior the binary had pre-#93 for malformed `RUST_LOG` values. Phase 1 of #93 does not change this.
 
 Phase 2 of #93 (if shipped) will surface this in the sidebar UI; Phase 3 (if shipped) will move to live reload via `tracing-subscriber`.

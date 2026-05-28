@@ -1,4 +1,4 @@
-# README badges row — spec
+# README badges row: spec
 
 Helper file for whoever rewrites the README hero block. Copy the markdown
 under "Final block" into the README directly under the H1, above the
@@ -10,7 +10,7 @@ under "Final block" into the README directly under the H1, above the
   hurts first-impression credibility.
 - All badges are shields.io. No custom hosting, no third-party badge
   services that can break the README if they go down.
-- Style is locked to `flat-square` for the whole row — a single visual
+- Style is locked to `flat-square` for the whole row: a single visual
   rhythm.
 - Color is locked to the brand cyan (`00d4ff`) for status/info badges and
   shields.io defaults for true categorical badges (license, language).
@@ -20,13 +20,13 @@ under "Final block" into the README directly under the H1, above the
 
 The order is deliberate: identity → quality → trust → community → stack.
 
-1. **GitHub Release** — what version is current.
-2. **Build** — is it green right now.
-3. **License** — can I actually use this.
-4. **Stars** — social proof at a glance.
-5. **Code-signed (SignPath)** — the trust signal that separates this from
+1. **GitHub Release**: what version is current.
+2. **Build**: is it green right now.
+3. **License**: can I actually use this.
+4. **Stars**: social proof at a glance.
+5. **Code-signed (SignPath)**: the trust signal that separates this from
    a weekend project on a stranger's GitHub.
-6. **Stack** — Rust + Tauri 2, in one combined badge to save a slot.
+6. **Stack**: Rust + Tauri 2, in one combined badge to save a slot.
 
 ## Final block (paste into README)
 
@@ -48,21 +48,21 @@ The order is deliberate: identity → quality → trust → community → stack.
 - [ ] All 6 badges render in the GitHub README preview (paste, push, reload).
       Broken badge images degrade trust faster than no badge.
 - [ ] The 6 badges fit on **one row** on a 1280-wide viewport. If they wrap
-      to two lines, the row reads as cluttered — drop the stack badge first.
+      to two lines, the row reads as cluttered; drop the stack badge first.
 - [ ] No badge links to a 404. `CODE_SIGNING_POLICY.md` must exist at repo
       root (it does, as of 2026-05-27).
 
 ## Future additions (out of scope for this round)
 
-If we later want to surface these, here are the badge specs ready to drop in
-— but only if we remove one from the row above. Six is the cap.
+If we later want to surface these, here are the badge specs ready to drop in,
+but only if we remove one from the row above. Six is the cap.
 
 - **Discord** (only after ~500 stars per growth-hacker rec):
   `https://img.shields.io/discord/<server_id>?style=flat-square&color=00d4ff&logo=discord&label=discord`
 - **Total downloads** (once release-asset counts are non-trivial):
   `https://img.shields.io/github/downloads/mblua/AgentsCommander/total?style=flat-square&color=00d4ff&label=downloads`
 - **Last commit** (only useful if velocity drops and we want to signal
-  active development — usually noise):
+  active development, usually noise):
   `https://img.shields.io/github/last-commit/mblua/AgentsCommander?style=flat-square`
 
-— ui-designer, wg-2-community
+ui-designer, wg-2-community
