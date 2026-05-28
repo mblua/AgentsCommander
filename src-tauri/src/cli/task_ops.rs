@@ -51,9 +51,16 @@ pub enum TaskOp {
 #[derive(Debug, Clone)]
 pub enum EditOutcome {
     /// File was written. `backup` is `None` when the file did not exist before.
-    Wrote { backup: Option<PathBuf> },
+    Wrote {
+        backup: Option<PathBuf>,
+        content: String,
+        title: Option<String>,
+    },
     /// Set-title found the existing value already matched; no write performed.
-    NoOp,
+    NoOp {
+        content: String,
+        title: Option<String>,
+    },
 }
 
 /// Errors emitted by [`perform`]. `Display` impls match the §3 error matrix
@@ -474,7 +481,10 @@ where
         TaskOp::AppendBody(_) => false,
     };
     if is_noop {
-        return Ok(EditOutcome::NoOp);
+        return Ok(EditOutcome::NoOp {
+            content: existing.clone(),
+            title: title_value_of(&parsed),
+        });
     }
 
     // ── 5b. Render to bytes for the upcoming write ────────────────────────
@@ -592,6 +602,8 @@ where
 
     Ok(EditOutcome::Wrote {
         backup: backup_path,
+        content: new_content.clone(),
+        title: title_value_of(&new_parsed),
     })
 }
 
@@ -761,7 +773,7 @@ mod tests {
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
         let r = perform_inner(&wg, TaskOp::SetTitle("X".into()), now).unwrap();
         match r {
-            EditOutcome::NoOp => {}
+            EditOutcome::NoOp { .. } => {}
             other => panic!("expected NoOp, got {:?}", other),
         }
     }
@@ -897,7 +909,7 @@ mod tests {
         let now = || fixed_now_at(2026, 1, 1, 12, 34, 56);
         let r = perform_inner(&wg, TaskOp::SetTitle("X".into()), now).unwrap();
         let bp = match r {
-            EditOutcome::Wrote { backup: Some(bp) } => bp,
+            EditOutcome::Wrote { backup: Some(bp), .. } => bp,
             other => panic!("expected Wrote with backup, got {:?}", other),
         };
         let name = bp.file_name().unwrap().to_string_lossy().into_owned();
@@ -1222,7 +1234,7 @@ mod tests {
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
         let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
         match r {
-            EditOutcome::NoOp => {}
+            EditOutcome::NoOp { .. } => {}
             other => panic!("expected NoOp, got {:?}", other),
         }
         // No backup file created.
@@ -1249,7 +1261,7 @@ mod tests {
         let now = || fixed_now_at(2026, 5, 7, 12, 0, 0);
         let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
         let backup_path = match &r {
-            EditOutcome::Wrote { backup: Some(bp) } => bp.clone(),
+            EditOutcome::Wrote { backup: Some(bp), .. } => bp.clone(),
             other => panic!("expected Wrote with backup, got {:?}", other),
         };
         // HIGH-2 assertion: backup bytes must equal the pre-clean file.
@@ -1274,7 +1286,7 @@ mod tests {
         std::fs::create_dir_all(&wg).unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
         let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
-        assert!(matches!(r, EditOutcome::Wrote { backup: None }));
+        assert!(matches!(r, EditOutcome::Wrote { backup: None, .. }));
         assert_eq!(
             std::fs::read_to_string(wg.join("TASK.md")).unwrap(),
             "---\ntitle: 'Clean'\n---\nReady to start a new topic\n"
@@ -1285,5 +1297,57 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".bak.md"))
             .count();
         assert_eq!(bak_count, 0);
+    }
+
+    #[test]
+    fn concurrent_writes_return_correct_post_edit_content() {
+        for _iter in 0..10 {
+            let fix = FixtureRoot::new("task-u42");
+            let wg = fix.path().join("wg-1");
+            std::fs::create_dir_all(&wg).unwrap();
+            let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+            
+            // First call sets up the file
+            perform_inner(&wg, TaskOp::SetTitle("Initial".into()), now).unwrap();
+            
+            let barrier = Arc::new(Barrier::new(2));
+            let wg_clone1 = wg.clone();
+            let wg_clone2 = wg.clone();
+            let b1 = barrier.clone();
+            let b2 = barrier.clone();
+
+            let h1 = thread::spawn(move || {
+                b1.wait();
+                perform(&wg_clone1, TaskOp::AppendBody("first append".into()))
+            });
+            let h2 = thread::spawn(move || {
+                b2.wait();
+                perform(&wg_clone2, TaskOp::AppendBody("second append".into()))
+            });
+            
+            let r1 = h1.join().unwrap();
+            let r2 = h2.join().unwrap();
+            
+            let content1 = match r1 {
+                Ok(EditOutcome::Wrote { content, .. }) => content,
+                Err(TaskOpError::LockTimeout) => continue,
+                other => panic!("h1 unexpected outcome: {:?}", other),
+            };
+            let content2 = match r2 {
+                Ok(EditOutcome::Wrote { content, .. }) => content,
+                Err(TaskOpError::LockTimeout) => continue,
+                other => panic!("h2 unexpected outcome: {:?}", other),
+            };
+            
+            let final_disk_content = std::fs::read_to_string(wg.join("TASK.md")).unwrap();
+            
+            if final_disk_content.ends_with("first append\n") {
+                assert_eq!(content1, final_disk_content);
+            } else if final_disk_content.ends_with("second append\n") {
+                assert_eq!(content2, final_disk_content);
+            } else {
+                panic!("unexpected final disk content");
+            }
+        }
     }
 }
