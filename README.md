@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mblua/AgentsCommander/actions"><img src="https://img.shields.io/github/actions/workflow/status/mblua/AgentsCommander/release.yml?branch=main" alt="CI status" /></a>
-  <a href="https://github.com/mblua/AgentsCommander/releases/latest"><img src="https://img.shields.io/github/v/release/mblua/AgentsCommander?display_name=tag&sort=semver" alt="Latest release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" /></a>
-  <a href="CODE_SIGNING_POLICY.md"><img src="https://img.shields.io/badge/code--signed-SignPath-success" alt="Code signed by SignPath" /></a>
-  <img src="https://img.shields.io/badge/built%20with-Rust-orange" alt="Built with Rust" />
-  <img src="https://img.shields.io/badge/Tauri-2-yellow" alt="Tauri 2" />
+  <a href="https://github.com/mblua/AgentsCommander/releases/latest"><img src="https://img.shields.io/github/v/release/mblua/AgentsCommander?style=flat-square&color=00d4ff&label=release" alt="GitHub release" /></a>
+  <a href="https://github.com/mblua/AgentsCommander/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/mblua/AgentsCommander/release.yml?style=flat-square&label=build" alt="Build" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT" /></a>
+  <a href="https://github.com/mblua/AgentsCommander/stargazers"><img src="https://img.shields.io/github/stars/mblua/AgentsCommander?style=flat-square&color=00d4ff&label=stars" alt="GitHub stars" /></a>
+  <a href="CODE_SIGNING_POLICY.md"><img src="https://img.shields.io/badge/code--signed-SignPath-00d4ff?style=flat-square&logo=windows" alt="Code-signed · SignPath" /></a>
+  <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri%202-dea584?style=flat-square&logo=rust" alt="Built with Rust + Tauri 2" /></a>
 </p>
 
 <p align="center">
