@@ -114,7 +114,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
     // tree. `sender=` and `wg=` are both caller-derived (--root) and a forged
     // --root produces a forged-but-consistent line; pid disambiguates.
     match task_ops::perform(&wg_root, TaskOp::SetTitle(args.title.clone())) {
-        Ok(EditOutcome::Wrote { backup: Some(bp) }) => {
+        Ok(EditOutcome::Wrote { backup: Some(bp), .. }) => {
             log::info!(
                 "[task] set-title: sender={} wg={} pid={} backup={}",
                 sender,
@@ -125,7 +125,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
             crate::cli_println!("TASK.md title updated; backup: {}", bp.display());
             0
         }
-        Ok(EditOutcome::Wrote { backup: None }) => {
+        Ok(EditOutcome::Wrote { backup: None, .. }) => {
             log::info!(
                 "[task] set-title: sender={} wg={} pid={} backup=<no prior file>",
                 sender,
@@ -135,7 +135,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
             crate::cli_println!("TASK.md created; no prior content to back up");
             0
         }
-        Ok(EditOutcome::NoOp) => {
+        Ok(EditOutcome::NoOp { .. }) => {
             log::info!(
                 "[task] set-title (no-op): sender={} wg={} pid={} (title value already matches)",
                 sender,
