@@ -330,13 +330,20 @@ export interface TaskUpdateResult {
   task: string | null;
 }
 
-export interface WorkgroupTaskUpdatedEvent {
-  workgroupRoot?: string;
-  workgroupPath?: string;
-  task: string | null;
-  sessionIds?: string[];
-  taskTitle?: string | null;
-}
+export type WorkgroupTaskUpdatedEvent =
+  | {
+      source: "manual";
+      workgroupRoot: string;
+      task: string | null;
+      taskTitle: string | null;
+    }
+  | {
+      source: "poll";
+      workgroupRoot: string;
+      task: string | null;
+      taskTitle: string | null;
+      sessionIds: string[];
+    };
 
 // ---------------------------------------------------------------------------
 // Project registration result (#191 — shared open/new project flow)

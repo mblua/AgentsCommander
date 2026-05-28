@@ -248,7 +248,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
     unlisteners.push(
       await onWorkgroupTaskUpdated((data) => {
-        const wgPath = data.workgroupPath || data.workgroupRoot;
+        const wgPath = data.workgroupRoot;
         if (wgPath) {
           projectStore.updateWorkgroupTask(wgPath, taskFirstLine(data.task), data.taskTitle);
         }

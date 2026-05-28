@@ -317,7 +317,8 @@ struct TaskCacheEntry {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskUpdatedPayload {
-    workgroup_path: String,
+    workgroup_root: String,
+    source: String,
     task: Option<String>,
     // Always serialize taskTitle, even when None, so the consumer receives an
     // explicit signal (null) rather than `undefined`. Matches the manual-emit
@@ -756,7 +757,8 @@ impl DiscoveryBranchWatcher {
         }
 
         let payload = TaskUpdatedPayload {
-            workgroup_path: wg_root.to_string_lossy().into_owned(),
+            workgroup_root: wg_root.to_string_lossy().into_owned(),
+            source: "poll".to_string(),
             task: new_task.clone(),
             task_title: new_title.clone(),
             session_ids: session_ids.iter().map(|u| u.to_string()).collect(),
