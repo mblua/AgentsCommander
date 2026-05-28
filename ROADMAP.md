@@ -27,6 +27,10 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 - **Per-agent model + effort-level selection** — pin a specific model (e.g. Opus 4.7 vs Sonnet 4.6) and a thinking-effort tier (low / medium / high / ultra) to each agent independently. Today the choice is per-session at launch time; this would persist per `_agent_<name>` in the matrix and survive across workgroups. ([#329](https://github.com/mblua/AgentsCommander/issues/329))
 
+### Organigram & scaling
+
+- **Build the company — multi-level coordinator hierarchies** — A workgroup today is one layer. The next step layers them: level-A coordinator talks to its level-B reports; B talks to C; A never reaches C directly. Skip-levels flow through the chain, like in any sane org. The result: a real organigram, enforced by the messaging topology instead of by convention. Cascade decisions down, roll status up, hold accountability at 5, 50, or 500 agents the same way. ([#330](https://github.com/mblua/AgentsCommander/issues/330))
+
 ### CLI capabilities
 
 - **`create-workgroup` / `create-team` / `create-project`** — non-interactive equivalents of the existing `create-agent` flow for headless / script-driven setup. ([#317](https://github.com/mblua/AgentsCommander/issues/317))
