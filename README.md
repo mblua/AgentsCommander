@@ -10,10 +10,6 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/demo.gif" alt="60-second demo of multiple coding agents running in parallel" />
-</p>
-
-<p align="center">
   <a href="https://github.com/mblua/AgentsCommander/releases/latest"><img src="https://img.shields.io/github/v/release/mblua/AgentsCommander?style=flat-square&color=00d4ff&label=release" alt="GitHub release" /></a>
   <a href="https://github.com/mblua/AgentsCommander/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/mblua/AgentsCommander/release.yml?style=flat-square&label=build" alt="Build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT" /></a>
@@ -25,7 +21,7 @@
 <p align="center">
   <a href="https://github.com/mblua/AgentsCommander/releases/latest"><b>⬇ Download (latest release)</b></a>
   &nbsp;·&nbsp;
-  <a href="#60-second-demo"><b>▶ 60-second demo</b></a>
+  <a href="#60-second-quickstart"><b>▶ 60-second quickstart</b></a>
   &nbsp;·&nbsp;
   <a href="docs/quickstart.md"><b>Quickstart</b></a>
 </p>
@@ -43,14 +39,10 @@ You bring the coding agents. AgentsCommander coordinates them.
 ## See it work
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="Sidebar with three coding agents: two running, one waiting for input" />
+  <img src="docs/screenshots/hero.png" alt="Agents Commander home screen with quick start guide and active agent sidebar" />
 </p>
 
-<p align="center">
-  <img src="docs/screenshots/messaging.png" alt="Two agents exchanging a markdown message through the messaging folder" />
-</p>
-
-<a id="60-second-demo"></a>
+<a id="60-second-quickstart"></a>
 
 ## 60-second quickstart
 
