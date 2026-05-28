@@ -64,6 +64,53 @@ pub struct SessionRequest {
     pub timestamp: String,
 }
 
+pub(crate) fn find_launch_agent<'a>(
+    settings: &'a crate::config::settings::AppSettings,
+    requested: &str,
+) -> Option<&'a crate::config::settings::AgentConfig> {
+    let requested_lower = requested.to_lowercase();
+    settings.agents.iter().find(|a| {
+        a.id.eq_ignore_ascii_case(requested)
+            || a.label.eq_ignore_ascii_case(requested)
+            || a.label.to_lowercase().contains(&requested_lower)
+            || a.command.to_lowercase().starts_with(&requested_lower)
+    })
+}
+
+pub(crate) fn build_session_request(
+    cwd: String,
+    session_name: String,
+    agent: &crate::config::settings::AgentConfig,
+) -> SessionRequest {
+    let parts: Vec<&str> = agent.command.split_whitespace().collect();
+    let (shell, shell_args) = if agent.git_pull_before {
+        (
+            "cmd.exe".to_string(),
+            vec!["/K".to_string(), format!("git pull && {}", agent.command)],
+        )
+    } else {
+        (
+            parts.first().copied().unwrap_or_default().to_string(),
+            parts
+                .get(1..)
+                .unwrap_or(&[])
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
+    };
+
+    SessionRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        cwd,
+        session_name,
+        agent_id: agent.id.clone(),
+        shell,
+        shell_args,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
 pub fn execute(args: CreateAgentArgs) -> i32 {
     let created = match agent_creation::create_agent_folder_on_disk(&args.parent, &args.name) {
         Ok(created) => created,
@@ -81,15 +128,7 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
     if let Some(ref agent_id) = args.launch {
         let settings = config::settings::load_settings();
 
-        let agent_id_lower = agent_id.to_lowercase();
-        let agent_config = settings.agents.iter().find(|a| {
-            a.id.eq_ignore_ascii_case(agent_id)
-                || a.label.eq_ignore_ascii_case(agent_id)
-                || a.label.to_lowercase().contains(&agent_id_lower)
-                || a.command.to_lowercase().starts_with(&agent_id_lower)
-        });
-
-        match agent_config {
+        match find_launch_agent(&settings, agent_id) {
             Some(agent) => {
                 // Auto-generate .claude/settings.local.json if the agent has the flag
                 if agent.exclude_global_claude_md {
@@ -110,28 +149,11 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
                     eprintln!("Warning: failed to apply rtk hook: {}", e);
                 }
 
-                let parts: Vec<&str> = agent.command.split_whitespace().collect();
-                let (shell, shell_args) = if agent.git_pull_before {
-                    (
-                        "cmd.exe".to_string(),
-                        vec!["/K".to_string(), format!("git pull && {}", agent.command)],
-                    )
-                } else {
-                    (
-                        parts[0].to_string(),
-                        parts[1..].iter().map(|s| s.to_string()).collect(),
-                    )
-                };
-
-                let request = SessionRequest {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    cwd: agent_path_str.clone(),
-                    session_name: created.display_name.clone(),
-                    agent_id: agent.id.clone(),
-                    shell,
-                    shell_args,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                };
+                let request = build_session_request(
+                    agent_path_str.clone(),
+                    created.display_name.clone(),
+                    agent,
+                );
 
                 match write_session_request(&request) {
                     Ok(()) => {
@@ -174,7 +196,7 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
 }
 
 /// Write a session request file to ~/.agentscommander/session-requests/.
-fn write_session_request(request: &SessionRequest) -> Result<(), String> {
+pub(crate) fn write_session_request(request: &SessionRequest) -> Result<(), String> {
     let config_dir = config::config_dir().ok_or("Cannot determine config directory")?;
 
     let requests_dir = config_dir.join("session-requests");
@@ -187,4 +209,103 @@ fn write_session_request(request: &SessionRequest) -> Result<(), String> {
     std::fs::write(&path, json).map_err(|e| format!("Failed to write session request: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::settings::{AgentConfig, AppSettings};
+
+    fn agent(id: &str, label: &str, command: &str) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            label: label.to_string(),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            git_pull_before: false,
+            exclude_global_claude_md: false,
+        }
+    }
+
+    #[test]
+    fn find_launch_agent_matches_id_label_substring_and_command_prefix() {
+        let mut settings = AppSettings::default();
+        settings.agents = vec![
+            agent("codex", "OpenAI Codex", "codex"),
+            agent(
+                "claude",
+                "Claude Desktop",
+                "claude --dangerously-skip-permissions",
+            ),
+            agent("pwsh", "PowerShell", "powershell.exe -NoLogo"),
+        ];
+
+        assert_eq!(
+            find_launch_agent(&settings, "CODEX").map(|a| a.id.as_str()),
+            Some("codex")
+        );
+        assert_eq!(
+            find_launch_agent(&settings, "Claude Desktop").map(|a| a.id.as_str()),
+            Some("claude")
+        );
+        assert_eq!(
+            find_launch_agent(&settings, "desktop").map(|a| a.id.as_str()),
+            Some("claude")
+        );
+        assert_eq!(
+            find_launch_agent(&settings, "powershell").map(|a| a.id.as_str()),
+            Some("pwsh")
+        );
+    }
+
+    #[test]
+    fn build_session_request_wraps_git_pull_before_with_cmd_on_windows_shape() {
+        let mut launch_agent = agent("codex", "Codex", "codex --ask-for-approval never");
+        launch_agent.git_pull_before = true;
+
+        let request = build_session_request(
+            "C:/repo/.ac-new/_agent_architect".to_string(),
+            "repo/architect".to_string(),
+            &launch_agent,
+        );
+
+        assert_eq!(request.cwd, "C:/repo/.ac-new/_agent_architect");
+        assert_eq!(request.session_name, "repo/architect");
+        assert_eq!(request.agent_id, "codex");
+        assert_eq!(request.shell, "cmd.exe");
+        assert_eq!(
+            request.shell_args,
+            vec![
+                "/K".to_string(),
+                "git pull && codex --ask-for-approval never".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn write_session_request_is_still_json_camel_case() {
+        let request = SessionRequest {
+            id: format!("test-{}", uuid::Uuid::new_v4().simple()),
+            cwd: "C:/repo/.ac-new/_agent_architect".to_string(),
+            session_name: "repo/architect".to_string(),
+            agent_id: "codex".to_string(),
+            shell: "codex".to_string(),
+            shell_args: vec!["--ask-for-approval".to_string(), "never".to_string()],
+            timestamp: "2026-05-28T00:00:00Z".to_string(),
+        };
+
+        write_session_request(&request).expect("write request");
+
+        let path = crate::config::config_dir()
+            .expect("config dir")
+            .join("session-requests")
+            .join(format!("{}.json", request.id));
+        let json = std::fs::read_to_string(&path).expect("read request");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(json.contains("\"sessionName\""));
+        assert!(json.contains("\"agentId\""));
+        assert!(!json.contains("session_name"));
+        assert!(!json.contains("agent_id"));
+    }
 }
