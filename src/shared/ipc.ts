@@ -12,6 +12,7 @@ import type {
   PhoneMessage,
   AgentInfo,
   AcDiscoveryResult,
+  AcProjectRefreshRequestedPayload,
   TeamConfigResult,
   WindowGeometry,
   TaskUpdateResult,
@@ -360,6 +361,15 @@ export function onDiscoveryBranchUpdated(
 ): Promise<UnlistenFn> {
   return transport.listen<{ replicaPath: string; branch: string | null }>(
     "ac_discovery_branch_updated",
+    callback
+  );
+}
+
+export function onAcProjectRefreshRequested(
+  callback: (data: AcProjectRefreshRequestedPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AcProjectRefreshRequestedPayload>(
+    "ac_project_refresh_requested",
     callback
   );
 }
