@@ -33,7 +33,7 @@ On every AC startup AC probes `PATH` for the `rtk` binary and runs one of these 
 | `rtk` on PATH? | `injectRtkHook` setting | `rtkPromptDismissed` | Behavior |
 |---|---|---|---|
 | Yes | `false` | `false` | Emits `rtk_startup_status mode=prompt-enable` — the sidebar banner offers to enable injection. |
-| Yes | `true` | any | Mode `active`. Sweeps every managed agent dir and (re)writes `~/.claude/settings.local.json` with the RTK `PreToolUse` hook. |
+| Yes | `true` | any | Mode `active`. Sweeps every managed agent dir and (re)writes the `.claude/settings.local.json` inside each managed agent directory with the RTK `PreToolUse` hook. |
 | No | `true` | any | Mode `auto-disabled`. Persists `injectRtkHook=false`, then sweeps to remove any stale hooks. |
 | No | `false` | any | Mode `silent`. No-op. |
 
@@ -41,7 +41,7 @@ The sweep loop is idempotent and serialized under an internal lock so concurrent
 
 ## What gets written
 
-For each managed agent directory, AC writes (or removes) the following block in `.claude/settings.local.json`:
+For each managed agent directory, AC writes (or removes) the following block in `<agent-dir>/.claude/settings.local.json` (the per-agent settings file under each managed agent directory in the matrix — **not** the user's global `~/.claude/`):
 
 ```json
 {
@@ -50,7 +50,7 @@ For each managed agent directory, AC writes (or removes) the following block in 
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "bash ~/.claude/rtk-rewrite.sh" }
+          { "type": "command", "command": "node -e \"'@ac-rtk-marker-v2';…\"" }
         ]
       }
     ]
@@ -58,9 +58,11 @@ For each managed agent directory, AC writes (or removes) the following block in 
 }
 ```
 
-This hook tells Claude Code to invoke RTK's rewrite script before any Bash tool call. RTK then transparently prefixes the command with `rtk`. You do not have to change agent prompts or instructions.
+The `command` is a self-contained `node -e "..."` one-liner — no external script, no companion file on disk. The snippet reads Claude Code's tool input on stdin, prepends `rtk ` to any Bash invocation that does not already start with it (skipping shell built-ins like `cd`, `export`, `source`), and emits the rewritten command back to Claude Code in the v2 hook output schema (`hookSpecificOutput.updatedInput`).
 
-For the hook to actually fire, the rewrite script must also exist at `~/.claude/hooks/rtk-rewrite.sh`. RTK installs it via `rtk init -g` (Unix) or by copying the bundled script (Windows). See the RTK README for current instructions.
+The leading `'@ac-rtk-marker-v2'` string literal is a JS no-op that AC uses as an identity marker. Every sweep matches on the marker substring, then decides whether to refresh, leave alone, or remove the hook — which preserves any user-customized rewriter body across AC upgrades. The canonical command text lives in `RTK_REWRITER_COMMAND` (`src-tauri/src/config/claude_settings.rs:52`) and is verified byte-identical to `repo-AgentsCommander/.claude/settings.json` by a source-of-truth test.
+
+You do not have to change agent prompts, install any rewriter script, or run any RTK init command. AC injects everything Claude Code needs.
 
 ## Installing RTK separately
 
@@ -68,8 +70,7 @@ AC does not bundle RTK; you install it yourself once:
 
 1. Follow the RTK installation instructions at [https://github.com/rtk-ai/rtk](https://github.com/rtk-ai/rtk).
 2. Verify it is on PATH: `rtk --version`.
-3. Run `rtk init -g` so the rewrite script lands at `~/.claude/hooks/rtk-rewrite.sh`.
-4. Restart AC. The sidebar banner appears offering to enable the hook injection. Click **Enable**.
+3. Restart AC. The sidebar banner appears offering to enable the hook injection. Click **Enable**.
 
 From that point on, AC injects the hook into every managed agent directory at startup. New agents you create through the UI inherit the hook automatically.
 
