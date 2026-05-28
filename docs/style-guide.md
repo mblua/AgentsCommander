@@ -1,6 +1,6 @@
 # Docs style guide
 
-For contributors writing or editing AgentsCommander documentation. Six rules. Apply them in this order — earlier rules override later ones.
+For contributors writing or editing AgentsCommander documentation. Seven rules. Apply them in this order: earlier rules override later ones.
 
 Every doc opens with a 1-sentence "who reads this and why" line under the H1. The line above this section is the example.
 
@@ -36,7 +36,7 @@ Do not combine "install", "configure", and "run" into one wall of text. Each get
 
 The second form is true but useless. The first form copy-pastes.
 
-When you show a command, also show what the user should expect to see — first 1–2 lines of output, or "exits 0 on success" if there is no stdout.
+When you show a command, also show what the user should expect to see: first 1–2 lines of output, or "exits 0 on success" if there is no stdout.
 
 ## 5. Be specific about failure
 
@@ -48,6 +48,10 @@ Name the error string. Name the directory. Name the file. Vague troubleshooting 
 ## 6. Cut ruthlessly
 
 If a sentence does not help the reader do something or understand something, delete it. Every word in a doc is paid for by every reader.
+
+## 7. Never use the em-dash
+
+Never use the em-dash character (`—`, U+2014). It is the single most visible marker that prose was written by an LLM, so it reads as an AI tell. Replace it with a comma, parentheses, a colon, a semicolon, or a separate sentence. A spaced hyphen (` - `) is allowed but use it sparingly. The en-dash (`–`, U+2013) stays allowed for numeric ranges such as `1–2 lines`. The backticked glyph above is the only place an em-dash appears in these docs on purpose: it names the character this rule forbids.
 
 ## Vocabulary
 
@@ -74,7 +78,7 @@ These are banned in any public doc:
 
 If you find yourself reaching for one, ask: *what concrete capability or outcome am I trying to describe?* Then write that instead.
 
-Also avoid: "simply", "just", "easily", "easy to use" — they age badly and gaslight users who hit friction.
+Also avoid: "simply", "just", "easily", "easy to use", because they age badly and gaslight users who hit friction.
 
 ## Code examples
 
