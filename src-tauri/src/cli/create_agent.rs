@@ -68,6 +68,11 @@ pub(crate) fn find_launch_agent<'a>(
     settings: &'a crate::config::settings::AppSettings,
     requested: &str,
 ) -> Option<&'a crate::config::settings::AgentConfig> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return None;
+    }
+
     let requested_lower = requested.to_lowercase();
     settings.agents.iter().find(|a| {
         a.id.eq_ignore_ascii_case(requested)
@@ -264,6 +269,22 @@ mod tests {
             find_launch_agent(&settings, "powershell").map(|a| a.id.as_str()),
             Some("pwsh")
         );
+        assert_eq!(
+            find_launch_agent(&settings, "  CODEX  ").map(|a| a.id.as_str()),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn find_launch_agent_rejects_empty_and_whitespace_requests() {
+        let mut settings = AppSettings::default();
+        settings.agents = vec![
+            agent("codex", "OpenAI Codex", "codex"),
+            agent("claude", "Claude Desktop", "claude"),
+        ];
+
+        assert!(find_launch_agent(&settings, "").is_none());
+        assert!(find_launch_agent(&settings, "   \t  ").is_none());
     }
 
     #[test]

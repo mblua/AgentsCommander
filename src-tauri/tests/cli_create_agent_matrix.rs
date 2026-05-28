@@ -406,6 +406,61 @@ fn create_agent_matrix_whitespace_launch_command_warns_without_request() {
 }
 
 #[test]
+fn create_agent_matrix_empty_launch_request_warns_without_request() {
+    let tmp = Tmp::new("cli-create-agent-matrix-empty-launch-request");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(
+        &config_dir,
+        serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "codex --ask-for-approval never",
+                "color": "#000000"
+            }]
+        }),
+    );
+    let project = project_with_ac_new(tmp.path());
+    let project_s = project.to_string_lossy().to_string();
+
+    let out = Command::new(&bin)
+        .args([
+            "create-agent-matrix",
+            "--project",
+            &project_s,
+            "--name",
+            "Architect",
+            "--description",
+            "Build plans",
+            "--launch",
+            "",
+        ])
+        .output()
+        .expect("spawn binary");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+    assert_eq!(json["launched"], false);
+    assert!(json["launchAgent"].is_null());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not found in settings"));
+    assert!(
+        session_request_paths(&config_dir).is_empty(),
+        "empty launch request must not write a launch request"
+    );
+}
+
+#[test]
 fn create_agent_blank_launch_command_warns_without_request() {
     let tmp = Tmp::new("cli-create-agent-blank-launch");
     let bin = copy_binary_into(tmp.path());
