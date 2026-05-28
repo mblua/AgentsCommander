@@ -5,8 +5,8 @@
 <h1 align="center">Agents Commander</h1>
 
 <p align="center">
-  Run a team of AI coding agents — Claude Code, Codex, Gemini — coordinating through files you can read.<br/>
-  No frameworks. No databases. No MCP.
+  Run a team of AI coding agents (Claude Code, Codex, Gemini) in visible terminals, coordinating through files you can read.<br/>
+  File-based workflows, real OS processes, and no hidden orchestration state.
 </p>
 
 <p align="center">
@@ -34,16 +34,16 @@
 
 ## The 30-second pitch
 
-- **Pick the coding agent per role.** Claude Code on architecture, Codex on dev, Gemini on review — or any mix. Each runs in its own real terminal with a full PTY, not a command runner.
+- **Pick the coding agent per role.** Claude Code on architecture, Codex on dev, Gemini on review, or any mix. Each runs in its own real terminal with a full PTY, not a command runner.
 - **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
-- **No telemetry, no databases.** All state lives in plain JSON, TOML, and markdown next to the binary. Portable — copy the `.exe` to any drive and it carries its own config.
+- **Local state, no telemetry.** All state lives in plain JSON, TOML, and markdown next to the binary. Portable: copy the `.exe` to any drive and it carries its own config.
 
 You bring the coding agents. AgentsCommander coordinates them.
 
 ## See it work
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="Sidebar with three coding agents — two running, one waiting for input" />
+  <img src="docs/screenshots/hero.png" alt="Sidebar with three coding agents: two running, one waiting for input" />
 </p>
 
 <p align="center">
@@ -55,16 +55,16 @@ You bring the coding agents. AgentsCommander coordinates them.
 ## 60-second quickstart
 
 1. **Download** the latest installer for your platform from [the releases page](https://github.com/mblua/AgentsCommander/releases/latest). Windows `.exe`, Linux `.AppImage`, and macOS `.dmg` are built on every release.
-2. **Run** the installer (or run the portable `.exe` directly — see [Portable instances](docs/features/portable-instances.md)).
-3. **Open a project** — click `New Project` in the sidebar and point it at an empty folder. AC creates an `.ac-new/` workspace there.
-4. **Create a Team** — add a coordinator and one worker agent, each with a role prompt. [Teams and workgroups](docs/agents/teams-and-workgroups.md) walks through this.
-5. **Launch the coordinator** — pick Claude Code, Codex, or Gemini from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
+2. **Run** the installer (or run the portable `.exe` directly; see [Portable instances](docs/features/portable-instances.md)).
+3. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates an `.ac-new/` workspace there.
+4. **Create a Team**: add a coordinator and one worker agent, each with a role prompt. [Teams and workgroups](docs/agents/teams-and-workgroups.md) walks through this.
+5. **Launch the coordinator**: pick Claude Code, Codex, or Gemini from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
 
 Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Why this exists
 
-Multi-agent frameworks today orchestrate LLM calls inside a Python process. AgentsCommander orchestrates the **coding agents you already use** — Claude Code, Codex, Gemini — as real OS processes, and lets them coordinate through plain markdown files that any human, any tool, and any `git diff` can inspect. You see every step, in a real terminal, with no opaque graph state and no framework to learn.
+Most agent tools focus on in-process orchestration or one interactive session. AgentsCommander starts with the **coding agents you already use** (Claude Code, Codex, Gemini), runs them as real OS processes, and lets them coordinate through plain markdown files that any human, any tool, and any `git diff` can inspect. You see every step in a real terminal, and the coordination state stays visible on disk.
 
 ## What you can build
 
@@ -84,7 +84,7 @@ Full recipes: [`docs/use-cases.md`](docs/use-cases.md).
 | **Operates real CLI coding agents** | ✅ Claude Code, Codex, Gemini | ❌ Python LLM calls | ❌ Python conversation | ❌ Python library | Partial (one agent) | ✅ (one agent) |
 | **Real PTY per agent** | ✅ ConPTY / Unix PTY | ❌ | ❌ | ❌ | ✅ | ✅ |
 | **Filesystem-first messaging** | ✅ Markdown in `messaging/` | ❌ DB / Python state | ❌ Python objects | ❌ Python tasks | n/a | n/a |
-| **No Python / framework lock-in** | ✅ | ❌ | ❌ | ❌ | ❌ (Python) | ✅ |
+| **Standalone runtime** | ✅ Rust / Tauri | ❌ Python library | ❌ Python library | ❌ Python library | ❌ Python app | ✅ standalone CLI |
 | **Multi-agent on the same repo** | ✅ | Partial | Partial | Partial | ❌ | ❌ |
 | **Desktop UI** | ✅ Tauri app | ❌ | ❌ | ❌ | TUI only | TUI only |
 
@@ -94,53 +94,53 @@ Full comparison with trade-offs and honest losses: [`docs/comparison.md`](docs/c
 
 These are not accidents.
 
-- **No MCP.** The Model Context Protocol adds little practical value over simpler alternatives (HTTP APIs, direct IPC). It is not used unless a specific integration strictly requires it.
-- **Files over databases.** All state and communication is persisted to plain files (JSON, TOML, markdown). Every change is visible via `git diff`, trivial to inspect, easy to debug. Databases will be introduced later for performance-critical paths once the data model is mature — not before.
+- **Start with files and CLIs.** AgentsCommander keeps the core workflow in plain files and real terminal sessions. External protocols, including MCP, belong where they improve a concrete integration without hiding the workflow.
+- **Files before databases.** All state and communication is persisted to plain files (JSON, TOML, markdown). Every change is visible via `git diff`, trivial to inspect, easy to debug. Databases can be introduced later for performance-critical paths once the data model is mature.
 - **One agent = one directory.** An agent is defined by a `CLAUDE.md` file (or equivalent role-prompt file) inside its own directory. Multiple role prompts within the same directory or its subdirectories are forbidden. Coding agents assume the entire contents of their working directory are relevant context; if two role prompts coexisted, an agent could read another agent's role and leak context.
 
 ## Documentation
 
-- [Quickstart](docs/quickstart.md) — 60-second download to first running agent
-- [Concepts](docs/concepts.md) — agent, team, workgroup, coordinator, brief
-- [Teams and workgroups](docs/agents/teams-and-workgroups.md) — coordinators, members, briefs, messaging
-- [Features](docs/features/) — Telegram bridge, voice-to-text, portable instances, RTK integration
-- [Reference](docs/reference/) — full CLI, `settings.json` schema, architecture, log filtering
+- [Quickstart](docs/quickstart.md): 60-second download to first running agent
+- [Concepts](docs/concepts.md): agent, team, workgroup, coordinator, brief
+- [Teams and workgroups](docs/agents/teams-and-workgroups.md): coordinators, members, briefs, messaging
+- [Features](docs/features/): Telegram bridge, voice-to-text, portable instances, RTK integration
+- [Reference](docs/reference/): full CLI, `settings.json` schema, architecture, log filtering
 - [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Docs style guide](docs/style-guide.md)
 
 ## Platform support
 
 | Platform | Status |
 |---|---|
-| **Windows** | Primary target — every release is built and tested here. |
-| **Linux** | Compatible — builds cleanly; less day-to-day testing. |
-| **macOS** | Built on Windows. Runs on Linux. Works on macOS — see [issue #320](https://github.com/mblua/AgentsCommander/issues/320) (help wanted on verification). File issues, we will fix them. |
+| **Windows** | Primary target; every release is built and tested here. |
+| **Linux** | Compatible; builds cleanly with less day-to-day testing. |
+| **macOS** | Built on Windows. Runs on Linux. Works on macOS; see [issue #320](https://github.com/mblua/AgentsCommander/issues/320) (help wanted on verification). File issues, we will fix them. |
 
 ## Trust
 
-AgentsCommander does not collect telemetry, analytics, or usage data. Optional features (Telegram Bridge, Voice-to-Text) transmit data to external services only when you enable them — see [`PRIVACY.md`](PRIVACY.md). Windows releases are digitally signed: certificate by [SignPath Foundation](https://signpath.org), free code signing courtesy of [SignPath.io](https://signpath.io). Full policy in [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
+AgentsCommander does not collect telemetry, analytics, or usage data. Optional features (Telegram Bridge, Voice-to-Text) transmit data to external services only when you enable them; see [`PRIVACY.md`](PRIVACY.md). Windows releases are digitally signed: certificate by [SignPath Foundation](https://signpath.org), free code signing courtesy of [SignPath.io](https://signpath.io). Full policy in [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
 
 ## Community
 
-- **Questions, ideas, show-and-tell** — [GitHub Discussions](https://github.com/mblua/AgentsCommander/discussions).
-- **Bug reports, feature requests** — [GitHub Issues](https://github.com/mblua/AgentsCommander/issues).
-- **What's next** — [`ROADMAP.md`](ROADMAP.md). Pinned issues track macOS verification and the coding agents we want to add next.
+- **Questions, ideas, show-and-tell**: [GitHub Discussions](https://github.com/mblua/AgentsCommander/discussions).
+- **Bug reports, feature requests**: [GitHub Issues](https://github.com/mblua/AgentsCommander/issues).
+- **What's next**: [`ROADMAP.md`](ROADMAP.md). Pinned issues track macOS verification and the coding agents we want to add next.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) — branch naming, local build, log-filter setup, and the docs style guide.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md): branch naming, local build, log-filter setup, and the docs style guide.
 
 ## Acknowledgments
 
 AgentsCommander stands on the shoulders of:
 
-- **[@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)** — community library of agent role templates. AC ships a vendored snapshot of this catalog (see `src-tauri/src/commands/agency_agents_snapshot.json`) so role browsing works offline. Big thanks to the maintainers for keeping it open.
-- **[RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk)** — CLI proxy that compresses command outputs to cut LLM token consumption by 60–90% on common dev operations. AC auto-detects `rtk` on PATH at startup and wires the `PreToolUse` hook into managed agent directories (see `src-tauri/src/lib.rs:382-473` and `src-tauri/src/config/claude_settings.rs`).
+- **[@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)**: community library of agent role templates. AC ships a vendored snapshot of this catalog (see `src-tauri/src/commands/agency_agents_snapshot.json`) so role browsing works offline. Big thanks to the maintainers for keeping it open.
+- **[RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk)**: CLI proxy that compresses command outputs to cut LLM token consumption by 60–90% on common dev operations. AC auto-detects `rtk` on PATH at startup and wires the `PreToolUse` hook into managed agent directories (see `src-tauri/src/lib.rs:382-473` and `src-tauri/src/config/claude_settings.rs`).
 
-Also: Tauri, SolidJS, xterm.js, portable-pty, axum, tokio — the toolchain layer this app would be impossible without.
+Also: Tauri, SolidJS, xterm.js, portable-pty, axum, tokio; the toolchain layer this app would be impossible without.
 
 ## Author
 
-**Mariano Blua** — [GitHub](https://github.com/mblua)
+**Mariano Blua**: [GitHub](https://github.com/mblua)
 
 ## License
 
