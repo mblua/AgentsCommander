@@ -10,8 +10,8 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MESSAGING_DIR_NAME: &str = "messaging";
 pub const PTY_SAFE_MAX: usize = 1024;
-pub const FILE_NOTIFICATION_PREFIX: &str = "Nuevo mensaje: ";
-pub const FILE_NOTIFICATION_SUFFIX: &str = ". Lee este archivo.";
+pub const FILE_NOTIFICATION_PREFIX: &str = "New message: ";
+pub const FILE_NOTIFICATION_SUFFIX: &str = ". Read this file.";
 
 const MAX_SLUG_LEN: usize = 50;
 const MAX_COLLISION_SUFFIX: u32 = 99;
