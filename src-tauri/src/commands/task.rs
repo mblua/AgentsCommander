@@ -70,6 +70,7 @@ fn emit_task_updated(
         "workgroup_task_updated",
         serde_json::json!({
             "workgroupRoot": strip_unc(wg_root),
+            "source": "manual",
             "task": task.clone(),
             "taskTitle": task_title.clone(),
         }),

@@ -209,15 +209,15 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     unlisteners.push(
       await onWorkgroupTaskUpdated((data) => {
         // #163: Poller (ac_discovery.rs) provides sessionIds
-        if (data.sessionIds) {
-          const targetId = props.lockedSessionId ?? terminalStore.activeSessionId;       
+        if (data.source === "poll") {
+          const targetId = props.lockedSessionId ?? terminalStore.activeSessionId;
           if (!targetId) return;
           if (!data.sessionIds.includes(targetId)) return;
           terminalStore.setActiveWorkgroupTask(data.task);
-        } 
+        }
         // #162: Manual edits (brief.rs) provide workgroupRoot
-        else if (data.workgroupRoot || data.workgroupPath) {
-          const wgRoot = data.workgroupRoot || data.workgroupPath;
+        else if (data.source === "manual") {
+          const wgRoot = data.workgroupRoot;
           const cwd = terminalStore.activeWorkingDirectory;
           if (!cwd || !wgRoot) return;
           const cwdNorm = normalizePathForCompare(cwd);
