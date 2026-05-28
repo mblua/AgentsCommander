@@ -10,7 +10,7 @@ Every example assumes you have the [Quickstart](quickstart.md) finished: a proje
 
 ```
 wg-1-feature-x/
-  _agent_tech-lead/          # coordinator — Claude Code
+  __agent_tech-lead/         # coordinator — Claude Code
   __agent_dev-backend/       # backend module
   __agent_dev-frontend/      # frontend module
 ```
@@ -30,7 +30,7 @@ You watch all three terminals at once. When the green dot lights up on the coord
 
 ```
 wg-2-review/
-  _agent_shipper/            # opens the PR — Codex
+  __agent_shipper/           # opens the PR — Codex
   __agent_reviewer-claude/   # Claude Code
   __agent_reviewer-gemini/   # Gemini
 ```
@@ -48,7 +48,7 @@ Workflow:
 
 ```
 wg-3-refactor-auth/
-  _agent_arch/               # coordinator — Claude Code, runs for hours
+  __agent_arch/              # coordinator — Claude Code, runs for hours
   __agent_dev-1/             # worker
   __agent_dev-2/             # worker
   __agent_dev-3/             # worker

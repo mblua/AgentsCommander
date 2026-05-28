@@ -41,7 +41,7 @@ Open the Teams pane. A **Team** is one coordinator plus one or more worker agent
 3. Add one **worker** the same way (for example `dev-rust` with the *Rust developer* template).
 4. Mark the first agent as **coordinator**.
 
-Behind the scenes AC creates `.ac-new/wg-1-<team-name>/_agent_tech-lead/` and `__agent_dev-rust/` with `Role.md` files inside.
+Behind the scenes AC creates `.ac-new/wg-1-<team-name>/__agent_tech-lead/` and `__agent_dev-rust/` with `Role.md` files inside.
 
 ## 4. Write a brief and launch the coordinator
 

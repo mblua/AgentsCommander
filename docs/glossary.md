@@ -72,7 +72,7 @@ A CLI proxy that compresses verbose command outputs to cut LLM token consumption
 
 ## Session
 
-A running process bound to one agent directory and one coding-agent CLI. Sessions live in the sidebar with status dots: green idle, yellow running, gray exited.
+A running process bound to one agent directory and one coding-agent CLI. Sessions live in the sidebar with status dots: green waiting (ready for your input), blue running, amber pending, red exited, gray idle.
 
 ## Settings tab
 

@@ -20,9 +20,11 @@ You pick the coding agent **per session**. The same agent directory can be launc
 
 One running process bound to one agent directory, running inside a real PTY (ConPTY on Windows, Unix PTY on Linux/macOS). Each session shows in the sidebar with a status dot:
 
-- green — idle, waiting for input
-- yellow — running
-- gray — exited
+- green — waiting for human input (the agent finished its turn and is ready for your reply)
+- blue — running (PTY output is streaming)
+- amber — pending (queued, no live PTY activity yet)
+- red — exited (clean or crash; detail in the row tooltip)
+- gray — idle (no recent activity)
 
 You can detach a session into its own window, attach a Telegram bot to it, or talk to it by voice.
 

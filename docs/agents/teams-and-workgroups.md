@@ -56,7 +56,7 @@ my-project/
     └── wg-1-feature-x/
         ├── TASK.md                       # the brief
         ├── messaging/                    # inter-agent messages (see below)
-        ├── _agent_tech-lead/             # coordinator replica
+        ├── __agent_tech-lead/            # coordinator replica
         ├── __agent_dev-rust/             # worker replica
         └── __agent_dev-ts/               # worker replica
 ```
@@ -65,7 +65,7 @@ The integer `<N>` is sequential per project. Multiple workgroups for the same te
 
 ### Replicas vs the matrix
 
-| | Canonical matrix (`_agent_<name>`) | Workgroup replica (`__agent_<name>` or `_agent_<name>` for coordinators) |
+| | Canonical matrix (`_agent_<name>`) | Workgroup replica (`__agent_<name>`) |
 |---|---|---|
 | Holds `memory/`, `plans/`, `skills/`, `Role.md` | ✅ Canonical | Read-only mirror |
 | Holds session scratch, inbox/outbox | ❌ | ✅ |
@@ -109,7 +109,7 @@ From the UI, click **Activate** on the team. AC:
 
 1. Creates `.ac-new/wg-<N>-<team>/`.
 2. Copies the team config and member references.
-3. Provisions each member's replica directory (`__agent_<name>/` for workers, `_agent_<name>/` for the coordinator).
+3. Provisions each member's replica directory (`__agent_<name>/`, with the same double-underscore prefix for both workers and the coordinator).
 4. Generates blank `TASK.md`, `messaging/`, and per-replica session artifacts.
 5. Launches the coordinator's session, optionally auto-injecting a "set the brief" prompt if `auto_generate_task_title` is on.
 
