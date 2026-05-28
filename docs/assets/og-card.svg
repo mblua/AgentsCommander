@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
      width="1200" height="630" viewBox="0 0 1200 630">
-  <title>AgentsCommander &#8212; Open Graph card</title>
+  <title>AgentsCommander Open Graph card</title>
   <desc>1200x630 social preview. Helmet mark on left, wordmark and tagline on right, atmospheric terminal-row hint along the bottom edge. All colors from the locked Noir palette in src/sidebar/styles/variables.css. Helmet PNG is embedded as base64 so the SVG renders identically anywhere (librsvg blocks external file refs).</desc>
 
   <defs>
@@ -48,9 +48,9 @@
         font-weight="400"
         fill="#00d4ff"
         letter-spacing="-0.2">
-    <tspan x="490" dy="0">Run a team of AI coding agents &#8212;</tspan>
-    <tspan x="490" dy="38">Claude Code, Codex, Gemini &#8212;</tspan>
-    <tspan x="490" dy="38">coordinating through files you can read.</tspan>
+    <tspan x="490" dy="0">Run teams of Claude Code, Codex &amp; Gemini</tspan>
+    <tspan x="490" dy="38">on the subscriptions you already pay for.</tspan>
+    <tspan x="490" dy="38">Real repos. No worktrees.</tspan>
   </text>
 
   <rect x="0" y="510" width="1200" height="1" fill="#ffffff" opacity="0.05"/>
