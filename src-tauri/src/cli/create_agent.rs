@@ -81,12 +81,17 @@ pub(crate) fn build_session_request(
     cwd: String,
     session_name: String,
     agent: &crate::config::settings::AgentConfig,
-) -> SessionRequest {
-    let parts: Vec<&str> = agent.command.split_whitespace().collect();
+) -> Result<SessionRequest, String> {
+    let command = agent.command.trim();
+    if command.is_empty() {
+        return Err(format!("launch agent '{}' has an empty command", agent.id));
+    }
+
+    let parts: Vec<&str> = command.split_whitespace().collect();
     let (shell, shell_args) = if agent.git_pull_before {
         (
             "cmd.exe".to_string(),
-            vec!["/K".to_string(), format!("git pull && {}", agent.command)],
+            vec!["/K".to_string(), format!("git pull && {}", command)],
         )
     } else {
         (
@@ -100,7 +105,7 @@ pub(crate) fn build_session_request(
         )
     };
 
-    SessionRequest {
+    Ok(SessionRequest {
         id: uuid::Uuid::new_v4().to_string(),
         cwd,
         session_name,
@@ -108,7 +113,7 @@ pub(crate) fn build_session_request(
         shell,
         shell_args,
         timestamp: chrono::Utc::now().to_rfc3339(),
-    }
+    })
 }
 
 pub fn execute(args: CreateAgentArgs) -> i32 {
@@ -149,17 +154,20 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
                     eprintln!("Warning: failed to apply rtk hook: {}", e);
                 }
 
-                let request = build_session_request(
+                match build_session_request(
                     agent_path_str.clone(),
                     created.display_name.clone(),
                     agent,
-                );
-
-                match write_session_request(&request) {
-                    Ok(()) => {
-                        launched = true;
-                        launch_agent_id = Some(agent.id.clone());
-                    }
+                ) {
+                    Ok(request) => match write_session_request(&request) {
+                        Ok(()) => {
+                            launched = true;
+                            launch_agent_id = Some(agent.id.clone());
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: agent created but failed to request launch: {}", e);
+                        }
+                    },
                     Err(e) => {
                         eprintln!("Warning: agent created but failed to request launch: {}", e);
                     }
@@ -267,7 +275,8 @@ mod tests {
             "C:/repo/.ac-new/_agent_architect".to_string(),
             "repo/architect".to_string(),
             &launch_agent,
-        );
+        )
+        .expect("request");
 
         assert_eq!(request.cwd, "C:/repo/.ac-new/_agent_architect");
         assert_eq!(request.session_name, "repo/architect");
@@ -280,6 +289,22 @@ mod tests {
                 "git pull && codex --ask-for-approval never".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn build_session_request_rejects_blank_and_whitespace_commands() {
+        for command in ["", "   \t  "] {
+            let launch_agent = agent("codex", "Codex", command);
+            let err = build_session_request(
+                "C:/repo/.ac-new/_agent_architect".to_string(),
+                "repo/architect".to_string(),
+                &launch_agent,
+            )
+            .expect_err("blank command");
+
+            assert!(err.contains("empty command"));
+            assert!(err.contains("codex"));
+        }
     }
 
     #[test]

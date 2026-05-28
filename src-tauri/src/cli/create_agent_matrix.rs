@@ -95,16 +95,23 @@ pub fn execute(args: CreateAgentMatrixArgs) -> i32 {
     if let Some(ref requested) = args.launch {
         match create_agent::find_launch_agent(&settings, requested) {
             Some(agent) => {
-                let request = create_agent::build_session_request(
+                match create_agent::build_session_request(
                     agent_path.clone(),
                     created.display_name.clone(),
                     agent,
-                );
-                match create_agent::write_session_request(&request) {
-                    Ok(()) => {
-                        launched = true;
-                        launch_agent_id = Some(agent.id.clone());
-                    }
+                ) {
+                    Ok(request) => match create_agent::write_session_request(&request) {
+                        Ok(()) => {
+                            launched = true;
+                            launch_agent_id = Some(agent.id.clone());
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: agent matrix created but failed to request launch: {}",
+                                e
+                            );
+                        }
+                    },
                     Err(e) => {
                         eprintln!(
                             "Warning: agent matrix created but failed to request launch: {}",

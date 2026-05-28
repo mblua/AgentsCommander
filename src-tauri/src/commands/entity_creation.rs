@@ -95,6 +95,13 @@ pub struct SyncResult {
 pub(crate) const AGENT_MATRIX_DIRS: &[&str] = &["memory", "plans", "skills", "inbox", "outbox"];
 pub(crate) const AGENT_REPLICA_DIRS: &[&str] = &["inbox", "outbox"];
 
+fn create_agent_matrix_subdirs(agent_dir: &Path) -> Result<(), (&'static str, std::io::Error)> {
+    for &sub in AGENT_MATRIX_DIRS {
+        std::fs::create_dir_all(agent_dir.join(sub)).map_err(|e| (sub, e))?;
+    }
+    Ok(())
+}
+
 /// Create the full Agent Matrix layout, including the root directory.
 ///
 /// The returned tag is `"agent_dir"` for root failures or the failing subdir
@@ -103,10 +110,19 @@ pub(crate) fn create_agent_matrix_layout(
     agent_dir: &Path,
 ) -> Result<(), (&'static str, std::io::Error)> {
     std::fs::create_dir_all(agent_dir).map_err(|e| ("agent_dir", e))?;
-    for &sub in AGENT_MATRIX_DIRS {
-        std::fs::create_dir_all(agent_dir.join(sub)).map_err(|e| (sub, e))?;
-    }
-    Ok(())
+    create_agent_matrix_subdirs(agent_dir)
+}
+
+/// Create a new Agent Matrix layout after atomically claiming the root.
+///
+/// Unlike `create_agent_matrix_layout`, this fails if the root already exists.
+/// Use it for user-facing creation paths so concurrent creates cannot overwrite
+/// each other's Role.md or config.json.
+pub(crate) fn create_new_agent_matrix_layout(
+    agent_dir: &Path,
+) -> Result<(), (&'static str, std::io::Error)> {
+    std::fs::create_dir(agent_dir).map_err(|e| ("agent_dir", e))?;
+    create_agent_matrix_subdirs(agent_dir)
 }
 
 /// Create the full workgroup replica layout, including the root directory.
@@ -422,8 +438,11 @@ pub(crate) fn create_agent_matrix_on_disk(
             None => None,
         };
 
-    create_agent_matrix_layout(&agent_dir).map_err(|(sub, e)| match sub {
-        "agent_dir" => format!("Failed to create agent directory: {}", e),
+    create_new_agent_matrix_layout(&agent_dir).map_err(|(sub, e)| match (sub, e.kind()) {
+        ("agent_dir", std::io::ErrorKind::AlreadyExists) => {
+            format!("Agent '{}' already exists", safe_name)
+        }
+        ("agent_dir", _) => format!("Failed to create agent directory: {}", e),
         _ => format!("Failed to create {} directory: {}", sub, e),
     })?;
 
@@ -2135,6 +2154,40 @@ mod tests {
         assert!(
             !ac_new.join("_agent_architect").exists(),
             "invalid template must not create the target matrix directory"
+        );
+    }
+
+    #[test]
+    fn create_agent_matrix_on_disk_existing_root_fails_without_overwrite() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let ac_new = project.join(".ac-new");
+        let agent_dir = ac_new.join("_agent_architect");
+        std::fs::create_dir_all(&agent_dir).expect("create existing matrix root");
+        std::fs::write(agent_dir.join("Role.md"), "keep role").expect("write existing role");
+        std::fs::write(agent_dir.join("config.json"), "keep config")
+            .expect("write existing config");
+        let settings = AppSettings::default();
+        let project_s = project.to_string_lossy().to_string();
+
+        let err = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+            project_path: &project_s,
+            name: "Architect",
+            description: "Build plans",
+            role_template_id: None,
+            settings: &settings,
+            config_dir: None,
+        })
+        .expect_err("existing root");
+
+        assert_eq!(err, "Agent 'architect' already exists");
+        assert_eq!(
+            std::fs::read_to_string(agent_dir.join("Role.md")).expect("read existing role"),
+            "keep role"
+        );
+        assert_eq!(
+            std::fs::read_to_string(agent_dir.join("config.json")).expect("read existing config"),
+            "keep config"
         );
     }
 

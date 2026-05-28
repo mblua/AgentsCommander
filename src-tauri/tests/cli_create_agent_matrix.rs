@@ -77,6 +77,18 @@ fn project_with_ac_new(tmp: &Path) -> PathBuf {
     project
 }
 
+fn session_request_paths(config_dir: &Path) -> Vec<PathBuf> {
+    let requests_dir = config_dir.join("session-requests");
+    if !requests_dir.exists() {
+        return Vec::new();
+    }
+    std::fs::read_dir(&requests_dir)
+        .expect("read session-requests")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
+        .collect()
+}
+
 #[test]
 fn create_agent_matrix_success_prints_json_and_writes_layout() {
     let tmp = Tmp::new("cli-create-agent-matrix-success");
@@ -126,6 +138,62 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
     for dir in ["memory", "plans", "skills", "inbox", "outbox"] {
         assert!(agent_dir.join(dir).is_dir(), "missing {}", dir);
     }
+}
+
+#[test]
+fn create_agent_matrix_local_template_writes_role_and_skills() {
+    let tmp = Tmp::new("cli-create-agent-matrix-local-template");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, minimal_settings());
+    let template_dir = config_dir.join("agent-templates").join("planner");
+    std::fs::create_dir_all(template_dir.join("skills").join("demo"))
+        .expect("create local template skills");
+    std::fs::write(
+        template_dir.join("Role.md"),
+        "---\nname: Planner\n---\n\n# Planner Template\n\nPlan carefully.\n",
+    )
+    .expect("write local template role");
+    std::fs::write(
+        template_dir.join("skills").join("demo").join("SKILL.md"),
+        "# Demo Skill\n",
+    )
+    .expect("write local template skill");
+    let project = project_with_ac_new(tmp.path());
+    let project_s = project.to_string_lossy().to_string();
+
+    let out = Command::new(&bin)
+        .args([
+            "create-agent-matrix",
+            "--project",
+            &project_s,
+            "--name",
+            "Architect",
+            "--description",
+            "Build plans",
+            "--role-template",
+            "local:planner",
+        ])
+        .output()
+        .expect("spawn binary");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    let role = std::fs::read_to_string(agent_dir.join("Role.md")).expect("read Role.md");
+    assert!(role.contains("## Role Profile"));
+    assert!(role.contains("# Planner Template"));
+    assert!(agent_dir
+        .join("skills")
+        .join("demo")
+        .join("SKILL.md")
+        .is_file());
 }
 
 #[test]
@@ -267,12 +335,7 @@ fn create_agent_matrix_launch_writes_session_request() {
     assert_eq!(json["launched"], true);
     assert_eq!(json["launchAgent"], "codex");
 
-    let requests_dir = config_dir.join("session-requests");
-    let requests: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
-        .expect("read session-requests")
-        .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
-        .collect();
+    let requests = session_request_paths(&config_dir);
     assert_eq!(requests.len(), 1, "expected exactly one session request");
 
     let request: serde_json::Value =
@@ -285,4 +348,113 @@ fn create_agent_matrix_launch_writes_session_request() {
     );
     assert_eq!(request["sessionName"], "ProjectAlpha/architect");
     assert_eq!(request["agentId"], "codex");
+}
+
+#[test]
+fn create_agent_matrix_whitespace_launch_command_warns_without_request() {
+    let tmp = Tmp::new("cli-create-agent-matrix-blank-launch");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(
+        &config_dir,
+        serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "   \t  ",
+                "color": "#000000"
+            }]
+        }),
+    );
+    let project = project_with_ac_new(tmp.path());
+    let project_s = project.to_string_lossy().to_string();
+
+    let out = Command::new(&bin)
+        .args([
+            "create-agent-matrix",
+            "--project",
+            &project_s,
+            "--name",
+            "Architect",
+            "--description",
+            "Build plans",
+            "--launch",
+            "codex",
+        ])
+        .output()
+        .expect("spawn binary");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+    assert_eq!(json["launched"], false);
+    assert!(json["launchAgent"].is_null());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("empty command"));
+    assert!(
+        session_request_paths(&config_dir).is_empty(),
+        "blank command must not write a launch request"
+    );
+}
+
+#[test]
+fn create_agent_blank_launch_command_warns_without_request() {
+    let tmp = Tmp::new("cli-create-agent-blank-launch");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(
+        &config_dir,
+        serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "",
+                "color": "#000000"
+            }]
+        }),
+    );
+    let parent = tmp.path().join("Agents");
+    std::fs::create_dir_all(&parent).expect("create parent");
+    let parent_s = parent.to_string_lossy().to_string();
+
+    let out = Command::new(&bin)
+        .args([
+            "create-agent",
+            "--parent",
+            &parent_s,
+            "--name",
+            "Bot",
+            "--launch",
+            "codex",
+        ])
+        .output()
+        .expect("spawn binary");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+    assert_eq!(json["launched"], false);
+    assert!(json["launchAgent"].is_null());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("empty command"));
+    assert!(
+        session_request_paths(&config_dir).is_empty(),
+        "blank command must not write a launch request"
+    );
 }
