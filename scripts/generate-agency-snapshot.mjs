@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Vendored-snapshot generator for issue #271 — Agent Template Picker.
+// Vendored-snapshot generator for issue #271 - Agent Template Picker.
 //
 // Builds `src-tauri/src/commands/agency_agents_snapshot.json` from a pinned
 // commit of msitarzewski/agency-agents. The generated JSON is a committed
@@ -88,7 +88,7 @@ function run(cmd, args, opts = {}) {
 
 function cloneRepo(repo, ref, dest) {
   if (SHA_RE.test(ref)) {
-    // G11 — `--depth 1 --branch` cannot accept a raw SHA. Full clone, then checkout.
+    // G11 - `--depth 1 --branch` cannot accept a raw SHA. Full clone, then checkout.
     console.log(`[clone] full clone ${repo} (SHA pin: ${ref})`);
     run('git', ['clone', repo, dest]);
     run('git', ['-C', dest, 'checkout', ref]);
@@ -99,7 +99,7 @@ function cloneRepo(repo, ref, dest) {
   return run('git', ['-C', dest, 'rev-parse', 'HEAD']);
 }
 
-// Minimal hand-parser — mirrors the Rust side. Supports plain, single-quoted,
+// Minimal hand-parser - mirrors the Rust side. Supports plain, single-quoted,
 // and double-quoted scalar values; surrounding quotes are trimmed. No multi-line
 // scalars (the upstream templates do not use any).
 function parseFrontmatter(text) {
@@ -140,6 +140,12 @@ function titleCaseDivision(name) {
     .split('-')
     .map(seg => (seg.length ? seg[0].toUpperCase() + seg.slice(1) : seg))
     .join(' ');
+}
+
+// No-em-dash policy (#332): strip U+2014 from catalog text on write so the
+// committed snapshot stays ASCII. 1:1 replacement preserves surrounding spacing.
+function stripEmDash(s) {
+  return typeof s === 'string' ? s.replace(/\u2014/g, '-') : s;
 }
 
 function listDivisions(repoDir) {
@@ -192,7 +198,7 @@ function buildTemplates(repoDir) {
         continue;
       }
       const stem = file.replace(/\.md$/i, '');
-      // G12 — derive id from <division>-<stem> so uniqueness is structural,
+      // G12 - derive id from <division>-<stem> so uniqueness is structural,
       // not assumed from upstream filename conventions.
       const id = `agency:${division}-${stem}`;
       if (seen.has(id)) {
@@ -202,11 +208,11 @@ function buildTemplates(repoDir) {
       seen.add(id);
       templates.push({
         id,
-        name: meta.name.trim(),
-        description: (meta.description || '').trim(),
+        name: stripEmDash(meta.name.trim()),
+        description: stripEmDash((meta.description || '').trim()),
         category: titleCaseDivision(division),
         color: meta.color ? meta.color.trim() : null,
-        body: trimmedBody,
+        body: stripEmDash(trimmedBody),
       });
     }
   }
@@ -228,14 +234,14 @@ function main() {
     commit = cloneRepo(repo, ref, repoDir);
     const { templates, skipped } = buildTemplates(repoDir);
     if (templates.length === 0) {
-      console.error('no usable agency templates found — aborting');
+      console.error('no usable agency templates found - aborting');
       process.exit(1);
     }
     if (skipped.length) {
       console.warn(`[generate] skipped ${skipped.length} file(s):`);
       for (const s of skipped) console.warn(`  - ${s}`);
     }
-    // G14 — no `generatedAt`: provenance lives in the pinned `commit` SHA, and
+    // G14 - no `generatedAt`: provenance lives in the pinned `commit` SHA, and
     // omitting the timestamp makes regenerations byte-stable when inputs are.
     const snapshot = {
       source: repo,
