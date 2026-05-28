@@ -1,6 +1,6 @@
 # FAQ
 
-For developers with the questions that come up before they install. Ten answers — each one as short as we can make it.
+For developers with the questions that come up before they install. Thirteen answers — each one as short as we can make it.
 
 ## Is AgentsCommander an AI?
 
