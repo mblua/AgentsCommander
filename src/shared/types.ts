@@ -272,6 +272,14 @@ export interface AcDiscoveryResult {
   workgroups: AcWorkgroup[];
 }
 
+export interface AcProjectRefreshRequestedPayload {
+  id: string;
+  projectPath: string;
+  agentPath?: string;
+  agentName?: string;
+  reason: "createAgentMatrix";
+}
+
 // Team wizard shared types (used by NewTeamModal and EditTeamModal)
 
 export interface TeamWizardAgentEntry {

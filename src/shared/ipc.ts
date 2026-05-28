@@ -12,6 +12,7 @@ import type {
   PhoneMessage,
   AgentInfo,
   AcDiscoveryResult,
+  AcProjectRefreshRequestedPayload,
   TeamConfigResult,
   WindowGeometry,
   TaskUpdateResult,
@@ -376,6 +377,15 @@ export function onAcWorkgroupTaskUpdated(
     task: string | null;
     taskTitle?: string;
   }>("ac_workgroup_task_updated", callback);
+}
+
+export function onAcProjectRefreshRequested(
+  callback: (data: AcProjectRefreshRequestedPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AcProjectRefreshRequestedPayload>(
+    "ac_project_refresh_requested",
+    callback
+  );
 }
 
 export function onSessionIdle(
