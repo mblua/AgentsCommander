@@ -26,7 +26,7 @@
   display: flex;
   flex-direction: row;
   flex: 1 1 auto;
-  min-height: 0; /* CRITICAL — without this xterm overflows on first render */
+  min-height: 0; /* CRITICAL - without this xterm overflows on first render */
   min-width: 0;
 }
 
@@ -414,7 +414,7 @@ html.light-theme .home-markdown pre { background: rgba(0, 0, 0, 0.05); }
 /* --- Error modal (#264) --------------------------------------------------
  * Queued modal surfacing ERROR-level backend log events. One at a time; the
  * "N" counter shows queue depth. z-index sits above the quit-confirm modal
- * (10000) so a coincident error is visually dominant — and, via
+ * (10000) so a coincident error is visually dominant - and, via
  * stopImmediatePropagation in ErrorModal's keydown handler, owns the keyboard.
  * Variables fall back to literals so the modal renders before theme hydration.
  */

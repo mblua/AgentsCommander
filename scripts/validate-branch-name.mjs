@@ -99,7 +99,7 @@ function validateFormat(branch) {
 
 async function verifyIssueOpen(issue) {
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-  if (!token) die(`Missing GH_TOKEN / GITHUB_TOKEN in environment — cannot verify issue #${issue}.`);
+  if (!token) die(`Missing GH_TOKEN / GITHUB_TOKEN in environment - cannot verify issue #${issue}.`);
   const url = `https://api.github.com/repos/${TARGET_REPO}/issues/${issue}`;
   let res, data;
   try {

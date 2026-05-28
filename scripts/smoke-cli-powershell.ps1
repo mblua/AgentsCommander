@@ -15,12 +15,12 @@ $failed = 0
 # the ONLY shape that reproduces issue #129's failure mode.
 #
 # Note on exit codes: PS-NonInteractive bare `&` does NOT propagate $LASTEXITCODE for
-# GUI-subsystem children (PE Subsystem=2 — empirically verified in Round 3, R3.G.3).
+# GUI-subsystem children (PE Subsystem=2 - empirically verified in Round 3, R3.G.3).
 # The outer process always sees ExitCode=0 regardless of the AC binary's true exit
 # code. This is the same bare-`&`-vs-pipeline asymmetry underlying issue #129 itself,
 # and it cannot be worked around in this harness shape (the harness shape is mandatory
 # to reproduce the bug). Tests 1-3 therefore drop exit-code assertions and rely on
-# stdout/stderr presence — those are the bug-relevant signals (Round 4, Option 1).
+# stdout/stderr presence - those are the bug-relevant signals (Round 4, Option 1).
 function Invoke-PSNonInteractiveDirect {
     param(
         [Parameter(Mandatory=$true)] [string]$Exe,
@@ -91,7 +91,7 @@ if (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) {
 # else: empty case is already counted as a fail by the prior `stdout non-empty` assertion above
 
 # Test 2: send --help -- stdout has clap-rendered help text.
-# Failure mode on unfixed binary: identical to Test 1 — clap writes the help text
+# Failure mode on unfixed binary: identical to Test 1 - clap writes the help text
 # to stdout; AttachConsole rebinds the inherited PIPE stdout to PS's hidden console
 # buffer; captured stdout is empty. Test 2's "stdout non-empty" assertion fails.
 # Empirically confirmed in verify-prod-binary.ps1 Test 1 (same `send --help` invocation).
@@ -108,17 +108,17 @@ Assert-True "send --help mentions --to flag" ($r2.Stdout -match '--to') "stdout 
 # exit-code propagation is not usable in this harness: PS-NonInteractive bare `&`
 # does NOT update $LASTEXITCODE for GUI-subsystem children, so any `exit non-zero`
 # assertion would fail even on a correctly fixed binary. `stderr non-empty` is the
-# sole — and bug-relevant — signal for this test.
+# sole - and bug-relevant - signal for this test.
 $r3 = Invoke-PSNonInteractiveDirect -Exe $BinaryPath -ExeArgs @('send', '--bogus-flag-xyz')
 Assert-True "send unknown flag stderr non-empty" (-not [string]::IsNullOrWhiteSpace($r3.Stderr)) "stderr was empty (issue #129 not fixed for clap-error path)"
 
 # Test 4 (G3 regression check): `2>&1 | ConvertFrom-Json` on list-peers must still work.
-# This test deliberately uses a DIFFERENT inner command shape — pipeline mode with
+# This test deliberately uses a DIFFERENT inner command shape - pipeline mode with
 # `2>&1 | Out-String`. Pipeline mode bypasses issue #129 (R2.1 confirmed: pipeline
 # operators give the child a PIPE stdout via STARTUPINFO redirection, no NULL → no
 # AttachConsole rebind). So Test 4 PASSES on both fixed and unfixed binary as long
 # as stderr is empty (which it is post-Step-A). Test 4 FAILS only if a future change
-# reintroduces dual-write to stderr — the merged stream would then contain non-JSON
+# reintroduces dual-write to stderr - the merged stream would then contain non-JSON
 # stderr content, breaking ConvertFrom-Json. That is the regression Test 4 guards.
 #
 # NEW-2 fix: replace the broken `-replace [char]39, [char]39 + [char]39` (which is a

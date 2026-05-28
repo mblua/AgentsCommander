@@ -1391,7 +1391,7 @@ html.light-theme .root-agent-avatar {
   background: rgba(239, 68, 68, 0.3);
 }
 
-/* Warning state — typing detected during recording */
+/* Warning state - typing detected during recording */
 .session-item-voice-indicator.warning .voice-warning-text {
   font-size: 10px;
   color: #f59e0b;
@@ -2964,7 +2964,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
 
 /* =============================================================================
    SIDEBAR STYLE: Deep Space
-   NASA JPL mission control — layered depth, atmospheric glow, status-forward.
+   NASA JPL mission control - layered depth, atmospheric glow, status-forward.
    Coordinators get a warm amber beacon; everything else recedes into deep blue.
    ============================================================================= */
 
@@ -3112,7 +3112,7 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-wg-group:last-child {
   box-shadow: inset 0 0 20px rgba(60, 130, 255, 0.08);
 }
 
-/* Active coordinator beacon — beats the (0,4,0) coord-beacon rule.
+/* Active coordinator beacon - beats the (0,4,0) coord-beacon rule.
    Specificity (0,5,0). Tints the existing amber gradient toward
    active-blue while preserving the beacon shape. */
 [data-sidebar-style="deep-space"] .replica-item.active:has(.ac-discovery-badge.coord) {
@@ -3125,7 +3125,7 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-wg-group:last-child {
   box-shadow: inset 0 0 24px rgba(60, 130, 255, 0.18);
 }
 
-/* Light-theme active coord variant — beats the light coord-beacon (0,5,1).
+/* Light-theme active coord variant - beats the light coord-beacon (0,5,1).
    Specificity (0,6,1). */
 html.light-theme[data-sidebar-style="deep-space"] .replica-item.active:has(.ac-discovery-badge.coord) {
   background: linear-gradient(
@@ -3155,7 +3155,7 @@ html.light-theme[data-sidebar-style="deep-space"] .replica-item.active:has(.ac-d
   order: -1;
 }
 
-/* Coordinator beacon — enlarged, highlighted, unmissable */
+/* Coordinator beacon - enlarged, highlighted, unmissable */
 [data-sidebar-style="deep-space"] .replica-item:has(.ac-discovery-badge.coord) {
   padding: 8px 12px 8px 14px;
   background: linear-gradient(
@@ -3197,7 +3197,7 @@ html.light-theme[data-sidebar-style="deep-space"] .replica-item:has(.ac-discover
   color: rgba(140, 80, 0, 0.9);
 }
 
-/* Non-coordinator agents in Deep Space — recede slightly but remain legible */
+/* Non-coordinator agents in Deep Space - recede slightly but remain legible */
 [data-sidebar-style="deep-space"] .replica-item:not(:has(.ac-discovery-badge.coord)) .replica-item-name {
   opacity: 0.85;
   font-size: 11px;
@@ -3235,7 +3235,7 @@ html.light-theme[data-sidebar-style="deep-space"] .replica-item:has(.ac-discover
 
 /* =============================================================================
    SIDEBAR STYLE: Arctic Ops
-   Polar research station — frosted glass panels, icy blue-white palette,
+   Polar research station - frosted glass panels, icy blue-white palette,
    sharp beveled edges. Clean, clinical, high-visibility.
    ============================================================================= */
 
@@ -3431,7 +3431,7 @@ html.light-theme[data-sidebar-style="arctic-ops"] .root-agent-avatar {
 
 /* =============================================================================
    SIDEBAR STYLE: Obsidian Mesh
-   Submarine control room — volcanic dark with amber warnings, crosshatch
+   Submarine control room - volcanic dark with amber warnings, crosshatch
    patterns on headers, heavy industrial weight. Dense, utilitarian.
    ============================================================================= */
 
@@ -3570,13 +3570,13 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
   border-left-color: rgba(220, 160, 40, 0.6);
 }
 
-/* Active coord rows — beats coord-beacon at (0,4,0). Specificity (0,5,0). */
+/* Active coord rows - beats coord-beacon at (0,4,0). Specificity (0,5,0). */
 [data-sidebar-style="obsidian-mesh"] .replica-item.active:has(.ac-discovery-badge.coord) {
   background: rgba(255, 140, 60, 0.18);
   border-left-color: rgba(255, 180, 80, 0.85);
 }
 
-/* Active worker rows — beats worker-recede at (0,4,0). Specificity (0,5,0).
+/* Active worker rows - beats worker-recede at (0,4,0). Specificity (0,5,0).
    `opacity: 1` overrides the worker recede opacity 0.75 so the active
    worker is fully legible. */
 [data-sidebar-style="obsidian-mesh"] .replica-item.active:not(:has(.ac-discovery-badge.coord)) {
@@ -3585,7 +3585,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
   opacity: 1;
 }
 
-/* Light-theme coord active — beats the light coord-beacon at (0,5,1).
+/* Light-theme coord active - beats the light coord-beacon at (0,5,1).
    Specificity (0,6,1). Color values are saturated variants of the
    existing light orange-coord palette so the active state reads as
    "selected" while staying in the theme's visual language. */
@@ -3605,7 +3605,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item.active:has(.a
    ultra-compact. The effect: a dense status board where only coordinators
    demand attention; workers are visible but recede. */
 
-/* Coordinators — full prominence, expanded */
+/* Coordinators - full prominence, expanded */
 [data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-discovery-badge.coord) {
   padding: 7px 10px 7px 12px;
   background: rgba(255, 80, 40, 0.05);
@@ -3633,7 +3633,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
   color: rgba(160, 70, 0, 0.9);
 }
 
-/* Worker agents — minimized, receded */
+/* Worker agents - minimized, receded */
 [data-sidebar-style="obsidian-mesh"] .replica-item:not(:has(.ac-discovery-badge.coord)) {
   padding: 2px 8px 2px 14px;
   opacity: 0.75;
@@ -3657,7 +3657,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
   display: flex;
 }
 
-/* Worker status dots — smaller */
+/* Worker status dots - smaller */
 [data-sidebar-style="obsidian-mesh"] .replica-item:not(:has(.ac-discovery-badge.coord)) > .session-item-status {
   width: 6px;
   height: 6px;
@@ -3673,7 +3673,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
   margin-left: 6px;
 }
 
-/* Session items for workers — also compact */
+/* Session items for workers - also compact */
 [data-sidebar-style="obsidian-mesh"] .ac-wg-subgroup > .session-item:not(:has(.ac-discovery-badge.coord)) {
   padding-top: 3px;
   padding-bottom: 3px;
@@ -3707,7 +3707,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
 
 /* =============================================================================
    SIDEBAR STYLE: Neon Circuit
-   PCB trace aesthetics — electric magenta on dark substrate, circuit-trace
+   PCB trace aesthetics - electric magenta on dark substrate, circuit-trace
    borders, cyberpunk hardware hacker. Hot pink coordinators, cool data paths.
    ============================================================================= */
 
@@ -3891,7 +3891,7 @@ html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
   display: none;
 }
 
-/* Neutralize coordinator beacon styling inside coord-quick-access —
+/* Neutralize coordinator beacon styling inside coord-quick-access -
    the container already provides its own visual framing */
 .coord-quick-access .replica-item:has(.ac-discovery-badge.coord) {
   background: transparent;
@@ -3908,7 +3908,7 @@ html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
   box-shadow: none;
 }
 
-/* Active highlight inside coord-quick-access — beats the dark-theme
+/* Active highlight inside coord-quick-access - beats the dark-theme
    neutralizer at (0,4,0). Specificity (0,5,0). Uses CSS vars so each theme
    gets its own light/dark `--sidebar-active` and `--sidebar-accent` tones.
    `box-shadow: none` neutralizes the per-theme deep-space active glow which
@@ -3919,7 +3919,7 @@ html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
   box-shadow: none;
 }
 
-/* Light-theme counterparts — higher specificity to beat
+/* Light-theme counterparts - higher specificity to beat
    html.light-theme[data-sidebar-style] .replica-item:has(...) beacon rules */
 html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access .replica-item:has(.ac-discovery-badge.coord),
 html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replica-item:has(.ac-discovery-badge.coord) {
@@ -4549,7 +4549,7 @@ html.light-theme .onboarding-card.selected {
 }
 
 /* =============================================================================
-   Root Agent Banner — active state
+   Root Agent Banner - active state
    Placed at end-of-file so source order beats per-sidebar-style background
    overrides (which match equal specificity 0,2,0). var(--sidebar-active) is
    defined per style, so this one rule works across all 7 sidebar styles.
@@ -4562,7 +4562,7 @@ html.light-theme .onboarding-card.selected {
 
 /* Let the New Agent form body scroll instead of clipping the footer when the
    template picker pushes the modal past `.agent-modal { max-height:80vh }`.
-   Scoped via a modifier class — other `.new-agent-form` users are untouched.
+   Scoped via a modifier class - other `.new-agent-form` users are untouched.
    `min-height:0` is REQUIRED: without it the flex item keeps its content height,
    re-inflates the modal, and `.agent-modal { overflow:hidden }` clips the footer. */
 .new-agent-form-scroll {
@@ -4687,7 +4687,7 @@ html.light-theme .onboarding-card.selected {
   flex-shrink: 0;
 }
 
-/* Source badge — visually distinguished from the category badge so the
+/* Source badge - visually distinguished from the category badge so the
    origin (upstream agency repo vs. user's local agent-templates folder) is
    identifiable at a glance. Letter-case is preserved because the agency URL
    is case-sensitive; the row's flex-wrap (above) lets the badge flow onto a

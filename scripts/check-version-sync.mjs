@@ -74,7 +74,7 @@ if (broken.length > 0) {
 const versions = new Set(checks.map(c => c.version));
 if (versions.size === 1) {
   const [v] = versions;
-  console.log(`[check-version-sync] OK — every location at ${v}`);
+  console.log(`[check-version-sync] OK - every location at ${v}`);
   process.exit(0);
 }
 

@@ -68,7 +68,7 @@
   overflow: hidden;
 }
 
-/* Override standalone heights — in browser layout they must fill their pane, not 100vh */
+/* Override standalone heights - in browser layout they must fill their pane, not 100vh */
 .browser-sidebar .sidebar-layout {
   height: 100% !important;
 }

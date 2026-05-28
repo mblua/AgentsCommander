@@ -135,9 +135,9 @@ function planFile(file, patches, target) {
   const steps = [];
   for (const p of patches) {
     // Anchor-not-matched is a hard fail: it means the file was renamed or
-    // restructured and our regex needs maintenance — do NOT silently skip.
+    // restructured and our regex needs maintenance - do NOT silently skip.
     if (!p.re.test(current)) {
-      die(`${file}: anchor for "${p.label}" did not match — file may have been renamed or restructured. Update PATCHES regexes.`);
+      die(`${file}: anchor for "${p.label}" did not match - file may have been renamed or restructured. Update PATCHES regexes.`);
     }
     const next = current.replace(p.re, (_match, prefix) => `${prefix}"${target}"`);
     steps.push({ label: p.label, changed: next !== current });
@@ -160,7 +160,7 @@ function main() {
   const current = readCurrentVersion();
   const target  = resolveTarget(args[0], current);
 
-  // Always run every patch — even when target equals current. That way an
+  // Always run every patch - even when target equals current. That way an
   // explicit X.Y.Z passed to repair drift will overwrite stale lock
   // entries instead of silently skipping the writes.
   if (target === current) {
@@ -173,7 +173,7 @@ function main() {
   // sequentially in memory, and written once. The previous one-plan-per-
   // entry layout re-read the original file for every entry and then
   // wrote each plan independently, so the second write to any file
-  // silently clobbered the first — package-lock.json lost its root
+  // silently clobbered the first - package-lock.json lost its root
   // version rewrite on every bump.
   const byFile = new Map();
   for (const p of PATCHES) {
@@ -183,9 +183,9 @@ function main() {
   }
 
   // Two-phase to avoid leaving the repo half-updated if a later file fails:
-  //   phase 1 — read every file, validate every anchor, compute every new
+  //   phase 1 - read every file, validate every anchor, compute every new
   //             content. If anything fails, we exit before any writeFileSync.
-  //   phase 2 — write the files whose content actually changed.
+  //   phase 2 - write the files whose content actually changed.
   const plans = [];
   for (const [file, patches] of byFile) {
     plans.push(planFile(file, patches, target));
