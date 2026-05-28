@@ -149,7 +149,7 @@ fn sanitize_name(raw: &str) -> Result<String, String> {
 }
 
 /// Validate that an existing entity name is safe for path operations.
-/// Unlike `sanitize_name`, this does NOT transform the name — it just rejects
+/// Unlike `sanitize_name`, this does NOT transform the name - it just rejects
 /// names that contain path traversal or separator characters.
 ///
 /// `pub(crate)` so the sentinel-collision invariant test in
@@ -192,7 +192,7 @@ fn agent_matches(team_agent_entry: &str, agent_name: &str) -> bool {
 /// Parse YAML frontmatter from a Role.md file.
 /// Returns (name, description) if found. Strips a leading UTF-8 BOM first so a
 /// `Role.md` saved as UTF-8-with-BOM still yields its display name/description
-/// — mirrors `role_templates::parse_template_frontmatter`.
+/// - mirrors `role_templates::parse_template_frontmatter`.
 fn parse_role_frontmatter(content: &str) -> (Option<String>, Option<String>) {
     let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
     if !content.starts_with("---") {
@@ -223,7 +223,7 @@ fn parse_role_frontmatter(content: &str) -> (Option<String>, Option<String>) {
 
 /// Extract a `title:` field from the YAML frontmatter at the start of `content`.
 ///
-/// Best-effort frontmatter detection — NOT a YAML implementation. Suitable
+/// Best-effort frontmatter detection - NOT a YAML implementation. Suitable
 /// only for the narrow case of one optional scalar field at the top of
 /// TASK.md.
 ///
@@ -239,7 +239,7 @@ fn parse_role_frontmatter(content: &str) -> (Option<String>, Option<String>) {
 ///
 /// Returns `None` otherwise (no frontmatter, no title key, or empty value).
 ///
-/// Mirrors `parse_role_frontmatter`'s shape — both speak the same on-disk
+/// Mirrors `parse_role_frontmatter`'s shape - both speak the same on-disk
 /// format. See plan `_plans/107-auto-brief-title.md` §6 for why we do not
 /// pull in `serde_yaml`.
 pub(crate) fn parse_task_title(content: &str) -> Option<String> {
@@ -293,7 +293,7 @@ fn build_task_content(task_title: &str) -> String {
 ///
 /// When a template is supplied, its body is inserted as a `## Role Profile`
 /// section between the title/description and the mandatory `## Source of Truth`
-/// / `## Agent Memory Rule` sections (plan §7) — the mandatory sections always
+/// / `## Agent Memory Rule` sections (plan §7) - the mandatory sections always
 /// land last so a template body cannot push them off, and Role-Profile content
 /// inherits the picker's display order (the section header makes the source of
 /// the imported text obvious to a human reader of Role.md).
@@ -311,7 +311,7 @@ fn build_role_content(
     let profile = match template {
         Some(t) => format!(
             "\n## Role Profile\n\n\
-             <!-- ac:role-profile source=\"{}\" — imported template body; \
+             <!-- ac:role-profile source=\"{}\" - imported template body; \
              the AC sections below are mandatory and must stay last -->\n\n\
              {}\n\n\
              <!-- ac:role-profile:end -->\n",
@@ -373,10 +373,10 @@ pub async fn create_agent_matrix(
         return Err(format!("Agent '{}' already exists", safe_name));
     }
 
-    // #271 — resolve the picked template BEFORE any disk mutation so an unknown
+    // #271 - resolve the picked template BEFORE any disk mutation so an unknown
     // / unreadable id fails fast and no half-built matrix is left on disk. If
     // the user picked a template but the config dir is unresolvable, hard-error
-    // (plan §4.2.2) rather than silently producing a no-template agent — that
+    // (plan §4.2.2) rather than silently producing a no-template agent - that
     // would be a contract violation. Distinct from `list_role_templates`, where
     // a missing config dir can degrade to "agency-only" since no selection has
     // been made yet.
@@ -411,7 +411,7 @@ pub async fn create_agent_matrix(
     std::fs::write(agent_dir.join("Role.md"), &role_content)
         .map_err(|e| format!("Failed to write Role.md: {}", e))?;
 
-    // #271 — best-effort copy of the template's skills/ AFTER the layout exists.
+    // #271 - best-effort copy of the template's skills/ AFTER the layout exists.
     // Failures here are non-fatal: the matrix is still usable, the user can
     // re-add skills manually, and partial-copy state is just files inside an
     // otherwise valid matrix directory. Surfaced via log::error! → ErrorModal.
@@ -436,13 +436,13 @@ pub async fn create_agent_matrix(
     std::fs::write(agent_dir.join("config.json"), "{\n  \"tooling\": {}\n}\n")
         .map_err(|e| format!("Failed to write config.json: {}", e))?;
 
-    // Issue #84 — auto-generate .claude/settings.local.json if any configured
+    // Issue #84 - auto-generate .claude/settings.local.json if any configured
     // coding agent has `exclude_global_claude_md`. Inert for Codex/Gemini.
     // Reads from in-memory SettingsState (kept in sync by `update_settings` in
     // commands/config.rs:32-44). Avoids the disk-read race that load_settings()
     // would have against a concurrent save_settings() (see plan §13.2).
     //
-    // Issue #120 — also gate the rtk hook on `inject_rtk_hook` (read from the
+    // Issue #120 - also gate the rtk hook on `inject_rtk_hook` (read from the
     // same snapshot). Acquires `RtkSweepLockState` around the helper sequence
     // so concurrent sweeps cannot interleave a read-modify-write on the file.
     let (exclude_claude_md, inject_rtk_hook) = {
@@ -685,7 +685,7 @@ pub async fn create_team(
 }
 
 /// Create a workgroup from an existing team.
-/// Clones repos async — partial failures are reported but don't rollback the WG.
+/// Clones repos async - partial failures are reported but don't rollback the WG.
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -797,12 +797,12 @@ pub async fn create_workgroup(
         }
     }
 
-    // Issue #84 — snapshot gate ONCE before the loop. Deliberate: all replicas
+    // Issue #84 - snapshot gate ONCE before the loop. Deliberate: all replicas
     // in this workgroup creation must use the same gate value. Mid-loop
-    // toggles via update_settings are intentionally ignored — half-applied
+    // toggles via update_settings are intentionally ignored - half-applied
     // workgroups would be worse than a stale snapshot.
     //
-    // Issue #120 — also snapshot `inject_rtk_hook` here for the same reason.
+    // Issue #120 - also snapshot `inject_rtk_hook` here for the same reason.
     let (exclude_claude_md, inject_rtk_hook) = {
         let s = settings.read().await;
         (
@@ -831,7 +831,7 @@ pub async fn create_workgroup(
             _ => format!("Failed to create {} for {}: {}", sub, agent_name, e),
         })?;
 
-        // Issue #84 / #120 — write .claude/settings.local.json if any agent has
+        // Issue #84 / #120 - write .claude/settings.local.json if any agent has
         // the flag, and apply the rtk hook based on the global toggle. Per-replica
         // RtkSweepLock guard keeps the critical section short while still
         // serializing per-file work against any concurrent sweep.
@@ -984,7 +984,7 @@ pub async fn delete_team(
         ));
     }
 
-    // Delete team dir first — bail before touching workgroups if this fails
+    // Delete team dir first - bail before touching workgroups if this fails
     std::fs::remove_dir_all(&team_dir)
         .map_err(|e| format!("Failed to delete team directory: {}", e))?;
     log::info!("[entity_creation] Deleted team: {}", team_name);
@@ -1050,7 +1050,7 @@ pub async fn delete_workgroup(
     // BEFORE remove_dir_all. NTFS rename requires DELETE access on every open
     // handle to the dir or any descendant; if any blocker holds a handle without
     // FILE_SHARE_DELETE (terminal cwd, VSCode workspace open, file watcher,
-    // memory-mapped TASK.md), the rename fails atomically — no files touched —
+    // memory-mapped TASK.md), the rename fails atomically - no files touched -
     // and we run the diagnostic on the still-intact tree. On success the dir is
     // re-parented to a sentinel name and removed; the user-visible WG is gone.
     match try_atomic_delete_wg(&wg_dir) {
@@ -1066,7 +1066,7 @@ pub async fn delete_workgroup(
             let report = crate::commands::wg_delete_diagnostic::diagnose_blockers(
                 &wg_dir,
                 &workgroup_name,
-                &raw, // raw OS error verbatim — see plan §C.1
+                &raw, // raw OS error verbatim - see plan §C.1
                 session_mgr.inner(),
             )
             .await;
@@ -1144,7 +1144,7 @@ pub async fn update_team(
 
     log::info!("[entity_creation] Updated team: {}", team_name);
 
-    // Propagate repo changes to existing workgroups (async now — awaits SessionManager refresh).
+    // Propagate repo changes to existing workgroups (async now - awaits SessionManager refresh).
     match sync_workgroup_repos_inner(
         &base,
         &team_name,
@@ -1171,7 +1171,7 @@ pub async fn update_team(
         }
     }
 
-    // Refresh coordinator flags — a team edit can add/remove the coordinator or change its target.
+    // Refresh coordinator flags - a team edit can add/remove the coordinator or change its target.
     emit_coordinator_refresh(&app, session_mgr.inner()).await;
 
     Ok(())
@@ -1199,7 +1199,7 @@ fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<SessionRepo> {
     })
 }
 
-/// Core sync logic — updates repos and context in all replica configs for a team's workgroups.
+/// Core sync logic - updates repos and context in all replica configs for a team's workgroups.
 /// After successful per-replica writes, pushes the new `git_repos` to any matching live session
 /// via `refresh_git_repos_for_sessions` + watcher cache invalidation + `session_git_repos` emit.
 /// Async so it can await the RwLock on `SessionManager`.
@@ -1221,7 +1221,7 @@ async fn sync_workgroup_repos_inner(
     // `updates` is built ONLY from replicas whose config.json write succeeded
     // (Grinch #15 partial-failure filter). In-memory state must match on-disk.
     let mut updates: Vec<(String, Vec<SessionRepo>)> = Vec::new();
-    // Replica paths touched successfully — used for `invalidate_replicas` so the next
+    // Replica paths touched successfully - used for `invalidate_replicas` so the next
     // discovery poll re-registers them with fresh data (§3.2.5 / Grinch #17).
     let mut touched_replica_paths: Vec<String> = Vec::new();
 
@@ -1365,10 +1365,10 @@ async fn sync_workgroup_repos_inner(
                 }
             }
 
-            // Write succeeded — record for in-memory refresh. Canonicalize each repo
+            // Write succeeded - record for in-memory refresh. Canonicalize each repo
             // path so source_path matches DiscoveryBranchWatcher's shape. Order of
             // `assigned_repos` = team config `repos` order, preserved via the filter
-            // above — do NOT sort or dedupe.
+            // above - do NOT sort or dedupe.
             let session_repos: Vec<SessionRepo> = assigned_repos
                 .iter()
                 .filter_map(|rel| build_session_repo(replica_dir, rel))
@@ -1615,7 +1615,7 @@ fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, String)> {
                     }
                 }
                 _ => {
-                    // No upstream configured — local-only branch = unpushed work
+                    // No upstream configured - local-only branch = unpushed work
                     reasons.push("no remote upstream");
                 }
             }
@@ -1635,7 +1635,7 @@ fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, String)> {
 pub(crate) enum WgDeleteOutcome {
     /// Rename succeeded and the renamed dir was removed (or, in the rare race
     /// where remove failed after a successful rename, an orphan remains and a
-    /// `log::warn!` was emitted — from the user's perspective the WG is gone).
+    /// `log::warn!` was emitted - from the user's perspective the WG is gone).
     Deleted,
     /// Rename failed with a Windows file-in-use error. Tree is intact; caller
     /// should run the blocker diagnostic and return `BLOCKERS:` to the frontend.
@@ -1653,7 +1653,7 @@ pub(crate) enum WgDeleteOutcome {
 /// error the WG is still intact, so the caller can run the diagnostic over the
 /// original tree and surface a `BLOCKERS:` report.
 ///
-/// Suffix scheme: `.deleting-<wg_name>-<uuid>` — leading `.` keeps any orphan
+/// Suffix scheme: `.deleting-<wg_name>-<uuid>` - leading `.` keeps any orphan
 /// (rare race: rename succeeds but remove_dir_all fails) invisible to the
 /// `starts_with("wg-")` filters in `ac_discovery`, `cli::list_peers`, and
 /// `claude_settings`, so an orphan won't surface as a ghost workgroup. UUID is
@@ -1713,7 +1713,7 @@ pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
 /// Superset of `is_file_in_use_error`: matches the same {32, 33, 1224} codes
 /// PLUS `ERROR_ACCESS_DENIED` (5). Empirically `MoveFileEx` (and therefore
 /// `std::fs::rename`) returns 5, not 32, when an existing open handle on the
-/// source's descendant lacks `FILE_SHARE_DELETE` — the most common real-world
+/// source's descendant lacks `FILE_SHARE_DELETE` - the most common real-world
 /// blocker shape (default-share opens by IDEs and terminals). This is the
 /// rename-path counterpart to `is_file_in_use_error`, which was tuned for
 /// `remove_dir_all` semantics where ACCESS_DENIED typically means a real
@@ -1740,9 +1740,9 @@ pub(crate) fn is_rename_blocked_by_handle(e: &std::io::Error) -> bool {
 ///
 /// Matches the Win32 codes that surface when another process holds an open or
 /// memory-mapped handle to a file we tried to delete:
-/// - `ERROR_SHARING_VIOLATION` (32) — standard open with a deny-share mode.
-/// - `ERROR_LOCK_VIOLATION` (33) — byte-range lock collision.
-/// - `ERROR_USER_MAPPED_FILE` (1224) — file is mapped into another process's address
+/// - `ERROR_SHARING_VIOLATION` (32) - standard open with a deny-share mode.
+/// - `ERROR_LOCK_VIOLATION` (33) - byte-range lock collision.
+/// - `ERROR_USER_MAPPED_FILE` (1224) - file is mapped into another process's address
 ///   space. This is the VSCode / IDE memory-mapped-I/O case and was the motivating
 ///   real-world scenario for the blocker diagnostic. See plan §6.1.
 ///
@@ -1810,7 +1810,7 @@ fn determine_next_wg_number(ac_new_dir: &Path, team_name: &str) -> u32 {
             let name_str = name.to_string_lossy();
             if name_str.starts_with("wg-") && name_str.ends_with(&suffix) {
                 // Extract the number between "wg-" and "-{team_name}".
-                // Use `.get(..)` (checked slicing) — a name like
+                // Use `.get(..)` (checked slicing) - a name like
                 // `wg-{team}` (no number) passes both the prefix and
                 // suffix checks but produces a slice with start > end,
                 // which would panic with `&str[..]`. `.get(..)` returns
@@ -1828,7 +1828,7 @@ fn determine_next_wg_number(ac_new_dir: &Path, team_name: &str) -> u32 {
     // any iterator-overflow footgun in debug builds; `find` short-circuits at
     // the first miss so the actual cost is O(taken.len() + 1) in practice.
     // A `0` may end up in `taken` (from a stray `wg-0-{team}`) but is never
-    // tested here — the search starts at 1, so slot 1 is always reachable.
+    // tested here - the search starts at 1, so slot 1 is always reachable.
     (1u32..=u32::MAX).find(|n| !taken.contains(n)).unwrap_or(1)
 }
 
@@ -1857,7 +1857,7 @@ fn compute_relative_identity(agent_path: &str, replica_dir: &Path, ac_new_dir: &
         );
     }
 
-    // Absolute path — try to make relative
+    // Absolute path - try to make relative
     if let Ok(rel) = pathdiff_relative(replica_dir, agent) {
         return rel;
     }
@@ -2159,7 +2159,7 @@ mod tests {
     #[test]
     fn try_atomic_delete_wg_blocked_with_restrictive_share_mode() {
         use std::os::windows::fs::OpenOptionsExt;
-        // FILE_SHARE_READ only — explicitly NO FILE_SHARE_DELETE.
+        // FILE_SHARE_READ only - explicitly NO FILE_SHARE_DELETE.
         const FILE_SHARE_READ: u32 = 0x00000001;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2187,7 +2187,7 @@ mod tests {
             WgDeleteOutcome::Deleted => {
                 panic!(
                     "expected Blocked when child file is held without FILE_SHARE_DELETE; \
-                     got Deleted (rename succeeded — Windows behavior may have changed)"
+                     got Deleted (rename succeeded - Windows behavior may have changed)"
                 );
             }
             WgDeleteOutcome::Other(e) => {
@@ -2219,7 +2219,7 @@ mod tests {
     }
 
     /// `is_rename_blocked_by_handle` matches `ERROR_ACCESS_DENIED` (5).
-    /// MoveFileEx returns 5 — not 32 — when an open handle on a descendant
+    /// MoveFileEx returns 5 - not 32 - when an open handle on a descendant
     /// lacks `FILE_SHARE_DELETE`. Empirical, verified by the
     /// `try_atomic_delete_wg_blocked_with_restrictive_share_mode` test below.
     #[cfg(windows)]
@@ -2232,7 +2232,7 @@ mod tests {
         );
     }
 
-    /// `is_rename_blocked_by_handle` is a superset of `is_file_in_use_error` —
+    /// `is_rename_blocked_by_handle` is a superset of `is_file_in_use_error` -
     /// the existing 32/33/1224 codes still match.
     #[cfg(windows)]
     #[test]
@@ -2259,7 +2259,7 @@ mod tests {
         );
     }
 
-    /// Off Windows the helper always returns false — diagnostic isn't run on
+    /// Off Windows the helper always returns false - diagnostic isn't run on
     /// non-Windows platforms.
     #[cfg(not(windows))]
     #[test]
@@ -2271,7 +2271,7 @@ mod tests {
         );
     }
 
-    // ── parse_task_title — dev-rust R7 cases ──
+    // ── parse_task_title - dev-rust R7 cases ──
 
     #[test]
     fn parse_task_title_returns_some_for_canonical_frontmatter() {
@@ -2333,7 +2333,7 @@ mod tests {
         );
     }
 
-    // ── parse_task_title — dev-rust-grinch G3 / G13 case-insensitivity ──
+    // ── parse_task_title - dev-rust-grinch G3 / G13 case-insensitivity ──
 
     #[test]
     fn parse_task_title_handles_capital_t() {
@@ -2369,7 +2369,7 @@ mod tests {
         );
     }
 
-    // ── parse_task_title — UTF-8 BOM (grinch MEDIUM) ──
+    // ── parse_task_title - UTF-8 BOM (grinch MEDIUM) ──
     // Mirrors `cli/task_ops.rs::parse_task` which already strips the BOM.
     // Without this, TASK.md saved as "UTF-8 with BOM" breaks gate-4
     // idempotency and risks silent overwrite of a user-edited title.
@@ -2387,7 +2387,7 @@ mod tests {
         assert_eq!(parse_task_title("\u{FEFF}# Heading\n\nbody\n"), None);
     }
 
-    // ── #177 — determine_next_wg_number lowest-free reuse ──
+    // ── #177 - determine_next_wg_number lowest-free reuse ──
 
     /// Helper: create an empty directory at `<root>/<name>` for the test.
     fn touch_dir(root: &Path, name: &str) {
@@ -2395,7 +2395,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("create_dir {}: {}", name, e));
     }
 
-    /// Empty `.ac-new/` returns slot 1 — the lowest positive integer.
+    /// Empty `.ac-new/` returns slot 1 - the lowest positive integer.
     #[test]
     fn determine_next_wg_number_returns_one_when_no_wg_dirs_exist() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2413,7 +2413,7 @@ mod tests {
         assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 4);
     }
 
-    /// Gap reuse — the load-bearing case from issue #177.
+    /// Gap reuse - the load-bearing case from issue #177.
     /// `wg-1` and `wg-3` exist (someone destroyed `wg-2`) → next slot is 2.
     #[test]
     fn determine_next_wg_number_reuses_lowest_internal_gap() {
@@ -2423,7 +2423,7 @@ mod tests {
         assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 2);
     }
 
-    /// Leading gap — `wg-1` is free even though higher slots are taken.
+    /// Leading gap - `wg-1` is free even though higher slots are taken.
     #[test]
     fn determine_next_wg_number_reuses_slot_one_when_only_higher_slots_exist() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2466,7 +2466,7 @@ mod tests {
 
     /// `wg-0-<team>` does not block slot 1. The allocator's lowest-free
     /// search starts at 1, so any `0` that ends up in `taken` is never
-    /// tested by `find` — slot 1 stays reachable. The allocator only ever
+    /// tested by `find` - slot 1 stays reachable. The allocator only ever
     /// produces values ≥ 1.
     #[test]
     fn determine_next_wg_number_ignores_zero_numbered_dir() {
@@ -2476,7 +2476,7 @@ mod tests {
         assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 1);
     }
 
-    /// Files (not directories) named like a workgroup must not occupy a slot —
+    /// Files (not directories) named like a workgroup must not occupy a slot -
     /// the allocator only considers real workgroup directories.
     #[test]
     fn determine_next_wg_number_ignores_files_named_like_workgroups() {
@@ -2488,7 +2488,7 @@ mod tests {
     /// Regression for the suffix-overlaps-prefix slice case: a directory
     /// named `wg-{team}` (no number, e.g. `wg-dev-team`) passes both the
     /// `starts_with("wg-")` and `ends_with("-{team}")` checks, but the
-    /// digits slice would be `&name_str[3..2]` — invalid. With `&str[..]`
+    /// digits slice would be `&name_str[3..2]` - invalid. With `&str[..]`
     /// indexing this panics; with `name_str.get(..)` it returns `None` and
     /// the entry is silently ignored. This test locks in the no-panic
     /// behavior so a future refactor cannot reintroduce the bug.
@@ -2503,7 +2503,7 @@ mod tests {
     /// In-flight `.deleting-wg-N-team-<uuid>` directories must NOT be
     /// counted as occupying slot N. Locks the contract that #177 relies
     /// on: the leading `.` of the temp name (set in `try_atomic_delete_wg`
-    /// at line 1535 — `.deleting-{wg_name}-{uuid}`) dodges the
+    /// at line 1535 - `.deleting-{wg_name}-{uuid}`) dodges the
     /// `starts_with("wg-")` filter, so a freed slot is reusable on the
     /// very next allocation tick. A future temp-name refactor that drops
     /// the leading `.` would silently re-introduce the gap-leak this issue
@@ -2522,11 +2522,11 @@ mod tests {
 
     /// Team `team` is a strict suffix of team `dev-team`. The dir
     /// `wg-1-dev-team` ends with `-team` but must NOT count toward team
-    /// `team` — its middle `1-dev` fails `parse::<u32>()` and is ignored.
+    /// `team` - its middle `1-dev` fails `parse::<u32>()` and is ignored.
     /// Test 5 only covered non-overlapping team names; this case locks the
     /// suffix-overlap disambiguation that edge case §2 argues for. A future
     /// maintainer who relaxed parsing (hex, leading `+`, trailing-char
-    /// stripping) would silently reintroduce cross-team contamination — and
+    /// stripping) would silently reintroduce cross-team contamination - and
     /// none of the existing tests would catch it.
     #[test]
     fn determine_next_wg_number_distinguishes_subset_team_suffixes() {
@@ -2540,12 +2540,12 @@ mod tests {
         assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 2);
     }
 
-    // ── #271 — build_role_content (Role.md template merge) ──
+    // ── #271 - build_role_content (Role.md template merge) ──
 
-    /// Test #21 — byte-for-byte parity with the pre-#271 inline `format!`
+    /// Test #21 - byte-for-byte parity with the pre-#271 inline `format!`
     /// so callers that pass no template see the legacy file. The legacy
     /// format string is reproduced verbatim here (NOT imported from the
-    /// helper) so the two transcriptions can cross-check each other —
+    /// helper) so the two transcriptions can cross-check each other -
     /// any drift in `build_role_content` instantly fails this test.
     #[test]
     fn build_role_content_no_template_matches_legacy() {
@@ -2563,7 +2563,7 @@ mod tests {
         );
     }
 
-    /// Test #22 — supplying a resolved template inserts the `## Role Profile`
+    /// Test #22 - supplying a resolved template inserts the `## Role Profile`
     /// section between the heading/description and the Source of Truth section,
     /// using the template body verbatim (post-trim). Body must be fenced by the
     /// plan §7.2 HTML-comment delimiters with the opening tag carrying the
@@ -2610,7 +2610,7 @@ mod tests {
             profile_idx < sot_idx,
             "Role Profile must precede Source of Truth"
         );
-        // Delimiters must bracket the body — opening before, closing after.
+        // Delimiters must bracket the body - opening before, closing after.
         let open_idx = out
             .find("<!-- ac:role-profile source=")
             .expect("opening delimiter present");
@@ -2632,7 +2632,7 @@ mod tests {
         );
     }
 
-    /// Test #23 — mandatory sections are always last, even when a template body
+    /// Test #23 - mandatory sections are always last, even when a template body
     /// itself contains a heading that LOOKS like a mandatory section. The
     /// template is inserted between description and the mandatory block, never
     /// after it; the actual `## Source of Truth` and `## Agent Memory Rule`
@@ -2646,7 +2646,7 @@ mod tests {
         };
         let out = build_role_content("alpha", "desc", Some(&template));
         // The mandatory block's exact opening line appears in both the template
-        // body AND the helper's tail — so `rfind` must point at the helper's
+        // body AND the helper's tail - so `rfind` must point at the helper's
         // copy, which has to sit AFTER the entire template body.
         let last_sot = out
             .rfind("## Source of Truth")
@@ -2674,7 +2674,7 @@ mod tests {
         );
     }
 
-    /// Test #24 — single quotes in the description are doubled inside the YAML
+    /// Test #24 - single quotes in the description are doubled inside the YAML
     /// frontmatter `description:` value so the file stays valid YAML, while the
     /// human-readable body keeps the original character.
     #[test]

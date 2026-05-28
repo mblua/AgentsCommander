@@ -42,10 +42,10 @@ pub async fn save_debug_logs(content: String) -> Result<(), String> {
     Ok(())
 }
 
-/// #264 — read-and-clear the buffered ERROR-level log entries for the UI error
+/// #264 - read-and-clear the buffered ERROR-level log entries for the UI error
 /// modal. The frontend calls this once on `ErrorModal` mount (to collect errors
 /// logged before the webview was listening) and again on every `error_log_event`
-/// ping. Sync (no I/O, no `.await`) — a sub-microsecond mutex take.
+/// ping. Sync (no I/O, no `.await`) - a sub-microsecond mutex take.
 #[tauri::command]
 pub fn drain_error_logs() -> Vec<crate::logging::ErrorLogEntry> {
     crate::logging::error_sink().drain()
@@ -65,7 +65,7 @@ pub async fn update_settings(
     new_settings: AppSettings,
 ) -> Result<(), String> {
     let mut to_save = new_settings;
-    // Preserve existing root token — frontend cannot overwrite it
+    // Preserve existing root token - frontend cannot overwrite it
     to_save.root_token = settings.read().await.root_token.clone();
     crate::config::settings::validate_agent_commands(&to_save)?;
     save_settings(&to_save)?;
@@ -171,7 +171,7 @@ pub fn get_instance_label() -> String {
     crate::config::profile::instance_label().to_string()
 }
 
-/// Narrow setter — flips ONLY `inject_rtk_hook`. Holds the SettingsState
+/// Narrow setter - flips ONLY `inject_rtk_hook`. Holds the SettingsState
 /// write lock through `save_settings` so the in-memory mutation, the cloned
 /// snapshot, and the disk write happen atomically with respect to each other
 /// (issue #120, grinch H3 + N1). The explicit `drop(s)` after `save_settings`
@@ -202,9 +202,9 @@ pub async fn set_inject_rtk_hook(
     Ok(())
 }
 
-/// Narrow setter — flips ONLY `rtk_prompt_dismissed`. Same lock-held-through-save
+/// Narrow setter - flips ONLY `rtk_prompt_dismissed`. Same lock-held-through-save
 /// pattern as `set_inject_rtk_hook` (issue #120, grinch H3 + N1). The same
-/// `update_settings` caveat applies — see `set_inject_rtk_hook` doc for
+/// `update_settings` caveat applies - see `set_inject_rtk_hook` doc for
 /// details.
 #[tauri::command]
 pub async fn set_rtk_prompt_dismissed(
@@ -219,7 +219,7 @@ pub async fn set_rtk_prompt_dismissed(
     Ok(())
 }
 
-/// Narrow setter — flips ONLY `sounds_enabled`. Same lock-held-through-save
+/// Narrow setter - flips ONLY `sounds_enabled`. Same lock-held-through-save
 /// pattern as `set_inject_rtk_hook` (issue #158). Replaces the toolbar's
 /// previous full-object `update_settings(next)` call, which could clobber
 /// unrelated fields from a stale `settingsStore.current` snapshot.
@@ -238,7 +238,7 @@ pub async fn set_sounds_enabled(
     Ok(())
 }
 
-/// Narrow setter — flips ONLY `theme_light`. Same lock-held-through-save
+/// Narrow setter - flips ONLY `theme_light`. Same lock-held-through-save
 /// pattern as `set_sounds_enabled` (issue #289). Lets the UI persist the
 /// user's light/dark mode choice without going through `update_settings`,
 /// which could clobber unrelated fields from a stale snapshot. The
@@ -263,7 +263,7 @@ pub async fn set_theme_light(
 /// continues. Reads `project_paths` from the live `SettingsState` (avoids a
 /// disk-read race against `save_settings`).
 ///
-/// Acquires `RtkSweepLockState` for the entire loop — eliminates the
+/// Acquires `RtkSweepLockState` for the entire loop - eliminates the
 /// in-process race vs. concurrent `ensure_claude_md_excludes` /
 /// `ensure_rtk_pretool_hook` calls from `entity_creation` /
 /// `agent_creator` (issue #120, grinch M8). Cross-process races (two AC
@@ -323,16 +323,16 @@ pub async fn sweep_rtk_hook(
 
 /// Returns the BOOT-TIME RTK startup decision computed by the setup task in
 /// `lib.rs::run` and cached in `RtkStartupModeState`. This is the SAME value
-/// the setup task emitted via `rtk_startup_status` — so the listener and the
+/// the setup task emitted via `rtk_startup_status` - so the listener and the
 /// getter always agree, even after the auto-disable side-effect mutates
 /// settings (issue #120 §18 amendment).
 ///
 /// If called before the setup task has finished (extremely narrow boot
-/// window — `which::which` resolve + a state read), returns "silent". The
+/// window - `which::which` resolve + a state read), returns "silent". The
 /// listener will fire shortly after with the actual mode; combined with
 /// idempotent `setMode` on the frontend, the banner self-corrects.
 ///
-/// Pure read — does NOT auto-disable, does NOT sweep, does NOT probe PATH.
+/// Pure read - does NOT auto-disable, does NOT sweep, does NOT probe PATH.
 #[tauri::command]
 pub async fn get_rtk_startup_status(
     mode_cache: State<'_, RtkStartupModeState>,

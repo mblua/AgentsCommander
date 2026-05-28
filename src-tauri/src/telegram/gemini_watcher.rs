@@ -1,6 +1,6 @@
 // Gemini CLI session-file watcher.
 //
-// P1 pivot: Telegram bridging targets new Gemini sessions only — the legacy
+// P1 pivot: Telegram bridging targets new Gemini sessions only - the legacy
 // `.json` (full-rewrite) format is out-of-scope; users on
 // `@google/gemini-cli < 0.42.0` see a one-time `telegram_bridge_warning`.
 // New Gemini sessions write append-only `session-*.jsonl` via `appendFileSync`
@@ -59,7 +59,7 @@ pub fn spawn_watch_task(
 /// Extractor for `read_preamble_for_race`: returns
 /// `(timestamp, Some(id), body)` for each `type:"gemini"` line. The kernel
 /// returns the surfaced ids alongside the bodies in a single read, which the
-/// watcher uses to seed `emitted_ids` directly — closing the M1 TOCTOU where
+/// watcher uses to seed `emitted_ids` directly - closing the M1 TOCTOU where
 /// a separate seeder pass re-read the file and could mark a line's id as
 /// emitted whose body landed BETWEEN the two reads (silent permanent drop).
 fn gemini_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
@@ -254,7 +254,7 @@ async fn watch_loop(
                     continue;
                 }
 
-                // Step 4: Kernel A discovery — pick newest session-*.jsonl by mtime.
+                // Step 4: Kernel A discovery - pick newest session-*.jsonl by mtime.
                 // M5: rescan only when we don't have a current file, the file
                 // was unlinked, or its mtime has not advanced for
                 // ROTATION_STALE_SECS wall-clock seconds. `last_mtime_advance`
@@ -539,20 +539,20 @@ mod tests {
                 out.push(c);
             }
         }
-        // Re-append with same id, same content — skip.
+        // Re-append with same id, same content - skip.
         if let Some((id, c)) = extract_gemini_message(l1) {
             if emitted.insert(id) {
                 out.push(c);
             }
         }
-        // In-progress empty-content pattern — never emits anyway.
+        // In-progress empty-content pattern - never emits anyway.
         let l2 = r#"{"type":"gemini","id":"b","content":"","thoughts":[]}"#;
         if let Some((id, c)) = extract_gemini_message(l2) {
             if emitted.insert(id) {
                 out.push(c);
             }
         }
-        // Non-empty content for new id — emits once.
+        // Non-empty content for new id - emits once.
         let l3 = r#"{"type":"gemini","id":"c","content":"new"}"#;
         if let Some((id, c)) = extract_gemini_message(l3) {
             if emitted.insert(id) {
@@ -580,7 +580,7 @@ mod tests {
         writeln!(f, r#"{{"id":"g1","timestamp":"2026-05-19T00:00:03Z","type":"gemini","content":"","thoughts":[{{"subject":"x"}}]}}"#).unwrap();
         // gemini final.
         writeln!(f, r#"{{"id":"g1","timestamp":"2026-05-19T00:00:04Z","type":"gemini","content":"Hello world"}}"#).unwrap();
-        // gemini re-appended (same id) — must be deduped.
+        // gemini re-appended (same id) - must be deduped.
         writeln!(f, r#"{{"id":"g1","timestamp":"2026-05-19T00:00:05Z","type":"gemini","content":"Hello world"}}"#).unwrap();
         // $rewindTo record.
         writeln!(f, r#"{{"$rewindTo":"g1","timestamp":"2026-05-19T00:00:06Z"}}"#).unwrap();
@@ -652,7 +652,7 @@ mod tests {
         );
         assert_eq!(bodies, vec!["first".to_string(), "second".to_string()]);
 
-        // Seed emitted_ids ONLY from kernel's returned ids — no second file read.
+        // Seed emitted_ids ONLY from kernel's returned ids - no second file read.
         let mut emitted_ids: HashSet<String> = HashSet::new();
         for id in ids.into_iter().flatten() {
             emitted_ids.insert(id);
@@ -662,7 +662,7 @@ mod tests {
 
         // Race: a third line lands AFTER the kernel returned. In the old
         // double-read this would have happened BETWEEN the two reads and the
-        // seeder would have pre-marked "c" as emitted — silently dropping its
+        // seeder would have pre-marked "c" as emitted - silently dropping its
         // body on the next poll. With the single-read fix, "c" is invisible
         // to the seed step and must surface here.
         let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();

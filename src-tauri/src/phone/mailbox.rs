@@ -119,7 +119,7 @@ fn validate_root_sender_payload_with_root_dir(
 /// Mirrors the WG-replica walk-up in `cli::send::derive_root_project_dir` so
 /// the mailbox can resolve qualified WG-peer FQNs against the same root-walk-up
 /// source the sending CLI used (and the same source `list_peers::detect_wg_replica`
-/// uses to report siblings as `reachable: true`). In-memory only — settings.json
+/// uses to report siblings as `reachable: true`). In-memory only - settings.json
 /// is NOT mutated. See #228 D1-a.
 ///
 /// The path layout is fixed by `MailboxPoller::poll` which constructs outbox
@@ -204,10 +204,10 @@ pub(crate) fn canonicalize_msg_from_in_place(
 /// Decision made by `deliver_wake` for an existing session.
 #[derive(Debug, PartialEq)]
 pub(crate) enum WakeAction {
-    /// Session is live — inject into stdin, regardless of whether the agent
+    /// Session is live - inject into stdin, regardless of whether the agent
     /// is waiting for input or mid-turn. Bias toward delivery.
     Inject,
-    /// Session is Exited — destroy it and fall through to spawn a fresh one.
+    /// Session is Exited - destroy it and fall through to spawn a fresh one.
     RespawnExited,
 }
 
@@ -234,19 +234,19 @@ pub(crate) fn wake_spawn_skip_auto_resume(spawn_with_resume: bool) -> bool {
 }
 
 /// Decide whether a session is a viable candidate for the mailbox to attempt
-/// delivery to. Pure function — unit-testable without a tauri runtime.
+/// delivery to. Pure function - unit-testable without a tauri runtime.
 ///
 /// Rules:
-/// - `Exited(_)` records are KEPT even with `has_pty == false` — the wake
+/// - `Exited(_)` records are KEPT even with `has_pty == false` - the wake
 ///   contract documents the respawn path: "if Exited, respawn". The respawn
 ///   path does NOT need a live PTY (it calls `destroy_session_inner` then
 ///   `create_session_inner`).
 /// - All other statuses (`Active`/`Running`/`Idle`) require `has_pty == true`.
 ///   A SessionManager record with one of these statuses but no PtyManager
-///   entry is a desync phantom — the inject path is guaranteed to fail with
+///   entry is a desync phantom - the inject path is guaranteed to fail with
 ///   `AppError::SessionNotFound`, so the router must skip it (issue #223).
 ///
-/// Exhaustive `match` (not `matches!`) — a future `SessionStatus` variant
+/// Exhaustive `match` (not `matches!`) - a future `SessionStatus` variant
 /// forces a deliberate compile-error decision rather than silently routing
 /// to the `has_pty` branch. (dev-rust R1.B7 / grinch G.M6.)
 pub(crate) fn is_viable_wake_candidate(status: &SessionStatus, has_pty: bool) -> bool {
@@ -267,7 +267,7 @@ pub(crate) fn is_viable_wake_candidate(status: &SessionStatus, has_pty: bool) ->
 /// for Exited keeps the record in place so the user sees it in the sidebar
 /// exactly as they left it.
 ///
-/// Exhaustive `match` (not `matches!`) — a future `SessionStatus` variant
+/// Exhaustive `match` (not `matches!`) - a future `SessionStatus` variant
 /// forces a deliberate compile-error decision. Same pattern as
 /// `is_viable_wake_candidate`.
 pub(crate) fn is_viable_root_recipient(status: &SessionStatus, has_pty: bool) -> bool {
@@ -292,7 +292,7 @@ pub(crate) fn err_is_pty_session_missing(e: &str) -> bool {
     e.contains("Session not found:")
 }
 
-/// §224 D.3 — pure filter: session infos by exact-FQN match on
+/// §224 D.3 - pure filter: session infos by exact-FQN match on
 /// `working_directory`. Extracted from `find_all_sessions` so the predicate
 /// can be unit-tested without a live `SessionManager` / `AppHandle`.
 /// Defensive regression guard: no future change can accidentally re-introduce
@@ -308,17 +308,17 @@ pub(crate) fn filter_sessions_by_fqn<'a>(
         .collect()
 }
 
-/// §224 A.2.5 — outcome of the daemon-restart race guard wait loop.
+/// §224 A.2.5 - outcome of the daemon-restart race guard wait loop.
 ///
 /// The production caller (`handle_close_session`) inlines the wait loop
 /// because the natural probe closure captures `&self`, `app`, and `target`
 /// across an `.await`, which is awkward to pass through this helper's
 /// `FnMut() -> Future` shape without boxing. The helper is retained as the
 /// canonical executable specification of the wait semantics for D.5a unit
-/// tests — any future divergence between the inline loop and this helper is
+/// tests - any future divergence between the inline loop and this helper is
 /// a regression.
 ///
-/// §224 G-IMPL-5 (NIT, accepted) — LOAD-BEARING COMMENT. The inlined wait
+/// §224 G-IMPL-5 (NIT, accepted) - LOAD-BEARING COMMENT. The inlined wait
 /// loop in `handle_close_session` has no direct unit test on Windows
 /// (D.5b is `#[ignore]`'d pending the cross-process FS enumeration
 /// investigation). Equivalence between the two implementations is
@@ -331,19 +331,19 @@ pub(crate) enum RestoreWaitOutcome {
     /// Deadline elapsed with the restore flag still set; caller should report
     /// `status="restore_in_progress"` to the user.
     StillInProgress,
-    /// Flag cleared with the probe still returning empty — there is no live
+    /// Flag cleared with the probe still returning empty - there is no live
     /// session for this FQN. Caller falls through to the `no_match` path.
     NoMatch,
 }
 
-/// §224 A.2.5 — poll `probe` for a non-empty result, OR for `flag` to clear,
+/// §224 A.2.5 - poll `probe` for a non-empty result, OR for `flag` to clear,
 /// until `deadline`. Pure async helper extracted so the race-guard logic can
 /// be unit-tested without a live `SessionManager` / `AppHandle`.
 ///
 /// Returns:
-///   * `Ok(non_empty_session_ids)` — a session appeared during the wait.
-///   * `Err(StillInProgress)` — deadline elapsed, flag still set.
-///   * `Err(NoMatch)` — flag cleared with empty result throughout (final
+///   * `Ok(non_empty_session_ids)` - a session appeared during the wait.
+///   * `Err(StillInProgress)` - deadline elapsed, flag still set.
+///   * `Err(NoMatch)` - flag cleared with empty result throughout (final
 ///     probe also empty).
 #[allow(dead_code)]
 pub(crate) async fn wait_for_restore_or_session<F, Fut>(
@@ -555,7 +555,7 @@ impl MailboxPoller {
                                 self.retry_tracker.remove(&path);
                             } else {
                                 log::error!(
-                                    "Failed to reject outbox message {:?} — will retry",
+                                    "Failed to reject outbox message {:?} - will retry",
                                     path
                                 );
                             }
@@ -604,7 +604,7 @@ impl MailboxPoller {
         // This prevents tokenless spoofing: a message in repo X's outbox must claim to be from repo X.
         //
         // §DR5 lenient fallback: if `msg.from` is unqualified (legacy) and its LOCAL
-        // part matches `expected_from`'s local part, accept — §AR2-norm below then
+        // part matches `expected_from`'s local part, accept - §AR2-norm below then
         // upgrades `msg.from` to the canonical FQN. Cross-project qualified names
         // are rejected (different `project:` prefix).
         //
@@ -613,7 +613,7 @@ impl MailboxPoller {
         let mut expected_from: Option<String> = None;
         if !is_app_outbox {
             let outbox_dir = path.parent().unwrap_or(Path::new(""));
-            // outbox_dir is <repo>/.agentscommander/outbox — go up 2 levels to get the repo path
+            // outbox_dir is <repo>/.agentscommander/outbox - go up 2 levels to get the repo path
             if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
                 let derived = sender_name_for_session_cwd(&repo_path.to_string_lossy());
                 if !anti_spoof_accept(&msg.from, &derived) {
@@ -632,7 +632,7 @@ impl MailboxPoller {
             }
         }
 
-        // ── §AR2-norm — SINGLE POINT OF TRUTH: msg.from / msg.to canonicalization ──
+        // ── §AR2-norm - SINGLE POINT OF TRUTH: msg.from / msg.to canonicalization ──
         //
         // Runs AFTER anti-spoof and BEFORE token validation / routing / action dispatch.
         // Every downstream read of msg.from / msg.to sees the canonical FQN (or bare
@@ -659,7 +659,7 @@ impl MailboxPoller {
         // layout (`<project>/.ac-new/wg-*/__agent_*/<local-dir>/outbox/<file>.json`),
         // include the derived `<project>` in the in-memory `paths` slice so qualified
         // WG-peer FQNs written by `cli::send` (which performs the symmetric walk-up
-        // augmentation — see #228 Step 1) resolve here too. Without this, the daemon
+        // augmentation - see #228 Step 1) resolve here too. Without this, the daemon
         // re-rejects with `UnknownQualified` even though the CLI side succeeded.
         // settings.json is NOT mutated. In-memory, this-message only. See #228 D1-a.
         if !msg.to.is_empty() {
@@ -831,7 +831,7 @@ impl MailboxPoller {
                 msg.to
             );
         } else if root_agent_recipient {
-            // #293 — coordinator → root recipient.
+            // #293 - coordinator → root recipient.
             //
             // Build the same effective_project_paths slice the root-sender
             // branch uses (settings + the outbox file's WG-replica project
@@ -868,7 +868,7 @@ impl MailboxPoller {
             );
         } else if is_master {
             log::info!(
-                "[mailbox] Master token used — bypassing team validation for {} -> {}",
+                "[mailbox] Master token used - bypassing team validation for {} -> {}",
                 msg.from,
                 msg.to
             );
@@ -891,11 +891,11 @@ impl MailboxPoller {
             );
         }
 
-        // Action-based dispatch (close-session, etc.) — handled before mode-based delivery
+        // Action-based dispatch (close-session, etc.) - handled before mode-based delivery
         if let Some(ref action) = msg.action {
             match action.as_str() {
                 "close-session" => {
-                    // §224 G-IMPL-2 — thread `is_app_outbox` so the response-
+                    // §224 G-IMPL-2 - thread `is_app_outbox` so the response-
                     // write path can skip the outbox-relative primary write
                     // when the message came from the app-outbox (master-token
                     // path). That derived path lands under
@@ -913,7 +913,7 @@ impl MailboxPoller {
             }
         }
 
-        // Deliver based on mode — all modes require immediate delivery or rejection
+        // Deliver based on mode - all modes require immediate delivery or rejection
         let mode = if msg.mode.is_empty() {
             "wake"
         } else {
@@ -936,9 +936,9 @@ impl MailboxPoller {
         self.move_to_delivered(path, &msg).await
     }
 
-    /// Deliver mode: wake — inject into the recipient's PTY for any non-Exited
+    /// Deliver mode: wake - inject into the recipient's PTY for any non-Exited
     /// session; destroy and respawn if Exited; spawn persistent if none. Always
-    /// delivers (no busy-gate — stdin buffer absorbs input while the agent is
+    /// delivers (no busy-gate - stdin buffer absorbs input while the agent is
     /// mid-turn).
     async fn deliver_wake(
         &self,
@@ -946,10 +946,10 @@ impl MailboxPoller {
         msg: &OutboxMessage,
     ) -> Result<(), String> {
         // Whether the spawn-fallback should allow provider auto-resume.
-        // Default false: cold wake — no SessionManager record at this CWD.
+        // Default false: cold wake - no SessionManager record at this CWD.
         // Promoted to true in two paths below: (a) RespawnExited deferred-
         // destroy block, (b) phantoms-only fall-through (every CWD match
-        // was a desync phantom — preserve any on-disk transcript via
+        // was a desync phantom - preserve any on-disk transcript via
         // auto-resume). See issue #223 round-1 resolution.
         //
         // MUST NOT be re-derived after `destroy_session_inner` runs: post-
@@ -962,7 +962,7 @@ impl MailboxPoller {
         let mut pending_exited_telegram_bot_id: Option<String> = None;
         // HIGH-1 (Step-7 review): symmetric AC5 protection. Tracks whether
         // every iter'd Inject candidate hit the `err_is_pty_session_missing`
-        // race arm — if so, the post-loop fall-through must still promote
+        // race arm - if so, the post-loop fall-through must still promote
         // spawn_with_resume so the on-disk transcript isn't abandoned. Same
         // outcome as grinch G.H2's phantoms-only path, just a different
         // upstream cause (race-killed siblings vs. desync phantoms).
@@ -973,7 +973,7 @@ impl MailboxPoller {
         // only AC5-preservation path (grinch G.H2). Iterate so a stale-Running
         // phantom no longer blocks delivery to the live Idle recipient at the
         // same CWD; defer Exited destroys until later Inject attempts fail
-        // (grinch G.H1) — preserves AC5's "first Exited wins respawn slot".
+        // (grinch G.H1) - preserves AC5's "first Exited wins respawn slot".
         //
         // #293: Root Agent recipient uses the `is_root_agent` flag lookup,
         // not CWD-FQN match, since `agent_fqn_from_path(ac-root-agent)` does
@@ -1007,7 +1007,7 @@ impl MailboxPoller {
                             // safety net for the dropped per-iteration
                             // re-read (grinch G.M2). Try the next candidate.
                             // Flag the race for the post-loop AC5 promotion
-                            // (grinch HIGH-1) — if every Inject candidate
+                            // (grinch HIGH-1) - if every Inject candidate
                             // races to dead, the spawn-persistent fall-through
                             // must still set spawn_with_resume.
                             lost_inject_to_race = true;
@@ -1024,7 +1024,7 @@ impl MailboxPoller {
                 WakeAction::RespawnExited => {
                     // Defer the destroy: an Inject candidate later in the list
                     // may succeed and avoid destroy+spawn entirely (grinch
-                    // G.H1). Only the FIRST Exited's id is remembered —
+                    // G.H1). Only the FIRST Exited's id is remembered -
                     // preserves AC5's "first Exited wins the respawn slot"
                     // semantic.
                     if pending_exited_destroy.is_none() {
@@ -1052,12 +1052,12 @@ impl MailboxPoller {
         // No Inject returned Ok. Three cases enable auto-resume on the spawn-
         // persistent fall-through:
         //   1. A deferred Exited destroy is pending (spawn_with_resume true).
-        //   2. Candidate list empty BUT records existed in the manager — i.e.,
+        //   2. Candidate list empty BUT records existed in the manager - i.e.,
         //      every CWD-match was a non-Exited phantom. Spawning cold would
         //      abandon any on-disk transcript at the matched CWD (grinch G.H2
         //      AC5 micro-regression).
         //   3. Every viable Inject candidate died mid-flight (all hit the
-        //      `err_is_pty_session_missing` race arm). Symmetric to case 2 —
+        //      `err_is_pty_session_missing` race arm). Symmetric to case 2 -
         //      same AC5 outcome since cold spawn would abandon the transcript
         //      (grinch HIGH-1, Step-7 review).
         if pending_exited_destroy.is_none()
@@ -1088,7 +1088,7 @@ impl MailboxPoller {
             }
         }
 
-        // ── No viable Inject candidate succeeded — spawn a persistent one ──
+        // ── No viable Inject candidate succeeded - spawn a persistent one ──
         log::info!(
             "[mailbox] wake: no active session for '{}', spawning persistent session",
             msg.to
@@ -1112,12 +1112,12 @@ impl MailboxPoller {
                 .load(std::sync::atomic::Ordering::SeqCst);
             return if restoring {
                 Err(format!(
-                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
+                    "Root Agent session not yet restored for '{}'; daemon restart in progress - will retry.",
                     msg.to
                 ))
             } else {
                 Err(format!(
-                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
+                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages - ask the user to launch it.",
                     msg.to
                 ))
             };
@@ -1125,7 +1125,7 @@ impl MailboxPoller {
 
         let agent_command = self.resolve_agent_command(app, msg).await;
         let (shell, shell_args) = agent_command.ok_or_else(|| {
-            format!("No agent command resolved for '{}' — cannot spawn session. Configure lastCodingAgent or agents in settings.", msg.to)
+            format!("No agent command resolved for '{}' - cannot spawn session. Configure lastCodingAgent or agents in settings.", msg.to)
         })?;
 
         let dest_path = self.resolve_repo_path(&msg.to, app).await;
@@ -1137,7 +1137,7 @@ impl MailboxPoller {
                     .await
                     .ok_or_else(|| {
                         format!(
-                            "Cannot resolve repo path for '{}' — cannot spawn session",
+                            "Cannot resolve repo path for '{}' - cannot spawn session",
                             msg.to
                         )
                     })?
@@ -1225,13 +1225,13 @@ impl MailboxPoller {
             drop(mgr);
         }
 
-        // Inject message — interactive mode (session persists, user sees reply instructions)
+        // Inject message - interactive mode (session persists, user sees reply instructions)
         self.inject_into_pty(app, session_id, msg, true).await
     }
 
     /// Inject a message into a session's PTY stdin.
     /// `interactive` = true (all remaining callers): live interactive `wake`
-    /// delivery — plain message only, no response markers, no watcher.
+    /// delivery - plain message only, no response markers, no watcher.
     /// `interactive` = false is currently unreachable (the former
     /// `wake-and-sleep` non-interactive path was removed in 0.7.0). The
     /// `use_markers=true` branch below is retained for future non-interactive
@@ -1249,7 +1249,7 @@ impl MailboxPoller {
         // `/clear` and `/compact` are submitted to the agent's PTY exactly the
         // same way as a normal message body: through `inject_text_into_session`,
         // which owns shell detection and the agent-specific double-Enter safety
-        // net (see pty/inject.rs). The injector — not this branch — appends the
+        // net (see pty/inject.rs). The injector - not this branch - appends the
         // Enter(s); we pass just the `/command` text.
         if let Some(ref command) = msg.command {
             const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
@@ -1265,7 +1265,7 @@ impl MailboxPoller {
             // sends ZERO carriage returns when `needs_explicit_enter` is
             // false, so writing `/clear` into such a shell would leave the
             // text un-submitted and let subsequent user input concatenate
-            // with it. Reject explicitly instead — closes grinch's G1 + G3.
+            // with it. Reject explicitly instead - closes grinch's G1 + G3.
             // Removing this reject requires extending `needs_explicit_enter`
             // to recognize the rejected case as agent-aware first; see
             // `#233-followup-cmd-wrapper`.
@@ -1276,7 +1276,7 @@ impl MailboxPoller {
                 match sessions.iter().find(|s| s.id == session_id.to_string()) {
                     None => {
                         return Err(format!(
-                            "Session {} not found — cannot execute remote command '{}'",
+                            "Session {} not found - cannot execute remote command '{}'",
                             session_id, command
                         ))
                     }
@@ -1292,7 +1292,7 @@ impl MailboxPoller {
                             command
                         ))
                     }
-                    _ => {} // idle agent-shell — proceed
+                    _ => {} // idle agent-shell - proceed
                 }
             }
 
@@ -1303,21 +1303,21 @@ impl MailboxPoller {
             // 500 ms → \r inside `inject_text_into_session`), not microseconds
             // as the original direct-write path. Two things can interleave
             // inside that window:
-            //   1. User keystrokes from xterm.js — they take the path
+            //   1. User keystrokes from xterm.js - they take the path
             //      `frontend → invoke("pty_write") → commands/pty.rs::pty_write
             //      → PtyManager::write` (raw bytes, bypasses the injector). A
             //      user typing between the staggered Enters concatenates with
             //      the un-Enter'd `/<command>`.
             //   2. The idle detector flipping `waiting_for_input` to false
             //      based on independent PTY output, leaving the second `\r`
-            //      to land on a busy agent (harmless — at worst an extra
+            //      to land on a busy agent (harmless - at worst an extra
             //      Enter on empty input, per pty/inject.rs:78-79).
             // We accept this race because the standard-message path at
             // mailbox.rs:972 already exhibits it identically and the
             // staggered double-Enter is the empirically-tuned defense
             // against the dominant single-`\r`-eaten failure mode that
             // motivated #233.
-            let cmd_text = format!("/{}", command); // NO trailing \r — the injector adds it
+            let cmd_text = format!("/{}", command); // NO trailing \r - the injector adds it
             crate::pty::inject::inject_text_into_session(app, session_id, &cmd_text)
                 .await
                 .map_err(|e| {
@@ -1355,7 +1355,7 @@ impl MailboxPoller {
             //  - `/clear` and `/compact` both keep the still-live child process environment.
             //  - Credentials are env-only; nothing is re-sent through the PTY here.
             //  - If the message has a follow-up body, inject it after the agent becomes idle.
-            // Never block the delivery pipeline — spawn as a detached task.
+            // Never block the delivery pipeline - spawn as a detached task.
             let app_clone = app.clone();
             let msg_clone = msg.clone();
             let command_owned = command.clone();
@@ -1453,7 +1453,7 @@ impl MailboxPoller {
     }
 
     /// Wait for agent to become idle after a remote command, then inject body as follow-up.
-    /// Static method — can be spawned as a detached task without borrowing self.
+    /// Static method - can be spawned as a detached task without borrowing self.
     async fn inject_followup_after_idle_static(
         app: &tauri::AppHandle,
         session_id: Uuid,
@@ -1478,7 +1478,7 @@ impl MailboxPoller {
             let sessions = mgr.list_sessions().await;
             match sessions.iter().find(|s| s.id == session_id.to_string()) {
                 Some(s) if s.waiting_for_input => break,
-                Some(_) => {} // busy — keep polling
+                Some(_) => {} // busy - keep polling
                 None => {
                     return Err(format!(
                         "Session {} destroyed before follow-up could be injected",
@@ -1489,7 +1489,7 @@ impl MailboxPoller {
         }
 
         // Inject the follow-up body as a standard interactive message.
-        // Note: same TOCTOU race as the command path — agent could become busy
+        // Note: same TOCTOU race as the command path - agent could become busy
         // between the idle check above and this write. Acceptable for this use case.
         let payload = crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body);
         crate::pty::inject::inject_text_into_session(app, session_id, &payload).await
@@ -1499,14 +1499,14 @@ impl MailboxPoller {
     /// Prefers active/running non-temp sessions over idle/exited ones.
     ///
     /// Used ONLY by stale-token logging (mailbox.rs:456, 501). Routing now uses
-    /// `find_live_candidates` — do not add new callers. (grinch G.L5.)
+    /// `find_live_candidates` - do not add new callers. (grinch G.L5.)
     async fn find_active_session(&self, app: &tauri::AppHandle, agent_name: &str) -> Option<Uuid> {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
 
         log::info!(
-            "[mailbox] find_active_session for '{}' — {} sessions: {:?}",
+            "[mailbox] find_active_session for '{}' - {} sessions: {:?}",
             agent_name,
             sessions.len(),
             sessions
@@ -1520,7 +1520,7 @@ impl MailboxPoller {
 
         // §AR2-G2: exact-FQN filter. Post-§AR2-norm, `agent_name` is canonical
         // (or a legacy form that genuinely matches only one project's CWD). The
-        // substring/suffix fuzziness from the pre-fix code is gone — cross-project
+        // substring/suffix fuzziness from the pre-fix code is gone - cross-project
         // leakage is impossible at this layer.
         let mut matches: Vec<&crate::session::session::SessionInfo> = sessions
             .iter()
@@ -1571,7 +1571,7 @@ impl MailboxPoller {
     /// Find ALL viable CWD-matched candidates for wake delivery, sorted by
     /// preference (Active/Running first, then Idle, then Exited; non-temp before
     /// temp). Filters out records whose `SessionStatus` is non-`Exited` but
-    /// whose PtyManager entry is missing — those are desync phantoms (issue
+    /// whose PtyManager entry is missing - those are desync phantoms (issue
     /// #223). `Exited(_)` candidates are RETAINED for the respawn path.
     ///
     /// Returns `(viable, had_any_match)`:
@@ -1582,7 +1582,7 @@ impl MailboxPoller {
     ///   `err_is_pty_session_missing` continue arm in `deliver_wake` is the
     ///   load-bearing safety net for that race.
     /// - `had_any_match`: true if at least one CWD-matched record existed BEFORE
-    ///   the predicate filter — the caller uses this to distinguish "no record
+    ///   the predicate filter - the caller uses this to distinguish "no record
     ///   at all" (cold spawn) from "phantoms only" (warm spawn with auto-resume,
     ///   preserves on-disk Claude/Codex/Gemini transcript). (grinch G.H2.)
     async fn find_live_candidates(
@@ -1633,7 +1633,7 @@ impl MailboxPoller {
                 let has_pty = pty.has_session(id);
                 let viable = is_viable_wake_candidate(&s.status, has_pty);
                 if !viable {
-                    // Phantom skip — observable in prod logs to scope the AC3
+                    // Phantom skip - observable in prod logs to scope the AC3
                     // follow-up. (dev-rust R1.B4.)
                     log::warn!(
                         "[mailbox] skipping desync phantom: id={} status={:?} has_pty={} name='{}'",
@@ -1668,12 +1668,12 @@ impl MailboxPoller {
     /// Returns the first match by `SessionManager` iteration order. Persistence
     /// dedup (`config/sessions_persistence.rs:242-329`) converges to a single
     /// root session at steady state, but multiple records may exist transiently
-    /// during concurrent spawns — a defensive log fires when more than one
+    /// during concurrent spawns - a defensive log fires when more than one
     /// matches so future code does not silently rely on "exactly one" as a
     /// structural invariant.
     ///
     /// Filters via `is_viable_root_recipient` (stricter than
-    /// `is_viable_wake_candidate`) — Exited records are returned as `None` so
+    /// `is_viable_wake_candidate`) - Exited records are returned as `None` so
     /// the caller's no-spawn guard sees `(empty, false)` instead of triggering
     /// the destroy-and-respawn path on a user-launched session.
     async fn find_root_session_candidate(
@@ -1742,13 +1742,13 @@ impl MailboxPoller {
     ///
     /// NEW ACTION HANDLERS: resolve user-supplied target fields via
     /// `config::teams::resolve_agent_target` BEFORE privileged operations.
-    /// The outbox is a trust boundary — any new destructive action must
+    /// The outbox is a trust boundary - any new destructive action must
     /// canonicalize its target here, not rely on CLI-side resolution.
     ///
-    /// §224 G-IMPL-2 — `is_app_outbox`: true when the message file lives
+    /// §224 G-IMPL-2 - `is_app_outbox`: true when the message file lives
     /// under the instance-private app-outbox (master/root-token path).
     /// Used by the response-write block (A.6) to skip the outbox-relative
-    /// primary write — for app-outbox messages it would land under
+    /// primary write - for app-outbox messages it would land under
     /// `<config_dir>/instances/<id>/responses/`, a directory the CLI does
     /// not poll, leaking orphan JSON files with no GC.
     async fn handle_close_session(
@@ -1818,13 +1818,13 @@ impl MailboxPoller {
 
         // Find all sessions for the target agent.
         //
-        // §224 A.2 — empty `session_ids` is NOT an error. The pre-fix code
+        // §224 A.2 - empty `session_ids` is NOT an error. The pre-fix code
         // rejected with "No active session found", which conflicted with
         // `list-sessions` reporting the session as alive (ghost rows from
         // `persist_merging_failed`; see A.1). Now we fall through to a
         // successful no-op response with status="no_match".
         //
-        // §224 A.2.5 — daemon-restart race guard. If the initial probe is
+        // §224 A.2.5 - daemon-restart race guard. If the initial probe is
         // empty AND restore is still in progress, poll up to 5s for either
         // (a) the flag to clear, or (b) a matching session to appear. Three
         // outcomes:
@@ -1868,7 +1868,7 @@ impl MailboxPoller {
         let force = msg.force.unwrap_or(false);
         let timeout_secs = msg.timeout_secs.unwrap_or(30);
 
-        // §224 A.2 — gate the kill-loop log on non-empty session_ids so we
+        // §224 A.2 - gate the kill-loop log on non-empty session_ids so we
         // don't emit a misleading "force-killing 0 session(s)" line on the
         // no_match / restore_in_progress paths.
         if !session_ids.is_empty() {
@@ -1898,7 +1898,7 @@ impl MailboxPoller {
             }
         }
 
-        // §224 A.7 — active ghost cleanup. After A.2.5 has confirmed (with
+        // §224 A.7 - active ghost cleanup. After A.2.5 has confirmed (with
         // wait-and-retry) that no session matches the target, force a
         // sessions.json rewrite from the live SessionManager to drop any
         // stale persisted entry. Without this, a user with only the ghost
@@ -1915,7 +1915,7 @@ impl MailboxPoller {
         // "already_closed", and the destroy path's downstream events will
         // trigger persist_current_state organically.
         //
-        // §224 G-IMPL-4 (NIT, accepted) — snapshot vs concurrent create_session
+        // §224 G-IMPL-4 (NIT, accepted) - snapshot vs concurrent create_session
         // is racy in the ~5-50ms window between `snapshot_sessions` and
         // `save_sessions`. If a `create_session` for any target lands in
         // that window and runs its own `persist_current_state` BEFORE our
@@ -1923,7 +1923,7 @@ impl MailboxPoller {
         // until the next lifecycle event re-persists. Impact: brief disk
         // inconsistency, recoverable. Accepted.
         //
-        // §224 G-IMPL-6 (NIT, accepted) — A.7 also drops unrelated failed-
+        // §224 G-IMPL-6 (NIT, accepted) - A.7 also drops unrelated failed-
         // recoverable ghosts. The snapshot includes only live SessionManager
         // entries; if `sessions.json` has a failed-recoverable ghost for
         // unrelated agent X, this rewrite drops X's ghost too. This is the
@@ -1947,13 +1947,13 @@ impl MailboxPoller {
 
         // Write response with details.
         //
-        // §224 A.2 + A.2.5 — four terminal states, all exit-0 from the user's
+        // §224 A.2 + A.2.5 - four terminal states, all exit-0 from the user's
         // seat:
-        //   "restore_in_progress" — daemon still in startup; couldn't decide.
-        //   "no_match"            — found zero live sessions matching the FQN.
-        //   "already_closed"      — found some, but every one vanished before
+        //   "restore_in_progress" - daemon still in startup; couldn't decide.
+        //   "no_match"            - found zero live sessions matching the FQN.
+        //   "already_closed"      - found some, but every one vanished before
         //                           destroy (race).
-        //   "closed"              — at least one was actively killed.
+        //   "closed"              - at least one was actively killed.
         if let Some(ref rid) = msg.request_id {
             let status = if restore_in_progress_result {
                 "restore_in_progress"
@@ -1983,33 +1983,33 @@ impl MailboxPoller {
                 }
             };
 
-            // §224 A.6 — dual-write the response:
+            // §224 A.6 - dual-write the response:
             //
-            // (1) <message_file_dir>/../responses/<rid>.json — always derivable
+            // (1) <message_file_dir>/../responses/<rid>.json - always derivable
             //     from `path` (the queued message's file location). This is
             //     exactly `<ac_dir>/responses/<rid>.json`, the CLI's polled
             //     location (close_session.rs:194-195), so no resolve_repo_path
             //     dependency.
             //
             // (2) <resolve_repo_path(msg.from)>/<agent_local_dir>/responses/<rid>.json
-            //     — preserves cross-agent delivery for cases where the sender
+            //     - preserves cross-agent delivery for cases where the sender
             //     FQN points to a different ac_dir than the outbox file's
             //     parent. Best-effort; failure does not affect (1).
             //
             // Either write succeeding is enough for the CLI to receive the
             // response.
             //
-            // §224 G-IMPL-2 — skip the derived primary write (1) when the
+            // §224 G-IMPL-2 - skip the derived primary write (1) when the
             // message came from the app-outbox (master/root-token path).
             // For app-outbox messages the parent path is
             // `<config_dir>/instances/<id>/outbox/`, so the derived responses
-            // dir resolves to `<config_dir>/instances/<id>/responses/` — a
+            // dir resolves to `<config_dir>/instances/<id>/responses/` - a
             // directory the CLI never polls (it always polls
             // `<--root>/.<bin_stem>/responses/`). Writing there leaks orphan
             // JSON files with no GC; the resolved-sender path (2) is the only
             // useful target for the master-token case. If `resolve_repo_path`
             // also fails (msg.from not enumerable), the CLI hits the response
-            // timeout and exits 2 (G-IMPL-3) — "outcome unknown".
+            // timeout and exits 2 (G-IMPL-3) - "outcome unknown".
             if !is_app_outbox {
                 let outbox_relative_responses_dir = path
                     .parent()
@@ -2045,14 +2045,14 @@ impl MailboxPoller {
                     );
                 }
             } else if is_app_outbox {
-                // §224 G-IMPL-2 — app-outbox call AND resolve_repo_path failed
+                // §224 G-IMPL-2 - app-outbox call AND resolve_repo_path failed
                 // means the CLI's `--root` is not enumerable in project_paths.
                 // Both write paths above are unreachable; the CLI will hit its
                 // response-poll timeout and exit 2 ("outcome unknown",
                 // G-IMPL-3). Log explicitly so operators can debug.
                 log::warn!(
                     "[mailbox] close-session app-outbox response is undeliverable: \
-                     resolve_repo_path(msg.from='{}') returned None — the sender's --root \
+                     resolve_repo_path(msg.from='{}') returned None - the sender's --root \
                      is not enumerable in project_paths. CLI will timeout with exit 2.",
                     msg.from
                 );
@@ -2192,7 +2192,7 @@ impl MailboxPoller {
     /// Resolve the full filesystem path for an agent name.
     ///
     /// §AR2-G4: collector pattern. For qualified inputs, an FQN matches at most
-    /// one CWD/path/team-member entry per iteration (by construction) — the
+    /// one CWD/path/team-member entry per iteration (by construction) - the
     /// dedupe is defense-in-depth for redundant registrations. For unqualified
     /// inputs (legacy), local-part matches across multiple projects return
     /// `None` rather than arbitrarily picking one.
@@ -2307,7 +2307,7 @@ impl MailboxPoller {
                         let candidate = dir.join(".ac-new").join(wg_name).join(&replica_dir);
                         if candidate.is_dir() {
                             record_match(&candidate.to_string_lossy(), &mut matches);
-                            // Within a single `rp`, first hit is the unique hit —
+                            // Within a single `rp`, first hit is the unique hit -
                             // an FQN matches one replica dir per project. Continue
                             // OUTER loop to detect cross-project ambiguity (§DR2-4).
                             break;
@@ -2330,11 +2330,11 @@ impl MailboxPoller {
         }
     }
 
-    // Shadow `agent_name_from_path` removed — all mailbox call sites now use
+    // Shadow `agent_name_from_path` removed - all mailbox call sites now use
     // `crate::config::teams::agent_fqn_from_path` per §AR2 (§DR2 consolidation).
 
     /// Check if sender can reach destination via team membership.
-    /// Only agents in the same team can communicate — no parent directory fallback.
+    /// Only agents in the same team can communicate - no parent directory fallback.
     fn can_reach(&self, from: &str, to: &str, discovered_teams: &[teams::DiscoveredTeam]) -> bool {
         crate::config::teams::can_communicate(from, to, discovered_teams)
     }
@@ -2502,7 +2502,7 @@ impl MailboxPoller {
         std::fs::create_dir_all(&rejected_dir)
             .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
 
-        // Write reason file FIRST — the CLI polls for this file to detect rejection
+        // Write reason file FIRST - the CLI polls for this file to detect rejection
         let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
         std::fs::write(&reason_path, reason)
             .map_err(|_| "Failed to write reason file".to_string())?;
@@ -2614,7 +2614,7 @@ impl MailboxPoller {
                 request.cwd.clone(),
                 Some(request.session_name.clone()),
                 Some(request.agent_id.clone()),
-                None,       // No agent label — auto-detected from shell
+                None,       // No agent label - auto-detected from shell
                 false,      // Persist tooling
                 Vec::new(), // git_repos
                 true,       // skip_auto_resume = true → CLI session-request is a fresh create
@@ -2651,7 +2651,7 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
 
     if bytes.starts_with(&[0xFF, 0xFE]) {
         log::warn!(
-            "[bom] UTF-16 LE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 without BOM)",
+            "[bom] UTF-16 LE BOM detected in {:?} - decoding to UTF-8 (writer should use UTF-8 without BOM)",
             path
         );
         let u16_data: Vec<u16> = bytes[2..]
@@ -2661,7 +2661,7 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
         Ok(String::from_utf16_lossy(&u16_data))
     } else if bytes.starts_with(&[0xFE, 0xFF]) {
         log::warn!(
-            "[bom] UTF-16 BE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 without BOM)",
+            "[bom] UTF-16 BE BOM detected in {:?} - decoding to UTF-8 (writer should use UTF-8 without BOM)",
             path
         );
         let u16_data: Vec<u16> = bytes[2..]
@@ -2671,7 +2671,7 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
         Ok(String::from_utf16_lossy(&u16_data))
     } else if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         log::warn!(
-            "[bom] UTF-8 BOM detected in {:?} — stripping (writer should use UTF-8 without BOM)",
+            "[bom] UTF-8 BOM detected in {:?} - stripping (writer should use UTF-8 without BOM)",
             path
         );
         String::from_utf8(bytes[3..].to_vec())
@@ -2686,9 +2686,9 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-    // ── §224 D.5a — wait_for_restore_or_session unit tests ──
+    // ── §224 D.5a - wait_for_restore_or_session unit tests ──
 
-    // ── §224 D.3 — filter_sessions_by_fqn pure-predicate tests ──
+    // ── §224 D.3 - filter_sessions_by_fqn pure-predicate tests ──
 
     fn make_session_info(
         id: &str,
@@ -3057,7 +3057,7 @@ mod tests {
         assert_eq!(
             filter_sessions_by_fqn(&pool, "proj-a:wg-1-dev-team/tech-lead").len(),
             0,
-            "agent_fqn_from_path must NOT resolve the root URI — the lookup is by `is_root_agent` flag"
+            "agent_fqn_from_path must NOT resolve the root URI - the lookup is by `is_root_agent` flag"
         );
     }
 
@@ -3100,7 +3100,7 @@ mod tests {
 
     #[test]
     fn filter_sessions_by_fqn_matches_regardless_of_was_detached_or_status() {
-        // §224 — the active vs detached vs waiting-for-input mix should not
+        // §224 - the active vs detached vs waiting-for-input mix should not
         // matter; only the FQN of working_directory.
         let target = "proj:wg-1-devs/alice";
         let mut active = make_session_info(
@@ -3199,13 +3199,13 @@ mod tests {
 
     #[test]
     fn wake_spawn_skip_auto_resume_skips_when_cold() {
-        // Cold wake (no prior session, or race fallthrough) — suppress resume.
+        // Cold wake (no prior session, or race fallthrough) - suppress resume.
         assert!(wake_spawn_skip_auto_resume(false));
     }
 
     #[test]
     fn wake_spawn_skip_auto_resume_allows_when_known_state() {
-        // Known-state wake (RespawnExited match) — allow `--continue` /
+        // Known-state wake (RespawnExited match) - allow `--continue` /
         // codex `resume --last` / gemini `--resume latest`.
         assert!(!wake_spawn_skip_auto_resume(true));
     }
@@ -3254,9 +3254,9 @@ mod tests {
         assert!(is_viable_wake_candidate(&SessionStatus::Active, true));
     }
 
-    /// Issue #223 — primary regression guard. A SessionManager record with
+    /// Issue #223 - primary regression guard. A SessionManager record with
     /// status=Running but no PtyManager entry (the phantom in the log) MUST be
-    /// skipped — otherwise inject_into_pty fails with `Session not found:` and
+    /// skipped - otherwise inject_into_pty fails with `Session not found:` and
     /// the router has no fallback.
     #[test]
     fn is_viable_wake_candidate_skips_phantom_running_no_pty() {
@@ -3285,7 +3285,7 @@ mod tests {
     }
 
     /// Stale-PTY-instance edge case: status=Exited with a leftover PtyInstance
-    /// entry. Still a candidate — RespawnExited will destroy the leftover.
+    /// entry. Still a candidate - RespawnExited will destroy the leftover.
     #[test]
     fn is_viable_wake_candidate_keeps_exited_with_stale_pty() {
         assert!(is_viable_wake_candidate(&SessionStatus::Exited(0), true));
@@ -3332,7 +3332,7 @@ mod tests {
 
     /// Pins the actual `AppError::SessionNotFound` Display format. If a future
     /// refactor changes `errors.rs:5` to anything other than `"Session not
-    /// found: {0}"`, this test fails with a clear message — the sniff is the
+    /// found: {0}"`, this test fails with a clear message - the sniff is the
     /// load-bearing safety net for the candidate loop. (grinch G.M3.)
     #[test]
     fn err_is_pty_session_missing_matches_actual_apperror_format() {
@@ -3342,7 +3342,7 @@ mod tests {
         assert!(
             err_is_pty_session_missing(&raw),
             "AppError::SessionNotFound display changed to {:?}; \
-             err_is_pty_session_missing substring sniff broken — \
+             err_is_pty_session_missing substring sniff broken - \
              update both the sniff and this test",
             raw
         );
@@ -3362,7 +3362,7 @@ mod tests {
     }
 
     /// §DR7 / AR2-tests #23: qualified-but-wrong-project msg.from is rejected.
-    /// A naïve suffix match would accept this — the LOCAL-only fallback rejects.
+    /// A naïve suffix match would accept this - the LOCAL-only fallback rejects.
     #[test]
     fn anti_spoof_cross_project_qualified_msg_from_rejected() {
         let expected = "proj-a:wg-1-devs/tech-lead";
@@ -3396,7 +3396,7 @@ mod tests {
         let mut msg_from = "proj-a:wg-1-devs/tech-lead".to_string();
         let upgraded = canonicalize_msg_from_in_place(
             &mut msg_from,
-            Some("proj-b:wg-1-devs/tech-lead"), // different project — don't overwrite!
+            Some("proj-b:wg-1-devs/tech-lead"), // different project - don't overwrite!
         );
         assert!(!upgraded);
         assert_eq!(msg_from, "proj-a:wg-1-devs/tech-lead");
@@ -3411,14 +3411,14 @@ mod tests {
         assert_eq!(msg_from, "wg-1-devs/alice");
     }
 
-    // ── Full mailbox-pipeline tests marked [INT] — placeholders for a future
+    // ── Full mailbox-pipeline tests marked [INT] - placeholders for a future
     // two-project fixture harness. Acknowledged to ship with the fix per
     // tech-lead's must-apply directive; the pure-logic tests above cover the
     // §G1, §G2, §G5 regression surface at the unit level, and §AR2-G1's
     // close-session resolver gate is covered by the §AR2-shared resolver
     // tests (config::teams::tests::resolve_agent_target_*). ──
 
-    /// §G9#1 / AR2-tests #17 — close-session with unqualified target from a
+    /// §G9#1 / AR2-tests #17 - close-session with unqualified target from a
     /// direct outbox write MUST NOT destroy sessions in an unauthorized
     /// project. Covered at the resolver layer by
     /// `resolve_agent_target_rejects_ambiguous` and
@@ -3426,7 +3426,7 @@ mod tests {
     /// `handle_close_session`'s §AR2-G1 gate calls `resolve_agent_target`
     /// before authorization, so rejecting Ambiguous at that layer blocks the
     /// attack before any session is touched. Full end-to-end fixture needs a
-    /// Tauri `AppHandle` harness — follow-up.
+    /// Tauri `AppHandle` harness - follow-up.
     #[test]
     #[ignore = "integration: needs two-project Tauri AppHandle fixture"]
     fn close_session_rejects_direct_outbox_write_with_unqualified_target() {
@@ -3436,7 +3436,7 @@ mod tests {
         //   - config::teams::tests::is_coordinator_rejects_legacy_unqualified_from
     }
 
-    /// §G9#2 / AR2-tests #18 — wake with ambiguous unqualified `to` MUST be
+    /// §G9#2 / AR2-tests #18 - wake with ambiguous unqualified `to` MUST be
     /// rejected, not silently routed. Covered at the resolver layer by the
     /// same `resolve_agent_target_rejects_ambiguous` test; `process_message`
     /// calls `resolve_agent_target` on `msg.to` at §AR2-norm before mode
@@ -3450,7 +3450,7 @@ mod tests {
         //   - config::teams::tests::resolve_agent_target_two_level_scan
     }
 
-    /// §G9#3 / AR2-tests #19 — `resolve_repo_path` WG fallback with a
+    /// §G9#3 / AR2-tests #19 - `resolve_repo_path` WG fallback with a
     /// qualified target honors `target_project` (no cross-project leak even
     /// when the base dir `rp` is another project's root). Logic covered by
     /// the `project_matches` closure + `dirs_to_check` seeding in the
@@ -3460,16 +3460,16 @@ mod tests {
     #[ignore = "integration: needs filesystem fixture + AppHandle"]
     fn resolve_repo_path_wg_fallback_honors_target_project() {}
 
-    /// §G9#4 / AR2-tests #20 — `resolve_repo_path` with an unqualified target
+    /// §G9#4 / AR2-tests #20 - `resolve_repo_path` with an unqualified target
     /// matching multiple projects returns `None` (refuses arbitrary pick).
-    /// §AR2-G4 collector pattern logic is covered by inspection — the
+    /// §AR2-G4 collector pattern logic is covered by inspection - the
     /// `matches.len()` match arm returns None on `_`. Full integration test
     /// needs AppHandle + session-CWDs fixture.
     #[test]
     #[ignore = "integration: needs filesystem fixture + AppHandle"]
     fn resolve_repo_path_returns_none_on_ambiguous_unqualified() {}
 
-    /// §G9#8 / AR2-tests #21 — a session spawned by `deliver_wake` from an
+    /// §G9#8 / AR2-tests #21 - a session spawned by `deliver_wake` from an
     /// FQN `msg.to` has a sidebar `Session.name` WITHOUT the `:` prefix.
     /// §AR2-session-name handles this at mailbox.rs (spawn path) via
     /// `split_project_prefix(&msg.to).1`. The logic is one line; a full
@@ -3478,13 +3478,13 @@ mod tests {
     #[ignore = "integration: needs Tauri runtime + session manager fixture"]
     fn deliver_wake_spawned_session_name_has_no_colon() {}
 
-    /// §G9#9 / AR2-tests #24 — full round-trip CLI send → mailbox route →
+    /// §G9#9 / AR2-tests #24 - full round-trip CLI send → mailbox route →
     /// reply. Intentionally integration-level; no unit scaffolding.
     #[test]
     #[ignore = "integration: full CLI + mailbox + two-project fixture"]
     fn resolve_to_target_round_trip_integration() {}
 
-    // ── #228 D1-a — derive_project_from_outbox_path tests ──
+    // ── #228 D1-a - derive_project_from_outbox_path tests ──
 
     #[test]
     fn derive_project_from_outbox_path_walks_up_wg_replica_layout() {
@@ -3527,7 +3527,7 @@ mod tests {
 
     #[test]
     fn derive_project_from_outbox_path_rejects_app_outbox_layout() {
-        // App-outbox lives at <config_dir>/app-outbox/<file>.json — no
+        // App-outbox lives at <config_dir>/app-outbox/<file>.json - no
         // `__agent_*` / `wg-*` ancestors. Helper must return None so app-outbox
         // messages are NOT augmented (they have their own master-token bypass).
         let temp = tempfile::TempDir::new().unwrap();
@@ -3540,8 +3540,8 @@ mod tests {
 
     // ── Issue #223 deliver_wake integration placeholders ──
 
-    /// Issue #223 — full regression test the user explicitly requested:
-    ///   "two CWD-matching records, one dead PTY, one live — assert delivery
+    /// Issue #223 - full regression test the user explicitly requested:
+    ///   "two CWD-matching records, one dead PTY, one live - assert delivery
     ///   reaches live."
     /// Full-pipeline assertion needs a Tauri AppHandle harness with both
     /// SessionManager and PtyManager state primed. Logic coverage lives in the
@@ -3559,7 +3559,7 @@ mod tests {
         //   4. Assert delivery returned Ok.
     }
 
-    /// Issue #223 — secondary fallback test:
+    /// Issue #223 - secondary fallback test:
     ///   "If first live candidate dies between liveness probe and inject,
     ///   router must try next candidate within the SAME delivery attempt."
     #[test]
@@ -3573,7 +3573,7 @@ mod tests {
         //   4. Assert two inject attempts inside one delivery, second succeeds.
     }
 
-    /// Issue #223 — AC5 regression guard:
+    /// Issue #223 - AC5 regression guard:
     ///   Wake delivery to a deferred-non-coord session (status=Exited(0), no
     ///   PTY) MUST still take the RespawnExited path, NOT silently fall through
     ///   to cold spawn-persistent.
@@ -3589,7 +3589,7 @@ mod tests {
         //      (spawn_with_resume=true → wake_spawn_skip_auto_resume(true)=false).
     }
 
-    /// Issue #295 — deferred Telegram intent must survive the mailbox wake
+    /// Issue #295 - deferred Telegram intent must survive the mailbox wake
     /// respawn path, which destroys the dormant Session before creating the
     /// replacement live PTY.
     #[test]
@@ -3606,12 +3606,12 @@ mod tests {
         //      session carrier rather than failing delivery.
     }
 
-    /// Issue #223 — HIGH-1 (Step-7 review): symmetric to the phantoms-only
+    /// Issue #223 - HIGH-1 (Step-7 review): symmetric to the phantoms-only
     /// AC5 fall-through (grinch G.H2). When every viable Inject candidate
     /// races to dead between liveness probe and `PtyManager::write`, the
     /// post-loop branch MUST still promote `spawn_with_resume`. Otherwise
     /// cold spawn-persistent runs and the on-disk transcript at the matched
-    /// CWD is silently abandoned — same AC5 outcome as the phantoms-only
+    /// CWD is silently abandoned - same AC5 outcome as the phantoms-only
     /// case, just with a race-killed-siblings cause instead of desync.
     /// Plausible triggers: system shutdown mid-wake, OOM kill of sibling
     /// PTYs, container restart, Windows logoff with sibling sessions.
@@ -3620,7 +3620,7 @@ mod tests {
     fn deliver_wake_promotes_resume_when_all_live_candidates_race_to_dead() {
         // Fixture shape:
         //   1. SessionManager has two records, same working_directory, both
-        //      status=Running, both initially with PtyManager entries — so
+        //      status=Running, both initially with PtyManager entries - so
         //      `find_live_candidates` returns both as viable with
         //      had_any_match=true.
         //   2. Patch PtyManager::write so BOTH attempts return SessionNotFound
@@ -3712,7 +3712,7 @@ mod tests {
         let f = write_temp(&[]);
         let got = read_text_bom_tolerant(f.path()).expect("empty ok");
         assert_eq!(got, "");
-        // Serde fails with a parse error (NOT a read error) — confirms the failure
+        // Serde fails with a parse error (NOT a read error) - confirms the failure
         // surfaces at the parser, which is what the callsites wrap with their own
         // context strings.
         let parse_err = serde_json::from_str::<serde_json::Value>(&got).expect_err("must err");
@@ -3727,7 +3727,7 @@ mod tests {
     /// bytes are non-UTF-8 and have no BOM (e.g. PowerShell `Set-Content
     /// -Encoding ANSI` from a CP1252 locale), `read_text_bom_tolerant` returns
     /// `Err` every poll cycle. Before this fix, the reject branch was guarded
-    /// by `if let Ok(content) = ...` and dropped to `else { false }` on Err —
+    /// by `if let Ok(content) = ...` and dropped to `else { false }` on Err -
     /// the file stayed in the source dir at `attempt_count >= MAX`, looping
     /// forever. The new `Err(_) => reject_raw_file(...)` arm closes that gap.
     /// This test drives the fallback directly: an unreadable file is moved to
@@ -3737,7 +3737,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let outbox = tmp.path();
         let stuck = outbox.join("stuck.json");
-        // CP1252 high-byte sequence — invalid UTF-8, no BOM.
+        // CP1252 high-byte sequence - invalid UTF-8, no BOM.
         std::fs::write(&stuck, [0x80, 0x81, 0x82]).expect("write stuck file");
 
         // Precondition: this is exactly the input shape that hits the new Err arm.

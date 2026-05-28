@@ -35,7 +35,7 @@ pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 /// Handle to the running web server task, allowing stop control.
 pub type WebServerHandle = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>;
 
-/// Issue #120 — serializes in-process writers of `.claude/settings.local.json`.
+/// Issue #120 - serializes in-process writers of `.claude/settings.local.json`.
 ///
 /// Acquired by `commands::config::sweep_rtk_hook`, the startup auto-disable
 /// and active-recovery sweeps in `setup`, and every in-process call site that
@@ -44,7 +44,7 @@ pub type WebServerHandle = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>
 /// out of scope for #120.
 pub type RtkSweepLockState = Arc<tokio::sync::Mutex<()>>;
 
-/// Issue #120 §18 — cached boot-time RTK startup mode.
+/// Issue #120 §18 - cached boot-time RTK startup mode.
 ///
 /// Set ONCE by the setup task in `run()` after computing the mode and
 /// BEFORE running any side effects. Read by
@@ -55,7 +55,7 @@ pub type RtkStartupModeState = Arc<std::sync::OnceLock<String>>;
 
 /// Master token generated at app startup. Allows bypassing team validation (can_reach).
 /// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See #34.
-/// Field is private — use `matches()` for constant-time comparison.
+/// Field is private - use `matches()` for constant-time comparison.
 pub struct MasterToken(String);
 
 impl MasterToken {
@@ -82,11 +82,11 @@ impl MasterToken {
     }
 }
 
-/// §224 A.2.5 / G1 — set true while the post-startup session-restore loop is
+/// §224 A.2.5 / G1 - set true while the post-startup session-restore loop is
 /// running (`lib.rs` setup task that calls `create_session_inner` for every
 /// persisted session). Read by `mailbox::handle_close_session` to decide
 /// whether `session_ids.is_empty()` means "no live session for this FQN" or
-/// "restore loop hasn't reached this session yet — retry briefly."
+/// "restore loop hasn't reached this session yet - retry briefly."
 pub struct RestoreInProgress(pub AtomicBool);
 
 /// Instance-private outbox directory. Only this app instance polls it.
@@ -113,7 +113,7 @@ impl AppOutbox {
 ///   - `persisted_status`: `PersistedSession::status` as snapshotted at the
 ///     last app shutdown. `None` means the snapshot was taken by an older
 ///     binary that did not record status. Treat `None` as **awake** for
-///     forward-compat — better to wake a coord the user expected to be
+///     forward-compat - better to wake a coord the user expected to be
 ///     awake than silently leave it dormant on first launch after upgrade.
 ///
 /// Returns true ⇒ restore with PTY; false ⇒ defer (dormant).
@@ -148,12 +148,12 @@ pub(crate) fn should_wake_root_agent_on_restore(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
+    // Same backend the CLI path now installs in `main.rs` - see `logging.rs`
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
     crate::logging::init_logger();
 
-    // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
+    // Generate master token - printed to stdout and persisted to master-token.txt for CLI use
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
 
     // Create instance-private outbox directory and clean up stale ones
@@ -173,7 +173,7 @@ pub fn run() {
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
     let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
 
-    // Generate web access token — separate from master token for limited blast radius
+    // Generate web access token - separate from master token for limited blast radius
     let web_access_token = Arc::new(WebAccessToken::new(uuid::Uuid::new_v4().to_string()));
 
     println!("[master-token] {}", master_token.value());
@@ -270,12 +270,12 @@ pub fn run() {
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
 
-    // Issue #120 — RTK sweep mutex. Acquired by every in-process writer of
+    // Issue #120 - RTK sweep mutex. Acquired by every in-process writer of
     // `.claude/settings.local.json`. See plan §7.5 for the design.
     let rtk_sweep_lock: RtkSweepLockState = Arc::new(tokio::sync::Mutex::new(()));
     let rtk_sweep_lock_for_setup = Arc::clone(&rtk_sweep_lock);
 
-    // Issue #120 §18 — cached boot-time RTK startup mode. Set ONCE by the
+    // Issue #120 §18 - cached boot-time RTK startup mode. Set ONCE by the
     // setup task before running side effects; read by
     // `get_rtk_startup_status` so the late-mounting banner sees the SAME
     // mode the listener received.
@@ -309,14 +309,14 @@ pub fn run() {
             // Make AppHandle available to idle detector callbacks
             let _ = app_handle_lock.set(app.handle().clone());
 
-            // #264 — spawn the background task that emits `error_log_event`
+            // #264 - spawn the background task that emits `error_log_event`
             // pings to the UI when ERROR entries are captured. The task runs
             // OUTSIDE the env_logger format closure (see §3.7 / B1). Entries
             // logged before this point stay buffered; the frontend's first
             // `drain_error_logs` call collects them.
             crate::logging::spawn_error_emit_task(app.handle().clone());
 
-            // #271 — seed `<config_dir>/agent-templates/` + README on startup.
+            // #271 - seed `<config_dir>/agent-templates/` + README on startup.
             crate::commands::role_templates::ensure_default_templates_dir_at_config();
 
             // Git branch watcher: polls git branch for each session every 5s
@@ -369,14 +369,14 @@ pub fn run() {
                 }
             }
 
-            // Issue #120 — RTK startup detection. Probes PATH for `rtk`, then:
+            // Issue #120 - RTK startup detection. Probes PATH for `rtk`, then:
             //   - rtk found AND inject_rtk_hook=false AND rtk_prompt_dismissed=false
             //       → emit "rtk_startup_status" with mode="prompt-enable"
             //   - rtk found AND inject_rtk_hook=true
             //       → emit mode="active" + active-recovery ON-sweep (idempotent)
             //   - rtk missing AND inject_rtk_hook=true
-            //       → persist inject_rtk_hook=false (write lock held through save —
-            //         grinch H4 + N1); sweep with enabled=false (RtkSweepLock held —
+            //       → persist inject_rtk_hook=false (write lock held through save -
+            //         grinch H4 + N1); sweep with enabled=false (RtkSweepLock held -
             //         grinch M8); emit mode="auto-disabled".
             //   - otherwise: emit mode="silent" (frontend treats as no-op).
             // Detached so the rest of setup is not blocked by disk I/O.
@@ -406,7 +406,7 @@ pub fn run() {
                         _ => "silent",
                     };
 
-                    // §18 — cache the boot decision BEFORE running side effects
+                    // §18 - cache the boot decision BEFORE running side effects
                     // so a late-mounting banner sees the SAME mode the listener
                     // receives (auto-disabled side-effects mutate inject_rtk_hook,
                     // breaking any naïve recompute path). `set` returns Err if
@@ -477,7 +477,7 @@ pub fn run() {
                 log::error!("[root-agent] Failed to provision root agent directory: {}", e);
             }
 
-            // §224 A.2.5 / G-IMPL-1 — Set restore_in_progress=TRUE BEFORE the
+            // §224 A.2.5 / G-IMPL-1 - Set restore_in_progress=TRUE BEFORE the
             // mailbox poller starts. The restore task now also owns the root-agent
             // first-start path, so it must run even with no persisted sessions.
             //
@@ -520,7 +520,7 @@ pub fn run() {
             let saved_settings = config::settings::load_settings();
 
             // Collect available monitor bounds (physical) + scale factor for geometry validation
-            // Tuple: (x, y, x2, y2, scale_factor) — all positions/sizes in physical pixels
+            // Tuple: (x, y, x2, y2, scale_factor) - all positions/sizes in physical pixels
             let monitors: Vec<(f64, f64, f64, f64, f64)> = app
                 .available_monitors()
                 .unwrap_or_default()
@@ -664,7 +664,7 @@ pub fn run() {
 
             // Restore sessions from last run
             //
-            // §224 G-IMPL-1 — `persisted` and `restore_flag` are hoisted above
+            // §224 G-IMPL-1 - `persisted` and `restore_flag` are hoisted above
             // mailbox_poller.start() (see comment block there). `persisted` is
             // reused here; the flag is already TRUE when we enter this block.
             {
@@ -675,13 +675,13 @@ pub fn run() {
                 let settings_state_clone = app.state::<SettingsState>().inner().clone();
                 let app_handle = app.handle().clone();
 
-                // #248 — read the new setting and always discover teams (the coord check
+                // #248 - read the new setting and always discover teams (the coord check
                 // is run for every persisted session, regardless of the setting's value).
                 let settings_snapshot = crate::config::settings::load_settings();
                 let setting_on = settings_snapshot.restore_coordinator_wake_state;
                 let teams = crate::config::teams::discover_teams();
 
-                // #248 Grinch Z10 — diagnostic: empty `teams` after a project-path rename
+                // #248 Grinch Z10 - diagnostic: empty `teams` after a project-path rename
                 // is a real failure mode; without this line the user sees coords stay
                 // dormant with no log clue. Emits exactly once per launch.
                 log::info!(
@@ -692,11 +692,11 @@ pub fn run() {
                     persisted.len()
                 );
 
-                // §224 A.2.5 — RAII guard inside the closure clears the flag
+                // §224 A.2.5 - RAII guard inside the closure clears the flag
                 // on normal exit AND on panic unwind so the daemon can't get
                 // stuck advertising "still restoring" forever.
                 //
-                // §224 G-IMPL-1 — the upper hoisted block already set the flag
+                // §224 G-IMPL-1 - the upper hoisted block already set the flag
                 // TRUE before mailbox_poller.start(); we only need to grab a
                 // fresh Arc clone here for the RAII guard inside the spawned task.
                 let restore_flag_for_task = app
@@ -718,7 +718,7 @@ pub fn run() {
                     let mut active_id = None;
                     let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
 
-                    // #248 Grinch Z5 — count outcomes for the end-of-restore summary line.
+                    // #248 Grinch Z5 - count outcomes for the end-of-restore summary line.
                     let mut n_woken: usize = 0;
                     let mut n_deferred: usize = 0;
 
@@ -870,7 +870,7 @@ pub fn run() {
                                                         .await;
                                                     if let Err(e) = detached_result {
                                                         log::warn!(
-                                                            "[restore] detach_terminal_inner failed for root agent '{}': {} — session stays live (attached)",
+                                                            "[restore] detach_terminal_inner failed for root agent '{}': {} - session stays live (attached)",
                                                             ps.name,
                                                             e
                                                         );
@@ -1005,7 +1005,7 @@ pub fn run() {
                             continue;
                         }
 
-                        // #248 — decide wake vs defer for this session.
+                        // #248 - decide wake vs defer for this session.
                         // §DR2: use `agent_fqn_from_path` so WG replicas get project-precise
                         // team membership and coordinator checks. Strict `is_coordinator`
                         // (§AR2-strict) requires the FQN to avoid cross-project flag leaks.
@@ -1023,12 +1023,12 @@ pub fn run() {
                                 ps.agent_id.clone(),
                                 ps.agent_label.clone(),
                                 ps.git_repos.clone(),
-                                is_coord, // #248 — pass live is_coord so dormant coords stay coords (Z7).
+                                is_coord, // #248 - pass live is_coord so dormant coords stay coords (Z7).
                             ).await {
                                 Ok(session) => {
                                     mgr.rename_session(session.id, ps.name.clone()).await.ok();
 
-                                    // Grinch Z2 — preserve detach state across the defer lifecycle.
+                                    // Grinch Z2 - preserve detach state across the defer lifecycle.
                                     // Must be applied BEFORE mark_exited so the next snapshot_sessions
                                     // event (whether triggered by failed_recoverable, user action, or
                                     // shutdown) writes was_detached=true to disk. Without this, the
@@ -1056,7 +1056,7 @@ pub fn run() {
                                         let info = crate::session::session::SessionInfo::from(&updated);
                                         let _ = tauri::Emitter::emit(&app_handle, "session_created", info);
                                     }
-                                    // Grinch Z5 — debug, not info: under the new default every
+                                    // Grinch Z5 - debug, not info: under the new default every
                                     // persisted session lands here, and an info-level line per
                                     // session creates a "mass defer" wall in startup logs that
                                     // looks like an alarm. The end-of-loop info summary below
@@ -1149,7 +1149,7 @@ pub fn run() {
                                         .await;
                                         if let Err(e) = detached_result {
                                             log::warn!(
-                                                "[restore] detach_terminal_inner failed for '{}': {} — session stays live (attached)",
+                                                "[restore] detach_terminal_inner failed for '{}': {} - session stays live (attached)",
                                                 ps.name,
                                                 e
                                             );
@@ -1168,18 +1168,18 @@ pub fn run() {
                         }
                     }
 
-                    // #248 Grinch Z5 — load-bearing summary line. Replaces the per-session
+                    // #248 Grinch Z5 - load-bearing summary line. Replaces the per-session
                     // info noise demoted to debug above. Must be emitted BEFORE the post-loop
                     // active-switch block so the restore-decision summary is grouped with
                     // the restore log in chronological order, not interleaved with switch events.
                     log::info!(
-                        "[restore] complete — {} woken, {} deferred (setting_on={}, total_evaluated={})",
+                        "[restore] complete - {} woken, {} deferred (setting_on={}, total_evaluated={})",
                         n_woken, n_deferred, setting_on, persisted.len()
                     );
 
                     // Switch to the session that was active when the app closed. Plan §A2.2.G3
                     // filter: if the persisted-active session is now detached (respawned with
-                    // `was_detached=true` above), do NOT switch main to it — main + detached
+                    // `was_detached=true` above), do NOT switch main to it - main + detached
                     // would both render the same session. Walk the list for the first non-
                     // detached candidate; emit `session_switched` with null if none.
                     if let Some(id) = active_id {
@@ -1218,7 +1218,7 @@ pub fn run() {
                                     );
                                 }
                             } else {
-                                // #248 Fix A — preserve dormant status for the persisted-active
+                                // #248 Fix A - preserve dormant status for the persisted-active
                                 // session. Read the candidate's current status from the live
                                 // manager (it was just set by either the defer arm or
                                 // create_session_inner upstream).
@@ -1241,7 +1241,7 @@ pub fn run() {
                                     );
                                 }
 
-                                // `session_switched` payload is unchanged — sidebar uses it for
+                                // `session_switched` payload is unchanged - sidebar uses it for
                                 // the selection highlight; dot color is driven by `status` from
                                 // the next `list_sessions` refresh (which now correctly returns
                                 // `Exited(0)` for the dormant case thanks to set_active_only).
@@ -1357,13 +1357,13 @@ pub fn run() {
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
-                    // Detached-window destroyed (by any mechanism — X, Alt+F4, programmatic).
+                    // Detached-window destroyed (by any mechanism - X, Alt+F4, programmatic).
                     // Two jobs:
-                    //   1) Clear from `DetachedSessionsState` — switch_session needs an
+                    //   1) Clear from `DetachedSessionsState` - switch_session needs an
                     //      accurate view of which sessions have live windows.
-                    //   2) Emit `terminal_attached` — frontend stores subscribed to this event
+                    //   2) Emit `terminal_attached` - frontend stores subscribed to this event
                     //      clear the id from `sessionsStore.detachedIds` (Phase 2+ only;
-                    //      Phase 1 has no subscriber — the event is harmlessly dropped).
+                    //      Phase 1 has no subscriber - the event is harmlessly dropped).
                     //
                     // DELIBERATELY ABSENT: we do NOT call `SessionManager::set_was_detached`
                     // here. That mutation is reserved for `detach_terminal_inner` (→true)
@@ -1418,7 +1418,7 @@ pub fn run() {
                     // Issue #231 + grinch G-LOW (#246): remove daemon.pid AFTER
                     // persist_current_state so a concurrent CLI invocation never
                     // observes NoPidFile while sessions.json is being rewritten.
-                    // Still runs before process exit — subsequent CLI invocations
+                    // Still runs before process exit - subsequent CLI invocations
                     // see NoPidFile (not StalePidFile) once we return.
                     crate::config::daemon_pid::remove_pid_file();
                 }

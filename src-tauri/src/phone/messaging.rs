@@ -23,7 +23,7 @@ pub const PTY_WRAP_FIXED: usize = "\n[Message from ] \n\r".len();
 
 /// Single-source render of the interactive PTY wrap. Both injection sites in
 /// `phone::mailbox` call this, and the contract test measures its empty
-/// expansion against `PTY_WRAP_FIXED` — any edit to the literal here trips
+/// expansion against `PTY_WRAP_FIXED` - any edit to the literal here trips
 /// the test before the clamp accounting can drift.
 pub fn format_pty_wrap(from: &str, body: &str) -> String {
     format!("\n[Message from {}] {}\n\r", from, body)
@@ -106,7 +106,7 @@ pub enum MessagingError {
 
 /// Resolve the workgroup root by walking up from `agent_root`.
 ///
-/// Pure path operation — no filesystem touch, no canonicalization. Tests can
+/// Pure path operation - no filesystem touch, no canonicalization. Tests can
 /// use synthetic paths.
 pub fn workgroup_root(agent_root: &Path) -> Result<PathBuf, MessagingError> {
     for ancestor in agent_root.ancestors() {
@@ -236,7 +236,7 @@ pub fn validate_filename_shape(name: &str) -> Result<(), MessagingError> {
     }
     // Use `rposition` so filenames whose `from_short` contains the literal
     // segment `to` (e.g. `"wg7-to-lead"`) parse with the rightmost `to` as the
-    // separator — matching the canonical `build_filename` output structure.
+    // separator - matching the canonical `build_filename` output structure.
     // Shape validity is unaffected either way; this keeps round-trip parsing
     // unambiguous for any future caller that wants to split the filename back
     // into from/to/slug.
@@ -772,7 +772,7 @@ mod tests {
         assert!(rendered.ends_with("\n\r"));
     }
 
-    /// PTY_SAFE_MAX clamp arithmetic — pathological long path must exceed
+    /// PTY_SAFE_MAX clamp arithmetic - pathological long path must exceed
     /// `PTY_WRAP_FIXED + from.len() + body.len() > PTY_SAFE_MAX=1024`.
     #[test]
     fn pty_safe_max_clamp_rejects_long_path() {
@@ -790,7 +790,7 @@ mod tests {
     }
 
     /// Happy-path: realistic production body (155) + typical from (13) fits
-    /// comfortably under the 1024 clamp — the case that motivated this trim.
+    /// comfortably under the 1024 clamp - the case that motivated this trim.
     #[test]
     fn pty_safe_max_clamp_accepts_typical() {
         let from = "wg7-architect";

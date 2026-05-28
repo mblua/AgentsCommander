@@ -1,7 +1,7 @@
-//! Integration tests for issue #224 — close-session CLI exit-code contract.
+//! Integration tests for issue #224 - close-session CLI exit-code contract.
 //!
 //! Strategy: spawn the binary in a subprocess (per the `cli_task_logger.rs`
-//! pattern — copied into a per-test tmp dir so `config_dir()` is isolated)
+//! pattern - copied into a per-test tmp dir so `config_dir()` is isolated)
 //! with master-token bypass, and simulate the daemon's mailbox response by
 //! writing the expected `delivered/` and `responses/` files from a sibling
 //! thread. This proves the CLI's outbox-polling + response-interpretation
@@ -9,10 +9,10 @@
 //! (real session lifecycle) is out of scope for #224 and tracked separately.
 //!
 //! Covers:
-//! - D.4  — no_match exits 0 with prose line
-//! - D.5b — restore_in_progress exits 0 with retry prose
-//! - D.6  — response written ONLY to outbox-relative path is still consumed
-//! - D.8  — prose assertions for already_closed and closed paths
+//! - D.4  - no_match exits 0 with prose line
+//! - D.5b - restore_in_progress exits 0 with retry prose
+//! - D.6  - response written ONLY to outbox-relative path is still consumed
+//! - D.8  - prose assertions for already_closed and closed paths
 //!
 //! ## Why these are `#[ignore]`'d on Windows
 //!
@@ -25,7 +25,7 @@
 //! present in the dir BEFORE the subprocess started writing). The same
 //! `read_dir` from a fresh process (e.g. after the test runner exits) DOES
 //! see the file. This appears to be Windows directory-enumeration cache
-//! semantics + possibly antivirus interference; it is NOT a CLI bug —
+//! semantics + possibly antivirus interference; it is NOT a CLI bug -
 //! `cli_close_session.rs` has the same behavior pattern as the live
 //! daemon-mediated flow. The unit tests in `src/cli/close_session.rs`,
 //! `src/phone/mailbox.rs`, and `src/config/sessions_persistence.rs` cover
@@ -37,7 +37,7 @@
 //!
 //! Re-ran `cargo test --test cli_close_session -- --ignored` after the
 //! G-IMPL-1/2/3 fixes. Result: **all 5 tests still fail with the same
-//! symptom** — simulator's `read_dir` panics with "timeout waiting for CLI
+//! symptom** - simulator's `read_dir` panics with "timeout waiting for CLI
 //! outbox write" while the CLI subprocess's own stderr shows it reached
 //! the delivery-poll loop (i.e. it had already written to the outbox).
 //!
@@ -289,9 +289,9 @@ fn run_close_session_with_simulator(
     (out.status.code(), stdout, stderr)
 }
 
-/// §224 D.4 — `status=no_match` produces exit 0 and the AC #2 prose line.
+/// §224 D.4 - `status=no_match` produces exit 0 and the AC #2 prose line.
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
+#[ignore = "Windows cross-process FS enumeration anomaly - see module docs"]
 fn close_session_no_match_exits_zero_with_prose() {
     let tmp = Tmp::new("close-no-match");
     let fix = build_fixture(tmp.path(), "bob-not-running");
@@ -319,9 +319,9 @@ fn close_session_no_match_exits_zero_with_prose() {
     );
 }
 
-/// §224 D.5b — `status=restore_in_progress` produces exit 0 and retry prose.
+/// §224 D.5b - `status=restore_in_progress` produces exit 0 and retry prose.
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
+#[ignore = "Windows cross-process FS enumeration anomaly - see module docs"]
 fn close_session_restore_in_progress_exits_zero_with_retry_prose() {
     let tmp = Tmp::new("close-restore");
     let fix = build_fixture(tmp.path(), "carol-mid-restore");
@@ -349,9 +349,9 @@ fn close_session_restore_in_progress_exits_zero_with_retry_prose() {
     );
 }
 
-/// §224 D.8 — `status=already_closed` produces exit 0 and the race-prose line.
+/// §224 D.8 - `status=already_closed` produces exit 0 and the race-prose line.
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
+#[ignore = "Windows cross-process FS enumeration anomaly - see module docs"]
 fn close_session_already_closed_exits_zero_with_prose() {
     let tmp = Tmp::new("close-already");
     let fix = build_fixture(tmp.path(), "dan-raced");
@@ -374,9 +374,9 @@ fn close_session_already_closed_exits_zero_with_prose() {
     );
 }
 
-/// §224 D.8 — `status=closed` exits 0 and is silent on prose (JSON suffices).
+/// §224 D.8 - `status=closed` exits 0 and is silent on prose (JSON suffices).
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
+#[ignore = "Windows cross-process FS enumeration anomaly - see module docs"]
 fn close_session_closed_exits_zero_silent_prose() {
     let tmp = Tmp::new("close-closed");
     let fix = build_fixture(tmp.path(), "eve-actually-running");
@@ -409,12 +409,12 @@ fn close_session_closed_exits_zero_silent_prose() {
     );
 }
 
-/// §224 D.6 — the outbox-relative response-write path is the one the CLI
+/// §224 D.6 - the outbox-relative response-write path is the one the CLI
 /// consumes. The simulator only ever writes to `<ac_dir>/responses/<rid>.json`
 /// (the outbox-relative location derived from the message file's path), so a
 /// successful close cycle through this test proves A.6 is correct.
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
+#[ignore = "Windows cross-process FS enumeration anomaly - see module docs"]
 fn close_session_response_via_outbox_relative_path_only() {
     let tmp = Tmp::new("close-outbox-rel");
     let fix = build_fixture(tmp.path(), "frank-rel-only");

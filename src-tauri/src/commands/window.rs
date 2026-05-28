@@ -13,9 +13,9 @@ use crate::DetachedSessionsState;
 /// 2. Build the WebviewWindow. Any build failure returns Err without mutating state.
 /// 3. Post-build session-existence recheck (G.7 race). If the session was destroyed
 ///    between the caller's check and window build, destroy the just-built window and
-///    bail with Err — no stale UUID inserted into `DetachedSessionsState`.
+///    bail with Err - no stale UUID inserted into `DetachedSessionsState`.
 /// 4. Insert UUID into `DetachedSessionsState`.
-/// 5. Set `Session::was_detached = true` via SessionManager (Fix A — A3.2.3).
+/// 5. Set `Session::was_detached = true` via SessionManager (Fix A - A3.2.3).
 ///    This is the authoritative source-of-truth for persistence under plan §A3.2.
 /// 6. Emit `terminal_detached` for frontend sync.
 /// 7. Sibling-switch: if `skip_switch == false`, find the next non-detached session
@@ -39,7 +39,7 @@ pub(crate) async fn detach_terminal_inner(
     let label = format!("terminal-{}", session_id.replace('-', ""));
     let url = format!("index.html?window=detached&sessionId={}", session_id);
 
-    // Focus-existing short-circuit — matches pre-0.8.0 behavior.
+    // Focus-existing short-circuit - matches pre-0.8.0 behavior.
     if let Some(existing) = app.get_webview_window(&label) {
         existing.set_focus().map_err(|e| e.to_string())?;
         return Ok(label);
@@ -48,7 +48,7 @@ pub(crate) async fn detach_terminal_inner(
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .expect("Failed to load app icon");
 
-    // Step 2: build first. If build fails, no state mutation — G.1 leak plugged.
+    // Step 2: build first. If build fails, no state mutation - G.1 leak plugged.
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title("Terminal [detached]")
         .icon(icon)
@@ -89,14 +89,14 @@ pub(crate) async fn detach_terminal_inner(
         mgr.set_was_detached(uuid, true).await;
     }
 
-    // Step 6: emit terminal_detached — frontend stores + main-window pre-warm listener
+    // Step 6: emit terminal_detached - frontend stores + main-window pre-warm listener
     // (A2.3.G6) subscribe to this.
     let _ = app.emit(
         "terminal_detached",
         serde_json::json!({ "sessionId": session_id, "windowLabel": label }),
     );
 
-    // Step 7: sibling-switch — skip on restore path per R.10 / A3.3 / A2.2.G3.
+    // Step 7: sibling-switch - skip on restore path per R.10 / A3.3 / A2.2.G3.
     if !skip_switch {
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
@@ -170,7 +170,7 @@ pub async fn detach_terminal(
 }
 
 /// Re-attach a detached session to the main window. Closes the detached window (if any),
-/// clears `Session::was_detached` (Fix A — must happen BEFORE emitting events so any
+/// clears `Session::was_detached` (Fix A - must happen BEFORE emitting events so any
 /// intervening snapshot sees the correct state, plan §A3.2.4 / NEW-2), switches the
 /// main-pane active session, and emits `terminal_attached` + `session_switched`.
 ///
@@ -260,7 +260,7 @@ pub fn list_detached_sessions(detached: State<'_, DetachedSessionsState>) -> Vec
 }
 
 /// Record the geometry of a detached window. Called by the frontend on drag/resize
-/// (debounced). Persisted via the normal session-snapshot pipeline — the value
+/// (debounced). Persisted via the normal session-snapshot pipeline - the value
 /// lives on `Session::detached_geometry` and travels into `PersistedSession` on
 /// the next snapshot (plan §Arb-1 / §A2.4.Arb1 / §6.2).
 #[tauri::command]
@@ -305,20 +305,20 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 /// the recreate branch is defensive cover for the (unexpected) case where main
 /// was closed without quitting the app.
 ///
-/// Renamed from `ensure_terminal_window` per R.4 / Arb-3 — 9 callers preserved via
+/// Renamed from `ensure_terminal_window` per R.4 / Arb-3 - 9 callers preserved via
 /// the `ensureTerminal` → `focusMain` deprecated alias on the frontend.
 #[tauri::command]
 pub async fn focus_main_window(app: AppHandle) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
-    // Already exists — show (may be hidden) and focus.
+    // Already exists - show (may be hidden) and focus.
     if let Some(win) = app.get_webview_window("main") {
         win.show().map_err(|e| e.to_string())?;
         win.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
     }
 
-    // Defensive recreate — main was closed without quitting the app. Uses the saved
+    // Defensive recreate - main was closed without quitting the app. Uses the saved
     // geometry (or a sensible default) so the window appears where the user last left it.
     let saved = crate::config::settings::load_settings();
 
@@ -371,7 +371,7 @@ pub async fn open_guide_window(app: AppHandle) -> Result<(), String> {
         WebviewUrl::App("index.html?window=guide".into()),
     )
     .title(format!(
-        "Guide — {}",
+        "Guide - {}",
         crate::config::profile::app_title_suffix()
     ))
     .icon(icon)

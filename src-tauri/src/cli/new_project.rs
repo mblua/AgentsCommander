@@ -1,10 +1,10 @@
-//! `new-project <PATH>` CLI verb — ensure an AC project structure at PATH
+//! `new-project <PATH>` CLI verb - ensure an AC project structure at PATH
 //! (creating `.ac-new/` if missing) and register it in
 //! `settings.project_paths`. Shares the registration logic with the Tauri
 //! command at `commands::ac_discovery::new_project` via the
 //! `config::projects` module.
 //!
-//! Same GUI concurrency caveat as `open-project` — see that file.
+//! Same GUI concurrency caveat as `open-project` - see that file.
 
 use clap::Args;
 
@@ -15,9 +15,9 @@ use crate::config::settings::{load_settings_for_cli, save_settings};
 #[command(after_help = "\
 PURPOSE: Create an AC project at PATH (mkdir-p `.ac-new/` and write its \
 `.gitignore` if missing) and register it in the GUI sidebar's project list.\n\n\
-PATH: Absolute or relative — relative paths are resolved against the current \
+PATH: Absolute or relative - relative paths are resolved against the current \
 working directory. The folder is created if it does not yet exist.\n\n\
-IDEMPOTENCY: Re-running on a folder that already has `.ac-new/` is safe — the \
+IDEMPOTENCY: Re-running on a folder that already has `.ac-new/` is safe - the \
 gitignore is swept (missing patterns appended), and the registration step \
 deduplicates against any prior entry.")]
 pub struct NewProjectArgs {

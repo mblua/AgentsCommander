@@ -1,4 +1,4 @@
-//! Plan #137 follow-up — pin runtime emission of `[task]` audit log lines
+//! Plan #137 follow-up - pin runtime emission of `[task]` audit log lines
 //! from the CLI path.
 //!
 //! Pre-fix bug: `main.rs` jumped straight into `cli::handle_cli` without
@@ -105,7 +105,7 @@ fn task_set_title_audit_line_reaches_file_sink() {
         // (`cargo test`) shell's env. Without this, running
         // `RUST_LOG=warn cargo test --tests` filters out the `info!`
         // audit line and the `[task] set-title:` check below
-        // false-fails — production behavior is unchanged.
+        // false-fails - production behavior is unchanged.
         .env("RUST_LOG", "agentscommander=info")
         .output()
         .expect("spawn binary");
@@ -135,7 +135,7 @@ fn task_set_title_audit_line_reaches_file_sink() {
 
     // Cross-check: the TASK.md write actually happened, so the log line
     // we observed is from the live happy path (not a zombie line cached on
-    // disk from a prior test run — we copied to a fresh tmp dir, but be
+    // disk from a prior test run - we copied to a fresh tmp dir, but be
     // defensive about future test refactors).
     let task_path = agent_root
         .parent()
@@ -143,7 +143,7 @@ fn task_set_title_audit_line_reaches_file_sink() {
         .join("TASK.md");
     assert!(
         task_path.exists(),
-        "TASK.md was not created at {} — log line may be from an unrelated path",
+        "TASK.md was not created at {} - log line may be from an unrelated path",
         task_path.display(),
     );
 }

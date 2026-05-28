@@ -51,11 +51,11 @@ fn debug_guard() {
     );
 }
 
-// Exit-code assertions are intentionally absent on all four tests (R5.4 — applies
+// Exit-code assertions are intentionally absent on all four tests (R5.4 - applies
 // R4.1's NEW-3 logic symmetrically to R2.6). PS-NonInteractive bare `&` does not
 // propagate the AC binary's $LASTEXITCODE for GUI-subsystem children (PE
 // Subsystem=2); the outer powershell.exe always exits 0 regardless. The bug-
-// relevant signals are stdout/stderr presence — those alone distinguish fixed
+// relevant signals are stdout/stderr presence - those alone distinguish fixed
 // from unfixed binaries.
 
 #[test]

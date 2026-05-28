@@ -99,7 +99,7 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
                         eprintln!("Warning: failed to write claude settings: {}", e);
                     }
                 }
-                // Issue #120 — apply the rtk hook based on the global toggle.
+                // Issue #120 - apply the rtk hook based on the global toggle.
                 // CLI runs out-of-process; cannot share the in-process RtkSweepLock
                 // with a running AC instance. Cross-process race documented in §7.4
                 // of the issue #120 plan as a follow-up.

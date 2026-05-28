@@ -218,8 +218,8 @@ fn gemini_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
 }
 
 fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
-    // #260 — resume tokens sourced from the CodingAgentProfile (single source
-    // of truth). G6: slice-pattern destructure, never index — a future
+    // #260 - resume tokens sourced from the CodingAgentProfile (single source
+    // of truth). G6: slice-pattern destructure, never index - a future
     // <2-element slice degrades gracefully instead of panicking in release.
     let &[resume_flag, resume_value] = CodingAgentKind::Gemini.profile().resume_tokens else {
         debug_assert!(false, "Gemini resume_tokens must have exactly 2 elements");
@@ -276,8 +276,8 @@ fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
 }
 
 fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
-    // #260 — resume tokens sourced from the CodingAgentProfile (single source
-    // of truth). G6: slice-pattern destructure, never index — a future
+    // #260 - resume tokens sourced from the CodingAgentProfile (single source
+    // of truth). G6: slice-pattern destructure, never index - a future
     // <2-element slice degrades gracefully instead of panicking in release.
     let &[resume_subcmd, resume_flag] = CodingAgentKind::Codex.profile().resume_tokens else {
         debug_assert!(false, "Codex resume_tokens must have exactly 2 elements");
@@ -390,7 +390,7 @@ pub(crate) fn resolve_claude_projects_dir(
     ///
     /// Limitations (acceptable for real-world wrappers):
     ///   - No nested expansion: `%A%` whose value contains `%B%` is not re-expanded.
-    ///   - No escape syntax (cmd's `^%`, PowerShell's backtick) — wrappers don't use these.
+    ///   - No escape syntax (cmd's `^%`, PowerShell's backtick) - wrappers don't use these.
     fn expand_env_vars(input: &str) -> String {
         // Pass 1: %NAME% (cmd-style).
         let mut buf = String::with_capacity(input.len());
@@ -551,7 +551,7 @@ pub(crate) fn resolve_claude_projects_dir(
 
     fn resolve_token_to_file(token: &str) -> Option<PathBuf> {
         let p = Path::new(token);
-        // Direct path (absolute, or relative with separator) — use as-is if
+        // Direct path (absolute, or relative with separator) - use as-is if
         // it exists. Avoids consulting %PATH% when the user already gave us
         // a full location.
         let has_separator = token.contains('/') || token.contains('\\');
@@ -562,7 +562,7 @@ pub(crate) fn resolve_claude_projects_dir(
                 None
             };
         }
-        // Bare basename — defer to %PATH% + PATHEXT (Windows) via `which`.
+        // Bare basename - defer to %PATH% + PATHEXT (Windows) via `which`.
         which::which(token).ok()
     }
 
@@ -612,7 +612,7 @@ pub(crate) fn resolve_claude_projects_dir(
 /// Callers should compute `claude_project_exists` via `resolve_claude_projects_dir`
 /// to honor wrapper-set `CLAUDE_CONFIG_DIR`. Note: a wrapper named exactly
 /// `claude.cmd` / `claude.exe` / `claude.ps1` that overrides `CLAUDE_CONFIG_DIR`
-/// is intentionally NOT honored — the resolver short-circuits when the file_stem
+/// is intentionally NOT honored - the resolver short-circuits when the file_stem
 /// equals `claude`. Users who need wrapper overrides should rename to
 /// `claude-<suffix>` (e.g. `claude-mb`).
 ///
@@ -645,7 +645,7 @@ fn should_inject_continue(
     !already_has_continue
 }
 
-/// Issue #107 round 5 — build the optional title prompt, or `Ok(None)` if the
+/// Issue #107 round 5 - build the optional title prompt, or `Ok(None)` if the
 /// auto-title preconditions do not hold.
 ///
 /// Synchronous: filesystem reads only, no PTY, no await, no snapshot.
@@ -676,15 +676,15 @@ fn build_title_prompt_appendage(_cwd: &str) -> Result<Option<String>, String> {
 /// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
 ///
 /// `skip_auto_resume` controls provider auto-resume injection:
-/// - `true` — suppress all provider auto-resume. Use this for any "fresh
+/// - `true` - suppress all provider auto-resume. Use this for any "fresh
 ///   create" call site (UI/CLI/root-agent create, mailbox wake-from-cold
 ///   meaning no SessionManager record at this CWD, `restart_session` with
 ///   default semantics from `effective_restart_skip_auto_resume`).
-/// - `false` — allow provider auto-resume. Use this only for paths restoring
+/// - `false` - allow provider auto-resume. Use this only for paths restoring
 ///   a session AC already knows about (the startup-restore loop in `lib.rs`,
-///   the wake-from-known-state branch in `mailbox::deliver_wake` — any
+///   the wake-from-known-state branch in `mailbox::deliver_wake` - any
 ///   `RespawnExited` match, today driven exclusively by deferred-non-coord
-///   `Exited(0)` records — and `restart_session` when its caller passes
+///   `Exited(0)` records - and `restart_session` when its caller passes
 ///   `Some(false)`).
 // Shared by Tauri command + restore path; collapsing args would force a context struct.
 #[allow(clippy::too_many_arguments)]
@@ -714,7 +714,7 @@ pub async fn create_session_inner(
         )
     };
 
-    // Recompute is_coordinator from the current team snapshot. One source of truth —
+    // Recompute is_coordinator from the current team snapshot. One source of truth -
     // every caller of create_session_inner gets the same computation.
     let teams = tokio::task::spawn_blocking(crate::config::teams::discover_teams)
         .await
@@ -755,7 +755,7 @@ pub async fn create_session_inner(
 
     let mut shell_args = shell_args;
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
-    // #260 — single detector (session/profile.rs). Replaces the old
+    // #260 - single detector (session/profile.rs). Replaces the old
     // starts_with triple; this is the SAME call `strip_auto_injected_args`
     // makes, so the persisted recipe and the runtime identity cannot disagree.
     let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
@@ -772,7 +772,7 @@ pub async fn create_session_inner(
         None => None,
     };
 
-    // Single source of truth — store the identity on the SessionManager record
+    // Single source of truth - store the identity on the SessionManager record
     // AND the local clone (the latter feeds the imminent `session_created` emit).
     mgr.set_agent_kind(id, agent_kind).await;
     session.agent_kind = agent_kind;
@@ -791,7 +791,7 @@ pub async fn create_session_inner(
         claude_project_exists,
         &full_cmd,
     ) {
-        // #260 — Claude's resume flag from the CodingAgentProfile. resume_tokens
+        // #260 - Claude's resume flag from the CodingAgentProfile. resume_tokens
         // is a 1-element const for Claude, so [0] is provably in bounds.
         let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
         if let Some(ref aid) = agent_id {
@@ -836,7 +836,7 @@ pub async fn create_session_inner(
             Err(e) => {
                 log::error!("Replica context validation failed: {}", e);
                 use tauri_plugin_dialog::DialogExt;
-                let dialog_msg = format!("Cannot launch session — context files missing:\n\n{}", e);
+                let dialog_msg = format!("Cannot launch session - context files missing:\n\n{}", e);
                 app.dialog()
                     .message(&dialog_msg)
                     .title("Context File Error")
@@ -874,7 +874,7 @@ pub async fn create_session_inner(
     // Bind once, broadcast to two consumers: the store write is for later
     // `mgr.get_session` callers; the local-clone write is for the imminent emit.
     //
-    // DO NOT REMOVE OR GATE THIS CAPTURE. Issue #65 regression guard — removing
+    // DO NOT REMOVE OR GATE THIS CAPTURE. Issue #65 regression guard - removing
     // or wrapping in a condition reintroduces the exact bug this plan fixes.
     // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
     let effective = shell_args.clone();
@@ -1027,7 +1027,7 @@ pub async fn create_session_inner(
                     let cfg = settings.read().await;
                     resolve_agent_label(aid, &cfg).unwrap_or_else(|| {
                         log::warn!(
-                            "Could not resolve label for agent_id='{}' — defaulting to 'Unknown'",
+                            "Could not resolve label for agent_id='{}' - defaulting to 'Unknown'",
                             aid
                         );
                         "Unknown".to_string()
@@ -1389,7 +1389,7 @@ async fn destroy_session_inner_with_options(
     let _ = app.emit("session_destroyed", serde_json::json!({ "id": id }));
 
     // Close any detached terminal window for this session.
-    // R.2: `destroy()` — not `close()` — so the Phase 2 `onCloseRequested` handler
+    // R.2: `destroy()` - not `close()` - so the Phase 2 `onCloseRequested` handler
     // on the detached window is bypassed. Triggering the handler here would call
     // `attach_terminal` on a session that's been destroyed (benign no-op per
     // A2.2.G5) but emits extra window-lifecycle noise for no gain.
@@ -1403,7 +1403,7 @@ async fn destroy_session_inner_with_options(
     // `DetachedSessionsState`; if the next-active is a detached session, emitting
     // its id to main would cause main + the detached window to both own an xterm
     // for the same session (duplicate display + keystroke routing ambiguity). Filter
-    // here — if detached, walk the list for the first non-detached session instead.
+    // here - if detached, walk the list for the first non-detached session instead.
     if let Some(new_id) = new_active {
         let is_detached = {
             let detached = app.state::<DetachedSessionsState>();
@@ -1471,7 +1471,7 @@ fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
 
 /// Restart a session: destroy the existing one and recreate it with the same
 /// configuration but a fresh PTY. By default suppresses provider auto-resume
-/// (true user-intent restart — fresh conversation).
+/// (true user-intent restart - fresh conversation).
 ///
 /// Callers that are instead *waking* a previously-deferred session pass
 /// `skip_auto_resume = Some(false)`. A session is "deferred" (PTY `Exited(0)`
@@ -1605,7 +1605,7 @@ pub async fn restart_session(
         attach_local_config_telegram_if_any(&app, new_uuid, &cwd).await;
     }
 
-    // 7. Persist state — create_session_inner does NOT persist
+    // 7. Persist state - create_session_inner does NOT persist
     {
         let mgr = session_mgr.read().await;
         persist_current_state(&mgr).await;
@@ -2537,7 +2537,7 @@ mod tests {
 
     #[test]
     fn should_inject_continue_returns_true_when_unrelated_continue_substring() {
-        // D4 #9: token-equality fence — `--continued-mode` is NOT `--continue`.
+        // D4 #9: token-equality fence - `--continued-mode` is NOT `--continue`.
         // Guards against a future regression to substring matching.
         assert!(should_inject_continue(
             true,
@@ -2547,7 +2547,7 @@ mod tests {
         ));
     }
 
-    // ── Issue #107 Round 5 §R5.8.6 — build_title_prompt_appendage idempotence ──
+    // ── Issue #107 Round 5 §R5.8.6 - build_title_prompt_appendage idempotence ──
     //
     // Tempdir naming starts with `wg-` so `find_workgroup_task_path_for_cwd`'s
     // ancestor walk finds the cwd itself as the wg ancestor. The three tests
@@ -2557,7 +2557,7 @@ mod tests {
     // `std::fs::read_to_string`, which is not worth the harness for a thin
     // orchestrator.
 
-    // ── Issue #186 — resolve_claude_projects_dir ──
+    // ── Issue #186 - resolve_claude_projects_dir ──
 
     fn write_wrapper(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
@@ -2705,7 +2705,7 @@ mod tests {
 
     #[test]
     fn resolve_claude_projects_dir_finds_claude_token_in_embedded_cmd_string() {
-        // Embedded form — per-arg whitespace split must surface claude-mb.cmd.
+        // Embedded form - per-arg whitespace split must surface claude-mb.cmd.
         // Skip on hosts where the temp dir contains spaces (split would
         // fragment the wrapper path); the cmd-wrapped-args test above
         // already covers spaced paths via direct token form.
@@ -2753,7 +2753,7 @@ mod tests {
 
     #[test]
     fn resolve_claude_projects_dir_parses_cmd_quoted_whole_assignment() {
-        // `set "CLAUDE_CONFIG_DIR=<path with spaces>"` — canonical cmd idiom
+        // `set "CLAUDE_CONFIG_DIR=<path with spaces>"` - canonical cmd idiom
         // when the value contains spaces or shell metacharacters.
         let tmp = tempfile::tempdir().unwrap();
         let custom_base = tmp.path().join("Path With Spaces").join(".claude-mb");

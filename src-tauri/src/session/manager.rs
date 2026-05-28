@@ -156,8 +156,8 @@ impl SessionManager {
     }
 
     /// Set the active session WITHOUT mutating its status. Use when the target
-    /// session is dormant (`Exited(_)`) and we want it "selected but not running"
-    /// — e.g. the persisted-active session was deferred at startup under the
+    /// session is dormant (`Exited(_)`) and we want it "selected but not running",
+    /// e.g. the persisted-active session was deferred at startup under the
     /// issue #248 policy. The previously-active session (if any) is demoted
     /// Active → Running per the standard `switch_session` semantics. The newly-
     /// active session's status is left untouched.
@@ -173,7 +173,7 @@ impl SessionManager {
 
         let mut active = self.active_session.write().await;
 
-        // Deactivate the current session — same demotion logic as switch_session.
+        // Deactivate the current session - same demotion logic as switch_session.
         if let Some(old_id) = *active {
             if let Some(old) = sessions.get_mut(&old_id) {
                 if old.status == SessionStatus::Active {
@@ -351,7 +351,7 @@ impl SessionManager {
 
     /// Set `was_detached` on the session. Authoritative store for persistence under
     /// Fix A (plan §A3.2). Mutated ONLY by `detach_terminal_inner` (→true) and
-    /// `attach_terminal` (→false). See plan §10 rule — the `WindowEvent::Destroyed`
+    /// `attach_terminal` (→false). See plan §10 rule - the `WindowEvent::Destroyed`
     /// handler must NOT call this.
     pub async fn set_was_detached(&self, id: Uuid, detached: bool) {
         let mut sessions = self.sessions.write().await;
@@ -372,7 +372,7 @@ impl SessionManager {
 
     /// Register the effective arg vector actually handed to portable-pty
     /// at spawn time. Called by `create_session_inner` immediately before
-    /// `pty_mgr.spawn`. Idempotent — callers write the final vec once per
+    /// `pty_mgr.spawn`. Idempotent - callers write the final vec once per
     /// session lifetime. Overwrites on re-call (defensive; not expected in
     /// normal flow).
     pub async fn set_effective_shell_args(&self, id: Uuid, args: Vec<String>) {
@@ -499,7 +499,7 @@ impl SessionManager {
             .map(|(id, _)| *id)
     }
 
-    /// Find a session by its authentication token. Linear scan — fine for 10-20 sessions.
+    /// Find a session by its authentication token. Linear scan - fine for 10-20 sessions.
     pub async fn find_by_token(&self, token: Uuid) -> Option<SessionInfo> {
         let sessions = self.sessions.read().await;
         sessions
@@ -685,7 +685,7 @@ mod tests {
         assert_eq!(second_stored.status, SessionStatus::Active);
     }
 
-    // ── Issue #248 — set_active_only (Fix A) ──
+    // ── Issue #248 - set_active_only (Fix A) ──
 
     #[tokio::test]
     async fn set_active_only_preserves_dormant_status() {
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!(mgr.get_active().await, None);
     }
 
-    // ── Issue #248 / Grinch Z9 — defer + set_active_only + list_sessions chain ──
+    // ── Issue #248 / Grinch Z9 - defer + set_active_only + list_sessions chain ──
 
     #[tokio::test]
     async fn issue_248_defer_set_active_only_list_sessions_chain() {
@@ -804,7 +804,7 @@ mod tests {
         assert_eq!(infos.len(), 1);
         let json = serde_json::to_value(&infos[0]).unwrap();
 
-        // The critical assertion — Round-2 Z1 blocker.
+        // The critical assertion - Round-2 Z1 blocker.
         // Before Fix A, this would be `"status":"active"` and the FE would
         // render the live dot, taking the wrong click path. With Fix A, status
         // round-trips as the object form for SessionStatus::Exited.
@@ -814,10 +814,10 @@ mod tests {
         assert_eq!(mgr.get_active().await, Some(session.id));
     }
 
-    /// #260 G1 — pins `mark_idle`'s contract: the terminal mutation the
+    /// #260 G1 - pins `mark_idle`'s contract: the terminal mutation the
     /// idle-detector `on_idle` callback performs. NOTE: `create_session`
     /// auto-activates the first session (status `Active`), and `mark_idle`
-    /// only transitions `Running → Idle` — so demote via `clear_active` first.
+    /// only transitions `Running → Idle` - so demote via `clear_active` first.
     /// Without that step the status assertion below would be vacuous.
     #[tokio::test]
     async fn mark_idle_sets_waiting_for_input_and_running_to_idle() {

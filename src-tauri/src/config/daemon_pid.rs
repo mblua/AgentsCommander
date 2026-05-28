@@ -15,7 +15,7 @@ fn pid_path() -> Option<PathBuf> {
 pub fn write_pid_file() {
     if let Some(path) = pid_path() {
         // Best-effort write. If the daemon can't write the pid file (perms?),
-        // log it but do not abort startup — the CLI just won't get its warning.
+        // log it but do not abort startup - the CLI just won't get its warning.
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -42,12 +42,12 @@ pub fn remove_pid_file() {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonState {
     /// PID file present and the PID corresponds to a live process (OR a process
-    /// we lack rights to query — see `is_pid_alive` `ACCESS_DENIED` handling
+    /// we lack rights to query - see `is_pid_alive` `ACCESS_DENIED` handling
     /// for the elevated-daemon / non-elevated-CLI case).
     Running { pid: u32 },
-    /// PID file missing — no daemon has started, or it was force-killed and
+    /// PID file missing - no daemon has started, or it was force-killed and
     /// the file was cleaned by a prior CLI invocation. (We do NOT delete the
-    /// stale pid file from the CLI — that would race a daemon coming up.)
+    /// stale pid file from the CLI - that would race a daemon coming up.)
     NoPidFile,
     /// PID file present but the PID does not correspond to a live process.
     StalePidFile { pid: u32 },
@@ -55,7 +55,7 @@ pub enum DaemonState {
     MalformedPidFile,
 }
 
-/// Public entry point — resolves the pid path from `config_dir()` and
+/// Public entry point - resolves the pid path from `config_dir()` and
 /// delegates to `detect_daemon_state_at`. Returns `NoPidFile` if `config_dir`
 /// is unavailable (no home dir).
 pub fn detect_daemon_state() -> DaemonState {
@@ -115,7 +115,7 @@ fn is_pid_alive(pid: u32) -> bool {
         let got_code = GetExitCodeProcess(handle, &mut code);
         CloseHandle(handle);
         // STILL_ACTIVE (259) means the process is running. Any other code
-        // means it has exited — treat the pid as dead even if the handle
+        // means it has exited - treat the pid as dead even if the handle
         // opened (could be a zombie kept alive by another handle holder).
         got_code != 0 && code == STILL_ACTIVE as u32
     }
@@ -126,7 +126,7 @@ fn is_pid_alive(_pid: u32) -> bool {
     // Windows-first stub (plan D4-b). AgentsCommander is Windows-first; the
     // daemon-pid warning is a stderr quality-of-life signal, not a
     // correctness-critical check. Returning `true` here means the CLI never
-    // warns about a stale snapshot on Linux/macOS — acceptable until/unless
+    // warns about a stale snapshot on Linux/macOS - acceptable until/unless
     // we ship for those platforms. Avoids adding a `libc` direct dep
     // (`src-tauri/Cargo.toml` does NOT currently list libc) just for platform
     // parity. If we later need real Unix coverage, add `libc = "0.2"` under
@@ -143,7 +143,7 @@ mod tests {
     fn current_process_is_alive() {
         // On Windows, OpenProcess against our own PID succeeds and
         // GetExitCodeProcess returns STILL_ACTIVE. On non-Windows, the stub
-        // returns true unconditionally — assertion still holds.
+        // returns true unconditionally - assertion still holds.
         assert!(is_pid_alive(std::process::id()));
     }
 

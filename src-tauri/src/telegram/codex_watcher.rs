@@ -122,7 +122,7 @@ fn read_first_line(path: &Path) -> Option<String> {
 /// **mtime, not `payload.timestamp`**: `session_meta.payload.timestamp` is the
 /// session CREATION time and is NEVER updated on resume. M6 empirical (Codex
 /// 0.130.0) shows `codex resume --last` appends to the original file from the
-/// resumed session's creation day — so a 4-day-old file's `payload.timestamp`
+/// resumed session's creation day - so a 4-day-old file's `payload.timestamp`
 /// is 4 days old even when it was just appended to. mtime tracks the
 /// most-recently-written file, which is the live one Codex is appending to.
 ///
@@ -146,7 +146,7 @@ fn find_session_file(
             .join(format!("{:02}", day.format("%d")));
         let read = match std::fs::read_dir(&dir) {
             Ok(r) => r,
-            Err(_) => continue, // partition missing — normal for days with no codex usage
+            Err(_) => continue, // partition missing - normal for days with no codex usage
         };
         for entry in read.flatten() {
             let path = entry.path();
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn find_session_file_picks_newest_mtime_when_multiple_match() {
-        // M6: tiebreaker is file mtime, not payload.timestamp — see
+        // M6: tiebreaker is file mtime, not payload.timestamp - see
         // find_session_file doc comment for why.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -553,7 +553,7 @@ mod tests {
         let now = Utc::now();
         let cwd = r"C:\Users\foo\bar";
 
-        // Abandoned same-day session — its payload.timestamp is "today" but
+        // Abandoned same-day session - its payload.timestamp is "today" but
         // it was last touched a couple of minutes ago.
         let today = day_dir(root, now.date_naive());
         let abandoned_today = write_rollout(
@@ -564,7 +564,7 @@ mod tests {
         );
         std::thread::sleep(std::time::Duration::from_millis(150));
 
-        // Resumed file lives 4 days back — its payload.timestamp is 4 days ago
+        // Resumed file lives 4 days back - its payload.timestamp is 4 days ago
         // but its mtime is "now" (we just wrote it = the resume just appended).
         let four_days_ago = now - chrono::Duration::days(4);
         let dir4 = day_dir(root, four_days_ago.date_naive());
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn find_session_file_handles_missing_date_partition() {
-        // Empty root — no partitions at all. Function returns None without panic.
+        // Empty root - no partitions at all. Function returns None without panic.
         let tmp = tempfile::tempdir().unwrap();
         let now = Utc::now();
         let found = find_session_file(tmp.path(), "c:\\users\\foo\\bar", now);

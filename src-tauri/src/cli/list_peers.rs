@@ -34,7 +34,7 @@ PEER FILTER (--peer):\n  \
   requested FQN is not present in the discovered peer set the command\n  \
   exits non-zero with a clear stderr error naming the unknown peer(s);\n  \
   no JSON is emitted on the unknown-peer path. Unreachable peers\n  \
-  (reachable=false) are still returned when their name matches —\n  \
+  (reachable=false) are still returned when their name matches -\n  \
   filtering is by name only.\n\n\
 NOTES:\n  \
   - Canonical Root Agent roots return verified WG coordinator replicas only.\n    \
@@ -62,7 +62,7 @@ pub struct ListPeersArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory (required). Your working directory — used to identify you and your teams
+    /// Agent root directory (required). Your working directory - used to identify you and your teams
     #[arg(long)]
     pub root: Option<String>,
 
@@ -111,7 +111,7 @@ PEER FILTER (--peer):\n  \
   requested FQN is not present in the discovered peer set the command\n  \
   exits non-zero with a clear stderr error naming the unknown peer(s);\n  \
   no JSON is emitted on the unknown-peer path. Unreachable peers\n  \
-  (reachable=false) are still returned when their name matches —\n  \
+  (reachable=false) are still returned when their name matches -\n  \
   filtering is by name only. Identical semantics to `list-peers --peer`.\n\n\
 NOTES:\n  \
   - Working-state visibility is bound to the binary instance that wrote\n    \
@@ -134,7 +134,7 @@ pub struct ListPeersLeanArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory (required). Your working directory — used to identify you and your teams
+    /// Agent root directory (required). Your working directory - used to identify you and your teams
     #[arg(long)]
     pub root: Option<String>,
 
@@ -195,13 +195,13 @@ const ROLE_SUMMARY_MAX: usize = 80;
 /// Note: `roleSummary` is best-effort. When a peer's role document has no
 /// `## Role` section (or no `# Role:` heading for WG replicas), the field
 /// reflects the first non-heading lines that `extract_role_section` falls
-/// back to — which may not be a true role description. Treat the field as
+/// back to - which may not be a true role description. Treat the field as
 /// a hint, not authoritative.
 fn lean_role_summary(role: &str) -> String {
     const NO_ROLE_SENTINELS: &[&str] = &["No role description available.", "WG replica agent."];
     // Standard AgentsCommander preamble openings. These appear verbatim in
     // every replica's CLAUDE.md by design, so when they surface through the
-    // `extract_role_section` fallback they carry no discriminating signal —
+    // `extract_role_section` fallback they carry no discriminating signal -
     // suppress them rather than ship 20 peers with identical roleSummary.
     const PREAMBLE_PREFIXES: &[&str] = &[
         "You are running inside an AgentsCommander session",
@@ -264,14 +264,14 @@ struct PeerInfo {
     /// `running-peer` badge predicate (ProjectPanel.tsx:780-786).
     working: bool,
     /// Fine-grained status. One of:
-    ///   "active"   — SessionStatus::Active (focused session)
-    ///   "running"  — SessionStatus::Running
-    ///   "idle"     — SessionStatus::Idle
-    ///   "waiting"  — any matching session has waiting_for_input==true
+    ///   "active"   - SessionStatus::Active (focused session)
+    ///   "running"  - SessionStatus::Running
+    ///   "idle"     - SessionStatus::Idle
+    ///   "waiting"  - any matching session has waiting_for_input==true
     ///                (overrides underlying SessionStatus, mirrors
     ///                replicaDotClass() at ProjectPanel.tsx:60)
-    ///   "exited"   — SessionStatus::Exited(_)
-    ///   "none"     — no session matches this peer (WG peers match by
+    ///   "exited"   - SessionStatus::Exited(_)
+    ///   "none"     - no session matches this peer (WG peers match by
     ///                name+cwd, non-WG peers match by cwd only)
     session_status: String,
     /// UUID of the matched session, when one was found.
@@ -287,7 +287,7 @@ struct PeerInfo {
     coding_agents: HashMap<String, CodingAgentEntry>,
 }
 
-// Shadow `agent_name_from_path`/`strip_agent_prefix` removed — canonical
+// Shadow `agent_name_from_path`/`strip_agent_prefix` removed - canonical
 // helpers live in `config::teams` (§AR2-order step 7 / §DR2). Origin agents
 // use `agent_name_from_path` (project/agent); WG replicas use
 // `agent_fqn_from_path` (project:wg-N/agent).
@@ -665,7 +665,7 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
     }
 
     // Coordinator also sees coordinators of OTHER WGs in the same .ac-new
-    // (same project, different WG — still qualified with `wg.my_project`).
+    // (same project, different WG - still qualified with `wg.my_project`).
     if i_am_coordinator {
         if let Ok(entries) = std::fs::read_dir(&wg.ac_new_dir) {
             for entry in entries.flatten() {
@@ -705,7 +705,7 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
         }
     }
 
-    // #293 — synthetic Root Agent reply peer (identity-verified coordinators
+    // #293 - synthetic Root Agent reply peer (identity-verified coordinators
     // only). Augment `settings.project_paths` with the caller's own project
     // dir so `verified_wg_coordinator_target` sees the replica even when the
     // project isn't in settings. Mirrors `cli/send.rs::effective_project_paths`
@@ -783,7 +783,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
             let reachable =
                 crate::config::teams::can_communicate(&my_name, &peer_name, &discovered);
 
-            // Skip duplicates — add team to existing peer, upgrade reachable if needed
+            // Skip duplicates - add team to existing peer, upgrade reachable if needed
             if let Some(existing) = peers.iter_mut().find(|p| p.name == peer_name) {
                 if !existing.teams.contains(&team.name) {
                     existing.teams.push(team.name.clone());
@@ -859,7 +859,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
             if !ac_new_dir.is_dir() {
                 continue;
             }
-            // Project folder name (parent of .ac-new) — LHS of the canonical FQN.
+            // Project folder name (parent of .ac-new) - LHS of the canonical FQN.
             let project_folder = match repo_dir.file_name().and_then(|n| n.to_str()) {
                 Some(n) => n.to_string(),
                 None => continue,
@@ -1009,7 +1009,7 @@ fn discover_root_coordinator_peers_from_project_paths(project_paths: &[String]) 
 
 /// Build a synthetic `PeerInfo` for the canonical Root Agent reply target,
 /// or `None` if the caller is not an identity-verified WG coordinator (the
-/// only relationship that can address the Root Agent — see #293 §3).
+/// only relationship that can address the Root Agent - see #293 §3).
 ///
 /// `wg` is the caller's WG-replica detection result (already computed by
 /// `discover_peers`); `project_paths` is the effective settings slice the
@@ -1033,7 +1033,7 @@ fn build_root_agent_synthetic_peer(
         path: root_dir,
         // `status`/`session_status` reflect "we don't track it from here".
         // The root session is in a different working-directory namespace
-        // than this verb scans — its working state is invisible to
+        // than this verb scans - its working state is invisible to
         // `compute_peer_status`.
         status: "unknown".to_string(),
         role: "AgentsCommander Root Agent (canonical reply target).".to_string(),
@@ -1106,7 +1106,7 @@ fn report_unknown_peers(unknown: &[String], available: &[String]) -> i32 {
     1
 }
 
-/// Run the shared discovery — WG-replica path when `root` is a replica, the
+/// Run the shared discovery - WG-replica path when `root` is a replica, the
 /// origin-agent path otherwise. Factored so `execute` and `execute_lean`
 /// share the dispatch.
 fn discover_peers(root: &str) -> Vec<PeerInfo> {
@@ -1382,7 +1382,7 @@ mod tests {
             my_project: "proj-a".to_string(),
         };
 
-        // Sanity check: with EMPTY settings, the helper returns None — proves
+        // Sanity check: with EMPTY settings, the helper returns None - proves
         // the augmentation matters and we're not just trivially passing.
         let empty: Vec<String> = vec![];
         assert!(
@@ -1629,7 +1629,7 @@ mod tests {
         }
     }
 
-    // §6.1 — command exists in clap
+    // §6.1 - command exists in clap
 
     #[test]
     fn list_peers_lean_subcommand_is_registered() {
@@ -1660,7 +1660,7 @@ mod tests {
         assert!(after.contains("codingAgents"));
     }
 
-    // §6.2 — JSON shape: kept and omitted fields
+    // §6.2 - JSON shape: kept and omitted fields
 
     #[test]
     fn lean_json_keeps_essential_fields() {
@@ -1678,7 +1678,7 @@ mod tests {
         ] {
             assert!(
                 json.contains(kept),
-                "lean JSON missing {} — got {}",
+                "lean JSON missing {} - got {}",
                 kept,
                 json
             );
@@ -1701,7 +1701,7 @@ mod tests {
         ] {
             assert!(
                 !json.contains(forbidden),
-                "lean JSON must not contain {} — got {}",
+                "lean JSON must not contain {} - got {}",
                 forbidden,
                 json
             );
@@ -1718,7 +1718,7 @@ mod tests {
         assert_eq!(parsed.as_array().unwrap().len(), 2);
     }
 
-    // §6.3 — field preservation parity
+    // §6.3 - field preservation parity
 
     #[test]
     fn lean_preserves_name_working_session_status_reachable() {
@@ -1742,7 +1742,7 @@ mod tests {
         assert_eq!(lean.session_status, "none");
     }
 
-    // §12.2 — From<&PeerInfo> binds to lean_role_summary helper
+    // §12.2 - From<&PeerInfo> binds to lean_role_summary helper
 
     #[test]
     fn lean_role_summary_is_produced_by_lean_role_summary_helper() {
@@ -1755,7 +1755,7 @@ mod tests {
         assert!(lean.role_summary.ends_with('…'));
     }
 
-    // §6.4 — peer-set parity via projection
+    // §6.4 - peer-set parity via projection
 
     #[test]
     fn lean_projection_preserves_peer_set_order_and_names() {
@@ -1775,7 +1775,7 @@ mod tests {
         assert_eq!(lean_names, full_names);
     }
 
-    // §6.5 — roleSummary derivation (§12.1 contract: ≤ MAX total chars)
+    // §6.5 - roleSummary derivation (§12.1 contract: ≤ MAX total chars)
 
     #[test]
     fn role_summary_takes_first_non_empty_line() {
@@ -1816,16 +1816,16 @@ mod tests {
         let json = serde_json::to_string(&lean).unwrap();
         assert!(
             !json.contains("\"roleSummary\":"),
-            "roleSummary must be omitted when empty — got {}",
+            "roleSummary must be omitted when empty - got {}",
             json
         );
     }
 
-    // §12.7 — preamble sentinel filtering
+    // §12.7 - preamble sentinel filtering
 
     #[test]
     fn role_summary_filters_agentscommander_preamble() {
-        let preamble = "You are running inside an AgentsCommander session — \
+        let preamble = "You are running inside an AgentsCommander session - \
                         a terminal session manager that coordinates multiple AI agents.";
         assert_eq!(lean_role_summary(preamble), "");
 
@@ -1833,7 +1833,7 @@ mod tests {
         assert_eq!(lean_role_summary(context_header), "");
     }
 
-    // §12.8 — fence-post truncation tests
+    // §12.8 - fence-post truncation tests
 
     #[test]
     fn role_summary_no_ellipsis_at_exact_limit() {
@@ -1854,7 +1854,7 @@ mod tests {
         assert_eq!(prefix, "x".repeat(ROLE_SUMMARY_MAX - 1));
     }
 
-    // §6.6 — validation guards (token/root) for both execute and execute_lean
+    // §6.6 - validation guards (token/root) for both execute and execute_lean
 
     #[test]
     fn execute_returns_1_when_token_missing() {
@@ -2027,7 +2027,7 @@ mod tests {
     fn peer_filter_match_is_case_sensitive() {
         let peers = vec![sample_peer_info("project:wg-1-team/Dev")];
         let err = apply_peer_filter(peers, &["project:wg-1-team/dev".to_string()])
-            .expect_err("must Err — names differ in case");
+            .expect_err("must Err - names differ in case");
         assert_eq!(err, vec!["project:wg-1-team/dev".to_string()]);
     }
 

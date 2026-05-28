@@ -3,7 +3,7 @@
 // messages and sends them to Telegram, bypassing the PTY-based pipeline.
 //
 // Shared scaffold (find_latest_jsonl, read_new_lines, polling/rotation
-// constants) lives in `jsonl_kernel.rs` — see commit 1 for the extraction.
+// constants) lives in `jsonl_kernel.rs` - see commit 1 for the extraction.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -88,7 +88,7 @@ fn extract_assistant_text(line: &str) -> Option<String> {
         serde_json::Value::Array(arr) => {
             let mut texts = Vec::new();
             for block in arr {
-                // G4: whitelist "text" only — filters tool_use, tool_result, thinking, and future types
+                // G4: whitelist "text" only - filters tool_use, tool_result, thinking, and future types
                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                         let trimmed = text.trim();
@@ -171,7 +171,7 @@ async fn watch_loop(
                                 .map(|d| d.as_secs() >= ROTATION_STALE_SECS)
                                 .unwrap_or(true)
                         }
-                        _ => true, // No current file — always accept
+                        _ => true, // No current file - always accept
                     };
 
                     if should_switch {

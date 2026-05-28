@@ -50,7 +50,7 @@ impl WsBroadcaster {
     }
 
     /// Broadcast PTY output as binary frame: 36-byte UUID ASCII + raw bytes.
-    /// Called from native PTY read thread — must be non-blocking.
+    /// Called from native PTY read thread - must be non-blocking.
     pub fn broadcast_pty_output(&self, session_id: &str, data: &[u8]) {
         let mut frame = Vec::with_capacity(36 + data.len());
         // Pad or truncate session_id to exactly 36 bytes

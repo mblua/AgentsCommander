@@ -72,7 +72,7 @@ impl AgentTooling {
 
 // ── Legacy Dark Factory fields (kept for backwards-compatible deserialization) ──
 /// Preserved so existing config.json files with a "darkFactory" key can still be read.
-/// No longer written or used for routing — teams come from discovery.
+/// No longer written or used for routing - teams come from discovery.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDarkFactory {
@@ -104,7 +104,7 @@ pub struct AgentLocalConfig {
     pub agent: AgentIdentity,
     #[serde(default, skip_serializing_if = "AgentTooling::is_empty")]
     pub tooling: AgentTooling,
-    /// Legacy field — kept for backwards-compatible reads of old config.json files.
+    /// Legacy field - kept for backwards-compatible reads of old config.json files.
     /// No longer used for routing. Teams are discovered from _team_*/config.json.
     #[serde(default, skip_serializing_if = "AgentDarkFactory::is_empty")]
     pub dark_factory: AgentDarkFactory,
@@ -112,7 +112,7 @@ pub struct AgentLocalConfig {
 
 /// Update lastCodingAgent and codingAgents in a repo's config.
 /// Writes to BOTH:
-///  - `<repo_path>/config.json` (root, shared across all instances — read by discovery)
+///  - `<repo_path>/config.json` (root, shared across all instances - read by discovery)
 ///  - `<repo_path>/<agent_local_dir>/config.json` (per-instance)
 ///
 /// Reads existing config, upserts the coding agent entry, writes back.

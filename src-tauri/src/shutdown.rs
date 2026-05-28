@@ -11,9 +11,9 @@ use tokio_util::sync::CancellationToken;
 /// A single `trigger()` call cancels both mechanisms simultaneously.
 ///
 /// ## Tasks NOT covered by this signal (die with tokio runtime):
-/// - Wake-and-sleep cleanup loops (phone/mailbox.rs) — async, up to 600s timeout
-/// - Follow-up injection loops (phone/mailbox.rs) — async, up to 30s timeout
-/// - Credential injection (commands/session.rs) — one-shot async, 2s sleep
+/// - Wake-and-sleep cleanup loops (phone/mailbox.rs) - async, up to 600s timeout
+/// - Follow-up injection loops (phone/mailbox.rs) - async, up to 30s timeout
+/// - Credential injection (commands/session.rs) - one-shot async, 2s sleep
 ///
 /// These run on Tauri's tokio runtime and are force-cancelled on runtime drop.
 #[derive(Clone)]
@@ -36,7 +36,7 @@ impl ShutdownSignal {
         }
     }
 
-    /// Trigger shutdown — cancels the token and sets the atomic flag.
+    /// Trigger shutdown - cancels the token and sets the atomic flag.
     pub fn trigger(&self) {
         self.flag.store(true, Ordering::SeqCst);
         self.token.cancel();

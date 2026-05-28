@@ -8,9 +8,9 @@ use crate::phone::types::OutboxMessage;
 use super::send::agent_name_from_root;
 
 /// Pure: decide CLI exit code from the daemon's response body.
-/// §224 G2 — exit codes:
-///   0  — known status (closed | already_closed | no_match | restore_in_progress).
-///   2  — unparseable JSON, missing `status` field, non-string status, or
+/// §224 G2 - exit codes:
+///   0  - known status (closed | already_closed | no_match | restore_in_progress).
+///   2  - unparseable JSON, missing `status` field, non-string status, or
 ///        unknown status value. Distinct from 1 (used elsewhere for auth/IO
 ///        failures) so scripts can distinguish "daemon spoke incoherently"
 ///        from "daemon refused".
@@ -18,11 +18,11 @@ use super::send::agent_name_from_root;
 /// Note: this contract applies only when the daemon successfully wrote a
 /// response file the CLI could read. The orthogonal "delivered but response
 /// timed out" path at the end of `execute()` is NOT routed through this
-/// helper — see the response-poll loop. That fallback ALSO returns exit 2
+/// helper - see the response-poll loop. That fallback ALSO returns exit 2
 /// (§224 G-IMPL-3): if delivery succeeded but no response appeared in the
 /// poll window, the session's state is unknown (daemon crashed mid-handle,
 /// response landed at an undeliverable path, or in-flight). "Outcome
-/// unknown" belongs in the exit-2 class — exit 0 here would re-create the
+/// unknown" belongs in the exit-2 class - exit 0 here would re-create the
 /// silent-success surface #224 was filed to eliminate.
 fn interpret_close_response_exit_code(content: &str) -> i32 {
     let resp: serde_json::Value = match serde_json::from_str(content) {
@@ -39,7 +39,7 @@ fn interpret_close_response_exit_code(content: &str) -> i32 {
 }
 
 /// Print a human-readable status line on stdout, after the JSON response.
-/// §224 G7 — AC #2 requires "stdout message such as `No sessions matched ...`".
+/// §224 G7 - AC #2 requires "stdout message such as `No sessions matched ...`".
 /// JSON is preserved for scripts; the prose line satisfies the literal AC text.
 fn print_status_prose(content: &str) {
     let Ok(resp) = serde_json::from_str::<serde_json::Value>(content) else {
@@ -51,7 +51,7 @@ fn print_status_prose(content: &str) {
         .unwrap_or("");
     match resp.get("status").and_then(|v| v.as_str()) {
         Some("no_match") => {
-            crate::cli_println!("No sessions matched '{}' — nothing to close.", target);
+            crate::cli_println!("No sessions matched '{}' - nothing to close.", target);
         }
         Some("already_closed") => {
             crate::cli_println!(
@@ -75,7 +75,7 @@ fn print_status_prose(content: &str) {
 #[command(after_help = "\
 AUTHORIZATION: Only coordinators of the target agent's team can close sessions. \
 The master/root token bypasses this check.\n\n\
-BEHAVIOR: By default, graceful shutdown is used — an exit command is injected into \
+BEHAVIOR: By default, graceful shutdown is used - an exit command is injected into \
 the agent's PTY (e.g., /exit for Claude Code) and the system waits for clean exit. \
 If the agent doesn't exit within --timeout seconds, it falls back to force-kill. \
 Use --force to skip graceful shutdown and kill immediately.\n\n\
@@ -87,14 +87,14 @@ pub struct CloseSessionArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory (required). Your working directory — used to derive your agent name
+    /// Agent root directory (required). Your working directory - used to derive your agent name
     #[arg(long)]
     pub root: Option<String>,
 
     /// Target agent name to close. Use `list-peers-lean` to discover valid names.
-    /// Accepts FQN form (e.g., "myproject:wg-1-ac-devs/dev-rust" — preferred,
+    /// Accepts FQN form (e.g., "myproject:wg-1-ac-devs/dev-rust" - preferred,
     /// matches the `name` field returned by `list-peers-lean`) or WG-local form
-    /// (e.g., "wg-1-ac-devs/dev-rust" — auto-resolved when unambiguous across
+    /// (e.g., "wg-1-ac-devs/dev-rust" - auto-resolved when unambiguous across
     /// your project paths).
     #[arg(long)]
     pub target: String,
@@ -165,12 +165,12 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             || !teams::is_coordinator_of(&sender, &resolved_target, &discovered)
         {
             log::error!(
-                "authorization denied — '{}' is not a coordinator of '{}'. Only coordinators can close sessions of their team agents.",
+                "authorization denied - '{}' is not a coordinator of '{}'. Only coordinators can close sessions of their team agents.",
                 sender,
                 resolved_target
             );
             eprintln!(
-                "Error: authorization denied — '{}' is not a coordinator of '{}'. \
+                "Error: authorization denied - '{}' is not a coordinator of '{}'. \
                  Only coordinators can close sessions of their team agents.",
                 sender, resolved_target
             );
@@ -201,7 +201,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         timeout_secs: Some(args.timeout),
     };
 
-    // Write to outbox — use app outbox for root/master token, else agent's outbox
+    // Write to outbox - use app outbox for root/master token, else agent's outbox
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
     let outbox_dir = if is_root {
         let app_outbox = crate::config::config_dir()
@@ -258,8 +258,8 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             let reason = std::fs::read_to_string(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
             let trimmed = reason.trim();
-            log::error!("close-session rejected — {}", trimmed);
-            eprintln!("Error: close-session rejected — {}", trimmed);
+            log::error!("close-session rejected - {}", trimmed);
+            eprintln!("Error: close-session rejected - {}", trimmed);
             return 1;
         }
         if start.elapsed() >= confirm_timeout {
@@ -289,12 +289,12 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             match std::fs::read_to_string(&response_path) {
                 Ok(content) => {
                     crate::cli_println!("{}", content);
-                    // §224 G7 — print a human-readable prose line for no_match
+                    // §224 G7 - print a human-readable prose line for no_match
                     // / already_closed / restore_in_progress so AC #2's
                     // "stdout message such as `No sessions matched ...`" lands
                     // even when callers don't parse the JSON.
                     print_status_prose(&content);
-                    // §224 G2 — validate the daemon's contract: known status
+                    // §224 G2 - validate the daemon's contract: known status
                     // → exit 0; unparseable / missing / unknown status → exit 2.
                     return interpret_close_response_exit_code(&content);
                 }
@@ -306,19 +306,19 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             }
         }
         if resp_start.elapsed() >= resp_timeout {
-            // §224 G-IMPL-3 — Delivery confirmed but no response in
+            // §224 G-IMPL-3 - Delivery confirmed but no response in
             // `resp_timeout`. The session's terminal state is UNKNOWN:
             // the daemon may have crashed mid-handle, the response may
             // have landed at an undeliverable path (G-IMPL-2 + a non-
             // enumerable --root), or it may simply be in flight.
             //
             // Exit 2 ("outcome unknown") per the truth table in
-            // `interpret_close_response_exit_code` — exit 0 here would
+            // `interpret_close_response_exit_code` - exit 0 here would
             // be a silent-success regression of #224. Prose to stderr,
             // not stdout, so script consumers don't mistake it for the
             // happy-path JSON.
             eprintln!(
-                "Error: close-session delivered but daemon did not write a response within {}s — outcome unknown (request {})",
+                "Error: close-session delivered but daemon did not write a response within {}s - outcome unknown (request {})",
                 resp_timeout.as_secs(),
                 request_id
             );
@@ -332,7 +332,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
 mod tests {
     use super::*;
 
-    // ── §224 D.1 — interpret_close_response_exit_code (non-vacuous) ──
+    // ── §224 D.1 - interpret_close_response_exit_code (non-vacuous) ──
 
     #[test]
     fn closed_status_returns_zero() {
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(interpret_close_response_exit_code("true"), 2);
     }
 
-    // ── §224 D.1 — print_status_prose panic-resistance smoke tests ──
+    // ── §224 D.1 - print_status_prose panic-resistance smoke tests ──
     // Subprocess test (D.8) covers the actual stdout content end-to-end.
 
     #[test]

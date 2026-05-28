@@ -47,7 +47,7 @@ fn read_preferred_agent_id(
         .collect();
     if matches.len() > 1 {
         log::warn!(
-            "[discovery] Multiple agents with label '{}' — using first match (id={})",
+            "[discovery] Multiple agents with label '{}' - using first match (id={})",
             app_label,
             matches[0].id
         );
@@ -182,10 +182,10 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
 /// its own line). Leading `# ` heading markers are stripped from the result.
 ///
 /// Without this, a TASK.md that opens with `---` (frontmatter) sends the
-/// literal `---` to the sidebar — the `wg.task` field then defeats the
+/// literal `---` to the sidebar - the `wg.task` field then defeats the
 /// frontend's frontmatter-stripping renderer (issue #161).
 fn extract_task_first_line(content: &str) -> Option<String> {
-    // Strip a UTF-8 BOM if present — `read_to_string` does not, and `str::trim`
+    // Strip a UTF-8 BOM if present - `read_to_string` does not, and `str::trim`
     // does not treat U+FEFF as whitespace, so without this the frontmatter opener
     // check below sees `\u{FEFF}---` instead of `---` and the heading-strip below
     // leaves the BOM on the result.
@@ -221,7 +221,7 @@ fn extract_task_first_line(content: &str) -> Option<String> {
 /// path matches the form `discover_project` produces (which never has the
 /// prefix because it comes from a `read_dir` walk). The codebase already
 /// applies the same strip downstream when embedding paths into the agent
-/// init prompt — see the `find_workgroup_task_path_handles_unc_prefix_input`
+/// init prompt - see the `find_workgroup_task_path_handles_unc_prefix_input`
 /// test note in `session.rs`.
 fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
@@ -264,7 +264,7 @@ fn detect_git_branch_sync(dir: &str) -> Option<String> {
 const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// #280 §3.3 — per-path counter for `detect_branch` timeouts. Mirrors the
+/// #280 §3.3 - per-path counter for `detect_branch` timeouts. Mirrors the
 /// `git_watcher.rs` helper but lives in a separate module-local map so the
 /// two watchers track their own paths independently (different scan sets).
 fn note_discovery_timeout(path: &str) -> u64 {
@@ -281,7 +281,7 @@ fn note_discovery_timeout(path: &str) -> u64 {
 struct ReplicaBranchEntry {
     replica_path: String,
     /// (label, absolute repo path) pairs. Order = replica config.json `repos` array order.
-    /// Never sort or dedupe — `Vec<SessionRepo>` equality in poll() depends on order.
+    /// Never sort or dedupe - `Vec<SessionRepo>` equality in poll() depends on order.
     repos: Vec<(String, String)>,
     /// Session name format: "wg_name/replica_name"
     session_name: String,
@@ -330,15 +330,15 @@ struct TaskUpdatedPayload {
 pub struct DiscoveryBranchWatcher {
     app_handle: AppHandle,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-    /// Keyed by the project directory that DIRECTLY CONTAINS `.ac-new/` — NOT by
+    /// Keyed by the project directory that DIRECTLY CONTAINS `.ac-new/` - NOT by
     /// `settings.project_paths` entries (which may be parent dirs holding many projects).
     /// Keying by the direct parent prevents both (a) the original overwrite-across-projects
     /// bug (Grinch #1) and (b) the double-registration that occurs when `project_paths`
     /// contains both a parent and a child (Grinch #12).
     replicas: Mutex<HashMap<String, Vec<ReplicaBranchEntry>>>,
-    /// Single-repo branch cache — gates `ac_discovery_branch_updated` emission (panel UI).
+    /// Single-repo branch cache - gates `ac_discovery_branch_updated` emission (panel UI).
     discovery_cache: Mutex<HashMap<String, Option<String>>>,
-    /// Full per-repo state cache — gates `session_git_repos` emission. Independent from
+    /// Full per-repo state cache - gates `session_git_repos` emission. Independent from
     /// `discovery_cache` so multi-repo replicas re-emit on per-repo drift even when the
     /// single-branch view stays None.
     repos_cache: Mutex<HashMap<String, Vec<SessionRepo>>>,
@@ -367,7 +367,7 @@ impl DiscoveryBranchWatcher {
     }
 
     /// Update this project's replicas in the watcher. `ac_new_parent_dir` is the directory
-    /// that directly contains `.ac-new/` — NOT a grand-parent from `settings.project_paths`.
+    /// that directly contains `.ac-new/` - NOT a grand-parent from `settings.project_paths`.
     /// See the invariant comment on the `replicas` field.
     pub fn update_replicas_for_project(&self, ac_new_parent_dir: &str, workgroups: &[AcWorkgroup]) {
         // Invariant guard: catch mistaken call-site passes (e.g. a `base_path` parent)
@@ -380,7 +380,7 @@ impl DiscoveryBranchWatcher {
         );
         if !has_ac_new {
             log::warn!(
-                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no .ac-new/ — ignoring",
+                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no .ac-new/ - ignoring",
                 ac_new_parent_dir
             );
             return;
@@ -517,7 +517,7 @@ impl DiscoveryBranchWatcher {
 
         // Gate A + Gate B (existing replica-driven git detection). Wrapped so
         // an empty `entries` (no project loaded) still falls through to Gate C,
-        // which is also driven by active sessions — sessions can exist for
+        // which is also driven by active sessions - sessions can exist for
         // workgroups whose project is not in `settings.projectPaths`.
         if !entries.is_empty() {
             for entry in &entries {
@@ -613,7 +613,7 @@ impl DiscoveryBranchWatcher {
                             );
                         } else {
                             log::debug!(
-                            "[DiscoveryBranchWatcher] gen mismatch for {} — refresh landed during poll; skipping stale emit",
+                            "[DiscoveryBranchWatcher] gen mismatch for {} - refresh landed during poll; skipping stale emit",
                             entry.replica_path
                         );
                             // Clear our own cache entry so next tick re-evaluates against the fresh list.
@@ -621,13 +621,13 @@ impl DiscoveryBranchWatcher {
                         }
                     }
                     // If no session exists yet (un-instantiated replica), Gate A has already covered
-                    // the display surface — no session to push git_repos into.
+                    // the display surface - no session to push git_repos into.
                 }
             }
         }
 
         // Gate C: TASK.md detection. Runs every tick whether or not Gate A/B
-        // had work to do — sessions in workgroups whose project is not loaded
+        // had work to do - sessions in workgroups whose project is not loaded
         // still need brief updates.
         self.poll_tasks(&entries).await;
     }
@@ -637,17 +637,17 @@ impl DiscoveryBranchWatcher {
     /// of `poll()`; no new thread, no new cadence.
     async fn poll_tasks(&self, entries: &[ReplicaBranchEntry]) {
         // Build the union of workgroup roots to watch:
-        //   1. Replicas in loaded projects (from `entries`) — covers the
+        //   1. Replicas in loaded projects (from `entries`) - covers the
         //      sidebar `ProjectPanel` surface.
         //   2. Active sessions (walked up from cwd via the existing helper)
-        //      — covers the terminal `WorkgroupTask` surface for sessions
+        //      - covers the terminal `WorkgroupTask` surface for sessions
         //      whose project is NOT loaded.
         // The map's value is the list of session UUIDs that resolve to this
         // wg-root (used for the event payload's `sessionIds`).
         let mut wg_roots: HashMap<PathBuf, Vec<Uuid>> = HashMap::new();
 
         for entry in entries {
-            // replica.path is `<wg-root>/__agent_<name>` — its parent IS the
+            // replica.path is `<wg-root>/__agent_<name>` - its parent IS the
             // wg-root. We do NOT call `find_workgroup_task_path_for_cwd`
             // here because the parent is already the answer; calling it
             // would re-walk and add no information.
@@ -694,11 +694,11 @@ impl DiscoveryBranchWatcher {
         });
 
         // Mutex held only for the duration of the get; released before any I/O.
-        // CRITICAL: never hold std::sync::Mutex across an .await — it's not
+        // CRITICAL: never hold std::sync::Mutex across an .await - it's not
         // tokio-aware and would deadlock under load.
         let prev = self.task_cache.lock().unwrap().get(&wg_root).cloned();
 
-        // Stat-equality short-circuit — the steady-state path. Cost: one
+        // Stat-equality short-circuit - the steady-state path. Cost: one
         // metadata() call per wg per tick when nothing has changed.
         if let Some(ref prev_entry) = prev {
             if prev_entry.sentinel == now_sentinel {
@@ -714,7 +714,7 @@ impl DiscoveryBranchWatcher {
         let (new_task, new_title) = read_task_fields(wg_root.as_path());
 
         // Re-stat. If the file changed during our read window (external
-        // editor mid-save — Notepad does CreateFile(OPEN_EXISTING) +
+        // editor mid-save - Notepad does CreateFile(OPEN_EXISTING) +
         // SetEndOfFile + write, NOT atomic rename), the read may be torn.
         // Defer to the next tick when the stat has settled.
         let post_sentinel = std::fs::metadata(&task_path).ok().map(|m| StatSentinel {
@@ -723,7 +723,7 @@ impl DiscoveryBranchWatcher {
         });
         if post_sentinel != now_sentinel {
             log::debug!(
-                "[DiscoveryBranchWatcher] stat changed during read of {} (likely torn — external editor mid-save); deferring to next tick",
+                "[DiscoveryBranchWatcher] stat changed during read of {} (likely torn - external editor mid-save); deferring to next tick",
                 task_path.display()
             );
             return;
@@ -737,7 +737,7 @@ impl DiscoveryBranchWatcher {
         // ALWAYS refresh the sentinel (next-tick short-circuit depends on
         // it). Insert a placeholder `task = prev.task` so a failed emit
         // below leaves the cache holding the previously-shipped content,
-        // not the new content — that way the next stat-change retries
+        // not the new content - that way the next stat-change retries
         // emission instead of silently accepting the failed state.
         {
             let mut cache = self.task_cache.lock().unwrap();
@@ -764,7 +764,7 @@ impl DiscoveryBranchWatcher {
         match self.app_handle.emit("workgroup_task_updated", payload) {
             Ok(()) => {
                 // Commit shipped content. Mirrors GitWatcher's emit-then-cache
-                // ordering — invariant: the cache's `brief` field is the last
+                // ordering - invariant: the cache's `brief` field is the last
                 // value the FRONTEND has, not the last value we read.
                 self.task_cache
                     .lock()
@@ -790,7 +790,7 @@ impl DiscoveryBranchWatcher {
             Ok(result) => result,
             Err(_) => {
                 let n = note_discovery_timeout(working_dir);
-                // #280 §3.3 — same dampening policy as git_watcher.rs: log
+                // #280 §3.3 - same dampening policy as git_watcher.rs: log
                 // first sighting + every 50th. Module tag remains
                 // `[DiscoveryBranchWatcher]` so the two watchers stay
                 // distinguishable in app.log.
@@ -843,7 +843,7 @@ pub async fn discover_ac_agents(
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
 ) -> Result<AcDiscoveryResult, String> {
     let cfg = settings.read().await;
-    // Discovery-wide team snapshot — used per-replica for is_coordinator
+    // Discovery-wide team snapshot - used per-replica for is_coordinator
     // and at the end for refresh_coordinator_flags. Computed once so a
     // single discovery pass presents a coherent coordinator view.
     // Lock-safe: discover_teams() reads settings from disk via load_settings()
@@ -992,7 +992,7 @@ pub async fn discover_ac_agents(
                                         std::fs::canonicalize(&target)
                                             .inspect_err(|e| {
                                                 log::warn!(
-                                                    "[ac-discovery] identity canonicalize failed — replica='{}' target='{}' err={}",
+                                                    "[ac-discovery] identity canonicalize failed - replica='{}' target='{}' err={}",
                                                     wg_path.display(),
                                                     target.display(),
                                                     e
@@ -1043,7 +1043,7 @@ pub async fn discover_ac_agents(
                                 );
 
                                 log::debug!(
-                                    "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
+                                    "[ac-discovery] call={} replica - project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
                                     call_id,
                                     project_folder,
                                     dir_name,
@@ -1142,7 +1142,7 @@ pub async fn discover_ac_agents(
             wg.team_name = Some(t.name.clone());
             log::info!("[discovery] Workgroup '{}' → team '{}'", wg.name, t.name);
         } else {
-            // Pass 2: suffix fallback — covers missing/stale identity, canonicalize
+            // Pass 2: suffix fallback - covers missing/stale identity, canonicalize
             // failure, or absolute-path team refs from different projects
             let suffix = teams.iter().find(|t| {
                 wg.agents.iter().any(|agent| {
@@ -1197,7 +1197,7 @@ pub async fn discover_ac_agents(
         .filter(|a| a.is_coordinator)
         .count();
     log::debug!(
-        "[ac-discovery] call={} discover_ac_agents: summary — workgroups={} teams={} replicas={} coordinator={}",
+        "[ac-discovery] call={} discover_ac_agents: summary - workgroups={} teams={} replicas={} coordinator={}",
         call_id,
         workgroups.len(),
         teams.len(),
@@ -1323,7 +1323,7 @@ pub async fn discover_project(
     // Opportunistic: ensure gitignore protects workgroup clones
     let _ = ensure_ac_new_gitignore(&ac_new_dir);
 
-    // Discovery-wide team snapshot — see discover_ac_agents for rationale.
+    // Discovery-wide team snapshot - see discover_ac_agents for rationale.
     // Lock-safe: discover_teams() reads settings from disk via load_settings()
     // and does NOT acquire SettingsState; the read guard above stays valid.
     // Placed AFTER the .ac-new-missing early return so non-AC folders don't
@@ -1424,7 +1424,7 @@ pub async fn discover_project(
                                 std::fs::canonicalize(&target)
                                     .inspect_err(|e| {
                                         log::warn!(
-                                            "[ac-discovery] identity canonicalize failed — replica='{}' target='{}' err={}",
+                                            "[ac-discovery] identity canonicalize failed - replica='{}' target='{}' err={}",
                                             wg_path.display(),
                                             target.display(),
                                             e
@@ -1471,7 +1471,7 @@ pub async fn discover_project(
                         );
 
                         log::debug!(
-                            "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
+                            "[ac-discovery] call={} replica - project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
                             call_id,
                             project_folder,
                             dir_name,
@@ -1565,7 +1565,7 @@ pub async fn discover_project(
             wg.team_name = Some(t.name.clone());
             log::info!("[discovery] Workgroup '{}' → team '{}'", wg.name, t.name);
         } else {
-            // Pass 2: suffix fallback — covers missing/stale identity, canonicalize
+            // Pass 2: suffix fallback - covers missing/stale identity, canonicalize
             // failure, or absolute-path team refs from different projects
             let suffix = teams.iter().find(|t| {
                 wg.agents.iter().any(|agent| {
@@ -1612,7 +1612,7 @@ pub async fn discover_project(
         .filter(|a| a.is_coordinator)
         .count();
     log::debug!(
-        "[ac-discovery] call={} discover_project: summary — path='{}' workgroups={} teams={} replicas={} coordinator={}",
+        "[ac-discovery] call={} discover_project: summary - path='{}' workgroups={} teams={} replicas={} coordinator={}",
         call_id,
         path,
         workgroups.len(),
@@ -1688,15 +1688,15 @@ pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Resu
     Ok(())
 }
 
-// ── #191 — shared open/new project commands ──────────────────────────────
+// ── #191 - shared open/new project commands ──────────────────────────────
 
 /// Validate an existing AC project at `path` and register it in
 /// `settings.project_paths`. Mirrors the ActionBar "Open Project" flow at
 /// `src/sidebar/components/ActionBar.tsx:78-94` but performs the dedup +
 /// persist atomically against `SettingsState`.
 ///
-/// Holds the SettingsState write lock through `save_settings` — same pattern
-/// as `set_inject_rtk_hook` (`src-tauri/src/commands/config.rs:184-194`) — so
+/// Holds the SettingsState write lock through `save_settings` - same pattern
+/// as `set_inject_rtk_hook` (`src-tauri/src/commands/config.rs:184-194`) - so
 /// concurrent `update_settings` calls cannot race.
 #[tauri::command]
 pub async fn open_project(
@@ -1782,7 +1782,7 @@ mod tests {
         );
     }
 
-    // ── extract_task_first_line — issue #161 ──
+    // ── extract_task_first_line - issue #161 ──
 
     #[test]
     fn task_no_frontmatter_with_heading() {
@@ -1888,7 +1888,7 @@ mod tests {
         );
     }
 
-    /// #280 §3.3 — `note_discovery_timeout` is a monotonic per-path
+    /// #280 §3.3 - `note_discovery_timeout` is a monotonic per-path
     /// counter, mirroring `git_watcher::note_timeout` but isolated to the
     /// discovery watcher's path set. Two paths get independent counters.
     #[test]

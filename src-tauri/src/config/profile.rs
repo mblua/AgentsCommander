@@ -10,13 +10,13 @@
 
 use std::sync::OnceLock;
 
-/// Build profile string — "dev", "prod", or "stage".
+/// Build profile string - "dev", "prod", or "stage".
 /// Used as fallback when binary name has no underscore suffix.
 pub const BUILD_PROFILE: &str = env!("BUILD_PROFILE");
 
 /// Extract suffix from binary name: `agentscommander_foo` -> Some("foo").
 /// Returns None for plain `agentscommander` (no underscore = prod).
-/// Cached via OnceLock — parsed once at first call.
+/// Cached via OnceLock - parsed once at first call.
 fn binary_suffix() -> Option<&'static str> {
     static SUFFIX: OnceLock<Option<String>> = OnceLock::new();
     SUFFIX
@@ -92,7 +92,7 @@ pub fn mutex_name() -> &'static str {
     })
 }
 
-/// Executable name — actual binary filename from current_exe().
+/// Executable name - actual binary filename from current_exe().
 /// Falls back to BUILD_PROFILE mapping if current_exe() fails.
 pub fn exe_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();

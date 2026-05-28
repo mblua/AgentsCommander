@@ -9,7 +9,7 @@ use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
-/// #291 — in-process mutex serializing all `save_sessions` calls.
+/// #291 - in-process mutex serializing all `save_sessions` calls.
 ///
 /// The historical race: two concurrent callers both wrote to the shared
 /// `sessions.json.tmp`, then both tried to `rename` it. The first rename
@@ -34,7 +34,7 @@ use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 /// so picking up the lock cleanly is safe.
 static SAVE_SESSIONS_LOCK: Mutex<()> = Mutex::new(());
 
-/// #291 — counter feeding the per-call unique temp filename for
+/// #291 - counter feeding the per-call unique temp filename for
 /// `save_sessions`. Combined with the PID it makes the temp filename
 /// `sessions.json.<pid>.<op_id>.tmp` distinct from any concurrent in-process
 /// or cross-process save, and from any leftover temp file written by a
@@ -42,7 +42,7 @@ static SAVE_SESSIONS_LOCK: Mutex<()> = Mutex::new(());
 /// the two counters can be reasoned about independently in diagnostics.
 static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 
-/// #280 §3.1 — diagnostic context captured when an atomic rename exhausts
+/// #280 §3.1 - diagnostic context captured when an atomic rename exhausts
 /// its retry budget. Surfaced in the caller's error string so a single
 /// ERROR line carries enough state to investigate the AV / Indexer / second
 /// instance contention pattern.
@@ -58,14 +58,14 @@ struct RenameDiagnostics {
     duration: std::time::Duration,
 }
 
-/// #280 §3.1 — number of `std::fs::rename` attempts. With the
+/// #280 §3.1 - number of `std::fs::rename` attempts. With the
 /// `BACKOFFS_MS = [10, 50, 200]` schedule below, this gives a worst-case
 /// 260 ms blocking window before surfacing the error. G-MED-2 fix:
 /// 4 attempts so all three backoff entries are actually used (with
 /// `ATTEMPTS = 3` the 200 ms entry would be dead code).
 const RENAME_ATTEMPTS: u32 = 4;
 
-/// #280 §3.1 — backoff schedule between rename attempts in milliseconds.
+/// #280 §3.1 - backoff schedule between rename attempts in milliseconds.
 /// Tuned for Windows AV / Indexer holds which typically clear within
 /// ~50 ms but occasionally take >100 ms on cold caches. The terminal
 /// attempt has no backoff (we already failed `RENAME_ATTEMPTS - 1` times).
@@ -79,7 +79,7 @@ const RENAME_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
 /// This retry loop targets *cross-process* contention on the destination
 /// (`sessions.json`): AV scanners, the Windows Indexer, or a second AC
 /// instance briefly holding the file. It is NOT the mitigation for #291,
-/// which was an in-process race on a shared *temp* filename — that one is
+/// which was an in-process race on a shared *temp* filename - that one is
 /// solved upstream in `save_sessions_to_dir` by a per-call unique temp
 /// name plus `SAVE_SESSIONS_LOCK`, so by the time we get here the source
 /// path is guaranteed unique to this save.
@@ -89,7 +89,7 @@ const RENAME_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
 /// up to `sum(RENAME_BACKOFFS_MS)` = 260 ms during a contended rename.
 /// `save_sessions` is invoked from async Tauri command handlers, but the
 /// surrounding code (`std::fs::write`, `std::fs::rename`) is already sync,
-/// so this does not introduce a new class of blocking — only enlarges an
+/// so this does not introduce a new class of blocking - only enlarges an
 /// existing one. The clean fix (`tokio::task::spawn_blocking` for the
 /// whole persistence block) is a wider signature/caller refactor and is
 /// out of scope for #280 (observability hardening, not concurrency
@@ -110,7 +110,7 @@ fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, RenameDiagno
             Ok(()) => {
                 if attempt > 0 {
                     log::info!(
-                        "[sessions] rename succeeded after retry — op_id={} pid={} instance={} attempt={}/{} duration={:?}",
+                        "[sessions] rename succeeded after retry - op_id={} pid={} instance={} attempt={}/{} duration={:?}",
                         op_id,
                         pid,
                         instance_id,
@@ -123,7 +123,7 @@ fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, RenameDiagno
             }
             Err(e) => {
                 log::debug!(
-                    "[sessions] rename attempt {}/{} failed — op_id={} pid={} os_error={:?} kind={:?}",
+                    "[sessions] rename attempt {}/{} failed - op_id={} pid={} os_error={:?} kind={:?}",
                     attempt + 1,
                     RENAME_ATTEMPTS,
                     op_id,
@@ -198,8 +198,8 @@ pub struct PersistedSession {
 
     /// True if the session was detached into its own window at snapshot time.
     /// Phase 3 restore re-spawns a detached window for every persisted row with
-    /// `was_detached=true` (except deferred sessions — see plan §R.9). Sourced
-    /// from `Session::was_detached` under Fix A — NOT from `DetachedSessionsState`.
+    /// `was_detached=true` (except deferred sessions - see plan §R.9). Sourced
+    /// from `Session::was_detached` under Fix A - NOT from `DetachedSessionsState`.
     #[serde(default)]
     pub was_detached: bool,
 
@@ -209,7 +209,7 @@ pub struct PersistedSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detached_geometry: Option<WindowGeometry>,
 
-    // ── Legacy fields — read-only, consumed by the upgrade pass in load_sessions. ──
+    // ── Legacy fields - read-only, consumed by the upgrade pass in load_sessions. ──
     // `skip_serializing_if = "Option::is_none"` means snapshot_sessions never writes them
     // back, and the first save after upgrade retires them from disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -460,7 +460,7 @@ pub fn load_sessions() -> Vec<PersistedSession> {
                         }
                         (None, None) => {}
                         (Some(_), Some(_)) => {
-                            // prefix == "multi-repo" with a source — ambiguous legacy shape.
+                            // prefix == "multi-repo" with a source - ambiguous legacy shape.
                             log::warn!(
                                 "[sessions] Legacy session '{}' had source + multi-repo prefix; leaving git_repos empty for discovery backfill",
                                 ps.name
@@ -522,7 +522,7 @@ fn save_sessions_to_config_dir(sessions: &[PersistedSession]) -> Result<(), Stri
 /// persistence path through a `tempfile::tempdir()` without touching the
 /// process-wide `config_dir()` once-cell.
 fn save_sessions_to_dir(dir: &Path, sessions: &[PersistedSession]) -> Result<(), String> {
-    // #291 — serialize in-process saves. Recover from poison: a prior
+    // #291 - serialize in-process saves. Recover from poison: a prior
     // panic inside the critical section is rare (the body is sync std::fs
     // + serde), and the on-disk file is atomic (tmp+rename), so the next
     // caller can safely proceed.
@@ -538,7 +538,7 @@ fn save_sessions_to_dir(dir: &Path, sessions: &[PersistedSession]) -> Result<(),
     let json = serde_json::to_string_pretty(sessions)
         .map_err(|e| format!("Failed to serialize sessions: {}", e))?;
 
-    // #291 — unique temp filename per save. Combined with the mutex above,
+    // #291 - unique temp filename per save. Combined with the mutex above,
     // this kills the shared-`sessions.json.tmp` race: even cross-process
     // concurrent saves cannot race on the temp file, and any leftover
     // `.tmp` from a prior crashed run cannot be mistaken for ours.
@@ -553,12 +553,12 @@ fn save_sessions_to_dir(dir: &Path, sessions: &[PersistedSession]) -> Result<(),
         return Err(format!("Failed to write temp sessions file: {}", e));
     }
 
-    // #280 §3.1 — atomic rename with bounded retries to absorb transient
+    // #280 §3.1 - atomic rename with bounded retries to absorb transient
     // AV / Indexer / second-instance contention. On exhaustion, fold the
     // diagnostic context into the error so the upstream `log::error!` in
     // `persist_*` is self-contained for forensics.
     if let Err((err_msg, d)) = rename_with_retry(&tmp_path, &path) {
-        // #291 — best-effort cleanup of our unique temp file so we don't
+        // #291 - best-effort cleanup of our unique temp file so we don't
         // accumulate `.tmp` litter across failed saves. The mutex + unique
         // name guarantee this remove only touches OUR own temp file.
         let _ = std::fs::remove_file(&tmp_path);
@@ -618,7 +618,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             agent_label: s.agent_label.clone(),
             telegram_bot_id: s.telegram_bot_id.clone(),
             // Fix A: read detach state directly from the Session (via SessionInfo). The
-            // `DetachedSessionsState` set is NOT consulted at persist time — the Destroyed
+            // `DetachedSessionsState` set is NOT consulted at persist time - the Destroyed
             // handler clears the set before `RunEvent::Exit` runs the final persist.
             was_detached: s.was_detached,
             detached_geometry: s.detached_geometry.clone(),
@@ -639,7 +639,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
 /// Strip auto-injected provider args from saved shell arguments.
 /// Removes Claude's `--continue` / `--append-system-prompt-file <path>` and Codex's
 /// `resume --last`, which are auto-injected at session creation time (see commands/session.rs).
-/// These must not be baked into the saved "recipe" — otherwise they self-perpetuate
+/// These must not be baked into the saved "recipe" - otherwise they self-perpetuate
 /// across app restarts (or session restarts) even when the conditions change.
 ///
 /// Handles two injection modes:
@@ -678,10 +678,10 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     }
 
     fn strip_claude_tokens(tokens: &mut Vec<String>, start: usize) {
-        // #260 — Claude's resume flag from the CodingAgentProfile. resume_tokens
+        // #260 - Claude's resume flag from the CodingAgentProfile. resume_tokens
         // is a 1-element const for Claude, so [0] is provably in bounds. The
         // `--append-system-prompt-file` flag below is the context-file flag,
-        // NOT a resume token — intentionally kept as a literal.
+        // NOT a resume token - intentionally kept as a literal.
         let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
         let mut idx = start;
         while idx < tokens.len() {
@@ -702,7 +702,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     }
 
     fn strip_codex_tokens(tokens: &mut Vec<String>, start: usize) {
-        // #260 — resume tokens from the CodingAgentProfile. G6: slice-pattern
+        // #260 - resume tokens from the CodingAgentProfile. G6: slice-pattern
         // destructure, never index; a wrong-arity slice no-ops gracefully.
         let &[resume_subcmd, resume_flag] = CodingAgentKind::Codex.profile().resume_tokens else {
             debug_assert!(false, "Codex resume_tokens must have exactly 2 elements");
@@ -721,7 +721,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     }
 
     fn strip_gemini_tokens(tokens: &mut Vec<String>, start: usize) {
-        // #260 — resume tokens from the CodingAgentProfile. G6: slice-pattern
+        // #260 - resume tokens from the CodingAgentProfile. G6: slice-pattern
         // destructure, never index. The joined `--resume=latest` variant is
         // derived from the same two tokens.
         let &[resume_flag, resume_value] = CodingAgentKind::Gemini.profile().resume_tokens else {
@@ -746,7 +746,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
         }
     }
 
-    // #260 — consult the single detector (session/profile.rs) instead of
+    // #260 - consult the single detector (session/profile.rs) instead of
     // re-deriving agent identity here. Guarantees this stripper agrees with
     // the `agent_kind` that `create_session_inner` stamped on the session.
     let (is_claude, is_codex, is_gemini) = match CodingAgentKind::detect(shell, args) {
@@ -916,7 +916,7 @@ pub(crate) fn sanitize_failed_recoverable(ps: &PersistedSession) -> PersistedSes
 /// Persist live sessions plus stripped recipes for entries that failed to
 /// restore. Stripped recipes survive on disk only until the next
 /// `persist_current_state` call (any session-lifecycle event) overwrites the
-/// snapshot — so retry-on-next-startup is best-effort. §224 G5/G8.
+/// snapshot - so retry-on-next-startup is best-effort. §224 G5/G8.
 pub async fn persist_merging_failed_result(
     mgr: &SessionManager,
     failed: &[PersistedSession],
@@ -932,7 +932,7 @@ async fn persist_merging_failed_to_dir_result(
 ) -> Result<(), String> {
     let _guard = sessions_save_lock().lock().await;
     let mut snapshot = snapshot_sessions(mgr).await;
-    // §224 — strip stale runtime fields (`id`, `status`, `waiting_for_input`,
+    // §224 - strip stale runtime fields (`id`, `status`, `waiting_for_input`,
     // `created_at`) from failed-recoverable entries. Without this, the prior
     // run's runtime fields travel into the new snapshot, and `list-sessions`
     // reports a session as alive (its `s.id.is_some()` filter passes) while
@@ -991,7 +991,7 @@ mod tests {
     use crate::session::manager::SessionManager;
     use std::time::Duration;
 
-    /// §224 D.2 — the strip drops every runtime field but preserves the recipe
+    /// §224 D.2 - the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt.
     #[test]
     fn sanitize_failed_recoverable_drops_runtime_fields() {
@@ -1042,7 +1042,7 @@ mod tests {
         assert!(!clean.was_detached);
     }
 
-    /// §224 D.2 — idempotence: stripping an entry that already has None
+    /// §224 D.2 - idempotence: stripping an entry that already has None
     /// runtime fields is a no-op (does not flip recipe fields).
     #[test]
     fn sanitize_failed_recoverable_is_idempotent() {
@@ -1366,7 +1366,7 @@ mod tests {
         assert_eq!(strip_auto_injected_args("powershell.exe", &args), args);
     }
 
-    // ── Issue #186 — wrapper-basename Claude detection in the stripper ──
+    // ── Issue #186 - wrapper-basename Claude detection in the stripper ──
 
     #[test]
     fn strip_auto_injected_args_strips_continue_for_wrapper_basename() {
@@ -1477,7 +1477,7 @@ mod tests {
         assert!(ps.git_branch_prefix.is_none());
     }
 
-    /// Issue #248 — status round-trips through serialize/deserialize.
+    /// Issue #248 - status round-trips through serialize/deserialize.
     /// Locks the field against future "ignored on restore" misreads now that
     /// `should_wake_on_restore` in `lib.rs` consumes it.
     #[test]
@@ -1586,7 +1586,7 @@ mod tests {
         assert!(ps.git_branch_prefix.is_none());
     }
 
-    /// #280 §3.1 — happy path: rename a real tmp file over a real dst.
+    /// #280 §3.1 - happy path: rename a real tmp file over a real dst.
     /// Must succeed on the first attempt (no INFO emission, no diagnostic
     /// context returned).
     #[test]
@@ -1600,7 +1600,7 @@ mod tests {
         assert!(!src.exists());
     }
 
-    /// #280 §3.1 — the retry loop exhausts all attempts and returns the
+    /// #280 §3.1 - the retry loop exhausts all attempts and returns the
     /// diagnostic context. We force consistent failure by pointing `tmp`
     /// at a non-existent path (`NotFound` on both Windows and Unix).
     #[test]
@@ -1621,7 +1621,7 @@ mod tests {
         assert!(diag.duration < std::time::Duration::from_secs(2));
     }
 
-    /// #291 — direct regression for the shared-`sessions.json.tmp` race.
+    /// #291 - direct regression for the shared-`sessions.json.tmp` race.
     ///
     /// An `Arc<Barrier>` forces all writer threads to enter the
     /// write+rename critical section simultaneously, maximizing the
@@ -1711,7 +1711,7 @@ mod tests {
         );
     }
 
-    /// #291 — a single save round-trips: file lands at `sessions.json`,
+    /// #291 - a single save round-trips: file lands at `sessions.json`,
     /// deserializes back to the input, and no `.tmp` file is left behind.
     #[test]
     fn save_sessions_to_dir_round_trips_and_cleans_up_temp() {

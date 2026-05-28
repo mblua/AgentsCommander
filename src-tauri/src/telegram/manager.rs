@@ -75,7 +75,7 @@ impl TelegramBridgeManager {
         );
 
         // Only register output sender for PTY mode.
-        // In reader mode, the watcher reads directly from file — no PTY byte feed needed.
+        // In reader mode, the watcher reads directly from file - no PTY byte feed needed.
         if !is_reader_mode {
             if let Ok(mut senders) = self.output_senders.lock() {
                 senders.insert(session_id, handle.output_sender.clone());

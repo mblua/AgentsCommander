@@ -31,7 +31,7 @@ struct AppState {
 }
 
 /// Start the embedded HTTP/WebSocket server.
-/// Called from Tauri's setup() — runs on the same tokio runtime.
+/// Called from Tauri's setup() - runs on the same tokio runtime.
 // Wired by a single setup() call with all shared state already in scope; an
 // args struct would just rename the same fields.
 #[allow(clippy::too_many_arguments)]
@@ -72,7 +72,7 @@ pub fn start_server(
         log::info!("[web-server] Serving static files from {:?}", path);
         app = app.fallback_service(ServeDir::new(path).append_index_html_on_directories(true));
     } else {
-        log::warn!("[web-server] No dist/ directory found — static file serving disabled");
+        log::warn!("[web-server] No dist/ directory found - static file serving disabled");
     }
 
     let handle = tauri::async_runtime::spawn(async move {
@@ -116,7 +116,7 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_ws_connection(socket, state.ws_state))
 }
 
-/// Public session view for the HTTP API — omits sensitive fields like `token`.
+/// Public session view for the HTTP API - omits sensitive fields like `token`.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiSessionView {
@@ -131,7 +131,7 @@ struct ApiSessionView {
     last_prompt: Option<String>,
 }
 
-/// HTTP GET /api/sessions — returns JSON array of all sessions.
+/// HTTP GET /api/sessions - returns JSON array of all sessions.
 async fn api_sessions_handler(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<AppState>,
@@ -173,7 +173,7 @@ async fn api_sessions_handler(
             created_at: s.created_at,
             shell: s.shell,
             // Back-compat: present each repo as "<label>/<branch>" (or bare label when
-            // branch unknown), joined with ", ". Comma — not newline — so single-line
+            // branch unknown), joined with ", ". Comma - not newline - so single-line
             // JSON clients don't truncate.
             git_branch: if s.git_repos.is_empty() {
                 None

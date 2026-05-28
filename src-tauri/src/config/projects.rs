@@ -3,7 +3,7 @@
 //! (`cli::open_project` / `cli::new_project`). The same code path means UI and
 //! CLI cannot diverge on dedup, validation, or registration order.
 //!
-//! This module is intentionally Tauri-free and CLI-free — it operates on a
+//! This module is intentionally Tauri-free and CLI-free - it operates on a
 //! mutable `&mut AppSettings` borrow plus a `&Path`. Callers own the
 //! lock-acquire and the `save_settings` call.
 
@@ -13,7 +13,7 @@ use super::settings::AppSettings;
 
 /// Outcome of a register call. Callers translate this into the verb-specific
 /// stdout / IPC payload (CLI prints the lines from §2; Tauri command returns
-/// the struct verbatim — `#[serde(rename_all = "camelCase")]`).
+/// the struct verbatim - `#[serde(rename_all = "camelCase")]`).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRegistration {
@@ -29,7 +29,7 @@ pub struct ProjectRegistration {
 }
 
 /// Errors returned by the helper. `Display` strings are the exact stderr text
-/// the CLI prints (prefixed with `Error: ` by the caller — see §4.4).
+/// the CLI prints (prefixed with `Error: ` by the caller - see §4.4).
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
     #[error("path '{0}' is empty")]
@@ -52,7 +52,7 @@ pub enum ProjectError {
 /// Errors when the path is missing, not a directory, or has no `.ac-new/`.
 ///
 /// On success, mutates `settings.project_paths` (appends if new) and
-/// `settings.project_path` (legacy single-project field — kept in sync with
+/// `settings.project_path` (legacy single-project field - kept in sync with
 /// `project_paths[0]` to match the frontend's `persistProjectPaths` contract
 /// at `src/sidebar/stores/project.ts:163-171`).
 ///
@@ -85,7 +85,7 @@ pub fn register_existing_project(
 /// `.gitignore` when missing) and register it in `settings.project_paths`.
 ///
 /// Errors only when the path is empty, the parent does not exist, or
-/// `.ac-new/` cannot be created. A pre-existing `.ac-new/` is fine — the
+/// `.ac-new/` cannot be created. A pre-existing `.ac-new/` is fine - the
 /// gitignore sweep is opportunistic (matches `discover_project`'s behaviour
 /// at `src-tauri/src/commands/ac_discovery.rs:1308-1309`).
 pub fn register_new_project(
@@ -145,7 +145,7 @@ fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
     }
     // `std::path::absolute` (stable since Rust 1.79; toolchain is 1.93.1)
     // lexically resolves the path against the process CWD. On Windows it
-    // also collapses `.`/`..` segments via `GetFullPathNameW` — closing
+    // also collapses `.`/`..` segments via `GetFullPathNameW` - closing
     // Round-1 G4 (silent double-registration of `..\projects` from
     // different CWDs). On POSIX the std API preserves `..` for
     // symlink-safety reasons; documented as §6.10. No filesystem IO,
@@ -154,7 +154,7 @@ fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
 }
 
 /// Mirrors the frontend `normalizePath` at
-/// `src/sidebar/stores/project.ts:17-19`. Comparison only — the persisted
+/// `src/sidebar/stores/project.ts:17-19`. Comparison only - the persisted
 /// entry retains the original byte sequence.
 fn normalize_for_compare(s: &str) -> String {
     // Slashes normalised, lowercased, trailing `/` stripped. The trailing
@@ -380,7 +380,7 @@ mod tests {
     // ── absolutise: relative + dot-dot collapse (Round-1 G4 + G13) ────────
 
     /// CWD is process-wide; restore on Drop. Any other test that mutates
-    /// CWD in this same module would race — keep this confined.
+    /// CWD in this same module would race - keep this confined.
     struct CwdGuard(PathBuf);
     impl Drop for CwdGuard {
         fn drop(&mut self) {

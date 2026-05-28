@@ -95,7 +95,7 @@ pub struct AppSettings {
     /// Delay in seconds before auto-executing after transcription
     #[serde(default = "default_voice_delay")]
     pub voice_auto_execute_delay: u32,
-    /// Zoom level for the sidebar window (1.0 = 100%). DEPRECATED in 0.8.0 — see `main_zoom`.
+    /// Zoom level for the sidebar window (1.0 = 100%). DEPRECATED in 0.8.0 - see `main_zoom`.
     /// Retained for one version for downgrade safety; seeded into `main_zoom` on first load.
     #[serde(default = "default_zoom")]
     pub sidebar_zoom: f64,
@@ -111,11 +111,11 @@ pub struct AppSettings {
     /// Legacy: zoom level for the removed dark factory window. Kept for backwards-compat reads.
     #[serde(default = "default_zoom")]
     pub darkfactory_zoom: f64,
-    /// DEPRECATED in 0.8.0 — previously held the sidebar window geometry under the
+    /// DEPRECATED in 0.8.0 - previously held the sidebar window geometry under the
     /// two-window model. `skip_serializing_if` drops it on next save. See `main_geometry`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_geometry: Option<WindowGeometry>,
-    /// DEPRECATED in 0.8.0 — previously held the terminal window geometry. Seeded into
+    /// DEPRECATED in 0.8.0 - previously held the terminal window geometry. Seeded into
     /// `main_geometry` by the first-boot migration. `skip_serializing_if` drops it on next save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_geometry: Option<WindowGeometry>,
@@ -163,7 +163,7 @@ pub struct AppSettings {
     pub coord_sort_by_activity: bool,
     /// Optional logger filter expression. Applied at startup if `RUST_LOG` is unset.
     /// Uses standard `env_logger` filter syntax (e.g. `info,agentscommander_lib::config::teams=trace`).
-    /// Phase 1 of #93 — settings-level control with `RUST_LOG` env override (backwards-compat).
+    /// Phase 1 of #93 - settings-level control with `RUST_LOG` env override (backwards-compat).
     /// Phase 2 (UI dropdown) and Phase 3 (live reload) are deferred per the issue.
     #[serde(default)]
     pub log_level: Option<String>,
@@ -432,7 +432,7 @@ pub fn load_settings() -> AppSettings {
         }
     };
 
-    // 0.8.0 unified-window migration — seed main_* from legacy fields on first load
+    // 0.8.0 unified-window migration - seed main_* from legacy fields on first load
     // after upgrade. Runs BEFORE root_token auto-gen so the migrated values persist
     // via the same save. The deprecated `sidebar_geometry`/`terminal_geometry` fields
     // are automatically dropped from disk by `skip_serializing_if` on the next save.
@@ -459,9 +459,9 @@ pub fn load_settings() -> AppSettings {
         );
     }
 
-    // #248 migration — translates legacy startOnlyCoordinators (if present).
+    // #248 migration - translates legacy startOnlyCoordinators (if present).
     // Track whether the legacy field was on disk so we can fire a single save
-    // at the end of the function (Grinch Z3 — without this, upgrade users
+    // at the end of the function (Grinch Z3 - without this, upgrade users
     // with an existing root_token never persist the migration and the legacy
     // key lingers in settings.json, spamming the migration log on every launch).
     let issue_248_migrated = settings.legacy_start_only_coordinators.is_some();
@@ -493,7 +493,7 @@ pub fn load_settings() -> AppSettings {
 /// do NOT silently rewrite `settings.json` (Round-1 G5 in #191's plan).
 ///
 /// The CLI verbs do not consume the root_token; if a future verb needs it,
-/// `settings.root_token == None` on a brand-new install is fine — the CLI
+/// `settings.root_token == None` on a brand-new install is fine - the CLI
 /// is read-only with respect to it. The GUI still owns root_token
 /// generation via the next `load_settings()` call when it boots.
 ///
@@ -534,7 +534,7 @@ pub fn load_settings_for_cli() -> AppSettings {
         }
     };
 
-    // 0.8.0 unified-window migration — must mirror `load_settings` exactly,
+    // 0.8.0 unified-window migration - must mirror `load_settings` exactly,
     // EXCEPT for the root_token auto-gen + save_settings call.
     if settings.main_geometry.is_none() {
         if let Some(ref g) = settings.terminal_geometry {
@@ -550,7 +550,7 @@ pub fn load_settings_for_cli() -> AppSettings {
         settings.main_always_on_top = true;
     }
 
-    // #248 migration — translate in-memory only. The CLI loader is forbidden
+    // #248 migration - translate in-memory only. The CLI loader is forbidden
     // from writing settings.json per the §463 contract (load_settings_for_cli
     // is the read-only variant used by mutating verbs like `open-project` and
     // `new-project`; it must not race with the GUI's settings writes). The
@@ -563,7 +563,7 @@ pub fn load_settings_for_cli() -> AppSettings {
 
 /// One-shot migration for issue #248: translate the legacy
 /// `startOnlyCoordinators` field into the new state-sensitive
-/// `restore_coordinator_wake_state`. Idempotent — once the legacy carrier is
+/// `restore_coordinator_wake_state`. Idempotent - once the legacy carrier is
 /// cleared (`.take()`), subsequent calls see `None` and do nothing.
 ///
 /// Translation rules:
@@ -573,19 +573,19 @@ pub fn load_settings_for_cli() -> AppSettings {
 ///
 /// Conflict handling (Grinch Z4): if the user (or a third-party tool) wrote
 /// BOTH keys and the new field already differs from the legacy intent, emit a
-/// `warn!` and keep the new field's existing value — never silently overwrite
+/// `warn!` and keep the new field's existing value - never silently overwrite
 /// a deliberate `restoreCoordinatorWakeState` with a stale legacy value.
 fn apply_issue_248_migration(settings: &mut AppSettings) {
     if let Some(legacy) = settings.legacy_start_only_coordinators.take() {
         if !settings.restore_coordinator_wake_state {
             settings.restore_coordinator_wake_state = legacy;
             log::info!(
-                "[settings-migration] #248 — translated legacy startOnlyCoordinators={} → restoreCoordinatorWakeState={}",
+                "[settings-migration] #248 - translated legacy startOnlyCoordinators={} → restoreCoordinatorWakeState={}",
                 legacy, settings.restore_coordinator_wake_state
             );
         } else if legacy != settings.restore_coordinator_wake_state {
             log::warn!(
-                "[settings-migration] #248 — conflicting state on disk: legacy startOnlyCoordinators={} but restoreCoordinatorWakeState={} already set; keeping the new value, dropping legacy",
+                "[settings-migration] #248 - conflicting state on disk: legacy startOnlyCoordinators={} but restoreCoordinatorWakeState={} already set; keeping the new value, dropping legacy",
                 legacy, settings.restore_coordinator_wake_state
             );
         }
@@ -598,7 +598,7 @@ fn apply_issue_248_migration(settings: &mut AppSettings) {
 /// the full `load_settings` flow can run post-init with log calls captured.
 ///
 /// Returns `None` on missing file, missing field, malformed JSON, unreadable filesystem,
-/// or any other read error — fully read-only and side-effect-free.
+/// or any other read error - fully read-only and side-effect-free.
 fn read_log_level_from_path(path: &std::path::Path) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&contents).ok()?;
@@ -611,7 +611,7 @@ pub fn read_log_level_only() -> Option<String> {
 }
 
 /// Save settings to the app config directory (see config_dir()).
-/// Atomic write (tmp + rename) per G.14 — mirrors `sessions_persistence::save_sessions`.
+/// Atomic write (tmp + rename) per G.14 - mirrors `sessions_persistence::save_sessions`.
 /// Splitter-drag debouncing raises save frequency in 0.8.0; atomic writes ensure a crash
 /// mid-write cannot corrupt the existing settings.json.
 pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn read_log_level_only_returns_some_empty_string_when_log_level_is_empty() {
         // Asserts read_log_level_only returns Some("") (not None) when logLevel is the
-        // empty string — the helper preserves the user's intent (the field is set, just
+        // empty string - the helper preserves the user's intent (the field is set, just
         // empty). Downstream filter machinery handles the rest, with semantics distinct
         // from the malformed-string case: empty-string → parse_filters("") produces 0
         // directives → env_filter's hidden {None, Error} default applies → Error-only logs
@@ -1101,7 +1101,7 @@ mod tests {
         assert!(back.rtk_prompt_dismissed);
     }
 
-    // ── Issue #248 — legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
+    // ── Issue #248 - legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
     //
     // The minimal JSON below carries the three fields without serde defaults
     // (`defaultShell`, `defaultShellArgs`, `agents`) plus whichever issue-#248
@@ -1125,7 +1125,7 @@ mod tests {
         assert!(s.restore_coordinator_wake_state);
         assert!(s.legacy_start_only_coordinators.is_none());
 
-        // Round-trip — the legacy field must NOT reappear on next save.
+        // Round-trip - the legacy field must NOT reappear on next save.
         let out = serde_json::to_string(&s).expect("serialize");
         assert!(!out.contains("startOnlyCoordinators"));
         assert!(out.contains("\"restoreCoordinatorWakeState\":true"));
@@ -1147,7 +1147,7 @@ mod tests {
 
     #[test]
     fn issue_248_no_legacy_field_keeps_new_field_value() {
-        // Fresh install or post-migrated settings.json — no legacy field.
+        // Fresh install or post-migrated settings.json - no legacy field.
         let json = r#"{
             "defaultShell": "bash",
             "defaultShellArgs": [],
@@ -1162,11 +1162,11 @@ mod tests {
 
     #[test]
     fn issue_248_migration_conflict_keeps_new_value_and_drops_legacy() {
-        // Grinch Z4 — both keys present, conflicting values. The user (or a
+        // Grinch Z4 - both keys present, conflicting values. The user (or a
         // third-party tool) wrote restoreCoordinatorWakeState=true AFTER an
         // older startOnlyCoordinators=false was already on disk. The new value
         // wins; the legacy key is silently dropped from the next save. The
-        // helper emits a `warn!` log line for triage — not asserted here (log
+        // helper emits a `warn!` log line for triage - not asserted here (log
         // capture is not wired in the existing test suite), just exercised.
         let json = r#"{
             "defaultShell": "bash",

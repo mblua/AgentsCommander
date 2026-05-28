@@ -53,7 +53,7 @@ pub struct Session {
     /// including dynamic injections (`--continue`, `codex resume --last`,
     /// `--append-system-prompt-file <path>`). `None` until the PTY is
     /// spawned for this session; set once by `create_session_inner` right
-    /// before `pty_mgr.spawn`. Runtime-only — NOT persisted to `sessions.toml`
+    /// before `pty_mgr.spawn`. Runtime-only - NOT persisted to `sessions.toml`
     /// (configured args in `shell_args` are the persistence recipe; the
     /// effective args are re-derived at every spawn from current settings).
     #[serde(skip)]
@@ -72,7 +72,7 @@ pub struct Session {
     pub agent_label: Option<String>,
     /// Repos watched by this session. Empty = no repo badge rendered.
     /// Order = replica config.json `repos` array order. Never sort, never dedupe,
-    /// never rebuild from a map — equality comparisons in `GitWatcher` depend on order.
+    /// never rebuild from a map - equality comparisons in `GitWatcher` depend on order.
     #[serde(default)]
     pub git_repos: Vec<SessionRepo>,
     /// Whether this session's agent is a coordinator of any discovered team.
@@ -102,7 +102,7 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telegram_bot_id: Option<String>,
     /// True while this session has a live detached window (or is marked to re-spawn
-    /// one on next launch). Source of truth for persistence — `snapshot_sessions`
+    /// one on next launch). Source of truth for persistence - `snapshot_sessions`
     /// reads this directly, NOT from `DetachedSessionsState`.
     ///
     /// Mutated ONLY by:
@@ -110,7 +110,7 @@ pub struct Session {
     ///   - `attach_terminal` → false (before emitting `terminal_attached`)
     ///
     /// The `WindowEvent::Destroyed` handler at `lib.rs` does NOT touch this field
-    /// (see plan §A3.12 NEW-3 + §10 rule) — it only clears `DetachedSessionsState`
+    /// (see plan §A3.12 NEW-3 + §10 rule) - it only clears `DetachedSessionsState`
     /// and emits `terminal_attached` for frontend sync.
     #[serde(default)]
     pub was_detached: bool,
@@ -132,7 +132,7 @@ pub enum SessionStatus {
 
 /// Walk up from `cwd` to the first ancestor directory whose name starts with
 /// `wg-`, and return that directory's `TASK.md` path. Returns `None` if no
-/// such ancestor exists (does NOT check that the file exists on disk — caller
+/// such ancestor exists (does NOT check that the file exists on disk - caller
 /// decides how to handle a missing file).
 pub(crate) fn find_workgroup_task_path_for_cwd(cwd: &str) -> Option<std::path::PathBuf> {
     let mut current = Some(Path::new(cwd));
@@ -197,7 +197,7 @@ pub struct SessionInfo {
     pub telegram_bot_id: Option<String>,
     #[serde(default)]
     pub was_detached: bool,
-    /// Not serialized to the frontend — internal carrier for `snapshot_sessions`
+    /// Not serialized to the frontend - internal carrier for `snapshot_sessions`
     /// so persistence can read the last-known detached-window geometry without a
     /// second lock round-trip through `SessionManager::get_session`.
     #[serde(skip)]
@@ -314,7 +314,7 @@ mod tests {
         assert!(json.get("telegramBotId").is_none());
     }
 
-    // ── find_workgroup_task_path_for_cwd — issue #107 ──
+    // ── find_workgroup_task_path_for_cwd - issue #107 ──
 
     #[test]
     fn find_workgroup_task_path_returns_path_when_cwd_is_workgroup_root() {
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn find_workgroup_task_path_handles_unc_prefix_input() {
-        // The helper is a pure path walk; it does not strip `\\?\` itself —
+        // The helper is a pure path walk; it does not strip `\\?\` itself -
         // §9.4 strips the prefix downstream when embedding into the prompt.
         // This test documents that the walk-up still finds the wg-* ancestor
         // even when the input carries the prefix.

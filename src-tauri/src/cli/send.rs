@@ -60,7 +60,7 @@ pub struct SendArgs {
     #[arg(long, default_value = "300")]
     pub timeout: u64,
 
-    /// Agent root directory (required). Your working directory — used to derive your agent name
+    /// Agent root directory (required). Your working directory - used to derive your agent name
     #[arg(long)]
     pub root: Option<String>,
 
@@ -73,7 +73,7 @@ pub struct SendArgs {
 /// `config::teams::agent_fqn_from_path` so WG replicas produce
 /// `<project>:<wg>/<agent>` and origin agents produce `<project>/<agent>`.
 ///
-/// Single source of truth — keep as a thin wrapper rather than a shadow copy.
+/// Single source of truth - keep as a thin wrapper rather than a shadow copy.
 pub(crate) fn agent_name_from_root(root: &str) -> String {
     crate::config::teams::agent_fqn_from_path(root)
 }
@@ -164,7 +164,7 @@ pub fn execute(args: SendArgs) -> i32 {
     let sender = sender_for_root(&root, root_is_root_agent);
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
-    // Validate mode — "queue" is no longer supported
+    // Validate mode - "queue" is no longer supported
     let valid_modes = ["wake"];
     if !valid_modes.contains(&args.mode.as_str()) {
         eprintln!(
@@ -193,7 +193,7 @@ pub fn execute(args: SendArgs) -> i32 {
     let mut effective_project_paths = settings.project_paths.clone();
     if let Some(root_project) = derive_root_project_dir(&root) {
         // Canonicalize once outside the dedup closure. If canonicalization of
-        // `root_project` itself fails (rare — it just resolved milliseconds
+        // `root_project` itself fails (rare - it just resolved milliseconds
         // ago inside `derive_root_project_dir`), fall back to string-equality
         // rather than a broken `None == None` match.
         let canon_root_project = std::fs::canonicalize(&root_project).ok();
@@ -221,20 +221,20 @@ pub fn execute(args: SendArgs) -> i32 {
     if root_is_root_agent {
         if !root_agent_target_allowed(&resolved_to, &effective_project_paths) {
             eprintln!(
-                "Error: root-agent routing rejected — '{}' is not a verified WG coordinator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
+                "Error: root-agent routing rejected - '{}' is not a verified WG coordinator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
                 resolved_to
             );
             return 1;
         }
     } else if crate::config::root_agent::is_root_agent_target(&resolved_to) {
-        // #293 — coordinator → root. Only identity-verified WG coordinators
+        // #293 - coordinator → root. Only identity-verified WG coordinators
         // are allowed to address the Root Agent. Master/root token still goes
         // through this gate intentionally: the URI is meaningful only when
         // paired with a real coordinator identity, and the verified check is
         // cheap.
         if !coordinator_to_root_target_allowed(&sender, &effective_project_paths) {
             eprintln!(
-                "Error: routing rejected — '{}' is not a verified WG coordinator replica and cannot message '{}'. Replies to the Root Agent are reserved for verified WG coordinators.",
+                "Error: routing rejected - '{}' is not a verified WG coordinator replica and cannot message '{}'. Replies to the Root Agent are reserved for verified WG coordinators.",
                 sender,
                 crate::config::root_agent::ROOT_AGENT_SENDER
             );
@@ -246,7 +246,7 @@ pub fn execute(args: SendArgs) -> i32 {
         let discovered = teams::discover_teams();
         if !teams::can_communicate(&sender, &resolved_to, &discovered) {
             eprintln!(
-                "Error: routing rejected — '{}' cannot reach '{}'. \
+                "Error: routing rejected - '{}' cannot reach '{}'. \
                  Check team membership and coordinator rules.",
                 sender, resolved_to
             );
@@ -316,7 +316,7 @@ pub fn execute(args: SendArgs) -> i32 {
         }
 
         // PTY_SAFE_MAX clamp (trimmed overhead: the wrap no longer embeds
-        // wg_root or bin_path — only `from` and the fixed framing remain).
+        // wg_root or bin_path - only `from` and the fixed framing remain).
         let overhead = crate::phone::messaging::PTY_WRAP_FIXED + sender.len();
         if body.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
             eprintln!(
@@ -445,7 +445,7 @@ pub fn execute(args: SendArgs) -> i32 {
         if rejected_reason_path.exists() {
             let reason = std::fs::read_to_string(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
-            eprintln!("Error: message rejected — {}", reason.trim());
+            eprintln!("Error: message rejected - {}", reason.trim());
             return 1;
         }
         if start.elapsed() >= confirm_timeout {

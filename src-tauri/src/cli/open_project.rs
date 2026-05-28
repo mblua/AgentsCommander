@@ -1,4 +1,4 @@
-//! `open-project <PATH>` CLI verb — validate an existing AC project and
+//! `open-project <PATH>` CLI verb - validate an existing AC project and
 //! register it in `settings.project_paths`. Shares the registration logic
 //! with the Tauri command at `commands::ac_discovery::open_project` via the
 //! `config::projects` module.
@@ -11,7 +11,7 @@
 //! GUI concurrency caveat: when AC's GUI is running, its in-memory
 //! `SettingsState` is the source of truth. A subsequent GUI `update_settings`
 //! built from a stale snapshot can clobber a CLI-registered entry. Documented
-//! in the plan §6 — a watcher/reload story is a follow-up issue.
+//! in the plan §6 - a watcher/reload story is a follow-up issue.
 
 use clap::Args;
 
@@ -23,7 +23,7 @@ use crate::config::settings::{load_settings_for_cli, save_settings};
 PURPOSE: Register an existing AC project so it appears in the GUI sidebar on \
 next launch. The folder must already contain `.ac-new/` (use `new-project` to \
 create one).\n\n\
-PATH: Absolute or relative — relative paths are resolved against the current \
+PATH: Absolute or relative - relative paths are resolved against the current \
 working directory. The persisted entry is the absolute form.\n\n\
 IDEMPOTENCY: Re-registering the same path is a no-op; the verb prints \
 \"Project already registered\" and exits 0.")]
@@ -103,7 +103,7 @@ mod tests {
     }
 
     // The CLI execute() touches the live settings.json on disk. These two
-    // tests exercise the arg parsing + early-error paths only — the
+    // tests exercise the arg parsing + early-error paths only - the
     // persistence-mutating success paths are covered by `config::projects`
     // unit tests, which use an in-memory AppSettings.
 

@@ -16,11 +16,11 @@ use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 
 /// Derive which session-reader pipeline to spawn for a given session.
 ///
-/// - `Ok(Some(kind))` — agent detected and resolver succeeded → caller spawns
+/// - `Ok(Some(kind))` - agent detected and resolver succeeded → caller spawns
 ///   the reader.
-/// - `Ok(None)` — `agent_kind` is `None` (plain shell) → caller falls back to
+/// - `Ok(None)` - `agent_kind` is `None` (plain shell) → caller falls back to
 ///   PTY mode.
-/// - `Err(message)` — agent detected but resolver returned None → caller logs +
+/// - `Err(message)` - agent detected but resolver returned None → caller logs +
 ///   emits `telegram_bridge_error` + early-returns with its contractual success
 ///   value (or `Err` for `telegram_attach`).
 ///
@@ -68,12 +68,12 @@ pub(crate) fn derive_reader(
                     attach_time,
                 })),
                 None => Err(
-                    "Cannot resolve Gemini home (~/.gemini/ missing — Gemini never installed)"
+                    "Cannot resolve Gemini home (~/.gemini/ missing - Gemini never installed)"
                         .to_string(),
                 ),
             }
         }
-        None => Ok(None), // No agent detected — caller falls back to PTY mode.
+        None => Ok(None), // No agent detected - caller falls back to PTY mode.
     }
 }
 
@@ -241,7 +241,7 @@ pub async fn telegram_get_bridge(
 
 #[cfg(test)]
 mod attach_detach_persistence_tests {
-    /// Issue #295 — full command regression needs a Tauri AppHandle fixture with
+    /// Issue #295 - full command regression needs a Tauri AppHandle fixture with
     /// managed SessionManager/PtyManager/TelegramBridgeState and an injectable
     /// sessions.json failure path. Keep the harness shape next to the command
     /// code so the ordering contract is explicit until such a fixture exists.
@@ -337,7 +337,7 @@ fn extension_to_mime(ext: &str) -> &'static str {
     }
 }
 
-/// True if `meta` describes a symlink or — on Windows — ANY reparse point
+/// True if `meta` describes a symlink or - on Windows - ANY reparse point
 /// (junction, mount point, …). Mirrors the helper in `commands/role_templates.rs`;
 /// keep both in sync. `FileType::is_symlink()` does not flag Windows junctions
 /// or file-typed reparse points, so the raw `FILE_ATTRIBUTE_REPARSE_POINT`
@@ -386,7 +386,7 @@ fn truncate_caption(input: &str) -> String {
 ///   - `caption` is trimmed and clamped to `CAPTION_MAX_UTF16_UNITS` UTF-16
 ///     code units (Telegram's true unit). Empty captions are dropped.
 ///
-/// Pure helper — does NOT depend on `tauri::State`. Shared by the Tauri
+/// Pure helper - does NOT depend on `tauri::State`. Shared by the Tauri
 /// command `telegram_send_image` and the `telegram-send-image` CLI verb so
 /// validation/multipart logic lives in exactly one place.
 pub(crate) async fn perform_send_image(

@@ -223,7 +223,7 @@ fn strip_ansi_csi(s: &str) -> String {
                                 chars.next();
                                 break; // proper ST terminator
                             }
-                            // ESC not followed by \ — not ST, keep consuming
+                            // ESC not followed by \ - not ST, keep consuming
                             continue;
                         }
                         chars.next();
@@ -239,7 +239,7 @@ fn strip_ansi_csi(s: &str) -> String {
                                 chars.next();
                                 break; // proper ST terminator
                             }
-                            // ESC not followed by \ — not ST, keep consuming
+                            // ESC not followed by \ - not ST, keep consuming
                             continue;
                         }
                         chars.next();
@@ -363,7 +363,7 @@ impl PtyManager {
             .spawn_command(command)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
 
-        // Drop the slave side — we only need the master
+        // Drop the slave side - we only need the master
         drop(pair.slave);
 
         let writer = pair
@@ -384,7 +384,7 @@ impl PtyManager {
 
         self.ptys.lock().unwrap().insert(id, instance);
 
-        // #260 — register with the idle detector. Seeds activity[id] (when the
+        // #260 - register with the idle detector. Seeds activity[id] (when the
         // profile opts in) so an all-suppressed / escape-only session is still
         // evaluated by the watcher. Must run before the read loop starts.
         self.idle_detector.register_session(id, idle_tuning);
@@ -424,7 +424,7 @@ impl PtyManager {
                             );
                         }
 
-                        // Record PTY activity for idle detection — but only if the
+                        // Record PTY activity for idle detection - but only if the
                         // output contains meaningful visible content. Terminal escape
                         // sequences (cursor moves, title updates, color resets, prompt
                         // redraws) are NOT user/agent activity and must not flip the
@@ -501,7 +501,7 @@ impl PtyManager {
     ///
     /// Used by the mailbox router to filter out SessionManager records whose
     /// PTY entry has gone missing (a desync that produces phantom Best-match
-    /// candidates — see issue #223). A live PtyInstance does NOT guarantee the
+    /// candidates - see issue #223). A live PtyInstance does NOT guarantee the
     /// underlying child process is alive; it only guarantees that a subsequent
     /// `write` will NOT fail with `AppError::SessionNotFound`. Detecting a dead
     /// child of a live PtyInstance is out of scope for this accessor (issue #223
@@ -607,7 +607,7 @@ impl PtyManager {
 }
 
 /// Scan PTY output text for %%AC_RESPONSE::<rid>::START/END%% markers.
-/// This runs on the PTY read thread — must be fast and non-blocking.
+/// This runs on the PTY read thread - must be fast and non-blocking.
 fn scan_response_markers(session_id: Uuid, text: &str, watchers: &ResponseWatcherMap) {
     let Ok(mut watchers) = watchers.lock() else {
         return;
@@ -631,9 +631,9 @@ fn scan_response_markers(session_id: Uuid, text: &str, watchers: &ResponseWatche
         };
 
         if watcher.capturing {
-            // We're between START and END — accumulate
+            // We're between START and END - accumulate
             if let Some(end_pos) = text.find(&end_marker) {
-                // Found END marker — extract final content
+                // Found END marker - extract final content
                 let chunk = &text[..end_pos];
                 if let Some(ref mut buf) = watcher.buffer {
                     buf.push_str(chunk);
@@ -668,11 +668,11 @@ fn scan_response_markers(session_id: Uuid, text: &str, watchers: &ResponseWatche
                     Err(e) => log::warn!("Failed to serialize response: {}", e),
                 }
 
-                // Remove this watcher — response captured
+                // Remove this watcher - response captured
                 watchers.remove(&key);
                 return; // Key removed, skip further processing
             } else {
-                // No END yet — accumulate everything
+                // No END yet - accumulate everything
                 if let Some(ref mut buf) = watcher.buffer {
                     buf.push_str(text);
                 }

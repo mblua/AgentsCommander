@@ -1,4 +1,4 @@
-//! Per-coding-agent profile — the single source of truth for behavior that
+//! Per-coding-agent profile - the single source of truth for behavior that
 //! varies by coding agent (Claude Code, Codex CLI, Gemini CLI).
 //!
 //! Before #260 this knowledge was scattered: three `is_claude`/`is_codex`/
@@ -8,7 +8,7 @@
 //! hard-coded idle-detector thresholds. `CodingAgentProfile` consolidates it.
 //!
 //! Design (see _plans/260-coding-agent-profile.md §2): plain `Copy` data +
-//! `const` lookup, not a trait — the agent set is small and closed and only
+//! `const` lookup, not a trait - the agent set is small and closed and only
 //! data varies, so a struct beats a `dyn` object (no vtables, no allocation,
 //! usable in `const` context, exhaustive `match` on `CodingAgentKind`).
 
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 /// Identity of a coding agent. `Option<CodingAgentKind>` on a session: `None`
 /// means "not a recognised coding agent" (a plain shell).
 ///
-/// Mutual exclusion is **structural** — a session is exactly one kind or none.
+/// Mutual exclusion is **structural** - a session is exactly one kind or none.
 /// This enum is what let #260 delete the `debug_assert!` that guarded the old
 /// three-bool representation in `derive_reader`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +45,7 @@ impl CodingAgentKind {
     pub fn detect(shell: &str, args: &[String]) -> Option<CodingAgentKind> {
         // Mirror of `crate::commands::session::executable_basename`
         // (`session.rs:1506`, identical body). Deliberately NOT shared:
-        // importing it would invert the dependency direction — the `session`
+        // importing it would invert the dependency direction - the `session`
         // domain module would depend on the `commands` (IPC) layer (§2 D2).
         // ~6 trivial lines; do not "consolidate" into a layering violation
         // (dev-rust R1.4 #3).
@@ -89,7 +89,7 @@ impl CodingAgentKind {
 /// `CodingAgentProfile` (or `DEFAULT` for a plain shell) and handed to
 /// `IdleDetector::register_session` at PTY spawn time.
 ///
-/// Invariant: `resize_grace >= idle_threshold` — a resize repaint must not be
+/// Invariant: `resize_grace >= idle_threshold` - a resize repaint must not be
 /// able to trigger a false busy→idle transition. `register_session`
 /// `debug_assert!`s it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +103,7 @@ pub struct IdleTuning {
     /// `activity[id] = Instant::now()` at PTY spawn. Without this seed, a
     /// session whose entire visible output is suppressed (resize grace) or
     /// escape-only (SKIPPED) is never inserted into the detector's `activity`
-    /// map, so the watcher thread — which only iterates `activity` — never
+    /// map, so the watcher thread - which only iterates `activity` - never
     /// evaluates it and `mark_idle` never fires. See plan §1.
     pub seed_initial_activity: bool,
 }
@@ -136,7 +136,7 @@ pub struct CodingAgentProfile {
     pub resume_tokens: &'static [&'static str],
 }
 
-// All three agents currently use `IdleTuning::DEFAULT` — identical to the
+// All three agents currently use `IdleTuning::DEFAULT` - identical to the
 // pre-#260 hard-coded constants, which GUARANTEES zero behavior change. The
 // per-profile `idle` field exists so a future agent can diverge (e.g. a
 // longer `resize_grace` for a heavier TUI) without re-plumbing the detector.
@@ -175,7 +175,7 @@ mod tests {
             CodingAgentKind::detect("claude", &[]),
             Some(CodingAgentKind::Claude)
         );
-        // claude-mb wrapper — prefix match.
+        // claude-mb wrapper - prefix match.
         assert_eq!(
             CodingAgentKind::detect("claude-mb", &["--effort".into(), "max".into()]),
             Some(CodingAgentKind::Claude)
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn detect_precedence_claude_wins() {
-        // A compound command mentioning both — Claude takes precedence,
+        // A compound command mentioning both - Claude takes precedence,
         // matching create_session_inner's pre-#260 ordering.
         assert_eq!(
             CodingAgentKind::detect("cmd.exe", &["/K".into(), "codex && claude".into()]),
@@ -239,11 +239,11 @@ mod tests {
 
     #[test]
     fn detect_space_in_shell_path_treats_shell_as_one_token() {
-        // #260 G3 — `detect` treats `shell` as a SINGLE token; it does NOT
+        // #260 G3 - `detect` treats `shell` as a SINGLE token; it does NOT
         // whitespace-split it the way pre-#260 `create_session_inner` split
         // the joined command string. A space-containing shell path whose real
         // executable is not an agent therefore resolves to `None` (the more
-        // correct result — the executable here is `runner.exe`).
+        // correct result - the executable here is `runner.exe`).
         assert_eq!(
             CodingAgentKind::detect("C:\\codex tools\\runner.exe", &[]),
             None
@@ -271,7 +271,7 @@ mod tests {
         assert!(idle_tuning_for(None).seed_initial_activity);
     }
 
-    /// dev-rust R1.5 — locks the §11 "all three profiles == DEFAULT → zero
+    /// dev-rust R1.5 - locks the §11 "all three profiles == DEFAULT → zero
     /// idle-tuning regression" guarantee. A future stray per-agent retune
     /// fails here loudly instead of silently shifting behavior.
     #[test]

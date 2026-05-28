@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 /// when Gemini has never been installed on this machine.
 ///
 /// The cwd-to-slug lookup is deferred to `lookup_chats_dir_for_cwd` below
-/// (H1 softened contract — see plan §4.3).
+/// (H1 softened contract - see plan §4.3).
 pub(crate) fn resolve_gemini_home(
     shell: &str,
     args: &[String],

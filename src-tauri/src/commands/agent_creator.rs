@@ -31,9 +31,9 @@ pub async fn create_agent_folder(
 }
 
 /// Creates or updates .claude/settings.local.json with claudeMdExcludes in the given directory.
-/// Works on any directory — both new agent folders and existing repos.
+/// Works on any directory - both new agent folders and existing repos.
 ///
-/// Issue #120 — also applies the rtk PreToolUse hook based on the global toggle.
+/// Issue #120 - also applies the rtk PreToolUse hook based on the global toggle.
 /// Acquires `RtkSweepLockState` around the helper sequence (M8) so concurrent
 /// sweeps cannot interleave a read-modify-write on the same file.
 #[tauri::command]

@@ -1,5 +1,5 @@
 // Callers of `ensure_claude_md_excludes` and `ensure_rtk_pretool_hook` (must be
-// kept in sync with any new agent-creation flow — see issue #84 for the original
+// kept in sync with any new agent-creation flow - see issue #84 for the original
 // `ensure_claude_md_excludes` miss and issue #120 for the rtk extension):
 //   - commands/agent_creator.rs::write_claude_settings_local (Tauri cmd; frontend: NewAgentModal.tsx + SessionItem.tsx ctx-menu)
 //   - cli/create_agent.rs (CLI `create-agent --launch <id>`)
@@ -21,7 +21,7 @@
 /// current Claude Code rejects with "Hook JSON output validation
 /// failed". v2 uses `hookSpecificOutput.updatedInput` (see
 /// `RTK_REWRITER_COMMAND`). The marker bump triggers automatic cleanup
-/// of any v1 entries left over from earlier AC builds — see
+/// of any v1 entries left over from earlier AC builds - see
 /// `RTK_LEGACY_MARKERS` and `merge_rtk_hook`'s legacy pre-pass.
 pub const RTK_HOOK_MARKER: &str = "@ac-rtk-marker-v2";
 
@@ -32,15 +32,15 @@ pub const RTK_HOOK_MARKER: &str = "@ac-rtk-marker-v2";
 pub const RTK_LEGACY_MARKERS: &[&str] = &["@ac-rtk-marker-v1"];
 
 /// Canonical RTK PreToolUse rewriter command. The leading
-/// `'@ac-rtk-marker-v2';` is a JS string-literal expression statement —
+/// `'@ac-rtk-marker-v2';` is a JS string-literal expression statement -
 /// node treats it as a no-op (string in statement position). The marker
 /// is never executed and never affects rewriter behavior; it exists
 /// solely to identify "this hook is AC-injected" across AC upgrades
 /// (see `RTK_HOOK_MARKER`).
 ///
 /// **Output schema (v2).** Emits
-/// `{hookSpecificOutput:{hookEventName:'PreToolUse', updatedInput:{...}}}`
-/// — the format Claude Code current accepts. v1 emitted a
+/// `{hookSpecificOutput:{hookEventName:'PreToolUse', updatedInput:{...}}}`,
+/// the format Claude Code current accepts. v1 emitted a
 /// `decision:'modify'` shape that the current validator rejects;
 /// entries with the v1 marker are auto-cleaned by ON-sweep / OFF-sweep
 /// (see `RTK_LEGACY_MARKERS`).
@@ -120,7 +120,7 @@ pub fn ensure_claude_md_excludes(dir: &Path) -> Result<(), String> {
 /// Non-destructive on every malformed input: bails with `log::warn!` and
 /// returns `Ok(())` without modifying the file. UTF-8 BOM is stripped on
 /// the read path. Idempotency and removal both filter by marker substring
-/// (`RTK_HOOK_MARKER`), not byte-equality of the full command — this
+/// (`RTK_HOOK_MARKER`), not byte-equality of the full command - this
 /// preserves user customizations of the rewriter body across AC upgrades.
 pub fn ensure_rtk_pretool_hook(dir: &Path, enabled: bool) -> Result<(), String> {
     if !dir.exists() {
@@ -153,7 +153,7 @@ pub fn ensure_rtk_pretool_hook(dir: &Path, enabled: bool) -> Result<(), String> 
             }
         }
     } else {
-        // ON-path with missing file — start with an empty doc.
+        // ON-path with missing file - start with an empty doc.
         serde_json::json!({})
     };
 
@@ -165,7 +165,7 @@ pub fn ensure_rtk_pretool_hook(dir: &Path, enabled: bool) -> Result<(), String> 
 
     // Mutate. Both helpers return `true` if `obj` was changed (caller should
     // write back) and `false` if the call was a structural no-op or a
-    // wrong-shape bail (caller must NOT write — keep user's file untouched).
+    // wrong-shape bail (caller must NOT write - keep user's file untouched).
     let mutated = if enabled {
         merge_rtk_hook(&mut obj, &settings_path)
     } else {
@@ -185,7 +185,7 @@ pub fn ensure_rtk_pretool_hook(dir: &Path, enabled: bool) -> Result<(), String> 
 }
 
 /// Idempotent merge by marker (preserves user customizations of the
-/// rewriter body across AC upgrades — see grinch M10). Returns `true` iff
+/// rewriter body across AC upgrades - see grinch M10). Returns `true` iff
 /// `obj` was modified (caller should write).
 ///
 /// Bails with `log::warn!` and returns `false` on any wrong-shape value
@@ -209,7 +209,7 @@ fn merge_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
     if let Some(existing) = map.get("hooks") {
         if !existing.is_object() {
             log::warn!(
-                "[rtk] ON-sweep: 'hooks' in {} is {} (expected object); bailing — preserving user data",
+                "[rtk] ON-sweep: 'hooks' in {} is {} (expected object); bailing - preserving user data",
                 settings_path.display(),
                 discriminant_label(existing),
             );
@@ -239,19 +239,19 @@ fn merge_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
         .as_array_mut()
         .expect("just inserted or pre-checked array");
 
-    // Legacy cleanup pre-pass — remove inner hooks whose command contains
+    // Legacy cleanup pre-pass - remove inner hooks whose command contains
     // ANY marker in `RTK_LEGACY_MARKERS`. Runs every ON-sweep so v1
     // entries left on disk by earlier AC builds are cleaned up before the
     // idempotency check (without this, the v2 idempotency check would not
     // find a match, we'd append a v2 entry, and the v1 entry would coexist
-    // — Claude Code would dispatch both hooks and the v1 one would still
+    // - Claude Code would dispatch both hooks and the v1 one would still
     // emit the rejected schema).
     let mut legacy_touched_indices: Vec<usize> = Vec::new();
     let mut cleaned_legacy = false;
     for (idx, entry) in pretool_arr.iter_mut().enumerate() {
         let inner = match entry.get_mut("hooks").and_then(|v| v.as_array_mut()) {
             Some(arr) => arr,
-            None => continue, // missing or wrong-shape — skip per-entry, preserve user data
+            None => continue, // missing or wrong-shape - skip per-entry, preserve user data
         };
         let before = inner.len();
         inner.retain(|h| {
@@ -268,7 +268,7 @@ fn merge_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
     if cleaned_legacy {
         // Cascade: drop matcher entries we just emptied via legacy cleanup.
         // Mirrors the cascade logic in `remove_rtk_hook`. Only drops entries
-        // we touched — user-authored matchers with pre-existing empty hooks
+        // we touched - user-authored matchers with pre-existing empty hooks
         // arrays are preserved.
         let mut current = 0usize;
         pretool_arr.retain(|entry| {
@@ -287,7 +287,7 @@ fn merge_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
 
     // Idempotency: ANY existing inner hook whose command contains the
     // CURRENT marker means "already applied". This includes user-customized
-    // variants — we do NOT overwrite their tweaks. Returns `cleaned_legacy`
+    // variants - we do NOT overwrite their tweaks. Returns `cleaned_legacy`
     // so the caller writes back if (and only if) the legacy pre-pass
     // actually changed anything.
     for entry in pretool_arr.iter() {
@@ -354,7 +354,7 @@ fn merge_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
 /// Removes every PreToolUse hook whose `command` contains `RTK_HOOK_MARKER`.
 /// Returns `true` iff `obj` was modified (caller should write).
 ///
-/// Wrong-shape branches inside the tree are SKIPPED with a log warn — never
+/// Wrong-shape branches inside the tree are SKIPPED with a log warn - never
 /// destroyed. Other shapes (e.g. a non-Bash matcher entry, an entry with
 /// no `hooks` key) are left untouched.
 fn remove_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
@@ -396,7 +396,7 @@ fn remove_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
 
     // Track WHICH entries we actually emptied via marker removal. Without this,
     // the cascade-retain below would also drop user-authored matcher entries
-    // that pre-existed with empty `hooks` arrays — destroying their data even
+    // that pre-existed with empty `hooks` arrays - destroying their data even
     // though we never touched them.
     let mut touched_indices: Vec<usize> = Vec::new();
     let mut any_removed = false;
@@ -446,7 +446,7 @@ fn remove_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
         let touched = touched_indices.contains(&current);
         current += 1;
         if !touched {
-            return true; // user's entry — never our concern
+            return true; // user's entry - never our concern
         }
         entry
             .get("hooks")
@@ -466,7 +466,7 @@ fn remove_rtk_hook(obj: &mut serde_json::Value, settings_path: &Path) -> bool {
     true
 }
 
-/// True iff `path` stat-checks as a real directory — NOT a Unix symlink,
+/// True iff `path` stat-checks as a real directory - NOT a Unix symlink,
 /// NOT a Windows NTFS junction (`FILE_ATTRIBUTE_REPARSE_POINT`), and a
 /// directory according to `symlink_metadata`. Consolidates the M7 gate
 /// shared by `push_if_new`, the `wg-*` parent re-check, and the parent-dir
@@ -508,23 +508,23 @@ fn discriminant_label(v: &serde_json::Value) -> &'static str {
 ///
 /// **`project_paths` semantics.** Each entry may be either (a) a project root
 /// that directly contains `.ac-new/`, or (b) a parent dir holding many such
-/// project roots as immediate children. We probe both shapes — base + non-
-/// hidden children — mirroring the existing pattern in
+/// project roots as immediate children. We probe both shapes - base + non-
+/// hidden children - mirroring the existing pattern in
 /// `commands/ac_discovery.rs::discover_ac_agents` (~line 596) and
 /// `commands/repos.rs::search_repos`. Without descending one level, sweeps
 /// silently no-op for users whose `project_paths` lists a parent dir.
 ///
 /// Filters applied (grinch M7):
-///   - `symlink_metadata` — Unix symlinks-to-dir are NOT followed.
+///   - `symlink_metadata` - Unix symlinks-to-dir are NOT followed.
 ///   - Windows NTFS junctions (`FILE_ATTRIBUTE_REPARSE_POINT`) are filtered.
-///   - Canonical-path dedupe — duplicates resolved (same dir reachable via
+///   - Canonical-path dedupe - duplicates resolved (same dir reachable via
 ///     two `project_paths` entries, or via base + child overlap, lands once).
 ///
 /// Skips silently: missing project paths, non-directory entries, unreadable
 /// directories, paths that fail to canonicalize.
 ///
 /// Order is filesystem-iteration order minus duplicates; not sorted. Callers
-/// should not rely on stable ordering — sweep is idempotent per dir.
+/// should not rely on stable ordering - sweep is idempotent per dir.
 pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::PathBuf> {
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -533,7 +533,7 @@ pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::
     let mut out: Vec<PathBuf> = Vec::new();
 
     let push_if_new = |raw: PathBuf, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
-        // M7 gate — reject symlinks/junctions/non-dirs in one place.
+        // M7 gate - reject symlinks/junctions/non-dirs in one place.
         if !is_real_directory(&raw) {
             return;
         }
@@ -574,7 +574,7 @@ pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::
                 }
 
                 if name.starts_with("wg-") {
-                    // M7 gate — re-check wg-* parent isn't a symlink/junction.
+                    // M7 gate - re-check wg-* parent isn't a symlink/junction.
                     if !is_real_directory(&p) {
                         continue;
                     }
@@ -790,7 +790,7 @@ mod tests {
         seed_settings(&dir, &serde_json::to_string(&initial).unwrap());
         let raw_before = read_settings_raw(&dir).unwrap();
         ensure_rtk_pretool_hook(&dir, true).expect("ok");
-        // No write happened — raw bytes preserved.
+        // No write happened - raw bytes preserved.
         let raw_after = read_settings_raw(&dir).unwrap();
         assert_eq!(raw_before, raw_after);
         // Structural equality holds too.
@@ -1021,7 +1021,7 @@ mod tests {
         }
 
         if !link_created {
-            // Test cannot create the link in this environment — skip gracefully.
+            // Test cannot create the link in this environment - skip gracefully.
             cleanup(&dir);
             return;
         }
@@ -1063,7 +1063,7 @@ mod tests {
     #[test]
     fn t21_marker_idempotency_with_different_body() {
         let dir = tempdir("t21");
-        // Hook with the CURRENT marker prefix but a different body —
+        // Hook with the CURRENT marker prefix but a different body -
         // exercises idempotency-by-marker (preserves user customizations of
         // the rewriter body across AC upgrades). Legacy-marker auto-cleanup
         // is exercised separately by t27.
@@ -1108,7 +1108,7 @@ mod tests {
     fn t23_enumerate_descends_one_level_for_parent_project_paths() {
         // project_paths may be either a project root (containing .ac-new/)
         // or a parent dir holding many such roots. Mirrors the convention in
-        // commands/ac_discovery.rs::discover_ac_agents — without descending
+        // commands/ac_discovery.rs::discover_ac_agents - without descending
         // one level, sweeps silently no-op for the parent-dir shape.
         let dir = tempdir("t23");
         let parent = dir.join("parent");
@@ -1182,7 +1182,7 @@ mod tests {
         // project_paths = parent dir; one of parent's non-hidden children is a
         // symlink/junction pointing OUTSIDE the parent tree to a dir that has
         // its own .ac-new/. The descend must NOT cross that boundary.
-        // (Grinch H1' regression test — without the M7 gate at the descend
+        // (Grinch H1' regression test - without the M7 gate at the descend
         // step, the sweep escapes the declared workspace.)
         let dir = tempdir("t25");
         let parent = dir.join("parent");
@@ -1233,7 +1233,7 @@ mod tests {
         );
         assert!(
             !names.contains(&"_agent_outside".to_string()),
-            "symlinked-target matrix must NOT be enumerated — sweep escape: {:?}",
+            "symlinked-target matrix must NOT be enumerated - sweep escape: {:?}",
             names
         );
         cleanup(&dir);
@@ -1320,7 +1320,7 @@ mod tests {
         // shape) must be cleaned by ON-sweep before the v2 entry is
         // inserted. Without this the v2 idempotency check would not match,
         // a v2 entry would be appended, and Claude Code would dispatch
-        // BOTH hooks — the v1 one would still emit the rejected schema.
+        // BOTH hooks - the v1 one would still emit the rejected schema.
         let dir = tempdir("t27");
         let initial = json!({
             "claudeMdExcludes": ["x"],
@@ -1464,7 +1464,7 @@ mod tests {
     #[test]
     fn t30_v1_alongside_user_hook_preserves_user_appends_v2() {
         // Cascade-drop must NOT remove a Bash matcher entry just because
-        // we touched it during legacy cleanup — only when its inner hooks
+        // we touched it during legacy cleanup - only when its inner hooks
         // are now empty. If the user has an unrelated hook in the same
         // matcher, the cascade keeps the matcher and ON-sweep then appends
         // a v2 hook next to the user's existing one.
@@ -1506,7 +1506,7 @@ mod tests {
         // shape inner hooks (the `match get_mut.and_then.as_array_mut`
         // pattern). A regression that swapped `continue` for `return false`
         // would bail the whole sweep on encountering one user-authored
-        // wrong-shape entry — even though the next Bash entry has a real
+        // wrong-shape entry - even though the next Bash entry has a real
         // v1 marker that must still be cleaned.
         let dir = tempdir("t31");
         let initial = json!({

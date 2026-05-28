@@ -1,4 +1,4 @@
-//! `task-append-body` CLI verb — append a body paragraph to the workgroup
+//! `task-append-body` CLI verb - append a body paragraph to the workgroup
 //! TASK.md without touching the YAML frontmatter.
 //!
 //! Trust model: caller honestly reports their own `--root` and `--token`.
@@ -31,7 +31,7 @@ pub struct TaskAppendBodyArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory (required). Your working directory — used to derive your agent name
+    /// Agent root directory (required). Your working directory - used to derive your agent name
     #[arg(long)]
     pub root: Option<String>,
 
@@ -94,7 +94,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
         let teams = crate::config::teams::discover_teams();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
-                "Error: authorization denied — '{}' is not a coordinator of any team. \
+                "Error: authorization denied - '{}' is not a coordinator of any team. \
                  Only coordinators can edit TASK.md.",
                 sender
             );
@@ -226,7 +226,7 @@ mod tests {
     // newlines after a successful append") is covered at the apply layer by
     // `task_ops::tests::apply_append_body_preserves_internal_body_line_endings_and_documents_trailing_loss`.
     // Reaching the apply layer through `execute` would require stubbing
-    // team-config so the coordinator gate passes — the apply-layer test
+    // team-config so the coordinator gate passes - the apply-layer test
     // gives the same byte-level guarantee at much lower cost.
 
     #[test]

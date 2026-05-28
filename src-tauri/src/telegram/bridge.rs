@@ -14,7 +14,7 @@ use crate::pty::manager::PtyManager;
 use crate::telegram::api;
 use crate::telegram::types::BridgeInfo;
 
-// ── #280 §3.2 — error classification + throttling ─────────────
+// ── #280 §3.2 - error classification + throttling ─────────────
 
 /// Coarse classification of Telegram API failure modes. Used to tag log
 /// lines so an operator can grep by kind and to drive the throttle below
@@ -30,7 +30,7 @@ enum TelegramErrKind {
 
 impl TelegramErrKind {
     /// Substring-match classification against `AppError::Telegram` strings
-    /// (already redacted by api.rs §1.3 — token shape never affects
+    /// (already redacted by api.rs §1.3 - token shape never affects
     /// classification). Order matters: precise API-side errors must be
     /// tested before the generic transport-error catchall.
     fn classify(msg: &str) -> Self {
@@ -82,9 +82,9 @@ impl ErrorThrottle {
 
     /// Returns `(should_emit, prior_kind)`:
     ///
-    /// * `should_emit = true` — emit the ERROR line, reset the suppressed
+    /// * `should_emit = true` - emit the ERROR line, reset the suppressed
     ///   counter when formatting the suffix.
-    /// * `should_emit = false` — increment the suppressed counter and emit
+    /// * `should_emit = false` - increment the suppressed counter and emit
     ///   at DEBUG instead.
     ///
     /// `prior_kind` is the kind that was in the slot before this call,
@@ -137,7 +137,7 @@ impl BridgeLogger {
     pub(super) fn log(&mut self, direction: &str, session_id: &str, text: &str) {
         if let Some(ref mut f) = self.file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
-            // #280 G-MED-3 / LOW-1 — telegram-bridge.log is outside
+            // #280 G-MED-3 / LOW-1 - telegram-bridge.log is outside
             // env_logger's sink scrub. Redact BEFORE truncating so the 500-
             // byte cut cannot land inside a token tail and leak a partial
             // secret (the redactor's 10-char floor would refuse to match
@@ -204,7 +204,7 @@ impl DiagLogger {
     pub(super) fn log_raw(&mut self, text: &str) {
         if let Some(ref mut f) = self.raw_file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
-            // #280 G-MED-3 — diag-raw.log lives outside env_logger's sink
+            // #280 G-MED-3 - diag-raw.log lives outside env_logger's sink
             // scrub. Scrub here so secret-bearing content (agent output
             // containing a Telegram URL, or any future call site that
             // bypassed api.rs) cannot land in the diag log.
@@ -219,7 +219,7 @@ impl DiagLogger {
     pub(super) fn log_sent(&mut self, text: &str) {
         if let Some(ref mut f) = self.sent_file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
-            // #280 G-MED-3 — same scrub as log_raw; diag-sent.log bypasses
+            // #280 G-MED-3 - same scrub as log_raw; diag-sent.log bypasses
             // env_logger.
             let text = crate::telegram::redact::redact(text);
             let _ = writeln!(f, "--- [{}] ---", now);
@@ -563,7 +563,7 @@ pub fn spawn_bridge(
 
     match reader {
         Some(SessionReaderKind::Claude { project_dir }) => {
-            drop(rx); // not needed — no PTY bytes feed
+            drop(rx); // not needed - no PTY bytes feed
             super::claude_watcher::spawn_watch_task(
                 project_dir,
                 bot_token.clone(),
@@ -792,7 +792,7 @@ pub(super) async fn flush_buffer(
     skip_dedup: bool,
 ) {
     let text = std::mem::take(buffer);
-    // Deduplicate consecutive identical lines (PTY mode only — screen redraws cause duplicates).
+    // Deduplicate consecutive identical lines (PTY mode only - screen redraws cause duplicates).
     // JSONL mode skips dedup because content is clean and legitimate repeated lines are valid.
     let text = if skip_dedup {
         text
@@ -819,7 +819,7 @@ pub(super) async fn flush_buffer(
         diag.log_sent(&chunk);
 
         if let Err(e) = api::send_message(client, token, chat_id, &chunk).await {
-            // #280 — defense-in-depth scrub before `msg` reaches the
+            // #280 - defense-in-depth scrub before `msg` reaches the
             // `telegram_bridge_error` Tauri event payload (which bypasses
             // the env_logger format closure that protects stderr/app.log).
             // The reqwest error sites inside api.rs already wrap with
@@ -832,12 +832,12 @@ pub(super) async fn flush_buffer(
             let pid = std::process::id();
             // `token_prefix` is the numeric bot user id (e.g. "8336197840"),
             // not the secret. Telegram bot user ids are public via
-            // @BotInfoBot — they're identifiers, useful for correlating
+            // @BotInfoBot - they're identifiers, useful for correlating
             // multi-bot deployments. The secret is the `:AAGB…` tail.
             let token_prefix = token.split(':').next().unwrap_or("?");
             logger.log("SEND_ERR", session_id, &msg);
             log::error!(
-                "[bridge] Telegram send failed — kind={} session_id={} pid={} bot_id={} err={}",
+                "[bridge] Telegram send failed - kind={} session_id={} pid={} bot_id={} err={}",
                 kind.as_str(),
                 session_id,
                 pid,
@@ -921,7 +921,7 @@ async fn poll_task(
             let kind = TelegramErrKind::classify(&msg);
             logger.log("POLL_ERR", &session_id_str, &msg);
             log::warn!(
-                "[bridge] Initial getUpdates failed — kind={} session_id={} err={}",
+                "[bridge] Initial getUpdates failed - kind={} session_id={} err={}",
                 kind.as_str(),
                 session_id_str,
                 msg
@@ -929,7 +929,7 @@ async fn poll_task(
         }
     }
 
-    // #280 §3.2 — throttle bursty network errors in the poll loop. Created
+    // #280 §3.2 - throttle bursty network errors in the poll loop. Created
     // once per task so the state is naturally per-bridge-instance; drops
     // when `poll_task` exits.
     let throttle = ErrorThrottle::new(Duration::from_secs(60));
@@ -1047,7 +1047,7 @@ async fn poll_task(
                         let token_prefix = token.split(':').next().unwrap_or("?");
                         logger.log("POLL_ERR", &session_id_str, &msg);
 
-                        // #280 §3.2 — throttle Network errors (the burst
+                        // #280 §3.2 - throttle Network errors (the burst
                         // shape that produced 7,872 of 11,140 ERROR lines
                         // in the live log). Unauthorized/Conflict/Rate-
                         // Limited are rare and signal-rich → always emit.
@@ -1055,7 +1055,7 @@ async fn poll_task(
                         let (should_emit, prior_kind) = throttle.check(kind);
                         if !should_throttle || should_emit {
                             let suppressed = throttle.suppressed.swap(0, Ordering::Relaxed);
-                            // G-LOW-2 — attribute the suppressed count to
+                            // G-LOW-2 - attribute the suppressed count to
                             // the kind that was being suppressed, not the
                             // current emit's kind. When `prior_kind` and
                             // `kind` differ, surface that explicitly.
@@ -1069,7 +1069,7 @@ async fn poll_task(
                                 (n, _) => format!(" (suppressed_repeats={})", n),
                             };
                             log::error!(
-                                "[bridge] Telegram poll error — kind={} session_id={} pid={} bot_id={} err={}{}",
+                                "[bridge] Telegram poll error - kind={} session_id={} pid={} bot_id={} err={}{}",
                                 kind.as_str(),
                                 session_id_str,
                                 pid,
@@ -1080,7 +1080,7 @@ async fn poll_task(
                         } else {
                             throttle.suppressed.fetch_add(1, Ordering::Relaxed);
                             log::debug!(
-                                "[bridge] Telegram poll error suppressed — kind={} session_id={} (in throttle window)",
+                                "[bridge] Telegram poll error suppressed - kind={} session_id={} (in throttle window)",
                                 kind.as_str(),
                                 session_id_str
                             );
@@ -1097,7 +1097,7 @@ async fn poll_task(
 mod tests {
     use super::*;
 
-    // ── #280 §3.2 — TelegramErrKind::classify ────────────────────
+    // ── #280 §3.2 - TelegramErrKind::classify ────────────────────
 
     #[test]
     fn classify_unauthorized() {
@@ -1147,7 +1147,7 @@ mod tests {
         );
     }
 
-    // ── #280 §3.2 — ErrorThrottle ────────────────────────────────
+    // ── #280 §3.2 - ErrorThrottle ────────────────────────────────
 
     #[test]
     fn throttle_emits_on_first_kind_sighting() {
@@ -1167,7 +1167,7 @@ mod tests {
         assert_eq!(prior, Some(TelegramErrKind::Network));
     }
 
-    /// G-LOW-2 — when a different kind breaks the window, the prior kind
+    /// G-LOW-2 - when a different kind breaks the window, the prior kind
     /// is returned so the caller can attribute the suppressed count to it
     /// rather than the new kind.
     #[test]
@@ -1196,7 +1196,7 @@ mod tests {
         assert_eq!(prior, Some(TelegramErrKind::Network));
     }
 
-    // ── #280 G-MED-3 / LOW-3 — call-site redaction tests ────────
+    // ── #280 G-MED-3 / LOW-3 - call-site redaction tests ────────
     //
     // The redact() helper has its own thorough tests (15+ cases in
     // telegram::redact::tests). These tests cover the INVOCATIONS at the
@@ -1217,7 +1217,7 @@ mod tests {
             .expect("open temp log")
     }
 
-    /// LOW-3 — `BridgeLogger::log` must redact any Telegram token in the
+    /// LOW-3 - `BridgeLogger::log` must redact any Telegram token in the
     /// `text` payload before writing to `telegram-bridge.log` (the log
     /// bypasses env_logger's sink scrub). Guards against a future caller
     /// passing an unscrubbed reqwest error string.
@@ -1246,10 +1246,10 @@ mod tests {
         );
     }
 
-    /// LOW-1 — BridgeLogger truncates at 500 bytes. The redact step must
+    /// LOW-1 - BridgeLogger truncates at 500 bytes. The redact step must
     /// run BEFORE truncation, otherwise a token positioned so the cut
     /// lands inside its tail leaves only a partial fragment (sub
-    /// 10-char floor) that the redactor refuses to match — leaking the
+    /// 10-char floor) that the redactor refuses to match - leaking the
     /// secret prefix. This test pre-computes a string where the pre-fix
     /// code would have leaked, and asserts the post-fix code does not.
     #[test]
@@ -1263,9 +1263,9 @@ mod tests {
         // tail at offset 5):
         //   481 bytes of "a" padding (`a` chosen so it is NOT a member of
         //   the token-char set we later grep for)
-        // + "/bot987654321:"        (14 bytes — `/bot` + 9 digits + `:`)
+        // + "/bot987654321:"        (14 bytes - `/bot` + 9 digits + `:`)
         // +  5 bytes of token-chars (the secret prefix "FAKE_")
-        // = 500 bytes — the truncation boundary.
+        // = 500 bytes - the truncation boundary.
         // Total text length: 481 + 14 + 37 + 11 = 543 bytes
         //   (token chars after `:` = 37; "/getUpdates" = 11).
         //
@@ -1277,7 +1277,7 @@ mod tests {
         //
         // Post-fix flow (redact → truncate):
         //   - Redact replaces `/bot<digits>:<tail>` with `/bot***`; the
-        //     redacted string is 481 + 7 + 11 = 499 bytes — already
+        //     redacted string is 481 + 7 + 11 = 499 bytes - already
         //     under 500, so the truncation branch never fires.
         //   - No fragment of the token can survive.
         let padding = "a".repeat(481);
@@ -1290,7 +1290,7 @@ mod tests {
         let content = std::fs::read_to_string(&path).expect("read log back");
         assert!(
             content.contains("/bot***"),
-            "redact marker missing — scrub did not run: {content}"
+            "redact marker missing - scrub did not run: {content}"
         );
         assert!(
             !content.contains(FAKE_TG_TOKEN),
@@ -1310,7 +1310,7 @@ mod tests {
         );
     }
 
-    /// LOW-3 — `DiagLogger::log_raw` writes the full stabilized PTY row
+    /// LOW-3 - `DiagLogger::log_raw` writes the full stabilized PTY row
     /// to `diag-raw.log` with no truncation. If a row contains a Telegram
     /// URL (e.g. the agent pasted one into its terminal), the scrub at
     /// bridge.rs:207 must mask it before the row reaches disk.
@@ -1342,7 +1342,7 @@ mod tests {
         );
     }
 
-    /// LOW-3 — `DiagLogger::log_sent` mirrors `log_raw` for the
+    /// LOW-3 - `DiagLogger::log_sent` mirrors `log_raw` for the
     /// post-filter outbound payload. Same scrub contract: any embedded
     /// `[?&]key=<value>` or Telegram token must be masked.
     #[test]

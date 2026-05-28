@@ -2,18 +2,18 @@
 //!
 //! `reqwest::Error::Display` prints the full request URL when an HTTP
 //! request fails, and several APIs we call encode credentials directly in
-//! the URL — without scrubbing, those credentials reach stderr, `app.log`,
+//! the URL - without scrubbing, those credentials reach stderr, `app.log`,
 //! the error modal, and (for the Telegram bridge) remote chat users.
 //!
 //! Coverage:
 //!
-//! * **Telegram bot tokens** — `/bot<digits>:<base64url-chars>` in both
+//! * **Telegram bot tokens** - `/bot<digits>:<base64url-chars>` in both
 //!   `https://api.telegram.org/bot<TOKEN>/<method>` and
 //!   `https://api.telegram.org/file/bot<TOKEN>/<path>` URL shapes. The
 //!   token segment is identical in both; the single scanner handles both.
 //!   See issue #280 §1.
 //!
-//! * **Gemini API keys** — `?key=<value>` or `&key=<value>` in
+//! * **Gemini API keys** - `?key=<value>` or `&key=<value>` in
 //!   `https://generativelanguage.googleapis.com/v1beta/...?key=<API_KEY>`.
 //!   The structurally identical leak shape was surfaced by the round-1
 //!   adversarial review (G-HIGH-2). The Gemini key leak is arguably worse
@@ -39,7 +39,7 @@
 /// Replaces the matched secret span with `***` while preserving the
 /// surrounding URL shape so operators can still tell whether the failure
 /// was on `/getUpdates`, `/sendMessage`, `/file/...`, or
-/// `:generateContent`. Safe to call on strings that contain no secret —
+/// `:generateContent`. Safe to call on strings that contain no secret -
 /// returns the input unchanged.
 ///
 /// Examples:
@@ -90,7 +90,7 @@ pub fn redact(input: &str) -> String {
         // The leading byte (`?` or `&`) is consumed verbatim, then we replace
         // the value after `key=`.
         //
-        // #280 LOW-2 — the plan §0 specified a 20-char floor (matching the
+        // #280 LOW-2 - the plan §0 specified a 20-char floor (matching the
         // 32-char real Gemini key length minus slack). We deliberately
         // accept ANY non-empty value here as defense-in-depth: real keys
         // are still scrubbed, and a future debug log printing
@@ -113,7 +113,7 @@ pub fn redact(input: &str) -> String {
             }
         }
 
-        // No match at this position — copy a full UTF-8 char. Casting
+        // No match at this position - copy a full UTF-8 char. Casting
         // `bytes[i] as char` is UNSAFE for multi-byte chars: a continuation
         // byte (e.g. 0xC3 0xA9 for "é") would each map to a different
         // Unicode scalar (U+00C3 U+00A9 = "Ã©"). `i` is always at a char
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(redact(s), s);
     }
 
-    /// #280 /feature-dev review G-HIGH — the byte-walking fallback used
+    /// #280 /feature-dev review G-HIGH - the byte-walking fallback used
     /// `out.push(bytes[i] as char)` which corrupts UTF-8 continuation
     /// bytes whenever the scanner runs (i.e., when `/bot` or `key=` is
     /// present somewhere in the input). DiagLogger pipes raw agent PTY
@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(redact(s), s);
     }
 
-    /// #280 LOW-2 — the implementation deliberately deviates from the
+    /// #280 LOW-2 - the implementation deliberately deviates from the
     /// plan's 20-char floor for Gemini `?key=<value>` matches: any
     /// non-empty value is masked. This is safer than the spec (real keys
     /// are still scrubbed), at the cost of masking unrelated short query
@@ -328,7 +328,7 @@ mod tests {
         assert!(got.contains("?alt=json"), "lost prefix: {got}");
         assert!(got.contains("foo=bar"), "lost suffix: {got}");
         // Empty-value contract (`?key=` followed by `&` / end) is the
-        // only case that escapes — guarded separately by
+        // only case that escapes - guarded separately by
         // `does_not_match_empty_query_value`.
     }
 

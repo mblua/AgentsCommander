@@ -4,7 +4,7 @@ use clap::{CommandFactory, FromArgMatches};
 
 fn main() {
     // Resolve actual binary name at runtime so --help shows the correct name.
-    // Leaked once at startup — lives for the process lifetime.
+    // Leaked once at startup - lives for the process lifetime.
     let binary_name: &'static str = Box::leak(
         std::env::current_exe()
             .ok()
@@ -39,7 +39,7 @@ fn main() {
                         // Install the same logger backend the GUI uses so
 
                         // every `log::*` call from CLI verbs (the `[task]`
-                        // audit lines in particular — plan #137 §3a HIGH-1
+                        // audit lines in particular - plan #137 §3a HIGH-1
                         // mitigation) reaches stderr + <config_dir>/app.log.
                         // GATED on `cli.command.is_some()` so the GUI branch
                         // below initializes via `lib::run()` exactly once.
@@ -50,7 +50,7 @@ fn main() {
                     None => {
                         // GUI mode (with or without --app)
                         if !try_acquire_single_instance() {
-                            // Another GUI instance is already running — exit silently
+                            // Another GUI instance is already running - exit silently
                             std::process::exit(0);
                         }
                         agentscommander_lib::run();
@@ -88,13 +88,13 @@ fn try_acquire_single_instance() -> bool {
     unsafe {
         let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
         if handle.is_null() {
-            // Failed to create mutex — let it run anyway
+            // Failed to create mutex - let it run anyway
             return true;
         }
         // If the mutex already existed, another instance owns it
         GetLastError() != ERROR_ALREADY_EXISTS
     }
-    // Note: we intentionally do NOT close the handle — it must stay alive
+    // Note: we intentionally do NOT close the handle - it must stay alive
     // for the lifetime of the process to hold the mutex.
 }
 

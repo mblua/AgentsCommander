@@ -12,7 +12,7 @@ use crate::session::session::SessionRepo;
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// #280 §3.3 — per-path counter for `detect_branch` timeouts. Used to dampen
+/// #280 §3.3 - per-path counter for `detect_branch` timeouts. Used to dampen
 /// the WARN storm by logging only the first occurrence per path plus every
 /// 50th thereafter. Process-local: counts reset on restart. Bounded by the
 /// number of distinct repo paths (~150 in production observations), so no
@@ -135,7 +135,7 @@ impl GitWatcher {
             };
 
             if changed {
-                // CAS write — if a refresh bumped the gen between our snapshot and now,
+                // CAS write - if a refresh bumped the gen between our snapshot and now,
                 // the write + emit are skipped. Prevents the stale-overwrite race (Grinch #14).
                 let wrote = {
                     let mgr = self.session_manager.read().await;
@@ -154,7 +154,7 @@ impl GitWatcher {
                     self.cache.lock().unwrap().insert(id, refreshed);
                 } else {
                     log::debug!(
-                        "[GitWatcher] gen mismatch on session {} — refresh landed during poll; skipping stale emit",
+                        "[GitWatcher] gen mismatch on session {} - refresh landed during poll; skipping stale emit",
                         id
                     );
                     // Invalidate our cache so the next tick re-evaluates against the refreshed list.
@@ -172,10 +172,10 @@ impl GitWatcher {
             Ok(result) => result,
             Err(_) => {
                 let n = note_timeout(working_dir);
-                // #280 §3.3 — throttle the per-path WARN. Observed rate is
+                // #280 §3.3 - throttle the per-path WARN. Observed rate is
                 // ~120 timeouts/day/path; logging every one floods app.log.
                 // Log the first sighting (heartbeat) and every 50th
-                // thereafter (still ~2-3 WARN/day/path) — enough signal to
+                // thereafter (still ~2-3 WARN/day/path) - enough signal to
                 // notice persistent slowness without spamming.
                 if n == 1 || n.is_multiple_of(50) {
                     log::warn!(
@@ -296,7 +296,7 @@ mod tests {
         assert!(wrote2, "current gen must succeed");
     }
 
-    /// #280 §3.3 — `note_timeout` is a monotonic per-path counter so the
+    /// #280 §3.3 - `note_timeout` is a monotonic per-path counter so the
     /// caller can throttle WARN emissions to "first + every Nth". Two
     /// independent paths get independent counters.
     #[test]

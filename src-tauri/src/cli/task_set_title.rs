@@ -1,4 +1,4 @@
-//! `task-set-title` CLI verb — set the YAML-frontmatter `title:` field of
+//! `task-set-title` CLI verb - set the YAML-frontmatter `title:` field of
 //! the workgroup TASK.md.
 //!
 //! Trust model: caller honestly reports their own `--root` and `--token`.
@@ -30,7 +30,7 @@ pub struct TaskSetTitleArgs {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Agent root directory (required). Your working directory — used to derive your agent name
+    /// Agent root directory (required). Your working directory - used to derive your agent name
     #[arg(long)]
     pub root: Option<String>,
 
@@ -89,7 +89,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
         let teams = crate::config::teams::discover_teams();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
-                "Error: authorization denied — '{}' is not a coordinator of any team. \
+                "Error: authorization denied - '{}' is not a coordinator of any team. \
                  Only coordinators can edit TASK.md.",
                 sender
             );
@@ -218,7 +218,7 @@ mod tests {
     fn set_title_rejects_non_coordinator_with_uuid_token() {
         let fix = FixtureRoot::new("task-i3");
         let agent_root = make_wg_fixture(fix.path());
-        // No team config exists — discover_teams returns empty, so any caller
+        // No team config exists - discover_teams returns empty, so any caller
         // (root-token aside) is rejected as non-coordinator.
         let token = uuid::Uuid::new_v4().to_string();
         let args = args_for(
@@ -306,7 +306,7 @@ mod tests {
         let fix = FixtureRoot::new("task-i18");
         let _agent_root = make_wg_fixture(fix.path());
         let wg_root = fix.path().join("proj").join(".ac-new").join("wg-1-test");
-        // Coordinator running directly from the WG dir (no __agent_*) — the
+        // Coordinator running directly from the WG dir (no __agent_*) - the
         // is_any_coordinator gate fails closed (sender is not a coordinator).
         let token = uuid::Uuid::new_v4().to_string();
         let args = args_for(

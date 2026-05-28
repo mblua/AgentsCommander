@@ -2,7 +2,7 @@
 //! action buttons (issue #162).
 //!
 //! Trust model: these commands run inside the GUI process under the
-//! user's authority — same model as `rename_session`, `destroy_session`,
+//! user's authority - same model as `rename_session`, `destroy_session`,
 //! etc. No coordinator gate (the CLI verbs in `cli/brief_*.rs` retain
 //! their gate; this file does not call into them).
 
@@ -25,7 +25,7 @@ pub struct TaskUpdateResult {
     /// Stripped of the Windows `\\?\` extended-length prefix when present.
     pub workgroup_root: String,
     /// Trimmed TASK.md content as displayed by the panel. `None` when the
-    /// file is empty or missing post-edit (defensive — should not happen
+    /// file is empty or missing post-edit (defensive - should not happen
     /// after a successful Wrote, but possible on race-deletion).
     pub task: Option<String>,
 }
@@ -135,7 +135,7 @@ pub async fn task_set_title(
     // Round 2 (Grinch LOW-1): cap at 256 chars (typical YAML scalar
     // convention). Prevents a 1 MB pasted blob from becoming the title
     // and breaking panel layout / file ergonomics. Counts Unicode
-    // scalars, not bytes — a 256-emoji title is allowed and renders
+    // scalars, not bytes - a 256-emoji title is allowed and renders
     // sensibly.
     if title.chars().count() > 256 {
         return Err("title is too long (max 256 characters)".to_string());
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn read_task_fields_at_body_only_no_frontmatter_returns_body_and_no_title() {
-        // grinch LOW (PR #304 review): coverage gap — a file with body content
+        // grinch LOW (PR #304 review): coverage gap - a file with body content
         // but no YAML frontmatter must return (Some(body), None), not (None, _).
         let dir = tempfile::tempdir().unwrap();
         let content = "Just a body line\nmore body\n";

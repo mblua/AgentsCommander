@@ -21,7 +21,7 @@ pub(crate) const ROTATION_STALE_SECS: u64 = 3;
 pub(crate) const PREAMBLE_MAX_BYTES: u64 = 64 * 1024;
 
 /// Grace window for the §J timestamp filter. Lines with embedded timestamp
-/// ≥ attach_time - RACE_GRACE_SECS are emitted (strict lower bound — future
+/// ≥ attach_time - RACE_GRACE_SECS are emitted (strict lower bound - future
 /// timestamps from the live agent are always emitted).
 pub(crate) const RACE_GRACE_SECS: i64 = 5;
 
@@ -73,7 +73,7 @@ pub(crate) fn read_new_lines(
     // Use metadata on the open handle (avoids TOCTOU with path-based metadata)
     let file_len = file.metadata()?.len();
 
-    // H2: File truncation/shrink — silent skip to current EOF, no replay.
+    // H2: File truncation/shrink - silent skip to current EOF, no replay.
     if file_len < *offset {
         log::warn!(
             "[JSONL_TRUNCATE] File shrunk from {} to {}, skipping past replay",
@@ -139,7 +139,7 @@ pub(crate) fn read_new_lines(
 /// `extractor` is the per-backend "given a line, return its
 /// `(timestamp, optional_id, body)` if it's an emission candidate, else None".
 /// The `id` slot lets backends that dedupe by id (Gemini) seed their dedup set
-/// directly from this single read — eliminating the M1 TOCTOU where a parallel
+/// directly from this single read - eliminating the M1 TOCTOU where a parallel
 /// `seed_emitted_ids_from_preamble` pass re-read the file and could mark an
 /// id as emitted whose body was appended between the two reads. Backends that
 /// don't dedupe (Claude, Codex) pass `None` for the id slot.
@@ -216,7 +216,7 @@ mod tests {
         let mut offset = file_len;
         let mut remainder = String::new();
 
-        // No new content — read returns empty.
+        // No new content - read returns empty.
         let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
         assert!(lines.is_empty());
         assert_eq!(offset, file_len);
@@ -283,7 +283,7 @@ mod tests {
     // ── §J preamble scan tests ────────────────────────────────────────────
 
     /// Extractor for tests: reads `timestamp` field as RFC3339, `content` as the body.
-    /// `id` slot is unused (None) — backends that dedupe by id are covered in
+    /// `id` slot is unused (None) - backends that dedupe by id are covered in
     /// gemini_watcher tests.
     fn test_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn preamble_scan_with_single_huge_line_partial_at_start_emits_empty() {
-        // File contains one 80 KB line — preamble window has no `\n` → empty Vec.
+        // File contains one 80 KB line - preamble window has no `\n` → empty Vec.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("session.jsonl");
         let now = Utc::now();

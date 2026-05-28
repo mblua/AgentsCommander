@@ -24,11 +24,11 @@ pub fn agent_local_dir_name() -> String {
     format!(".{}", exe)
 }
 
-/// Returns the app config directory — portable, next to the binary.
+/// Returns the app config directory - portable, next to the binary.
 /// Pattern: `<binary_parent_dir>/.<binary_file_stem>/`
 /// E.g., `C:\tools\agentscommander_standalone.exe` → `C:\tools\.agentscommander_standalone\`
 /// Fallback: `$HOME/<profile::config_dir_name()>` if current_exe() fails.
-/// Cached via OnceLock — resolved once at first call.
+/// Cached via OnceLock - resolved once at first call.
 pub fn config_dir() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {

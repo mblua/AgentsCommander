@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// #280 §3.4 — record whether the missing-config one-shot INFO has already
+/// #280 §3.4 - record whether the missing-config one-shot INFO has already
 /// fired for a given `(project, team_dir)` pair this process. Returns
 /// `true` on the first call for that pair, `false` thereafter. Resets on
 /// process restart. Process-local because the dedup is per-instance.
@@ -23,7 +23,7 @@ pub struct DiscoveredTeam {
     /// team, and gates cross-project leakage in WG-aware membership checks.
     pub project: String,
     /// Agent display names in "project/agent" format (from resolve_agent_ref).
-    /// Index-aligned with `agent_paths` — both vecs always have the same length.
+    /// Index-aligned with `agent_paths` - both vecs always have the same length.
     pub agent_names: Vec<String>,
     /// Absolute paths to agent directories (resolved from team config refs).
     /// `None` entries mean the directory was not found on disk.
@@ -69,7 +69,7 @@ pub fn split_project_prefix(name: &str) -> (Option<&str>, &str) {
 ///
 /// Uses `rposition` so a pathological path containing an earlier `.ac-new`
 /// segment (e.g. `C:/.ac-new/repos/proj/.ac-new/wg-1-devs/__agent_x`) anchors
-/// on the right-most occurrence — the identity anchor. Subdirectories inside
+/// on the right-most occurrence - the identity anchor. Subdirectories inside
 /// a replica (`.ac-new/wg-1-devs/__agent_alice/some/deep`) resolve to the
 /// owning replica's FQN, consistent with "alice owns her subdirs".
 pub fn agent_fqn_from_path(path: &str) -> String {
@@ -91,7 +91,7 @@ pub fn agent_fqn_from_path(path: &str) -> String {
     agent_name_from_path(path)
 }
 
-// ── FQN resolution (shared between CLI and mailbox — §AR2-shared) ──
+// ── FQN resolution (shared between CLI and mailbox - §AR2-shared) ──
 
 /// Error type for `resolve_agent_target`. Each variant carries the data needed to
 /// produce an actionable user message via `thiserror::Display`.
@@ -121,7 +121,7 @@ pub enum ResolutionError {
     },
 
     /// Target's agent segment starts with the on-disk replica/matrix prefix
-    /// (`__agent_` or `_agent_`) — i.e. the caller passed a filesystem directory
+    /// (`__agent_` or `_agent_`) - i.e. the caller passed a filesystem directory
     /// name instead of a peer FQN. Common Codex-agent fallback bug when
     /// `list-peers` returned empty (Issue #134).
     #[error(
@@ -135,7 +135,7 @@ pub enum ResolutionError {
 
 /// Does the agent segment of `target` start with the on-disk replica/matrix
 /// prefix? Checks the right-hand-most `/`-delimited segment after stripping
-/// an optional `proj:` prefix — catches `__agent_x`, `proj/__agent_x`,
+/// an optional `proj:` prefix - catches `__agent_x`, `proj/__agent_x`,
 /// `wg-1-team/__agent_x`, and `proj:wg-1-team/__agent_x` alike.
 fn agent_segment_is_filesystem_dir(target: &str) -> bool {
     let after_colon = target.split_once(':').map(|(_, l)| l).unwrap_or(target);
@@ -316,7 +316,7 @@ pub fn verified_wg_coordinator_target(
 ///   (origin agents are conventionally unique; §AR2-G7).
 /// - Unqualified WG: `wg-N-team/<agent>` → resolved by two-level scan across
 ///   `project_paths`. Unambiguous → qualified FQN returned; ambiguous → error.
-/// - Bare `<agent>` (no `/`): returned as-is (Decision 2 step 3 — legacy).
+/// - Bare `<agent>` (no `/`): returned as-is (Decision 2 step 3 - legacy).
 ///
 /// Reject-on-ambiguity semantics are identical for CLI and mailbox callers.
 pub fn resolve_agent_target(
@@ -340,7 +340,7 @@ pub fn resolve_agent_target(
     // Issue #134: reject filesystem-directory names (`__agent_*`, `_agent_*`)
     // anywhere in the agent segment. `agent_name_from_path` strips these
     // prefixes when deriving display names, so a legitimate peer FQN never
-    // contains them — accepting them silently routes the message into the void.
+    // contains them - accepting them silently routes the message into the void.
     if agent_segment_is_filesystem_dir(target) {
         return Err(ResolutionError::LooksLikeFilesystemDir(target.to_string()));
     }
@@ -401,7 +401,7 @@ pub fn resolve_agent_target(
         };
     }
 
-    // Case 3: origin form or bare — return as-is (legacy delegation).
+    // Case 3: origin form or bare - return as-is (legacy delegation).
     Ok(target.to_string())
 }
 
@@ -527,7 +527,7 @@ pub fn is_in_team(agent_name: &str, team: &DiscoveredTeam) -> bool {
         }
     }
     // WG-aware: if agent is a WG replica belonging to this team, match by suffix.
-    // §DR8/§5.3: lenient `None => true` tolerance — unqualified agent_name matches
+    // §DR8/§5.3: lenient `None => true` tolerance - unqualified agent_name matches
     // any project's team of the same name (transition aid for Decision 3's
     // tolerate-on-read). Strict semantics live in `is_coordinator` only.
     if let Some(wg_team) = extract_wg_team(agent_name) {
@@ -557,14 +557,14 @@ pub fn is_in_team(agent_name: &str, team: &DiscoveredTeam) -> bool {
 ///
 /// §AR2-strict: the WG-aware branch enforces **strict** project matching
 /// (`None => false`). An unqualified `agent_name` (no `:` prefix) CANNOT hold
-/// coordinator authority — the authorization gate for destructive operations
+/// coordinator authority - the authorization gate for destructive operations
 /// must not tolerate legacy names. `is_in_team` and `can_communicate` remain
 /// lenient for display/reachability paths (§DR8).
 fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
     if let Some(ref coord_name) = team.coordinator_name {
         if agent_matches_member(agent_name, coord_name, team.coordinator_path.as_ref()) {
             log::trace!(
-                "[teams] is_coordinator: direct-match → true — agent='{}' team='{}/{}' coord='{}'",
+                "[teams] is_coordinator: direct-match → true - agent='{}' team='{}/{}' coord='{}'",
                 agent_name,
                 team.project,
                 team.name,
@@ -575,14 +575,14 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
         // WG-aware: if agent is a WG replica of this team's coordinator, match by suffix.
         // Cross-WG authority within the same team is allowed (wg-2/tech-lead can manage
         // agents in teams originally defined with wg-1/tech-lead as coordinator). Cross-
-        // project authority is NOT allowed — the project guard below enforces this.
+        // project authority is NOT allowed - the project guard below enforces this.
         if let Some(wg_team) = extract_wg_team(agent_name) {
             let (agent_project, _) = split_project_prefix(agent_name);
             let Some(agent_project) = agent_project else {
                 // Strict: unqualified `agent_name` cannot hold coordinator authority.
                 if wg_team == team.name && agent_suffix(agent_name) == agent_suffix(coord_name) {
                     log::trace!(
-                        "[teams] is_coordinator: reject-unqualified → false — agent='{}' team='{}/{}' coord='{}' (suffix would match)",
+                        "[teams] is_coordinator: reject-unqualified → false - agent='{}' team='{}/{}' coord='{}' (suffix would match)",
                         agent_name, team.project, team.name, coord_name
                     );
                 }
@@ -593,7 +593,7 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 && agent_suffix(agent_name) == agent_suffix(coord_name)
             {
                 log::trace!(
-                    "[teams] is_coordinator: wg-aware-match → true — agent='{}' team='{}/{}' coord='{}' agent_project='{}'",
+                    "[teams] is_coordinator: wg-aware-match → true - agent='{}' team='{}/{}' coord='{}' agent_project='{}'",
                     agent_name, team.project, team.name, coord_name, agent_project
                 );
                 return true;
@@ -603,7 +603,7 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 && agent_suffix(agent_name) == agent_suffix(coord_name)
             {
                 log::trace!(
-                    "[teams] is_coordinator: reject-project-mismatch → false — agent='{}' agent_project='{}' team_project='{}' team='{}' coord='{}'",
+                    "[teams] is_coordinator: reject-project-mismatch → false - agent='{}' agent_project='{}' team_project='{}' team='{}' coord='{}'",
                     agent_name, agent_project, team.project, team.name, coord_name
                 );
             }
@@ -612,7 +612,7 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 && agent_suffix(agent_name) != agent_suffix(coord_name)
             {
                 log::trace!(
-                    "[teams] is_coordinator: reject-suffix-mismatch → false — agent='{}' team='{}/{}' coord='{}' agent_suffix='{}' coord_suffix='{}'",
+                    "[teams] is_coordinator: reject-suffix-mismatch → false - agent='{}' team='{}/{}' coord='{}' agent_suffix='{}' coord_suffix='{}'",
                     agent_name, team.project, team.name, coord_name,
                     agent_suffix(agent_name), agent_suffix(coord_name)
                 );
@@ -622,7 +622,7 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
                 && agent_suffix(agent_name) != agent_suffix(coord_name)
             {
                 log::trace!(
-                    "[teams] is_coordinator: reject-both-mismatch → false — agent='{}' agent_project='{}' team_project='{}' team='{}' coord='{}' agent_suffix='{}' coord_suffix='{}'",
+                    "[teams] is_coordinator: reject-both-mismatch → false - agent='{}' agent_project='{}' team_project='{}' team='{}' coord='{}' agent_suffix='{}' coord_suffix='{}'",
                     agent_name, agent_project, team.project, team.name, coord_name,
                     agent_suffix(agent_name), agent_suffix(coord_name)
                 );
@@ -648,7 +648,7 @@ pub fn is_any_coordinator(agent_name: &str, teams: &[DiscoveredTeam]) -> bool {
 /// Thin wrapper so call sites don't have to duplicate the `agent_fqn_from_path` + `is_any_coordinator` pair.
 ///
 /// §DR2: uses `agent_fqn_from_path` so WG replicas get project-precise
-/// coordinator checks. `is_coordinator` is strict (§AR2-strict) — the FQN
+/// coordinator checks. `is_coordinator` is strict (§AR2-strict) - the FQN
 /// here ensures cross-project coordinator flags never leak.
 pub fn is_coordinator_for_cwd(working_directory: &str, teams: &[DiscoveredTeam]) -> bool {
     let agent_name = agent_fqn_from_path(working_directory);
@@ -712,7 +712,7 @@ pub fn discover_teams() -> Vec<DiscoveredTeam> {
         let base = Path::new(repo_path);
         if !base.is_dir() {
             log::trace!(
-                "[teams] discover_teams: project_path skipped (not a directory) — path='{}'",
+                "[teams] discover_teams: project_path skipped (not a directory) - path='{}'",
                 repo_path
             );
             continue;
@@ -775,7 +775,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
 
     for entry in entries.flatten() {
         log::trace!(
-            "[teams] discover_teams_in_project: inspecting entry — project='{}' entry='{}'",
+            "[teams] discover_teams_in_project: inspecting entry - project='{}' entry='{}'",
             project_folder,
             entry.file_name().to_string_lossy()
         );
@@ -798,7 +798,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
         let raw = match std::fs::read_to_string(&config_path) {
             Ok(s) => s,
             Err(e) => {
-                // #280 §3.4 — NotFound is an expected state for half-installed
+                // #280 §3.4 - NotFound is an expected state for half-installed
                 // team dirs (`_team_foo/` created but no `config.json` yet).
                 // Logging WARN at every discovery sweep spams app.log; downgrade
                 // NotFound to DEBUG and emit a one-shot INFO per (project,
@@ -808,14 +808,14 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
                     std::io::ErrorKind::NotFound => {
                         if note_missing_team_config(&project_folder, dir_name) {
                             log::info!(
-                                "[teams] team config missing (logged once per startup) — project='{}' team_dir='{}' path='{}'",
+                                "[teams] team config missing (logged once per startup) - project='{}' team_dir='{}' path='{}'",
                                 project_folder,
                                 dir_name,
                                 config_path.display()
                             );
                         }
                         log::debug!(
-                            "[teams] dropped team — project='{}' team_dir='{}' reason='not_found' path='{}'",
+                            "[teams] dropped team - project='{}' team_dir='{}' reason='not_found' path='{}'",
                             project_folder,
                             dir_name,
                             config_path.display()
@@ -823,7 +823,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
                     }
                     _ => {
                         log::warn!(
-                            "[teams] dropped team — project='{}' team_dir='{}' reason='read_failed' err='{}' path='{}'",
+                            "[teams] dropped team - project='{}' team_dir='{}' reason='read_failed' err='{}' path='{}'",
                             project_folder,
                             dir_name,
                             e,
@@ -838,7 +838,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
             Ok(v) => v,
             Err(e) => {
                 log::warn!(
-                    "[teams] dropped team — project='{}' team_dir='{}' reason='parse_failed' err='{}' path='{}'",
+                    "[teams] dropped team - project='{}' team_dir='{}' reason='parse_failed' err='{}' path='{}'",
                     project_folder,
                     dir_name,
                     e,
@@ -848,7 +848,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
             }
         };
 
-        // Resolve agents — build names and paths in a single pass to keep indices aligned
+        // Resolve agents - build names and paths in a single pass to keep indices aligned
         let agent_refs: Vec<String> = parsed
             .get("agents")
             .and_then(|a| a.as_array())
@@ -892,7 +892,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
         });
         let pushed = teams.last().expect("just pushed");
         log::debug!(
-            "[teams] discovered team — project='{}' team='{}' coord_name={:?} coord_path={:?} agent_count={}",
+            "[teams] discovered team - project='{}' team='{}' coord_name={:?} coord_path={:?} agent_count={}",
             pushed.project,
             pushed.name,
             pushed.coordinator_name,
@@ -975,7 +975,7 @@ mod tests {
     // ── resolve_agent_target tests (AR2-tests 12-16) ──
 
     /// Auto-cleaned temp dir for fixture roots. Matches the convention used in
-    /// `phone/messaging.rs` tests — no new crate dependencies.
+    /// `phone/messaging.rs` tests - no new crate dependencies.
     struct FixtureRoot(PathBuf);
     impl Drop for FixtureRoot {
         fn drop(&mut self) {
@@ -1207,7 +1207,7 @@ mod tests {
                 .join("__agent_alice");
             std::fs::create_dir_all(&replica).unwrap();
         }
-        // project_paths = [tmp] (parent only — must descend one level).
+        // project_paths = [tmp] (parent only - must descend one level).
         let paths = vec![tmp.path().to_string_lossy().to_string()];
         let err = resolve_agent_target("wg-1-devs/alice", &paths).unwrap_err();
         match err {
@@ -1347,7 +1347,7 @@ mod tests {
         assert!(!can_communicate(from, to, &teams));
     }
 
-    /// §DR7: lenient tolerance for legacy-unqualified names — unqualified
+    /// §DR7: lenient tolerance for legacy-unqualified names - unqualified
     /// pairs on the same WG can still communicate during the migration window.
     #[test]
     fn can_communicate_allows_legacy_unqualified() {
@@ -1372,7 +1372,7 @@ mod tests {
 
     /// Issue #77 regression guard: `is_any_coordinator` is the hot path used by
     /// `commands::ac_discovery` to populate `AcAgentReplica.isCoordinator`. The
-    /// §AR2-strict gate in `is_coordinator` requires a project-qualified FQN —
+    /// §AR2-strict gate in `is_coordinator` requires a project-qualified FQN -
     /// callers that pass an unqualified WG-local name will silently get `false`
     /// (which is exactly the bug fixed in #77). This test pins the contract so
     /// no future refactor can re-introduce the regression.
@@ -1395,20 +1395,20 @@ mod tests {
     #[test]
     fn is_coordinator_rejects_legacy_unqualified_from() {
         let teams = [dev_team("proj-a")];
-        // Legacy-unqualified name — local part matches the team coordinator, but
+        // Legacy-unqualified name - local part matches the team coordinator, but
         // with no project prefix the strict rule rejects.
         assert!(!is_coordinator("wg-1-dev-team/tech-lead", &teams[0]));
         // For completeness, the fully-qualified form DOES grant authority.
         assert!(is_coordinator("proj-a:wg-1-dev-team/tech-lead", &teams[0]));
     }
 
-    /// #280 §3.4 — `note_missing_team_config` is a process-local one-shot
+    /// #280 §3.4 - `note_missing_team_config` is a process-local one-shot
     /// dedup keyed on `(project, team_dir)`. First sighting returns true so
     /// the caller emits the INFO; later sightings return false so the WARN
     /// storm collapses to a single line per unique pair per process.
     #[test]
     fn note_missing_team_config_returns_true_first_time_only() {
-        // Use unique pair to avoid collisions with other tests' state — the
+        // Use unique pair to avoid collisions with other tests' state - the
         // helper's HashSet is process-global.
         let project = "proj-test-280-3-4";
         let dir = "_team_foo_test_280_3_4";

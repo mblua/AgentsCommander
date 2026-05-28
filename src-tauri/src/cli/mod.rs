@@ -14,16 +14,16 @@ use clap::{Parser, Subcommand};
 
 /// Print to stdout with BrokenPipe tolerance. If the underlying write fails
 /// SPECIFICALLY with `io::ErrorKind::BrokenPipe` (typically because the
-/// consumer closed stdout early — `head`, captured pipe in PS without
+/// consumer closed stdout early - `head`, captured pipe in PS without
 /// `Out-String`, etc.), exit the process cleanly with code 0 instead of
 /// panicking. ANY OTHER write error (`PermissionDenied`, `StorageFull`,
 /// `WriteZero`, `Interrupted`, `Other`, etc.) panics like `println!` does
-/// today — those are real failures and a silent exit-0 would let consumers
+/// today - those are real failures and a silent exit-0 would let consumers
 /// believe an empty redirect target is a successful empty result. See #230.
 ///
 /// Use this in CLI verbs anywhere we currently call `println!` for primary
 /// output (JSON results, status lines, response bodies). Continue using
-/// `eprintln!` for error / log output — stderr is rarely piped and the
+/// `eprintln!` for error / log output - stderr is rarely piped and the
 /// panic surface there is acceptable for now.
 #[macro_export]
 macro_rules! cli_println {
@@ -64,7 +64,7 @@ or any valid UUID). Per-session tokens are authoritative at the daemon mailbox b
 not in the CLI. A UUID issued by a different binary instance will pass the CLI's shape \
 check but will be REJECTED by the daemon's mailbox (write-path verbs like `send`, \
 `close-session`, `task-set-title`, `task-append-body`). Read-only verb `list-peers` \
-REQUIRES a token but accepts ANY UUID-shaped value at the CLI boundary — the token value \
+REQUIRES a token but accepts ANY UUID-shaped value at the CLI boundary - the token value \
 is not consulted for authorization at the CLI. It reads disk state directly (from \
 `--root` and the binary's per-binary config directory); authorization of any specific \
 UUID happens only at the daemon mailbox, which write-path verbs invoke. `list-sessions` \
@@ -88,7 +88,7 @@ pub enum Commands {
     Send(send::SendArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
     ListPeers(list_peers::ListPeersArgs),
-    /// List reachable peers (lean JSON — name, working, sessionStatus, reachable, teams)
+    /// List reachable peers (lean JSON - name, working, sessionStatus, reachable, teams)
     ListPeersLean(list_peers::ListPeersLeanArgs),
     /// List all sessions in the running app instance (returns JSON)
     ListSessions(list_sessions::ListSessionsArgs),
@@ -111,7 +111,7 @@ pub enum Commands {
 /// Attach to parent console (or allocate a new one) ONLY if both stdout and stderr
 /// have invalid/missing handles. When stdio is already valid (inherited pipes,
 /// inherited console handles, or file redirects from the parent), `AttachConsole`
-/// would REBIND the std handles to a fresh console buffer — breaking those
+/// would REBIND the std handles to a fresh console buffer - breaking those
 /// inherited channels. That rebinding is the root cause of issue #129: PS
 /// -NonInteractive `&` direct calls inherit pipe handles to the GUI-subsystem
 /// child, and AttachConsole's rebind sends subsequent writes to a console buffer
@@ -120,7 +120,7 @@ pub enum Commands {
 /// The condition uses `GetFileType` on the std handles. `FILE_TYPE_UNKNOWN`
 /// (returned for null/invalid handles) is the only case where attaching is
 /// useful (the user double-clicked the GUI exe in explorer.exe, etc.). For PIPE,
-/// CHAR, DISK, REMOTE — the inherited handle is already routable, leave it alone.
+/// CHAR, DISK, REMOTE - the inherited handle is already routable, leave it alone.
 #[cfg(target_os = "windows")]
 #[allow(clippy::collapsible_if)]
 pub fn attach_parent_console() {
@@ -206,7 +206,7 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
 
 /// Dispatch CLI subcommands. Returns exit code.
 ///
-/// Caller contract: `attach_parent_console()` MUST be called before this — see
+/// Caller contract: `attach_parent_console()` MUST be called before this - see
 /// `main.rs`. Done there (not here) so the eprintln!s inside `init_logger()`
 /// reach the user's terminal on Windows release builds.
 pub fn handle_cli(cmd: Commands) -> i32 {
@@ -233,7 +233,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
 ///
 /// `std::process::exit` skips destructors, so the default flush-on-drop
 /// behavior of `Stdout`/`Stderr` does not run. This helper forces an
-/// explicit flush. Errors are silenced — there is nothing meaningful to do
+/// explicit flush. Errors are silenced - there is nothing meaningful to do
 /// with a flush failure at process exit.
 pub fn flush_outputs() {
     use std::io::Write;

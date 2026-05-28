@@ -12,18 +12,18 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
-// IPC type — metadata only (no prompt body)
+// IPC type - metadata only (no prompt body)
 // ---------------------------------------------------------------------------
 
 /// Metadata for one role template. Mirrored by the TypeScript `RoleTemplateMeta`
-/// interface in `src/shared/types.ts`. Deliberately carries NO prompt body —
+/// interface in `src/shared/types.ts`. Deliberately carries NO prompt body -
 /// see the module docs and plan §8.6.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoleTemplateMeta {
     /// Source-qualified id: "agency:<file-stem>" or "local:<folder-name>".
     pub id: String,
-    /// "agency" | "local" — machine-readable source.
+    /// "agency" | "local" - machine-readable source.
     pub source: String,
     /// Display name (frontmatter `name`, else folder/file stem).
     pub name: String,
@@ -34,7 +34,7 @@ pub struct RoleTemplateMeta {
     pub category: String,
     /// Optional accent color (agency frontmatter `color`); None for local v1.
     pub color: Option<String>,
-    /// Optional emoji; reserved/forward-compat — None for both sources in v1.
+    /// Optional emoji; reserved/forward-compat - None for both sources in v1.
     pub emoji: Option<String>,
     /// True iff the template ships a non-empty `skills/` directory.
     pub has_skills: bool,
@@ -51,7 +51,7 @@ pub struct RoleTemplateMeta {
 /// so this file MUST exist before `src-tauri` compiles at all. The branch is
 /// kept buildable by committing a minimal valid **placeholder** snapshot first
 /// and replacing it with the reviewed real snapshot before final build/release.
-/// The placeholder carries `"commit": "PLACEHOLDER-DO-NOT-RELEASE"` — the
+/// The placeholder carries `"commit": "PLACEHOLDER-DO-NOT-RELEASE"` - the
 /// shipper MUST verify that sentinel is gone before a release build.
 const AGENCY_SNAPSHOT_JSON: &str = include_str!("agency_agents_snapshot.json");
 
@@ -59,7 +59,7 @@ const AGENCY_SNAPSHOT_JSON: &str = include_str!("agency_agents_snapshot.json");
 struct AgencySnapshot {
     #[serde(default)]
     templates: Vec<AgencyTemplate>,
-    // header fields (source/ref/commit/templateCount) are ignored here —
+    // header fields (source/ref/commit/templateCount) are ignored here -
     // serde skips unknown fields by default.
 }
 
@@ -90,7 +90,7 @@ fn agency_templates() -> &'static Vec<AgencyTemplate> {
             Err(e) => {
                 log::error!(
                     "[role-templates] embedded agency snapshot failed to parse \
-                     — built-in templates unavailable: {}",
+                     - built-in templates unavailable: {}",
                     e
                 );
                 Vec::new()
@@ -132,7 +132,7 @@ pub enum LocalTemplatesDir {
     },
 }
 
-/// Pure resolver — `config_dir` is a parameter so it is unit-testable.
+/// Pure resolver - `config_dir` is a parameter so it is unit-testable.
 pub fn resolve_local_templates_dir(
     settings: &crate::config::settings::AppSettings,
     config_dir: &Path,
@@ -230,7 +230,7 @@ pub fn ensure_default_templates_dir(config_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Startup convenience wrapper — resolves the real config dir and logs (warn)
+/// Startup convenience wrapper - resolves the real config dir and logs (warn)
 /// on failure. A missing default dir is never fatal.
 pub fn ensure_default_templates_dir_at_config() {
     match crate::config::config_dir() {
@@ -247,7 +247,7 @@ pub fn ensure_default_templates_dir_at_config() {
 }
 
 // ---------------------------------------------------------------------------
-// Frontmatter helpers (self-contained — module decoupling)
+// Frontmatter helpers (self-contained - module decoupling)
 // ---------------------------------------------------------------------------
 
 /// Extract `name` + `description` from leading YAML frontmatter. Returns
@@ -284,7 +284,7 @@ fn parse_template_frontmatter(content: &str) -> (Option<String>, Option<String>)
 ///
 /// Strips a leading UTF-8 BOM FIRST, then treats the input as frontmatter only
 /// if it begins with exactly `---` immediately followed by a newline (`---\n`
-/// or `---\r\n`) — this avoids mistaking a body that opens with a Markdown
+/// or `---\r\n`) - this avoids mistaking a body that opens with a Markdown
 /// `---` horizontal rule for frontmatter. If no closing `---` line is found,
 /// returns `content` (post-BOM) unchanged.
 fn strip_yaml_frontmatter(content: &str) -> &str {
@@ -297,7 +297,7 @@ fn strip_yaml_frontmatter(content: &str) -> &str {
         None => return content,
     };
     // Scan for a closing `---` line; return the body after it. If there is no
-    // closing line, the input was not real frontmatter — return it unchanged.
+    // closing line, the input was not real frontmatter - return it unchanged.
     let mut offset = 0;
     for line in after_open.split_inclusive('\n') {
         let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
@@ -310,10 +310,10 @@ fn strip_yaml_frontmatter(content: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// Link-safety helpers (plan §8.4 — local templates may be authored by others)
+// Link-safety helpers (plan §8.4 - local templates may be authored by others)
 // ---------------------------------------------------------------------------
 
-/// True if `meta` describes a symlink or — on Windows — ANY reparse point
+/// True if `meta` describes a symlink or - on Windows - ANY reparse point
 /// (junction, mount point, …). A Windows directory junction is a reparse point
 /// that `FileType::is_symlink()` does not reliably report, so the raw
 /// `FILE_ATTRIBUTE_REPARSE_POINT` (0x400) bit is also checked.
@@ -333,7 +333,7 @@ fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
 }
 
 /// `symlink_metadata` (no link traversal) + reparse-point rejection. `Err(())`
-/// means "missing, unreadable, or a link/reparse point" — callers skip/reject.
+/// means "missing, unreadable, or a link/reparse point" - callers skip/reject.
 fn lstat_no_links(path: &Path) -> Result<std::fs::Metadata, ()> {
     match std::fs::symlink_metadata(path) {
         Ok(m) if is_link_or_reparse(&m) => Err(()),
@@ -351,7 +351,7 @@ fn lstat_no_links(path: &Path) -> Result<std::fs::Metadata, ()> {
 /// `Role.md` (not a symlink). Skips non-dirs, links/reparse points, dirs
 /// without Role.md, and unreadable entries. Never recurses past depth 1.
 ///
-/// A missing/unreadable `dir` yields `Vec::new()` — a missing templates dir
+/// A missing/unreadable `dir` yields `Vec::new()` - a missing templates dir
 /// must not break the picker. Sorted case-insensitively by name on return.
 fn collect_local_templates(dir: &Path) -> Vec<RoleTemplateMeta> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -359,7 +359,7 @@ fn collect_local_templates(dir: &Path) -> Vec<RoleTemplateMeta> {
     };
     let mut out: Vec<RoleTemplateMeta> = Vec::new();
     for entry in entries.flatten() {
-        // DirEntry::metadata() does NOT follow links — it stats the entry.
+        // DirEntry::metadata() does NOT follow links - it stats the entry.
         let Ok(meta) = entry.metadata() else {
             continue;
         };
@@ -460,7 +460,7 @@ pub fn collect_role_templates(
 
 /// Resolve a template id to its body + skills source. Synchronous and
 /// filesystem-read-only, so `create_agent_matrix` can call it BEFORE any disk
-/// mutation. An unknown id is an `Err` — the caller `?`-propagates it and no
+/// mutation. An unknown id is an `Err` - the caller `?`-propagates it and no
 /// directory is created. `config_dir` is a parameter for testability; the
 /// `agency:` branch does not use it.
 pub fn resolve_role_template(
@@ -495,7 +495,7 @@ pub fn resolve_role_template(
             }
         };
         // SECURITY: never build a path from the id string. Re-enumerate the
-        // resolved dir and match by id — the resolved path is therefore always
+        // resolved dir and match by id - the resolved path is therefore always
         // a real direct child (no `..` / separator traversal possible).
         let entries = std::fs::read_dir(&dir)
             .map_err(|e| format!("Cannot read templates directory: {}", e))?;
@@ -605,7 +605,7 @@ fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
                 continue;
             }
         };
-        // DirEntry::metadata() does NOT follow links — it stats the entry.
+        // DirEntry::metadata() does NOT follow links - it stats the entry.
         let meta = match entry.metadata() {
             Ok(m) => m,
             Err(e) => {
@@ -614,7 +614,7 @@ fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
             }
         };
         if is_link_or_reparse(&meta) {
-            continue; // symlink / junction — never copied (security).
+            continue; // symlink / junction - never copied (security).
         }
         let target = dst.join(entry.file_name());
         if meta.is_dir() {
@@ -624,7 +624,7 @@ fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
                 failures.push(format!("{}: cannot copy ({})", entry.path().display(), e));
             }
         }
-        // else: device / fifo / other — skipped.
+        // else: device / fifo / other - skipped.
     }
 }
 
@@ -635,7 +635,7 @@ fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
 /// List all role templates available to the New Agent picker: built-in agency
 /// templates (always) plus local templates from the resolved path.
 ///
-/// Returns `Ok` even when the explicit `agentTemplatesPath` is invalid — that
+/// Returns `Ok` even when the explicit `agentTemplatesPath` is invalid - that
 /// failure is logged via `log::error!` (→ ErrorModal) and the built-ins are
 /// still returned. A missing config dir degrades to agency-only + a warning.
 #[tauri::command]
@@ -840,7 +840,7 @@ mod tests {
         std::fs::create_dir_all(&tmpl).expect("mk template dir");
         // Symlink the template's Role.md at an outside file.
         let Ok(()) = try_symlink_file(&secret, &tmpl.join("Role.md")) else {
-            return; // no symlink privilege — skip, not fail.
+            return; // no symlink privilege - skip, not fail.
         };
         let r = resolve_role_template("local:evil", &AppSettings::default(), tmp.path());
         assert!(r.is_err(), "a symlinked Role.md must be rejected");
@@ -857,7 +857,7 @@ mod tests {
         let tmpl = tmp.path().join("agent-templates").join("ls");
         write(&tmpl.join("Role.md"), "# LS\n\nBody.\n");
         let Ok(()) = try_symlink_dir(&outside, &tmpl.join("skills")) else {
-            return; // no symlink privilege — skip, not fail.
+            return; // no symlink privilege - skip, not fail.
         };
         let r = resolve_role_template("local:ls", &AppSettings::default(), tmp.path())
             .expect("ls resolves (symlinked skills just ignored)");
@@ -933,11 +933,11 @@ mod tests {
     fn ensure_default_templates_dir_preserves_existing_readme() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let readme = tmp.path().join("agent-templates").join("README.md");
-        write(&readme, "SENTINEL — user edited\n");
+        write(&readme, "SENTINEL - user edited\n");
         ensure_default_templates_dir(tmp.path()).expect("seed default dir");
         let after = std::fs::read_to_string(&readme).expect("read readme");
         assert_eq!(
-            after, "SENTINEL — user edited\n",
+            after, "SENTINEL - user edited\n",
             "README must not be overwritten"
         );
     }
@@ -1014,7 +1014,7 @@ mod tests {
         let src = tmp.path().join("src");
         write(&src.join("real.md"), "real\n");
         let Ok(()) = try_symlink_dir(&outside, &src.join("linked")) else {
-            return; // no symlink privilege — skip, not fail.
+            return; // no symlink privilege - skip, not fail.
         };
         let dst = tmp.path().join("dst");
         let _ = copy_dir_recursive(&src, &dst);
@@ -1032,7 +1032,7 @@ mod tests {
         write(&real.join("f.md"), "f\n");
         let link = tmp.path().join("link");
         let Ok(()) = try_symlink_dir(&real, &link) else {
-            return; // no symlink privilege — skip, not fail.
+            return; // no symlink privilege - skip, not fail.
         };
         let dst = tmp.path().join("dst");
         let failures = copy_dir_recursive(&link, &dst);

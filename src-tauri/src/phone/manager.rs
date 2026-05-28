@@ -97,7 +97,7 @@ pub fn send_message(
     // Validate routing
     if !crate::config::teams::can_communicate(from, to, teams) {
         return Err(format!(
-            "Agent '{}' cannot communicate with '{}' — no shared team or coordinator link",
+            "Agent '{}' cannot communicate with '{}' - no shared team or coordinator link",
             from, to
         ));
     }

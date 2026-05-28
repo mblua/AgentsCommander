@@ -1,4 +1,4 @@
-//! `telegram-send-image` CLI verb — sends a local image (or generic file) to
+//! `telegram-send-image` CLI verb - sends a local image (or generic file) to
 //! a configured Telegram bot from an external terminal, bypassing the Tauri
 //! frontend. Issue #282.
 //!

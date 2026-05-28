@@ -7,7 +7,7 @@
 //! `[task]` audit lines), undermining plan #137 §3a's HIGH-1 mitigation.
 //!
 //! Idempotent via a process-wide [`OnceLock`]: calling more than once is a
-//! silent no-op. Defensive only — current call sites are mutually exclusive
+//! silent no-op. Defensive only - current call sites are mutually exclusive
 //! (a single process runs either the GUI path OR the CLI path, never both).
 //! Without the guard, a second `env_logger::Builder::init()` would panic via
 //! `log::set_logger`'s "called twice" contract.
@@ -20,20 +20,20 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static INIT: OnceLock<()> = OnceLock::new();
 
-/// #280 §2 — size cap per `app.log` file. Above this, the file is rotated.
+/// #280 §2 - size cap per `app.log` file. Above this, the file is rotated.
 /// 50 MB chosen so a single file is still grep-able in a text editor while
 /// keeping the combined retention cap below ~300 MB total per binary instance.
 const APP_LOG_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
-/// #280 §2 — number of rotated files to keep (`app.log.1` … `app.log.<KEEP>`).
+/// #280 §2 - number of rotated files to keep (`app.log.1` … `app.log.<KEEP>`).
 /// Combined with `APP_LOG_MAX_BYTES` this caps total log disk usage at
 /// roughly `APP_LOG_MAX_BYTES * (APP_LOG_KEEP + 1)` bytes per binary instance
 /// (active file + KEEP rotated). Rotation walks `(KEEP - 1) ..= 1` so the
 /// highest rename is `.(KEEP - 1) → .KEEP`, atomically evicting the prior
-/// `.KEEP` via `std::fs::rename`'s replace semantics — see `rotate()`.
+/// `.KEEP` via `std::fs::rename`'s replace semantics - see `rotate()`.
 const APP_LOG_KEEP: u32 = 5;
 
-/// #280 §2 — log file plus a bookkeeping counter for size-based rotation.
+/// #280 §2 - log file plus a bookkeeping counter for size-based rotation.
 /// `bytes` is read/written with `Relaxed` ordering: it's a best-effort cap
 /// counter, not a synchronization primitive. A small over-shoot at the
 /// rotation boundary is acceptable.
@@ -43,15 +43,15 @@ struct AppLogFile {
     path: PathBuf,
 }
 
-/// #280 §2 — rotate `path` → `path.1` and shift existing `path.<i>` to
+/// #280 §2 - rotate `path` → `path.1` and shift existing `path.<i>` to
 /// `path.<i+1>`. The walk runs `(KEEP - 1) ..= 1` so the highest rename is
 /// `.(KEEP - 1) → .KEEP`; the existing `.KEEP` is implicitly evicted by
 /// `std::fs::rename`'s atomic-replace semantics (G-HIGH-1 fix). Caller must
 /// have observed `bytes >= APP_LOG_MAX_BYTES`; we re-check under the lock
-/// (G-MED-1 fix) to keep concurrent invocations idempotent — only one
+/// (G-MED-1 fix) to keep concurrent invocations idempotent - only one
 /// thread actually rotates.
 ///
-/// On any IO error inside rotation, we log to stderr (NOT `log::*` — that
+/// On any IO error inside rotation, we log to stderr (NOT `log::*` - that
 /// would re-enter the format closure) and continue. Worst case: the file
 /// grows somewhat past the cap before a successful rotation.
 fn rotate(state: &AppLogFile) {
@@ -60,7 +60,7 @@ fn rotate(state: &AppLogFile) {
         Err(e) => e.into_inner(),
     };
 
-    // #280 G-MED-1 — re-check the byte counter under the lock. If another
+    // #280 G-MED-1 - re-check the byte counter under the lock. If another
     // thread already rotated (their `bytes.store(0)` ran), nothing to do.
     if state.bytes.load(Ordering::Relaxed) < APP_LOG_MAX_BYTES {
         return;
@@ -71,7 +71,7 @@ fn rotate(state: &AppLogFile) {
         Some(p) => p,
         None => {
             eprintln!(
-                "[log] rotate: cannot resolve parent for {} — skipping",
+                "[log] rotate: cannot resolve parent for {} - skipping",
                 base.display()
             );
             return;
@@ -81,7 +81,7 @@ fn rotate(state: &AppLogFile) {
         Some(s) => s,
         None => {
             eprintln!(
-                "[log] rotate: cannot extract file name for {} — skipping",
+                "[log] rotate: cannot extract file name for {} - skipping",
                 base.display()
             );
             return;
@@ -111,7 +111,7 @@ fn rotate(state: &AppLogFile) {
         }
     } else {
         // KEEP == 1 (or 0): no shift needed; `.1` will be overwritten below.
-        // KEEP == 0 is degenerate but harmless — `app.log` gets truncated
+        // KEEP == 0 is degenerate but harmless - `app.log` gets truncated
         // to a fresh file with no retained history.
     }
 
@@ -120,18 +120,18 @@ fn rotate(state: &AppLogFile) {
         let one = numbered(1);
         if let Err(e) = std::fs::rename(base, &one) {
             eprintln!(
-                "[log] rotate: failed to rename {} → {}: {} — leaving active file in place",
+                "[log] rotate: failed to rename {} → {}: {} - leaving active file in place",
                 base.display(),
                 one.display(),
                 e
             );
-            // Active file stays — next writes append to it; cap will be
+            // Active file stays - next writes append to it; cap will be
             // breached temporarily.
             return;
         }
     } else if let Err(e) = std::fs::remove_file(base) {
         eprintln!(
-            "[log] rotate: KEEP=0 and failed to remove {}: {} — leaving active file in place",
+            "[log] rotate: KEEP=0 and failed to remove {}: {} - leaving active file in place",
             base.display(),
             e
         );
@@ -169,7 +169,7 @@ fn rotate(state: &AppLogFile) {
                 base.display(),
                 e
             );
-            // Counter NOT reset — next writes will see "over cap" and try
+            // Counter NOT reset - next writes will see "over cap" and try
             // rotating again. Active fd in `file_guard` is now stale: on
             // both Unix and Windows the open handle survives `rename()` and
             // continues to point at the moved file, so subsequent writes
@@ -219,7 +219,7 @@ fn init_logger_inner() {
             })
     });
 
-    // #280 §2.6 — first-time migration. Existing users may have multi-GB
+    // #280 §2.6 - first-time migration. Existing users may have multi-GB
     // app.log from before the rotation rollout; rotate immediately so this
     // run starts on a fresh file instead of appending to it.
     if let Some(ref state) = log_state {
@@ -251,24 +251,24 @@ fn init_logger_inner() {
             move |buf, record| {
                 let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
                 let line = format!(
-                    "{} [{}] {} — {}\n",
+                    "{} [{}] {} - {}\n",
                     ts,
                     record.level(),
                     record.target(),
                     record.args()
                 );
-                // #280 — universal secret scrub before the line reaches
+                // #280 - universal secret scrub before the line reaches
                 // stderr or app.log. Defends against new call sites and
                 // third-party crate errors that may have bypassed api.rs's
                 // and voice.rs's redaction. Near-zero cost when the line
                 // contains no "/bot" or "key=" substring (early-return
                 // inside redact()).
                 let line = crate::telegram::redact::redact(&line);
-                // #264 — tee ERROR-level entries from AgentsCommander's own
+                // #264 - tee ERROR-level entries from AgentsCommander's own
                 // targets into the process-wide sink for the UI error modal.
                 // Placed BEFORE the `?` writes below so a failing stderr/app.log
                 // write cannot skip capture (M1). MUST NOT call any log::* macro
-                // — this runs inside the logger and would recurse.
+                // - this runs inside the logger and would recurse.
                 if should_capture(record) {
                     error_sink().capture(ErrorLogEntry::from_record(ts.to_string(), record));
                 }
@@ -294,7 +294,7 @@ fn init_logger_inner() {
 }
 
 // ===========================================================================
-// #264 — ERROR-level log capture for the UI error modal.
+// #264 - ERROR-level log capture for the UI error modal.
 // ===========================================================================
 
 /// One captured ERROR-level log entry, surfaced to the UI error modal (#264).
@@ -304,7 +304,7 @@ fn init_logger_inner() {
 pub struct ErrorLogEntry {
     /// Local wall-clock timestamp, e.g. "2026-05-21 15:56:11.123".
     pub timestamp: String,
-    /// Level string — always "ERROR" today; kept for forward-compat + copy text.
+    /// Level string - always "ERROR" today; kept for forward-compat + copy text.
     pub level: String,
     /// Log target (module path), e.g. "agentscommander_lib::commands::entity_creation".
     pub target: String,
@@ -315,9 +315,9 @@ pub struct ErrorLogEntry {
 impl ErrorLogEntry {
     /// Build an entry from a log `Record` plus a preformatted timestamp.
     /// Factored out of the format closure so it is unit-testable with a
-    /// synthetic `Record` — the closure itself cannot be invoked from a test.
+    /// synthetic `Record` - the closure itself cannot be invoked from a test.
     fn from_record(timestamp: String, record: &log::Record) -> Self {
-        // #280 — the error modal is exposed to the UI; scrub the message
+        // #280 - the error modal is exposed to the UI; scrub the message
         // so a leaked bot token / Gemini key cannot reach the frontend
         // payload. Source-side redaction in api.rs / voice.rs is the
         // first line of defense; this is defense-in-depth.
@@ -348,15 +348,15 @@ const ERROR_BUFFER_CAP: usize = 200;
 
 /// Process-wide sink that tees ERROR-level log entries to the Tauri UI layer.
 ///
-/// `pending` is the source of truth — every captured entry lands there.
+/// `pending` is the source of truth - every captured entry lands there.
 /// `notify` wakes the emit task (`spawn_error_emit_task`). The `env_logger`
 /// format closure calls only `capture()`, which pushes to `pending` and then
-/// `notify_one()` — both sync, log-free and panic-free. The actual
+/// `notify_one()` - both sync, log-free and panic-free. The actual
 /// `error_log_event` emit runs OUTSIDE the logger, in the emit task (see §3.7).
 /// The emitted event is a content-free *ping*: the frontend responds by calling
 /// `drain_error_logs`, which read-and-clears `pending`. Because `capture()`
 /// pushes BEFORE signalling, a drain triggered by the ping always observes the
-/// entry — race-free without sequence numbers.
+/// entry - race-free without sequence numbers.
 pub struct ErrorEventSink {
     pending: Mutex<VecDeque<ErrorLogEntry>>,
     notify: tokio::sync::Notify,
@@ -386,7 +386,7 @@ impl ErrorEventSink {
         }
         // Wake the emit task. Coalescing is intentional: Notify holds at most
         // one permit, so a burst of captures between wake-ups yields a single
-        // ping — the frontend's read-and-clear drain collects them all anyway.
+        // ping - the frontend's read-and-clear drain collects them all anyway.
         self.notify.notify_one();
     }
 
@@ -413,8 +413,8 @@ pub fn error_sink() -> &'static ErrorEventSink {
 /// Called once from `lib::run()`'s `setup()` hook (§5.3.a).
 ///
 /// The task waits on the sink's `Notify` and emits a content-free ping each
-/// time `capture()` signals. Running the emit HERE — outside the `env_logger`
-/// format closure — keeps the logging hot path minimal and isolates any panic
+/// time `capture()` signals. Running the emit HERE - outside the `env_logger`
+/// format closure - keeps the logging hot path minimal and isolates any panic
 /// inside `emit()` from the arbitrary `log::error!` call site. See §3.7.
 pub fn spawn_error_emit_task(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -444,7 +444,7 @@ mod tests {
 
     /// Run `should_capture` against a synthetic record. The `Record` (and the
     /// `format_args!` temporary it borrows) is built and consumed inside this
-    /// single expression — see §7.1's lifetime note.
+    /// single expression - see §7.1's lifetime note.
     fn captures(level: log::Level, target: &str) -> bool {
         should_capture(
             &log::Record::builder()
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(built.message, "line one\nline two");
     }
 
-    /// #280 LOW-3 — companion to `from_record_redacts_telegram_token_in_message`
+    /// #280 LOW-3 - companion to `from_record_redacts_telegram_token_in_message`
     /// for the Gemini `?key=` shape. The voice.rs source-side fix moves
     /// the API key out of the URL entirely, but this defense-in-depth
     /// scrub catches any future caller that re-introduces the query
@@ -519,7 +519,7 @@ mod tests {
         );
     }
 
-    /// #280 — the error modal payload reaches the UI; secrets must be
+    /// #280 - the error modal payload reaches the UI; secrets must be
     /// scrubbed at `from_record` time so even a future caller that bypassed
     /// the source-side redaction in api.rs cannot leak a token into the
     /// frontend.
@@ -550,7 +550,7 @@ mod tests {
     /// `ErrorLogEntry` crosses the Tauri IPC boundary, so the
     /// `#[serde(rename_all = "camelCase")]` rename is part of the contract with
     /// `src/shared/types.ts`. The four field names are single-word today, so the
-    /// rename is a no-op — this test guards the contract against a future
+    /// rename is a no-op - this test guards the contract against a future
     /// field rename (mirrors `rtk_sweep_result_serializes_camel_case`).
     #[test]
     fn error_log_entry_serializes_camel_case() {
@@ -572,7 +572,7 @@ mod tests {
         let first = sink.drain();
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].message, "only");
-        // A second drain sees nothing — drain is read-and-clear.
+        // A second drain sees nothing - drain is read-and-clear.
         assert!(sink.drain().is_empty());
     }
 
@@ -605,7 +605,7 @@ mod tests {
         );
     }
 
-    // ── #280 §2 — app.log rotation tests ──────────────────────────────
+    // ── #280 §2 - app.log rotation tests ──────────────────────────────
 
     /// Build a synthetic `AppLogFile` rooted at `dir`. `bytes` is preloaded
     /// so the tests can drive `rotate()` directly without needing to write
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(read_marker(tmp.path(), "app.log.3").as_deref(), Some("TWO"));
     }
 
-    /// G-HIGH-1 — the rotation walks `(KEEP - 1) ..= 1`, so the highest
+    /// G-HIGH-1 - the rotation walks `(KEEP - 1) ..= 1`, so the highest
     /// rename is `.<KEEP - 1> → .<KEEP>`. The old `.<KEEP>` is evicted
     /// atomically. No `.<KEEP + 1>` is ever created.
     #[test]
@@ -705,7 +705,7 @@ mod tests {
         assert_eq!(oldest.as_deref(), Some(format!("DOT_{}", APP_LOG_KEEP - 1).as_str()));
     }
 
-    /// G-MED-1 — under concurrent invocation, `rotate()` re-checks the
+    /// G-MED-1 - under concurrent invocation, `rotate()` re-checks the
     /// byte counter inside the lock. After the first rotation resets the
     /// counter to 0, the second call must return early without shifting
     /// the just-rotated files.

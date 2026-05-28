@@ -2,7 +2,7 @@
 //!
 //! This module owns the TASK.md parser/renderer, edit application, advisory
 //! filesystem lock, atomic publish, and timestamped backup. It contains NO
-//! clap surface and NO authorization — the per-verb modules
+//! clap surface and NO authorization - the per-verb modules
 //! (`task_set_title`, `task_append_body`) handle those concerns and call
 //! into [`perform`].
 //!
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime};
 use chrono::{DateTime, Utc};
 
 /// Timeout for the cooperative lock. Mirrors the issue acceptance criterion
-/// "concurrent writes from two coordinators don't corrupt the file" — first
+/// "concurrent writes from two coordinators don't corrupt the file" - first
 /// wins, second polls every 50 ms for up to this window, else `LockTimeout`.
 const LOCK_TIMEOUT_5S: Duration = Duration::from_secs(5);
 
@@ -130,7 +130,7 @@ pub(crate) fn parse_task(s_in: &str) -> ParsedTask {
     };
 
     // ── Pull the opening line (CRIT-1 Form B fix) ──────────────────────────
-    // The opening's actual byte length is whatever split_inclusive yields —
+    // The opening's actual byte length is whatever split_inclusive yields -
     // 4 bytes for "---\n", 5 for "---\r\n", 7 for "--- \r\n", etc.
     let mut iter = s.split_inclusive('\n');
     let opening = match iter.next() {
@@ -161,7 +161,7 @@ pub(crate) fn parse_task(s_in: &str) -> ParsedTask {
     }
 
     if !closed {
-        // Malformed frontmatter — preserve whole post-BOM input as body.
+        // Malformed frontmatter - preserve whole post-BOM input as body.
         return ParsedTask {
             bom,
             line_ending,
@@ -220,7 +220,7 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
     // Also require !parsed.bom so a BOM-only existing file (post-BOM-peel
     // body is "") falls through to the "preserve bom/eol" branch instead of
     // tripping this brand-new shortcut and stripping the BOM (LOW-1, plan §5
-    // row 2 — HIGH-3 byte-exact round-trip).
+    // row 2 - HIGH-3 byte-exact round-trip).
     if !parsed.has_frontmatter && parsed.body.is_empty() && !parsed.bom {
         return ParsedTask {
             bom: false,
@@ -242,7 +242,7 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
         };
     }
 
-    // Has frontmatter — find existing title-shaped line(s) (NIT-5).
+    // Has frontmatter - find existing title-shaped line(s) (NIT-5).
     let title_count = parsed
         .frontmatter
         .iter()
@@ -250,7 +250,7 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
         .count();
     if title_count > 1 {
         log::warn!(
-            "TASK.md frontmatter contains {} title: lines; replacing the first only — \
+            "TASK.md frontmatter contains {} title: lines; replacing the first only - \
              downstream YAML parsers may pick a different one",
             title_count
         );
@@ -308,7 +308,7 @@ fn apply_append_body(parsed: &ParsedTask, text: &str) -> ParsedTask {
 /// the body is always LF canonical (`"Ready to start a new topic\n"`). For
 /// an empty input (`parse_task("")`), `parsed.bom == false` and
 /// `parsed.line_ending == "\n"`, so the output is the canonical LF/no-BOM
-/// Clean form — no special case needed.
+/// Clean form - no special case needed.
 fn apply_clean(parsed: &ParsedTask) -> ParsedTask {
     ParsedTask {
         bom: parsed.bom,
@@ -339,7 +339,7 @@ pub(crate) fn title_value_of(parsed: &ParsedTask) -> Option<String> {
 
 /// Decode a YAML scalar from the canonical single-quoted form `'value with '' escapes'`.
 /// For non-canonical inputs (bare scalar, double-quoted, etc.) returns the raw
-/// trimmed input. Sufficient for "did the user-visible title change?" — the
+/// trimmed input. Sufficient for "did the user-visible title change?" - the
 /// conservative direction (returning false → write a new backup) is harmless;
 /// the unsafe direction (returning true → skip a real edit) is impossible because
 /// the parsed-after-edit form is always canonical single-quoted.
@@ -354,9 +354,9 @@ fn extract_yaml_single_quoted(s: &str) -> String {
 
 // ── Lock guard ──────────────────────────────────────────────────────────────
 
-/// Cooperative file-lock via `OpenOptions::create_new` (kernel-level mutex —
+/// Cooperative file-lock via `OpenOptions::create_new` (kernel-level mutex -
 /// `O_CREAT | O_EXCL` on Unix, `CREATE_NEW` on Windows). On `Drop` removes the
-/// lockfile best-effort. NOT mandatory — does not block external editors;
+/// lockfile best-effort. NOT mandatory - does not block external editors;
 /// see the size+mtime sentinel in `perform_inner` for that surface.
 pub(crate) struct LockGuard {
     path: PathBuf,
@@ -372,7 +372,7 @@ impl LockGuard {
         loop {
             match OpenOptions::new().write(true).create_new(true).open(path) {
                 Ok(mut file) => {
-                    // Best-effort metadata write — never abort lock acquisition on this.
+                    // Best-effort metadata write - never abort lock acquisition on this.
                     let _ = writeln!(
                         file,
                         "pid={} ts={}",
@@ -384,7 +384,7 @@ impl LockGuard {
                     });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // Stale-lock recovery: kernel CREATE_NEW is the mutex —
+                    // Stale-lock recovery: kernel CREATE_NEW is the mutex -
                     // exactly one writer wins after the remove_file race.
                     if let Ok(meta) = std::fs::metadata(path) {
                         if meta
@@ -461,9 +461,9 @@ where
     let new_parsed = apply_edit(&parsed, &op);
 
     // ── 5. Idempotence short-circuit ──────────────────────────────────────
-    // SetTitle: semantic — short-circuit when YAML-decoded title value is
+    // SetTitle: semantic - short-circuit when YAML-decoded title value is
     //   unchanged (re-quoting/escaping never produces a NoOp).
-    // Clean:    structural — short-circuit when post-edit frontmatter and
+    // Clean:    structural - short-circuit when post-edit frontmatter and
     //   body byte-match the pre-edit shape (covers repeated clean clicks).
     // AppendBody: never NoOp.
     let is_noop = match op {
@@ -528,9 +528,9 @@ where
         return Err(TaskOpError::TmpWriteFailed(tmp_path, e));
     }
 
-    // 7a. Sentinel check — see HIGH-4. Realistic editor-save case caught;
+    // 7a. Sentinel check - see HIGH-4. Realistic editor-save case caught;
     // sub-millisecond TOCTOU at the read→metadata window remains theoretically open.
-    // FAT32 mtime granularity is 2 s — for typical AC layouts (NTFS / EXT4 / APFS,
+    // FAT32 mtime granularity is 2 s - for typical AC layouts (NTFS / EXT4 / APFS,
     // sub-second), this is not a concern.
     if let Some((pre_len, pre_mtime)) = pre_sentinel {
         match std::fs::metadata(&task_path) {
@@ -560,7 +560,7 @@ where
                     .expect("file_existed ⇒ backup_path is Some");
                 return Err(TaskOpError::ExternalWrite(bp));
             }
-            Err(_) => { /* other transient FS error — let rename surface the real error */ }
+            Err(_) => { /* other transient FS error - let rename surface the real error */ }
         }
     }
 
@@ -585,7 +585,7 @@ where
     };
 
     if let Err(e) = do_rename() {
-        // MED-1 cleanup — keeps I20's "no TASK.md.tmp.* litter" assertion holding.
+        // MED-1 cleanup - keeps I20's "no TASK.md.tmp.* litter" assertion holding.
         let _ = std::fs::remove_file(&tmp_path);
         return Err(TaskOpError::RenameFailed(e, backup_path));
     }
@@ -607,7 +607,7 @@ mod tests {
     use std::thread;
 
     /// Auto-cleaned temp dir for fixture roots. Mirrors `config/teams.rs::FixtureRoot`
-    /// — copied locally so we don't have to make it `pub(crate)` cross-module.
+    /// - copied locally so we don't have to make it `pub(crate)` cross-module.
     struct FixtureRoot(PathBuf);
     impl Drop for FixtureRoot {
         fn drop(&mut self) {
@@ -835,7 +835,7 @@ mod tests {
 
     #[test]
     fn lock_guard_recovers_stale_lockfile() {
-        // Test approach (std-only — no `filetime`, no FFI):
+        // Test approach (std-only - no `filetime`, no FFI):
         // pre-create the lockfile via OpenOptions::create_new, drop the handle,
         // sleep ~30 ms, then call acquire with a small `stale_after` (e.g. 10 ms).
         // The production constant is LOCK_STALE_AFTER_5M (300 s); the test uses
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn backup_failure_aborts_write_and_preserves_task() {
-        // Per plan §9 U24, the test pins "backup failure aborts cleanly" — either
+        // Per plan §9 U24, the test pins "backup failure aborts cleanly" - either
         // BackupExhausted (loop exhausts 100 collisions) or BackupFailed (a
         // create_new error other than AlreadyExists). On Windows, attempting to
         // OpenOptions::create_new a path where a directory already exists returns
@@ -1135,7 +1135,7 @@ mod tests {
     fn apply_set_title_preserves_bom_on_bom_only_existing_file() {
         // BOM-only file (e.g. coordinator opened TASK.md in Notepad on
         // Windows, which writes \xEF\xBB\xBF, then saved). The brand-new
-        // branch must NOT fire — that would strip the BOM and violate the
+        // branch must NOT fire - that would strip the BOM and violate the
         // HIGH-3 byte-exact round-trip guarantee. The fix gates the
         // brand-new branch on !parsed.bom so this case falls through to the
         // "no frontmatter, preserve bom/eol" branch.
@@ -1180,12 +1180,12 @@ mod tests {
     #[test]
     fn apply_clean_replaces_existing_frontmatter_and_body() {
         // Round 2 (dev-rust R1.3): hard-reset semantics also normalize
-        // indentation — a coordinator-edited `  title: 'X'` (two-space
+        // indentation - a coordinator-edited `  title: 'X'` (two-space
         // indent) becomes unindented `"title: 'Clean'"`. Idempotence
         // check in §3.1.4 will treat this as write-worthy.
         let parsed = parse_task("---\ntitle: 'Old'\nfoo: bar\n---\nold body\n");
         let p = apply_clean(&parsed);
-        // Frontmatter is REPLACED entirely (foo: bar is dropped — Clean
+        // Frontmatter is REPLACED entirely (foo: bar is dropped - Clean
         // is a hard reset, not a merge).
         assert_eq!(p.frontmatter, vec!["title: 'Clean'".to_string()]);
         assert_eq!(p.body, "Ready to start a new topic\n");
@@ -1195,7 +1195,7 @@ mod tests {
     fn apply_clean_preserves_crlf_and_bom() {
         // Round 2 (dev-rust R1.3): on a Notepad-saved Clean file with
         // body `"Ready to start a new topic\r\n"`, repeated Clean is NOT
-        // idempotent — the CRLF→LF body conversion is treated as a
+        // idempotent - the CRLF→LF body conversion is treated as a
         // write-worthy diff. This matches `apply_append_body`'s pinned
         // trade-off (test U34).
         let input = "\u{FEFF}---\r\ntitle: old\r\nx: 1\r\n---\r\nbody\r\n";
@@ -1266,7 +1266,7 @@ mod tests {
     fn perform_clean_creates_task_when_file_missing() {
         // Round 2 (Grinch LOW-3): brand-new workgroup, no TASK.md.
         // Implementation handles this via the `if file_existed` gate at
-        // task_ops.rs:455 — Clean writes the canonical form with no
+        // task_ops.rs:455 - Clean writes the canonical form with no
         // backup. Pin the behavior here so a future refactor that
         // reorders the gate doesn't regress silently.
         let fix = FixtureRoot::new("task-u41");

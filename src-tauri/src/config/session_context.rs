@@ -929,7 +929,7 @@ fn generate_repos_workspace_info(
 
         if !resolved.exists() {
             md.push_str(&format!(
-                "- **{}** — Path: `{}` — **(NOT FOUND)**\n",
+                "- **{}** - Path: `{}` - **(NOT FOUND)**\n",
                 repo_name, abs_path
             ));
             continue;
@@ -937,7 +937,7 @@ fn generate_repos_workspace_info(
 
         let branch = detect_git_branch(&abs_path).unwrap_or_else(|| "unknown".to_string());
         md.push_str(&format!(
-            "- **{}** — Path: `{}` — Branch: `{}`\n",
+            "- **{}** - Path: `{}` - Branch: `{}`\n",
             repo_name, abs_path, branch
         ));
     }
@@ -985,7 +985,7 @@ fn detect_git_branch(dir: &str) -> Option<String> {
 ///
 /// After resolving context[], if `identity` is set in config.json and `<identity>/Role.md`
 /// exists on disk, it is auto-appended (unless already resolved from context[]).
-/// The global context is NOT auto-prepended — it is only included if the token is in the array.
+/// The global context is NOT auto-prepended - it is only included if the token is in the array.
 ///
 /// Returns Ok(Some(path)) with the combined temp file, Ok(None) if no context[] field,
 /// or Err with details about missing files.
@@ -1269,7 +1269,7 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
     };
     let messaging_exception = match &messaging_mode {
         MessagingContextMode::Workgroup(path) => format!(
-            "**Narrow exception — workgroup messaging directory:**\n\n\
+            "**Narrow exception - workgroup messaging directory:**\n\n\
              You MAY create message files inside this directory:\n\n\
              ```\n\
              {path}\n\
@@ -1278,7 +1278,7 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
             path = path,
         ),
         MessagingContextMode::Root(path) => format!(
-            "**Narrow exception — Root Agent messaging directory:**\n\n\
+            "**Narrow exception - Root Agent messaging directory:**\n\n\
              You MAY create message files inside this directory:\n\n\
              ```\n\
              {path}\n\
@@ -1307,23 +1307,23 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
     };
     let forbidden_scope = if matrix_root.is_some() {
         format!(
-            "the entries listed above — including other agents' replica directories, any other files inside the Agent Matrix, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
+            "the entries listed above - including other agents' replica directories, any other files inside the Agent Matrix, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
             ws = workspace_root_phrase,
         )
     } else {
         format!(
-            "the entries listed above — including other agents' replica directories, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
+            "the entries listed above - including other agents' replica directories, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
             ws = workspace_root_phrase,
         )
     };
     let git_scope = if matrix_root.is_some() {
-        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these `.ac-new` roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location - that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these `.ac-new` roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
     } else {
-        "Your agent directory is typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these `.ac-new` roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+        "Your agent directory is typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory - that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these `.ac-new` roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
     };
     let peer_name_format = match &messaging_mode {
-        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
-        _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>` — e.g. `agentscommander/architect`.".to_string(),
+        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` - e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
+        _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` - e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>` - e.g. `agentscommander/architect`.".to_string(),
     };
     let send_message_instructions = match &messaging_mode {
         MessagingContextMode::Root(path) => format!(
@@ -1338,7 +1338,7 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
              ```\n\
              \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<coordinator_name>\" --send <filename> --mode wake\n\
              ```\n\n\
-             **IMPORTANT: `--send` takes the filename ONLY — never a path.**\n\n\
+             **IMPORTANT: `--send` takes the filename ONLY - never a path.**\n\n\
              Origin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.\n",
             path = path,
         ),
@@ -1352,7 +1352,7 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
              ```\n\
              \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<agent_name>\" --send <filename> --mode wake\n\
              ```\n\n\
-             **IMPORTANT: `--send` takes the filename ONLY — never a path.**\n\n\
+             **IMPORTANT: `--send` takes the filename ONLY - never a path.**\n\n\
              - BAD:  `--send \"C:\\...\\messaging\\20260419-143052-wg3-you-to-wg3-peer-hello.md\"`\n\
              - GOOD: `--send \"20260419-143052-wg3-you-to-wg3-peer-hello.md\"`\n\n\
              The CLI resolves the filename against `<workgroup-root>/messaging/` automatically. Passing a path triggers `filename '...' contains path separators or traversal`.\n"
@@ -1361,14 +1361,14 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
     format!(
         r#"# AgentsCommander Context
 
-You are running inside an AgentsCommander session — a terminal session manager that coordinates multiple AI agents.
+You are running inside an AgentsCommander session - a terminal session manager that coordinates multiple AI agents.
 
-## GOLDEN RULE — Repository Write Restrictions
+## GOLDEN RULE - Repository Write Restrictions
 
 **ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in {allowed_places}:
 
 1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
-2. **Your own agent replica directory and its subdirectories** — your assigned root:
+2. **Your own agent replica directory and its subdirectories** - your assigned root:
    ```
    {agent_root}
    ```
@@ -1410,7 +1410,7 @@ Use `AGENTSCOMMANDER_BINARY_PATH` when invoking the CLI. This ensures you use th
 
 The CLI `--help` output documents every subcommand, flag, and accepted value. Use it as a FALLBACK reference for commands or flags NOT covered inline in this context.
 
-**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly — you do NOT need to consult `--help` to confirm their syntax.
+**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly - you do NOT need to consult `--help` to confirm their syntax.
 
 ```
 "<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
@@ -1438,12 +1438,12 @@ Your agent root is your current working directory.
 
 {peer_name_format}
 
-**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk paths only — they are not peer names. The `list-peers-lean` JSON `name` field is the only authoritative source. If `list-peers-lean` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk — that produces invalid `--to` values. Stop and report the empty result instead.
+**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk paths only - they are not peer names. The `list-peers-lean` JSON `name` field is the only authoritative source. If `list-peers-lean` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk - that produces invalid `--to` values. Stop and report the empty result instead.
 
 {send_message_instructions}
 
 The recipient receives a short notification pointing to your file's absolute
-path and reads the content via filesystem. Do NOT use `--get-output` — it
+path and reads the content via filesystem. Do NOT use `--get-output` - it
 blocks and is only for non-interactive sessions. After sending, stay idle and
 wait for the reply.
 
@@ -1571,7 +1571,7 @@ mod tests {
             &no_skill_section(),
         );
         assert!(
-            out.contains("Narrow exception — workgroup messaging directory"),
+            out.contains("Narrow exception - workgroup messaging directory"),
             "expected messaging exception header, got:\n{}",
             out
         );
@@ -1591,7 +1591,7 @@ mod tests {
     fn default_context_non_workgroup_omits_messaging_exception() {
         let out = default_context("C:/fake/plain/agent", None, &no_skill_section());
         assert!(
-            !out.contains("Narrow exception — workgroup messaging directory"),
+            !out.contains("Narrow exception - workgroup messaging directory"),
             "expected no messaging exception header for non-WG agent, got:\n{}",
             out
         );
@@ -1607,7 +1607,7 @@ mod tests {
         let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
 
         assert!(
-            out.contains("Narrow exception — Root Agent messaging directory"),
+            out.contains("Narrow exception - Root Agent messaging directory"),
             "expected root messaging exception, got:\n{}",
             out
         );
@@ -1648,7 +1648,7 @@ mod tests {
             out
         );
         assert!(
-            out.contains("Narrow exception — workgroup messaging directory"),
+            out.contains("Narrow exception - workgroup messaging directory"),
             "messaging exception header missing, got:\n{}",
             out
         );

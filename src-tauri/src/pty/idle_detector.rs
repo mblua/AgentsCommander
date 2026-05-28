@@ -23,7 +23,7 @@ pub struct IdleDetector {
 
 /// Pure: the sessions that should transition busy→idle on this watcher tick,
 /// paired with how long they have been silent (for logging). No locks, no
-/// callbacks — unit-testable.
+/// callbacks - unit-testable.
 ///
 /// A session is only a candidate if it is present in `activity`. #260's
 /// `register_session` seed is what guarantees presence for an otherwise-silent
@@ -70,10 +70,10 @@ impl IdleDetector {
     }
 
     /// Register a session with the detector at PTY spawn time. Stores the
-    /// session's idle `tuning` and — when `tuning.seed_initial_activity` is
-    /// set (#260) — seeds `activity[id] = now` so the watcher evaluates the
+    /// session's idle `tuning` and - when `tuning.seed_initial_activity` is
+    /// set (#260) - seeds `activity[id] = now` so the watcher evaluates the
     /// session from t=0 even if no un-suppressed, printable PTY chunk ever
-    /// arrives (the grinch stuck-session bug — see plan §1).
+    /// arrives (the grinch stuck-session bug - see plan §1).
     pub fn register_session(&self, session_id: Uuid, tuning: IdleTuning) {
         debug_assert!(
             tuning.resize_grace >= tuning.idle_threshold,
@@ -110,7 +110,7 @@ impl IdleDetector {
     /// Record PTY activity (with byte count for diagnostics).
     pub fn record_activity_with_bytes(&self, session_id: Uuid, byte_count: usize) {
         let sid = &session_id.to_string()[..8];
-        // Per-session resize grace (#260) — copy out under a brief lock.
+        // Per-session resize grace (#260) - copy out under a brief lock.
         let resize_grace = self
             .tuning
             .lock()
@@ -212,7 +212,7 @@ mod tests {
         detector.register_session(id, IdleTuning::DEFAULT); // seed = true
         assert!(
             detector.activity.lock().unwrap().contains_key(&id),
-            "register_session must seed activity[id] — the #260 fix"
+            "register_session must seed activity[id] - the #260 fix"
         );
     }
 
@@ -232,7 +232,7 @@ mod tests {
         assert!(detector.tuning.lock().unwrap().contains_key(&id));
     }
 
-    /// Acceptance criterion #1 — the grinch stuck-session regression test.
+    /// Acceptance criterion #1 - the grinch stuck-session regression test.
     /// A codex session whose entire visible output was suppressed (resize
     /// grace) / escape-only (SKIPPED), so `record_activity_with_bytes` NEVER
     /// ran. With the #260 seed it is still in `activity` and the watcher
@@ -250,7 +250,7 @@ mod tests {
             .lock()
             .unwrap()
             .get(&id)
-            .expect("register_session must seed activity[id] — the #260 fix");
+            .expect("register_session must seed activity[id] - the #260 fix");
 
         let activity = detector.activity.lock().unwrap().clone();
         let idle_set: HashSet<Uuid> = HashSet::new();
@@ -279,7 +279,7 @@ mod tests {
     }
 
     /// Documents the bug mechanism: WITHOUT a seed, an all-suppressed session
-    /// is absent from `activity` and the watcher never even evaluates it —
+    /// is absent from `activity` and the watcher never even evaluates it -
     /// no matter how much time passes.
     #[test]
     fn unseeded_session_never_transitions() {
@@ -297,7 +297,7 @@ mod tests {
         );
         assert!(
             crossed.is_empty(),
-            "an un-seeded session is invisible to the watcher — the #260 bug"
+            "an un-seeded session is invisible to the watcher - the #260 bug"
         );
     }
 
@@ -318,7 +318,7 @@ mod tests {
         );
     }
 
-    /// dev-rust R1.5 — guards the `tuning.remove` line §6.1 adds to
+    /// dev-rust R1.5 - guards the `tuning.remove` line §6.1 adds to
     /// `remove_session`; without it a future detector-map leak is silent.
     #[test]
     fn remove_session_clears_tuning() {

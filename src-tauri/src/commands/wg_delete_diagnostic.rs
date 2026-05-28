@@ -7,7 +7,7 @@
 //!   3. External Windows processes whose current working directory is under the
 //!      workgroup tree, via a direct PEB ProcessParameters read.
 //!
-//! Pure helpers — no Tauri commands. Invoked from `entity_creation::delete_workgroup`.
+//! Pure helpers - no Tauri commands. Invoked from `entity_creation::delete_workgroup`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -85,7 +85,7 @@ pub async fn diagnose_blockers(
     // wall-time post-failure; running it on the current Tokio worker would block
     // that worker for the duration. Hand it off via `spawn_blocking` so other
     // async work (PTY reads, IPC events) keeps ticking. JoinError is treated as a
-    // scan failure and falls through to the `diagnostic_available = false` path —
+    // scan failure and falls through to the `diagnostic_available = false` path -
     // matches the FFI-error branch.
     #[cfg(windows)]
     let (processes, diagnostic_available) = {
@@ -192,14 +192,14 @@ fn path_is_under_windows(candidate: &Path, root: &Path) -> bool {
 /// resource paths to feed RmRegisterResources.
 ///
 /// Priority order in the output:
-///   1. **Directories** — WG root, top-level `repo-*` and `__agent_*` subdirs,
+///   1. **Directories** - WG root, top-level `repo-*` and `__agent_*` subdirs,
 ///      and `messaging/` if present. Surfaces dir-handle holders (terminal
 ///      cwd, IDE workspace open, file watchers via `ReadDirectoryChangesW`)
 ///      that file-only registration misses (#113 follow-up).
-///   2. **Hot lock files** — lock-prone git metadata (`.lock`, `index`,
+///   2. **Hot lock files** - lock-prone git metadata (`.lock`, `index`,
 ///      `HEAD`, etc.) so the budget can't be exhausted on a single
 ///      `.git/objects/` subtree.
-///   3. **Cold files** — everything else, until the cap is hit.
+///   3. **Cold files** - everything else, until the cap is hit.
 ///
 /// Skips dirs we can't read; never follows symlinks.
 #[cfg(windows)]
@@ -228,14 +228,14 @@ fn collect_files_to_probe(wg_dir: &Path) -> Vec<PathBuf> {
     }
 
     /// Top-level WG-child dirs whose handles commonly indicate a blocker:
-    /// `repo-*` (clones — git operations, IDE workspaces),
-    /// `__agent_*` (replicas — agent-spawned shells holding cwd),
-    /// `messaging/` (mailbox — file watchers).
+    /// `repo-*` (clones - git operations, IDE workspaces),
+    /// `__agent_*` (replicas - agent-spawned shells holding cwd),
+    /// `messaging/` (mailbox - file watchers).
     fn is_relevant_top_level_dir(name: &str) -> bool {
         name.starts_with("repo-") || name.starts_with("__agent_") || name == "messaging"
     }
 
-    /// Soft ceiling on total walk size — once we've inventoried 4× the probe
+    /// Soft ceiling on total walk size - once we've inventoried 4× the probe
     /// budget, we have plenty to choose from. Avoids walking gigabytes of
     /// `.git/objects/` when the WG is unusually large.
     const WALK_SOFT_CEILING: usize = MAX_FILES_TO_PROBE * 4;
@@ -285,7 +285,7 @@ fn collect_files_to_probe(wg_dir: &Path) -> Vec<PathBuf> {
         }
     }
 
-    // Dirs first (the new signal — small set, ~5–10 entries; prefer over cold
+    // Dirs first (the new signal - small set, ~5–10 entries; prefer over cold
     // files as the plan dictates), then hot files, then cold files. All
     // capped at MAX_FILES_TO_PROBE total.
     let mut out = dirs;
@@ -392,11 +392,11 @@ fn merge_blocker_processes(
 
 /// Two-pass Restart Manager scan:
 ///
-/// 1. **Bulk pass** — open RM sessions for batches of probed files (binary-search
+/// 1. **Bulk pass** - open RM sessions for batches of probed files (binary-search
 ///    fallback when RmRegisterResources rejects a batch), call `RmGetList` to learn
 ///    which PIDs hold any handles. Tolerant of single bad files; ~O(log N + bad_files)
 ///    sessions.
-/// 2. **Per-file attribution pass** — RM doesn't tell us *which* file each PID
+/// 2. **Per-file attribution pass** - RM doesn't tell us *which* file each PID
 ///    held. Iterate files; for each, open a fresh session, register only that
 ///    file, and accumulate (file → matching PID) entries. Cap each PID at
 ///    `MAX_FILES_PER_PROCESS` (5) and short-circuit once every blocker PID is
@@ -427,7 +427,7 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
             .collect()
     }
 
-    /// RAII guard for an RM session — guarantees `RmEndSession` runs even on early
+    /// RAII guard for an RM session - guarantees `RmEndSession` runs even on early
     /// return / panic. Leaking a session persists across the AC process lifetime
     /// and burns Restart Manager's per-process session quota (default 64).
     /// This Drop is the only path to RmEndSession; covers panic, ?, return.
@@ -480,7 +480,7 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
         let mut reasons: u32 = 0;
 
         // Probe: zero buffer, learn `needed`. RM returns SUCCESS with needed=0 when
-        // there are no blockers — distinct from MORE_DATA.
+        // there are no blockers - distinct from MORE_DATA.
         let rc = unsafe {
             RmGetList(
                 handle,
@@ -564,7 +564,7 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
         }
     }
 
-    /// FILETIME equality — tolerates PID recycling between bulk and per-file passes.
+    /// FILETIME equality - tolerates PID recycling between bulk and per-file passes.
     fn same_start(
         a: &windows_sys::Win32::Foundation::FILETIME,
         b: &windows_sys::Win32::Foundation::FILETIME,
@@ -638,7 +638,7 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
         .map(|p| to_wide_nul(&p.to_string_lossy()))
         .collect();
 
-    // ── Phase 1: bulk pass — get the set of blocker PIDs ─────────────────────
+    // ── Phase 1: bulk pass - get the set of blocker PIDs ─────────────────────
     let bulk_list: Vec<RM_PROCESS_INFO> = collect_blockers_tolerant(&wide_files, &alive);
 
     if bulk_list.is_empty() {
@@ -651,7 +651,7 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
     for info in &bulk_list {
         let pid = info.Process.dwProcessId;
         if pid == 0 {
-            // System Idle / kernel — never actionable, never a real blocker.
+            // System Idle / kernel - never actionable, never a real blocker.
             continue;
         }
         let name = {
@@ -682,7 +682,7 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
             .values()
             .all(|p| p.files.len() >= MAX_FILES_PER_PROCESS)
         {
-            break; // every blocker has its quota — further probing wastes RM sessions
+            break; // every blocker has its quota - further probing wastes RM sessions
         }
         if !path.exists() {
             continue; // raced again; skip
@@ -1381,7 +1381,7 @@ mod tests {
     }
 
     /// §7.1 (Windows variant): `is_file_in_use_error` matches `ERROR_USER_MAPPED_FILE` (1224).
-    /// This is the VSCode / IDE memory-mapped-I/O case — the motivating scenario for the
+    /// This is the VSCode / IDE memory-mapped-I/O case - the motivating scenario for the
     /// diagnostic. See plan §6.1.
     #[cfg(windows)]
     #[test]
@@ -1397,13 +1397,13 @@ mod tests {
     #[test]
     fn is_file_in_use_error_rejects_unrelated_errors_on_windows() {
         use crate::commands::entity_creation::is_file_in_use_error;
-        // ERROR_ACCESS_DENIED — separate failure mode, not file-in-use.
+        // ERROR_ACCESS_DENIED - separate failure mode, not file-in-use.
         let access_denied = std::io::Error::from_raw_os_error(5);
         assert!(
             !is_file_in_use_error(&access_denied),
             "os error 5 (ERROR_ACCESS_DENIED) must NOT match"
         );
-        // ERROR_FILE_NOT_FOUND — not a file-in-use case.
+        // ERROR_FILE_NOT_FOUND - not a file-in-use case.
         let not_found = std::io::Error::from_raw_os_error(2);
         assert!(
             !is_file_in_use_error(&not_found),
@@ -1424,7 +1424,7 @@ mod tests {
     }
 
     /// §7.22 (covers G.4.7): no valid workgroup name can collide with the
-    /// `BLOCKERS:` or `DIRTY_REPOS:` sentinel prefixes — `validate_existing_name`
+    /// `BLOCKERS:` or `DIRTY_REPOS:` sentinel prefixes - `validate_existing_name`
     /// rejects both `:` and `_`. Locks the wire-protocol invariant.
     #[test]
     fn workgroup_names_cannot_collide_with_sentinels() {
@@ -1460,7 +1460,7 @@ mod tests {
         // A non-relevant top-level dir must NOT be registered (filter discipline).
         let unrelated = wg_dir.join("docs");
         std::fs::create_dir(&unrelated).expect("create docs");
-        // A regular file at WG root — should still appear in the result, just
+        // A regular file at WG root - should still appear in the result, just
         // after the dirs.
         std::fs::write(wg_dir.join("TASK.md"), "# t\n").expect("write TASK.md");
 
@@ -1521,7 +1521,7 @@ mod tests {
                 result
             ),
             // If there are no files (empty WG) or no dirs (would be a bug),
-            // the test is moot — but it shouldn't happen with the setup above.
+            // the test is moot - but it shouldn't happen with the setup above.
             other => panic!(
                 "expected at least one dir and one file in result, got {:?}; result={:?}",
                 other, result
