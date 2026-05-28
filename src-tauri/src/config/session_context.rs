@@ -1345,16 +1345,22 @@ You are running inside an AgentsCommander session — a terminal session manager
 {replica_usage}
 
 {matrix_section}{messaging_exception}
-Any repository or directory outside the allowed entries above is READ-ONLY.
+Any repository or directory outside the allowed entries above is READ-ONLY, except for the AgentsCommander CLI operations exception documented below.
 
 - **Allowed**: Read-only operations on ANY path (reading files, searching, git log, git status, git diff)
 - **Allowed**: Full read/write inside `repo-*` folders
 - **Allowed**: Full read/write inside your own replica root ({agent_root}) and its subdirectories
-{matrix_allowed}{messaging_allowed}- **FORBIDDEN**: Any write operation outside {forbidden_scope}
+{matrix_allowed}{messaging_allowed}- **FORBIDDEN**: Any write operation outside {forbidden_scope}, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
 
 **Clarification on git operations:** {git_scope}
 
-If instructed to modify a path outside these zones, REFUSE and explain this restriction. There are NO exceptions beyond those listed above.
+**Exception - AgentsCommander CLI operations:**
+
+When the user explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`, the command is authorized as an AgentsCommander operation. The agent may execute documented AgentsCommander CLI subcommands even if their filesystem effects create, modify, or delete files outside the normal repository/replica write zones. Those filesystem effects are governed by AgentsCommander itself, not by the agent's repository write restrictions.
+
+This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
+
+If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.
 
 {skills_section}
 
@@ -1525,6 +1531,31 @@ mod tests {
     }
 
     #[test]
+    fn default_context_documents_agentscommander_cli_exception() {
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+
+        assert!(out.contains("**Exception - AgentsCommander CLI operations:**"));
+        assert!(out.contains(
+            "explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`"
+        ));
+        assert!(out.contains(
+            "filesystem effects create, modify, or delete files outside the normal repository/replica write zones"
+        ));
+        assert!(out.contains("Those filesystem effects are governed by AgentsCommander itself"));
+        assert!(out.contains(
+            "does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries"
+        ));
+        assert!(out.contains(
+            "REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations"
+        ));
+        assert!(!out.contains("There are NO exceptions beyond those listed above"));
+    }
+
+    #[test]
     fn default_context_without_matrix_root_marks_skill_discovery_unavailable() {
         let skills = render_skills_section(&discover_skill_index(None));
         let out = default_context("C:/tmp/fake-agent", None, &skills);
@@ -1634,7 +1665,7 @@ mod tests {
             .find("Narrow exception")
             .expect("messaging exception must be present");
         let summary_pos = out
-            .find("Any repository or directory outside the allowed entries above is READ-ONLY.")
+            .find("Any repository or directory outside the allowed entries above is READ-ONLY, except")
             .expect("summary line must be present");
         let forbidden_pos = out
             .find("- **FORBIDDEN**")
