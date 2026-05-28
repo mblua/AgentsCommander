@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
 use tauri::Manager;
 use uuid::Uuid;
 
@@ -28,6 +29,103 @@ fn sender_name_for_session_cwd_with_root_flag(
 fn sender_name_for_session_cwd(working_directory: &str) -> String {
     let is_root_agent = crate::config::root_agent::is_root_agent_path(working_directory);
     sender_name_for_session_cwd_with_root_flag(working_directory, is_root_agent)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRefreshEventPayload {
+    id: String,
+    project_path: String,
+    agent_path: String,
+    agent_name: String,
+    reason: String,
+}
+
+#[derive(Debug, Default)]
+struct ProjectRefreshPollBatch {
+    payloads: Vec<ProjectRefreshEventPayload>,
+    processed_paths: Vec<PathBuf>,
+}
+
+fn canonical_project_refresh_path(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| PathBuf::from(path))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBatch {
+    if !requests_dir.is_dir() {
+        return ProjectRefreshPollBatch::default();
+    }
+
+    let mut entries: Vec<PathBuf> = match std::fs::read_dir(requests_dir) {
+        Ok(rd) => rd
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .collect(),
+        Err(e) => {
+            log::warn!(
+                "[project-refresh-requests] Failed to read {:?}: {}",
+                requests_dir,
+                e
+            );
+            return ProjectRefreshPollBatch::default();
+        }
+    };
+    entries.sort();
+
+    let mut batch = ProjectRefreshPollBatch::default();
+    let mut seen_projects = BTreeSet::new();
+
+    for path in entries {
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+
+        let content = match read_text_bom_tolerant(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!(
+                    "[project-refresh-requests] Failed to read {:?}: {}",
+                    path,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let mut request: crate::cli::create_agent_matrix::ProjectRefreshRequest =
+            match serde_json::from_str(&content) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::warn!(
+                        "[project-refresh-requests] Failed to parse {:?}: {}",
+                        path,
+                        e
+                    );
+                    let _ = std::fs::remove_file(&path);
+                    continue;
+                }
+            };
+
+        let canonical_project_path = canonical_project_refresh_path(&request.project_path);
+        request.project_path = canonical_project_path.clone();
+        batch.processed_paths.push(path);
+
+        if !seen_projects.insert(canonical_project_path) {
+            continue;
+        }
+
+        batch.payloads.push(ProjectRefreshEventPayload {
+            id: request.id,
+            project_path: request.project_path,
+            agent_path: request.agent_path,
+            agent_name: request.agent_name,
+            reason: request.reason,
+        });
+    }
+
+    batch
 }
 
 fn validate_root_sender_route(
@@ -567,6 +665,9 @@ impl MailboxPoller {
 
         // Prune tracker entries for files that no longer exist
         self.retry_tracker.retain(|path, _| path.exists());
+
+        // Poll project-refresh-requests directory from create-agent-matrix CLI.
+        self.poll_project_refresh_requests(app).await;
 
         // Poll session-requests directory (from create-agent CLI)
         self.poll_session_requests(app).await;
@@ -2555,6 +2656,29 @@ impl MailboxPoller {
         Ok(())
     }
 
+    /// Poll ~/.agentscommander/project-refresh-requests/ for sidebar refresh requests.
+    async fn poll_project_refresh_requests(&self, app: &tauri::AppHandle) {
+        let config_dir = match crate::config::config_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let requests_dir = config_dir.join("project-refresh-requests");
+        let batch = collect_project_refresh_requests(&requests_dir);
+
+        for payload in &batch.payloads {
+            log::info!(
+                "[project-refresh-requests] Emitting refresh: project='{}' agent='{}'",
+                payload.project_path,
+                payload.agent_name
+            );
+            let _ = tauri::Emitter::emit(app, "ac_project_refresh_requested", payload);
+        }
+
+        for path in batch.processed_paths {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     /// Poll ~/.agentscommander/session-requests/ for launch requests from the CLI.
     async fn poll_session_requests(&self, app: &tauri::AppHandle) {
         let config_dir = match crate::config::config_dir() {
@@ -3536,6 +3660,99 @@ mod tests {
         let file = app_outbox.join("msg.json");
         std::fs::write(&file, "{}").unwrap();
         assert!(derive_project_from_outbox_path(&file).is_none());
+    }
+
+    fn write_project_refresh_request_fixture(
+        path: &Path,
+        id: &str,
+        project_path: &Path,
+        agent_name: &str,
+    ) {
+        let request = crate::cli::create_agent_matrix::ProjectRefreshRequest {
+            id: id.to_string(),
+            project_path: project_path.to_string_lossy().to_string(),
+            agent_path: project_path
+                .join(".ac-new")
+                .join("_agent_architect")
+                .to_string_lossy()
+                .to_string(),
+            agent_name: agent_name.to_string(),
+            reason: "createAgentMatrix".to_string(),
+            timestamp: "2026-05-28T20:00:00Z".to_string(),
+        };
+        std::fs::write(path, serde_json::to_string_pretty(&request).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn project_refresh_request_reader_skips_tmp_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let requests_dir = temp.path().join("project-refresh-requests");
+        std::fs::create_dir_all(&requests_dir).unwrap();
+        let project = temp.path().join("ProjectAlpha");
+        std::fs::create_dir_all(&project).unwrap();
+        let tmp_file = requests_dir.join("request.json.tmp");
+        write_project_refresh_request_fixture(
+            &tmp_file,
+            "request-tmp",
+            &project,
+            "ProjectAlpha/architect",
+        );
+
+        let batch = collect_project_refresh_requests(&requests_dir);
+
+        assert!(batch.payloads.is_empty());
+        assert!(batch.processed_paths.is_empty());
+        assert!(
+            tmp_file.is_file(),
+            "tmp file should be left for a future poll"
+        );
+    }
+
+    #[test]
+    fn project_refresh_request_reader_deletes_malformed_json() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let requests_dir = temp.path().join("project-refresh-requests");
+        std::fs::create_dir_all(&requests_dir).unwrap();
+        let bad_file = requests_dir.join("bad.json");
+        std::fs::write(&bad_file, "{not json").unwrap();
+
+        let batch = collect_project_refresh_requests(&requests_dir);
+
+        assert!(batch.payloads.is_empty());
+        assert!(batch.processed_paths.is_empty());
+        assert!(!bad_file.exists(), "malformed request should be deleted");
+    }
+
+    #[test]
+    fn project_refresh_request_reader_coalesces_same_project() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let requests_dir = temp.path().join("project-refresh-requests");
+        std::fs::create_dir_all(&requests_dir).unwrap();
+        let project = temp.path().join("ProjectAlpha");
+        std::fs::create_dir_all(project.join(".ac-new").join("_agent_architect")).unwrap();
+        write_project_refresh_request_fixture(
+            &requests_dir.join("a.json"),
+            "request-a",
+            &project,
+            "ProjectAlpha/architect",
+        );
+        write_project_refresh_request_fixture(
+            &requests_dir.join("b.json"),
+            "request-b",
+            &project,
+            "ProjectAlpha/planner",
+        );
+
+        let batch = collect_project_refresh_requests(&requests_dir);
+
+        assert_eq!(batch.payloads.len(), 1);
+        assert_eq!(batch.processed_paths.len(), 2);
+        let expected_project = std::fs::canonicalize(&project)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(batch.payloads[0].project_path, expected_project);
+        assert_eq!(batch.payloads[0].id, "request-a");
     }
 
     // ── Issue #223 deliver_wake integration placeholders ──

@@ -7,7 +7,7 @@
 //! the running GUI through the session-request mailbox.
 
 use clap::Args;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::create_agent;
 use crate::commands::entity_creation::{
@@ -63,6 +63,17 @@ struct CreateAgentMatrixResult {
     launch_agent: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRefreshRequest {
+    pub id: String,
+    pub project_path: String,
+    pub agent_path: String,
+    pub agent_name: String,
+    pub reason: String,
+    pub timestamp: String,
+}
+
 pub fn execute(args: CreateAgentMatrixArgs) -> i32 {
     let settings = crate::config::settings::load_settings_for_cli();
     let config_dir = crate::config::config_dir();
@@ -89,6 +100,30 @@ pub fn execute(args: CreateAgentMatrixArgs) -> i32 {
 
     let agent_path = created.agent_dir.to_string_lossy().to_string();
     let role_path = created.role_path.to_string_lossy().to_string();
+
+    let project_path_for_refresh = std::fs::canonicalize(&args.project)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&args.project))
+        .to_string_lossy()
+        .to_string();
+    let agent_path_for_refresh = std::fs::canonicalize(&created.agent_dir)
+        .unwrap_or_else(|_| created.agent_dir.clone())
+        .to_string_lossy()
+        .to_string();
+    let refresh_request = ProjectRefreshRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        project_path: project_path_for_refresh,
+        agent_path: agent_path_for_refresh,
+        agent_name: created.display_name.clone(),
+        reason: "createAgentMatrix".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(e) = write_project_refresh_request(&refresh_request) {
+        eprintln!(
+            "Warning: agent matrix created but failed to request sidebar refresh: {}",
+            e
+        );
+    }
+
     let mut launched = false;
     let mut launch_agent_id: Option<String> = None;
 
@@ -148,4 +183,26 @@ pub fn execute(args: CreateAgentMatrixArgs) -> i32 {
     }
 
     0
+}
+
+fn write_project_refresh_request(request: &ProjectRefreshRequest) -> Result<(), String> {
+    let config_dir =
+        crate::config::config_dir().ok_or("Cannot determine config directory".to_string())?;
+    let requests_dir = config_dir.join("project-refresh-requests");
+    std::fs::create_dir_all(&requests_dir)
+        .map_err(|e| format!("Failed to create project-refresh-requests dir: {}", e))?;
+
+    let final_path = requests_dir.join(format!("{}.json", request.id));
+    let tmp_path = requests_dir.join(format!("{}.json.tmp", request.id));
+    let json = serde_json::to_string_pretty(request)
+        .map_err(|e| format!("Failed to serialize project refresh request: {}", e))?;
+
+    std::fs::write(&tmp_path, json)
+        .map_err(|e| format!("Failed to write project refresh request: {}", e))?;
+    std::fs::rename(&tmp_path, &final_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("Failed to finalize project refresh request: {}", e)
+    })?;
+
+    Ok(())
 }

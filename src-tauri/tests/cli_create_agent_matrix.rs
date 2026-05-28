@@ -89,6 +89,52 @@ fn session_request_paths(config_dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn project_refresh_request_paths(config_dir: &Path) -> Vec<PathBuf> {
+    let requests_dir = config_dir.join("project-refresh-requests");
+    if !requests_dir.exists() {
+        return Vec::new();
+    }
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+        .expect("read project-refresh-requests")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn assert_single_project_refresh_request(config_dir: &Path, project: &Path) -> serde_json::Value {
+    let requests = project_refresh_request_paths(config_dir);
+    assert_eq!(
+        requests.len(),
+        1,
+        "expected exactly one project refresh request"
+    );
+    let request: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&requests[0]).expect("read request"))
+            .expect("project refresh request json");
+    uuid::Uuid::parse_str(request["id"].as_str().expect("id")).expect("id should be a uuid");
+    assert!(!request["timestamp"].as_str().expect("timestamp").is_empty());
+    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    assert_eq!(
+        request["projectPath"].as_str().expect("projectPath"),
+        std::fs::canonicalize(project)
+            .expect("canonical project")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(
+        request["agentPath"].as_str().expect("agentPath"),
+        std::fs::canonicalize(agent_dir)
+            .expect("canonical agent dir")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(request["agentName"], "ProjectAlpha/architect");
+    assert_eq!(request["reason"], "createAgentMatrix");
+    request
+}
+
 #[test]
 fn create_agent_matrix_success_prints_json_and_writes_layout() {
     let tmp = Tmp::new("cli-create-agent-matrix-success");
@@ -138,6 +184,39 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
     for dir in ["memory", "plans", "skills", "inbox", "outbox"] {
         assert!(agent_dir.join(dir).is_dir(), "missing {}", dir);
     }
+}
+
+#[test]
+fn create_agent_matrix_success_writes_project_refresh_request() {
+    let tmp = Tmp::new("cli-create-agent-matrix-success-refresh");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, minimal_settings());
+    let project = project_with_ac_new(tmp.path());
+    let project_s = project.to_string_lossy().to_string();
+
+    let out = Command::new(&bin)
+        .args([
+            "create-agent-matrix",
+            "--project",
+            &project_s,
+            "--name",
+            "Architect",
+            "--description",
+            "Build plans",
+        ])
+        .output()
+        .expect("spawn binary");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_single_project_refresh_request(&config_dir, &project);
 }
 
 #[test]
@@ -230,6 +309,10 @@ fn create_agent_matrix_invalid_template_exits_1_without_target_dir() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Unknown built-in role template"));
     assert!(!project.join(".ac-new").join("_agent_architect").exists());
+    assert!(
+        project_refresh_request_paths(&config_dir).is_empty(),
+        "invalid template must not write a project refresh request"
+    );
 }
 
 #[test]
@@ -348,6 +431,8 @@ fn create_agent_matrix_launch_writes_session_request() {
     );
     assert_eq!(request["sessionName"], "ProjectAlpha/architect");
     assert_eq!(request["agentId"], "codex");
+
+    assert_single_project_refresh_request(&config_dir, &project);
 }
 
 #[test]
