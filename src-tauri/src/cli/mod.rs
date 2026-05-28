@@ -3,6 +3,7 @@ pub mod task_ops;
 pub mod task_set_title;
 pub mod close_session;
 pub mod create_agent;
+pub mod create_agent_matrix;
 pub mod list_peers;
 pub mod list_sessions;
 pub mod new_project;
@@ -94,6 +95,8 @@ pub enum Commands {
     ListSessions(list_sessions::ListSessionsArgs),
     /// Create a new agent: folder + CLAUDE.md, optionally launch it
     CreateAgent(create_agent::CreateAgentArgs),
+    /// Create a full Agent Matrix in an AC project, optionally from a role template
+    CreateAgentMatrix(create_agent_matrix::CreateAgentMatrixArgs),
     /// Close all sessions for a target agent (coordinator authorization required)
     CloseSession(close_session::CloseSessionArgs),
     /// Set the title field in the workgroup TASK.md frontmatter (coordinator-only)
@@ -216,6 +219,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
         Commands::CreateAgent(args) => create_agent::execute(args),
+        Commands::CreateAgentMatrix(args) => create_agent_matrix::execute(args),
         Commands::CloseSession(args) => close_session::execute(args),
         Commands::TaskSetTitle(args) => task_set_title::execute(args),
         Commands::TaskAppendBody(args) => task_append_body::execute(args),

@@ -1,6 +1,10 @@
 import { createSignal } from "solid-js";
 import type { AcWorkgroup, AcAgentMatrix, AcTeam } from "../../shared/types";
 import { ProjectAPI, SettingsAPI, AgentCreatorAPI } from "../../shared/ipc";
+import {
+  findLoadedProjectPathForRefresh,
+  normalizeProjectPathForCompare,
+} from "./project-refresh";
 
 export interface ProjectState {
   path: string;
@@ -15,7 +19,7 @@ const [loading, setLoading] = createSignal(false);
 let loadingCount = 0;
 
 function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+  return normalizeProjectPathForCompare(p);
 }
 
 export const projectStore = {
@@ -180,6 +184,14 @@ export const projectStore = {
     } catch (e) {
       console.error("Failed to reload project:", e);
     }
+  },
+
+  /** Re-discover a project only when it is already loaded in the sidebar. */
+  async reloadProjectIfLoaded(path: string): Promise<boolean> {
+    const loadedPath = findLoadedProjectPathForRefresh(projects(), path);
+    if (!loadedPath) return false;
+    await projectStore.reloadProject(loadedPath);
+    return true;
   },
 
   /** Remove a project from the list by path */
