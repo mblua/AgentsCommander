@@ -1,5 +1,5 @@
 name: Bug report
-description: Something that should work doesn't — a crash, a wrong result, a regression.
+description: Something that should work doesn't (a crash, a wrong result, a regression).
 title: "[bug] "
 labels: ["bug"]
 body:
@@ -80,7 +80,7 @@ body:
     attributes:
       label: Coding agent involved (if any)
       options:
-        - "N/A — not coding-agent-specific"
+        - "N/A: not coding-agent-specific"
         - Claude Code
         - Codex
         - Gemini

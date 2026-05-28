@@ -1,5 +1,5 @@
 <!--
-Thanks for sending a PR. Please fill in the sections below — short answers are fine.
+Thanks for sending a PR. Please fill in the sections below. Short answers are fine.
 Delete sections that don't apply.
 -->
 
