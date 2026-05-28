@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
 use crate::config::claude_settings::ensure_claude_md_excludes;
-use crate::config::settings::SettingsState;
+use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
@@ -95,6 +95,13 @@ pub struct SyncResult {
 pub(crate) const AGENT_MATRIX_DIRS: &[&str] = &["memory", "plans", "skills", "inbox", "outbox"];
 pub(crate) const AGENT_REPLICA_DIRS: &[&str] = &["inbox", "outbox"];
 
+fn create_agent_matrix_subdirs(agent_dir: &Path) -> Result<(), (&'static str, std::io::Error)> {
+    for &sub in AGENT_MATRIX_DIRS {
+        std::fs::create_dir_all(agent_dir.join(sub)).map_err(|e| (sub, e))?;
+    }
+    Ok(())
+}
+
 /// Create the full Agent Matrix layout, including the root directory.
 ///
 /// The returned tag is `"agent_dir"` for root failures or the failing subdir
@@ -103,10 +110,19 @@ pub(crate) fn create_agent_matrix_layout(
     agent_dir: &Path,
 ) -> Result<(), (&'static str, std::io::Error)> {
     std::fs::create_dir_all(agent_dir).map_err(|e| ("agent_dir", e))?;
-    for &sub in AGENT_MATRIX_DIRS {
-        std::fs::create_dir_all(agent_dir.join(sub)).map_err(|e| (sub, e))?;
-    }
-    Ok(())
+    create_agent_matrix_subdirs(agent_dir)
+}
+
+/// Create a new Agent Matrix layout after atomically claiming the root.
+///
+/// Unlike `create_agent_matrix_layout`, this fails if the root already exists.
+/// Use it for user-facing creation paths so concurrent creates cannot overwrite
+/// each other's Role.md or config.json.
+pub(crate) fn create_new_agent_matrix_layout(
+    agent_dir: &Path,
+) -> Result<(), (&'static str, std::io::Error)> {
+    std::fs::create_dir(agent_dir).map_err(|e| ("agent_dir", e))?;
+    create_agent_matrix_subdirs(agent_dir)
 }
 
 /// Create the full workgroup replica layout, including the root directory.
@@ -342,6 +358,161 @@ fn build_role_content(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AgentMatrixSettingsFlags {
+    pub exclude_global_claude_md: bool,
+    pub inject_rtk_hook: bool,
+}
+
+impl AgentMatrixSettingsFlags {
+    pub(crate) fn from_settings(settings: &AppSettings) -> Self {
+        Self {
+            exclude_global_claude_md: settings.agents.iter().any(|a| a.exclude_global_claude_md),
+            inject_rtk_hook: settings.inject_rtk_hook,
+        }
+    }
+}
+
+pub(crate) struct CreateAgentMatrixDiskArgs<'a> {
+    pub project_path: &'a str,
+    pub name: &'a str,
+    pub description: &'a str,
+    pub role_template_id: Option<&'a str>,
+    pub settings: &'a AppSettings,
+    pub config_dir: Option<&'a Path>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CreatedAgentMatrixOnDisk {
+    pub agent_dir: PathBuf,
+    pub display_name: String,
+    pub safe_name: String,
+    pub role_path: PathBuf,
+}
+
+fn agent_matrix_display_name(project_path: &Path, safe_name: &str) -> String {
+    let project_folder = project_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| project_path.to_string_lossy().to_string());
+    format!("{}/{}", project_folder, safe_name)
+}
+
+pub(crate) fn create_agent_matrix_on_disk(
+    args: CreateAgentMatrixDiskArgs<'_>,
+) -> Result<CreatedAgentMatrixOnDisk, String> {
+    let safe_name = sanitize_name(args.name)?;
+    let project = Path::new(args.project_path);
+    let base = project.join(".ac-new");
+    if !base.is_dir() {
+        return Err(format!(
+            ".ac-new directory not found in {}",
+            args.project_path
+        ));
+    }
+
+    let agent_dir = base.join(format!("_agent_{}", safe_name));
+    if agent_dir.exists() {
+        return Err(format!("Agent '{}' already exists", safe_name));
+    }
+
+    // Resolve the picked template before any target disk mutation so unknown or
+    // unreadable template ids cannot leave a half-built matrix behind.
+    let resolved_template: Option<crate::commands::role_templates::ResolvedRoleTemplate> =
+        match args
+            .role_template_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(id) => {
+                let config_dir = args
+                    .config_dir
+                    .ok_or_else(|| "Could not determine config directory".to_string())?;
+                Some(crate::commands::role_templates::resolve_role_template(
+                    id,
+                    args.settings,
+                    config_dir,
+                )?)
+            }
+            None => None,
+        };
+
+    create_new_agent_matrix_layout(&agent_dir).map_err(|(sub, e)| match (sub, e.kind()) {
+        ("agent_dir", std::io::ErrorKind::AlreadyExists) => {
+            format!("Agent '{}' already exists", safe_name)
+        }
+        ("agent_dir", _) => format!("Failed to create agent directory: {}", e),
+        _ => format!("Failed to create {} directory: {}", sub, e),
+    })?;
+
+    let role_content = build_role_content(&safe_name, args.description, resolved_template.as_ref());
+    let role_path = agent_dir.join("Role.md");
+    std::fs::write(&role_path, &role_content)
+        .map_err(|e| format!("Failed to write Role.md: {}", e))?;
+
+    if let Some(ref t) = resolved_template {
+        if let Some(ref src) = t.skills_src {
+            let dst = agent_dir.join("skills");
+            let failures = crate::commands::role_templates::copy_dir_recursive(src, &dst);
+            if !failures.is_empty() {
+                log::error!(
+                    "[entity_creation] some files from template '{}' skills/ could not be \
+                     copied into {} ({} failure(s)): {}",
+                    t.id,
+                    dst.display(),
+                    failures.len(),
+                    failures.join("; ")
+                );
+            }
+        }
+    }
+
+    std::fs::write(agent_dir.join("config.json"), "{\n  \"tooling\": {}\n}\n")
+        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+
+    let display_name = agent_matrix_display_name(project, &safe_name);
+    Ok(CreatedAgentMatrixOnDisk {
+        agent_dir,
+        display_name,
+        safe_name,
+        role_path,
+    })
+}
+
+pub(crate) fn apply_agent_matrix_settings_files(
+    agent_dir: &Path,
+    flags: AgentMatrixSettingsFlags,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if flags.exclude_global_claude_md {
+        if let Err(e) = ensure_claude_md_excludes(agent_dir) {
+            let warning = format!(
+                "Failed to write .claude/settings.local.json for {}: {}",
+                agent_dir.display(),
+                e
+            );
+            log::warn!("[entity_creation] {}", warning);
+            warnings.push(warning);
+        }
+    }
+
+    if let Err(e) =
+        crate::config::claude_settings::ensure_rtk_pretool_hook(agent_dir, flags.inject_rtk_hook)
+    {
+        let warning = format!(
+            "Failed to apply rtk hook for matrix {}: {}",
+            agent_dir.display(),
+            e
+        );
+        log::warn!("[entity_creation] {}", warning);
+        warnings.push(warning);
+    }
+
+    warnings
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -362,119 +533,29 @@ pub async fn create_agent_matrix(
     description: String,
     role_template_id: Option<String>,
 ) -> Result<CreatedEntityResult, String> {
-    let safe_name = sanitize_name(&name)?;
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let settings_snapshot = settings.read().await.clone();
+    let flags = AgentMatrixSettingsFlags::from_settings(&settings_snapshot);
+    let config_dir = crate::config::config_dir();
 
-    let agent_dir = base.join(format!("_agent_{}", safe_name));
-    if agent_dir.exists() {
-        return Err(format!("Agent '{}' already exists", safe_name));
-    }
-
-    // #271 — resolve the picked template BEFORE any disk mutation so an unknown
-    // / unreadable id fails fast and no half-built matrix is left on disk. If
-    // the user picked a template but the config dir is unresolvable, hard-error
-    // (plan §4.2.2) rather than silently producing a no-template agent — that
-    // would be a contract violation. Distinct from `list_role_templates`, where
-    // a missing config dir can degrade to "agency-only" since no selection has
-    // been made yet.
-    let resolved_template: Option<crate::commands::role_templates::ResolvedRoleTemplate> =
-        match role_template_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            Some(id) => {
-                let settings_snapshot = settings.read().await.clone();
-                let config_dir = crate::config::config_dir()
-                    .ok_or_else(|| "Could not determine config directory".to_string())?;
-                Some(crate::commands::role_templates::resolve_role_template(
-                    id,
-                    &settings_snapshot,
-                    &config_dir,
-                )?)
-            }
-            None => None,
-        };
-
-    // Create directory structure. The helper owns both root and subdir creation.
-    create_agent_matrix_layout(&agent_dir).map_err(|(sub, e)| match sub {
-        "agent_dir" => format!("Failed to create agent directory: {}", e),
-        _ => format!("Failed to create {} directory: {}", sub, e),
+    let created = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+        project_path: &project_path,
+        name: &name,
+        description: &description,
+        role_template_id: role_template_id.as_deref(),
+        settings: &settings_snapshot,
+        config_dir: config_dir.as_deref(),
     })?;
 
-    // Role.md with YAML frontmatter (single-quoted values for safe YAML).
-    let role_content = build_role_content(&safe_name, &description, resolved_template.as_ref());
-
-    std::fs::write(agent_dir.join("Role.md"), &role_content)
-        .map_err(|e| format!("Failed to write Role.md: {}", e))?;
-
-    // #271 — best-effort copy of the template's skills/ AFTER the layout exists.
-    // Failures here are non-fatal: the matrix is still usable, the user can
-    // re-add skills manually, and partial-copy state is just files inside an
-    // otherwise valid matrix directory. Surfaced via log::error! → ErrorModal.
-    if let Some(ref t) = resolved_template {
-        if let Some(ref src) = t.skills_src {
-            let dst = agent_dir.join("skills");
-            let failures = crate::commands::role_templates::copy_dir_recursive(src, &dst);
-            if !failures.is_empty() {
-                log::error!(
-                    "[entity_creation] some files from template '{}' skills/ could not be \
-                     copied into {} ({} failure(s)): {}",
-                    t.id,
-                    dst.display(),
-                    failures.len(),
-                    failures.join("; ")
-                );
-            }
-        }
-    }
-
-    // config.json
-    std::fs::write(agent_dir.join("config.json"), "{\n  \"tooling\": {}\n}\n")
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
-
-    // Issue #84 — auto-generate .claude/settings.local.json if any configured
-    // coding agent has `exclude_global_claude_md`. Inert for Codex/Gemini.
-    // Reads from in-memory SettingsState (kept in sync by `update_settings` in
-    // commands/config.rs:32-44). Avoids the disk-read race that load_settings()
-    // would have against a concurrent save_settings() (see plan §13.2).
-    //
-    // Issue #120 — also gate the rtk hook on `inject_rtk_hook` (read from the
-    // same snapshot). Acquires `RtkSweepLockState` around the helper sequence
-    // so concurrent sweeps cannot interleave a read-modify-write on the file.
-    let (exclude_claude_md, inject_rtk_hook) = {
-        let s = settings.read().await;
-        (
-            s.agents.iter().any(|a| a.exclude_global_claude_md),
-            s.inject_rtk_hook,
-        )
-    };
     {
         let _guard = sweep_lock.lock().await;
-        if exclude_claude_md {
-            if let Err(e) = ensure_claude_md_excludes(&agent_dir) {
-                log::warn!(
-                    "[entity_creation] Failed to write .claude/settings.local.json for {}: {}",
-                    agent_dir.display(),
-                    e
-                );
-            }
-        }
-        if let Err(e) =
-            crate::config::claude_settings::ensure_rtk_pretool_hook(&agent_dir, inject_rtk_hook)
-        {
-            log::warn!(
-                "[entity_creation] Failed to apply rtk hook for matrix {}: {}",
-                agent_dir.display(),
-                e
-            );
-        }
+        let _warnings = apply_agent_matrix_settings_files(&created.agent_dir, flags);
     }
 
-    let result_path = agent_dir.to_string_lossy().to_string();
+    let result_path = created.agent_dir.to_string_lossy().to_string();
+    log::debug!(
+        "[entity_creation] Created agent matrix safe name: {}",
+        created.safe_name
+    );
     log::info!("[entity_creation] Created agent matrix: {}", result_path);
     Ok(CreatedEntityResult { path: result_path })
 }
@@ -2012,6 +2093,197 @@ mod tests {
             sentinel.is_file(),
             "second call must not wipe pre-existing files in memory/"
         );
+    }
+
+    #[test]
+    fn create_agent_matrix_on_disk_creates_full_layout_without_template() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let ac_new = project.join(".ac-new");
+        std::fs::create_dir_all(&ac_new).expect("create .ac-new");
+        let settings = AppSettings::default();
+        let project_s = project.to_string_lossy().to_string();
+
+        let created = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+            project_path: &project_s,
+            name: "Architect",
+            description: "Build plans",
+            role_template_id: None,
+            settings: &settings,
+            config_dir: None,
+        })
+        .expect("create matrix");
+
+        let agent_dir = ac_new.join("_agent_architect");
+        assert_eq!(created.agent_dir, agent_dir);
+        assert_eq!(created.safe_name, "architect");
+        assert_eq!(created.display_name, "ProjectAlpha/architect");
+        assert!(agent_dir.join("Role.md").is_file());
+        assert!(agent_dir.join("config.json").is_file());
+        for canonical in AGENT_MATRIX_DIRS {
+            assert!(
+                agent_dir.join(canonical).is_dir(),
+                "missing canonical dir {}",
+                canonical
+            );
+        }
+    }
+
+    #[test]
+    fn create_agent_matrix_on_disk_resolves_template_before_mutation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let ac_new = project.join(".ac-new");
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&ac_new).expect("create .ac-new");
+        std::fs::create_dir_all(&config_dir).expect("create config");
+        let settings = AppSettings::default();
+        let project_s = project.to_string_lossy().to_string();
+
+        let err = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+            project_path: &project_s,
+            name: "Architect",
+            description: "Build plans",
+            role_template_id: Some("agency:not-real"),
+            settings: &settings,
+            config_dir: Some(&config_dir),
+        })
+        .expect_err("invalid template");
+
+        assert!(err.contains("Unknown built-in role template"));
+        assert!(
+            !ac_new.join("_agent_architect").exists(),
+            "invalid template must not create the target matrix directory"
+        );
+    }
+
+    #[test]
+    fn create_agent_matrix_on_disk_existing_root_fails_without_overwrite() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let ac_new = project.join(".ac-new");
+        let agent_dir = ac_new.join("_agent_architect");
+        std::fs::create_dir_all(&agent_dir).expect("create existing matrix root");
+        std::fs::write(agent_dir.join("Role.md"), "keep role").expect("write existing role");
+        std::fs::write(agent_dir.join("config.json"), "keep config")
+            .expect("write existing config");
+        let settings = AppSettings::default();
+        let project_s = project.to_string_lossy().to_string();
+
+        let err = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+            project_path: &project_s,
+            name: "Architect",
+            description: "Build plans",
+            role_template_id: None,
+            settings: &settings,
+            config_dir: None,
+        })
+        .expect_err("existing root");
+
+        assert_eq!(err, "Agent 'architect' already exists");
+        assert_eq!(
+            std::fs::read_to_string(agent_dir.join("Role.md")).expect("read existing role"),
+            "keep role"
+        );
+        assert_eq!(
+            std::fs::read_to_string(agent_dir.join("config.json")).expect("read existing config"),
+            "keep config"
+        );
+    }
+
+    #[test]
+    fn create_agent_matrix_on_disk_applies_local_template_and_skills() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let ac_new = project.join(".ac-new");
+        let config_dir = tmp.path().join("config");
+        let template_dir = config_dir.join("agent-templates").join("my-template");
+        std::fs::create_dir_all(&ac_new).expect("create .ac-new");
+        std::fs::create_dir_all(template_dir.join("skills").join("example"))
+            .expect("create template skill dir");
+        std::fs::write(
+            template_dir.join("Role.md"),
+            "---\nname: My Template\n---\n\n# Template Body\n\nUse this profile.\n",
+        )
+        .expect("write template role");
+        std::fs::write(
+            template_dir.join("skills").join("example").join("SKILL.md"),
+            "# Skill\n",
+        )
+        .expect("write template skill");
+        let settings = AppSettings::default();
+        let project_s = project.to_string_lossy().to_string();
+
+        let created = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+            project_path: &project_s,
+            name: "Architect",
+            description: "Build plans",
+            role_template_id: Some("local:my-template"),
+            settings: &settings,
+            config_dir: Some(&config_dir),
+        })
+        .expect("create matrix from template");
+
+        let role = std::fs::read_to_string(created.role_path).expect("read Role.md");
+        assert!(role.contains("## Role Profile"));
+        assert!(role.contains("# Template Body"));
+        assert!(role.contains("Use this profile."));
+        assert!(created
+            .agent_dir
+            .join("skills")
+            .join("example")
+            .join("SKILL.md")
+            .is_file());
+    }
+
+    #[test]
+    fn agent_matrix_settings_flags_match_ui_contract() {
+        let mut settings = AppSettings::default();
+        settings.inject_rtk_hook = true;
+        settings.agents = vec![
+            crate::config::settings::AgentConfig {
+                id: "codex".to_string(),
+                label: "Codex".to_string(),
+                command: "codex".to_string(),
+                color: "#000000".to_string(),
+                git_pull_before: false,
+                exclude_global_claude_md: false,
+            },
+            crate::config::settings::AgentConfig {
+                id: "claude".to_string(),
+                label: "Claude".to_string(),
+                command: "claude".to_string(),
+                color: "#ffffff".to_string(),
+                git_pull_before: false,
+                exclude_global_claude_md: true,
+            },
+        ];
+
+        let flags = AgentMatrixSettingsFlags::from_settings(&settings);
+
+        assert!(flags.exclude_global_claude_md);
+        assert!(flags.inject_rtk_hook);
+    }
+
+    #[test]
+    fn apply_agent_matrix_settings_files_writes_expected_settings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("_agent_architect");
+        std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+
+        let warnings = apply_agent_matrix_settings_files(
+            &agent_dir,
+            AgentMatrixSettingsFlags {
+                exclude_global_claude_md: true,
+                inject_rtk_hook: true,
+            },
+        );
+
+        assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+        let settings_path = agent_dir.join(".claude").join("settings.local.json");
+        let json = std::fs::read_to_string(settings_path).expect("read settings.local.json");
+        assert!(json.contains("claudeMdExcludes"));
+        assert!(json.contains("PreToolUse"));
     }
 
     #[test]

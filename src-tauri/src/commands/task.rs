@@ -81,6 +81,7 @@ fn emit_task_updated(
 /// YAML `title:` value. Returning both from one read avoids torn results when
 /// an external writer races us between two reads. Caller emits both fields so
 /// the sidebar can update its title without waiting for the next 15s poll.
+#[allow(dead_code)]
 fn read_task_fields_at(wg_root: &Path) -> (Option<String>, Option<String>) {
     let Ok(content) = std::fs::read_to_string(wg_root.join("TASK.md")) else {
         return (None, None);
@@ -149,7 +150,13 @@ pub async fn task_set_title(
         session_id,
         outcome
     );
-    let (task, task_title) = read_task_fields_at(&wg_root);
+    
+    let (content, task_title) = match &outcome {
+        task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
+        task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
+    };
+    let trimmed = content.trim();
+    let task = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
     let result = TaskUpdateResult {
         workgroup_root: strip_unc(&wg_root),
         task: task.clone(),
@@ -176,7 +183,13 @@ pub async fn task_clean(
         session_id,
         outcome
     );
-    let (task, task_title) = read_task_fields_at(&wg_root);
+    
+    let (content, task_title) = match &outcome {
+        task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
+        task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
+    };
+    let trimmed = content.trim();
+    let task = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
     let result = TaskUpdateResult {
         workgroup_root: strip_unc(&wg_root),
         task: task.clone(),

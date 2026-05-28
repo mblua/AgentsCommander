@@ -22,6 +22,7 @@ import {
   onTerminalDetached,
   onTerminalAttached,
   onWorkgroupTaskUpdated,
+  onAcProjectRefreshRequested,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
@@ -148,6 +149,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     ) {
       setShowOnboarding(true);
     }
+
+    unlisteners.push(
+      await onAcProjectRefreshRequested((data) => {
+        void projectStore.reloadProjectIfLoaded(data.projectPath);
+      })
+    );
 
     // Load saved project if any
     await projectStore.initFromSettings(

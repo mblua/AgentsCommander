@@ -117,7 +117,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
     // tree. `sender=` and `wg=` are both caller-derived (--root) and a forged
     // --root produces a forged-but-consistent line; pid disambiguates.
     match task_ops::perform(&wg_root, TaskOp::AppendBody(args.text.clone())) {
-        Ok(EditOutcome::Wrote { backup: Some(bp) }) => {
+        Ok(EditOutcome::Wrote { backup: Some(bp), .. }) => {
             log::info!(
                 "[task] append-body: sender={} wg={} pid={} backup={}",
                 sender,
@@ -128,7 +128,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
             crate::cli_println!("TASK.md body appended; backup: {}", bp.display());
             0
         }
-        Ok(EditOutcome::Wrote { backup: None }) => {
+        Ok(EditOutcome::Wrote { backup: None, .. }) => {
             log::info!(
                 "[task] append-body: sender={} wg={} pid={} backup=<no prior file>",
                 sender,
@@ -138,7 +138,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
             crate::cli_println!("TASK.md created; no prior content to back up");
             0
         }
-        Ok(EditOutcome::NoOp) => {
+        Ok(EditOutcome::NoOp { .. }) => {
             // append-body never produces NoOp (an append always changes the file).
             // Defensive: surface the same success line as a Wrote{None} would.
             crate::cli_println!("TASK.md unchanged");
