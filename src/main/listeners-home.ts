@@ -5,7 +5,7 @@ import { homeStore } from "./stores/home";
 /**
  * Wires the Home auto-visibility contract for the main window (issue #183).
  *
- * On mount: Home is shown unconditionally — every app open lands on Home
+ * On mount: Home is shown unconditionally - every app open lands on Home
  * regardless of any restored active session.
  *
  * Listeners installed:

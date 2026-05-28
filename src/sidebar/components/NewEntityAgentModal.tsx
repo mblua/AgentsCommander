@@ -17,13 +17,13 @@ const NewEntityAgentModal: Component<{
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
 
-  // #278 — distinguish user-edited fields from template-populated ones so a
+  // #278 - distinguish user-edited fields from template-populated ones so a
   // second template click can overwrite the first template's values without
   // clobbering anything the user typed by hand.
   const [nameDirty, setNameDirty] = createSignal(false);
   const [descriptionDirty, setDescriptionDirty] = createSignal(false);
 
-  // #271 — template picker state.
+  // #271 - template picker state.
   const [templates, setTemplates] = createSignal<RoleTemplateMeta[]>([]);
   const [templateQuery, setTemplateQuery] = createSignal("");
   const [selectedTemplateId, setSelectedTemplateId] = createSignal<string | null>(null);
@@ -77,7 +77,7 @@ const NewEntityAgentModal: Component<{
       );
       await projectStore.reloadProject(props.projectPath);
       props.onClose();
-      // intentionally do NOT clear creating() — modal unmounts; any in-flight
+      // intentionally do NOT clear creating() - modal unmounts; any in-flight
       // keydown event in the close transition stays guarded.
     } catch (e: any) {
       console.error("create_agent_matrix failed:", e);
@@ -139,7 +139,7 @@ const NewEntityAgentModal: Component<{
   const handleSearchKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
       // Pressing Enter while typing in the search input must not also trigger
-      // create — the user is still picking a template.
+      // create - the user is still picking a template.
       e.stopPropagation();
       e.preventDefault();
       return;
@@ -159,7 +159,7 @@ const NewEntityAgentModal: Component<{
         </div>
 
         <div class="new-agent-form new-agent-form-scroll">
-          {/* #271 — optional role-template picker */}
+          {/* #271 - optional role-template picker */}
           <div class="new-agent-field tpl-picker">
             <label class="new-agent-label">Template (optional)</label>
             <div class="tpl-picker-search">
@@ -208,7 +208,7 @@ const NewEntityAgentModal: Component<{
                 aria-selected={selectedTemplateId() === null}
               >
                 <div class="tpl-picker-item-name">No template</div>
-                <div class="tpl-picker-item-desc">Blank role — current default behavior</div>
+                <div class="tpl-picker-item-desc">Blank role (current default behavior)</div>
               </button>
               <For each={filteredTemplates()}>
                 {(t) => (

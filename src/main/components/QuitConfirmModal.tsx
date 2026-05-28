@@ -4,9 +4,9 @@ import { Portal } from "solid-js/web";
 export interface QuitConfirmModalProps {
   /** Number of detached sessions that will be closed if the user confirms. */
   detachedCount: number;
-  /** User cancelled — clicked Cancel, pressed Enter on Cancel, pressed ESC, or clicked the backdrop. */
+  /** User cancelled - clicked Cancel, pressed Enter on Cancel, pressed ESC, or clicked the backdrop. */
   onCancel: () => void;
-  /** User explicitly confirmed — clicked Quit or Tab-focused Quit then pressed Enter. */
+  /** User explicitly confirmed - clicked Quit or Tab-focused Quit then pressed Enter. */
   onQuit: () => void;
 }
 
@@ -22,7 +22,7 @@ const QuitConfirmModal: Component<QuitConfirmModalProps> = (props) => {
     // Initial focus: Cancel (the safe button).
     cancelBtnRef?.focus();
 
-    // Keyboard routing (capture phase — see A3B.2.3): Enter on Cancel-focus = Cancel,
+    // Keyboard routing (capture phase - see A3B.2.3): Enter on Cancel-focus = Cancel,
     // Enter on Quit-focus = Quit, ESC = Cancel always, Tab cycles [Cancel, Quit].
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -48,7 +48,7 @@ const QuitConfirmModal: Component<QuitConfirmModalProps> = (props) => {
         const focusables = [cancelBtnRef, quitBtnRef].filter(Boolean) as HTMLElement[];
         if (focusables.length < 2) return;
         const idx = focusables.indexOf(document.activeElement as HTMLElement);
-        // #266: activeElement can be outside the trap entirely — e.g. blurred
+        // #266: activeElement can be outside the trap entirely - e.g. blurred
         // to <body> after a click on the modal's non-focusable backdrop /
         // header / padding. idx is -1 then; without this guard the forward
         // branch's `idx === length - 1` is false, preventDefault is skipped,

@@ -224,7 +224,7 @@ describe("applyTemplatePrefill", () => {
 
   it("preserves_user_blank_field_marked_dirty", () => {
     // If the user cleared a template-populated field on purpose, picking
-    // another template must not refill it — nameDirty is the user's signal of
+    // another template must not refill it - nameDirty is the user's signal of
     // intent, regardless of whether the current value is empty.
     const next = applyTemplatePrefill(historian, {
       name: "",

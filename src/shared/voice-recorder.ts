@@ -122,7 +122,7 @@ async function start(sessionId: string) {
     rec.onstop = async () => {
       const stoppedSessionId = recordingSessionId();
 
-      // Stop tracking IMMEDIATELY — must await to guarantee the backend
+      // Stop tracking IMMEDIATELY - must await to guarantee the backend
       // clears the flag before the transcription's own pty_write executes.
       if (stoppedSessionId) await VoiceAPI.markRecording(stoppedSessionId, false);
 
@@ -196,7 +196,7 @@ function stop() {
   }
 }
 
-/** Cancel recording — discard audio without processing */
+/** Cancel recording - discard audio without processing */
 function cancel() {
   const sid = recordingSessionId();
   cancelAutoExecute();

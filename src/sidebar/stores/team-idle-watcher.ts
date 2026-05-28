@@ -1,12 +1,12 @@
 // Per-workgroup busy→all-idle transition detector for Feature #110.
 //
 // **Spec deviation:** issue #110 calls for per-*team* aggregation, but
-// `sessionsStore.state.teams` is currently dead code — `setTeams()` is
+// `sessionsStore.state.teams` is currently dead code - `setTeams()` is
 // defined but never called from anywhere in the repo. We aggregate by
 // workgroup instead, sourcing from `projectStore.projects[].workgroups[]`
 // (the live data path that ProjectPanel/TeamFilter actually use).
 // **If teams become live (someone wires up `setTeams`), revisit this
-// aggregation** — the right unit may be the team-config rather than the
+// aggregation** - the right unit may be the team-config rather than the
 // workgroup instance.
 //
 // **Why per-session previous-busy tracking** (instead of a busy *set*
@@ -32,7 +32,7 @@
 //
 // **Focused-WG suppression (#254)**: while the user is looking at a
 // workgroup (the active session belongs to it AND the AC window holds
-// OS focus), that workgroup's beep is gated off — they can already
+// OS focus), that workgroup's beep is gated off - they can already
 // see the state change, the beep is redundant. When focus moves away
 // (tab switch or alt-tab), the just-left workgroup keeps suppressing
 // for GRACE_MS to absorb the user's typical short detour back.
@@ -51,7 +51,7 @@ export const GRACE_MS = 4000;
 // initial tick (before the listener has reported anything) treats
 // the visible WG as focused. Exposed as a signal so the watcher's
 // createEffect re-runs on focus flips even when no session has
-// changed — without this, alt-tab→idle transitions inside the
+// changed - without this, alt-tab→idle transitions inside the
 // grace window would miss the grace setter.
 const [osFocused, setOsFocused] = createSignal(true);
 
@@ -78,7 +78,7 @@ export function shouldSuppressBeep(
  * for the workgroup being left behind (if any) and return the new
  * "previous focused WG" to persist for the next tick.
  *
- * Mutates `graceUntil` in place — callers own the map. Returns the
+ * Mutates `graceUntil` in place - callers own the map. Returns the
  * value the caller should assign to its `previousFocusedWg`.
  */
 export function updateGraceOnFocusChange(
@@ -104,14 +104,14 @@ async function startOsFocusListener(): Promise<() => void> {
       const focused = await win.isFocused();
       setOsFocused(focused);
     } catch {
-      // Non-fatal — keep the default-true seed.
+      // Non-fatal - keep the default-true seed.
     }
     const unlisten = await win.onFocusChanged(({ payload: focused }) => {
       setOsFocused(focused);
     });
     return unlisten;
   } catch {
-    // Browser/WS transport or import failure — assume always-focused
+    // Browser/WS transport or import failure - assume always-focused
     // so the legacy behavior (per-WG suppression keyed only on
     // activeId) still applies; we just can't react to OS alt-tab.
     return () => {};
@@ -143,7 +143,7 @@ function isBusy(session: Session): boolean {
 export function startTeamIdleWatcher(): () => void {
   return createRoot((dispose) => {
     // sessionId -> wg.path. Populated on first observation of each
-    // session and never overwritten — protects against rename.
+    // session and never overwritten - protects against rename.
     const sessionToWg = new Map<string, string>();
 
     // wg.path -> Map<sessionId, wasBusy>. The inner map records each
@@ -166,7 +166,7 @@ export function startTeamIdleWatcher(): () => void {
     // Spawn the OS focus listener; capture the unlisten so we can
     // detach it in dispose. The signal stays at its default until
     // the async listener resolves. `disposed` guards the race where
-    // the watcher is torn down before the dynamic import resolves —
+    // the watcher is torn down before the dynamic import resolves -
     // without it the listener would be registered into an orphan
     // variable and leak forever.
     let disposed = false;
@@ -176,7 +176,7 @@ export function startTeamIdleWatcher(): () => void {
         try {
           unlisten();
         } catch {
-          // ignore — best-effort detach
+          // ignore - best-effort detach
         }
         return;
       }
@@ -207,7 +207,7 @@ export function startTeamIdleWatcher(): () => void {
 
       // 2. Build current per-wg busy state from the alive bound
       //    sessions only. Destroyed sessions (not in `sessions`) and
-      //    exited sessions are excluded — they don't contribute to
+      //    exited sessions are excluded - they don't contribute to
       //    aggregation per spec.
       const sessionsById = new Map<string, Session>();
       for (const s of sessions) sessionsById.set(s.id, s);
@@ -233,7 +233,7 @@ export function startTeamIdleWatcher(): () => void {
       const focusedWg =
         hasOsFocus && activeId ? sessionToWg.get(activeId) ?? null : null;
 
-      // 4. First run is snapshot-only — see header comment.
+      // 4. First run is snapshot-only - see header comment.
       //    Crucially, we skip the focus-transition bookkeeping on
       //    the snapshot tick: the OS-focus listener resolves
       //    asynchronously, so the initial tick may run with the
@@ -317,7 +317,7 @@ export function startTeamIdleWatcher(): () => void {
         try {
           unlistenOsFocus();
         } catch {
-          // ignore — best-effort detach
+          // ignore - best-effort detach
         }
         unlistenOsFocus = null;
       }

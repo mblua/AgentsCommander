@@ -29,7 +29,7 @@ const NewWorkgroupModal: Component<{
       );
       await projectStore.reloadProject(props.projectPath);
       props.onClose();
-      // intentionally do NOT clear creating() — modal unmounts; any in-flight
+      // intentionally do NOT clear creating() - modal unmounts; any in-flight
       // keydown event in the close transition stays guarded.
     } catch (e: any) {
       console.error("create_workgroup failed:", e);

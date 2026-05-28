@@ -57,7 +57,7 @@ function parseTask(content: string | null): ParsedTask {
     pos = nl < 0 ? detect.length : nl + 1;
   }
 
-  // Missing closer means malformed frontmatter — fall back to original.
+  // Missing closer means malformed frontmatter - fall back to original.
   if (bodyStart < 0) return { title: null, body: raw };
 
   return { title, body: detect.slice(bodyStart) };

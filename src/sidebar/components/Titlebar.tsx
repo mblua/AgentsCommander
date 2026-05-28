@@ -151,7 +151,7 @@ const Titlebar: Component = () => {
                     onClick={() => applyWidthPreset(preset.width)}
                   >
                     <span class="layout-option-icon">&#x2630;</span>
-                    {preset.label} — {preset.width}px
+                    {preset.label}: {preset.width}px
                   </button>
                 )}
               </For>

@@ -247,7 +247,7 @@ const SessionItem: Component<{
    *  Other paths: "parentFolder/name" (last 2 segments)
    *
    *  .ac-new parsing is delegated to extractProjectName (innermost wins via
-   *  lastIndexOf — matches the titlebar helpers, fixes nested-.ac-new bug). */
+   *  lastIndexOf - matches the titlebar helpers, fixes nested-.ac-new bug). */
   const displayName = () => {
     const wd = props.session.workingDirectory;
     if (wd) {

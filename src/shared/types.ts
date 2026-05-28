@@ -339,7 +339,7 @@ export interface WorkgroupTaskUpdatedEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Project registration result (#191 — shared open/new project flow)
+// Project registration result (#191 - shared open/new project flow)
 // Mirrors src-tauri/src/config/projects.rs::ProjectRegistration.
 // ---------------------------------------------------------------------------
 
@@ -360,7 +360,7 @@ export interface ProjectRegistration {
 export interface ErrorLogEntry {
   /** Local timestamp string, e.g. "2026-05-21 15:56:11.123". */
   timestamp: string;
-  /** Always "ERROR" today — kept for forward-compat and copy output. */
+  /** Always "ERROR" today - kept for forward-compat and copy output. */
   level: string;
   /** Log target, e.g. "agentscommander_lib::commands::entity_creation". */
   target: string;

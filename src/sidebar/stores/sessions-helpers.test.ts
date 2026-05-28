@@ -148,7 +148,7 @@ describe("upsertSessionList (#274 banner-reuse hydration)", () => {
     // listener registration, banner called createRootAgent() and the
     // backend returned the existing Session WITHOUT emitting
     // session_created. The banner now calls sessionsStore.addSession with
-    // that returned Session — upsertSessionList must replace the prior
+    // that returned Session - upsertSessionList must replace the prior
     // (possibly stale or missing) entry.
     const sessions: Session[] = [];
     const returned = mkSession("root", "running", { isRootAgent: true, agentLabel: "claude" });

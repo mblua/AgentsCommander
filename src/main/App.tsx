@@ -93,7 +93,7 @@ const MainApp: Component = () => {
     persistWidth(clamped);
   };
 
-  // Stateless detached-window count (plan §A3B.3 / G3-B1 — must NOT read
+  // Stateless detached-window count (plan §A3B.3 / G3-B1 - must NOT read
   // sessionsStore because the store is Phase-2 and not authoritative anyway).
   async function countDetachedWindows(): Promise<number> {
     if (!isTauri) return 0;
@@ -145,10 +145,10 @@ const MainApp: Component = () => {
   };
 
   onMount(async () => {
-    // #289 — optimistic light-mode first paint (legacy default); the
+    // #289 - optimistic light-mode first paint (legacy default); the
     // SettingsAPI.get() block below overrides to dark for users who chose it.
     // The embedded SidebarApp + TerminalApp each run their own corrective
-    // step on the same documentElement — idempotent overlap is fine.
+    // step on the same documentElement - idempotent overlap is fine.
     document.documentElement.classList.add("light-theme");
 
     // Main window owns zoom + geometry persistence. Embedded Sidebar+Terminal
@@ -174,8 +174,8 @@ const MainApp: Component = () => {
     }
 
     // Home auto-visibility contract (issue #183 + #164). Wired in a
-    // dedicated helper so the gating logic — especially the userInitiated
-    // discriminator on session_switched — is unit-testable in isolation.
+    // dedicated helper so the gating logic - especially the userInitiated
+    // discriminator on session_switched - is unit-testable in isolation.
     unlisteners.push(...(await wireHomeListeners()));
 
     window.addEventListener("resize", onWindowResize);

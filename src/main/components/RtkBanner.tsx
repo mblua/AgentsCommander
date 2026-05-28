@@ -36,7 +36,7 @@ const RtkBanner: Component = () => {
     if (busy()) return;
     setBusy(true);
     try {
-      // Narrow setter — holds the Rust SettingsState write lock through
+      // Narrow setter - holds the Rust SettingsState write lock through
       // save_settings, avoiding the IPC-level read-modify-write race that a
       // get+update would have against a concurrent SettingsModal save.
       await SettingsAPI.setInjectRtkHook(true);
@@ -68,7 +68,7 @@ const RtkBanner: Component = () => {
     }
   };
 
-  // Auto-disabled banner is UI-only dismiss — does NOT persist. If the
+  // Auto-disabled banner is UI-only dismiss - does NOT persist. If the
   // condition (rtk missing AND injectRtkHook=true was the trigger that
   // already auto-flipped) holds again on next boot, the banner reappears.
   const onDismissAutoDisabled = () => setMode("silent");

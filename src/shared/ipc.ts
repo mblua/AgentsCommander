@@ -55,10 +55,10 @@ export interface RestartSessionOptions {
   /**
    * Forwarded to the backend `restart_session` command. Omit (or pass `true`)
    * for a true user-intent restart that starts a fresh conversation. Pass
-   * `false` when waking a deferred session — a session whose PTY is `Exited`
+   * `false` when waking a deferred session - a session whose PTY is `Exited`
    * either because it was deferred at startup (new-policy default, or the
    * coord-was-asleep-at-shutdown branch of `restoreCoordinatorWakeState`) or
-   * because the user closed it during the prior run — to allow provider
+   * because the user closed it during the prior run - to allow provider
    * auto-resume (`claude --continue`, `codex resume --last`, `gemini --resume latest`).
    */
   skipAutoResume?: boolean;
@@ -214,12 +214,12 @@ export const VoiceAPI = {
 export const DebugAPI = {
   saveLogs: (content: string) =>
     transport.invoke<void>("save_debug_logs", { content }),
-  /** #264 — read-and-clear the backend's buffered ERROR-level log entries. */
+  /** #264 - read-and-clear the backend's buffered ERROR-level log entries. */
   drainErrorLogs: () =>
     transport.invoke<ErrorLogEntry[]>("drain_error_logs"),
 };
 
-// #264 — content-free ping fired when a new ERROR-level log entry is captured.
+// #264 - content-free ping fired when a new ERROR-level log entry is captured.
 // The listener responds by calling DebugAPI.drainErrorLogs().
 export function onErrorLogEvent(
   callback: () => void
@@ -252,7 +252,7 @@ export const WindowAPI = {
   /**
    * Persist a detached window's geometry to its PersistedSession so it
    * re-spawns at the same position+size after an app restart. Per plan
-   * §A2.4.Arb1 (R.6 option a) — backend stores the value on
+   * §A2.4.Arb1 (R.6 option a) - backend stores the value on
    * PersistedSession.detached_geometry and auto-GCs when the session is
    * destroyed.
    */
@@ -307,7 +307,7 @@ export const TelegramAPI = {
   sendTest: (token: string) =>
     transport.invoke<number>("telegram_send_test", { token }),
 
-  // #282 — send an existing local file to the bot's configured chat.
+  // #282 - send an existing local file to the bot's configured chat.
   // ≤ 10 MB jpg/jpeg/png/webp ⇒ sendPhoto; otherwise sendDocument up to 50 MB.
   sendImage: (botId: string, path: string, caption?: string) =>
     transport.invoke<void>("telegram_send_image", { botId, path, caption }),
@@ -433,14 +433,14 @@ export const ProjectAPI = {
   /**
    * Validate an existing AC project at `path` and register it in
    * settings.projectPaths. Wraps the `open_project` Tauri command added in
-   * #191 — same backend logic as the CLI `open-project` verb.
+   * #191 - same backend logic as the CLI `open-project` verb.
    */
   open: (path: string) =>
     transport.invoke<ProjectRegistration>("open_project", { path }),
   /**
    * Ensure an AC project at `path` (mkdir `.ac-new/` if missing) and register
    * it in settings.projectPaths. Wraps the `new_project` Tauri command added
-   * in #191 — same backend logic as the CLI `new-project` verb.
+   * in #191 - same backend logic as the CLI `new-project` verb.
    */
   new: (path: string) =>
     transport.invoke<ProjectRegistration>("new_project", { path }),
@@ -549,7 +549,7 @@ export function onThemeChanged(
 }
 
 // Open the Settings modal (handled by sidebar ActionBar). Emitted from any
-// window — e.g. a disabled mic button asking the user to configure voice.
+// window - e.g. a disabled mic button asking the user to configure voice.
 // `section` targets a specific tab in SettingsModal (e.g. "integrations").
 // Omit to open on the default tab.
 export function emitOpenSettings(section?: string): Promise<void> {

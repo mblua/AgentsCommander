@@ -19,7 +19,7 @@ export const settingsStore = {
     const s = await SettingsAPI.get();
     setSettings(s);
     // Push the global mute state into sound.ts so every play* call sees the
-    // current value (#158). Default true is intentional — old settings.json
+    // current value (#158). Default true is intentional - old settings.json
     // files predate `soundsEnabled` and must remain audible until the user
     // explicitly mutes.
     setSoundsEnabled(s.soundsEnabled ?? true);

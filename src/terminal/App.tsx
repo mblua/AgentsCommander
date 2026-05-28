@@ -47,7 +47,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
   // (#164 follow-up). Keeping Brief/LastPrompt mounted preserves the height
   // of `.terminal-content-area`, so TerminalView's ResizeObserver does not
   // fire on Home toggle and the PTY does not receive a SIGWINCH. Detached
-  // and locked windows never render Home — they keep the normal layout.
+  // and locked windows never render Home - they keep the normal layout.
   const isHomeShown = createMemo(
     () => !!(props.embedded && !props.detached && !props.lockedSessionId && homeStore.visible)
   );
@@ -80,11 +80,11 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
   };
 
   onMount(async () => {
-    // #289 — optimistic light-mode first paint (legacy default); the
+    // #289 - optimistic light-mode first paint (legacy default); the
     // settingsStore.load() corrective step below restores dark for users
     // who persisted that preference. Guarded with !props.embedded because
     // MainApp owns the documentElement classList when this is mounted inside
-    // the unified layout — same pattern as zoom/geometry/onThemeChanged below.
+    // the unified layout - same pattern as zoom/geometry/onThemeChanged below.
     if (!props.embedded) {
       document.documentElement.classList.add("light-theme");
     }
@@ -131,7 +131,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       unlisteners.push(unlistenCloseRequested);
     }
 
-    // Window-level initializers — skipped when embedded (main owns these).
+    // Window-level initializers - skipped when embedded (main owns these).
     if (!props.embedded) {
       // Detached windows use "detached" (mapped to terminalZoom in zoomKeyMap).
       cleanupZoom = await initZoom(props.detached ? "detached" : "terminal");
@@ -143,7 +143,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       }
     }
     await settingsStore.load();
-    // #289 — restore persisted theme. Awaited above (vs. fire-and-forget)
+    // #289 - restore persisted theme. Awaited above (vs. fire-and-forget)
     // so themeLight is known before the corrective remove runs. Embedded
     // children skip per the convention above.
     if (!props.embedded && !settingsStore.current?.themeLight) {
@@ -229,7 +229,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       })
     );
 
-    // Theme sync: follow sidebar theme toggle (redundant in embedded mode —
+    // Theme sync: follow sidebar theme toggle (redundant in embedded mode -
     // sidebar's toggle already flips the shared documentElement classList).
     if (!props.embedded) {
       unlisteners.push(
@@ -287,7 +287,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
           .terminal-content-area inside .terminal-layout (the positioned
           containing block). Painted on top so it visually covers BRIEF /
           LAST PROMPT and the terminal area, but those panels remain mounted
-          underneath — toggling Home must not change the height of
+          underneath - toggling Home must not change the height of
           .terminal-content-area or trigger TerminalView's ResizeObserver
           (which would SIGWINCH the PTY). TerminalView is never unmounted
           while Home is visible. Detached/locked windows never render Home. */}

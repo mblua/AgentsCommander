@@ -116,7 +116,7 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       if (stage() === "launch") {
-        // Can't go back — folder is already created
+        // Can't go back - folder is already created
         props.onClose();
       } else {
         props.onClose();

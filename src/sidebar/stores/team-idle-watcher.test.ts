@@ -2,7 +2,7 @@
 //
 // Pure-helper tests for the focused-WG suppression + grace period
 // behavior introduced in #254. We exercise `shouldSuppressBeep` and
-// `updateGraceOnFocusChange` directly — no SolidJS root, no store
+// `updateGraceOnFocusChange` directly - no SolidJS root, no store
 // mocks, no fake timers. The wiring inside `startTeamIdleWatcher`'s
 // createEffect that calls these helpers is audited via code review
 // and the manual smoke test, not unit-mocked here.
@@ -112,7 +112,7 @@ describe("updateGraceOnFocusChange (#254)", () => {
 
     expect(afterTabIn).toBe("A");
     // previousFocusedWg was null, so no grace was armed for the
-    // "left" side — and the existing A grace entry is untouched.
+    // "left" side - and the existing A grace entry is untouched.
     expect(grace.get("A")).toBe(4000);
 
     // T=6000: A is focused again → suppressed by the focused-WG rule
@@ -135,7 +135,7 @@ describe("updateGraceOnFocusChange (#254)", () => {
     // window for the active session's WG. The fix moves the
     // updateGraceOnFocusChange call past the snapshot early-return,
     // so the first real tick always sees `previousFocusedWg` of
-    // null and the resolved `focusedWg` — null→null is a no-op.
+    // null and the resolved `focusedWg` - null→null is a no-op.
     const grace = new Map<string, number>();
     const result = updateGraceOnFocusChange(null, null, grace, 1000, GRACE_MS);
     expect(result).toBeNull();

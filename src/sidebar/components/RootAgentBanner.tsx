@@ -44,7 +44,7 @@ const RootAgentBanner: Component = () => {
 
   // Dormant root has status as `{ exited: number }` (not a string). Backend
   // marks root exited/dormant instead of removing the record so the banner can
-  // re-wake — but PTY-dependent actions (mic, detach, telegram, close) must be
+  // re-wake - but PTY-dependent actions (mic, detach, telegram, close) must be
   // hidden because there is no live PTY to receive input or attach to.
   const hasLivePty = createMemo(() => {
     const r = rootSession();
@@ -62,7 +62,7 @@ const RootAgentBanner: Component = () => {
   const subtitle = createMemo(() => {
     const r = rootSession();
     if (!r) return "Root Agent";
-    if (typeof r.status !== "string") return "Exited — click to wake";
+    if (typeof r.status !== "string") return "Exited, click to wake";
     return "Root Agent";
   });
 
@@ -368,7 +368,7 @@ const RootAgentBanner: Component = () => {
         }
         onClick={handleClick}
         onKeyDown={(e) => {
-          // Only intercept keys aimed at the banner itself — when focus is on
+          // Only intercept keys aimed at the banner itself - when focus is on
           // a child action button, that button's native handler runs and the
           // event still bubbles here, so we must skip to avoid double-firing.
           if (e.currentTarget !== e.target) return;
@@ -448,7 +448,7 @@ const RootAgentBanner: Component = () => {
 
         <Show when={rootSession()}>
           {/* Cancel-recording is local cleanup (MediaRecorder + mic stream),
-              not PTY-dependent — keep it visible even when the root is
+              not PTY-dependent - keep it visible even when the root is
               dormant so any in-flight recording can still be torn down. */}
           <Show when={isRecording()}>
             <button

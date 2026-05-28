@@ -8,7 +8,7 @@ const [entries, setEntries] = createSignal<ErrorLogEntry[]>([]);
 const [index, setIndex] = createSignal(0);
 
 // Upper bound on the frontend queue (M2). drain() is read-and-clear, so the
-// frontend ACCUMULATES entries across successive drains — the Rust-side
+// frontend ACCUMULATES entries across successive drains - the Rust-side
 // ERROR_BUFFER_CAP does NOT bound this side. Without a cap, a slow error loop
 // with the user AFK would grow `entries` without limit (and `enqueue`'s
 // array copy would be O(n²) over the run). Mirrors ERROR_BUFFER_CAP.

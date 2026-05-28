@@ -8,7 +8,7 @@ import type { Session, SessionStatus } from "../../shared/types";
  * the selected session to "active": a dormant root must keep its
  * { exited: N } status so RootAgentBanner's wake path
  * (typeof status !== "string") still fires and chooses
- * restart(..., { skipAutoResume: false }) — i.e. wake-with-provider-resume.
+ * restart(..., { skipAutoResume: false }) - i.e. wake-with-provider-resume.
  */
 export function isRuntimeStringStatus(status: SessionStatus): boolean {
   return typeof status === "string";

@@ -86,12 +86,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   };
 
   onMount(async () => {
-    // #289 — optimistically paint in light mode (the historic default and the
+    // #289 - optimistically paint in light mode (the historic default and the
     // AppSettings default) to keep first paint flash-free for the common case.
     // The persisted-preference check after SettingsAPI.get() below overrides
     // back to dark for users who chose it last session. Guarded with
     // !props.embedded because MainApp owns the documentElement classList when
-    // this is mounted inside the unified layout — same pattern as zoom/geometry.
+    // this is mounted inside the unified layout - same pattern as zoom/geometry.
     if (!props.embedded) {
       document.documentElement.classList.add("light-theme");
     }
@@ -120,7 +120,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       document.addEventListener("mousedown", handleRaiseTerminal);
     }
 
-    // Block the default browser context menu globally — custom menus are used instead
+    // Block the default browser context menu globally - custom menus are used instead
     document.addEventListener("contextmenu", blockContextMenu);
 
     if (!props.embedded) {
@@ -132,7 +132,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
 
-    // Feature #110 — start watching for team busy→all-idle transitions.
+    // Feature #110 - start watching for team busy→all-idle transitions.
     // Mounted after settingsStore.load() so the very first effect run
     // already sees the user's teamIdleBeepEnabled choice; the watcher's
     // own initialization guard separately suppresses any startup beep.
@@ -204,7 +204,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       )
     );
 
-    // Hydrate detachedIds from backend (G.8 race safety — covers detach
+    // Hydrate detachedIds from backend (G.8 race safety - covers detach
     // events that fired before this component mounted, e.g. from the
     // Phase-3 restore path or from a prior detach survived across a
     // SidebarApp re-mount in the unified window).

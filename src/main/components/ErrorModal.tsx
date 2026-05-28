@@ -6,7 +6,7 @@ import { DebugAPI, onErrorLogEvent } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { errorModalStore } from "../stores/error-modal";
 
-/** Copy-to-clipboard text for one entry — header line + full message. */
+/** Copy-to-clipboard text for one entry - header line + full message. */
 function formatEntry(e: ErrorLogEntry): string {
   return `${e.timestamp} [${e.level}] ${e.target}\n${e.message}`;
 }
@@ -23,8 +23,8 @@ const ErrorModal: Component = () => {
 
   // H1: a memo notifies dependents only when the entry's *identity* changes.
   // Reading errorModalStore.current directly in an effect re-fires whenever
-  // entries() changes — including when a background error is enqueued behind an
-  // already-open modal — which would steal focus and reset "Copied!". `enqueue`
+  // entries() changes - including when a background error is enqueued behind an
+  // already-open modal - which would steal focus and reset "Copied!". `enqueue`
   // only appends, so an already-shown entry keeps its object reference and the
   // memo stays quiet; it fires only on real transitions (open, advance, close).
   const currentEntry = createMemo(() => errorModalStore.current);
@@ -42,7 +42,7 @@ const ErrorModal: Component = () => {
     if (!isTauri) return; // Web remote client: the error modal is desktop-only.
     // Subscribe BEFORE the initial drain so a ping fired mid-mount is not lost
     // (same ordering rule as RtkBanner). A ping racing the drain just triggers
-    // a second drain — harmless: read-and-clear returns [] when already empty.
+    // a second drain - harmless: read-and-clear returns [] when already empty.
     unlisteners.push(await onErrorLogEvent(drainAndEnqueue));
     await drainAndEnqueue();
   });
@@ -66,7 +66,7 @@ const ErrorModal: Component = () => {
         ) as HTMLElement[];
         if (focusables.length < 2) return;
         const idx = focusables.indexOf(document.activeElement as HTMLElement);
-        // F1: activeElement can be outside the trap entirely — e.g. blurred to
+        // F1: activeElement can be outside the trap entirely - e.g. blurred to
         // <body> after a click on the modal's non-focusable backdrop / header /
         // padding. idx is -1 then; without this guard the forward branch's
         // `idx === length - 1` is false, preventDefault is skipped, and native
@@ -84,14 +84,14 @@ const ErrorModal: Component = () => {
         return;
       }
       // Any other key while open (incl. Enter): swallow propagation so xterm.js
-      // / global shortcuts do not react behind the modal. NOT preventDefault —
+      // / global shortcuts do not react behind the modal. NOT preventDefault -
       // native Enter/Space still activates the focused button, and arrow keys
       // still scroll the focused message box (default action).
       e.stopImmediatePropagation();
     };
     // Capture phase + stopImmediatePropagation. ErrorModal mounts before
     // QuitConfirmModal ever does, so its capture listener is registered first
-    // and wins — while the error modal is open it fully owns the keyboard.
+    // and wins - while the error modal is open it fully owns the keyboard.
     document.addEventListener("keydown", onKeyDown, true);
     onCleanup(() => document.removeEventListener("keydown", onKeyDown, true));
   });

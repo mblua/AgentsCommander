@@ -398,7 +398,7 @@ const AcDiscoveryPanel: Component = () => {
             <div class="ctx-files-panel" onClick={(e) => e.stopPropagation()}>
               <div class="ctx-files-header">
                 <span class="ctx-files-title">
-                  Context Files — {ctxFilesReplica()!.name}
+                  Context Files: {ctxFilesReplica()!.name}
                 </span>
                 <button class="ctx-files-close" onClick={closeContextFilesPanel}>
                   &times;

@@ -41,7 +41,7 @@ export const projectStore = {
     loadingCount++;
     setLoading(true);
     try {
-      // #191 — backend owns the validation + dedup + persist atomically.
+      // #191 - backend owns the validation + dedup + persist atomically.
       // Throws if `.ac-new/` is missing; caller (createAndLoad / pickAndCheck)
       // is responsible for creating it first via projectStore.createAndLoad
       // when that case is expected.
@@ -72,7 +72,7 @@ export const projectStore = {
       // Round-1 G11 deferred: surface this to the user via toast/sidebar
       // chip in a follow-up. For now, preserve the existing swallow-and-log
       // so behaviour is no worse than today (initFromSettings silently drops
-      // a project whose .ac-new was deleted between sessions — see §6.11).
+      // a project whose .ac-new was deleted between sessions - see §6.11).
       console.error("Failed to load project:", e);
     } finally {
       loadingCount--;

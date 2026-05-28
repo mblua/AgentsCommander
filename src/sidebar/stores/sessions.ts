@@ -60,7 +60,7 @@ function makeInactiveEntry(name: string, path: string): Session {
   };
 }
 
-/** Names and paths owned by WG replicas and matrix agents — used to hide them from Agent Sessions */
+/** Names and paths owned by WG replicas and matrix agents - used to hide them from Agent Sessions */
 const wgReplicaMemo = createMemo(() => {
   const names = new Set<string>();
   const paths = new Set<string>();
@@ -104,7 +104,7 @@ const filteredSessionsMemo = createMemo(() => {
     });
   })();
 
-  // Hide sessions owned by WG replicas — they display in ProjectPanel instead
+  // Hide sessions owned by WG replicas - they display in ProjectPanel instead
   const wg = wgReplicaMemo();
   const visibleSessions = wg.names.size > 0
     ? activeSessions.filter((s) => !wg.names.has(s.name))
@@ -134,12 +134,12 @@ const filteredSessionsMemo = createMemo(() => {
   };
 
   if (!state.teamFilter) {
-    // "All" — show inactive from all discovered repos
+    // "All" - show inactive from all discovered repos
     for (const repo of state.repos) {
       addInactive(repo.name, repo.path);
     }
   } else if (state.teamFilter === NO_TEAM) {
-    // "No team" — show inactive repos NOT in any team
+    // "No team" - show inactive repos NOT in any team
     const teamPaths = allTeamPathsMemo();
     for (const repo of state.repos) {
       if (!teamPaths.has(normalizePath(repo.path))) {
@@ -147,7 +147,7 @@ const filteredSessionsMemo = createMemo(() => {
       }
     }
   } else {
-    // Specific team — show inactive team members only
+    // Specific team - show inactive team members only
     const team = state.teams.find((t) => t.id === state.teamFilter);
     if (team) {
       for (const m of team.members) {
@@ -175,7 +175,7 @@ const [collapsedTeams, setCollapsedTeams] = createSignal<Record<string, boolean>
  * terminal_detached / terminal_attached / session_destroyed events.
  *
  * NOTE: this store is NOT the authoritative source of truth for "is the
- * detached window open?" — the Tauri window list is. Read the Tauri
+ * detached window open?" - the Tauri window list is. Read the Tauri
  * window list directly when correctness matters (e.g. quit-confirmation
  * count per G3-B1). This signal exists only to drive sidebar UI
  * (icon/title toggles, context-menu items).
@@ -192,7 +192,7 @@ const groupedSessionsMemo = createMemo((): { groups: TeamSessionGroup[]; ungroup
   const assignedPaths = new Set<string>();
 
   for (const team of teams) {
-    // Skip hidden teams — their sessions will appear as ungrouped
+    // Skip hidden teams - their sessions will appear as ungrouped
     if (team.visible === false) continue;
     const memberPaths = new Set(team.members.map((m) => normalizePath(m.path)));
 

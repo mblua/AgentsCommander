@@ -3,7 +3,7 @@ import type { AppSettings } from "./types";
 import { isTauri } from "./platform";
 
 // NOTE: main window is the only zoom initializer for the unified app. Embedded
-// Sidebar + Terminal MUST skip initZoom() — otherwise Ctrl+= registers two
+// Sidebar + Terminal MUST skip initZoom() - otherwise Ctrl+= registers two
 // wheel/keydown handlers with independent currentZoom closures and the values
 // race. Detached windows use "detached" (mapped to terminalZoom). See plan
 // §A2.11.N1 and DW.2 embedded-mode contract.
@@ -42,7 +42,7 @@ export async function initZoom(windowType: WindowType): Promise<() => void> {
       await getCurrentWebview().setZoom(currentZoom);
     } else {
       // Browser mode: apply zoom to #root, not <html>.
-      // Zooming <html> breaks xterm FitAddon measurements — it calculates
+      // Zooming <html> breaks xterm FitAddon measurements - it calculates
       // cell counts against pre-zoom container dimensions, producing content
       // that overflows when rendered at the zoomed scale.
       document.documentElement.style.zoom = "";

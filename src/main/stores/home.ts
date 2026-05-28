@@ -38,7 +38,7 @@ export const homeStore = {
     }
   },
 
-  // Manual refresh — re-runs fetch but does NOT wipe currently-displayed
+  // Manual refresh - re-runs fetch but does NOT wipe currently-displayed
   // content. If the refetch fails, the user keeps seeing the last-good content
   // (regression guard for plan §A1 / Grinch finding #3).
   async refresh() {

@@ -30,7 +30,7 @@ export const terminalStore = {
   /**
    * Partial-update contract: `id` always applied; any of `name` / `shell` /
    * `shellArgs` / `workingDirectory` / `workgroupTask` omitted or passed as `undefined` leaves
-   * the current value untouched. Rename events rely on this — they pass only
+   * the current value untouched. Rename events rely on this - they pass only
    * `(id, name)` so shell/args/cwd are preserved. Do NOT change the
    * undefined-skip semantics without auditing every caller.
    */

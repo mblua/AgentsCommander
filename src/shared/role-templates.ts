@@ -20,7 +20,7 @@ export function filterRoleTemplates(
  * Convert a template display name into a valid agent-folder name: lowercase,
  * whitespace/underscores → hyphens, drop chars outside [a-z0-9-], collapse
  * repeated hyphens, trim leading/trailing hyphens. Idempotent on a name that
- * is already a slug. Returns "" when the name has no slug-able characters —
+ * is already a slug. Returns "" when the name has no slug-able characters -
  * the caller then leaves the Name field empty (same as the no-template path).
  *
  * The New Agent dialog's canCreate() rejects a Name containing a space, `/`,
@@ -52,7 +52,7 @@ export function sourceLabel(template: Pick<RoleTemplateMeta, "source">): string 
  * defaults overwrite the current values UNLESS the user has manually edited the
  * field (the caller flips `nameDirty`/`descriptionDirty` in its onInput
  * handlers). Values that the previous template selection wrote stay
- * non-dirty, so a second template click freely replaces them — fixing #278
+ * non-dirty, so a second template click freely replaces them - fixing #278
  * where the highlighted row moved but the form fields stuck on the first pick.
  *
  * The Name is slugified (display names are free text that the modal's

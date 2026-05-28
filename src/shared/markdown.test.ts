@@ -93,7 +93,7 @@ describe('taskFirstLine', () => {
     expect(taskFirstLine('# Title')).toBe('Title');
   });
 
-  // §9.2 — greedy strip: matches Rust's `trim_start_matches("# ")`. A naive
+  // §9.2 - greedy strip: matches Rust's `trim_start_matches("# ")`. A naive
   // single-slice port would leave one "# " behind here, diverging from
   // discover_project's value and producing two write paths with different
   // results.

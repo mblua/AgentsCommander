@@ -25,7 +25,7 @@ const sections: HintSection[] = [
       },
       {
         title: "claude-hud",
-        body: "A statusline HUD for Claude Code that displays real-time context in your terminal — model, token usage, active tools, and session state at a glance. Essential for monitoring long-running agent sessions.",
+        body: "A statusline HUD for Claude Code that displays real-time context in your terminal: model, token usage, active tools, and session state at a glance. Essential for monitoring long-running agent sessions.",
         link: {
           label: "GitHub repo",
           url: "https://github.com/jarrodwatts/claude-hud",
@@ -33,14 +33,14 @@ const sections: HintSection[] = [
       },
       {
         title: "feature-dev plugin",
-        body: "Official Claude plugin for guided feature development. It analyzes your codebase, designs architectures, and writes implementation plans before writing code — resulting in higher quality features that follow your project's conventions.",
+        body: "Official Claude plugin for guided feature development. It analyzes your codebase, designs architectures, and writes implementation plans before writing code, resulting in higher quality features that follow your project's conventions.",
         link: {
           label: "Install plugin",
           url: "https://claude.com/plugins/feature-dev",
         },
       },
       {
-        title: "RTK — Token Optimizer",
+        title: "RTK: Token Optimizer",
         body: "CLI proxy that compresses command outputs to reduce token consumption. Prefix any command with rtk and it transparently compresses verbose outputs (git, cargo, npm, etc.) while passing through unchanged when no filter applies. Always safe to use.",
         link: {
           label: "rtk-ai.app",

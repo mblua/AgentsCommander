@@ -103,7 +103,7 @@ const ProjectPanel: Component = () => {
         //  - deferred at startup by the #248 policy (non-coord, or coord that was
         //    asleep at shutdown, or `restoreCoordinatorWakeState=false`)
         //  - user closed it during the prior run
-        // Wake it with provider auto-resume so the prior conversation continues —
+        // Wake it with provider auto-resume so the prior conversation continues -
         // this is NOT a user-intent "fresh conversation" restart.
         try {
           await SessionAPI.restart(existing.id, { skipAutoResume: false });
@@ -115,7 +115,7 @@ const ProjectPanel: Component = () => {
         }
         return;
       }
-      // Already instantiated and live — just switch to it
+      // Already instantiated and live - just switch to it
       await SessionAPI.switch(existing.id);
       if (isTauri) {
         const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -128,7 +128,7 @@ const ProjectPanel: Component = () => {
       return;
     }
 
-    // Not instantiated — create session in-place
+    // Not instantiated - create session in-place
     const gitRepos = buildGitRepos(replica);
 
     if (!replica.preferredAgentId) {
@@ -750,7 +750,7 @@ const ProjectPanel: Component = () => {
 
             <Show when={!collapsed()}>
               <div class="project-content">
-                {/* Coordinator Quick-Access — shown by styles that enable it via CSS */}
+                {/* Coordinator Quick-Access - shown by styles that enable it via CSS */}
                 {(() => {
                   const coordinators = createMemo(() => {
                     const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
@@ -1483,7 +1483,7 @@ const ProjectPanel: Component = () => {
                             </Show>
                             <Show when={r().diagnosticAvailable && r().sessions.length === 0 && r().processes.length === 0}>
                               <div style={{ "margin-top": "6px", opacity: 0.85 }}>
-                                No blockers identified. The lock may be transient — try again in a moment.
+                                No blockers identified. The lock may be transient. Try again in a moment.
                                 Raw error: <code>{r().rawOsError}</code>
                               </div>
                             </Show>
@@ -1534,7 +1534,7 @@ const ProjectPanel: Component = () => {
                             if (myGen !== retryGen) return;
                             console.error("delete_workgroup failed:", e);
                             const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete workgroup";
-                            // BLOCKERS: sentinel — render structured blocker list, no force-delete option.
+                            // BLOCKERS: sentinel - render structured blocker list, no force-delete option.
                             if (msg.startsWith("BLOCKERS:")) {
                               try {
                                 const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
@@ -1551,7 +1551,7 @@ const ProjectPanel: Component = () => {
                                 return;
                               }
                             }
-                            // DIRTY_REPOS: sentinel prefix — switch to force-confirm mode
+                            // DIRTY_REPOS: sentinel prefix - switch to force-confirm mode
                             if (!forceDelete && msg.startsWith("DIRTY_REPOS:")) {
                               setWgDeleteError(msg.slice("DIRTY_REPOS:".length));
                               setWgDirtyRepos(true);

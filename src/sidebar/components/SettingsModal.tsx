@@ -233,7 +233,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSaveError("");
     setSaving(true);
     await SettingsAPI.update(settings.data);
-    // #158 — push soundsEnabled into sound.ts synchronously so the gate
+    // #158 - push soundsEnabled into sound.ts synchronously so the gate
     // updates before the settingsStore.refresh() roundtrip below resolves.
     // Without this, a beep emitted between this point and the next load()
     // would see the stale gate value.
@@ -242,7 +242,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().setAlwaysOnTop(settings.data.sidebarAlwaysOnTop);
     }
-    // RTK sweep — only when the toggle value changed during this modal session.
+    // RTK sweep - only when the toggle value changed during this modal session.
     // Fired AFTER update_settings persists, so a sweep failure cannot leave
     // the persisted setting in disagreement with the on-disk replica state
     // worse than the pre-save baseline.

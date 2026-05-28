@@ -19,7 +19,7 @@ const ActionBar: Component = () => {
   const [confirmPath, setConfirmPath] = createSignal<string | null>(null);
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
   const [isPendingDialog, setIsPendingDialog] = createSignal(false);
-  // #289 — local synchronous mirror of the persisted theme. Drives the button
+  // #289 - local synchronous mirror of the persisted theme. Drives the button
   // glyph directly so rapid double-clicks each see the freshly-toggled value
   // (a getter that reads settingsStore.current?.themeLight would see the
   // pre-write value until fire-and-forget refresh() resolves, so clicks 2+ in
@@ -56,7 +56,7 @@ const ActionBar: Component = () => {
 
   // Cross-window / same-window trigger to open the Settings modal (e.g. from a
   // disabled mic button prompting the user to configure voice). The optional
-  // `section` argument targets a specific tab — SettingsModal picks it up via
+  // `section` argument targets a specific tab - SettingsModal picks it up via
   // the `section` prop and its createEffect re-targets the tab if the modal is
   // already open.
   let unlistenOpenSettings: UnlistenFn | null = null;
@@ -116,11 +116,11 @@ const ActionBar: Component = () => {
     }
   };
 
-  // #158 — global app-sound mute. Default true so old settings.json files
+  // #158 - global app-sound mute. Default true so old settings.json files
   // (no `soundsEnabled` field) stay audible. setSoundsEnabled is pushed
   // synchronously BEFORE the persist roundtrip so a beep that fires between
   // the click and the IPC reply (e.g. team-idle-watcher transitioning during
-  // file IO) sees the new gate value — the user's intent in clicking mute is
+  // file IO) sees the new gate value - the user's intent in clicking mute is
   // exactly to suppress imminent beeps. On persist failure we rollback the
   // gate and toast.
   const isSoundsEnabled = (): boolean =>
@@ -139,7 +139,7 @@ const ActionBar: Component = () => {
     }
   };
 
-  // #289 — flip the DOM class optimistically (snappy UI), persist, and roll
+  // #289 - flip the DOM class optimistically (snappy UI), persist, and roll
   // back both DOM and toast on failure. Mirrors handleToggleMute: the user
   // intent in clicking is to *see* the new theme immediately, so the visual
   // swap precedes the IPC roundtrip. emitThemeChanged keeps the other window

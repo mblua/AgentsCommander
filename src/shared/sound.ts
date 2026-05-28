@@ -56,11 +56,11 @@ export function primeAudio(): void {
  * Soft two-step beep that fires when an entire team transitions from
  * busy → all-idle. Two short tones (660 Hz then 880 Hz, ~120 ms each)
  * with a quick attack/release envelope so it doesn't click. Total under
- * ~280 ms — short enough not to be annoying, distinct enough to register
+ * ~280 ms - short enough not to be annoying, distinct enough to register
  * as "team finished".
  *
  * Errors (no AudioContext, suspended context that can't be resumed) are
- * swallowed — failing to beep must never break the FE.
+ * swallowed - failing to beep must never break the FE.
  */
 export async function playTeamIdleBeep(): Promise<void> {
   if (!soundsEnabled) return;
