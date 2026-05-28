@@ -140,7 +140,7 @@ Also: Tauri, SolidJS, xterm.js, portable-pty, axum, tokio — the toolchain laye
 
 ## Author
 
-**Mariano Blua** — [GitHub](https://github.com/mblua) · [X / Twitter]({{TWITTER_HANDLE}})
+**Mariano Blua** — [GitHub](https://github.com/mblua)
 
 ## License
 
