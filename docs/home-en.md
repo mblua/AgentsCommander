@@ -1,48 +1,25 @@
-# Agents Commander
+# AgentsCommander
 
-Your command center for coordinating AI agents, distributing work, and turning an idea into parallel execution.
+You opened AgentsCommander. Start here when you want to turn a project, a set of agent roles, and one task into a running workgroup.
 
-## Quick Start
+## Start fast
 
-### 1. Create a project
+1. Open or create an AgentsCommander project.
+   Use an existing repo or create a new project folder. AgentsCommander stores the project workspace, agents, teams, and message files inside that project.
+2. Create the agents you need.
+   Give each agent one clear role, such as coordinator, backend developer, reviewer, tester, or technical writer. Clear roles make delegation easier to review.
+3. Create a team or workgroup.
+   Pick one coordinator and add the worker agents that should handle the task. The coordinator plans and delegates; workers focus on their assigned parts.
+4. Launch the coordinator.
+   Open the coordinator session from the sidebar and choose the coding-agent runtime when prompted.
+5. Send the first task.
+   Tell the coordinator the outcome you want, the constraints that matter, and the files or docs it should inspect first.
+6. Review each agent's output.
+   Read the coordinator summary, inspect worker replies, verify changed files, and decide what should continue, stop, or ship.
 
-Start by creating or opening an Agents Commander project. The project is where you organize agents, teams, workgroups, and repositories.
+## Useful next steps
 
-### 2. Create agents
-
-Define agents with clear roles: tech lead, architect, frontend, backend, reviewer, shipper, or any specialist you need. Each agent lives in its own directory and keeps its own working context.
-
-### 3. Create teams
-
-Group agents into teams with a coordinator. Create workgroups for specific tasks, write a brief, and let each agent work in parallel with a clear responsibility.
-
-### 4. Multiply your productivity
-
-Instead of talking to a single assistant, direct a complete team: one designs, another implements, another reviews, another builds. Agents Commander helps you stay in control without losing speed.
-
-## Why Use Agents Commander
-
-Agents Commander is designed for working like a tech lead with a team of specialized agents. The app centralizes sessions, roles, teams, briefs, and communication so you can delegate real work, review results, and move forward with less context switching.
-
-The recommended workflow is simple: define the goal, assign agents, let them work in parallel, review the responses, and finish with a build ready to test.
-
-## Features
-
-- **Projects and workgroups**: organize work by project, team, and concrete task.
-- **Agents with their own roles**: each agent has its own folder, role prompt, and isolated context.
-- **Agent teams**: create teams with a coordinator, members, and associated workgroups.
-- **Parallel sessions**: run multiple agents at the same time from one interface.
-- **Real terminal**: each session runs in a full PTY, not a limited command runner.
-- **Control sidebar**: quickly open, switch, rename, detach, or close sessions.
-- **Visible brief**: keep the workgroup objective present while the work is running.
-- **Last Prompt**: quickly recover the last prompt sent to a session.
-- **Activity detection**: see which agents are still working and which are waiting for input.
-- **Detached windows**: move terminals into dedicated windows when you need more space.
-- **Agent messaging**: coordinate work through files and commands between team members.
-- **Voice to text**: dictate prompts by voice with optional transcription and auto-execution.
-- **Telegram bridge**: connect a session to Telegram for remote monitoring and control.
-- **Hints and integrated guide**: access recommendations to improve your coding-agent workflow.
-- **Global sound mute**: quickly control app sound notifications.
-- **Persistent zoom and geometry**: preserve window size, position, and scale.
-- **Portable instances**: copy and rename the executable to create isolated environments.
-- **File-based state**: configuration and communication stay in inspectable files that are easy to version.
+- [Quickstart](quickstart.md) for a guided first team.
+- [Creating agents](agents/creating-agents.md) to define durable roles.
+- [Teams and workgroups](agents/teams-and-workgroups.md) to understand coordinators, workers, and briefs.
+- [Troubleshooting](troubleshooting.md) when a session, message, or launch does not behave as expected.
