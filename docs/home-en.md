@@ -1,8 +1,8 @@
 # AgentsCommander
 
-You opened AgentsCommander. Start here when you want to turn a project, a set of agent roles, and one task into a running workgroup.
+You opened AgentsCommander. Start here when you want to turn a project, a set of agent roles, and one or more tasks into coordinated workgroups.
 
-Use the Agent Commander / Root Agent when work spans more than one team. It gives you one place to talk to workgroup coordinators, ask different teams to take on tasks, and keep initiatives aligned across workgroups.
+Use the Agent Commander / Root Agent when work spans more than one team or workgroup instance. It gives you one place to talk to workgroup coordinators, ask different teams to take on tasks, and keep initiatives aligned across parallel workgroups.
 
 ## Start fast
 
@@ -10,8 +10,8 @@ Use the Agent Commander / Root Agent when work spans more than one team. It give
    Use an existing repo or create a new project folder. AgentsCommander stores the project workspace, agents, teams, and message files inside that project.
 2. Create the agents you need.
    Give each agent one clear role, such as coordinator, backend developer, reviewer, tester, or technical writer. Clear roles make delegation easier to review.
-3. Create a team or workgroup.
-   Pick one coordinator and add the worker agents that should handle the task. The coordinator plans and delegates; workers focus on their assigned parts.
+3. Create teams or workgroups.
+   Pick one coordinator per team and add the worker agents that should handle the task. Coordinators plan and delegate; workers focus on their assigned parts.
 4. Launch the coordinator.
    Open the coordinator session from the sidebar and choose the coding-agent runtime when prompted.
 5. Send the first task.

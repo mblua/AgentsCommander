@@ -10,6 +10,7 @@ Once a bot is attached to a session:
 
 - **Outbound**: PTY output is parsed by a vt100 cleaner, filtered (no spinners, box-drawing, low-alpha rows), chunked at 4000 characters, rate-limited, and sent to Telegram as plain text messages.
 - **Inbound**: Telegram messages from the bot's authorized chat are written into the session's PTY as if you typed them.
+- **Images and files**: AC can send photos/images and documents to a configured bot with `telegram-send-image`, including screenshots captured by agents during a run.
 
 The bridge is per session. You can attach different bots to different sessions, or no bot at all.
 
@@ -17,12 +18,13 @@ The bridge is per session. You can attach different bots to different sessions, 
 
 - Overnight builds. Send the agent the prompt before bed; check the chat in the morning; reply if it asks a question.
 - Long refactors. Watch periodic status updates from your phone while doing other work.
+- Visual status. Ask an agent to capture a screenshot of a report, app state, or test result and send it to Telegram.
 - Remote operations. Kick off a `gh pr review` from anywhere with a Telegram client.
 
 ## When not to use it
 
 - High-volume real-time PTY output. Telegram rate-limits and chunking add latency; bursty TUI output may be heavily filtered before it reaches the chat.
-- Sensitive content. Telegram is not end-to-end encrypted by default (only Secret Chats are). The bridge sends terminal output through Telegram's servers — see [`PRIVACY.md`](../../PRIVACY.md).
+- Sensitive content. Telegram is not end-to-end encrypted by default (only Secret Chats are). The bridge sends terminal output through Telegram's servers - see [`PRIVACY.md`](../../PRIVACY.md).
 - Untrusted networks. The bot token grants control of the bot's chats; if you commit `settings.json` by accident you must rotate.
 
 ## Coding-agent reader modes
@@ -55,7 +57,13 @@ Spinners, progress bars, and chrome are filtered out. Only "stable" output rows 
 
 Plain text. Your message is written verbatim into the session's PTY as if you typed it on the keyboard, followed by a newline. Multi-line messages are sent line by line.
 
-There is no slash-command syntax — anything you would type in the terminal works.
+There is no slash-command syntax - anything you would type in the terminal works.
+
+## Sending images and screenshots
+
+Use `agentscommander telegram-send-image` to send a photo, screenshot, or file from any shell that can access your configured bot. Images with `jpg`, `jpeg`, `png`, or `webp` extensions are sent as Telegram photos when they fit the size limit; other files are sent as documents.
+
+For the full command and setup flow, see [Telegram setup](../integrations/telegram.md#sending-photos-images-and-screenshots-from-the-cli).
 
 ## State and indicators
 
@@ -79,5 +87,5 @@ For the data-flow detail, see [`PRIVACY.md`](../../PRIVACY.md).
 
 ## See also
 
-- [Telegram setup](../integrations/telegram.md) — step-by-step
-- [`docs/troubleshooting.md#telegram-bridge`](../troubleshooting.md#telegram-bridge) — common failures
+- [Telegram setup](../integrations/telegram.md) - step-by-step
+- [`docs/troubleshooting.md#telegram-bridge`](../troubleshooting.md#telegram-bridge) - common failures
