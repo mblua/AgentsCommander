@@ -1,6 +1,3 @@
-pub mod task_append_body;
-pub mod task_ops;
-pub mod task_set_title;
 pub mod close_session;
 pub mod create_agent;
 pub mod create_agent_matrix;
@@ -9,6 +6,9 @@ pub mod list_sessions;
 pub mod new_project;
 pub mod open_project;
 pub mod send;
+pub mod task_append_body;
+pub mod task_ops;
+pub mod task_set_title;
 pub mod telegram_send_image;
 
 use clap::{Parser, Subcommand};
@@ -93,7 +93,7 @@ pub enum Commands {
     ListPeersLean(list_peers::ListPeersLeanArgs),
     /// List all sessions in the running app instance (returns JSON)
     ListSessions(list_sessions::ListSessionsArgs),
-    /// Create a new agent: folder + CLAUDE.md, optionally launch it
+    /// Create a new Agent Matrix in a registered project
     CreateAgent(create_agent::CreateAgentArgs),
     /// Create a full Agent Matrix in an AC project, optionally from a role template
     CreateAgentMatrix(create_agent_matrix::CreateAgentMatrixArgs),

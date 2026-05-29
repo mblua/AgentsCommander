@@ -1,5 +1,11 @@
 export function normalizeProjectPathForCompare(path: string): string {
-  return path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+  let normalized = path.replace(/\\/g, "/").toLowerCase();
+  if (normalized.startsWith("//?/unc/")) {
+    normalized = `//${normalized.slice("//?/unc/".length)}`;
+  } else if (/^\/\/\?\/[a-z]:\//.test(normalized)) {
+    normalized = normalized.slice("//?/".length);
+  }
+  return normalized.replace(/\/+$/, "");
 }
 
 export function findLoadedProjectPathForRefresh(

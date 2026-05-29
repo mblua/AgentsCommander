@@ -7,7 +7,8 @@
 //! mutable `&mut AppSettings` borrow plus a `&Path`. Callers own the
 //! lock-acquire and the `save_settings` call.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use super::settings::AppSettings;
 
@@ -28,6 +29,13 @@ pub struct ProjectRegistration {
     pub created: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectResolution {
+    pub path: PathBuf,
+    pub folder_name: String,
+    pub registered: bool,
+}
+
 /// Errors returned by the helper. `Display` strings are the exact stderr text
 /// the CLI prints (prefixed with `Error: ` by the caller — see §4.4).
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +54,21 @@ pub enum ProjectError {
     AcNewCreateFailed(PathBuf, std::io::Error),
     #[error("failed to write .ac-new/.gitignore at {0}: {1}")]
     GitignoreFailed(PathBuf, String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectResolveError {
+    #[error("project reference is empty")]
+    Empty,
+    #[error("project reference must not contain NUL")]
+    Invalid,
+    #[error("project '{raw}' is ambiguous; candidates: {candidates:?}")]
+    Ambiguous {
+        raw: String,
+        candidates: Vec<String>,
+    },
+    #[error("project '{0}' was not found in settings.projectPaths")]
+    NotFound(String),
 }
 
 /// Validate an existing AC project and register it in `settings.project_paths`.
@@ -137,6 +160,43 @@ pub fn register_new_project(
     })
 }
 
+pub fn resolve_project_reference(
+    project_paths: &[String],
+    raw_project: &str,
+) -> Result<ProjectResolution, ProjectResolveError> {
+    let project = raw_project.trim();
+    if project.is_empty() {
+        return Err(ProjectResolveError::Empty);
+    }
+    if project.contains('\0') {
+        return Err(ProjectResolveError::Invalid);
+    }
+
+    let candidates = enumerate_registered_project_candidates(project_paths);
+
+    let name_matches = candidates
+        .iter()
+        .filter(|candidate| candidate.folder_name.eq_ignore_ascii_case(project))
+        .cloned()
+        .collect::<Vec<_>>();
+    match name_matches.len() {
+        1 => return Ok(name_matches.into_iter().next().expect("one match")),
+        n if n > 1 => {
+            let candidates = name_matches
+                .into_iter()
+                .map(|candidate| candidate.path.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            return Err(ProjectResolveError::Ambiguous {
+                raw: project.to_string(),
+                candidates,
+            });
+        }
+        _ => {}
+    }
+
+    Err(ProjectResolveError::NotFound(project.to_string()))
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────
 
 fn absolutise(raw: &str) -> Result<PathBuf, ProjectError> {
@@ -187,6 +247,101 @@ fn upsert_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
     // `src/sidebar/stores/project.ts:166-170`.
     settings.project_path = settings.project_paths.first().cloned();
     appended
+}
+
+fn enumerate_registered_project_candidates(project_paths: &[String]) -> Vec<ProjectResolution> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    for raw in project_paths {
+        let base = Path::new(raw);
+        if !is_real_directory(base) {
+            continue;
+        }
+
+        push_project_candidate(base, true, &mut out, &mut seen);
+
+        if let Ok(entries) = std::fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !is_real_directory(&path) {
+                    continue;
+                }
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name,
+                    None => continue,
+                };
+                if name.starts_with('.') {
+                    continue;
+                }
+                push_project_candidate(&path, true, &mut out, &mut seen);
+            }
+        }
+    }
+
+    out
+}
+
+fn push_project_candidate(
+    path: &Path,
+    registered: bool,
+    out: &mut Vec<ProjectResolution>,
+    seen: &mut HashSet<String>,
+) {
+    if !is_real_directory(path) || !is_real_directory(&path.join(".ac-new")) {
+        return;
+    }
+    let Some(key) = canonical_key(path) else {
+        return;
+    };
+    if !seen.insert(key) {
+        return;
+    }
+    let Some(folder_name) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    out.push(ProjectResolution {
+        path: path.to_path_buf(),
+        folder_name,
+        registered,
+    });
+}
+
+fn is_real_directory(path: &Path) -> bool {
+    let md = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if md.file_type().is_symlink() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return false;
+        }
+    }
+    md.is_dir()
+}
+
+fn canonical_key(path: &Path) -> Option<String> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    Some(path_compare_key(&canonical.to_string_lossy()))
+}
+
+fn path_compare_key(s: &str) -> String {
+    let without_extended = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", rest)
+    } else {
+        s.strip_prefix(r"\\?\").unwrap_or(s).to_string()
+    };
+    normalize_for_compare(&without_extended)
 }
 
 #[cfg(test)]
@@ -454,6 +609,99 @@ mod tests {
             original, with_trailing
         );
         assert_eq!(s.project_paths.len(), 1);
+    }
+
+    // ── resolve_project_reference ───────────────────────────────────────
+
+    fn create_ac_project(path: &Path) {
+        std::fs::create_dir_all(path.join(".ac-new")).unwrap();
+    }
+
+    #[test]
+    fn resolve_project_reference_matches_registered_folder_name() {
+        let fix = FixtureRoot::new("proj-resolve-name");
+        let project = fix.path().join("ProjectAlpha");
+        create_ac_project(&project);
+        let project_paths = vec![project.to_string_lossy().to_string()];
+
+        let resolved = resolve_project_reference(&project_paths, "ProjectAlpha").unwrap();
+
+        assert_eq!(resolved.path, project);
+        assert_eq!(resolved.folder_name, "ProjectAlpha");
+        assert!(resolved.registered);
+    }
+
+    #[test]
+    fn resolve_project_reference_matches_child_project_from_registered_parent() {
+        let fix = FixtureRoot::new("proj-resolve-parent");
+        let project = fix.path().join("ProjectAlpha");
+        create_ac_project(&project);
+        let project_paths = vec![fix.path().to_string_lossy().to_string()];
+
+        let resolved = resolve_project_reference(&project_paths, "ProjectAlpha").unwrap();
+
+        assert_eq!(resolved.path, project);
+    }
+
+    #[test]
+    fn resolve_project_reference_rejects_ambiguous_folder_name() {
+        let fix = FixtureRoot::new("proj-resolve-ambiguous");
+        let parent_a = fix.path().join("a");
+        let parent_b = fix.path().join("b");
+        let project_a = parent_a.join("ProjectAlpha");
+        let project_b = parent_b.join("ProjectAlpha");
+        create_ac_project(&project_a);
+        create_ac_project(&project_b);
+        let project_paths = vec![
+            parent_a.to_string_lossy().to_string(),
+            parent_b.to_string_lossy().to_string(),
+        ];
+
+        let err = resolve_project_reference(&project_paths, "ProjectAlpha").unwrap_err();
+
+        match err {
+            ProjectResolveError::Ambiguous { candidates, .. } => {
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().any(|p| p.contains("ProjectAlpha")));
+            }
+            other => panic!("expected ambiguous error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_project_reference_rejects_unregistered_direct_path() {
+        let fix = FixtureRoot::new("proj-resolve-unregistered");
+        let project = fix.path().join("ProjectAlpha");
+        create_ac_project(&project);
+
+        let err = resolve_project_reference(&[], &project.to_string_lossy()).unwrap_err();
+
+        assert!(matches!(err, ProjectResolveError::NotFound(_)));
+    }
+
+    #[test]
+    fn resolve_project_reference_rejects_registered_direct_path_input() {
+        let fix = FixtureRoot::new("proj-resolve-direct");
+        let project = fix.path().join("ProjectAlpha");
+        create_ac_project(&project);
+        let project_paths = vec![project.to_string_lossy().to_string()];
+
+        let err =
+            resolve_project_reference(&project_paths, &project.to_string_lossy()).unwrap_err();
+
+        assert!(matches!(err, ProjectResolveError::NotFound(_)));
+    }
+
+    #[test]
+    fn resolve_project_reference_skips_dot_prefixed_child_projects() {
+        let fix = FixtureRoot::new("proj-resolve-dot-child");
+        let hidden = fix.path().join(".HiddenProject");
+        create_ac_project(&hidden);
+        let project_paths = vec![fix.path().to_string_lossy().to_string()];
+
+        let err = resolve_project_reference(&project_paths, ".HiddenProject").unwrap_err();
+
+        assert!(matches!(err, ProjectResolveError::NotFound(_)));
     }
 
     // ── serde camelCase shape lock (Round-1 G14) ─────────────────────────
