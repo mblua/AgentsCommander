@@ -1,20 +1,21 @@
-# Capture guide — README hero, demo GIF, feature screenshots
+# Capture guide - README hero, demo GIF, feature screenshots
 
 This is the design spec for the visual assets that must be captured from
 the running app. The other deliverables in this push (`docs/brand.md`,
-`docs/assets/og-card.png`, `docs/assets/badges.md`) are static — they
+`docs/assets/og-card.png`, `docs/assets/badges.md`) are static - they
 ship in this PR. The captures below need someone with the GUI app
 running on a real desktop.
 
 If you are the human running the captures: read all sections once, set up
-the environment in **§1**, then work through §2–§7 in order.
+the environment in **§1**, review the demo checklist in **§2**, then work
+through the capture specs in order.
 
 ## 1. Environment
 
 ### Display
 
 - **Resolution:** 2560×1440 or higher (preferably a 2880×1800 retina
-  panel). Captures are saved at 2880×1800 — anything below requires
+  panel). Captures are saved at 2880×1800 - anything below requires
   upscaling and loses crispness.
 - **Display scaling:** **100%**. Windows DPI scaling above 100% breaks
   pixel-precise framing. Set in Settings → System → Display → Scale.
@@ -27,7 +28,7 @@ the environment in **§1**, then work through §2–§7 in order.
 
 - Build: latest commit on `chore/313-public-push` (i.e. version
   **0.8.43**).
-- App theme: **Noir** (default — do not switch to the light theme for
+- App theme: **Noir** (default - do not switch to the light theme for
   marketing captures).
 - Window mode: unified `main` window (sidebar + terminal in one). This
   is the only mode after the unified-window rewrite (`lib.rs:643`).
@@ -40,8 +41,8 @@ the environment in **§1**, then work through §2–§7 in order.
 Install these system-wide before capturing. Without them the renderer
 falls through to Segoe UI / Consolas and the captures lose brand fidelity.
 
-- **Geist** (UI) — https://vercel.com/font (download Geist Sans)
-- **Cascadia Code** (terminal) — bundled with Windows Terminal; install
+- **Geist** (UI) - https://vercel.com/font (download Geist Sans)
+- **Cascadia Code** (terminal) - bundled with Windows Terminal; install
   manually on macOS/Linux if missing
 
 If you cannot install Geist, fall back to **Inter Variable** as the closest
@@ -77,7 +78,47 @@ Reproducible setup:
 All session names and project names should be in English. No "proyecto",
 no "agente", no `_es` suffixes.
 
-## 2. `docs/screenshots/hero.png`
+## 2. Demo action checklist
+
+Use this as a planning inventory for future GIFs and short videos. Do
+not try to fit every action into one capture. Pick one sequence, keep
+the pointer visible when the click is the verb, and reuse the same
+English project, team, workgroup, and agent names across clips.
+
+### Action inventory
+
+- [ ] Create a project.
+- [ ] Open or load an existing project.
+- [ ] Create an agent from a canonical role.
+- [ ] Customize a canonical role once with a short instruction or edit.
+- [ ] Show that the role customization applies to every active and new
+      workgroup instance that uses that role.
+- [ ] Create a team.
+- [ ] Create a workgroup from a team.
+- [ ] Create multiple workgroups from the same team.
+- [ ] Launch a coordinator.
+- [ ] Send the first task.
+- [ ] Observe inter-agent messaging.
+- [ ] Inspect agent output.
+- [ ] Review and ship results.
+
+### First public GIF candidates
+
+| Priority | Sequence | Capture notes |
+|---|---|---|
+| 1 | Role customization inheritance | Edit one canonical role with a short instruction, then show active and new workgroup instances using that role pick up the change. This is the most specific product story. |
+| 2 | Project to first task | Create or open a project, create a team, create a workgroup, launch a coordinator, send the first task, and hold on the first useful output. |
+| 3 | One team, many workgroups | Create a team, create two workgroups from it, and show the shared roster with different tasks or outputs. |
+
+### Later and deeper clips
+
+- Create an agent from a canonical role, then compare it with an edited
+  role in a second workgroup.
+- Observe inter-agent messaging after the first task lands.
+- Inspect agent output, then review and ship the result.
+- Show settings or capture setup only when a user task depends on it.
+
+## 3. `docs/screenshots/hero.png`
 
 The single highest-leverage asset in the push. First-viewport of the
 README.
@@ -86,7 +127,7 @@ README.
 
 - **Window:** the entire app window, including the custom titlebar.
 - **Visible regions:** sidebar (left) + 2 terminal panes (right, split
-  vertically OR a single pane if split is not implemented — confirm
+  vertically OR a single pane if split is not implemented - confirm
   with dev-rust which is the canonical layout).
 - **Crop:** include 8–12px of shadow/halo around the window if the
   capture tool catches it, otherwise crop tight to the window chrome.
@@ -96,14 +137,14 @@ README.
 - ≥3 agent sessions visible.
 - Status mix: **at least 1 green (waiting)**, **at least 1
   yellow/pending** or **blue/running**. Never all green and never all
-  red — the mix is the point.
+  red - the mix is the point.
 - Recommended row composition (top → bottom):
   1. `architect` · Claude Code · status green (waiting)
   2. `dev-rust` · Codex · status blue (running)
   3. `reviewer` · Claude Code · status amber (pending)
 - One project header expanded above the rows. Project name: **a real
   repo name** the audience will recognize as a real repo (`repo-app`,
-  `repo-website`, etc.) — not `demo` or `test`.
+  `repo-website`, etc.) - not `demo` or `test`.
 
 ### Terminal state
 
@@ -121,11 +162,11 @@ README.
 - (optional) 1440×900 PNG: `docs/screenshots/hero@1x.png` (the
   filename suffix matches the retina convention readers expect)
 
-## 3. `docs/screenshots/demo.gif` + `docs/screenshots/demo.mp4`
+## 4. `docs/screenshots/demo.gif` + `docs/screenshots/demo.mp4`
 
 ### Length + budget
 
-- **8–15 seconds** total. Closer to 10 is ideal — long enough to land
+- **8–15 seconds** total. Closer to 10 is ideal - long enough to land
   the workflow, short enough to autoplay on a Twitter feed.
 - **GIF ≤ 4 MB.** Hard limit for README inline rendering performance.
 - **MP4 unconstrained but ≤ 6 MB** is target. GitHub re-encodes for
@@ -152,9 +193,9 @@ README.
 - Frame rate: **15–24 fps**. 30 fps is wasted bandwidth for GIF.
 - Resolution: capture at on-screen 1600×1000, export GIF at 1440 wide
   (downscaling smooths palette quantization).
-- Cursor: visible (it's part of the demo — the click is the verb).
+- Cursor: visible (it's part of the demo - the click is the verb).
 - Mouse highlight: optional cyan ring effect to draw attention. Do not
-  overuse — one or two clicks deserve it, not all of them.
+  overuse - one or two clicks deserve it, not all of them.
 
 ### GIF encoding
 
@@ -172,7 +213,7 @@ trim the recording to 10s.
 - `docs/screenshots/demo.mp4` (pristine source, also used as video embed
   for paths that prefer mp4)
 
-## 4. `docs/screenshots/agent-picker.png`
+## 5. `docs/screenshots/agent-picker.png`
 
 ### What it shows
 
@@ -189,7 +230,7 @@ vendored `agency-agents` snapshot.
 ### Modal state
 
 - Title: `Launch new-session` (or whatever the user actually typed for
-  the placeholder session name — pick a realistic name).
+  the placeholder session name - pick a realistic name).
 - Agent list: ≥6 rows visible without scroll. Roles to feature
   (in alphabetical order, since the component sorts):
   1. `architect`
@@ -201,7 +242,7 @@ vendored `agency-agents` snapshot.
   7. `ui-designer`
   8. `ux-architect`
 - Highlighted row: `tech-lead` or `ui-designer` (the highlight is the
-  cyan accent — show it working).
+  cyan accent - show it working).
 - Color badges: each agent's `agent.color` visible to the left of the
   name.
 - Footer text visible: `↑↓ navigate    ↵ launch    esc close`.
@@ -210,7 +251,7 @@ vendored `agency-agents` snapshot.
 
 - 2880×1800 PNG: `docs/screenshots/agent-picker.png`
 
-## 5. `docs/screenshots/multi-agent-panel.png`
+## 6. `docs/screenshots/multi-agent-panel.png`
 
 ### What it shows
 
@@ -219,7 +260,7 @@ story.
 
 ### Frame
 
-- Sidebar only — crop tightly to the left panel. Do NOT include the
+- Sidebar only - crop tightly to the left panel. Do NOT include the
   terminal.
 - Width: full sidebar width as the app renders it.
 - Height: enough vertical space for the project header + 4–6 session
@@ -229,7 +270,7 @@ story.
 
 - **At least one project** expanded showing 4+ sessions.
 - Status distribution (mandatory mix):
-  - 1 green (waiting) — top
+  - 1 green (waiting) - top
   - 1 blue (running)
   - 1 amber (pending)
   - 1 red (exited)
@@ -240,11 +281,11 @@ story.
 
 ### Export
 
-- 2880×1800 PNG (the column will be a slice of that — that's fine,
+- 2880×1800 PNG (the column will be a slice of that - that's fine,
   the right side can be transparent or `#0a0a0f`).
 - Filename: `docs/screenshots/multi-agent-panel.png`
 
-## 6. `docs/screenshots/telegram-bridge.png`
+## 7. `docs/screenshots/telegram-bridge.png`
 
 ### What it shows
 
@@ -252,9 +293,9 @@ The Telegram bridge feature, side-by-side with a real Telegram chat.
 
 ### Composition
 
-This is a composite. Two layouts work — pick one:
+This is a composite. Two layouts work - pick one:
 
-**Option A — desktop composite**
+**Option A - desktop composite**
 
 - Left half: AC window cropped to show the session row with the
   Telegram bridge state indicator + a tooltip or status message.
@@ -263,17 +304,17 @@ This is a composite. Two layouts work — pick one:
 - Both halves at the same vertical scale. A thin cyan line `#00d4ff`
   at 1px between them is optional.
 
-**Option B — phone mockup**
+**Option B - phone mockup**
 
 - Left half: AC window crop as above.
 - Right half: A clean Android or iOS phone mockup PNG with a
   screenshot of the same Telegram chat inside the phone frame.
-- The phone mockup must be a generic device — no Apple/Google
+- The phone mockup must be a generic device - no Apple/Google
   branding visible (trademark caution).
 
 ### Required content in the chat
 
-- ≥2 messages from the agent to the bot — short, plausible (e.g. "Done
+- ≥2 messages from the agent to the bot - short, plausible (e.g. "Done
   with the refactor. Tests pass. Awaiting review.")
 - 1 reply from the user (e.g. "Looks good, merge it.")
 - Username on the agent side should match the session name in AC.
@@ -284,7 +325,7 @@ This is a composite. Two layouts work — pick one:
 - If you mock the phone, save the source `.psd` or `.fig` alongside in
   `docs/assets/sources/` (gitignored) so future revisions are tractable.
 
-## 7. Verification checklist (before committing)
+## 8. Verification checklist (before committing)
 
 Run through this before `git add docs/screenshots/`:
 
@@ -307,12 +348,12 @@ Run through this before `git add docs/screenshots/`:
 - [ ] No personal wallpaper, browser tabs, or other desktop chrome
       bleeding into the capture.
 
-## 8. Where the design specs land if a capture is impossible
+## 9. Where the design specs land if a capture is impossible
 
 If a specific feature is not yet shippable as a capture (e.g. the
 Telegram bridge UI moved in a recent refactor), leave the file out of
 this PR and open a follow-up issue. Do **not** ship a placeholder
-SVG mockup in the screenshots directory — readers will assume it is a
+SVG mockup in the screenshots directory - readers will assume it is a
 real capture and feel misled when the actual UI differs.
 
-— ui-designer, wg-2-community
+- ui-designer, wg-2-community
