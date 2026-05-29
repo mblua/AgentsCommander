@@ -2,6 +2,8 @@
 
 You opened AgentsCommander. Start here when you want to turn a project, a set of agent roles, and one task into a running workgroup.
 
+Use the Agent Commander / Root Agent when work spans more than one team. It gives you one place to talk to workgroup coordinators, ask different teams to take on tasks, and keep initiatives aligned across workgroups.
+
 ## Start fast
 
 1. Open or create an AgentsCommander project.
