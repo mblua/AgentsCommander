@@ -468,7 +468,10 @@ pub(crate) fn create_agent_matrix_on_disk(
         }
     }
 
-    std::fs::write(agent_dir.join("config.json"), "{\n  \"tooling\": {}\n}\n")
+    let mut config_str = serde_json::to_string_pretty(&default_agent_matrix_config())
+        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
+    config_str.push('\n');
+    std::fs::write(agent_dir.join("config.json"), config_str)
         .map_err(|e| format!("Failed to write config.json: {}", e))?;
 
     let display_name = agent_matrix_display_name(project, &safe_name);
@@ -511,6 +514,13 @@ pub(crate) fn apply_agent_matrix_settings_files(
     }
 
     warnings
+}
+
+fn default_agent_matrix_config() -> serde_json::Value {
+    serde_json::json!({
+        "tooling": {},
+        "context": ["$AGENTSCOMMANDER_CONTEXT", "Role.md"],
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2296,6 +2306,17 @@ mod tests {
                 required
             );
         }
+    }
+
+    #[test]
+    fn default_agent_matrix_config_includes_context_and_role() {
+        let config = default_agent_matrix_config();
+
+        assert_eq!(config["tooling"], serde_json::json!({}));
+        assert_eq!(
+            config["context"],
+            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT", "Role.md"])
+        );
     }
 
     #[test]
