@@ -124,6 +124,132 @@ Each entry contains: `id`, `name`, `workingDirectory`, `status` (`"active" | "ru
 
 ---
 
+## `workgroup list`
+
+List workgroups in a registered project.
+
+```bash
+agentscommander workgroup list --project MyProject
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered project name. |
+
+Output is JSON. Each item includes `name`, `team`, `path`, `hasMessaging`, `hasTask`, and `replicas`.
+
+---
+
+## `workgroup add`
+
+Create an auto-numbered workgroup for a team.
+
+```bash
+agentscommander workgroup add \
+  --project MyProject \
+  --team "Dev Team" \
+  --title "Add OAuth2 login flow" \
+  --coordinator architect \
+  --agent dev-rust \
+  --agent dev-ts
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered project name. |
+| `--team` | Yes | Team name. Sanitized for `_team_<name>` and `wg-<N>-<name>`. |
+| `--title` | Yes | Initial `TASK.md` title. |
+| `--coordinator` | Yes | Existing agent to make coordinator. |
+| `--agent` | No | Team member to add before provisioning. Repeat for multiple agents. |
+| `--repo` | No | Repo URL assigned to the full final roster. Repeat for multiple repos. |
+| `--repo-agents` | No | `URL=agent-a,agent-b`; assigns only listed agents to that repo. |
+| `--repo-exclude-agents` | No | `URL=agent-a,agent-b`; assigns the full final roster except listed agents. |
+
+Workgroup numbers are allocated globally per project as the lowest free positive integer, across all teams. Deleted numbers are reused. There is no `--name` override.
+
+Repo include and exclude forms are mutually exclusive for the same URL. Output is JSON `{ path, cloneErrors }`. Clone failures are reported in `cloneErrors` and do not roll back workgroup creation.
+
+---
+
+## `workgroup remove`
+
+Delete a workgroup directory.
+
+```bash
+agentscommander workgroup remove --project MyProject --workgroup wg-1-dev-team
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered project name. |
+| `--workgroup` | Yes | Existing `wg-<N>-<team>` directory name. |
+| `--force-dirty` | No | Bypass dirty repo checks only. Live session checks still apply. |
+
+Removal refuses to continue when any live session exists under the workgroup. Without `--force-dirty`, it also refuses dirty or unpushed repos under the workgroup.
+
+---
+
+## `team list`
+
+List team configuration in a project, optionally scoped to one workgroup.
+
+```bash
+agentscommander team list --project MyProject
+agentscommander team list --project MyProject --workgroup wg-1-dev-team
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered project name. |
+| `--workgroup` | No | Existing workgroup name. When provided, the team is derived from the workgroup suffix. |
+
+Output is JSON. Each item includes `team`, `workgroup`, `agents`, `coordinator`, and `repos`.
+
+---
+
+## `team add-member`
+
+Add an agent to a team config and create its physical replica in a workgroup.
+
+```bash
+agentscommander team add-member \
+  --project MyProject \
+  --workgroup wg-1-dev-team \
+  --agent qa
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered project name. |
+| `--workgroup` | Yes | Existing workgroup name. |
+| `--agent` | Yes | Existing agent matrix name or `_agent_<name>` reference. |
+| `--coordinator` | No | Make the added agent the coordinator. |
+
+The command writes the team config, creates `wg-.../__agent_<name>/`, applies replica settings, and clones missing assigned repos into the workgroup. Output is JSON.
+
+---
+
+## `team remove-member`
+
+Remove a non-coordinator agent from a team config and delete its workgroup replica.
+
+```bash
+agentscommander team remove-member \
+  --project MyProject \
+  --workgroup wg-1-dev-team \
+  --agent qa
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered project name. |
+| `--workgroup` | Yes | Existing workgroup name. |
+| `--agent` | Yes | Existing agent matrix name or `_agent_<name>` reference. |
+
+The command refuses to remove the current coordinator and refuses live sessions under the target replica. It also removes the agent from repo assignments in the team config.
+
+---
+
 ## `create-agent`
 
 Create an agent directory with a `CLAUDE.md` role prompt; optionally launch it.
@@ -200,7 +326,7 @@ agentscommander task-set-title \
 | `--root` | Yes | Coordinator's root directory. |
 | `--title` | Yes | New title. Single line. Embedded `\n`, `\r`, NUL, or other control chars (except tab) are rejected. |
 
-The verb writes a timestamped `*.bak.md` of the previous brief on every successful write. Concurrent writes are serialized via an advisory lockfile (5s timeout). External edits between read and write abort the verb.
+The verb writes a timestamped `*.bak.md` of the previous `TASK.md` on every successful write. Concurrent writes are serialized via an advisory lockfile (5s timeout). External edits between read and write abort the verb.
 
 ---
 

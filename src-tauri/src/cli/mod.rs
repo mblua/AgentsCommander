@@ -6,10 +6,13 @@ pub mod list_sessions;
 pub mod new_project;
 pub mod open_project;
 pub mod send;
+pub mod session_safety;
 pub mod task_append_body;
 pub mod task_ops;
 pub mod task_set_title;
+pub mod team;
 pub mod telegram_send_image;
+pub mod workgroup;
 
 use clap::{Parser, Subcommand};
 
@@ -109,6 +112,10 @@ pub enum Commands {
     NewProject(new_project::NewProjectArgs),
     /// Send a local image/file to a configured Telegram bot (no GUI required)
     TelegramSendImage(telegram_send_image::TelegramSendImageArgs),
+    /// Manage workgroups in an AC project
+    Workgroup(workgroup::WorkgroupArgs),
+    /// Manage team membership in an AC workgroup
+    Team(team::TeamArgs),
 }
 
 /// Attach to parent console (or allocate a new one) ONLY if both stdout and stderr
@@ -226,6 +233,8 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::OpenProject(args) => open_project::execute(args),
         Commands::NewProject(args) => new_project::execute(args),
         Commands::TelegramSendImage(args) => telegram_send_image::execute(args),
+        Commands::Workgroup(args) => workgroup::execute(args),
+        Commands::Team(args) => team::execute(args),
     };
 
     flush_outputs();

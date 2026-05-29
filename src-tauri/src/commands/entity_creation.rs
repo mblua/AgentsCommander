@@ -81,6 +81,26 @@ pub struct SyncResult {
     pub errors: Vec<SyncError>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct WorkgroupDiskCreateArgs {
+    pub project_path: PathBuf,
+    pub team_name: String,
+    pub task_title: String,
+    pub coordinator: Option<String>,
+    pub agents: Vec<String>,
+    pub repos: Vec<RepoAssignment>,
+    pub settings_flags: AgentMatrixSettingsFlags,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReplicaDiskCreateArgs {
+    pub ac_new_dir: PathBuf,
+    pub wg_dir: PathBuf,
+    pub agent_path: String,
+    pub team_repos: Vec<RepoAssignment>,
+    pub settings_flags: AgentMatrixSettingsFlags,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -141,7 +161,7 @@ pub(crate) fn create_agent_replica_layout(
 
 /// Sanitize a user-provided name into a safe directory component:
 /// lowercase, only a-z 0-9 and hyphens, no leading/trailing hyphens.
-fn sanitize_name(raw: &str) -> Result<String, String> {
+pub(crate) fn sanitize_name(raw: &str) -> Result<String, String> {
     let sanitized: String = raw
         .to_lowercase()
         .chars()
@@ -513,6 +533,333 @@ pub(crate) fn apply_agent_matrix_settings_files(
     warnings
 }
 
+pub(crate) fn read_team_config(
+    ac_new_dir: &Path,
+    team_name: &str,
+) -> Result<TeamConfigResult, String> {
+    validate_existing_name(team_name, "Team")?;
+    let team_dir = ac_new_dir.join(format!("_team_{}", team_name));
+    let config_path = team_dir.join("config.json");
+    if !config_path.exists() {
+        return Err(format!("Team '{}' config not found", team_name));
+    }
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config.json: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse config.json: {}", e))
+}
+
+pub(crate) fn write_team_config(
+    ac_new_dir: &Path,
+    team_name: &str,
+    config: &TeamConfigResult,
+) -> Result<PathBuf, String> {
+    validate_existing_name(team_name, "Team")?;
+    let team_dir = ac_new_dir.join(format!("_team_{}", team_name));
+    std::fs::create_dir_all(&team_dir)
+        .map_err(|e| format!("Failed to create team directory: {}", e))?;
+    std::fs::create_dir_all(team_dir.join("memory"))
+        .map_err(|e| format!("Failed to create memory directory: {}", e))?;
+    let conventions = team_dir.join("conventions.md");
+    if !conventions.exists() {
+        std::fs::write(&conventions, "")
+            .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
+    }
+    let config_str = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
+    std::fs::write(team_dir.join("config.json"), config_str)
+        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    Ok(team_dir)
+}
+
+pub(crate) fn list_workgroup_dirs(ac_new_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(ac_new_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if parse_team_from_workgroup_name(name).is_ok() {
+                dirs.push(path);
+            }
+        }
+    }
+    dirs.sort_by(|a, b| {
+        a.file_name()
+            .unwrap_or_default()
+            .cmp(b.file_name().unwrap_or_default())
+    });
+    dirs
+}
+
+pub(crate) fn parse_team_from_workgroup_name(workgroup_name: &str) -> Result<String, String> {
+    let rest = workgroup_name
+        .strip_prefix("wg-")
+        .ok_or_else(|| format!("Invalid workgroup name '{}'", workgroup_name))?;
+    let Some((number, team)) = rest.split_once('-') else {
+        return Err(format!("Invalid workgroup name '{}'", workgroup_name));
+    };
+    let parsed = number
+        .parse::<u32>()
+        .map_err(|_| format!("Invalid workgroup number in '{}'", workgroup_name))?;
+    if parsed == 0 || team.is_empty() {
+        return Err(format!("Invalid workgroup name '{}'", workgroup_name));
+    }
+    validate_existing_name(team, "Team")?;
+    Ok(team.to_string())
+}
+
+pub(crate) fn resolve_agent_ref(ac_new_dir: &Path, raw_agent: &str) -> Result<String, String> {
+    let trimmed = raw_agent.trim();
+    if trimmed.is_empty() {
+        return Err("Agent reference cannot be empty".to_string());
+    }
+    if trimmed.contains('\0') {
+        return Err("Agent reference must not contain NUL".to_string());
+    }
+    let path = Path::new(trimmed);
+    let dir_name = if path.components().count() > 1 || path.is_absolute() {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("Invalid agent reference '{}'", raw_agent))?
+            .to_string()
+    } else {
+        trimmed.to_string()
+    };
+    let bare = dir_name.strip_prefix("_agent_").unwrap_or(&dir_name);
+    validate_existing_name(bare, "Agent")?;
+    let canonical_ref = format!("_agent_{}", bare);
+    let matrix_dir = ac_new_dir.join(&canonical_ref);
+    if !matrix_dir.is_dir() {
+        return Err(format!("Agent '{}' not found", bare));
+    }
+    Ok(canonical_ref)
+}
+
+pub(crate) fn agent_ref_bare_name(agent_ref: &str) -> String {
+    let dir_name = Path::new(agent_ref)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(agent_ref);
+    dir_name
+        .strip_prefix("_agent_")
+        .unwrap_or(dir_name)
+        .to_string()
+}
+
+pub(crate) async fn create_workgroup_on_disk(
+    args: WorkgroupDiskCreateArgs,
+) -> Result<WorkgroupCloneResult, String> {
+    let safe_team = sanitize_name(&args.team_name)?;
+    let task_title = args.task_title.trim().to_string();
+    validate_task_title(&task_title)?;
+    let base = args.project_path.join(".ac-new");
+    if !base.is_dir() {
+        return Err(format!(
+            ".ac-new directory not found in {}",
+            args.project_path.display()
+        ));
+    }
+
+    if let Err(e) = crate::commands::ac_discovery::ensure_ac_new_gitignore(&base) {
+        log::warn!(
+            "[create_workgroup] Failed to ensure .ac-new/.gitignore: {}",
+            e
+        );
+    }
+
+    let team_config =
+        if !args.agents.is_empty() || args.coordinator.is_some() || !args.repos.is_empty() {
+            let coordinator = args.coordinator.clone().ok_or_else(|| {
+                "Coordinator is required when provisioning team config".to_string()
+            })?;
+            if !args.agents.contains(&coordinator) {
+                return Err("Coordinator must be one of the selected agents".to_string());
+            }
+            let config = TeamConfigResult {
+                agents: args.agents.clone(),
+                coordinator,
+                repos: args.repos.clone(),
+            };
+            write_team_config(&base, &safe_team, &config)?;
+            config
+        } else {
+            read_team_config(&base, &safe_team)?
+        };
+
+    let wg_number = determine_next_wg_number(&base);
+    let wg_name = format!("wg-{}-{}", wg_number, safe_team);
+    let wg_dir = base.join(&wg_name);
+    if wg_dir.exists() {
+        return Err(format!("Workgroup directory already exists: {}", wg_name));
+    }
+    std::fs::create_dir_all(&wg_dir)
+        .map_err(|e| format!("Failed to create workgroup directory: {}", e))?;
+    std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
+        .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+    std::fs::write(wg_dir.join("TASK.md"), build_task_content(&task_title))
+        .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+
+    for agent_path in &team_config.agents {
+        create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_new_dir: base.clone(),
+            wg_dir: wg_dir.clone(),
+            agent_path: agent_path.clone(),
+            team_repos: team_config.repos.clone(),
+            settings_flags: args.settings_flags,
+        })?;
+    }
+
+    let clone_errors = clone_missing_repos_for_workgroup(&wg_dir, &team_config.repos).await;
+    let result_path = wg_dir.to_string_lossy().to_string();
+    log::info!(
+        "[entity_creation] Created workgroup: {} ({} clone errors)",
+        result_path,
+        clone_errors.len()
+    );
+    Ok(WorkgroupCloneResult {
+        path: result_path,
+        clone_errors,
+    })
+}
+
+pub(crate) fn create_or_update_replica_on_disk(
+    args: ReplicaDiskCreateArgs,
+) -> Result<PathBuf, String> {
+    let agent_dir_name = Path::new(&args.agent_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&args.agent_path);
+    let agent_name = agent_dir_name
+        .strip_prefix("_agent_")
+        .unwrap_or(agent_dir_name);
+    validate_existing_name(agent_name, "Agent")?;
+    let replica_dir = args.wg_dir.join(format!("__agent_{}", agent_name));
+
+    create_agent_replica_layout(&replica_dir).map_err(|(sub, e)| match sub {
+        "replica_dir" => format!("Failed to create replica dir for {}: {}", agent_name, e),
+        _ => format!("Failed to create {} for {}: {}", sub, agent_name, e),
+    })?;
+
+    if args.settings_flags.exclude_global_claude_md {
+        if let Err(e) = ensure_claude_md_excludes(&replica_dir) {
+            log::warn!(
+                "[entity_creation] Failed to write .claude/settings.local.json for replica {}: {}",
+                replica_dir.display(),
+                e
+            );
+        }
+    }
+    if let Err(e) = crate::config::claude_settings::ensure_rtk_pretool_hook(
+        &replica_dir,
+        args.settings_flags.inject_rtk_hook,
+    ) {
+        log::warn!(
+            "[entity_creation] Failed to apply rtk hook for replica {}: {}",
+            replica_dir.display(),
+            e
+        );
+    }
+
+    let assigned_repos: Vec<String> = args
+        .team_repos
+        .iter()
+        .filter(|r| r.agents.iter().any(|a| agent_matches(a, agent_name)))
+        .map(|r| {
+            let dir_name = format!("repo-{}", repo_dir_name_from_url(&r.url));
+            format!("../{}", dir_name)
+        })
+        .collect();
+
+    let identity_rel = compute_relative_identity(&args.agent_path, &replica_dir, &args.ac_new_dir);
+    let mut context_entries: Vec<String> = vec![
+        "$AGENTSCOMMANDER_CONTEXT".to_string(),
+        "$REPOS_WORKSPACE_INFO".to_string(),
+    ];
+    let matrix_dir = if Path::new(&args.agent_path).is_absolute() {
+        Path::new(&args.agent_path).to_path_buf()
+    } else {
+        args.ac_new_dir.join(
+            args.agent_path
+                .trim_start_matches("../")
+                .trim_start_matches("./"),
+        )
+    };
+    if matrix_dir.join("Role.md").exists() {
+        context_entries.push(format!("{}/Role.md", identity_rel));
+    }
+
+    let replica_config = serde_json::json!({
+        "identity": identity_rel,
+        "repos": assigned_repos,
+        "context": context_entries,
+    });
+    let config_str = serde_json::to_string_pretty(&replica_config)
+        .map_err(|e| format!("Failed to serialize replica config: {}", e))?;
+    std::fs::write(replica_dir.join("config.json"), config_str)
+        .map_err(|e| format!("Failed to write replica config: {}", e))?;
+    Ok(replica_dir)
+}
+
+pub(crate) fn remove_replica_dir(replica_dir: &Path) -> Result<(), String> {
+    if !replica_dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(replica_dir)
+        .map_err(|e| format!("Failed to delete replica directory: {}", e))
+}
+
+pub(crate) async fn clone_missing_repos_for_workgroup(
+    wg_dir: &Path,
+    repos: &[RepoAssignment],
+) -> Vec<CloneError> {
+    let mut clone_errors = Vec::new();
+    let mut seen_urls = HashSet::new();
+    for repo in repos {
+        if !seen_urls.insert(repo.url.clone()) {
+            continue;
+        }
+        let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
+        let target = wg_dir.join(&dir_name);
+        if target.exists() {
+            continue;
+        }
+        match git_clone_async(&repo.url, &target).await {
+            Ok(_) => log::info!(
+                "[entity_creation] Cloned {} -> {}",
+                repo.url,
+                target.display()
+            ),
+            Err(e) => {
+                log::error!("[entity_creation] Failed to clone {}: {}", repo.url, e);
+                clone_errors.push(CloneError {
+                    url: repo.url.clone(),
+                    error: e,
+                });
+            }
+        }
+    }
+    clone_errors
+}
+
+fn validate_task_title(task_title: &str) -> Result<(), String> {
+    if task_title.is_empty() {
+        return Err("Task title cannot be empty".to_string());
+    }
+    if task_title.chars().any(|c| c.is_control() && c != '\t') {
+        return Err("Task title must be a single line of printable characters \
+             (control characters other than tab are not allowed)"
+            .to_string());
+    }
+    if task_title.chars().count() > 256 {
+        return Err("Task title is too long (max 256 characters)".to_string());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -818,7 +1165,7 @@ pub async fn create_workgroup(
         .map_err(|e| format!("Failed to parse team config: {}", e))?;
 
     // Determine next WG number
-    let wg_number = determine_next_wg_number(&base, &safe_team);
+    let wg_number = determine_next_wg_number(&base);
 
     let wg_name = format!("wg-{}-{}", wg_number, safe_team);
     let wg_dir = base.join(&wg_name);
@@ -1620,7 +1967,7 @@ pub async fn get_team_config(
 
 /// Check all repo-* dirs inside the given workgroup dirs for dirty git state.
 /// Returns a list of (repo_display_name, reason) for repos with pending work.
-fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, String)> {
+pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, String)> {
     #[cfg(windows)]
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -1858,12 +2205,11 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
 /// permanent gaps after a workgroup was destroyed. The new policy reuses
 /// any freed numbers so the user-facing sequence stays compact.
 ///
-/// Filtering rules (unchanged from prior behavior):
+/// Filtering rules:
 /// - Only directories are considered (regular files are ignored).
-/// - The directory name must match `wg-<digits>-<team_name>` exactly:
-///   prefix `wg-`, suffix `-{team_name}`, numeric middle.
-/// - Non-numeric middles (e.g. `wg-foo-team`) and other team suffixes
-///   are ignored.
+/// - The directory name must match `wg-<positive digits>-<team>`.
+/// - Team suffix is ignored for allocation, so workgroup numbers are unique
+///   across the whole project.
 ///
 /// Slot 1 is always reachable because the lowest-free search starts at
 /// 1 (see the `find` call below); a stray `wg-0-{team}` directory ends
@@ -1878,8 +2224,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
 /// `wg-1-{team}` is in fact present; otherwise the slot-1 creation
 /// succeeds with stale state. Surfacing the read error is tracked
 /// separately and is out of scope for #177.
-fn determine_next_wg_number(ac_new_dir: &Path, team_name: &str) -> u32 {
-    let suffix = format!("-{}", team_name);
+pub(crate) fn determine_next_wg_number(ac_new_dir: &Path) -> u32 {
     let mut taken: HashSet<u32> = HashSet::new();
 
     if let Ok(entries) = std::fs::read_dir(ac_new_dir) {
@@ -1889,14 +2234,11 @@ fn determine_next_wg_number(ac_new_dir: &Path, team_name: &str) -> u32 {
             }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("wg-") && name_str.ends_with(&suffix) {
-                // Extract the number between "wg-" and "-{team_name}".
-                // Use `.get(..)` (checked slicing) — a name like
-                // `wg-{team}` (no number) passes both the prefix and
-                // suffix checks but produces a slice with start > end,
-                // which would panic with `&str[..]`. `.get(..)` returns
-                // `None` instead, so such entries are silently ignored.
-                if let Some(middle) = name_str.get(3..name_str.len() - suffix.len()) {
+            if let Some(rest) = name_str.strip_prefix("wg-") {
+                if let Some((middle, team)) = rest.split_once('-') {
+                    if team.is_empty() {
+                        continue;
+                    }
                     if let Ok(n) = middle.parse::<u32>() {
                         taken.insert(n);
                     }
@@ -2671,7 +3013,7 @@ mod tests {
     #[test]
     fn determine_next_wg_number_returns_one_when_no_wg_dirs_exist() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 1);
+        assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
     /// Contiguous allocation: `wg-1`, `wg-2`, `wg-3` already exist for the team
@@ -2682,7 +3024,7 @@ mod tests {
         touch_dir(tmp.path(), "wg-1-dev-team");
         touch_dir(tmp.path(), "wg-2-dev-team");
         touch_dir(tmp.path(), "wg-3-dev-team");
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 4);
+        assert_eq!(determine_next_wg_number(tmp.path()), 4);
     }
 
     /// Gap reuse — the load-bearing case from issue #177.
@@ -2692,7 +3034,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         touch_dir(tmp.path(), "wg-1-dev-team");
         touch_dir(tmp.path(), "wg-3-dev-team");
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 2);
+        assert_eq!(determine_next_wg_number(tmp.path()), 2);
     }
 
     /// Leading gap — `wg-1` is free even though higher slots are taken.
@@ -2701,23 +3043,18 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         touch_dir(tmp.path(), "wg-2-dev-team");
         touch_dir(tmp.path(), "wg-3-dev-team");
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 1);
+        assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
-    /// Team scoping: dirs for a different team must not block slot reuse for the
-    /// requested team. `wg-1-dev-team` and `wg-1-qa-team` coexist → for `qa-team`
-    /// only slot 1 is taken (by `wg-1-qa-team`), so next is 2; for `dev-team`
-    /// only slot 1 is taken (by `wg-1-dev-team`), so next is 2.
+    /// Project scoping: dirs for any team block slot reuse.
+    /// `wg-1-dev-team` and `wg-3-qa-team` make slot 2 the next free slot.
     #[test]
-    fn determine_next_wg_number_only_considers_matching_team_suffix() {
+    fn determine_next_wg_number_is_global_across_team_suffixes() {
         let tmp = tempfile::tempdir().expect("tempdir");
         touch_dir(tmp.path(), "wg-1-dev-team");
         touch_dir(tmp.path(), "wg-1-qa-team");
         touch_dir(tmp.path(), "wg-3-qa-team");
-        // For dev-team: only wg-1-dev-team counts → next free is 2.
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 2);
-        // For qa-team: wg-1-qa-team and wg-3-qa-team count → next free is 2.
-        assert_eq!(determine_next_wg_number(tmp.path(), "qa-team"), 2);
+        assert_eq!(determine_next_wg_number(tmp.path()), 2);
     }
 
     /// Invalid `wg-*` directory names must not occupy any slot.
@@ -2733,7 +3070,7 @@ mod tests {
         touch_dir(tmp.path(), "wg-abc-dev-team");
         touch_dir(tmp.path(), "wg--dev-team");
         touch_dir(tmp.path(), "wg-2-dev-team");
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 1);
+        assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
     /// `wg-0-<team>` does not block slot 1. The allocator's lowest-free
@@ -2745,7 +3082,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         touch_dir(tmp.path(), "wg-0-dev-team");
         touch_dir(tmp.path(), "wg-2-dev-team");
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 1);
+        assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
     /// Files (not directories) named like a workgroup must not occupy a slot —
@@ -2754,7 +3091,7 @@ mod tests {
     fn determine_next_wg_number_ignores_files_named_like_workgroups() {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("wg-1-dev-team"), b"not a dir").expect("write file");
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 1);
+        assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
     /// Regression for the suffix-overlaps-prefix slice case: a directory
@@ -2769,7 +3106,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         touch_dir(tmp.path(), "wg-dev-team");
         // Must return slot 1 (the bogus dir is ignored, not counted as taken).
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 1);
+        assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
     /// In-flight `.deleting-wg-N-team-<uuid>` directories must NOT be
@@ -2789,27 +3126,16 @@ mod tests {
             ".deleting-wg-2-dev-team-00000000-0000-0000-0000-000000000000",
         );
         // wg-2 is mid-delete: the `.deleting-…` entry must not block slot 2.
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 2);
+        assert_eq!(determine_next_wg_number(tmp.path()), 2);
     }
 
-    /// Team `team` is a strict suffix of team `dev-team`. The dir
-    /// `wg-1-dev-team` ends with `-team` but must NOT count toward team
-    /// `team` — its middle `1-dev` fails `parse::<u32>()` and is ignored.
-    /// Test 5 only covered non-overlapping team names; this case locks the
-    /// suffix-overlap disambiguation that edge case §2 argues for. A future
-    /// maintainer who relaxed parsing (hex, leading `+`, trailing-char
-    /// stripping) would silently reintroduce cross-team contamination — and
-    /// none of the existing tests would catch it.
+    /// Team suffix overlap is irrelevant to global allocation.
     #[test]
-    fn determine_next_wg_number_distinguishes_subset_team_suffixes() {
+    fn determine_next_wg_number_handles_subset_team_suffixes_globally() {
         let tmp = tempfile::tempdir().expect("tempdir");
         touch_dir(tmp.path(), "wg-1-dev-team");
         touch_dir(tmp.path(), "wg-1-team");
-        // For team `team`: only `wg-1-team` counts; `wg-1-dev-team`'s
-        // middle `1-dev` is non-numeric and is ignored. Next free is 2.
-        assert_eq!(determine_next_wg_number(tmp.path(), "team"), 2);
-        // For team `dev-team`: only `wg-1-dev-team` counts. Next free is 2.
-        assert_eq!(determine_next_wg_number(tmp.path(), "dev-team"), 2);
+        assert_eq!(determine_next_wg_number(tmp.path()), 2);
     }
 
     // ── #271 — build_role_content (Role.md template merge) ──
