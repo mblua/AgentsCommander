@@ -37,6 +37,10 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 - **`create-workgroup` / `create-team` / `create-project`** - non-interactive equivalents of the existing `create-agent` flow for headless / script-driven setup. ([#317](https://github.com/mblua/AgentsCommander/issues/317))
 
+### Automation
+
+- **Cron-based scheduled executions** - define explicit, inspectable, and auditable cron schedules that regularly trigger events for a coordinator, workgroup, agent, or workflow target, supporting recurring status checks, reports, maintenance tasks, and scheduled workgroup runs. ([#354](https://github.com/mblua/AgentsCommander/issues/354))
+
 ### Execution determinism
 
 - **AC Harness** - deterministic command-execution layer that complements RTK, plus extending RTK compatibility beyond Claude to Codex, Gemini, and future agents (today only Claude's `.claude/settings.local.json` hook is wired). ([#318](https://github.com/mblua/AgentsCommander/issues/318))
