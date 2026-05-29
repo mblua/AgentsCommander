@@ -786,6 +786,59 @@ fn find_ac_new_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
         .map(canonical_or_original)
 }
 
+fn write_combined_context_file(
+    cwd: &str,
+    resolved_paths: &[(String, std::path::PathBuf)],
+    filename_prefix: &str,
+) -> Result<String, String> {
+    let mut combined = String::new();
+    let mut first = true;
+
+    for (label, path) in resolved_paths {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
+        if first {
+            combined.push_str(&content);
+            first = false;
+        } else {
+            combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", label));
+            combined.push_str(&content);
+        }
+    }
+
+    let config_dir =
+        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    let context_dir = config_dir.join("context-cache");
+    std::fs::create_dir_all(&context_dir)
+        .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
+
+    let hash = simple_hash(cwd);
+    let file_path = context_dir.join(format!("{}-{}.md", filename_prefix, hash));
+    std::fs::write(&file_path, &combined)
+        .map_err(|e| format!("Failed to write combined context file: {}", e))?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+fn resolved_paths_include_path(
+    resolved_paths: &[(String, std::path::PathBuf)],
+    candidate: &std::path::Path,
+) -> bool {
+    resolved_paths.iter().any(|(_, path)| {
+        if path == candidate {
+            return true;
+        }
+
+        match (
+            std::fs::canonicalize(path),
+            std::fs::canonicalize(candidate),
+        ) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => false,
+        }
+    })
+}
+
 fn has_agent_matrix_dir_name(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1044,10 +1097,13 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         }
     }
 
-    // Auto-inject Role.md from identity matrix if present and not already resolved
-    if let Some(identity) = config.get("identity").and_then(|v| v.as_str()) {
-        let role_abs = cwd_path.join(format!("{}/{}", identity, ROLE_MD_FILENAME));
-        let already_included = resolved_paths.iter().any(|(_, p)| *p == role_abs);
+    // Auto-inject Role.md from identity matrix if present and not already resolved.
+    let auto_role_abs = config
+        .get("identity")
+        .and_then(|v| v.as_str())
+        .map(|identity| cwd_path.join(format!("{}/{}", identity, ROLE_MD_FILENAME)));
+    if let Some(role_abs) = auto_role_abs {
+        let already_included = resolved_paths_include_path(&resolved_paths, &role_abs);
         if !already_included && role_abs.exists() {
             resolved_paths.push((ROLE_MD_FILENAME.to_string(), role_abs));
         }
@@ -1069,48 +1125,112 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         ));
     }
 
-    // Build combined content in context[] order (no auto-prepend of global context)
-    let mut combined = String::new();
-    let mut first = true;
-
-    for (label, path) in &resolved_paths {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
-        if first {
-            combined.push_str(&content);
-            first = false;
-        } else {
-            combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", label));
-            combined.push_str(&content);
-        }
-    }
-
-    // Write to a temp file in the app config dir
-    let config_dir =
-        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let context_dir = config_dir.join("context-cache");
-    std::fs::create_dir_all(&context_dir)
-        .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
-
-    // Use a deterministic filename based on the cwd to avoid temp file accumulation
-    let hash = simple_hash(cwd);
-    let file_path = context_dir.join(format!("replica-context-{}.md", hash));
-    std::fs::write(&file_path, &combined)
-        .map_err(|e| format!("Failed to write combined context file: {}", e))?;
+    // Build combined content in context[] order, followed by any auto-injected role.
+    let file_path = write_combined_context_file(cwd, &resolved_paths, "replica-context")?;
 
     log::info!(
         "Built replica context for {} ({} context files) → {}",
         cwd,
         resolved_paths.len(),
-        file_path.display()
+        file_path
     );
 
-    Ok(Some(file_path.to_string_lossy().to_string()))
+    Ok(Some(file_path))
+}
+
+fn build_direct_matrix_context(cwd: &str) -> Result<String, String> {
+    let cwd_path = Path::new(cwd);
+    let global_context = ensure_session_context(cwd)?;
+    let role_path = Path::new(cwd).join(ROLE_MD_FILENAME);
+    let config_path = cwd_path.join("config.json");
+    let mut resolved_paths = vec![(
+        "AgentsCommanderContext.md".to_string(),
+        std::path::PathBuf::from(&global_context),
+    )];
+    let mut missing: Vec<String> = Vec::new();
+
+    if config_path.exists() {
+        let config_content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+
+        let config: serde_json::Value = serde_json::from_str(&config_content)
+            .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+
+        if let Some(context_array) = config.get("context").and_then(|v| v.as_array()) {
+            for entry in context_array {
+                let raw = match entry.as_str() {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                if raw == CONTEXT_TOKEN_GLOBAL {
+                    continue;
+                } else if raw == CONTEXT_TOKEN_REPOS {
+                    let repos_path = generate_repos_workspace_info(cwd_path, &config)?;
+                    if !resolved_paths_include_path(&resolved_paths, &repos_path) {
+                        resolved_paths.push(("Workspace Repos".to_string(), repos_path));
+                    }
+                } else {
+                    let abs = cwd_path.join(raw);
+                    if abs.exists() {
+                        if !resolved_paths_include_path(&resolved_paths, &abs) {
+                            let label = abs
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(raw)
+                                .to_string();
+                            resolved_paths.push((label, abs));
+                        }
+                    } else {
+                        missing.push(raw.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if !missing.is_empty() {
+        let matrix_name = cwd_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        return Err(format!(
+            "Agent Matrix '{}' has missing context files:\n{}",
+            matrix_name,
+            missing
+                .iter()
+                .map(|m| format!("  - {}", m))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    if role_path.exists() && !resolved_paths_include_path(&resolved_paths, &role_path) {
+        resolved_paths.push((ROLE_MD_FILENAME.to_string(), role_path));
+    }
+
+    if resolved_paths.len() == 1 {
+        return Ok(global_context);
+    }
+
+    let file_path = write_combined_context_file(cwd, &resolved_paths, "matrix-context")?;
+
+    log::info!(
+        "Built direct matrix context for {} ({} context files) → {}",
+        cwd,
+        resolved_paths.len(),
+        file_path
+    );
+
+    Ok(file_path)
 }
 
 /// Resolve the final session context content for an agent directory.
 /// Prefers replica config.json context[] and falls back to the per-agent default context.
-fn resolve_session_context_content(cwd: &str, is_coordinator: bool) -> Result<Option<String>, String> {
+fn resolve_session_context_content(
+    cwd: &str,
+    is_coordinator: bool,
+) -> Result<Option<String>, String> {
     let context_path = if is_replica_agent_dir(cwd) {
         match build_replica_context(cwd) {
             Ok(Some(combined_path)) => {
@@ -1136,7 +1256,7 @@ fn resolve_session_context_content(cwd: &str, is_coordinator: bool) -> Result<Op
             Err(e) => return Err(e),
         }
     } else if is_canonical_agent_matrix_dir(cwd) {
-        ensure_session_context(cwd)?
+        build_direct_matrix_context(cwd)?
     } else {
         return Ok(None);
     };
@@ -1500,6 +1620,24 @@ mod tests {
         let skill_path = skill_dir.join(SKILL_MD_FILENAME);
         std::fs::write(&skill_path, content).expect("write SKILL.md");
         skill_path
+    }
+
+    fn assert_global_context_before_one_role(content: &str, role_marker: &str) {
+        assert!(content.contains("# AgentsCommander Context"));
+        assert!(content.contains("# Context: Role.md"));
+        assert_eq!(
+            content.matches(role_marker).count(),
+            1,
+            "Role.md content should be included exactly once"
+        );
+        let global_index = content
+            .find("# AgentsCommander Context")
+            .expect("global context present");
+        let role_index = content.find(role_marker).expect("role content present");
+        assert!(
+            global_index < role_index,
+            "Role.md should be appended after the global context"
+        );
     }
 
     #[test]
@@ -2147,10 +2285,13 @@ mod tests {
             "---\nname: runtime\ndescription: Direct runtime skill metadata.\nwhen_to_use: Use directly from the canonical matrix.\n---\nDIRECT_BODY_SHOULD_NOT_RENDER\n",
         );
 
-        let materialized =
-            materialize_agent_context_file(&path_string(&matrix_root), ManagedContextTarget::Codex, false)
-                .expect("materialize context")
-                .expect("context path");
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
         let materialized_path = PathBuf::from(&materialized);
         let content =
             std::fs::read_to_string(&materialized_path).expect("read materialized context");
@@ -2167,6 +2308,113 @@ mod tests {
             &matrix_root.join("skills").join("runtime").join("SKILL.md")
         )));
         assert!(!content.contains("DIRECT_BODY_SHOULD_NOT_RENDER"));
+    }
+
+    #[test]
+    fn materialize_agent_context_file_includes_local_role_for_direct_matrix_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "# Direct Role\n\nDIRECT_MATRIX_ROLE_BODY\n",
+        )
+        .expect("write Role.md");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_global_context_before_one_role(&content, "DIRECT_MATRIX_ROLE_BODY");
+    }
+
+    #[test]
+    fn materialize_direct_matrix_default_config_includes_global_and_one_role() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            matrix_root.join("config.json"),
+            r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","Role.md"]}"#,
+        )
+        .expect("write config");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "# Direct Role\n\nDEFAULT_CONFIG_ROLE_BODY\n",
+        )
+        .expect("write Role.md");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_global_context_before_one_role(&content, "DEFAULT_CONFIG_ROLE_BODY");
+    }
+
+    #[test]
+    fn materialize_direct_matrix_role_only_config_prepends_global_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            matrix_root.join("config.json"),
+            r#"{"tooling":{},"context":["Role.md"]}"#,
+        )
+        .expect("write config");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "# Direct Role\n\nROLE_ONLY_CONFIG_BODY\n",
+        )
+        .expect("write Role.md");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_global_context_before_one_role(&content, "ROLE_ONLY_CONFIG_BODY");
+    }
+
+    #[test]
+    fn materialize_direct_matrix_null_context_keeps_global_context_and_role() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            matrix_root.join("config.json"),
+            r#"{"tooling":{},"context":[null]}"#,
+        )
+        .expect("write config");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "# Direct Role\n\nNULL_CONFIG_ROLE_BODY\n",
+        )
+        .expect("write Role.md");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_global_context_before_one_role(&content, "NULL_CONFIG_ROLE_BODY");
     }
 
     #[test]
