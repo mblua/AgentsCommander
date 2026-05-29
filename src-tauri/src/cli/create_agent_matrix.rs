@@ -14,18 +14,20 @@ use crate::commands::entity_creation::{
     apply_agent_matrix_settings_files, create_agent_matrix_on_disk, AgentMatrixSettingsFlags,
     CreateAgentMatrixDiskArgs,
 };
+use crate::config::projects::resolve_project_reference;
 
 #[derive(Args)]
 #[command(after_help = "\
 NOTES:\n  \
-  .ac-new must already exist under --project.\n  \
+  --project is a registered AC project folder name from settings.projectPaths. Paths are not accepted.\n  \
+  The target project must contain .ac-new.\n  \
   --name is sanitized by the same backend as the UI into a lower-case Matrix id.\n  \
   --role-template must be an id from the same source as the New Agent picker.\n  \
   Invalid templates fail before creating the target Matrix directory.\n  \
   Output is JSON with agentPath, agentName, rolePath, launched, launchAgent.")]
 pub struct CreateAgentMatrixArgs {
-    /// AC project directory that already contains .ac-new
-    #[arg(long, value_name = "PATH")]
+    /// Registered AC project folder name. Paths are not accepted.
+    #[arg(long, value_name = "PROJECT")]
     pub project: String,
 
     /// Agent Matrix display/input name, sanitized into the _agent_<id> folder
@@ -75,14 +77,38 @@ pub struct ProjectRefreshRequest {
 }
 
 pub fn execute(args: CreateAgentMatrixArgs) -> i32 {
+    execute_matrix_project_create(
+        &args.project,
+        &args.name,
+        &args.description,
+        args.role_template.as_deref(),
+        args.launch.as_deref(),
+    )
+}
+
+pub(crate) fn execute_matrix_project_create(
+    project: &str,
+    name: &str,
+    description: &str,
+    role_template: Option<&str>,
+    launch: Option<&str>,
+) -> i32 {
     let settings = crate::config::settings::load_settings_for_cli();
     let config_dir = crate::config::config_dir();
+    let resolved_project = match resolve_project_reference(&settings.project_paths, project) {
+        Ok(project) => project,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return 1;
+        }
+    };
+    let project_path = resolved_project.path.to_string_lossy().to_string();
 
     let created = match create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
-        project_path: &args.project,
-        name: &args.name,
-        description: &args.description,
-        role_template_id: args.role_template.as_deref(),
+        project_path: &project_path,
+        name,
+        description,
+        role_template_id: role_template,
         settings: &settings,
         config_dir: config_dir.as_deref(),
     }) {
@@ -101,8 +127,8 @@ pub fn execute(args: CreateAgentMatrixArgs) -> i32 {
     let agent_path = created.agent_dir.to_string_lossy().to_string();
     let role_path = created.role_path.to_string_lossy().to_string();
 
-    let project_path_for_refresh = std::fs::canonicalize(&args.project)
-        .unwrap_or_else(|_| std::path::PathBuf::from(&args.project))
+    let project_path_for_refresh = std::fs::canonicalize(&resolved_project.path)
+        .unwrap_or_else(|_| resolved_project.path.clone())
         .to_string_lossy()
         .to_string();
     let agent_path_for_refresh = std::fs::canonicalize(&created.agent_dir)
@@ -127,7 +153,7 @@ pub fn execute(args: CreateAgentMatrixArgs) -> i32 {
     let mut launched = false;
     let mut launch_agent_id: Option<String> = None;
 
-    if let Some(ref requested) = args.launch {
+    if let Some(requested) = launch {
         match create_agent::find_launch_agent(&settings, requested) {
             Some(agent) => {
                 match create_agent::build_session_request(
