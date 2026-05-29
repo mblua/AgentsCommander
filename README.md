@@ -5,8 +5,8 @@
 <h1 align="center">Agents Commander</h1>
 
 <p align="center">
-  Run a team of AI coding agents (Claude Code, Codex, Gemini) in visible terminals, coordinating through files you can read.<br/>
-  File-based workflows, real OS processes, and no hidden orchestration state.
+  Run multiple teams of AI coding agents (Claude Code, Codex, Gemini) across separate workgroup instances.<br/>
+  Root Agent coordination, visible terminals, and file-based workflows you can inspect.
 </p>
 
 <p align="center">
@@ -31,8 +31,9 @@
 ## The 30-second pitch
 
 - **Pick the coding agent per role.** Claude Code on architecture, Codex on dev, Gemini on review, or any mix. Each runs in its own real terminal with a full PTY, not a command runner.
-- **Direct teams from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to workgroup coordinators, send work to different teams, and keep initiatives aligned across workgroups.
+- **Direct multiple workgroups from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to workgroup coordinators, send work to different teams, and keep initiatives aligned across parallel workgroups.
 - **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
+- **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
 - **Local state, no telemetry.** All state lives in plain JSON, TOML, and markdown next to the binary. Portable: copy the `.exe` to any drive and it carries its own config.
 
 You bring the coding agents. AgentsCommander coordinates them.
@@ -66,7 +67,7 @@ Most agent tools focus on in-process orchestration or one interactive session. A
 | **Parallel feature development** | Two coding agents on the same repo, each owning a different module. Coordinator routes work and merges results. |
 | **Code-review swarm** | One agent ships a PR; two others review independently. You read both reviews in their own terminals before merging. |
 | **Autonomous refactor crew** | A long-running coordinator splits a multi-file refactor across worker agents and rebases their branches as they finish. |
-| **Long-running agent with phone alerts** | Pair a session with a [Telegram bot](docs/features/telegram-bridge.md) and kick off a build from your phone. Go to bed; wake to a finished diff. |
+| **Long-running agent with phone alerts** | Pair a session with a [Telegram bot](docs/features/telegram-bridge.md), kick off a build from your phone, and receive text updates plus screenshots or image artifacts. |
 
 Full recipes: [`docs/use-cases.md`](docs/use-cases.md).
 
@@ -96,7 +97,7 @@ These are not accidents.
 - [Quickstart](docs/quickstart.md): 60-second download to first running agent
 - [Concepts](docs/concepts.md): agent, team, workgroup, coordinator, brief
 - [Teams and workgroups](docs/agents/teams-and-workgroups.md): coordinators, members, briefs, messaging
-- [Features](docs/features/): Telegram bridge, voice-to-text, portable instances, RTK integration
+- [Features](docs/features/): Telegram bridge with image and screenshot sends, voice-to-text, portable instances, RTK integration
 - [Reference](docs/reference/): full CLI, `settings.json` schema, architecture, log filtering
 - [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Docs style guide](docs/style-guide.md)
 
