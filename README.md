@@ -31,6 +31,7 @@
 ## The 30-second pitch
 
 - **Pick the coding agent per role.** Claude Code on architecture, Codex on dev, Gemini on review, or any mix. Each runs in its own real terminal with a full PTY, not a command runner.
+- **Direct teams from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to workgroup coordinators, send work to different teams, and keep initiatives aligned across workgroups.
 - **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
 - **Local state, no telemetry.** All state lives in plain JSON, TOML, and markdown next to the binary. Portable: copy the `.exe` to any drive and it carries its own config.
 
