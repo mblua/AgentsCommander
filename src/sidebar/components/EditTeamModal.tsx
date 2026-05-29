@@ -26,6 +26,24 @@ const EditTeamModal: Component<{
     return idx >= 0 ? p.slice(idx + 1) : p;
   });
 
+  const currentProjectRoot = createMemo(() =>
+    props.projectPath.replace(/[\\/]+$/, "").replace(/\\/g, "/")
+  );
+
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+  const resolveConfigAgentPath = (agentRef: string) => {
+    const normalized = agentRef.replace(/\\/g, "/");
+    if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
+      return normalized;
+    }
+    const trimmed = normalized.replace(/^\.\/+/, "").replace(/^(\.\.\/)+/, "");
+    if (trimmed.startsWith(".ac-new/")) {
+      return `${currentProjectRoot()}/${trimmed}`;
+    }
+    return `${currentProjectRoot()}/.ac-new/${trimmed}`;
+  };
+
   const agentsByProject = createMemo(() => {
     const filter = agentFilter().toLowerCase();
     const filtered = filter
@@ -72,15 +90,15 @@ const EditTeamModal: Component<{
         projectName: a.projectName,
       }));
 
-      // Normalize paths for case/separator differences on Windows.
-      const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
       const discoveredNorm = new Set(entries.map((e) => norm(e.path)));
 
       // Synthesize entries for cross-project agents not found in discovered agents.
-      // Config stores absolute paths like C:\...\project\.ac-new\_agent_name
+      // Team config is stored relative to .ac-new for portability; older configs
+      // may still contain absolute paths. Resolve before comparing with discovery.
       for (const configPath of teamConfig.agents) {
-        if (!discoveredNorm.has(norm(configPath))) {
-          const normalized = configPath.replace(/\\/g, "/");
+        const resolvedPath = resolveConfigAgentPath(configPath);
+        if (!discoveredNorm.has(norm(resolvedPath))) {
+          const normalized = resolvedPath.replace(/\\/g, "/");
           const parts = normalized.split("/");
           // Extract agent name from _agent_{name} dir
           const agentDir = parts[parts.length - 1] || "";
@@ -88,14 +106,19 @@ const EditTeamModal: Component<{
           // Extract project name: parent of .ac-new
           const acNewIdx = parts.lastIndexOf(".ac-new");
           const projectName = acNewIdx > 0 ? parts[acNewIdx - 1] : "external";
-          entries.push({ name: agentName, path: configPath, projectName });
+          entries.push({ name: agentName, path: resolvedPath, projectName });
         }
       }
 
       setAllAgents(entries);
+      const entryPathByNorm = new Map(entries.map((e) => [norm(e.path), e.path]));
+      const configPathForUi = (agentRef: string) =>
+        entryPathByNorm.get(norm(resolveConfigAgentPath(agentRef))) ?? agentRef;
 
       // Pre-select agents matching config paths
-      const configAgentNorm = new Set(teamConfig.agents.map(norm));
+      const configAgentNorm = new Set(
+        teamConfig.agents.map((p) => norm(resolveConfigAgentPath(p)))
+      );
       const matched = new Set<string>();
       for (const entry of entries) {
         if (configAgentNorm.has(norm(entry.path))) {
@@ -106,7 +129,7 @@ const EditTeamModal: Component<{
 
       // Pre-select coordinator
       if (teamConfig.coordinator) {
-        const coordNorm = norm(teamConfig.coordinator);
+        const coordNorm = norm(resolveConfigAgentPath(teamConfig.coordinator));
         const coordEntry = entries.find((e) => norm(e.path) === coordNorm);
         if (coordEntry) {
           setCoordinator(coordEntry.path);
@@ -118,7 +141,7 @@ const EditTeamModal: Component<{
         setRepos(
           teamConfig.repos.map((r) => ({
             url: r.url,
-            agents: new Set(r.agents),
+            agents: new Set(r.agents.map(configPathForUi)),
           }))
         );
       }

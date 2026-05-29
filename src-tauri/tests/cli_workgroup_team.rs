@@ -131,6 +131,18 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
         .join("__agent_dev-rust")
         .join("config.json")
         .is_file());
+    let team_config_path = project
+        .join(".ac-new")
+        .join("_team_dev-team")
+        .join("config.json");
+    let team_config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(team_config_path).expect("config"))
+            .expect("team config json");
+    assert_eq!(
+        team_config["agents"],
+        serde_json::json!(["_agent_dev-rust", "_agent_architect"])
+    );
+    assert_eq!(team_config["coordinator"], "_agent_architect");
 
     let list = run_json(&bin, &["workgroup", "list", "--project", "ProjectAlpha"]);
     assert_eq!(list.as_array().expect("array").len(), 1);

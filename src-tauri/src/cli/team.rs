@@ -5,9 +5,10 @@ use crate::cli::workgroup::{
     clone_missing_for_config, push_unique, resolve_cli_project, write_refresh,
 };
 use crate::commands::entity_creation::{
-    agent_ref_bare_name, create_or_update_replica_on_disk, parse_team_from_workgroup_name,
-    read_team_config, remove_replica_dir, resolve_agent_ref, validate_existing_name,
-    write_team_config, AgentMatrixSettingsFlags, ReplicaDiskCreateArgs, RepoAssignment,
+    agent_ref_bare_name, create_or_update_replica_on_disk, normalize_team_config_for_project,
+    parse_team_from_workgroup_name, read_team_config, remove_replica_dir, resolve_agent_ref,
+    validate_existing_name, write_team_config, AgentMatrixSettingsFlags, ReplicaDiskCreateArgs,
+    RepoAssignment,
 };
 
 #[derive(Args)]
@@ -152,7 +153,8 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
-    let mut config = read_team_config(&ac_new, &team)?;
+    let mut config =
+        normalize_team_config_for_project(&ac_new, &read_team_config(&ac_new, &team)?)?;
     let agent_ref = resolve_agent_ref(&ac_new, &args.agent)?;
     let was_present = config.agents.contains(&agent_ref);
     push_unique(&mut config.agents, agent_ref.clone());
@@ -201,7 +203,8 @@ fn remove_member(args: TeamRemoveMemberArgs) -> Result<(), String> {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
-    let mut config = read_team_config(&ac_new, &team)?;
+    let mut config =
+        normalize_team_config_for_project(&ac_new, &read_team_config(&ac_new, &team)?)?;
     let agent_ref = resolve_agent_ref(&ac_new, &args.agent)?;
     if config.coordinator == agent_ref {
         return Err(

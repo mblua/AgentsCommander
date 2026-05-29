@@ -574,11 +574,50 @@ pub(crate) fn write_team_config(
         std::fs::write(&conventions, "")
             .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
     }
-    let config_str = serde_json::to_string_pretty(config)
+    let config = normalize_team_config_for_project(ac_new_dir, config)?;
+    let config_str = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
     std::fs::write(team_dir.join("config.json"), config_str)
         .map_err(|e| format!("Failed to write config.json: {}", e))?;
     Ok(team_dir)
+}
+
+pub(crate) fn normalize_team_config_for_project(
+    ac_new_dir: &Path,
+    config: &TeamConfigResult,
+) -> Result<TeamConfigResult, String> {
+    let agents = normalize_team_agent_refs(ac_new_dir, &config.agents)?;
+    let coordinator = if config.coordinator.trim().is_empty() {
+        String::new()
+    } else {
+        resolve_agent_ref(ac_new_dir, &config.coordinator)?
+    };
+    if !coordinator.is_empty() && !agents.contains(&coordinator) {
+        return Err("Coordinator must be one of the selected agents".to_string());
+    }
+    let mut repos = Vec::with_capacity(config.repos.len());
+    for repo in &config.repos {
+        repos.push(RepoAssignment {
+            url: repo.url.clone(),
+            agents: normalize_team_agent_refs(ac_new_dir, &repo.agents)?,
+        });
+    }
+    Ok(TeamConfigResult {
+        agents,
+        coordinator,
+        repos,
+    })
+}
+
+fn normalize_team_agent_refs(ac_new_dir: &Path, refs: &[String]) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for agent in refs {
+        let resolved = resolve_agent_ref(ac_new_dir, agent)?;
+        if !normalized.contains(&resolved) {
+            normalized.push(resolved);
+        }
+    }
+    Ok(normalized)
 }
 
 pub(crate) fn list_workgroup_dirs(ac_new_dir: &Path) -> Vec<PathBuf> {
@@ -694,6 +733,7 @@ pub(crate) async fn create_workgroup_on_disk(
                 coordinator,
                 repos: args.repos.clone(),
             };
+            let config = normalize_team_config_for_project(&base, &config)?;
             write_team_config(&base, &safe_team, &config)?;
             config
         } else {
@@ -1083,38 +1123,15 @@ pub async fn create_team(
         return Err(format!("Team '{}' already exists", safe_name));
     }
 
-    std::fs::create_dir_all(&team_dir)
-        .map_err(|e| format!("Failed to create team directory: {}", e))?;
-
-    // memory/
-    std::fs::create_dir_all(team_dir.join("memory"))
-        .map_err(|e| format!("Failed to create memory directory: {}", e))?;
-
-    // conventions.md (empty)
-    std::fs::write(team_dir.join("conventions.md"), "")
-        .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
-
-    // config.json
-    let repos_json: Vec<serde_json::Value> = repos
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "url": r.url,
-                "agents": r.agents,
-            })
-        })
-        .collect();
-
-    let config = serde_json::json!({
-        "agents": agents,
-        "coordinator": coordinator,
-        "repos": repos_json,
-    });
-
-    let config_str = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    std::fs::write(team_dir.join("config.json"), &config_str)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    let config = normalize_team_config_for_project(
+        &base,
+        &TeamConfigResult {
+            agents,
+            coordinator,
+            repos,
+        },
+    )?;
+    write_team_config(&base, &safe_name, &config)?;
 
     let result_path = team_dir.to_string_lossy().to_string();
     log::info!("[entity_creation] Created team: {}", result_path);
@@ -1555,30 +1572,15 @@ pub async fn update_team(
         return Err(format!("Team '{}' not found", team_name));
     }
 
-    if !coordinator.is_empty() && !agents.contains(&coordinator) {
-        return Err("Coordinator must be one of the selected agents".into());
-    }
-
-    let repos_json: Vec<serde_json::Value> = repos
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "url": r.url,
-                "agents": r.agents,
-            })
-        })
-        .collect();
-
-    let config = serde_json::json!({
-        "agents": agents,
-        "coordinator": coordinator,
-        "repos": repos_json,
-    });
-
-    let config_str = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    std::fs::write(team_dir.join("config.json"), &config_str)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    let config = normalize_team_config_for_project(
+        &base,
+        &TeamConfigResult {
+            agents,
+            coordinator,
+            repos,
+        },
+    )?;
+    write_team_config(&base, &team_name, &config)?;
 
     log::info!("[entity_creation] Updated team: {}", team_name);
 
@@ -1586,7 +1588,7 @@ pub async fn update_team(
     match sync_workgroup_repos_inner(
         &base,
         &team_name,
-        &repos,
+        &config.repos,
         session_mgr.inner(),
         git_watcher.inner(),
         discovery_watcher.inner(),
@@ -2658,6 +2660,59 @@ mod tests {
         assert_eq!(
             config["context"],
             serde_json::json!(["$AGENTSCOMMANDER_CONTEXT", "Role.md"])
+        );
+    }
+
+    #[test]
+    fn team_config_normalization_stores_project_relative_agent_refs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_new = tmp.path().join(".ac-new");
+        let architect = ac_new.join("_agent_architect");
+        let dev_rust = ac_new.join("_agent_dev-rust");
+        std::fs::create_dir_all(&architect).expect("architect matrix");
+        std::fs::create_dir_all(&dev_rust).expect("dev-rust matrix");
+
+        let config = TeamConfigResult {
+            agents: vec![
+                architect.to_string_lossy().to_string(),
+                "_agent_dev-rust".to_string(),
+                architect.to_string_lossy().to_string(),
+            ],
+            coordinator: architect.to_string_lossy().to_string(),
+            repos: vec![RepoAssignment {
+                url: "https://example.test/repo.git".to_string(),
+                agents: vec![
+                    architect.to_string_lossy().to_string(),
+                    "_agent_dev-rust".to_string(),
+                ],
+            }],
+        };
+
+        let normalized =
+            normalize_team_config_for_project(&ac_new, &config).expect("normalize config");
+        assert_eq!(
+            normalized.agents,
+            vec![
+                "_agent_architect".to_string(),
+                "_agent_dev-rust".to_string()
+            ]
+        );
+        assert_eq!(normalized.coordinator, "_agent_architect");
+        assert_eq!(
+            normalized.repos[0].agents,
+            vec![
+                "_agent_architect".to_string(),
+                "_agent_dev-rust".to_string()
+            ]
+        );
+
+        write_team_config(&ac_new, "dev-team", &config).expect("write config");
+        let written = std::fs::read_to_string(ac_new.join("_team_dev-team").join("config.json"))
+            .expect("read config");
+        assert!(
+            !written.contains(&tmp.path().to_string_lossy().to_string()),
+            "team config must not persist absolute project paths: {}",
+            written
         );
     }
 
