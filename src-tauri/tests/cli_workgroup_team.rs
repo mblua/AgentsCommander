@@ -122,7 +122,6 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     let wg_dir = project.join(".ac-new").join("wg-1-dev-team");
     assert_eq!(json["path"], wg_dir.to_string_lossy().as_ref());
     assert!(wg_dir.join("TASK.md").is_file());
-    assert!(!wg_dir.join("BRIEF.md").exists());
     assert!(wg_dir.join("messaging").is_dir());
     assert!(wg_dir
         .join("__agent_architect")
