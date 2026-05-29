@@ -288,7 +288,7 @@ html.light-theme .rtk-banner-btn-secondary:hover:not(:disabled) {
  * Architectural note: .home-view is rendered as a direct child of
  * .terminal-layout (see src/terminal/App.tsx), which is the positioned
  * containing block (`position: relative` set in terminal.css). It is
- * absolutely positioned to cover the WorkgroupBrief / LastPrompt context
+ * absolutely positioned to cover the WorkgroupTask / LastPrompt context
  * panels and the .terminal-content-area beneath them, while those panels
  * remain mounted underneath. Keeping them mounted preserves the height of
  * .terminal-content-area, so TerminalView's ResizeObserver does not fire on

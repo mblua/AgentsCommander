@@ -19,7 +19,7 @@ html, body, #root {
 /* Layout
  * `position: relative` makes this the containing block for the Home overlay
  * (issue #164). Home is rendered as a direct child here and uses
- * `position: absolute` to cover the BRIEF / LAST PROMPT panels and the
+ * `position: absolute` to cover the TASK / LAST PROMPT panels and the
  * terminal content area without unmounting them — keeping their height
  * stable so TerminalView's ResizeObserver never fires on Home toggle. */
 .terminal-layout {
@@ -235,7 +235,7 @@ html.light-theme .titlebar-version {
   opacity: 0.85;
 }
 
-/* Issue #162 — BRIEF panel action buttons + inline title editor */
+/* Issue #162: TASK panel action buttons + inline title editor */
 .workgroup-task-header {
   display: flex;
   align-items: center;
@@ -664,7 +664,7 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
 }
 
 /* Terminal content area. Lives between the context panels
- * (WorkgroupBrief/LastPrompt) and StatusBar, and wraps the terminal/empty
+ * (WorkgroupTask/LastPrompt) and StatusBar, and wraps the terminal/empty
  * Show block. The Home overlay (#164) is a sibling of this element inside
  * `.terminal-layout` — not nested here — so toggling Home does not affect
  * this element's size and TerminalView's ResizeObserver does not fire. */
