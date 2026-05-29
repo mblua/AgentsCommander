@@ -239,6 +239,97 @@ fn sessions_path() -> Option<PathBuf> {
     super::config_dir().map(|d| d.join("sessions.json"))
 }
 
+fn strip_long_prefix_str(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix(r"\??\UNC\") {
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = s.strip_prefix(r"\??\") {
+        rest.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn normalize_for_project_compare(path: &Path) -> String {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut s = strip_long_prefix_str(&path.to_string_lossy()).replace('\\', "/");
+    while s.ends_with('/') && s.len() > 1 {
+        s.pop();
+    }
+    if cfg!(windows) {
+        s.make_ascii_lowercase();
+    }
+    s
+}
+
+fn path_is_under_or_equal(candidate: &str, root: &str) -> bool {
+    if root.is_empty() {
+        return false;
+    }
+    if candidate == root {
+        return true;
+    }
+    if root == "/" {
+        return candidate.starts_with('/');
+    }
+    candidate.starts_with(&format!("{}/", root))
+}
+
+pub(crate) fn working_directory_under_any_project_path(
+    working_directory: &str,
+    project_paths: &[String],
+) -> bool {
+    let cwd = normalize_for_project_compare(Path::new(working_directory));
+    project_paths
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(|p| normalize_for_project_compare(Path::new(p)))
+        .any(|project| path_is_under_or_equal(&cwd, &project))
+}
+
+fn is_root_persisted_session(session: &PersistedSession) -> bool {
+    session.is_root_agent
+        || crate::config::root_agent::is_root_agent_dir_name(&session.working_directory)
+}
+
+fn filter_sessions_for_project_paths(
+    sessions: Vec<PersistedSession>,
+    project_paths: &[String],
+) -> Vec<PersistedSession> {
+    let total = sessions.len();
+    let filtered: Vec<PersistedSession> = sessions
+        .into_iter()
+        .filter(|session| {
+            if is_root_persisted_session(session) {
+                return true;
+            }
+            let keep =
+                working_directory_under_any_project_path(&session.working_directory, project_paths);
+            if !keep {
+                log::warn!(
+                    "[sessions] Dropping orphan persisted session '{}' at '{}' (outside current projectPaths)",
+                    session.name,
+                    session.working_directory
+                );
+            }
+            keep
+        })
+        .collect();
+
+    if filtered.len() < total {
+        log::info!(
+            "[sessions] Purged {} orphan persisted session(s) outside current projectPaths",
+            total - filtered.len()
+        );
+    }
+
+    filtered
+}
+
 /// Remove duplicate sessions by name AND working_directory.
 /// When duplicates share the same key (name or CWD), keep the one with
 /// `was_active=true`; if none (or both) are active, keep the last occurrence.
@@ -369,6 +460,14 @@ pub fn load_sessions() -> Vec<PersistedSession> {
         }
     };
 
+    load_sessions_from_path(&path)
+}
+
+fn load_sessions_from_dir(dir: &Path) -> Vec<PersistedSession> {
+    load_sessions_from_path(&dir.join("sessions.json"))
+}
+
+fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
     if !path.exists() {
         return vec![];
     }
@@ -486,6 +585,52 @@ pub fn load_sessions() -> Vec<PersistedSession> {
             vec![]
         }
     }
+}
+
+pub fn load_sessions_purging_outside_project_paths(
+    project_paths: &[String],
+) -> Vec<PersistedSession> {
+    let dir = match super::config_dir() {
+        Some(d) => d,
+        None => {
+            log::warn!("Could not determine home directory for session restore");
+            return vec![];
+        }
+    };
+
+    match purge_sessions_outside_project_paths_in_dir(&dir, project_paths) {
+        Ok(filtered) => filtered,
+        Err(e) => {
+            log::error!(
+                "Failed to rewrite sessions.json after orphan-session purge: {}",
+                e
+            );
+            filter_sessions_for_project_paths(load_sessions_from_dir(&dir), project_paths)
+        }
+    }
+}
+
+pub fn purge_sessions_outside_project_paths(project_paths: &[String]) -> Result<usize, String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    let before = load_sessions_from_dir(&dir);
+    let filtered = filter_sessions_for_project_paths(before.clone(), project_paths);
+    let removed = before.len().saturating_sub(filtered.len());
+    if removed > 0 {
+        save_sessions_to_dir(&dir, &filtered)?;
+    }
+    Ok(removed)
+}
+
+fn purge_sessions_outside_project_paths_in_dir(
+    dir: &Path,
+    project_paths: &[String],
+) -> Result<Vec<PersistedSession>, String> {
+    let before = load_sessions_from_dir(dir);
+    let filtered = filter_sessions_for_project_paths(before.clone(), project_paths);
+    if filtered.len() < before.len() {
+        save_sessions_to_dir(dir, &filtered)?;
+    }
+    Ok(filtered)
 }
 
 /// Save current sessions to the app config directory (see config_dir()).
@@ -922,13 +1067,16 @@ pub async fn persist_merging_failed_result(
     failed: &[PersistedSession],
 ) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    persist_merging_failed_to_dir_result(mgr, failed, &dir).await
+    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    persist_merging_failed_to_dir_for_project_paths_result(mgr, failed, &dir, Some(&project_paths))
+        .await
 }
 
-async fn persist_merging_failed_to_dir_result(
+async fn persist_merging_failed_to_dir_for_project_paths_result(
     mgr: &SessionManager,
     failed: &[PersistedSession],
     dir: &Path,
+    project_paths: Option<&[String]>,
 ) -> Result<(), String> {
     let _guard = sessions_save_lock().lock().await;
     let mut snapshot = snapshot_sessions(mgr).await;
@@ -951,6 +1099,10 @@ async fn persist_merging_failed_to_dir_result(
     // as a follow-up.
     snapshot.extend(failed.iter().map(sanitize_failed_recoverable));
     let snapshot = deduplicate(snapshot);
+    let snapshot = match project_paths {
+        Some(project_paths) => filter_sessions_for_project_paths(snapshot, project_paths),
+        None => snapshot,
+    };
     save_sessions_to_dir(dir, &snapshot)
 }
 
@@ -963,15 +1115,28 @@ pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSes
 /// Convenience: snapshot and save in one call. Logs errors but never fails.
 pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    persist_current_state_to_dir_result(mgr, &dir).await
+    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    persist_current_state_to_dir_for_project_paths_result(mgr, &dir, Some(&project_paths)).await
 }
 
 async fn persist_current_state_to_dir_result(
     mgr: &SessionManager,
     dir: &Path,
 ) -> Result<(), String> {
+    persist_current_state_to_dir_for_project_paths_result(mgr, dir, None).await
+}
+
+async fn persist_current_state_to_dir_for_project_paths_result(
+    mgr: &SessionManager,
+    dir: &Path,
+    project_paths: Option<&[String]>,
+) -> Result<(), String> {
     let _guard = sessions_save_lock().lock().await;
     let snapshot = snapshot_sessions(mgr).await;
+    let snapshot = match project_paths {
+        Some(project_paths) => filter_sessions_for_project_paths(snapshot, project_paths),
+        None => snapshot,
+    };
     save_sessions_to_dir(dir, &snapshot)
 }
 
@@ -984,9 +1149,11 @@ pub async fn persist_current_state(mgr: &SessionManager) {
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_current_state_result, persist_current_state_to_dir_result, rename_with_retry,
-        sanitize_failed_recoverable, save_sessions_to_dir, sessions_save_lock, snapshot_sessions,
-        strip_auto_injected_args, PersistedSession, RENAME_ATTEMPTS,
+        filter_sessions_for_project_paths, persist_current_state_result,
+        persist_current_state_to_dir_result, purge_sessions_outside_project_paths_in_dir,
+        rename_with_retry, sanitize_failed_recoverable, save_sessions_to_dir, sessions_save_lock,
+        snapshot_sessions, strip_auto_injected_args, working_directory_under_any_project_path,
+        PersistedSession, RENAME_ATTEMPTS,
     };
     use crate::session::manager::SessionManager;
     use std::time::Duration;
@@ -1202,6 +1369,104 @@ mod tests {
         persist_current_state_result(&mgr)
             .await
             .expect("persist_current_state_result should succeed");
+    }
+
+    #[test]
+    fn filter_sessions_for_project_paths_drops_coordinator_and_non_coordinator_orphans() {
+        use crate::session::session::SessionStatus;
+
+        let project_paths = vec!["C:/projects/current".to_string()];
+        let sessions = vec![
+            PersistedSession {
+                name: "kept-coordinator".into(),
+                working_directory: "C:/projects/current/.ac-new/wg-1/__agent_tech-lead".into(),
+                is_coordinator: true,
+                status: Some(SessionStatus::Running),
+                ..Default::default()
+            },
+            PersistedSession {
+                name: "orphan-coordinator".into(),
+                working_directory: "C:/projects/removed/.ac-new/wg-1/__agent_tech-lead".into(),
+                is_coordinator: true,
+                status: Some(SessionStatus::Running),
+                ..Default::default()
+            },
+            PersistedSession {
+                name: "orphan-member".into(),
+                working_directory: "C:/projects/removed/.ac-new/wg-1/__agent_dev-rust".into(),
+                is_coordinator: false,
+                status: Some(SessionStatus::Exited(0)),
+                ..Default::default()
+            },
+        ];
+
+        let filtered = filter_sessions_for_project_paths(sessions, &project_paths);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "kept-coordinator");
+    }
+
+    #[test]
+    fn purge_sessions_outside_project_paths_rewrites_sessions_json() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current = temp.path().join("current");
+        let removed = temp.path().join("removed");
+        let current_agent = current.join(".ac-new").join("wg-1").join("__agent_keep");
+        let removed_agent = removed.join(".ac-new").join("wg-1").join("__agent_old");
+        std::fs::create_dir_all(&current_agent).expect("create current agent");
+        std::fs::create_dir_all(&removed_agent).expect("create removed agent");
+
+        let sessions = vec![
+            PersistedSession {
+                name: "keep".into(),
+                working_directory: current_agent.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            PersistedSession {
+                name: "drop".into(),
+                working_directory: removed_agent.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+        ];
+        save_sessions_to_dir(temp.path(), &sessions).expect("seed sessions");
+
+        let project_paths = vec![current.to_string_lossy().to_string()];
+        let filtered = purge_sessions_outside_project_paths_in_dir(temp.path(), &project_paths)
+            .expect("purge sessions");
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "keep");
+
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("parse sessions");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "keep");
+    }
+
+    #[test]
+    fn project_path_comparison_is_boundary_safe() {
+        let project_paths = vec!["C:/repo/foo".to_string()];
+
+        assert!(working_directory_under_any_project_path(
+            "C:/repo/foo/.ac-new/wg-1/__agent_a",
+            &project_paths
+        ));
+        assert!(!working_directory_under_any_project_path(
+            "C:/repo/foobar/.ac-new/wg-1/__agent_a",
+            &project_paths
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn project_path_comparison_is_case_insensitive_on_windows() {
+        let project_paths = vec![r"C:\Users\Maria\Project".to_string()];
+
+        assert!(working_directory_under_any_project_path(
+            r"c:\users\maria\project\.ac-new\wg-1\__agent_a",
+            &project_paths
+        ));
     }
 
     #[test]

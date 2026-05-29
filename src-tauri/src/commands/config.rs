@@ -69,6 +69,14 @@ pub async fn update_settings(
     to_save.root_token = settings.read().await.root_token.clone();
     crate::config::settings::validate_agent_commands(&to_save)?;
     save_settings(&to_save)?;
+    if let Err(e) = crate::config::sessions_persistence::purge_sessions_outside_project_paths(
+        &to_save.project_paths,
+    ) {
+        log::warn!(
+            "[settings] Failed to purge sessions outside current projectPaths after settings update: {}",
+            e
+        );
+    }
     let mut s = settings.write().await;
     *s = to_save;
     Ok(())

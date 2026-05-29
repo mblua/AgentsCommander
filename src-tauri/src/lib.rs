@@ -500,7 +500,10 @@ pub fn run() {
             //
             // The matching `load_sessions()` call at the original site is
             // removed; `persisted` is reused by the restore task below.
-            let persisted = sessions_persistence::load_sessions();
+            let restore_settings_snapshot = config::settings::load_settings();
+            let persisted = sessions_persistence::load_sessions_purging_outside_project_paths(
+                &restore_settings_snapshot.project_paths,
+            );
             let restore_flag = app
                 .state::<Arc<RestoreInProgress>>()
                 .inner()
@@ -677,7 +680,7 @@ pub fn run() {
 
                 // #248 — read the new setting and always discover teams (the coord check
                 // is run for every persisted session, regardless of the setting's value).
-                let settings_snapshot = crate::config::settings::load_settings();
+                let settings_snapshot = restore_settings_snapshot.clone();
                 let setting_on = settings_snapshot.restore_coordinator_wake_state;
                 let teams = crate::config::teams::discover_teams();
 
