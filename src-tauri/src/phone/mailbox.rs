@@ -228,35 +228,54 @@ fn validate_root_sender_payload_with_root_dir(
 /// Uses `to_str()?` (NOT `to_string_lossy()`) for parity with
 /// `list_peers::detect_wg_replica`. Keep this in lockstep with
 /// `cli::send::derive_root_project_dir`.
-fn derive_project_from_outbox_path(outbox_file: &Path) -> Option<String> {
-    let canon = std::fs::canonicalize(outbox_file).ok()?;
+fn derive_project_from_outbox_path(outbox_file: &Path) -> Result<Option<String>, String> {
+    let Some(canon) = std::fs::canonicalize(outbox_file).ok() else {
+        return Ok(None);
+    };
     // canon = <project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json
-    let outbox_dir = canon.parent()?; // .../outbox
+    let Some(outbox_dir) = canon.parent() else {
+        return Ok(None);
+    };
     if outbox_dir.file_name().and_then(|n| n.to_str()) != Some("outbox") {
-        return None;
+        return Ok(None);
     }
-    let local_dir = outbox_dir.parent()?; // .../<local-dir>
-    let agent_dir = local_dir.parent()?; // .../__agent_*
-    let agent_name = agent_dir.file_name().and_then(|n| n.to_str())?;
+    let Some(local_dir) = outbox_dir.parent() else {
+        return Ok(None);
+    };
+    let Some(agent_dir) = local_dir.parent() else {
+        return Ok(None);
+    };
+    let Some(agent_name) = agent_dir.file_name().and_then(|n| n.to_str()) else {
+        return Ok(None);
+    };
     if !agent_name.starts_with("__agent_") {
-        return None;
+        return Ok(None);
     }
-    let wg_dir = agent_dir.parent()?; // .../wg-*
-    let wg_name = wg_dir.file_name().and_then(|n| n.to_str())?;
+    let Some(wg_dir) = agent_dir.parent() else {
+        return Ok(None);
+    };
+    let Some(wg_name) = wg_dir.file_name().and_then(|n| n.to_str()) else {
+        return Ok(None);
+    };
     if !wg_name.starts_with("wg-") {
-        return None;
+        return Ok(None);
     }
-    let workspace_dir = wg_dir.parent()?; // .../<workspace>
+    let Some(workspace_dir) = wg_dir.parent() else {
+        return Ok(None);
+    };
     if !workspace_dir
         .file_name()
         .and_then(|n| n.to_str())
         .map(crate::config::workspace::is_workspace_dir_name)
         .unwrap_or(false)
     {
-        return None;
+        return Ok(None);
     }
-    let project_dir = workspace_dir.parent()?; // .../<project>
-    Some(project_dir.to_str()?.to_string())
+    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)?;
+    let Some(project_dir) = workspace_dir.parent() else {
+        return Ok(None);
+    };
+    Ok(project_dir.to_str().map(|path| path.to_string()))
 }
 
 /// Tracks delivery attempts for a single outbox message.
@@ -706,6 +725,13 @@ impl MailboxPoller {
             msg.mode
         );
 
+        let outbox_project = match derive_project_from_outbox_path(path) {
+            Ok(project) => project,
+            Err(reason) => {
+                return self.reject_message(path, &msg, &reason).await;
+            }
+        };
+
         // For repo outboxes (not app-outbox), validate that msg.from matches the outbox owner.
         // This prevents tokenless spoofing: a message in repo X's outbox must claim to be from repo X.
         //
@@ -774,16 +800,16 @@ impl MailboxPoller {
                 let c = cfg.read().await;
                 c.project_paths.clone()
             };
-            if let Some(root_project) = derive_project_from_outbox_path(path) {
-                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+            if let Some(root_project) = outbox_project.as_ref() {
+                let canon_root_project = std::fs::canonicalize(root_project).ok();
                 let already_present = paths.iter().any(|p| match &canon_root_project {
                     Some(canon_target) => {
                         std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
                     }
-                    None => p == &root_project,
+                    None => p == root_project,
                 });
                 if !already_present {
-                    paths.push(root_project);
+                    paths.push(root_project.clone());
                 }
             }
             match crate::config::teams::resolve_agent_target(&msg.to, &paths) {
@@ -906,16 +932,16 @@ impl MailboxPoller {
                 let c = cfg.read().await;
                 c.project_paths.clone()
             };
-            if let Some(root_project) = derive_project_from_outbox_path(path) {
-                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+            if let Some(root_project) = outbox_project.as_ref() {
+                let canon_root_project = std::fs::canonicalize(root_project).ok();
                 let already_present = paths.iter().any(|p| match &canon_root_project {
                     Some(canon_target) => {
                         std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
                     }
-                    None => p == &root_project,
+                    None => p == root_project,
                 });
                 if !already_present {
-                    paths.push(root_project);
+                    paths.push(root_project.clone());
                 }
             }
 
@@ -948,16 +974,16 @@ impl MailboxPoller {
                 let c = cfg.read().await;
                 c.project_paths.clone()
             };
-            if let Some(root_project) = derive_project_from_outbox_path(path) {
-                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+            if let Some(root_project) = outbox_project.as_ref() {
+                let canon_root_project = std::fs::canonicalize(root_project).ok();
                 let already_present = paths.iter().any(|p| match &canon_root_project {
                     Some(canon_target) => {
                         std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
                     }
-                    None => p == &root_project,
+                    None => p == root_project,
                 });
                 if !already_present {
-                    paths.push(root_project);
+                    paths.push(root_project.clone());
                 }
             }
 
@@ -2319,6 +2345,9 @@ impl MailboxPoller {
         };
 
         let hits_agent = |cwd: &str| -> bool {
+            if crate::config::workspace::path_uses_stale_legacy_workspace(Path::new(cwd)) {
+                return false;
+            }
             let path_fqn = crate::config::teams::agent_fqn_from_path(cwd);
             if is_qualified {
                 path_fqn == agent_name
@@ -2410,7 +2439,9 @@ impl MailboxPoller {
                     }
 
                     for dir in dirs_to_check {
-                        let Some(workspace_dir) = crate::config::workspace::existing_workspace_dir(&dir) else {
+                        let Some(workspace_dir) =
+                            crate::config::workspace::existing_workspace_dir(&dir)
+                        else {
                             continue;
                         };
                         let candidate = workspace_dir.join(wg_name).join(&replica_dir);
@@ -3182,8 +3213,7 @@ mod tests {
         let mut root_session = pool[0].clone();
         root_session.is_root_agent = true;
         let predicate = |s: &crate::session::session::SessionInfo| {
-            s.is_root_agent
-                || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+            s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
         };
         assert!(predicate(&root_session));
         assert_eq!(
@@ -3632,14 +3662,95 @@ mod tests {
         let file = outbox.join("msg-42.json");
         std::fs::write(&file, "{}").unwrap();
 
-        let got =
-            derive_project_from_outbox_path(&file).expect("should derive project from WG layout");
+        let got = derive_project_from_outbox_path(&file)
+            .unwrap()
+            .expect("should derive project from WG layout");
         let expected = std::fs::canonicalize(&project_dir)
             .unwrap()
             .to_str()
             .unwrap()
             .to_string();
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn derive_project_from_outbox_path_rejects_stale_legacy_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_outbox = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander")
+            .join("outbox");
+        let stale_outbox = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander")
+            .join("outbox");
+        std::fs::create_dir_all(&canonical_outbox).unwrap();
+        std::fs::create_dir_all(&stale_outbox).unwrap();
+        let file = stale_outbox.join("msg-42.json");
+        std::fs::write(&file, "{}").unwrap();
+
+        let err = derive_project_from_outbox_path(&file).unwrap_err();
+        assert!(err.contains("stale legacy workspace"));
+    }
+
+    #[test]
+    fn derive_project_from_outbox_path_accepts_canonical_when_both_exist() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_outbox = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander")
+            .join("outbox");
+        let stale_outbox = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander")
+            .join("outbox");
+        std::fs::create_dir_all(&canonical_outbox).unwrap();
+        std::fs::create_dir_all(&stale_outbox).unwrap();
+        let file = canonical_outbox.join("msg-42.json");
+        std::fs::write(&file, "{}").unwrap();
+
+        let got = derive_project_from_outbox_path(&file)
+            .unwrap()
+            .expect("canonical outbox should derive project");
+        let expected = std::fs::canonicalize(&project_dir)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn stale_legacy_session_path_is_not_routable_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_agent = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_agent = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&canonical_agent).unwrap();
+        std::fs::create_dir_all(&stale_agent).unwrap();
+
+        assert!(!crate::config::workspace::path_uses_stale_legacy_workspace(
+            &canonical_agent
+        ));
+        assert!(crate::config::workspace::path_uses_stale_legacy_workspace(
+            &stale_agent
+        ));
     }
 
     #[test]
@@ -3654,7 +3765,7 @@ mod tests {
         std::fs::create_dir_all(&outbox).unwrap();
         let file = outbox.join("msg.json");
         std::fs::write(&file, "{}").unwrap();
-        assert!(derive_project_from_outbox_path(&file).is_none());
+        assert!(derive_project_from_outbox_path(&file).unwrap().is_none());
     }
 
     #[test]
@@ -3667,7 +3778,7 @@ mod tests {
         std::fs::create_dir_all(&app_outbox).unwrap();
         let file = app_outbox.join("msg.json");
         std::fs::write(&file, "{}").unwrap();
-        assert!(derive_project_from_outbox_path(&file).is_none());
+        assert!(derive_project_from_outbox_path(&file).unwrap().is_none());
     }
 
     fn write_project_refresh_request_fixture(

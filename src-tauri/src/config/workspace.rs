@@ -45,9 +45,7 @@ pub fn is_workspace_dir_name(name: &str) -> bool {
 }
 
 pub fn find_workspace_segment(parts: &[&str]) -> Option<usize> {
-    parts
-        .iter()
-        .rposition(|part| is_workspace_dir_name(part))
+    parts.iter().rposition(|part| is_workspace_dir_name(part))
 }
 
 pub fn find_workspace_ancestor(path: &Path) -> Option<PathBuf> {
@@ -60,4 +58,75 @@ pub fn find_workspace_ancestor(path: &Path) -> Option<PathBuf> {
                 .unwrap_or(false)
         })
         .map(Path::to_path_buf)
+}
+
+fn same_existing_path(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+pub fn ensure_authoritative_workspace_dir(workspace_dir: &Path) -> Result<(), String> {
+    let workspace_name = workspace_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "workspace path '{}' has no valid directory name",
+                workspace_dir.display()
+            )
+        })?;
+    if !is_workspace_dir_name(workspace_name) {
+        return Err(format!(
+            "workspace path '{}' is not an AC workspace directory",
+            workspace_dir.display()
+        ));
+    }
+
+    let project_dir = workspace_dir.parent().ok_or_else(|| {
+        format!(
+            "workspace path '{}' has no parent project directory",
+            workspace_dir.display()
+        )
+    })?;
+    let Some(authoritative) = existing_workspace_dir(project_dir) else {
+        return Err(format!(
+            "project '{}' has no AC workspace directory",
+            project_dir.display()
+        ));
+    };
+
+    if same_existing_path(workspace_dir, &authoritative) {
+        Ok(())
+    } else {
+        Err(format!(
+            "stale legacy workspace '{}' rejected because authoritative workspace '{}' exists",
+            workspace_dir.display(),
+            authoritative.display()
+        ))
+    }
+}
+
+pub fn stale_legacy_workspace_error_for_path(path: &Path) -> Option<String> {
+    let workspace_dir = find_workspace_ancestor(path)?;
+    let workspace_name = workspace_dir.file_name().and_then(|name| name.to_str())?;
+    if !workspace_name.eq_ignore_ascii_case(LEGACY_WORKSPACE_DIR) {
+        return None;
+    }
+    let project_dir = workspace_dir.parent()?;
+    let canonical = workspace_dir_for_project(project_dir);
+    if canonical.is_dir() && !same_existing_path(&workspace_dir, &canonical) {
+        Some(format!(
+            "stale legacy workspace '{}' rejected because authoritative workspace '{}' exists",
+            workspace_dir.display(),
+            canonical.display()
+        ))
+    } else {
+        None
+    }
+}
+
+pub fn path_uses_stale_legacy_workspace(path: &Path) -> bool {
+    stale_legacy_workspace_error_for_path(path).is_some()
 }

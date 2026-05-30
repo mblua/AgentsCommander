@@ -1,5 +1,5 @@
 use clap::Args;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::config::teams;
@@ -117,28 +117,51 @@ fn validate_root_agent_delivery_kind(
 ///
 /// Keep in lockstep with `list_peers::detect_wg_replica` and
 /// `phone::mailbox::derive_project_from_outbox_path`.
-fn derive_root_project_dir(root: &str) -> Option<String> {
-    let canon = std::fs::canonicalize(root).ok()?;
-    let my_dir_name = canon.file_name()?.to_str()?;
+fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
+    let Some(canon) = std::fs::canonicalize(root).ok() else {
+        return Ok(None);
+    };
+    let Some(my_dir_name) = canon.file_name().and_then(|name| name.to_str()) else {
+        return Ok(None);
+    };
     if !my_dir_name.starts_with("__agent_") {
-        return None;
+        return Ok(None);
     }
-    let wg_dir = canon.parent()?;
-    let wg_name = wg_dir.file_name()?.to_str()?;
+    let Some(wg_dir) = canon.parent() else {
+        return Ok(None);
+    };
+    let Some(wg_name) = wg_dir.file_name().and_then(|name| name.to_str()) else {
+        return Ok(None);
+    };
     if !wg_name.starts_with("wg-") {
-        return None;
+        return Ok(None);
     }
-    let workspace_dir = wg_dir.parent()?;
+    let Some(workspace_dir) = wg_dir.parent() else {
+        return Ok(None);
+    };
     if !workspace_dir
         .file_name()
         .and_then(|n| n.to_str())
         .map(crate::config::workspace::is_workspace_dir_name)
         .unwrap_or(false)
     {
-        return None;
+        return Ok(None);
     }
-    let project_dir = workspace_dir.parent()?;
-    Some(project_dir.to_str()?.to_string())
+    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)?;
+    let Some(project_dir) = workspace_dir.parent() else {
+        return Ok(None);
+    };
+    Ok(project_dir.to_str().map(|path| path.to_string()))
+}
+
+fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
+    let workspace_dir = wg_root.parent().ok_or_else(|| {
+        format!(
+            "workgroup root '{}' has no parent workspace directory",
+            wg_root.display()
+        )
+    })?;
+    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)
 }
 
 pub fn execute(args: SendArgs) -> i32 {
@@ -150,6 +173,14 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     };
     let root_is_root_agent = crate::config::root_agent::is_root_agent_path(&root);
+    if !root_is_root_agent {
+        if let Some(reason) =
+            crate::config::workspace::stale_legacy_workspace_error_for_path(Path::new(&root))
+        {
+            eprintln!("Error: {}", reason);
+            return 1;
+        }
+    }
     if let Err(reason) =
         validate_root_agent_delivery_kind(root_is_root_agent, args.command.as_deref())
     {
@@ -196,7 +227,14 @@ pub fn execute(args: SendArgs) -> i32 {
     // reachable do not fail send with `not found in any known project`.
     // settings.json is NOT modified. See #228 / plan _plans/228-cli-daemon-laterals.md.
     let mut effective_project_paths = settings.project_paths.clone();
-    if let Some(root_project) = derive_root_project_dir(&root) {
+    let root_project = match derive_root_project_dir(&root) {
+        Ok(root_project) => root_project,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return 1;
+        }
+    };
+    if let Some(root_project) = root_project {
         // Canonicalize once outside the dedup closure. If canonicalization of
         // `root_project` itself fails (rare — it just resolved milliseconds
         // ago inside `derive_root_project_dir`), fall back to string-equality
@@ -291,6 +329,10 @@ pub fn execute(args: SendArgs) -> i32 {
                     return 1;
                 }
             };
+            if let Err(e) = ensure_workgroup_root_is_authoritative(&wg_root) {
+                eprintln!("Error: {}", e);
+                return 1;
+            }
             match crate::phone::messaging::messaging_dir(&wg_root) {
                 Ok(d) => d,
                 Err(e) => {
@@ -655,8 +697,61 @@ mod tests {
             .unwrap()
             .to_string();
         let got = derive_root_project_dir(agent_root.to_str().unwrap())
+            .unwrap()
             .expect("should derive project from WG replica path");
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn derive_root_project_dir_rejects_stale_legacy_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-x");
+        let canonical_root = project.join(".ac").join("wg-1-devs").join("__agent_alice");
+        let stale_root = project
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&canonical_root).unwrap();
+        std::fs::create_dir_all(&stale_root).unwrap();
+
+        let err = derive_root_project_dir(stale_root.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("stale legacy workspace"));
+    }
+
+    #[test]
+    fn derive_root_project_dir_accepts_canonical_when_both_exist() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-x");
+        let canonical_root = project.join(".ac").join("wg-1-devs").join("__agent_alice");
+        let stale_root = project
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&canonical_root).unwrap();
+        std::fs::create_dir_all(&stale_root).unwrap();
+
+        let got = derive_root_project_dir(canonical_root.to_str().unwrap())
+            .unwrap()
+            .expect("canonical workspace should be accepted");
+        let expected = std::fs::canonicalize(&project)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn send_file_workgroup_root_rejects_stale_legacy_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-x");
+        let canonical_wg = project.join(".ac").join("wg-1-devs");
+        let stale_wg = project.join(".ac-new").join("wg-1-devs");
+        std::fs::create_dir_all(&canonical_wg).unwrap();
+        std::fs::create_dir_all(&stale_wg).unwrap();
+
+        let err = ensure_workgroup_root_is_authoritative(&stale_wg).unwrap_err();
+        assert!(err.contains("stale legacy workspace"));
     }
 
     #[test]
@@ -665,7 +760,9 @@ mod tests {
         // A random subdir without the WG-replica shape.
         let random = temp.path().join("random").join("dir");
         std::fs::create_dir_all(&random).unwrap();
-        assert!(derive_root_project_dir(random.to_str().unwrap()).is_none());
+        assert!(derive_root_project_dir(random.to_str().unwrap())
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -674,6 +771,8 @@ mod tests {
         let wg_dir = temp.path().join("proj-x").join(".ac-new").join("wg-1-devs");
         std::fs::create_dir_all(&wg_dir).unwrap();
         // Pointing at the WG dir, not the __agent_* dir → must return None.
-        assert!(derive_root_project_dir(wg_dir.to_str().unwrap()).is_none());
+        assert!(derive_root_project_dir(wg_dir.to_str().unwrap())
+            .unwrap()
+            .is_none());
     }
 }
