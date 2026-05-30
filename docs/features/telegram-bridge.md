@@ -59,6 +59,8 @@ Plain text. Your message is written verbatim into the session's PTY as if you ty
 
 There is no slash-command syntax - anything you would type in the terminal works.
 
+Incoming messages are accepted by configured Telegram `chat_id`, not by a per-user allowlist. In a group chat, any group member whose message reaches the bot can send input to the attached session. Use a private chat or trusted private group only. For details, see [Telegram setup: Security model](../integrations/telegram.md#security-model).
+
 ## Sending images and screenshots
 
 Use `agentscommander telegram-send-image` to send a photo, screenshot, or file from any shell that can access your configured bot. Images with `jpg`, `jpeg`, `png`, or `webp` extensions are sent as Telegram photos when they fit the size limit; other files are sent as documents.

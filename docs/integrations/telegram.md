@@ -15,16 +15,16 @@ In any Telegram client, talk to [@BotFather](https://t.me/BotFather):
 
 Save the token. Anyone with it can control the bot.
 
-## 2. Get your chat ID
+## 2. Choose the chat
 
-The bridge must know which Telegram chat to send to. Easiest path:
+The bridge authorizes by Telegram `chat_id`. Choose one chat for the bot:
 
-1. Open a chat with your new bot in Telegram and click **Start**.
-2. Send the bot any message (e.g. `/start`).
-3. Visit `https://api.telegram.org/bot<TOKEN>/getUpdates` in your browser (replace `<TOKEN>` with the bot token).
-4. Find your message in the JSON and copy the `chat.id` value (an integer; for group chats it is negative).
+- **Recommended**: a private chat between you and the bot.
+- **Also supported**: a trusted private group.
 
-You can also use [@RawDataBot](https://t.me/raw_data_bot) to look up your numeric ID without curl.
+Do not bind the bot to a public group. In a group, every member whose message is delivered to the bot can send input to the attached session.
+
+Open the intended chat now. For a private chat, click **Start**. For a group, add the bot to the private group and confirm every member is trusted. Wait to send a fresh message until step 3. The **Test** button discovers the chat ID from pending bot updates, so the newest eligible Telegram message should come from the chat you want to authorize. A stale update from another chat can be selected if it is the latest pending text or voice message.
 
 ## 3. Configure the bot in AC
 
@@ -35,11 +35,27 @@ In AgentsCommander:
 3. Fill in:
    - **Label** - a human-friendly name (e.g. *Personal bot*).
    - **Token** - the BotFather token from step 1.
-   - **Chat ID** - the integer from step 2.
-4. Click **Test** to fire a hello message. If your phone buzzes, you are configured.
-5. **Save**.
+4. In Telegram, send a fresh text or voice message from the intended private chat or trusted group.
+5. Click **Test**. AC reads recent bot updates, finds the latest text or voice message update, extracts that update's `chat_id`, and sends `agentscommander connected` back to that chat.
+6. Confirm the modal shows **Connected** and a chat ID.
+7. Click **Save**.
 
-The bot configuration is stored locally in `settings.json` under `telegramBots[]`. The token is in plaintext - protect access to your user account.
+If **Test** reports that no messages were found, send another message to the bot in Telegram and click **Test** again.
+
+**Test** writes the discovered chat ID into the Settings modal draft only. The bot configuration is persisted to `settings.json` after you click **Save**.
+
+## Security model
+
+Telegram bridge authorization is chat-level:
+
+- AC stores a bot token and one configured `chat_id` for each Telegram bot.
+- The listener skips every incoming update whose Telegram `chat_id` does not exactly match the configured chat ID.
+- AC does not maintain an app-side whitelist of Telegram user `from_id` values.
+- In a private chat, another person messaging the same bot has a different private `chat_id`, so that message is ignored.
+- In a group, the configured `chat_id` is the group chat. Any group member whose text or voice message is delivered to the bot can send accepted input. Telegram privacy mode and group permissions can affect which messages the bot receives, but AC does not enforce a per-member allowlist after the group `chat_id` matches.
+- Delivered text messages from the bound chat are written into the attached session. Delivered voice messages from the bound chat can be transcribed and injected when a Gemini API key is configured.
+
+Protect the bot token. Anyone with the token can call Telegram Bot API methods for that bot. Keep `settings.json` and logs private, and rotate the token in BotFather if it is exposed.
 
 ## 4. Attach to a session
 
@@ -82,7 +98,7 @@ The bridge sends terminal output through Telegram's servers - see [`PRIVACY.md`]
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Test` button shows a chat-id error | The bot has not received any message from you yet | Send the bot `/start` in Telegram first |
+| `Test` reports no messages or picks the wrong chat | The bot has no fresh pending text or voice message from the intended chat, or a stale update from another chat is newer | Send a new text or voice message in the intended private chat or trusted group, then click **Test** again. Confirm the shown chat ID before **Save** |
 | Bot icon turns red on a session | Last poll or send failed | Open DevTools (**Help → Toggle DevTools**), look at `telegram_bridge_error` events |
 | Chat floods with escape codes | The PTY emitted a TUI mode AC's cleaner does not recognize | Update AC; open an issue with the agent name and what you were running |
 | `--bot-label` errors with "no bot matches" | Label mismatch (exact-match) | Check **Settings → Integrations → Telegram** for the canonical label |
