@@ -211,7 +211,7 @@ pub(crate) fn execute_matrix_project_create(
     0
 }
 
-fn write_project_refresh_request(request: &ProjectRefreshRequest) -> Result<(), String> {
+pub(crate) fn write_project_refresh_request(request: &ProjectRefreshRequest) -> Result<(), String> {
     let config_dir =
         crate::config::config_dir().ok_or("Cannot determine config directory".to_string())?;
     let requests_dir = config_dir.join("project-refresh-requests");

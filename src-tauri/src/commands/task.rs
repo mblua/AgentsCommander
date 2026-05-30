@@ -1,9 +1,9 @@
-//! Tauri commands wrapping `cli::task_ops::perform` for the BRIEF panel
+//! Tauri commands wrapping `cli::task_ops::perform` for the TASK.md panel
 //! action buttons (issue #162).
 //!
 //! Trust model: these commands run inside the GUI process under the
-//! user's authority — same model as `rename_session`, `destroy_session`,
-//! etc. No coordinator gate (the CLI verbs in `cli/brief_*.rs` retain
+//! user's authority, same model as `rename_session`, `destroy_session`,
+//! etc. No coordinator gate (the CLI verbs in `cli/task_*.rs` retain
 //! their gate; this file does not call into them).
 
 use std::path::Path;
@@ -150,7 +150,7 @@ pub async fn task_set_title(
         session_id,
         outcome
     );
-    
+
     let (content, task_title) = match &outcome {
         task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
         task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
@@ -164,7 +164,6 @@ pub async fn task_set_title(
     emit_task_updated(&app, &wg_root, &task, &task_title);
     Ok(result)
 }
-
 
 /// Clear the workgroup TASK.md for the given session to the canonical Clean state.
 /// Returns the new (post-edit) trimmed TASK.md content for direct local refresh,
@@ -183,7 +182,7 @@ pub async fn task_clean(
         session_id,
         outcome
     );
-    
+
     let (content, task_title) = match &outcome {
         task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
         task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),

@@ -42,9 +42,9 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
   let cleanupZoom: (() => void) | null = null;
   let cleanupGeometry: (() => void) | null = null;
 
-  // Home is rendered as an overlay covering the BRIEF/LAST PROMPT panels and
+  // Home is rendered as an overlay covering the TASK/LAST PROMPT panels and
   // the terminal content area beneath them, while those panels stay mounted
-  // (#164 follow-up). Keeping Brief/LastPrompt mounted preserves the height
+  // (#164 follow-up). Keeping WorkgroupTask/LastPrompt mounted preserves the height
   // of `.terminal-content-area`, so TerminalView's ResizeObserver does not
   // fire on Home toggle and the PTY does not receive a SIGWINCH. Detached
   // and locked windows never render Home — they keep the normal layout.
@@ -285,7 +285,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       <StatusBar detached={props.detached} />
       {/* Home overlay (issue #164). Sibling of WorkgroupTask/LastPrompt and
           .terminal-content-area inside .terminal-layout (the positioned
-          containing block). Painted on top so it visually covers BRIEF /
+          containing block). Painted on top so it visually covers TASK /
           LAST PROMPT and the terminal area, but those panels remain mounted
           underneath — toggling Home must not change the height of
           .terminal-content-area or trigger TerminalView's ResizeObserver
