@@ -383,6 +383,30 @@ const ProjectPanel: Component = () => {
         };
 
         const hasTeams = () => proj.teams.length > 0;
+        const coordinatorItems = createMemo(() => {
+          const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
+          for (const wg of proj.workgroups) {
+            for (const replica of wg.agents) {
+              if (replica.isCoordinator) {
+                result.push({ replica, wg });
+              }
+            }
+          }
+          if (sessionsStore.coordSortByActivity) {
+            const activityMap = sessionsStore.lastActivityBySessionId;
+            const tsFor = (item: { replica: AcAgentReplica; wg: AcWorkgroup }): number => {
+              const session = replicaSession(item.wg, item.replica);
+              if (!session) return 0;
+              return activityMap[session.id] ?? 0;
+            };
+            result.sort((a, b) => tsFor(b) - tsFor(a));
+          }
+          return result;
+        });
+        const selectedCoordinatorItem = createMemo(() =>
+          coordinatorItems().find((item) => replicaSession(item.wg, item.replica)?.id === sessionsStore.activeId) ?? null
+        );
+        const selectedWorkgroup = createMemo(() => selectedCoordinatorItem()?.wg ?? null);
 
         const handleRemoveProject = () => {
           setShowCtxMenu(false);
@@ -664,6 +688,35 @@ const ProjectPanel: Component = () => {
           );
         };
 
+        const renderWorkgroupSubgroup = (wg: AcWorkgroup) => {
+          const [wgCollapsed, setWgCollapsed] = createSignal(false);
+          return (
+            <div class="ac-wg-subgroup">
+              <div
+                class="ac-wg-header ac-wg-header--collapsible"
+                title={wg.path}
+                onClick={() => setWgCollapsed((c) => !c)}
+                onContextMenu={(e) => handleWgContextMenu(e, wg)}
+              >
+                <span class="ac-discovery-chevron" classList={{ collapsed: wgCollapsed() }}>
+                  &#x25BE;
+                </span>
+                <div class="ac-wg-header-text">
+                  <span class="ac-wg-name">{wg.name}</span>
+                  <Show when={wg.taskTitle?.trim() || stripFrontmatter(wg.taskTitle ?? "").trim()}>
+                    {(text) => <span class="ac-wg-task">{text()}</span>}
+                  </Show>
+                </div>
+              </div>
+              <Show when={!wgCollapsed()}>
+                <For each={wg.agents}>
+                  {(replica) => renderReplicaItem(replica, wg)}
+                </For>
+              </Show>
+            </div>
+          );
+        };
+
         return (
           <div class="project-panel">
             <button
@@ -752,30 +805,10 @@ const ProjectPanel: Component = () => {
               <div class="project-content">
                 {/* Coordinator Quick-Access — shown by styles that enable it via CSS */}
                 {(() => {
-                  const coordinators = createMemo(() => {
-                    const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
-                    for (const wg of proj.workgroups) {
-                      for (const replica of wg.agents) {
-                        if (replica.isCoordinator) {
-                          result.push({ replica, wg });
-                        }
-                      }
-                    }
-                    if (sessionsStore.coordSortByActivity) {
-                      const activityMap = sessionsStore.lastActivityBySessionId;
-                      const tsFor = (item: { replica: AcAgentReplica; wg: AcWorkgroup }): number => {
-                        const session = replicaSession(item.wg, item.replica);
-                        if (!session) return 0;
-                        return activityMap[session.id] ?? 0;
-                      };
-                      result.sort((a, b) => tsFor(b) - tsFor(a));
-                    }
-                    return result;
-                  });
                   return (
-                    <Show when={coordinators().length > 0}>
+                    <Show when={coordinatorItems().length > 0}>
                       <div class="coord-quick-access">
-                        <For each={coordinators()}>
+                        <For each={coordinatorItems()}>
                           {(item) => {
                             const runningPeers = createMemo(() =>
                               item.wg.agents.filter((peer) => {
@@ -787,6 +820,37 @@ const ProjectPanel: Component = () => {
                             return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.taskTitle);
                           }}
                         </For>
+                      </div>
+                    </Show>
+                  );
+                })()}
+                {/* Selected Workgroup */}
+                {(() => {
+                  const [selectedCollapsed, setSelectedCollapsed] = createSignal(false);
+
+                  return (
+                    <Show when={sessionsStore.showCategories}>
+                      <div class="ac-wg-group">
+                        <div
+                          class="ac-wg-header ac-wg-header--collapsible"
+                          onClick={() => setSelectedCollapsed((c) => !c)}
+                        >
+                          <span class="ac-discovery-chevron" classList={{ collapsed: selectedCollapsed() }}>
+                            &#x25BE;
+                          </span>
+                          <div class="ac-wg-header-text">
+                            <span class="ac-wg-name">Selected Workgroup</span>
+                          </div>
+                          <span class="ac-team-count">{selectedWorkgroup() ? 1 : 0}</span>
+                        </div>
+                        <Show when={!selectedCollapsed()}>
+                          <Show
+                            when={selectedWorkgroup()}
+                            fallback={<div class="ac-empty-hint">No selected workgroup</div>}
+                          >
+                            {(wg) => renderWorkgroupSubgroup(wg())}
+                          </Show>
+                        </Show>
                       </div>
                     </Show>
                   );
@@ -843,34 +907,7 @@ const ProjectPanel: Component = () => {
                           fallback={<div class="ac-empty-hint">No workgroups</div>}
                         >
                           <For each={proj.workgroups}>
-                            {(wg) => {
-                              const [wgCollapsed, setWgCollapsed] = createSignal(false);
-                              return (
-                                <div class="ac-wg-subgroup">
-                                  <div
-                                    class="ac-wg-header ac-wg-header--collapsible"
-                                    title={wg.path}
-                                    onClick={() => setWgCollapsed((c) => !c)}
-                                    onContextMenu={(e) => handleWgContextMenu(e, wg)}
-                                  >
-                                    <span class="ac-discovery-chevron" classList={{ collapsed: wgCollapsed() }}>
-                                      &#x25BE;
-                                    </span>
-                                    <div class="ac-wg-header-text">
-                                      <span class="ac-wg-name">{wg.name}</span>
-                                      <Show when={wg.taskTitle?.trim() || stripFrontmatter(wg.taskTitle ?? "").trim()}>
-                                        {(text) => <span class="ac-wg-task">{text()}</span>}
-                                      </Show>
-                                    </div>
-                                  </div>
-                                  <Show when={!wgCollapsed()}>
-                                    <For each={wg.agents}>
-                                      {(replica) => renderReplicaItem(replica, wg)}
-                                    </For>
-                                  </Show>
-                                </div>
-                              );
-                            }}
+                            {(wg) => renderWorkgroupSubgroup(wg)}
                           </For>
                         </Show>
                       </Show>
