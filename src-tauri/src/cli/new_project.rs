@@ -1,5 +1,5 @@
 //! `new-project <PATH>` CLI verb — ensure an AC project structure at PATH
-//! (creating `.ac-new/` if missing) and register it in
+//! (creating `.ac/` if missing) and register it in
 //! `settings.project_paths`. Shares the registration logic with the Tauri
 //! command at `commands::ac_discovery::new_project` via the
 //! `config::projects` module.
@@ -13,12 +13,12 @@ use crate::config::settings::{load_settings_for_cli, save_settings};
 
 #[derive(Args)]
 #[command(after_help = "\
-PURPOSE: Create an AC project at PATH (mkdir-p `.ac-new/` and write its \
-`.gitignore` if missing) and register it in the GUI sidebar's project list.\n\n\
+PURPOSE: Create an AC project at PATH (mkdir-p `.ac/` and write its \
+`.gitignore` if no workspace exists) and register it in the GUI sidebar's project list.\n\n\
 PATH: Absolute or relative — relative paths are resolved against the current \
 working directory. The folder is created if it does not yet exist.\n\n\
-IDEMPOTENCY: Re-running on a folder that already has `.ac-new/` is safe — the \
-gitignore is swept (missing patterns appended), and the registration step \
+IDEMPOTENCY: Re-running on a folder that already has `.ac/` or legacy `.ac-new/` is safe; \
+the selected workspace gitignore is swept (missing patterns appended), and the registration step \
 deduplicates against any prior entry.")]
 pub struct NewProjectArgs {
     /// Path to make into an AC project (folder created if missing)
@@ -37,7 +37,7 @@ pub fn execute(args: NewProjectArgs) -> i32 {
             return 1;
         }
     };
-    // Save when we either created `.ac-new` or appended a new path entry.
+    // Save when we either created `.ac` or appended a new path entry.
     // (A pure no-op call still prints the status lines.)
     if result.created || result.registered {
         if let Err(e) = save_settings(&settings) {

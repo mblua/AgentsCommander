@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
 use crate::config::claude_settings::ensure_claude_md_excludes;
 use crate::config::settings::{AppSettings, SettingsState};
+use crate::config::workspace::existing_workspace_dir;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
@@ -342,7 +343,7 @@ fn build_role_content(
          {description}\n\
          {profile}\n\
          ## Source of Truth\n\n\
-         This role is defined in Role.md of your Agent Matrix at: .ac-new/_agent_{name}/\n\
+         This role is defined in Role.md of your Agent Matrix at: .ac/_agent_{name}/\n\
          If you are running as a replica, this file was generated from that source.\n\
          Always use memory/, plans/, and skills/ from your Agent Matrix, and treat Role.md \
          there as the canonical role definition. Never use external memory systems.\n\n\
@@ -404,13 +405,7 @@ pub(crate) fn create_agent_matrix_on_disk(
 ) -> Result<CreatedAgentMatrixOnDisk, String> {
     let safe_name = sanitize_name(args.name)?;
     let project = Path::new(args.project_path);
-    let base = project.join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(
-            ".ac-new directory not found in {}",
-            args.project_path
-        ));
-    }
+    let base = selected_workspace_dir(project)?;
 
     let agent_dir = base.join(format!("_agent_{}", safe_name));
     if agent_dir.exists() {
@@ -523,11 +518,20 @@ fn default_agent_matrix_config() -> serde_json::Value {
     })
 }
 
+fn selected_workspace_dir(project: &Path) -> Result<PathBuf, String> {
+    existing_workspace_dir(project).ok_or_else(|| {
+        format!(
+            ".ac directory not found in {} (legacy .ac-new also absent)",
+            project.display()
+        )
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
-/// Create an agent matrix directory inside {project_path}/.ac-new/_agent_{name}/
+/// Create an agent matrix directory inside {project_path}/.ac/_agent_{name}/
 ///
 /// `role_template_id` is the picker selection from `list_role_templates`; when
 /// `Some`, the resolved template's body is inserted as a `## Role Profile`
@@ -571,16 +575,13 @@ pub async fn create_agent_matrix(
 }
 
 /// Delete an agent matrix directory from a project.
-/// Removes {project_path}/.ac-new/_agent_{agent_name}/ entirely.
+/// Removes {project_path}/.ac/_agent_{agent_name}/ entirely.
 /// Checks that no team references this agent before deleting.
 #[tauri::command]
 pub async fn delete_agent_matrix(project_path: String, agent_name: String) -> Result<(), String> {
     validate_existing_name(&agent_name, "Agent")?;
 
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let agent_dir = base.join(format!("_agent_{}", agent_name));
     if !agent_dir.exists() {
@@ -594,7 +595,7 @@ pub async fn delete_agent_matrix(project_path: String, agent_name: String) -> Re
     let agent_dir_name = format!("_agent_{}", agent_name);
     let mut referencing_teams: Vec<String> = Vec::new();
     let entries = std::fs::read_dir(&base)
-        .map_err(|e| format!("Cannot read .ac-new directory for integrity check: {}", e))?;
+        .map_err(|e| format!("Cannot read workspace directory for integrity check: {}", e))?;
     for entry in entries {
         let entry = entry
             .map_err(|e| format!("Cannot read directory entry during integrity check: {}", e))?;
@@ -647,17 +648,16 @@ pub async fn delete_agent_matrix(project_path: String, agent_name: String) -> Re
 }
 
 /// List all agent matrices across multiple project paths.
-/// Scans {project}/.ac-new/_agent_*/ and reads Role.md frontmatter.
+/// Scans {project}/.ac/_agent_*/ and reads Role.md frontmatter.
 #[tauri::command]
 pub async fn list_all_agents(project_paths: Vec<String>) -> Result<Vec<AgentInfo>, String> {
     let mut agents: Vec<AgentInfo> = Vec::new();
 
     for project_path in &project_paths {
         let base = Path::new(project_path);
-        let ac_new = base.join(".ac-new");
-        if !ac_new.is_dir() {
+        let Some(ac_new) = existing_workspace_dir(base) else {
             continue;
-        }
+        };
 
         let project_name = base
             .file_name()
@@ -714,7 +714,7 @@ pub async fn list_all_agents(project_paths: Vec<String>) -> Result<Vec<AgentInfo
     Ok(agents)
 }
 
-/// Create a team directory inside {project_path}/.ac-new/_team_{name}/
+/// Create a team directory inside {project_path}/.ac/_team_{name}/
 #[tauri::command]
 pub async fn create_team(
     app: AppHandle,
@@ -726,10 +726,7 @@ pub async fn create_team(
     repos: Vec<RepoAssignment>,
 ) -> Result<CreatedEntityResult, String> {
     let safe_name = sanitize_name(&name)?;
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let team_dir = base.join(format!("_team_{}", safe_name));
     if team_dir.exists() {
@@ -802,15 +799,12 @@ pub async fn create_workgroup(
     if task_title.chars().count() > 256 {
         return Err("Task title is too long (max 256 characters)".to_string());
     }
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let base = selected_workspace_dir(Path::new(&project_path))?;
 
     // Ensure gitignore protects workgroup clones from parent repo operations
-    if let Err(e) = crate::commands::ac_discovery::ensure_ac_new_gitignore(&base) {
+    if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
         log::warn!(
-            "[create_workgroup] Failed to ensure .ac-new/.gitignore: {}",
+            "[create_workgroup] Failed to ensure workspace .gitignore: {}",
             e
         );
     }
@@ -1023,7 +1017,7 @@ pub async fn create_workgroup(
     })
 }
 
-/// Delete a team directory from {project_path}/.ac-new/_team_{name}/
+/// Delete a team directory from {project_path}/.ac/_team_{name}/
 #[tauri::command]
 pub async fn delete_team(
     app: AppHandle,
@@ -1032,10 +1026,7 @@ pub async fn delete_team(
     team_name: String,
 ) -> Result<(), String> {
     validate_existing_name(&team_name, "Team")?;
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let team_dir = base.join(format!("_team_{}", team_name));
     if !team_dir.exists() {
@@ -1097,7 +1088,7 @@ pub async fn delete_team(
     Ok(())
 }
 
-/// Delete a single workgroup directory from {project_path}/.ac-new/{wg_name}/
+/// Delete a single workgroup directory from {project_path}/.ac/{wg_name}/
 /// Returns dirty repo list as an Err if any repos have uncommitted/unpushed work.
 /// Pass `force = true` to skip the dirty-repo safety check (user already confirmed).
 #[tauri::command]
@@ -1110,10 +1101,7 @@ pub async fn delete_workgroup(
 ) -> Result<(), String> {
     validate_existing_name(&workgroup_name, "Workgroup")?;
 
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let wg_dir = base.join(&workgroup_name);
     if !wg_dir.exists() {
@@ -1182,7 +1170,7 @@ pub async fn delete_workgroup(
     Ok(())
 }
 
-/// Update an existing team's config.json in {project_path}/.ac-new/_team_{name}/
+/// Update an existing team's config.json in {project_path}/.ac/_team_{name}/
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -1198,10 +1186,7 @@ pub async fn update_team(
     repos: Vec<RepoAssignment>,
 ) -> Result<(), String> {
     validate_existing_name(&team_name, "Team")?;
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let team_dir = base.join(format!("_team_{}", team_name));
     if !team_dir.exists() {
@@ -1526,10 +1511,7 @@ pub async fn sync_workgroup_repos(
 ) -> Result<SyncResult, String> {
     validate_existing_name(&team_name, "Team")?;
 
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let team_dir = base.join(format!("_team_{}", team_name));
     if !team_dir.exists() {
@@ -1605,10 +1587,7 @@ pub async fn get_team_config(
     team_name: String,
 ) -> Result<TeamConfigResult, String> {
     validate_existing_name(&team_name, "Team")?;
-    let base = Path::new(&project_path).join(".ac-new");
-    if !base.is_dir() {
-        return Err(format!(".ac-new directory not found in {}", project_path));
-    }
+    let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let team_dir = base.join(format!("_team_{}", team_name));
     let config_path = team_dir.join("config.json");
@@ -2109,8 +2088,8 @@ mod tests {
     fn create_agent_matrix_on_disk_creates_full_layout_without_template() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let ac_new = project.join(".ac-new");
-        std::fs::create_dir_all(&ac_new).expect("create .ac-new");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(&workspace).expect("create .ac");
         let settings = AppSettings::default();
         let project_s = project.to_string_lossy().to_string();
 
@@ -2124,7 +2103,7 @@ mod tests {
         })
         .expect("create matrix");
 
-        let agent_dir = ac_new.join("_agent_architect");
+        let agent_dir = workspace.join("_agent_architect");
         assert_eq!(created.agent_dir, agent_dir);
         assert_eq!(created.safe_name, "architect");
         assert_eq!(created.display_name, "ProjectAlpha/architect");
@@ -2137,6 +2116,53 @@ mod tests {
                 canonical
             );
         }
+    }
+
+    #[test]
+    fn create_agent_matrix_on_disk_falls_back_to_legacy_ac_new() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let legacy_workspace = project.join(".ac-new");
+        std::fs::create_dir_all(&legacy_workspace).expect("create .ac-new");
+        let settings = AppSettings::default();
+        let project_s = project.to_string_lossy().to_string();
+
+        let created = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+            project_path: &project_s,
+            name: "Architect",
+            description: "Build plans",
+            role_template_id: None,
+            settings: &settings,
+            config_dir: None,
+        })
+        .expect("create matrix");
+
+        assert_eq!(created.agent_dir, legacy_workspace.join("_agent_architect"));
+    }
+
+    #[test]
+    fn create_agent_matrix_on_disk_prefers_ac_when_both_exist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let workspace = project.join(".ac");
+        let legacy_workspace = project.join(".ac-new");
+        std::fs::create_dir_all(&workspace).expect("create .ac");
+        std::fs::create_dir_all(&legacy_workspace).expect("create .ac-new");
+        let settings = AppSettings::default();
+        let project_s = project.to_string_lossy().to_string();
+
+        let created = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+            project_path: &project_s,
+            name: "Architect",
+            description: "Build plans",
+            role_template_id: None,
+            settings: &settings,
+            config_dir: None,
+        })
+        .expect("create matrix");
+
+        assert_eq!(created.agent_dir, workspace.join("_agent_architect"));
+        assert!(!legacy_workspace.join("_agent_architect").exists());
     }
 
     #[test]
@@ -2846,7 +2872,7 @@ mod tests {
         let description = "Test agent description.";
         let desc_yaml = description.replace('\'', "''");
         let legacy = format!(
-            "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac-new/_agent_{}/\nIf you are running as a replica, this file was generated from that source.\nAlways use memory/, plans/, and skills/ from your Agent Matrix, and treat Role.md there as the canonical role definition. Never use external memory systems.\n\n## Agent Memory Rule\n\nIf you are running as a replica, the single source of truth for persistent knowledge is your Agent Matrix's memory/, plans/, skills/, and Role.md. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
+            "---\nname: '{}'\ndescription: '{}'\ntype: agent\n---\n\n# {}\n\n{}\n\n## Source of Truth\n\nThis role is defined in Role.md of your Agent Matrix at: .ac/_agent_{}/\nIf you are running as a replica, this file was generated from that source.\nAlways use memory/, plans/, and skills/ from your Agent Matrix, and treat Role.md there as the canonical role definition. Never use external memory systems.\n\n## Agent Memory Rule\n\nIf you are running as a replica, the single source of truth for persistent knowledge is your Agent Matrix's memory/, plans/, skills/, and Role.md. Use your replica folder only for replica-local scratch, inbox/outbox, and session artifacts. NEVER use external memory systems from the coding agent (e.g., ~/.claude/projects/memory/).\n",
             safe_name, desc_yaml, safe_name, description, safe_name
         );
         let actual = build_role_content(safe_name, description, None);

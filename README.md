@@ -50,7 +50,7 @@ You bring the coding agents. AgentsCommander coordinates them.
 
 1. **Download** the latest installer for your platform from [the releases page](https://github.com/mblua/AgentsCommander/releases/latest). Windows `.exe`, Linux `.AppImage`, and macOS `.dmg` are built on every release.
 2. **Run** the installer (or run the portable `.exe` directly; see [Portable instances](docs/features/portable-instances.md)).
-3. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates an `.ac-new/` workspace there.
+3. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates an `.ac/` workspace there. Existing `.ac-new/` projects still open as legacy projects.
 4. **Create a Team**: add a coordinator and one worker agent, each with a role prompt. [Teams and workgroups](docs/agents/teams-and-workgroups.md) walks through this.
 5. **Launch the coordinator**: pick Claude Code, Codex, or Gemini from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
 

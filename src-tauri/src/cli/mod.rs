@@ -103,9 +103,9 @@ pub enum Commands {
     TaskSetTitle(task_set_title::TaskSetTitleArgs),
     /// Append text to the body of the workgroup TASK.md (coordinator-only)
     TaskAppendBody(task_append_body::TaskAppendBodyArgs),
-    /// Register an existing AC project (.ac-new must already exist) in settings
+    /// Register an existing AC project (.ac or legacy .ac-new must already exist) in settings
     OpenProject(open_project::OpenProjectArgs),
-    /// Create an AC project (mkdir .ac-new if missing) and register it in settings
+    /// Create an AC project (mkdir .ac if no workspace exists) and register it in settings
     NewProject(new_project::NewProjectArgs),
     /// Send a local image/file to a configured Telegram bot (no GUI required)
     TelegramSendImage(telegram_send_image::TelegramSendImageArgs),

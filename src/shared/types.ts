@@ -363,7 +363,7 @@ export interface ProjectRegistration {
   path: string;
   /** True when this call appended a new entry, false when already present. */
   registered: boolean;
-  /** True when this call created .ac-new/ on disk (always false for openProject). */
+  /** True when this call created .ac/ on disk (always false for openProject). */
   created: boolean;
 }
 

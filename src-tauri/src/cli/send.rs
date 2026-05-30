@@ -105,7 +105,7 @@ fn validate_root_agent_delivery_kind(
     }
 }
 
-/// If `root` lives inside `<project_dir>/.ac-new/wg-<N>-*/__agent_*/`,
+/// If `root` lives inside `<project_dir>/<workspace>/wg-<N>-*/__agent_*/`,
 /// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
 /// inside a WG-replica shape OR if the resulting `project_dir` is not valid
 /// UTF-8 (parity with `list_peers::detect_wg_replica`, which also uses
@@ -128,11 +128,16 @@ fn derive_root_project_dir(root: &str) -> Option<String> {
     if !wg_name.starts_with("wg-") {
         return None;
     }
-    let ac_new_dir = wg_dir.parent()?;
-    if ac_new_dir.file_name().and_then(|n| n.to_str()) != Some(".ac-new") {
+    let workspace_dir = wg_dir.parent()?;
+    if !workspace_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(crate::config::workspace::is_workspace_dir_name)
+        .unwrap_or(false)
+    {
         return None;
     }
-    let project_dir = ac_new_dir.parent()?;
+    let project_dir = workspace_dir.parent()?;
     Some(project_dir.to_str()?.to_string())
 }
 

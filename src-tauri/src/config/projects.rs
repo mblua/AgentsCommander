@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::settings::AppSettings;
+use super::workspace::{existing_workspace_dir, has_workspace_dir, workspace_dir_for_project};
 
 /// Outcome of a register call. Callers translate this into the verb-specific
 /// stdout / IPC payload (CLI prints the lines from §2; Tauri command returns
@@ -23,7 +24,7 @@ pub struct ProjectRegistration {
     /// `true` when this call appended a new entry; `false` when the path was
     /// already present (case-insensitive, slash-normalised match).
     pub registered: bool,
-    /// `true` when this call created `.ac-new/` on disk. Always `false` for
+    /// `true` when this call created `.ac/` on disk. Always `false` for
     /// `open_project`. `true` for `new_project` only when the directory did
     /// not already exist.
     pub created: bool,
@@ -46,14 +47,14 @@ pub enum ProjectError {
     PathMissing(PathBuf),
     #[error("path is not a directory: {0}")]
     NotADirectory(PathBuf),
-    #[error("no AC project at {0} (.ac-new/ not found)")]
-    AcNewMissing(PathBuf),
+    #[error("no AC project at {0} (.ac/ or legacy .ac-new/ not found)")]
+    WorkspaceMissing(PathBuf),
     #[error("failed to resolve absolute path for '{0}': {1}")]
     CwdFailure(String, std::io::Error),
-    #[error("failed to create .ac-new directory at {0}: {1}")]
-    AcNewCreateFailed(PathBuf, std::io::Error),
-    #[error("failed to write .ac-new/.gitignore at {0}: {1}")]
-    GitignoreFailed(PathBuf, String),
+    #[error("failed to create .ac directory at {0}: {1}")]
+    WorkspaceCreateFailed(PathBuf, std::io::Error),
+    #[error("failed to write workspace .gitignore at {0}: {1}")]
+    WorkspaceGitignoreFailed(PathBuf, String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -72,7 +73,7 @@ pub enum ProjectResolveError {
 }
 
 /// Validate an existing AC project and register it in `settings.project_paths`.
-/// Errors when the path is missing, not a directory, or has no `.ac-new/`.
+/// Errors when the path is missing, not a directory, or has no AC workspace.
 ///
 /// On success, mutates `settings.project_paths` (appends if new) and
 /// `settings.project_path` (legacy single-project field — kept in sync with
@@ -91,9 +92,8 @@ pub fn register_existing_project(
     if !abs.is_dir() {
         return Err(ProjectError::NotADirectory(abs));
     }
-    let ac_new = abs.join(".ac-new");
-    if !ac_new.is_dir() {
-        return Err(ProjectError::AcNewMissing(abs));
+    if existing_workspace_dir(&abs).is_none() {
+        return Err(ProjectError::WorkspaceMissing(abs));
     }
     let abs_str = abs.to_string_lossy().into_owned();
     let registered = upsert_project_path(settings, &abs_str);
@@ -104,11 +104,11 @@ pub fn register_existing_project(
     })
 }
 
-/// Ensure the AC project structure exists (creating `.ac-new/` and its
+/// Ensure the AC project structure exists (creating `.ac/` and its
 /// `.gitignore` when missing) and register it in `settings.project_paths`.
 ///
 /// Errors only when the path is empty, the parent does not exist, or
-/// `.ac-new/` cannot be created. A pre-existing `.ac-new/` is fine — the
+/// `.ac/` cannot be created. A pre-existing `.ac/` is fine; the
 /// gitignore sweep is opportunistic (matches `discover_project`'s behaviour
 /// at `src-tauri/src/commands/ac_discovery.rs:1308-1309`).
 pub fn register_new_project(
@@ -121,34 +121,42 @@ pub fn register_new_project(
     if abs.exists() && !abs.is_dir() {
         return Err(ProjectError::NotADirectory(abs));
     }
-    let ac_new = abs.join(".ac-new");
     // Ensure the parent (PATH itself) exists so the non-recursive
     // `create_dir` below can race-detect properly. `create_dir_all` is
     // idempotent on an already-existing dir, so this costs nothing extra
     // when PATH is already there.
-    std::fs::create_dir_all(&abs).map_err(|e| ProjectError::AcNewCreateFailed(abs.clone(), e))?;
-    // Authoritative `created` flag (Round-1 G9): use non-recursive
-    // `create_dir` so we can distinguish "we made the dir" from "another
-    // process beat us to it" via `ErrorKind::AlreadyExists`. The previous
-    // `is_dir()` check then `create_dir_all` pattern lied under that race.
-    let created = match std::fs::create_dir(&ac_new) {
-        Ok(()) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(e) => return Err(ProjectError::AcNewCreateFailed(ac_new.clone(), e)),
+    std::fs::create_dir_all(&abs)
+        .map_err(|e| ProjectError::WorkspaceCreateFailed(abs.clone(), e))?;
+
+    let (workspace_dir, created) = match existing_workspace_dir(&abs) {
+        Some(dir) => (dir, false),
+        None => {
+            let workspace_dir = workspace_dir_for_project(&abs);
+            // Authoritative `created` flag (Round-1 G9): use non-recursive
+            // `create_dir` so we can distinguish "we made the dir" from "another
+            // process beat us to it" via `ErrorKind::AlreadyExists`. The previous
+            // `is_dir()` check then `create_dir_all` pattern lied under that race.
+            let created = match std::fs::create_dir(&workspace_dir) {
+                Ok(()) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(e) => return Err(ProjectError::WorkspaceCreateFailed(workspace_dir.clone(), e)),
+            };
+            (workspace_dir, created)
+        }
     };
-    // Gitignore sweep (Round-1 G15): mandatory when we just created `.ac-new`
+    // Gitignore sweep (Round-1 G15): mandatory when we just created `.ac`
     // (a fresh AC project must ship with the protective patterns), best-effort
-    // when `.ac-new` pre-existed (a transient FS error on someone else's
+    // when `.ac` pre-existed (a transient FS error on someone else's
     // gitignore should not fail registration of a perfectly valid project).
-    match crate::commands::ac_discovery::ensure_ac_new_gitignore(&ac_new) {
+    match crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
         Ok(()) => {}
         Err(e) if !created => {
             log::warn!(
-                "[projects] gitignore sweep failed on pre-existing .ac-new at {:?}: {} (best-effort, continuing)",
-                ac_new, e
+                "[projects] gitignore sweep failed on pre-existing AC workspace at {:?}: {} (best-effort, continuing)",
+                workspace_dir, e
             );
         }
-        Err(e) => return Err(ProjectError::GitignoreFailed(ac_new.clone(), e)),
+        Err(e) => return Err(ProjectError::WorkspaceGitignoreFailed(workspace_dir.clone(), e)),
     }
 
     let abs_str = abs.to_string_lossy().into_owned();
@@ -288,7 +296,7 @@ fn push_project_candidate(
     out: &mut Vec<ProjectResolution>,
     seen: &mut HashSet<String>,
 ) {
-    if !is_real_directory(path) || !is_real_directory(&path.join(".ac-new")) {
+    if !is_real_directory(path) || !has_workspace_dir(path) {
         return;
     }
     let Some(key) = canonical_key(path) else {
@@ -402,18 +410,18 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_path_without_ac_new() {
+    fn open_rejects_path_without_workspace() {
         let fix = FixtureRoot::new("proj-open-noacnew");
         let mut s = AppSettings::default();
         let r = register_existing_project(&mut s, fix.path().to_str().unwrap());
-        assert!(matches!(r, Err(ProjectError::AcNewMissing(_))));
+        assert!(matches!(r, Err(ProjectError::WorkspaceMissing(_))));
         assert!(s.project_paths.is_empty());
     }
 
     #[test]
-    fn open_registers_path_with_ac_new() {
+    fn open_registers_path_with_ac() {
         let fix = FixtureRoot::new("proj-open-ok");
-        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let mut s = AppSettings::default();
         let r = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
         assert!(r.registered);
@@ -423,9 +431,31 @@ mod tests {
     }
 
     #[test]
+    fn open_registers_legacy_ac_new_fallback() {
+        let fix = FixtureRoot::new("proj-open-legacy-ok");
+        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+        let mut s = AppSettings::default();
+        let r = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
+        assert!(r.registered);
+        assert!(!r.created);
+        assert_eq!(s.project_paths.len(), 1);
+    }
+
+    #[test]
+    fn open_prefers_ac_when_both_ac_and_ac_new_exist() {
+        let fix = FixtureRoot::new("proj-open-both");
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
+        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+        let mut s = AppSettings::default();
+        let r = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
+        assert!(r.registered);
+        assert_eq!(existing_workspace_dir(fix.path()), Some(fix.path().join(".ac")));
+    }
+
+    #[test]
     fn open_is_idempotent_on_repeat_call() {
         let fix = FixtureRoot::new("proj-open-idem");
-        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let mut s = AppSettings::default();
         let _ = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
         let r2 = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
@@ -436,7 +466,7 @@ mod tests {
     #[test]
     fn open_dedup_is_case_insensitive_and_slash_agnostic() {
         let fix = FixtureRoot::new("proj-open-norm");
-        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let mut s = AppSettings::default();
         // Seed an entry with the exact path
         let original = fix.path().to_string_lossy().to_string();
@@ -453,21 +483,21 @@ mod tests {
     // ── register_new_project ─────────────────────────────────────────────
 
     #[test]
-    fn new_creates_ac_new_when_missing() {
+    fn new_creates_ac_when_missing() {
         let fix = FixtureRoot::new("proj-new-mkdir");
         let mut s = AppSettings::default();
         let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
         assert!(r.created);
         assert!(r.registered);
-        assert!(fix.path().join(".ac-new").is_dir());
-        assert!(fix.path().join(".ac-new").join(".gitignore").is_file());
+        assert!(fix.path().join(".ac").is_dir());
+        assert!(fix.path().join(".ac").join(".gitignore").is_file());
     }
 
     #[test]
     fn new_creates_parent_directory_when_missing() {
         // Covers the `create_dir_all(&abs)` branch in register_new_project
         // for a path whose project folder does NOT yet exist on disk. The
-        // existing `new_creates_ac_new_when_missing` test passes `fix.path()`
+        // existing `new_creates_ac_when_missing` test passes `fix.path()`
         // which `FixtureRoot::new` already created, so the parent-mkdir
         // branch was previously unexercised.
         let fix = FixtureRoot::new("proj-new-parent");
@@ -477,20 +507,32 @@ mod tests {
         assert!(r.created, "should report created=true for fresh path");
         assert!(r.registered);
         assert!(nested.is_dir(), "project root should have been created");
-        assert!(nested.join(".ac-new").is_dir());
-        assert!(nested.join(".ac-new").join(".gitignore").is_file());
+        assert!(nested.join(".ac").is_dir());
+        assert!(nested.join(".ac").join(".gitignore").is_file());
     }
 
     #[test]
-    fn new_skips_creation_when_ac_new_already_exists() {
+    fn new_skips_creation_when_ac_already_exists() {
         let fix = FixtureRoot::new("proj-new-existing");
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
+        let mut s = AppSettings::default();
+        let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
+        assert!(!r.created);
+        assert!(r.registered);
+        // gitignore swept opportunistically even though .ac pre-existed
+        assert!(fix.path().join(".ac").join(".gitignore").is_file());
+    }
+
+    #[test]
+    fn new_uses_legacy_ac_new_when_it_is_the_only_workspace() {
+        let fix = FixtureRoot::new("proj-new-legacy-existing");
         std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
         let mut s = AppSettings::default();
         let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
         assert!(!r.created);
         assert!(r.registered);
-        // gitignore swept opportunistically even though .ac-new pre-existed
-        assert!(fix.path().join(".ac-new").join(".gitignore").is_file());
+        assert!(!fix.path().join(".ac").exists());
+        assert!(fix.path().join(".ac-new").is_dir());
     }
 
     #[test]
@@ -521,8 +563,8 @@ mod tests {
     fn upsert_syncs_legacy_project_path_field() {
         let fix1 = FixtureRoot::new("proj-legacy-1");
         let fix2 = FixtureRoot::new("proj-legacy-2");
-        std::fs::create_dir_all(fix1.path().join(".ac-new")).unwrap();
-        std::fs::create_dir_all(fix2.path().join(".ac-new")).unwrap();
+        std::fs::create_dir_all(fix1.path().join(".ac")).unwrap();
+        std::fs::create_dir_all(fix2.path().join(".ac")).unwrap();
         let mut s = AppSettings::default();
         let r1 = register_existing_project(&mut s, fix1.path().to_str().unwrap()).unwrap();
         assert_eq!(s.project_path.as_deref(), Some(r1.path.as_str()));
@@ -546,7 +588,7 @@ mod tests {
     #[test]
     fn absolutise_resolves_relative_path_against_cwd() {
         let fix = FixtureRoot::new("proj-rel");
-        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let prev = std::env::current_dir().unwrap();
         let _guard = CwdGuard(prev);
         std::env::set_current_dir(fix.path()).unwrap();
@@ -572,7 +614,7 @@ mod tests {
     fn absolutise_collapses_dotdot_segments_on_windows() {
         let fix = FixtureRoot::new("proj-dotdot");
         let project = fix.path().join("project");
-        std::fs::create_dir_all(project.join(".ac-new")).unwrap();
+        std::fs::create_dir_all(project.join(".ac")).unwrap();
         let sibling = fix.path().join("sibling");
         std::fs::create_dir_all(&sibling).unwrap();
         let prev = std::env::current_dir().unwrap();
@@ -592,7 +634,7 @@ mod tests {
     #[test]
     fn upsert_dedup_strips_trailing_separator() {
         let fix = FixtureRoot::new("proj-trailing");
-        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let mut s = AppSettings::default();
         let original = fix.path().to_string_lossy().to_string();
         let _ = register_existing_project(&mut s, &original).unwrap();
@@ -614,6 +656,10 @@ mod tests {
     // ── resolve_project_reference ───────────────────────────────────────
 
     fn create_ac_project(path: &Path) {
+        std::fs::create_dir_all(path.join(".ac")).unwrap();
+    }
+
+    fn create_legacy_ac_project(path: &Path) {
         std::fs::create_dir_all(path.join(".ac-new")).unwrap();
     }
 
@@ -636,6 +682,18 @@ mod tests {
         let fix = FixtureRoot::new("proj-resolve-parent");
         let project = fix.path().join("ProjectAlpha");
         create_ac_project(&project);
+        let project_paths = vec![fix.path().to_string_lossy().to_string()];
+
+        let resolved = resolve_project_reference(&project_paths, "ProjectAlpha").unwrap();
+
+        assert_eq!(resolved.path, project);
+    }
+
+    #[test]
+    fn resolve_project_reference_matches_legacy_child_project() {
+        let fix = FixtureRoot::new("proj-resolve-legacy-parent");
+        let project = fix.path().join("ProjectAlpha");
+        create_legacy_ac_project(&project);
         let project_paths = vec![fix.path().to_string_lossy().to_string()];
 
         let resolved = resolve_project_reference(&project_paths, "ProjectAlpha").unwrap();

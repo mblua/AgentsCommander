@@ -1,5 +1,6 @@
 import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
 import { EntityAPI } from "../../shared/ipc";
+import { AC_WORKSPACE_DIR, LEGACY_AC_WORKSPACE_DIR } from "../../shared/constants";
 import { projectStore } from "../stores/project";
 import type { AcTeam, TeamWizardAgentEntry, TeamWizardRepoEntry, TeamWizardStep } from "../../shared/types";
 
@@ -77,7 +78,7 @@ const EditTeamModal: Component<{
       const discoveredNorm = new Set(entries.map((e) => norm(e.path)));
 
       // Synthesize entries for cross-project agents not found in discovered agents.
-      // Config stores absolute paths like C:\...\project\.ac-new\_agent_name
+      // Config stores absolute paths like C:\...\project\.ac\_agent_name
       for (const configPath of teamConfig.agents) {
         if (!discoveredNorm.has(norm(configPath))) {
           const normalized = configPath.replace(/\\/g, "/");
@@ -85,9 +86,15 @@ const EditTeamModal: Component<{
           // Extract agent name from _agent_{name} dir
           const agentDir = parts[parts.length - 1] || "";
           const agentName = agentDir.replace(/^_agent_/, "");
-          // Extract project name: parent of .ac-new
-          const acNewIdx = parts.lastIndexOf(".ac-new");
-          const projectName = acNewIdx > 0 ? parts[acNewIdx - 1] : "external";
+          // Extract project name: parent of the workspace dir.
+          let workspaceIdx = -1;
+          for (let i = parts.length - 1; i >= 0; i--) {
+            if (parts[i] === AC_WORKSPACE_DIR || parts[i] === LEGACY_AC_WORKSPACE_DIR) {
+              workspaceIdx = i;
+              break;
+            }
+          }
+          const projectName = workspaceIdx > 0 ? parts[workspaceIdx - 1] : "external";
           entries.push({ name: agentName, path: configPath, projectName });
         }
       }

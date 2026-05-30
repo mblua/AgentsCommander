@@ -211,7 +211,7 @@ fn validate_root_sender_payload_with_root_dir(
 }
 
 /// If `outbox_file` lives at
-/// `<project_dir>/.ac-new/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
+/// `<project_dir>/<workspace>/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
 /// return `project_dir` as a UTF-8 `String`. Otherwise, `None`.
 ///
 /// Mirrors the WG-replica walk-up in `cli::send::derive_root_project_dir` so
@@ -223,14 +223,14 @@ fn validate_root_sender_payload_with_root_dir(
 /// The path layout is fixed by `MailboxPoller::poll` which constructs outbox
 /// paths as `Path::new(<all_paths-entry>).join(agent_local_dir_name()).join("outbox")`.
 /// We walk ancestors: `<file>.json` → `outbox` → `<local-dir>` → `<__agent_*>` →
-/// `<wg-*>` → `<.ac-new>` → `<project_dir>`.
+/// `<wg-*>` → `<workspace>` → `<project_dir>`.
 ///
 /// Uses `to_str()?` (NOT `to_string_lossy()`) for parity with
 /// `list_peers::detect_wg_replica`. Keep this in lockstep with
 /// `cli::send::derive_root_project_dir`.
 fn derive_project_from_outbox_path(outbox_file: &Path) -> Option<String> {
     let canon = std::fs::canonicalize(outbox_file).ok()?;
-    // canon = <project>/.ac-new/wg-*/__agent_*/<local-dir>/outbox/<file>.json
+    // canon = <project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json
     let outbox_dir = canon.parent()?; // .../outbox
     if outbox_dir.file_name().and_then(|n| n.to_str()) != Some("outbox") {
         return None;
@@ -246,11 +246,16 @@ fn derive_project_from_outbox_path(outbox_file: &Path) -> Option<String> {
     if !wg_name.starts_with("wg-") {
         return None;
     }
-    let ac_new_dir = wg_dir.parent()?; // .../.ac-new
-    if ac_new_dir.file_name().and_then(|n| n.to_str()) != Some(".ac-new") {
+    let workspace_dir = wg_dir.parent()?; // .../<workspace>
+    if !workspace_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(crate::config::workspace::is_workspace_dir_name)
+        .unwrap_or(false)
+    {
         return None;
     }
-    let project_dir = ac_new_dir.parent()?; // .../<project>
+    let project_dir = workspace_dir.parent()?; // .../<project>
     Some(project_dir.to_str()?.to_string())
 }
 
@@ -757,7 +762,7 @@ impl MailboxPoller {
         // that case. Reject-on-ambiguity semantics match the CLI (Decision 2 rule 2c).
         //
         // §AR2-norm D1-a augmentation: when the outbox file lives under a WG-replica
-        // layout (`<project>/.ac-new/wg-*/__agent_*/<local-dir>/outbox/<file>.json`),
+        // layout (`<project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json`),
         // include the derived `<project>` in the in-memory `paths` slice so qualified
         // WG-peer FQNs written by `cli::send` (which performs the symmetric walk-up
         // augmentation — see #228 Step 1) resolve here too. Without this, the daemon
@@ -2360,7 +2365,7 @@ impl MailboxPoller {
             }
         }
 
-        // Loop 4: WG replica fallback. Scan `.ac-new/<wg>/__agent_<short>` under
+        // Loop 4: WG replica fallback. Scan `<workspace>/<wg>/__agent_<short>` under
         // project_paths (base + immediate non-dot children), honoring the target
         // project filter. §DR2-4 composition: push + break within a single `rp`
         // (an FQN matches at most one replica dir per project) but continue the
@@ -2405,7 +2410,10 @@ impl MailboxPoller {
                     }
 
                     for dir in dirs_to_check {
-                        let candidate = dir.join(".ac-new").join(wg_name).join(&replica_dir);
+                        let Some(workspace_dir) = crate::config::workspace::existing_workspace_dir(&dir) else {
+                            continue;
+                        };
+                        let candidate = workspace_dir.join(wg_name).join(&replica_dir);
                         if candidate.is_dir() {
                             record_match(&candidate.to_string_lossy(), &mut matches);
                             // Within a single `rp`, first hit is the unique hit —

@@ -14,14 +14,21 @@ describe('path-extractors', () => {
     expect(extractAgentName(w)).toBeNull();
   });
 
-  it('path_without_ac_new_returns_all_null', () => {
+  it('path_without_workspace_returns_all_null', () => {
     const w = 'C:\\foo\\bar';
     expect(extractProjectName(w)).toBeNull();
     expect(extractWorkgroupName(w)).toBeNull();
     expect(extractAgentName(w)).toBeNull();
   });
 
-  it('ac_new_only_returns_project_only', () => {
+  it('ac_only_returns_project_only', () => {
+    const w = 'C:\\foo\\.ac';
+    expect(extractProjectName(w)).toBe('foo');
+    expect(extractWorkgroupName(w)).toBeNull();
+    expect(extractAgentName(w)).toBeNull();
+  });
+
+  it('legacy_ac_new_only_returns_project_only', () => {
     const w = 'C:\\foo\\.ac-new';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBeNull();
@@ -29,6 +36,13 @@ describe('path-extractors', () => {
   });
 
   it('agent_in_wg_returns_all_three', () => {
+    const w = 'C:\\foo\\.ac\\wg-19-dev-team\\__agent_tech-lead';
+    expect(extractProjectName(w)).toBe('foo');
+    expect(extractWorkgroupName(w)).toBe('WG-19-DEV-TEAM');
+    expect(extractAgentName(w)).toBe('tech-lead');
+  });
+
+  it('legacy_agent_in_wg_returns_all_three', () => {
     const w = 'C:\\foo\\.ac-new\\wg-19-dev-team\\__agent_tech-lead';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBe('WG-19-DEV-TEAM');
@@ -49,15 +63,15 @@ describe('path-extractors', () => {
     expect(extractAgentName(w)).toBeNull();
   });
 
-  it('nested_ac_new_uses_innermost', () => {
-    const w = 'C:\\proj\\.ac-new\\wg-1-outer\\repo-AC\\.ac-new\\wg-2-inner\\__agent_alice';
+  it('nested_workspace_uses_innermost', () => {
+    const w = 'C:\\proj\\.ac-new\\wg-1-outer\\repo-AC\\.ac\\wg-2-inner\\__agent_alice';
     expect(extractProjectName(w)).toBe('repo-AC');
     expect(extractWorkgroupName(w)).toBe('WG-2-INNER');
     expect(extractAgentName(w)).toBe('alice');
   });
 
   it('unc_prefix_handled', () => {
-    const w = '\\\\?\\C:\\proj\\.ac-new\\wg-1\\__agent_x';
+    const w = '\\\\?\\C:\\proj\\.ac\\wg-1\\__agent_x';
     expect(extractProjectName(w)).toBe('proj');
     expect(extractWorkgroupName(w)).toBe('WG-1');
     expect(extractAgentName(w)).toBe('x');
@@ -85,7 +99,7 @@ describe('path-extractors', () => {
   });
 
   it('forward_slashes_handled', () => {
-    const w = '/foo/.ac-new/wg-1/__agent_x';
+    const w = '/foo/.ac/wg-1/__agent_x';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBe('WG-1');
     expect(extractAgentName(w)).toBe('x');

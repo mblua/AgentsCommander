@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use crate::config::workspace::{existing_workspace_dir, find_workspace_segment, has_workspace_dir};
+
 /// #280 §3.4 — record whether the missing-config one-shot INFO has already
 /// fired for a given `(project, team_dir)` pair this process. Returns
 /// `true` on the first call for that pair, `false` thereafter. Resets on
@@ -14,7 +16,7 @@ fn note_missing_team_config(project: &str, team_dir: &str) -> bool {
     g.insert((project.to_string(), team_dir.to_string()))
 }
 
-/// A team discovered from `_team_*/config.json` in `.ac-new/` project directories.
+/// A team discovered from `_team_*/config.json` in AC workspace directories.
 #[derive(Debug, Clone)]
 pub struct DiscoveredTeam {
     pub name: String,
@@ -62,21 +64,21 @@ pub fn split_project_prefix(name: &str) -> (Option<&str>, &str) {
 
 /// Derive the fully-qualified agent name from a CWD.
 ///
-/// - WG replica CWD `<...>/<project>/.ac-new/wg-N-team/__agent_alice[/...]`
+/// - WG replica CWD `<...>/<project>/.ac/wg-N-team/__agent_alice[/...]`
 ///   → `<project>:wg-N-team/alice`
 /// - Non-WG CWD `<...>/<project>/<agent>`
 ///   → `<project>/<agent>` (unchanged from `agent_name_from_path`)
 ///
-/// Uses `rposition` so a pathological path containing an earlier `.ac-new`
-/// segment (e.g. `C:/.ac-new/repos/proj/.ac-new/wg-1-devs/__agent_x`) anchors
+/// Uses `rposition` so a pathological path containing an earlier workspace
+/// segment (e.g. `C:/.ac/repos/proj/.ac/wg-1-devs/__agent_x`) anchors
 /// on the right-most occurrence — the identity anchor. Subdirectories inside
-/// a replica (`.ac-new/wg-1-devs/__agent_alice/some/deep`) resolve to the
+/// a replica (`.ac/wg-1-devs/__agent_alice/some/deep`) resolve to the
 /// owning replica's FQN, consistent with "alice owns her subdirs".
 pub fn agent_fqn_from_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
 
-    if let Some(ac_idx) = parts.iter().rposition(|p| *p == ".ac-new") {
+    if let Some(ac_idx) = find_workspace_segment(&parts) {
         if ac_idx > 0 && ac_idx + 2 < parts.len() {
             let project = parts[ac_idx - 1];
             let wg = parts[ac_idx + 1];
@@ -175,14 +177,14 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
             continue;
         }
 
-        // Include base itself if it contains `.ac-new`.
-        if base.join(".ac-new").is_dir() {
+        // Include base itself if it contains an AC workspace.
+        if has_workspace_dir(base) {
             if let Some(name) = base.file_name().and_then(|n| n.to_str()) {
                 out.push((name.to_string(), base.to_path_buf()));
             }
         }
 
-        // Plus immediate non-dot children that contain `.ac-new`.
+        // Plus immediate non-dot children that contain an AC workspace.
         if let Ok(entries) = std::fs::read_dir(base) {
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -193,7 +195,7 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
                 if name.starts_with('.') {
                     continue;
                 }
-                if p.join(".ac-new").is_dir() {
+                if has_workspace_dir(&p) {
                     out.push((name.to_string(), p));
                 }
             }
@@ -292,7 +294,9 @@ pub fn verified_wg_coordinator_target(
         if project_name != project {
             continue;
         }
-        let ac_new_dir = project_dir.join(".ac-new");
+        let Some(ac_new_dir) = existing_workspace_dir(&project_dir) else {
+            continue;
+        };
         let wg_dir = ac_new_dir.join(wg_name);
         if !wg_dir.is_dir() {
             continue;
@@ -368,7 +372,10 @@ pub fn resolve_agent_target(
             if name != project {
                 continue;
             }
-            let candidate = dir.join(".ac-new").join(wg).join(&replica_dir);
+            let Some(workspace_dir) = existing_workspace_dir(&dir) else {
+                continue;
+            };
+            let candidate = workspace_dir.join(wg).join(&replica_dir);
             if candidate.is_dir() {
                 return Ok(target.to_string());
             }
@@ -383,7 +390,10 @@ pub fn resolve_agent_target(
         let replica_dir = format!("__agent_{}", agent);
         let mut candidates: Vec<String> = Vec::new();
         for (name, dir) in enumerate_project_dirs(project_paths) {
-            let candidate = dir.join(".ac-new").join(wg).join(&replica_dir);
+            let Some(workspace_dir) = existing_workspace_dir(&dir) else {
+                continue;
+            };
+            let candidate = workspace_dir.join(wg).join(&replica_dir);
             if candidate.is_dir() {
                 let fqn = format!("{}:{}/{}", name, wg, agent);
                 if !candidates.contains(&fqn) {
@@ -414,12 +424,10 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
         .trim_start_matches("./");
 
     if trimmed.contains(':') || trimmed.starts_with('/') {
-        // Absolute path: extract origin project from folder before .ac-new
+        // Absolute path: extract origin project from folder before the workspace marker
         let parts: Vec<&str> = trimmed.split('/').collect();
-        let origin = parts
-            .iter()
-            .position(|p| *p == ".ac-new")
-            .and_then(|i| if i > 0 { Some(parts[i - 1]) } else { None })
+        let origin = find_workspace_segment(&parts)
+            .and_then(|i| (i > 0).then_some(parts[i - 1]))
             .unwrap_or(project_folder);
         let dir_name = parts.last().unwrap_or(&trimmed);
         let agent_name = dir_name
@@ -438,7 +446,7 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
     }
 }
 
-/// Resolve an agent ref to an absolute path given the .ac-new directory.
+/// Resolve an agent ref to an absolute path given the workspace directory.
 fn resolve_agent_path(ac_new_dir: &Path, agent_ref: &str) -> Option<PathBuf> {
     let normalized = agent_ref.replace('\\', "/");
     let trimmed = normalized
@@ -454,13 +462,13 @@ fn resolve_agent_path(ac_new_dir: &Path, agent_ref: &str) -> Option<PathBuf> {
         return None;
     }
 
-    // Relative to .ac-new/
+    // Relative to the workspace directory.
     let candidate = ac_new_dir.join(trimmed);
     if candidate.is_dir() {
         return Some(candidate);
     }
 
-    // Try parent of .ac-new/ (project root)
+    // Try parent of the workspace directory (project root).
     if let Some(project_root) = ac_new_dir.parent() {
         let candidate = project_root.join(trimmed);
         if candidate.is_dir() {
@@ -699,7 +707,7 @@ pub fn can_communicate(from: &str, to: &str, teams: &[DiscoveredTeam]) -> bool {
 }
 
 /// Discover all teams from all known project paths.
-/// Scans settings.project_paths (and immediate children) for `.ac-new/_team_*/config.json`.
+/// Scans settings.project_paths (and immediate children) for workspace `_team_*/config.json`.
 pub fn discover_teams() -> Vec<DiscoveredTeam> {
     let settings = crate::config::settings::load_settings();
     let mut teams = Vec::new();
@@ -757,10 +765,9 @@ pub fn discover_teams() -> Vec<DiscoveredTeam> {
 
 /// Discover teams in a single project directory.
 fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>) {
-    let ac_new = project_dir.join(".ac-new");
-    if !ac_new.is_dir() {
+    let Some(ac_new) = existing_workspace_dir(project_dir) else {
         return;
-    }
+    };
 
     let project_folder = project_dir
         .file_name()
@@ -910,6 +917,12 @@ mod tests {
 
     #[test]
     fn agent_fqn_from_path_wg_replica() {
+        let cwd = "C:/repos/proj-a/.ac/wg-1-devs/__agent_alice";
+        assert_eq!(agent_fqn_from_path(cwd), "proj-a:wg-1-devs/alice");
+    }
+
+    #[test]
+    fn agent_fqn_from_path_legacy_wg_replica() {
         let cwd = "C:/repos/proj-a/.ac-new/wg-1-devs/__agent_alice";
         assert_eq!(agent_fqn_from_path(cwd), "proj-a:wg-1-devs/alice");
     }
@@ -924,7 +937,7 @@ mod tests {
     /// §G6 case 1: subdirectory inside a replica still resolves to the replica's FQN.
     #[test]
     fn agent_fqn_from_path_deeper_cwd_returns_replica_fqn() {
-        let cwd = "C:/repos/proj-a/.ac-new/wg-1-devs/__agent_alice/some/deep/subdir";
+        let cwd = "C:/repos/proj-a/.ac/wg-1-devs/__agent_alice/some/deep/subdir";
         assert_eq!(agent_fqn_from_path(cwd), "proj-a:wg-1-devs/alice");
     }
 

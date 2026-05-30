@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
+use crate::config::workspace::{existing_workspace_dir, is_workspace_dir_name};
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
 #[derive(Args)]
@@ -483,13 +484,13 @@ struct WgReplicaInfo {
     my_agent_name: String,
     my_wg_name: String,
     my_wg_dir: PathBuf,
-    ac_new_dir: PathBuf,
-    /// Project folder name (the dir containing `.ac-new/`). Forms the
+    workspace_dir: PathBuf,
+    /// Project folder name (the dir containing the AC workspace). Forms the
     /// LHS of the canonical FQN for WG replicas.
     my_project: String,
 }
 
-/// Detect if `root` is a WG replica: path matches `*/.ac-new/wg-*/__agent_*/`.
+/// Detect if `root` is a WG replica: path matches `*/<workspace>/wg-*/__agent_*/`.
 fn detect_wg_replica(root: &str) -> Option<WgReplicaInfo> {
     let path = PathBuf::from(root);
     let canon = match std::fs::canonicalize(&path) {
@@ -509,28 +510,28 @@ fn detect_wg_replica(root: &str) -> Option<WgReplicaInfo> {
         return None;
     }
 
-    let ac_new_dir = wg_dir.parent()?;
-    let ac_new_name = ac_new_dir.file_name()?.to_str()?;
-    if ac_new_name != ".ac-new" {
+    let workspace_dir = wg_dir.parent()?;
+    let workspace_name = workspace_dir.file_name()?.to_str()?;
+    if !is_workspace_dir_name(workspace_name) {
         return None;
     }
 
-    let my_project = ac_new_dir.parent()?.file_name()?.to_str()?.to_string();
+    let my_project = workspace_dir.parent()?.file_name()?.to_str()?.to_string();
 
     Some(WgReplicaInfo {
         my_agent_name,
         my_wg_name: wg_name.to_string(),
         my_wg_dir: wg_dir.to_path_buf(),
-        ac_new_dir: ac_new_dir.to_path_buf(),
+        workspace_dir: workspace_dir.to_path_buf(),
         my_project,
     })
 }
 
 /// Resolve the coordinator agent name for a WG by matching replica identity
-/// paths against the team coordinator path in `.ac-new/_team_*/config.json`.
+/// paths against the team coordinator path in the workspace `_team_*/config.json`.
 /// Only checks the team whose name matches the WG suffix (e.g. `wg-1-ac-devs` → `_team_ac-devs`).
-fn resolve_wg_coordinator(ac_new_dir: &Path, wg_dir: &Path) -> Option<String> {
-    crate::config::teams::resolve_wg_coordinator_replica(ac_new_dir, wg_dir)
+fn resolve_wg_coordinator(workspace_dir: &Path, wg_dir: &Path) -> Option<String> {
+    crate::config::teams::resolve_wg_coordinator_replica(workspace_dir, wg_dir)
         .map(|replica| replica.agent_name)
 }
 
@@ -558,7 +559,7 @@ fn read_wg_role(replica_dir: &Path) -> String {
 }
 
 /// Build a PeerInfo for a WG replica directory. Also bootstraps IPC dirs.
-/// `project` is the project folder name (dir containing `.ac-new/`) and forms
+/// `project` is the project folder name (dir containing the AC workspace) and forms
 /// the LHS of the canonical FQN.
 fn build_wg_peer(
     project: &str,
@@ -615,7 +616,7 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
     // (`can_communicate`) compare project-qualified strings.
     let my_full_name = format!("{}:{}/{}", wg.my_project, wg.my_wg_name, wg.my_agent_name);
 
-    let coordinator = resolve_wg_coordinator(&wg.ac_new_dir, &wg.my_wg_dir);
+    let coordinator = resolve_wg_coordinator(&wg.workspace_dir, &wg.my_wg_dir);
     let i_am_coordinator = coordinator.as_deref() == Some(wg.my_agent_name.as_str());
 
     if coordinator.is_none() {
@@ -664,10 +665,10 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
         ));
     }
 
-    // Coordinator also sees coordinators of OTHER WGs in the same .ac-new
+    // Coordinator also sees coordinators of other WGs in the same workspace
     // (same project, different WG — still qualified with `wg.my_project`).
     if i_am_coordinator {
-        if let Ok(entries) = std::fs::read_dir(&wg.ac_new_dir) {
+        if let Ok(entries) = std::fs::read_dir(&wg.workspace_dir) {
             for entry in entries.flatten() {
                 let other_wg_dir = entry.path();
                 if !other_wg_dir.is_dir() {
@@ -678,7 +679,7 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
                     _ => continue,
                 };
 
-                if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_new_dir, &other_wg_dir) {
+                if let Some(other_coord) = resolve_wg_coordinator(&wg.workspace_dir, &other_wg_dir) {
                     let coord_dir = other_wg_dir.join(format!("__agent_{}", other_coord));
                     if !coord_dir.is_dir() {
                         continue;
@@ -714,7 +715,7 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
     let mut effective_paths = crate::config::settings::load_settings()
         .project_paths
         .clone();
-    if let Some(project_dir) = wg.ac_new_dir.parent() {
+    if let Some(project_dir) = wg.workspace_dir.parent() {
         if let Some(project_str) = project_dir.to_str() {
             let p = project_str.to_string();
             let canon_p = std::fs::canonicalize(&p).ok();
@@ -834,7 +835,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
     }
 
     // ── WG replica discovery ──────────────────────────────────────────────
-    // Scan project_paths for .ac-new/wg-*/__agent_* replicas
+    // Scan project_paths for workspace wg-*/__agent_* replicas
     let settings = crate::config::settings::load_settings();
     for base_path in &settings.project_paths {
         let base = Path::new(base_path);
@@ -855,16 +856,15 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
             }
         }
         for repo_dir in dirs_to_check {
-            let ac_new_dir = repo_dir.join(".ac-new");
-            if !ac_new_dir.is_dir() {
+            let Some(workspace_dir) = existing_workspace_dir(&repo_dir) else {
                 continue;
-            }
-            // Project folder name (parent of .ac-new) — LHS of the canonical FQN.
+            };
+            // Project folder name (parent of workspace) is the LHS of the canonical FQN.
             let project_folder = match repo_dir.file_name().and_then(|n| n.to_str()) {
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            let wg_entries = match std::fs::read_dir(&ac_new_dir) {
+            let wg_entries = match std::fs::read_dir(&workspace_dir) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
@@ -962,12 +962,11 @@ fn discover_root_coordinator_peers_from_project_paths(project_paths: &[String]) 
         }
 
         for repo_dir in dirs_to_check {
-            let ac_new_dir = repo_dir.join(".ac-new");
-            if !ac_new_dir.is_dir() {
+            let Some(workspace_dir) = existing_workspace_dir(&repo_dir) else {
                 continue;
-            }
+            };
 
-            let wg_entries = match std::fs::read_dir(&ac_new_dir) {
+            let wg_entries = match std::fs::read_dir(&workspace_dir) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
@@ -982,7 +981,7 @@ fn discover_root_coordinator_peers_from_project_paths(project_paths: &[String]) 
                 }
 
                 let Some(coord) =
-                    crate::config::teams::resolve_wg_coordinator_replica(&ac_new_dir, &wg_path)
+                    crate::config::teams::resolve_wg_coordinator_replica(&workspace_dir, &wg_path)
                 else {
                     continue;
                 };
@@ -1328,7 +1327,7 @@ mod tests {
             my_agent_name: "tech-lead".to_string(),
             my_wg_name: "wg-1-dev-team".to_string(),
             my_wg_dir: PathBuf::from("ignored-for-this-test"),
-            ac_new_dir: PathBuf::from("ignored-for-this-test"),
+            workspace_dir: PathBuf::from("ignored-for-this-test"),
             my_project: "proj-a".to_string(),
         };
         let peer = build_root_agent_synthetic_peer(&wg, &paths)
@@ -1346,7 +1345,7 @@ mod tests {
             my_agent_name: "dev-rust".to_string(),
             my_wg_name: "wg-1-dev-team".to_string(),
             my_wg_dir: PathBuf::from("ignored-for-this-test"),
-            ac_new_dir: PathBuf::from("ignored-for-this-test"),
+            workspace_dir: PathBuf::from("ignored-for-this-test"),
             my_project: "proj-a".to_string(),
         };
         assert!(build_root_agent_synthetic_peer(&wg, &paths).is_none());
@@ -1359,7 +1358,7 @@ mod tests {
             my_agent_name: "tech-lead".to_string(),
             my_wg_name: "wg-1-dev-team".to_string(),
             my_wg_dir: PathBuf::from("ignored-for-this-test"),
-            ac_new_dir: PathBuf::from("ignored-for-this-test"),
+            workspace_dir: PathBuf::from("ignored-for-this-test"),
             my_project: "proj-a".to_string(),
         };
         assert!(build_root_agent_synthetic_peer(&wg, &paths).is_none());
@@ -1373,12 +1372,12 @@ mod tests {
         // with cli/send.rs::effective_project_paths).
         let (temp, _seeded_paths) = make_root_discovery_fixture(false);
         let project_dir = temp.path().join("proj-a");
-        let ac_new_dir = project_dir.join(".ac-new");
+        let workspace_dir = project_dir.join(".ac");
         let wg = WgReplicaInfo {
             my_agent_name: "tech-lead".to_string(),
             my_wg_name: "wg-1-dev-team".to_string(),
-            my_wg_dir: ac_new_dir.join("wg-1-dev-team"),
-            ac_new_dir: ac_new_dir.clone(),
+            my_wg_dir: workspace_dir.join("wg-1-dev-team"),
+            workspace_dir: workspace_dir.clone(),
             my_project: "proj-a".to_string(),
         };
 
@@ -1390,10 +1389,10 @@ mod tests {
             "without augmentation, helper must reject (otherwise this test is trivial)"
         );
 
-        // Replicate the call-site augmentation: walk up `wg.ac_new_dir.parent()`.
+        // Replicate the call-site augmentation: walk up `wg.workspace_dir.parent()`.
         let mut augmented = empty.clone();
         let project_str = wg
-            .ac_new_dir
+            .workspace_dir
             .parent()
             .and_then(|d| d.to_str())
             .expect("fixture project dir is utf-8")

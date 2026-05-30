@@ -101,7 +101,7 @@ const ActionBar: Component = () => {
       if (hasAcNew) {
         await projectStore.loadProject(picked);
       } else {
-        showToast("No AC project found in this folder (.ac-new/ not found)");
+        showToast("No AC project found in this folder (.ac/ not found; legacy .ac-new/ also supported)");
       }
     } finally {
       setIsPendingDialog(false);
