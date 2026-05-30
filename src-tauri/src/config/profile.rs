@@ -62,7 +62,7 @@ pub fn app_title() -> &'static str {
     TITLE.get_or_init(|| match binary_suffix() {
         Some(suffix) => format!("Agents Commander [{}]", suffix.to_uppercase()),
         None => match BUILD_PROFILE {
-            "dev" => "Agents Commander New".to_string(),
+            "dev" => "Agents Commander".to_string(),
             "stage" => "Agents Commander [STAGE]".to_string(),
             _ => "Agents Commander".to_string(),
         },
@@ -116,7 +116,7 @@ pub fn product_name() -> &'static str {
     NAME.get_or_init(|| match binary_suffix() {
         Some(suffix) => format!("Agents Commander {}", capitalize_suffix(suffix)),
         None => match BUILD_PROFILE {
-            "dev" => "Agents Commander New".to_string(),
+            "dev" => "Agents Commander".to_string(),
             "stage" => "Agents Commander Stage".to_string(),
             _ => "Agents Commander".to_string(),
         },

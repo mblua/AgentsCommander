@@ -8,6 +8,10 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
+use crate::config::workspace::{
+    canonical_workspace_dir_label, existing_workspace_dir, find_workspace_segment,
+    has_workspace_dir, workspace_dir_for_project,
+};
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
@@ -132,21 +136,16 @@ pub struct AcDiscoveryResult {
 }
 
 /// Extract the origin project name from a resolved identity path.
-/// Looks for the folder immediately before ".ac-new" in the path.
+/// Looks for the folder immediately before the rightmost AC workspace marker.
 fn extract_origin_project(identity_abs_path: &std::path::Path) -> Option<String> {
     let s = identity_abs_path.to_string_lossy().replace('\\', "/");
     let parts: Vec<&str> = s.split('/').collect();
-    for (i, part) in parts.iter().enumerate() {
-        if *part == ".ac-new" && i > 0 {
-            return Some(parts[i - 1].to_string());
-        }
-    }
-    None
+    find_workspace_segment(&parts).and_then(|i| (i > 0).then(|| parts[i - 1].to_string()))
 }
 
 /// Derive agent display name from its path.
 /// Format: "{project_folder}/{agent_name}" where:
-/// - project_folder = directory containing .ac-new/
+/// - project_folder = directory containing the AC workspace
 /// - agent_name = folder name with "_agent_" prefix stripped
 fn agent_display_name(project_folder: &str, dir_name: &str) -> String {
     let agent_name = dir_name.strip_prefix("_agent_").unwrap_or(dir_name);
@@ -156,19 +155,17 @@ fn agent_display_name(project_folder: &str, dir_name: &str) -> String {
 /// Resolve an agent ref to a display name. Handles both relative refs
 /// (e.g. "../_agent_tech-lead") and absolute paths.
 /// For relative refs, uses project_folder as origin. For absolute paths,
-/// extracts the origin project from the folder before ".ac-new".
+/// extracts the origin project from the folder before the workspace marker.
 fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
     let normalized = agent_ref.replace('\\', "/");
     let trimmed = normalized
         .trim_start_matches("../")
         .trim_start_matches("./");
     if trimmed.contains(':') || trimmed.starts_with('/') {
-        // Absolute path: extract origin project from folder before .ac-new
+        // Absolute path: extract origin project from folder before the workspace marker
         let parts: Vec<&str> = trimmed.split('/').collect();
-        let origin = parts
-            .iter()
-            .position(|p| *p == ".ac-new")
-            .and_then(|i| if i > 0 { Some(parts[i - 1]) } else { None })
+        let origin = find_workspace_segment(&parts)
+            .and_then(|i| (i > 0).then_some(parts[i - 1]))
             .unwrap_or(project_folder);
         let dir_name = parts.last().unwrap_or(&trimmed);
         agent_display_name(origin, dir_name)
@@ -331,7 +328,7 @@ struct TaskUpdatedPayload {
 pub struct DiscoveryBranchWatcher {
     app_handle: AppHandle,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-    /// Keyed by the project directory that DIRECTLY CONTAINS `.ac-new/` — NOT by
+    /// Keyed by the project directory that directly contains the AC workspace, not by
     /// `settings.project_paths` entries (which may be parent dirs holding many projects).
     /// Keying by the direct parent prevents both (a) the original overwrite-across-projects
     /// bug (Grinch #1) and (b) the double-registration that occurs when `project_paths`
@@ -368,20 +365,20 @@ impl DiscoveryBranchWatcher {
     }
 
     /// Update this project's replicas in the watcher. `ac_new_parent_dir` is the directory
-    /// that directly contains `.ac-new/` — NOT a grand-parent from `settings.project_paths`.
+    /// that directly contains the AC workspace, not a grand-parent from `settings.project_paths`.
     /// See the invariant comment on the `replicas` field.
     pub fn update_replicas_for_project(&self, ac_new_parent_dir: &str, workgroups: &[AcWorkgroup]) {
         // Invariant guard: catch mistaken call-site passes (e.g. a `base_path` parent)
         // in dev builds. Release builds log a warn and return to prevent silent corruption.
-        let has_ac_new = Path::new(ac_new_parent_dir).join(".ac-new").is_dir();
+        let has_workspace = has_workspace_dir(Path::new(ac_new_parent_dir));
         debug_assert!(
-            has_ac_new,
-            "update_replicas_for_project: {} does not contain .ac-new/",
+            has_workspace,
+            "update_replicas_for_project: {} does not contain an AC workspace",
             ac_new_parent_dir
         );
-        if !has_ac_new {
+        if !has_workspace {
             log::warn!(
-                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no .ac-new/ — ignoring",
+                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no AC workspace, ignoring",
                 ac_new_parent_dir
             );
             return;
@@ -836,7 +833,7 @@ impl DiscoveryBranchWatcher {
     }
 }
 
-/// Discover AC-new agent matrices from .ac-new/ directories within configured repo paths.
+/// Discover AC agent matrices from workspace directories within configured repo paths.
 #[tauri::command]
 pub async fn discover_ac_agents(
     app: AppHandle,
@@ -855,7 +852,7 @@ pub async fn discover_ac_agents(
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
     let mut teams: Vec<AcTeam> = Vec::new();
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
-    // Track the `.ac-new/`-containing dir each workgroup originated from. Keys are
+    // Track the workspace-containing dir each workgroup originated from. Keys are
     // `wg.name` values (unique within a discovery run; workgroup dir names include
     // the team name which collides only intentionally across projects). Populated as
     // we push to `workgroups` so we can later call `update_replicas_for_project` once
@@ -886,14 +883,13 @@ pub async fn discover_ac_agents(
         };
 
         for repo_dir in dirs_to_check {
-            let ac_new_dir = repo_dir.join(".ac-new");
-            if !ac_new_dir.is_dir() {
+            let Some(workspace_dir) = existing_workspace_dir(&repo_dir) else {
                 continue;
-            }
+            };
             let repo_dir_str = repo_dir.to_string_lossy().to_string();
 
             // Opportunistic: ensure gitignore exists for existing projects
-            let _ = ensure_ac_new_gitignore(&ac_new_dir);
+            let _ = ensure_workspace_gitignore(&workspace_dir);
 
             let project_folder = repo_dir
                 .file_name()
@@ -901,7 +897,7 @@ pub async fn discover_ac_agents(
                 .unwrap_or("unknown")
                 .to_string();
 
-            let entries = match std::fs::read_dir(&ac_new_dir) {
+            let entries = match std::fs::read_dir(&workspace_dir) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
@@ -1165,7 +1161,7 @@ pub async fn discover_ac_agents(
         }
     }
 
-    // Update the branch watcher per-project. Each `.ac-new/`-containing dir gets its own
+    // Update the branch watcher per-project. Each workspace-containing dir gets its own
     // slot so multi-project setups don't overwrite each other (Grinch #1 + #12).
     let mut by_project: HashMap<String, Vec<AcWorkgroup>> = HashMap::new();
     for wg in &workgroups {
@@ -1214,17 +1210,16 @@ pub async fn discover_ac_agents(
     })
 }
 
-/// Check if a folder has a .ac-new/ subdirectory.
+/// Check if a folder has an AC workspace subdirectory.
 #[tauri::command]
 pub async fn check_project_path(path: String) -> Result<bool, String> {
-    let ac_new = Path::new(&path).join(".ac-new");
-    Ok(ac_new.is_dir())
+    Ok(existing_workspace_dir(Path::new(&path)).is_some())
 }
 
-/// Ensure .ac-new/.gitignore exists and contains all required exclusion patterns.
+/// Ensure the workspace .gitignore exists and contains all required exclusion patterns.
 /// Called during project creation, workgroup creation, and opportunistically during discovery.
-pub(crate) fn ensure_ac_new_gitignore(ac_new_dir: &Path) -> Result<(), String> {
-    let gitignore_path = ac_new_dir.join(".gitignore");
+pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), String> {
+    let gitignore_path = workspace_dir.join(".gitignore");
 
     // Each entry: (pattern, comment explaining why)
     let required_entries: &[(&str, &str)] = &[
@@ -1256,7 +1251,7 @@ pub(crate) fn ensure_ac_new_gitignore(ac_new_dir: &Path) -> Result<(), String> {
 
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(&gitignore_path)
-            .map_err(|e| format!("Failed to read .ac-new/.gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to read workspace .gitignore: {}", e))?;
 
         let mut additions = String::new();
         for (pattern, comment) in required_entries {
@@ -1271,7 +1266,7 @@ pub(crate) fn ensure_ac_new_gitignore(ac_new_dir: &Path) -> Result<(), String> {
                 &gitignore_path,
                 format!("{}{}{}", content, separator, additions),
             )
-            .map_err(|e| format!("Failed to update .ac-new/.gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to update workspace .gitignore: {}", e))?;
         }
     } else {
         let mut content = String::new();
@@ -1279,19 +1274,24 @@ pub(crate) fn ensure_ac_new_gitignore(ac_new_dir: &Path) -> Result<(), String> {
             content.push_str(&format!("{}\n{}\n\n", comment, pattern));
         }
         std::fs::write(&gitignore_path, content)
-            .map_err(|e| format!("Failed to create .ac-new/.gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to create workspace .gitignore: {}", e))?;
     }
 
     Ok(())
 }
 
-/// Create a .ac-new/ directory inside the given path.
+/// Create a canonical .ac/ directory inside the given path.
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
-    let ac_new = Path::new(&path).join(".ac-new");
-    std::fs::create_dir_all(&ac_new)
-        .map_err(|e| format!("Failed to create .ac-new directory: {}", e))?;
-    ensure_ac_new_gitignore(&ac_new)?;
+    let workspace_dir = workspace_dir_for_project(Path::new(&path));
+    std::fs::create_dir_all(&workspace_dir).map_err(|e| {
+        format!(
+            "Failed to create {} directory: {}",
+            canonical_workspace_dir_label(),
+            e
+        )
+    })?;
+    ensure_workspace_gitignore(&workspace_dir)?;
     Ok(())
 }
 
@@ -1313,22 +1313,21 @@ pub async fn discover_project(
 
     let cfg = settings.read().await;
 
-    let ac_new_dir = base.join(".ac-new");
-    if !ac_new_dir.is_dir() {
+    let Some(workspace_dir) = existing_workspace_dir(base) else {
         return Ok(AcDiscoveryResult {
             agents: vec![],
             teams: vec![],
             workgroups: vec![],
         });
-    }
+    };
 
     // Opportunistic: ensure gitignore protects workgroup clones
-    let _ = ensure_ac_new_gitignore(&ac_new_dir);
+    let _ = ensure_workspace_gitignore(&workspace_dir);
 
     // Discovery-wide team snapshot — see discover_ac_agents for rationale.
     // Lock-safe: discover_teams() reads settings from disk via load_settings()
     // and does NOT acquire SettingsState; the read guard above stays valid.
-    // Placed AFTER the .ac-new-missing early return so non-AC folders don't
+    // Placed AFTER the workspace-missing early return so non-AC folders don't
     // pay a wasted filesystem scan (§15 Finding F1).
     let teams_snapshot = crate::config::teams::discover_teams();
     let call_id = DISCOVERY_CALL_ID.fetch_add(1, Ordering::Relaxed);
@@ -1343,9 +1342,9 @@ pub async fn discover_project(
     let mut teams: Vec<AcTeam> = Vec::new();
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
 
-    let entries = match std::fs::read_dir(&ac_new_dir) {
+    let entries = match std::fs::read_dir(&workspace_dir) {
         Ok(e) => e,
-        Err(e) => return Err(format!("Failed to read .ac-new directory: {}", e)),
+        Err(e) => return Err(format!("Failed to read AC workspace directory: {}", e)),
     };
 
     for entry in entries.flatten() {
@@ -1714,7 +1713,7 @@ pub async fn open_project(
     Ok(result)
 }
 
-/// Ensure an AC project at `path` (creating `.ac-new/` if missing) and
+/// Ensure an AC project at `path` (creating `.ac/` if missing) and
 /// register it in `settings.project_paths`. Mirrors the ActionBar "New
 /// Project" flow at `src/sidebar/components/ActionBar.tsx:58-71`.
 #[tauri::command]
@@ -1747,40 +1746,73 @@ fn read_task_fields(wg_path: &Path) -> TaskFields {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ensure_ac_new_gitignore_includes_delete_sentinels_on_create() {
+    #[tokio::test]
+    async fn check_project_path_accepts_ac() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let ac_new = tmp.path().join(".ac-new");
-        std::fs::create_dir(&ac_new).expect("create .ac-new");
+        std::fs::create_dir(tmp.path().join(".ac")).expect("create .ac");
 
-        ensure_ac_new_gitignore(&ac_new).expect("ensure .ac-new/.gitignore");
+        assert!(check_project_path(tmp.path().to_string_lossy().to_string())
+            .await
+            .expect("check path"));
+    }
+
+    #[tokio::test]
+    async fn check_project_path_accepts_legacy_ac_new() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join(".ac-new")).expect("create .ac-new");
+
+        assert!(check_project_path(tmp.path().to_string_lossy().to_string())
+            .await
+            .expect("check path"));
+    }
+
+    #[tokio::test]
+    async fn create_ac_project_creates_ac_not_ac_new() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        create_ac_project(tmp.path().to_string_lossy().to_string())
+            .await
+            .expect("create project");
+
+        assert!(tmp.path().join(".ac").is_dir());
+        assert!(tmp.path().join(".ac").join(".gitignore").is_file());
+        assert!(!tmp.path().join(".ac-new").exists());
+    }
+
+    #[test]
+    fn ensure_workspace_gitignore_includes_delete_sentinels_on_create() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create .ac");
+
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
 
         let content =
-            std::fs::read_to_string(ac_new.join(".gitignore")).expect("read .ac-new/.gitignore");
+            std::fs::read_to_string(workspace.join(".gitignore")).expect("read .gitignore");
         assert!(
             content.lines().any(|line| line.trim() == ".deleting-*/"),
-            ".ac-new/.gitignore must ignore workgroup delete sentinel directories"
+            "workspace .gitignore must ignore workgroup delete sentinel directories"
         );
     }
 
     #[test]
-    fn ensure_ac_new_gitignore_appends_delete_sentinels_to_existing_file() {
+    fn ensure_workspace_gitignore_appends_delete_sentinels_to_existing_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let ac_new = tmp.path().join(".ac-new");
-        std::fs::create_dir(&ac_new).expect("create .ac-new");
-        std::fs::write(ac_new.join(".gitignore"), "wg-*/\n").expect("write .gitignore");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create .ac");
+        std::fs::write(workspace.join(".gitignore"), "wg-*/\n").expect("write .gitignore");
 
-        ensure_ac_new_gitignore(&ac_new).expect("ensure .ac-new/.gitignore");
+        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
 
         let content =
-            std::fs::read_to_string(ac_new.join(".gitignore")).expect("read .ac-new/.gitignore");
+            std::fs::read_to_string(workspace.join(".gitignore")).expect("read .gitignore");
         let count = content
             .lines()
             .filter(|line| line.trim() == ".deleting-*/")
             .count();
         assert_eq!(
             count, 1,
-            ".ac-new/.gitignore should append the delete sentinel pattern exactly once"
+            "workspace .gitignore should append the delete sentinel pattern exactly once"
         );
     }
 

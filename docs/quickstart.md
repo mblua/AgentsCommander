@@ -26,9 +26,9 @@ Run the installer, or drop the portable `.exe` into any folder and double-click.
 
 ## 2. Open or create an AC project
 
-An **AC project** is a folder with an `.ac-new/` workspace inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable.
+An **AC project** is a folder with an `.ac/` workspace inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable. Existing `.ac-new/` workspaces still open as a legacy fallback.
 
-In the sidebar, click **New Project** and point at any folder — empty or an existing repo. AC creates `.ac-new/` with a sensible `.gitignore` and registers the project in your sidebar.
+In the sidebar, click **New Project** and point at any folder, empty or an existing repo. AC creates `.ac/` with a sensible `.gitignore` and registers the project in your sidebar.
 
 > CLI equivalent: `agentscommander new-project /path/to/folder`
 
@@ -41,7 +41,7 @@ Open the Teams pane. A **Team** is one coordinator plus one or more worker agent
 3. Add one **worker** the same way (for example `dev-rust` with the *Rust developer* template).
 4. Mark the first agent as **coordinator**.
 
-Behind the scenes AC creates `.ac-new/wg-1-<team-name>/__agent_tech-lead/` and `__agent_dev-rust/` with `Role.md` files inside.
+Behind the scenes AC creates `.ac/wg-1-<team-name>/__agent_tech-lead/` and `__agent_dev-rust/` with `Role.md` files inside.
 
 ## 4. Write a brief and launch the coordinator
 
@@ -55,7 +55,7 @@ Ask the coordinator something like:
 
 > "Send a hello message to `<project>:wg-1-feature-x/dev-rust` and ask them to confirm the role they have."
 
-The coordinator will write a markdown file to `.ac-new/wg-1-feature-x/messaging/` and run `agentscommander send --to <peer> --send <filename> --mode wake`. In a second or two you will see the worker's session activate, read the file, and reply by writing its own message back.
+The coordinator will write a markdown file to `.ac/wg-1-feature-x/messaging/` and run `agentscommander send --to <peer> --send <filename> --mode wake`. In a second or two you will see the worker's session activate, read the file, and reply by writing its own message back.
 
 That's the loop. Every message is a file you can `cat`, `git diff`, and audit.
 

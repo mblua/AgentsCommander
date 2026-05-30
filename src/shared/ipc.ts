@@ -448,7 +448,7 @@ export const ProjectAPI = {
   open: (path: string) =>
     transport.invoke<ProjectRegistration>("open_project", { path }),
   /**
-   * Ensure an AC project at `path` (mkdir `.ac-new/` if missing) and register
+   * Ensure an AC project at `path` (mkdir `.ac/` if no workspace exists) and register
    * it in settings.projectPaths. Wraps the `new_project` Tauri command added
    * in #191 — same backend logic as the CLI `new-project` verb.
    */

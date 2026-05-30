@@ -12,7 +12,7 @@ An agent is a directory with a role-prompt file at its root. The directory IS th
 | Codex | `AGENTS.md` (or `CLAUDE.md` fallback) |
 | Gemini | `GEMINI.md` (or `CLAUDE.md` fallback) |
 
-When the agent dir lives inside an AC project at `.ac-new/_agent_<name>/`, AC promotes it to an **agent matrix** with optional `memory/`, `plans/`, `skills/`, and a canonical `Role.md`.
+When the agent dir lives inside an AC project at `.ac/_agent_<name>/`, AC promotes it to an **agent matrix** with optional `memory/`, `plans/`, `skills/`, and a canonical `Role.md`. Legacy `.ac-new/` projects use the same layout under `.ac-new/`.
 
 ## The one rule
 
@@ -23,7 +23,7 @@ If you need two agents in the same project, give each one its own sibling direct
 ## Path 1 — through the UI (recommended)
 
 1. Open the **New Agent** modal from the sidebar (the **+ Agent** button in the project header).
-2. Pick a parent directory. For a team member, this should be inside `.ac-new/_team_<team>/` (the team will discover the new agent automatically).
+2. Pick a parent directory. For a team member, this should be inside `.ac/_team_<team>/` (the team will discover the new agent automatically).
 3. Type a name (no slashes, no NUL, lowercase kebab-case recommended).
 4. Pick a role template — see [the role-template picker](../integrations/coding-agents.md#role-template-picker).
 5. Optionally enable skills if the template ships them.
@@ -34,7 +34,7 @@ AC creates the directory, writes the chosen role into `Role.md` and `CLAUDE.md`,
 ## Path 2 — through the CLI
 
 ```bash
-agentscommander create-agent --parent "C:\repos\my-project\.ac-new" --name "dev-rust"
+agentscommander create-agent --parent "C:\repos\my-project\.ac" --name "dev-rust"
 ```
 
 Optional flags:
@@ -99,14 +99,14 @@ AC derives the agent's name from its filesystem path:
 
 | Path shape | Canonical name |
 |---|---|
-| `<project>/.ac-new/_agent_<name>/` | `<project>/<name>` |
-| `<project>/.ac-new/wg-<N>-<team>/__agent_<name>/` (replica) | `<project>:wg-<N>-<team>/<name>` |
+| `<project>/.ac/_agent_<name>/` | `<project>/<name>` |
+| `<project>/.ac/wg-<N>-<team>/__agent_<name>/` (replica) | `<project>:wg-<N>-<team>/<name>` |
 
 Use this name verbatim with `send --to`. The CLI's `list-peers-lean` always emits the canonical form.
 
 ## Updating an agent
 
-To edit a role, edit `Role.md` in the canonical agent matrix at `.ac-new/_agent_<name>/`. AC regenerates `CLAUDE.md` from it. Never edit `CLAUDE.md` directly on a workgroup replica — the next sync will overwrite your changes.
+To edit a role, edit `Role.md` in the canonical agent matrix at `.ac/_agent_<name>/`. AC regenerates `CLAUDE.md` from it. Never edit `CLAUDE.md` directly on a workgroup replica; the next sync will overwrite your changes.
 
 ## See also
 

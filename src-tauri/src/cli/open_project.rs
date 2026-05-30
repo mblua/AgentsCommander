@@ -21,14 +21,14 @@ use crate::config::settings::{load_settings_for_cli, save_settings};
 #[derive(Args)]
 #[command(after_help = "\
 PURPOSE: Register an existing AC project so it appears in the GUI sidebar on \
-next launch. The folder must already contain `.ac-new/` (use `new-project` to \
+next launch. The folder must already contain `.ac/` or legacy `.ac-new/` (use `new-project` to \
 create one).\n\n\
 PATH: Absolute or relative — relative paths are resolved against the current \
 working directory. The persisted entry is the absolute form.\n\n\
 IDEMPOTENCY: Re-registering the same path is a no-op; the verb prints \
 \"Project already registered\" and exits 0.")]
 pub struct OpenProjectArgs {
-    /// Path to an existing AC project folder (must contain `.ac-new/`)
+    /// Path to an existing AC project folder (must contain `.ac/` or legacy `.ac-new/`)
     #[arg(value_name = "PATH")]
     pub path: String,
 }
@@ -43,10 +43,10 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
         Err(e) => {
             eprintln!("Error: {}", e);
             // Append CLI-specific guidance when the user pointed at a folder
-            // without `.ac-new/`. The bare error string is GUI-friendly
+            // without an AC workspace. The bare error string is GUI-friendly
             // (Round-1 G8); only the CLI knows about `new-project`.
-            if matches!(e, ProjectError::AcNewMissing(_)) {
-                eprintln!("Hint: use `new-project <PATH>` to create the .ac-new structure.");
+            if matches!(e, ProjectError::WorkspaceMissing(_)) {
+                eprintln!("Hint: use `new-project <PATH>` to create the .ac structure.");
             }
             return 1;
         }

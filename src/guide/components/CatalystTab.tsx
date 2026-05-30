@@ -18,7 +18,7 @@ const CatalystTab: Component = () => {
       <div class="guide-card">
         <div class="guide-card-title">1. Define your team</div>
         <div class="guide-card-body">
-          Go to your project's .ac-new/ directory and create a team via _team_*/config.json. Define agents, a coordinator, and repos. Teams are discovered automatically from these config files.
+          Go to your project's .ac/ directory and create a team via _team_*/config.json. Define agents, a coordinator, and repos. Teams are discovered automatically from these config files.
         </div>
       </div>
 
