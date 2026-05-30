@@ -960,7 +960,7 @@ pub async fn create_workgroup(
             "$AGENTSCOMMANDER_CONTEXT".to_string(),
             "$REPOS_WORKSPACE_INFO".to_string(),
         ];
-        // Resolve agent_path against base (.ac-new) for relative paths
+        // Resolve agent_path against the selected workspace for relative paths.
         let matrix_dir = if Path::new(agent_path).is_absolute() {
             Path::new(agent_path).to_path_buf()
         } else {
@@ -1840,7 +1840,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
     }
 }
 
-/// Scan `.ac-new/` for existing `wg-<N>-{team_name}/` dirs and return the
+/// Scan the selected workspace for existing `wg-<N>-{team_name}/` dirs and return the
 /// **lowest free positive integer** starting at 1.
 ///
 /// Issue #177: previously this returned `max(existing) + 1`, which left
@@ -1907,7 +1907,7 @@ fn determine_next_wg_number(ac_new_dir: &Path, team_name: &str) -> u32 {
 fn compute_relative_identity(agent_path: &str, replica_dir: &Path, ac_new_dir: &Path) -> String {
     let agent = Path::new(agent_path);
 
-    // If it's already a relative path within the same .ac-new/, make it relative to replica
+    // If it's already a relative path within the same workspace, make it relative to replica.
     if agent.is_relative() {
         // agent_path is like "../_agent_foo" or "_agent_foo"
         // From replica inside wg-N-team/ we need to go ../../_agent_foo
@@ -2714,7 +2714,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("create_dir {}: {}", name, e));
     }
 
-    /// Empty `.ac-new/` returns slot 1 — the lowest positive integer.
+    /// Empty workspace returns slot 1, the lowest positive integer.
     #[test]
     fn determine_next_wg_number_returns_one_when_no_wg_dirs_exist() {
         let tmp = tempfile::tempdir().expect("tempdir");

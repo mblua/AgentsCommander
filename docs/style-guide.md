@@ -40,7 +40,7 @@ When you show a command, also show what the user should expect to see — first 
 
 ## 5. Be specific about failure
 
-> ✅ "If you see `Error: ENOENT`, check that you are inside an `.ac-new/` project."
+> ✅ "If you see `Error: ENOENT`, check that you are inside an `.ac/` project. Legacy `.ac-new/` projects are also supported."
 > ❌ "If there is an error, check your setup."
 
 Name the error string. Name the directory. Name the file. Vague troubleshooting is worse than none.

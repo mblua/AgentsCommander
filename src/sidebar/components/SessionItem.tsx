@@ -243,11 +243,11 @@ const SessionItem: Component<{
   const isInactive = () => props.session.id.startsWith("inactive-");
 
   /** Derive short display name from workingDirectory.
-   *  .ac-new paths: "agent-name@origin-project" (e.g. "code-reviewer@phi_phibridge")
+   *  AC workspace paths: "agent-name@origin-project" (e.g. "code-reviewer@phi_phibridge")
    *  Other paths: "parentFolder/name" (last 2 segments)
    *
-   *  .ac-new parsing is delegated to extractProjectName (innermost wins via
-   *  lastIndexOf — matches the titlebar helpers, fixes nested-.ac-new bug). */
+   *  Workspace parsing is delegated to extractProjectName. The innermost
+   *  .ac or legacy .ac-new segment wins, matching the titlebar helpers. */
   const displayName = () => {
     const wd = props.session.workingDirectory;
     if (wd) {
