@@ -426,8 +426,66 @@ pub(crate) fn filter_sessions_by_fqn<'a>(
 ) -> Vec<&'a crate::session::session::SessionInfo> {
     sessions
         .iter()
-        .filter(|s| crate::config::teams::agent_fqn_from_path(&s.working_directory) == target)
+        .filter(|s| session_cwd_matches_fqn(&s.working_directory, target))
         .collect()
+}
+
+fn routable_agent_fqn_from_path(path: &str) -> Option<String> {
+    if crate::config::workspace::path_uses_stale_legacy_workspace(Path::new(path)) {
+        None
+    } else {
+        Some(crate::config::teams::agent_fqn_from_path(path))
+    }
+}
+
+fn session_cwd_matches_fqn(cwd: &str, target: &str) -> bool {
+    routable_agent_fqn_from_path(cwd).as_deref() == Some(target)
+}
+
+fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) -> Option<String> {
+    let (target_project, local) = crate::config::teams::split_project_prefix(agent_name);
+    let (wg_name, agent_short) = local.split_once('/')?;
+    if !wg_name.starts_with("wg-") {
+        return None;
+    }
+
+    let wg_marker = format!("/{}/", wg_name);
+    for (_, cwd) in dirs {
+        if routable_agent_fqn_from_path(cwd).is_none() {
+            continue;
+        }
+
+        let normalized = cwd.replace('\\', "/");
+        if let Some(wg_pos) = normalized.rfind(&wg_marker) {
+            let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
+            let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
+            if !std::path::Path::new(&candidate).is_dir() {
+                continue;
+            }
+
+            let Some(candidate_fqn) = routable_agent_fqn_from_path(&candidate) else {
+                continue;
+            };
+            if let Some(want) = target_project {
+                let (cand_project, _) = crate::config::teams::split_project_prefix(&candidate_fqn);
+                if cand_project != Some(want) {
+                    continue;
+                }
+            }
+
+            log::info!(
+                "[mailbox] wake: resolved WG agent path from sibling session: {}",
+                candidate
+            );
+            return Some(
+                std::path::PathBuf::from(&candidate)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+
+    None
 }
 
 /// §224 A.2.5 — outcome of the daemon-restart race guard wait loop.
@@ -1654,12 +1712,7 @@ impl MailboxPoller {
         // (or a legacy form that genuinely matches only one project's CWD). The
         // substring/suffix fuzziness from the pre-fix code is gone — cross-project
         // leakage is impossible at this layer.
-        let mut matches: Vec<&crate::session::session::SessionInfo> = sessions
-            .iter()
-            .filter(|s| {
-                crate::config::teams::agent_fqn_from_path(&s.working_directory) == agent_name
-            })
-            .collect();
+        let mut matches = filter_sessions_by_fqn(&sessions, agent_name);
 
         if matches.is_empty() {
             log::warn!("[mailbox] No session matched for '{}'", agent_name);
@@ -1728,12 +1781,7 @@ impl MailboxPoller {
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
 
-        let mut matches: Vec<&crate::session::session::SessionInfo> = sessions
-            .iter()
-            .filter(|s| {
-                crate::config::teams::agent_fqn_from_path(&s.working_directory) == agent_name
-            })
-            .collect();
+        let mut matches = filter_sessions_by_fqn(&sessions, agent_name);
 
         let had_any_match = !matches.is_empty();
         if !had_any_match {
@@ -2345,10 +2393,9 @@ impl MailboxPoller {
         };
 
         let hits_agent = |cwd: &str| -> bool {
-            if crate::config::workspace::path_uses_stale_legacy_workspace(Path::new(cwd)) {
+            let Some(path_fqn) = routable_agent_fqn_from_path(cwd) else {
                 return false;
-            }
-            let path_fqn = crate::config::teams::agent_fqn_from_path(cwd);
+            };
             if is_qualified {
                 path_fqn == agent_name
             } else {
@@ -2565,47 +2612,12 @@ impl MailboxPoller {
         app: &tauri::AppHandle,
         agent_name: &str,
     ) -> Option<String> {
-        let (target_project, local) = crate::config::teams::split_project_prefix(agent_name);
-        let (wg_name, agent_short) = local.split_once('/')?;
-        if !wg_name.starts_with("wg-") {
-            return None;
-        }
-
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_working_dirs().await;
         drop(mgr);
 
-        let wg_marker = format!("/{}/", wg_name);
-        for (_, cwd) in &dirs {
-            let normalized = cwd.replace('\\', "/");
-            if let Some(wg_pos) = normalized.rfind(&wg_marker) {
-                let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
-                let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
-                if std::path::Path::new(&candidate).is_dir() {
-                    // If target is qualified, enforce same project on the candidate.
-                    if let Some(want) = target_project {
-                        let candidate_fqn = crate::config::teams::agent_fqn_from_path(&candidate);
-                        let (cand_project, _) =
-                            crate::config::teams::split_project_prefix(&candidate_fqn);
-                        if cand_project != Some(want) {
-                            continue;
-                        }
-                    }
-                    log::info!(
-                        "[mailbox] wake: resolved WG agent path from sibling session: {}",
-                        candidate
-                    );
-                    return Some(
-                        std::path::PathBuf::from(&candidate)
-                            .to_string_lossy()
-                            .to_string(),
-                    );
-                }
-            }
-        }
-
-        None
+        resolve_wg_path_from_session_dirs(&dirs, agent_name)
     }
 
     /// Move an outbox message to outbox/delivered/ with token stripped.
@@ -2884,6 +2896,10 @@ mod tests {
             was_detached: false,
             detached_geometry: None,
         }
+    }
+
+    fn path_string(path: &Path) -> String {
+        path.to_string_lossy().to_string()
     }
 
     fn make_root_route_fixture(
@@ -3751,6 +3767,187 @@ mod tests {
         assert!(crate::config::workspace::path_uses_stale_legacy_workspace(
             &stale_agent
         ));
+    }
+
+    #[test]
+    fn filter_sessions_by_fqn_ignores_stale_live_target_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_agent = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_agent = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&canonical_agent).unwrap();
+        std::fs::create_dir_all(&stale_agent).unwrap();
+
+        let pool = vec![make_session_info(
+            "uuid-stale",
+            "alice-stale",
+            &path_string(&stale_agent),
+            crate::session::session::SessionStatus::Idle,
+            true,
+        )];
+
+        let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
+
+        assert!(hits.is_empty(), "stale legacy live target must be ignored");
+    }
+
+    #[test]
+    fn filter_sessions_by_fqn_prefers_canonical_live_target_when_both_exist() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_agent = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_agent = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&canonical_agent).unwrap();
+        std::fs::create_dir_all(&stale_agent).unwrap();
+
+        let pool = vec![
+            make_session_info(
+                "uuid-stale",
+                "alice-stale",
+                &path_string(&stale_agent),
+                crate::session::session::SessionStatus::Idle,
+                true,
+            ),
+            make_session_info(
+                "uuid-canonical",
+                "alice-canonical",
+                &path_string(&canonical_agent),
+                crate::session::session::SessionStatus::Idle,
+                true,
+            ),
+        ];
+
+        let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "uuid-canonical");
+    }
+
+    #[test]
+    fn filter_sessions_by_fqn_accepts_legacy_only_live_target() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let legacy_agent = temp
+            .path()
+            .join("proj-x")
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&legacy_agent).unwrap();
+
+        let pool = vec![make_session_info(
+            "uuid-legacy",
+            "alice-legacy",
+            &path_string(&legacy_agent),
+            crate::session::session::SessionStatus::Idle,
+            true,
+        )];
+
+        let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "uuid-legacy");
+    }
+
+    #[test]
+    fn wg_session_fallback_ignores_stale_sibling_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_target = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_target = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_sibling = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_bob");
+        std::fs::create_dir_all(&canonical_target).unwrap();
+        std::fs::create_dir_all(&stale_target).unwrap();
+        std::fs::create_dir_all(&stale_sibling).unwrap();
+
+        let dirs = vec![(Uuid::nil(), path_string(&stale_sibling))];
+
+        assert!(resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice").is_none());
+    }
+
+    #[test]
+    fn wg_session_fallback_returns_canonical_when_stale_sibling_is_first() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_target = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let canonical_sibling = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_bob");
+        let stale_target = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_sibling = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_bob");
+        std::fs::create_dir_all(&canonical_target).unwrap();
+        std::fs::create_dir_all(&canonical_sibling).unwrap();
+        std::fs::create_dir_all(&stale_target).unwrap();
+        std::fs::create_dir_all(&stale_sibling).unwrap();
+
+        let dirs = vec![
+            (Uuid::nil(), path_string(&stale_sibling)),
+            (Uuid::nil(), path_string(&canonical_sibling)),
+        ];
+
+        let got = resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice")
+            .expect("canonical sibling should resolve target");
+
+        assert_eq!(
+            std::fs::canonicalize(got).unwrap(),
+            std::fs::canonicalize(canonical_target).unwrap()
+        );
+    }
+
+    #[test]
+    fn wg_session_fallback_accepts_legacy_only_sibling() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let legacy_target = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let legacy_sibling = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_bob");
+        std::fs::create_dir_all(&legacy_target).unwrap();
+        std::fs::create_dir_all(&legacy_sibling).unwrap();
+
+        let dirs = vec![(Uuid::nil(), path_string(&legacy_sibling))];
+
+        let got = resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice")
+            .expect("legacy-only sibling should resolve target");
+
+        assert_eq!(
+            std::fs::canonicalize(got).unwrap(),
+            std::fs::canonicalize(legacy_target).unwrap()
+        );
     }
 
     #[test]
