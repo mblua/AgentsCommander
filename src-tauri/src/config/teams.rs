@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use crate::config::replica_identity::{
+    agent_bare_name_from_ref, read_and_repair_wg_replica_config, WG_REPLICA_REQUIRED_CONTEXT,
+};
 use crate::config::workspace::{existing_workspace_dir, find_workspace_segment, has_workspace_dir};
 
 /// #280 §3.4 — record whether the missing-config one-shot INFO has already
@@ -220,6 +223,7 @@ pub struct WgCoordinatorReplica {
 /// - Lowercase (case-insensitive comparison; matches the convention used by
 ///   `cli/list_peers::norm_path`).
 /// - Trim trailing `/`.
+#[cfg(test)]
 fn normalize_path_for_compare(s: &str) -> String {
     let stripped = s.strip_prefix(r"\\?\").unwrap_or(s);
     stripped
@@ -237,6 +241,7 @@ fn normalize_path_for_compare(s: &str) -> String {
 /// Returns a forward-slash string. `..` components above the root of an
 /// absolute path are dropped; `..` components at the front of a purely
 /// relative path are preserved.
+#[cfg(test)]
 fn logical_path_resolve(path: &Path) -> String {
     use std::path::Component;
     let mut components: Vec<Component> = Vec::new();
@@ -305,6 +310,7 @@ fn logical_path_resolve(path: &Path) -> String {
 /// declared `identity` field from `config.json`, never the replica directory
 /// name (`__agent_*`). A spoofed replica that declares a different matrix
 /// path still produces a different key from the team coordinator ref.
+#[cfg(test)]
 fn identity_compare_key(path: &Path) -> String {
     let raw = match std::fs::canonicalize(path) {
         Ok(canon) => canon.to_string_lossy().into_owned(),
@@ -328,39 +334,34 @@ pub fn resolve_wg_coordinator_replica(
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())?;
     let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
-    let coordinator_key = identity_compare_key(&team_dir.join(coordinator_ref));
+    let coordinator_name = agent_bare_name_from_ref(coordinator_ref).ok()?;
+    if !ac_new_dir
+        .join(format!("_agent_{}", coordinator_name))
+        .is_dir()
+    {
+        return None;
+    }
 
     for replica_entry in std::fs::read_dir(wg_dir).ok()?.flatten() {
         let replica_dir = replica_entry.path();
         if !replica_dir.is_dir() {
             continue;
         }
-        let dir_name = match replica_dir.file_name().and_then(|n| n.to_str()) {
+        let _dir_name = match replica_dir.file_name().and_then(|n| n.to_str()) {
             Some(n) if n.starts_with("__agent_") => n,
             _ => continue,
         };
-        let config: serde_json::Value =
-            match std::fs::read_to_string(replica_dir.join("config.json"))
-                .ok()
-                .and_then(|raw| serde_json::from_str(&raw).ok())
-            {
-                Some(v) => v,
-                None => continue,
-            };
-        let identity_ref = match config.get("identity").and_then(|i| i.as_str()) {
-            Some(i) => i,
-            None => continue,
+        let Ok((_config, identity)) =
+            read_and_repair_wg_replica_config(&replica_dir, WG_REPLICA_REQUIRED_CONTEXT)
+        else {
+            continue;
         };
-        let identity_key = identity_compare_key(&replica_dir.join(identity_ref));
-        if identity_key == coordinator_key {
+        if identity.agent_name == coordinator_name {
             return Some(WgCoordinatorReplica {
                 project,
                 team,
                 wg_name,
-                agent_name: dir_name
-                    .strip_prefix("__agent_")
-                    .unwrap_or(dir_name)
-                    .to_string(),
+                agent_name: identity.agent_name,
                 replica_dir,
             });
         }
@@ -1209,8 +1210,9 @@ mod tests {
 
     /// Build a fixture where both team config and replica configs reference
     /// a legacy folder name (`legacy-workspace`) that no longer exists on disk.
-    /// Mirrors the post-workspace-rename state from #299: `canonicalize()` fails
-    /// for both refs, but logical resolution should still produce equal keys.
+    /// Mirrors the post-workspace-rename state from #299/#300: persisted refs are
+    /// stale, but the same-workspace local matrices exist and are the only valid
+    /// authority targets.
     fn make_stale_coordinator_fixture(
         replica_spoofs_identity: bool,
     ) -> (FixtureRoot, PathBuf, PathBuf) {
@@ -1219,10 +1221,18 @@ mod tests {
         let ac_new = project.join(".ac-new");
         let team_dir = ac_new.join("_team_test-team");
         let wg_dir = ac_new.join("wg-1-test-team");
+        let alpha_matrix = ac_new.join("_agent_test-alpha");
+        let beta_matrix = ac_new.join("_agent_test-beta");
         let alpha_replica = wg_dir.join("__agent_test-alpha");
         let beta_replica = wg_dir.join("__agent_test-beta");
 
-        for dir in [&team_dir, &alpha_replica, &beta_replica] {
+        for dir in [
+            &team_dir,
+            &alpha_matrix,
+            &beta_matrix,
+            &alpha_replica,
+            &beta_replica,
+        ] {
             std::fs::create_dir_all(dir).unwrap();
         }
 
@@ -1277,19 +1287,24 @@ mod tests {
         (tmp, ac_new, wg_dir)
     }
 
-    /// #299: legacy stale absolute identity refs (workspace renamed; refs point
-    /// at a folder that no longer exists) must still resolve the coordinator
-    /// via logical (no-disk) path comparison.
+    /// #300: stale absolute identity refs are accepted only by repairing them
+    /// to the same-workspace local matrix with the same agent basename.
     #[test]
-    fn resolve_wg_coordinator_replica_tolerates_stale_absolute_refs() {
+    fn resolve_wg_coordinator_replica_repairs_stale_absolute_refs() {
         let (_tmp, ac_new, wg_dir) = make_stale_coordinator_fixture(false);
 
         let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir)
-            .expect("tolerant comparison should resolve coordinator with stale refs");
+            .expect("same-workspace repair should resolve coordinator with stale refs");
 
         assert_eq!(resolved.agent_name, "test-alpha");
         assert_eq!(resolved.team, "test-team");
         assert_eq!(resolved.wg_name, "wg-1-test-team");
+        let repaired_config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(wg_dir.join("__agent_test-alpha").join("config.json"))
+                .expect("read repaired config"),
+        )
+        .expect("parse repaired config");
+        assert_eq!(repaired_config["identity"], "../../_agent_test-alpha");
     }
 
     /// #299: even when refs are stale, spoofing must still be rejected — a
@@ -1306,20 +1321,19 @@ mod tests {
         assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
     }
 
-    /// #299: identity ref expressed as a relative path traversing out of the
-    /// workspace into a legacy folder (the typical post-rename shape) must
-    /// produce the same logical key as a team coordinator ref expressed as a
-    /// stale absolute path pointing at the same legacy folder.
+    /// #300: relative identity traversing out of the workspace must be repaired
+    /// to the same-workspace local matrix, not compared against the stale target.
     #[test]
-    fn resolve_wg_coordinator_replica_tolerates_stale_relative_identity() {
+    fn resolve_wg_coordinator_replica_repairs_stale_relative_identity() {
         let tmp = FixtureRoot::new("teams-stale-rel-fixture");
         let project = tmp.path().join("proj-a");
         let ac_new = project.join(".ac-new");
         let team_dir = ac_new.join("_team_test-team");
         let wg_dir = ac_new.join("wg-1-test-team");
+        let alpha_matrix = ac_new.join("_agent_test-alpha");
         let alpha_replica = wg_dir.join("__agent_test-alpha");
 
-        for dir in [&team_dir, &alpha_replica] {
+        for dir in [&team_dir, &alpha_matrix, &alpha_replica] {
             std::fs::create_dir_all(dir).unwrap();
         }
 
@@ -1349,7 +1363,7 @@ mod tests {
         .unwrap();
 
         let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir)
-            .expect("tolerant comparison should bridge stale absolute and relative refs");
+            .expect("same-workspace repair should resolve stale relative identity");
         assert_eq!(resolved.agent_name, "test-alpha");
     }
 

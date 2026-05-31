@@ -7,6 +7,10 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
 use crate::config::claude_settings::ensure_claude_md_excludes;
+use crate::config::replica_identity::{
+    expected_wg_replica_identity, normalize_wg_replica_context_entries,
+    repair_wg_replica_config_value, ROLE_MD_FILENAME, WG_REPLICA_REQUIRED_CONTEXT,
+};
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::config::workspace::existing_workspace_dir;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
@@ -783,14 +787,8 @@ pub(crate) fn create_or_update_replica_on_disk(
     args: ReplicaDiskCreateArgs,
 ) -> Result<PathBuf, String> {
     let agent_ref = resolve_agent_ref(&args.ac_new_dir, &args.agent_path)?;
-    let agent_dir_name = Path::new(&agent_ref)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&agent_ref);
-    let agent_name = agent_dir_name
-        .strip_prefix("_agent_")
-        .unwrap_or(agent_dir_name);
-    validate_existing_name(agent_name, "Agent")?;
+    let agent_name = agent_ref_bare_name(&agent_ref);
+    validate_existing_name(&agent_name, "Agent")?;
     let replica_dir = args.wg_dir.join(format!("__agent_{}", agent_name));
 
     create_agent_replica_layout(&replica_dir).map_err(|(sub, e)| match sub {
@@ -821,25 +819,23 @@ pub(crate) fn create_or_update_replica_on_disk(
     let assigned_repos: Vec<String> = args
         .team_repos
         .iter()
-        .filter(|r| r.agents.iter().any(|a| agent_matches(a, agent_name)))
+        .filter(|r| r.agents.iter().any(|a| agent_matches(a, &agent_name)))
         .map(|r| {
             let dir_name = format!("repo-{}", repo_dir_name_from_url(&r.url));
             format!("../{}", dir_name)
         })
         .collect();
 
-    let identity_rel = compute_relative_identity(&agent_ref, &replica_dir, &args.ac_new_dir);
-    let mut context_entries: Vec<String> = vec![
-        "$AGENTSCOMMANDER_CONTEXT".to_string(),
-        "$REPOS_WORKSPACE_INFO".to_string(),
-    ];
-    let matrix_dir = args.ac_new_dir.join(&agent_ref);
-    if matrix_dir.join("Role.md").exists() {
-        context_entries.push(format!("{}/Role.md", identity_rel));
-    }
+    let identity = expected_wg_replica_identity(&replica_dir)?;
+    let context_entries = normalize_wg_replica_context_entries(
+        &[],
+        WG_REPLICA_REQUIRED_CONTEXT,
+        &identity.identity,
+        identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+    );
 
     let replica_config = serde_json::json!({
-        "identity": identity_rel,
+        "identity": identity.identity,
         "repos": assigned_repos,
         "context": context_entries,
     });
@@ -1214,15 +1210,8 @@ pub async fn create_workgroup(
 
     // Create __agent_*/ replica dirs
     for agent_path in &team_agents {
-        let agent_dir_name = Path::new(agent_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(agent_path);
-
-        // Extract the clean agent name (strip _agent_ prefix)
-        let agent_name = agent_dir_name
-            .strip_prefix("_agent_")
-            .unwrap_or(agent_dir_name);
+        let agent_ref = resolve_agent_ref(&base, agent_path)?;
+        let agent_name = agent_ref_bare_name(&agent_ref);
 
         let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
 
@@ -1262,36 +1251,23 @@ pub async fn create_workgroup(
         // Determine repos assigned to this agent (match by _agent_ name)
         let assigned_repos: Vec<String> = team_repos
             .iter()
-            .filter(|r| r.agents.iter().any(|a| agent_matches(a, agent_name)))
+            .filter(|r| r.agents.iter().any(|a| agent_matches(a, &agent_name)))
             .map(|r| {
                 let dir_name = format!("repo-{}", repo_dir_name_from_url(&r.url));
                 format!("../{}", dir_name)
             })
             .collect();
 
-        // Compute relative identity path from replica to matrix
-        let identity_rel = compute_relative_identity(agent_path, &replica_dir, &base);
-
-        let mut context_entries: Vec<String> = vec![
-            "$AGENTSCOMMANDER_CONTEXT".to_string(),
-            "$REPOS_WORKSPACE_INFO".to_string(),
-        ];
-        // Resolve agent_path against the selected workspace for relative paths.
-        let matrix_dir = if Path::new(agent_path).is_absolute() {
-            Path::new(agent_path).to_path_buf()
-        } else {
-            base.join(
-                agent_path
-                    .trim_start_matches("../")
-                    .trim_start_matches("./"),
-            )
-        };
-        if matrix_dir.join("Role.md").exists() {
-            context_entries.push(format!("{}/Role.md", identity_rel));
-        }
+        let identity = expected_wg_replica_identity(&replica_dir)?;
+        let context_entries = normalize_wg_replica_context_entries(
+            &[],
+            WG_REPLICA_REQUIRED_CONTEXT,
+            &identity.identity,
+            identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+        );
 
         let replica_config = serde_json::json!({
-            "identity": identity_rel,
+            "identity": identity.identity,
             "repos": assigned_repos,
             "context": context_entries,
         });
@@ -1685,12 +1661,28 @@ async fn sync_workgroup_repos_inner(
                 }
             };
 
+            let identity = match repair_wg_replica_config_value(
+                replica_dir,
+                &mut config,
+                WG_REPLICA_REQUIRED_CONTEXT,
+            ) {
+                Ok(identity) => identity,
+                Err(e) => {
+                    result.errors.push(SyncError {
+                        replica: dir_name.to_string(),
+                        error: e,
+                    });
+                    continue;
+                }
+            };
+
             // Update repos
             config["repos"] = serde_json::json!(assigned_repos);
 
             // Context merge: prepend required tokens to maintain consistent ordering
             // with create_workgroup() (which writes [$AC_CONTEXT, $REPOS_INFO] first).
-            // Preserve any custom entries that were added via set_replica_context_files().
+            // Preserve custom non-Role entries while replacing identity-derived Role.md
+            // entries with the repaired same-workspace identity.
             let existing_context: Vec<String> = config
                 .get("context")
                 .and_then(|v| v.as_array())
@@ -1701,26 +1693,12 @@ async fn sync_workgroup_repos_inner(
                 })
                 .unwrap_or_default();
 
-            let required = ["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"];
-            let mut new_context: Vec<String> = required.iter().map(|s| s.to_string()).collect();
-            for entry in &existing_context {
-                if !required.contains(&entry.as_str()) {
-                    new_context.push(entry.clone());
-                }
-            }
-
-            // Auto-inject Role.md from identity if present and not already included
-            if let Some(identity) = config.get("identity").and_then(|v| v.as_str()) {
-                let role_entry = format!("{}/Role.md", identity);
-                if !new_context.contains(&role_entry) {
-                    let role_abs = replica_dir.join(&role_entry);
-                    if role_abs.exists() {
-                        new_context.push(role_entry);
-                    }
-                }
-            }
-
-            config["context"] = serde_json::json!(new_context);
+            config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
+                &existing_context,
+                &["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"],
+                &identity.identity,
+                identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+            ));
 
             // Write back
             match serde_json::to_string_pretty(&config) {
@@ -2160,86 +2138,6 @@ pub(crate) fn determine_next_wg_number(ac_new_dir: &Path) -> u32 {
     (1u32..=u32::MAX).find(|n| !taken.contains(n)).unwrap_or(1)
 }
 
-/// Compute a relative path from the replica dir to the agent matrix.
-/// If the agent path is absolute, compute relative; otherwise return as-is.
-fn compute_relative_identity(agent_path: &str, replica_dir: &Path, ac_new_dir: &Path) -> String {
-    let agent = Path::new(agent_path);
-
-    // If it's already a relative path within the same workspace, make it relative to replica.
-    if agent.is_relative() {
-        // agent_path is like "../_agent_foo" or "_agent_foo"
-        // From replica inside wg-N-team/ we need to go ../../_agent_foo
-        let agent_in_ac_new = ac_new_dir.join(
-            agent_path
-                .trim_start_matches("../")
-                .trim_start_matches("./"),
-        );
-        if let Ok(rel) = pathdiff_relative(replica_dir, &agent_in_ac_new) {
-            return rel;
-        }
-        return format!(
-            "../../{}",
-            agent_path
-                .trim_start_matches("../")
-                .trim_start_matches("./")
-        );
-    }
-
-    // Absolute path — try to make relative
-    if let Ok(rel) = pathdiff_relative(replica_dir, agent) {
-        return rel;
-    }
-
-    // Fallback: return absolute
-    agent_path.to_string()
-}
-
-/// Simple relative path computation (from → to).
-/// Strips Windows UNC prefix (\\?\) from canonicalized paths to ensure consistent comparison.
-fn pathdiff_relative(from: &Path, to: &Path) -> Result<String, String> {
-    // Canonicalize and strip UNC prefix for consistent comparison on Windows
-    let strip_unc = |p: PathBuf| -> PathBuf {
-        let s = p.to_string_lossy();
-        if let Some(stripped) = s.strip_prefix(r"\\?\") {
-            PathBuf::from(stripped)
-        } else {
-            p
-        }
-    };
-
-    let from_abs = strip_unc(std::fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf()));
-    let to_abs = if to.exists() {
-        strip_unc(std::fs::canonicalize(to).unwrap_or_else(|_| to.to_path_buf()))
-    } else {
-        to.to_path_buf()
-    };
-
-    let from_components: Vec<_> = from_abs.components().collect();
-    let to_components: Vec<_> = to_abs.components().collect();
-
-    // Find common prefix length
-    let common = from_components
-        .iter()
-        .zip(to_components.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    if common == 0 {
-        return Err("No common path prefix".into());
-    }
-
-    let ups = from_components.len() - common;
-    let mut result = PathBuf::new();
-    for _ in 0..ups {
-        result.push("..");
-    }
-    for comp in &to_components[common..] {
-        result.push(comp.as_os_str());
-    }
-
-    Ok(result.to_string_lossy().replace('\\', "/"))
-}
-
 /// Async git clone with CREATE_NO_WINDOW on Windows.
 async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
     #[cfg(windows)]
@@ -2614,17 +2512,14 @@ mod tests {
 
         let config = TeamConfigResult {
             agents: vec![
-                "_agent_architect".to_string(),
+                "architect".to_string(),
                 "_agent_dev-rust".to_string(),
-                "_agent_architect".to_string(),
+                "architect".to_string(),
             ],
             coordinator: "_agent_architect".to_string(),
             repos: vec![RepoAssignment {
                 url: "https://example.test/repo.git".to_string(),
-                agents: vec![
-                    "_agent_architect".to_string(),
-                    "_agent_dev-rust".to_string(),
-                ],
+                agents: vec!["architect".to_string(), "_agent_dev-rust".to_string()],
             }],
         };
 
@@ -2777,7 +2672,9 @@ mod tests {
         let matrix_role = matrix_dir.join("Role.md");
         std::fs::write(&matrix_role, b"# Alpha\n").expect("write matrix Role.md");
 
-        let identity = compute_relative_identity("_agent_alpha", &replica_dir, &ac_new);
+        let identity = crate::config::replica_identity::expected_wg_replica_identity(&replica_dir)
+            .expect("expected replica identity")
+            .identity;
 
         assert_eq!(
             identity, "../../_agent_alpha",
@@ -2794,6 +2691,77 @@ mod tests {
                 .expect("canonicalize matrix Role.md"),
             "replica Role.md context entry must resolve to origin matrix Role.md"
         );
+    }
+
+    #[test]
+    fn create_replica_rejects_filesystem_agent_ref() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("AgentsCommander_ac");
+        let workspace = project.join(".ac");
+        let matrix_dir = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-2-dev-team");
+        std::fs::create_dir_all(&matrix_dir).expect("create matrix");
+        std::fs::create_dir_all(&wg_dir).expect("create wg");
+        std::fs::write(matrix_dir.join("Role.md"), "# Tech Lead\n").expect("write role");
+        let stale_agent_ref = tmp
+            .path()
+            .join("agentscommander-old")
+            .join(".ac-new")
+            .join("_agent_tech-lead")
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_new_dir: workspace,
+            wg_dir: wg_dir.clone(),
+            agent_path: stale_agent_ref,
+            team_repos: Vec::new(),
+            settings_flags: AgentMatrixSettingsFlags {
+                exclude_global_claude_md: false,
+                inject_rtk_hook: false,
+            },
+        })
+        .expect_err("filesystem path refs must be rejected");
+
+        assert!(
+            err.contains("filesystem paths"),
+            "unexpected error: {}",
+            err
+        );
+        assert!(
+            !wg_dir.join("__agent_tech-lead").exists(),
+            "path refs must not create replicas"
+        );
+    }
+
+    #[test]
+    fn create_replica_writes_expected_local_identity_for_portable_ref() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("AgentsCommander_ac");
+        let workspace = project.join(".ac");
+        let matrix_dir = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-2-dev-team");
+        std::fs::create_dir_all(&matrix_dir).expect("create matrix");
+        std::fs::create_dir_all(&wg_dir).expect("create wg");
+        std::fs::write(matrix_dir.join("Role.md"), "# Tech Lead\n").expect("write role");
+
+        let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_new_dir: workspace,
+            wg_dir,
+            agent_path: "_agent_tech-lead".to_string(),
+            team_repos: Vec::new(),
+            settings_flags: AgentMatrixSettingsFlags {
+                exclude_global_claude_md: false,
+                inject_rtk_hook: false,
+            },
+        })
+        .expect("create replica");
+
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(replica_dir.join("config.json")).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(config["identity"], "../../_agent_tech-lead");
     }
 
     /// Success path: a clean WG dir with no blockers gets renamed and removed.
