@@ -105,9 +105,9 @@ These are not accidents.
 
 | Platform | Status |
 |---|---|
-| **Windows** | Primary target; every release is built and tested here. |
-| **Linux** | Compatible; builds cleanly with less day-to-day testing. |
-| **macOS** | Built on Windows. Runs on Linux. Works on macOS; see [issue #320](https://github.com/mblua/AgentsCommander/issues/320) (help wanted on verification). File issues, we will fix them. |
+| **Windows** | Primary version where most development happens. |
+| **Linux** | Testing is beginning. |
+| **macOS** | Untested. |
 
 ## Trust
 
