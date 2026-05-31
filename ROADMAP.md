@@ -30,6 +30,7 @@ This file is a snapshot. The authoritative status for any item lives in its link
 ### Organigram & scaling
 
 - **Build the company - multi-level coordinator hierarchies** - A workgroup today is one layer. The next step layers them: level-A coordinator talks to its level-B reports; B talks to C; A never reaches C directly. Skip-levels flow through the chain, like in any sane org. The result: a real organigram, enforced by the messaging topology instead of by convention. Cascade decisions down, roll status up, hold accountability at 5, 50, or 500 agents the same way. ([#330](https://github.com/mblua/AgentsCommander/issues/330))
+- **Curated role-team library** - ship a base catalog of task-ready teams, not just isolated roles. Each template defines the coordinator, specialist roles, task decomposition pattern, role boundaries, quality gates, and handoff contracts so a user can delegate a goal to a pre-curated team that can execute end to end with predictable accountability.
 - **Coordinator auto-handoff for context management** - when a coordinator reaches a configurable context threshold, it can write a compact handoff of active continuity state and continue fresh. Forgettable or exclude-from-handoff details stay out. ([#349](https://github.com/mblua/AgentsCommander/issues/349))
 - **Telegram conversation routing between coordinators** - transfer a Telegram conversation from one coordinator/workgroup to another without manual bot or channel reconfiguration. ([#350](https://github.com/mblua/AgentsCommander/issues/350))
 
