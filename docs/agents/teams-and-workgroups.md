@@ -4,11 +4,11 @@ For developers ready to compose multiple agents around a shared goal. Teams defi
 
 ## Team
 
-A **team** is one coordinator plus one or more worker agents. The team's config lives at `.ac-new/_team_<name>/config.json` and lists members by their canonical names.
+A **team** is one coordinator plus one or more worker agents. The team's config lives at `.ac/_team_<name>/config.json` and lists members by their canonical names. Legacy `.ac-new/` projects use the same layout under `.ac-new/`.
 
 ```
 my-project/
-└── .ac-new/
+└── .ac/
     ├── _agent_tech-lead/
     ├── _agent_dev-rust/
     ├── _agent_dev-ts/
@@ -53,7 +53,7 @@ A **workgroup** is a team's active workspace for one specific task. AC spins up 
 
 ```
 my-project/
-└── .ac-new/
+└── .ac/
     └── wg-1-feature-x/
         ├── TASK.md                       # canonical task file
         ├── messaging/                    # inter-agent messages (see below)
@@ -108,7 +108,7 @@ Both verbs validate the caller is a coordinator of any team in the project and c
 
 From the UI, click **Activate** on the team. From the CLI, use `workgroup add`. AC creates the same disk layout:
 
-1. Creates `.ac-new/wg-<N>-<team>/`.
+1. Creates `.ac/wg-<N>-<team>/`.
 2. Copies the team config and member references.
 3. Provisions each member's replica directory (`__agent_<name>/`, with the same double-underscore prefix for both workers and the coordinator).
 4. Generates `TASK.md`, `messaging/`, and per-replica session artifacts.

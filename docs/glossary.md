@@ -48,7 +48,7 @@ A renamed copy of `agentscommander.exe` (with an `_<suffix>` like `agentscommand
 
 ## Project (AC project)
 
-A folder containing an `.ac-new/` workspace. AC manages all agents, teams, and workgroups under that workspace.
+A folder containing an `.ac/` workspace. AC manages all agents, teams, and workgroups under that workspace. Legacy `.ac-new/` workspaces remain supported.
 
 ## PTY
 
@@ -80,7 +80,7 @@ The three tabs in the Settings modal: **General**, **Coding Agents**, **Integrat
 
 ## Team
 
-A coordinator + worker agents working toward shared goals. Defined in `.ac-new/_team_<name>/config.json`.
+A coordinator + worker agents working toward shared goals. Defined in `.ac/_team_<name>/config.json`.
 
 ## Telegram bridge
 
@@ -96,7 +96,7 @@ Push-to-talk transcription via the Google Gemini API. Dictate a prompt; AC write
 
 ## Workgroup
 
-A team's active workspace for a specific task. Lives at `.ac-new/wg-<N>-<team>/` with replicas of every team member.
+A team's active workspace for a specific task. Lives at `.ac/wg-<N>-<team>/` with replicas of every team member.
 
 ## `wg-<N>-<team>`
 

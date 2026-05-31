@@ -211,7 +211,7 @@ fn validate_root_sender_payload_with_root_dir(
 }
 
 /// If `outbox_file` lives at
-/// `<project_dir>/.ac-new/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
+/// `<project_dir>/<workspace>/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
 /// return `project_dir` as a UTF-8 `String`. Otherwise, `None`.
 ///
 /// Mirrors the WG-replica walk-up in `cli::send::derive_root_project_dir` so
@@ -223,35 +223,59 @@ fn validate_root_sender_payload_with_root_dir(
 /// The path layout is fixed by `MailboxPoller::poll` which constructs outbox
 /// paths as `Path::new(<all_paths-entry>).join(agent_local_dir_name()).join("outbox")`.
 /// We walk ancestors: `<file>.json` → `outbox` → `<local-dir>` → `<__agent_*>` →
-/// `<wg-*>` → `<.ac-new>` → `<project_dir>`.
+/// `<wg-*>` → `<workspace>` → `<project_dir>`.
 ///
 /// Uses `to_str()?` (NOT `to_string_lossy()`) for parity with
 /// `list_peers::detect_wg_replica`. Keep this in lockstep with
 /// `cli::send::derive_root_project_dir`.
-fn derive_project_from_outbox_path(outbox_file: &Path) -> Option<String> {
-    let canon = std::fs::canonicalize(outbox_file).ok()?;
-    // canon = <project>/.ac-new/wg-*/__agent_*/<local-dir>/outbox/<file>.json
-    let outbox_dir = canon.parent()?; // .../outbox
+fn derive_project_from_outbox_path(outbox_file: &Path) -> Result<Option<String>, String> {
+    let Some(canon) = std::fs::canonicalize(outbox_file).ok() else {
+        return Ok(None);
+    };
+    // canon = <project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json
+    let Some(outbox_dir) = canon.parent() else {
+        return Ok(None);
+    };
     if outbox_dir.file_name().and_then(|n| n.to_str()) != Some("outbox") {
-        return None;
+        return Ok(None);
     }
-    let local_dir = outbox_dir.parent()?; // .../<local-dir>
-    let agent_dir = local_dir.parent()?; // .../__agent_*
-    let agent_name = agent_dir.file_name().and_then(|n| n.to_str())?;
+    let Some(local_dir) = outbox_dir.parent() else {
+        return Ok(None);
+    };
+    let Some(agent_dir) = local_dir.parent() else {
+        return Ok(None);
+    };
+    let Some(agent_name) = agent_dir.file_name().and_then(|n| n.to_str()) else {
+        return Ok(None);
+    };
     if !agent_name.starts_with("__agent_") {
-        return None;
+        return Ok(None);
     }
-    let wg_dir = agent_dir.parent()?; // .../wg-*
-    let wg_name = wg_dir.file_name().and_then(|n| n.to_str())?;
+    let Some(wg_dir) = agent_dir.parent() else {
+        return Ok(None);
+    };
+    let Some(wg_name) = wg_dir.file_name().and_then(|n| n.to_str()) else {
+        return Ok(None);
+    };
     if !wg_name.starts_with("wg-") {
-        return None;
+        return Ok(None);
     }
-    let ac_new_dir = wg_dir.parent()?; // .../.ac-new
-    if ac_new_dir.file_name().and_then(|n| n.to_str()) != Some(".ac-new") {
-        return None;
+    let Some(workspace_dir) = wg_dir.parent() else {
+        return Ok(None);
+    };
+    if !workspace_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(crate::config::workspace::is_workspace_dir_name)
+        .unwrap_or(false)
+    {
+        return Ok(None);
     }
-    let project_dir = ac_new_dir.parent()?; // .../<project>
-    Some(project_dir.to_str()?.to_string())
+    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)?;
+    let Some(project_dir) = workspace_dir.parent() else {
+        return Ok(None);
+    };
+    Ok(project_dir.to_str().map(|path| path.to_string()))
 }
 
 /// Tracks delivery attempts for a single outbox message.
@@ -402,8 +426,66 @@ pub(crate) fn filter_sessions_by_fqn<'a>(
 ) -> Vec<&'a crate::session::session::SessionInfo> {
     sessions
         .iter()
-        .filter(|s| crate::config::teams::agent_fqn_from_path(&s.working_directory) == target)
+        .filter(|s| session_cwd_matches_fqn(&s.working_directory, target))
         .collect()
+}
+
+fn routable_agent_fqn_from_path(path: &str) -> Option<String> {
+    if crate::config::workspace::path_uses_stale_legacy_workspace(Path::new(path)) {
+        None
+    } else {
+        Some(crate::config::teams::agent_fqn_from_path(path))
+    }
+}
+
+fn session_cwd_matches_fqn(cwd: &str, target: &str) -> bool {
+    routable_agent_fqn_from_path(cwd).as_deref() == Some(target)
+}
+
+fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) -> Option<String> {
+    let (target_project, local) = crate::config::teams::split_project_prefix(agent_name);
+    let (wg_name, agent_short) = local.split_once('/')?;
+    if !wg_name.starts_with("wg-") {
+        return None;
+    }
+
+    let wg_marker = format!("/{}/", wg_name);
+    for (_, cwd) in dirs {
+        if routable_agent_fqn_from_path(cwd).is_none() {
+            continue;
+        }
+
+        let normalized = cwd.replace('\\', "/");
+        if let Some(wg_pos) = normalized.rfind(&wg_marker) {
+            let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
+            let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
+            if !std::path::Path::new(&candidate).is_dir() {
+                continue;
+            }
+
+            let Some(candidate_fqn) = routable_agent_fqn_from_path(&candidate) else {
+                continue;
+            };
+            if let Some(want) = target_project {
+                let (cand_project, _) = crate::config::teams::split_project_prefix(&candidate_fqn);
+                if cand_project != Some(want) {
+                    continue;
+                }
+            }
+
+            log::info!(
+                "[mailbox] wake: resolved WG agent path from sibling session: {}",
+                candidate
+            );
+            return Some(
+                std::path::PathBuf::from(&candidate)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+
+    None
 }
 
 /// §224 A.2.5 — outcome of the daemon-restart race guard wait loop.
@@ -701,6 +783,13 @@ impl MailboxPoller {
             msg.mode
         );
 
+        let outbox_project = match derive_project_from_outbox_path(path) {
+            Ok(project) => project,
+            Err(reason) => {
+                return self.reject_message(path, &msg, &reason).await;
+            }
+        };
+
         // For repo outboxes (not app-outbox), validate that msg.from matches the outbox owner.
         // This prevents tokenless spoofing: a message in repo X's outbox must claim to be from repo X.
         //
@@ -757,7 +846,7 @@ impl MailboxPoller {
         // that case. Reject-on-ambiguity semantics match the CLI (Decision 2 rule 2c).
         //
         // §AR2-norm D1-a augmentation: when the outbox file lives under a WG-replica
-        // layout (`<project>/.ac-new/wg-*/__agent_*/<local-dir>/outbox/<file>.json`),
+        // layout (`<project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json`),
         // include the derived `<project>` in the in-memory `paths` slice so qualified
         // WG-peer FQNs written by `cli::send` (which performs the symmetric walk-up
         // augmentation — see #228 Step 1) resolve here too. Without this, the daemon
@@ -769,16 +858,16 @@ impl MailboxPoller {
                 let c = cfg.read().await;
                 c.project_paths.clone()
             };
-            if let Some(root_project) = derive_project_from_outbox_path(path) {
-                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+            if let Some(root_project) = outbox_project.as_ref() {
+                let canon_root_project = std::fs::canonicalize(root_project).ok();
                 let already_present = paths.iter().any(|p| match &canon_root_project {
                     Some(canon_target) => {
                         std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
                     }
-                    None => p == &root_project,
+                    None => p == root_project,
                 });
                 if !already_present {
-                    paths.push(root_project);
+                    paths.push(root_project.clone());
                 }
             }
             match crate::config::teams::resolve_agent_target(&msg.to, &paths) {
@@ -901,16 +990,16 @@ impl MailboxPoller {
                 let c = cfg.read().await;
                 c.project_paths.clone()
             };
-            if let Some(root_project) = derive_project_from_outbox_path(path) {
-                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+            if let Some(root_project) = outbox_project.as_ref() {
+                let canon_root_project = std::fs::canonicalize(root_project).ok();
                 let already_present = paths.iter().any(|p| match &canon_root_project {
                     Some(canon_target) => {
                         std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
                     }
-                    None => p == &root_project,
+                    None => p == root_project,
                 });
                 if !already_present {
-                    paths.push(root_project);
+                    paths.push(root_project.clone());
                 }
             }
 
@@ -943,16 +1032,16 @@ impl MailboxPoller {
                 let c = cfg.read().await;
                 c.project_paths.clone()
             };
-            if let Some(root_project) = derive_project_from_outbox_path(path) {
-                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+            if let Some(root_project) = outbox_project.as_ref() {
+                let canon_root_project = std::fs::canonicalize(root_project).ok();
                 let already_present = paths.iter().any(|p| match &canon_root_project {
                     Some(canon_target) => {
                         std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
                     }
-                    None => p == &root_project,
+                    None => p == root_project,
                 });
                 if !already_present {
-                    paths.push(root_project);
+                    paths.push(root_project.clone());
                 }
             }
 
@@ -1623,12 +1712,7 @@ impl MailboxPoller {
         // (or a legacy form that genuinely matches only one project's CWD). The
         // substring/suffix fuzziness from the pre-fix code is gone — cross-project
         // leakage is impossible at this layer.
-        let mut matches: Vec<&crate::session::session::SessionInfo> = sessions
-            .iter()
-            .filter(|s| {
-                crate::config::teams::agent_fqn_from_path(&s.working_directory) == agent_name
-            })
-            .collect();
+        let mut matches = filter_sessions_by_fqn(&sessions, agent_name);
 
         if matches.is_empty() {
             log::warn!("[mailbox] No session matched for '{}'", agent_name);
@@ -1697,12 +1781,7 @@ impl MailboxPoller {
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
 
-        let mut matches: Vec<&crate::session::session::SessionInfo> = sessions
-            .iter()
-            .filter(|s| {
-                crate::config::teams::agent_fqn_from_path(&s.working_directory) == agent_name
-            })
-            .collect();
+        let mut matches = filter_sessions_by_fqn(&sessions, agent_name);
 
         let had_any_match = !matches.is_empty();
         if !had_any_match {
@@ -2314,7 +2393,9 @@ impl MailboxPoller {
         };
 
         let hits_agent = |cwd: &str| -> bool {
-            let path_fqn = crate::config::teams::agent_fqn_from_path(cwd);
+            let Some(path_fqn) = routable_agent_fqn_from_path(cwd) else {
+                return false;
+            };
             if is_qualified {
                 path_fqn == agent_name
             } else {
@@ -2360,7 +2441,7 @@ impl MailboxPoller {
             }
         }
 
-        // Loop 4: WG replica fallback. Scan `.ac-new/<wg>/__agent_<short>` under
+        // Loop 4: WG replica fallback. Scan `<workspace>/<wg>/__agent_<short>` under
         // project_paths (base + immediate non-dot children), honoring the target
         // project filter. §DR2-4 composition: push + break within a single `rp`
         // (an FQN matches at most one replica dir per project) but continue the
@@ -2405,7 +2486,12 @@ impl MailboxPoller {
                     }
 
                     for dir in dirs_to_check {
-                        let candidate = dir.join(".ac-new").join(wg_name).join(&replica_dir);
+                        let Some(workspace_dir) =
+                            crate::config::workspace::existing_workspace_dir(&dir)
+                        else {
+                            continue;
+                        };
+                        let candidate = workspace_dir.join(wg_name).join(&replica_dir);
                         if candidate.is_dir() {
                             record_match(&candidate.to_string_lossy(), &mut matches);
                             // Within a single `rp`, first hit is the unique hit —
@@ -2526,47 +2612,12 @@ impl MailboxPoller {
         app: &tauri::AppHandle,
         agent_name: &str,
     ) -> Option<String> {
-        let (target_project, local) = crate::config::teams::split_project_prefix(agent_name);
-        let (wg_name, agent_short) = local.split_once('/')?;
-        if !wg_name.starts_with("wg-") {
-            return None;
-        }
-
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_working_dirs().await;
         drop(mgr);
 
-        let wg_marker = format!("/{}/", wg_name);
-        for (_, cwd) in &dirs {
-            let normalized = cwd.replace('\\', "/");
-            if let Some(wg_pos) = normalized.rfind(&wg_marker) {
-                let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
-                let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
-                if std::path::Path::new(&candidate).is_dir() {
-                    // If target is qualified, enforce same project on the candidate.
-                    if let Some(want) = target_project {
-                        let candidate_fqn = crate::config::teams::agent_fqn_from_path(&candidate);
-                        let (cand_project, _) =
-                            crate::config::teams::split_project_prefix(&candidate_fqn);
-                        if cand_project != Some(want) {
-                            continue;
-                        }
-                    }
-                    log::info!(
-                        "[mailbox] wake: resolved WG agent path from sibling session: {}",
-                        candidate
-                    );
-                    return Some(
-                        std::path::PathBuf::from(&candidate)
-                            .to_string_lossy()
-                            .to_string(),
-                    );
-                }
-            }
-        }
-
-        None
+        resolve_wg_path_from_session_dirs(&dirs, agent_name)
     }
 
     /// Move an outbox message to outbox/delivered/ with token stripped.
@@ -2845,6 +2896,10 @@ mod tests {
             was_detached: false,
             detached_geometry: None,
         }
+    }
+
+    fn path_string(path: &Path) -> String {
+        path.to_string_lossy().to_string()
     }
 
     fn make_root_route_fixture(
@@ -3174,8 +3229,7 @@ mod tests {
         let mut root_session = pool[0].clone();
         root_session.is_root_agent = true;
         let predicate = |s: &crate::session::session::SessionInfo| {
-            s.is_root_agent
-                || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+            s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
         };
         assert!(predicate(&root_session));
         assert_eq!(
@@ -3624,14 +3678,276 @@ mod tests {
         let file = outbox.join("msg-42.json");
         std::fs::write(&file, "{}").unwrap();
 
-        let got =
-            derive_project_from_outbox_path(&file).expect("should derive project from WG layout");
+        let got = derive_project_from_outbox_path(&file)
+            .unwrap()
+            .expect("should derive project from WG layout");
         let expected = std::fs::canonicalize(&project_dir)
             .unwrap()
             .to_str()
             .unwrap()
             .to_string();
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn derive_project_from_outbox_path_rejects_stale_legacy_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_outbox = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander")
+            .join("outbox");
+        let stale_outbox = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander")
+            .join("outbox");
+        std::fs::create_dir_all(&canonical_outbox).unwrap();
+        std::fs::create_dir_all(&stale_outbox).unwrap();
+        let file = stale_outbox.join("msg-42.json");
+        std::fs::write(&file, "{}").unwrap();
+
+        let err = derive_project_from_outbox_path(&file).unwrap_err();
+        assert!(err.contains("stale legacy workspace"));
+    }
+
+    #[test]
+    fn derive_project_from_outbox_path_accepts_canonical_when_both_exist() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_outbox = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander")
+            .join("outbox");
+        let stale_outbox = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander")
+            .join("outbox");
+        std::fs::create_dir_all(&canonical_outbox).unwrap();
+        std::fs::create_dir_all(&stale_outbox).unwrap();
+        let file = canonical_outbox.join("msg-42.json");
+        std::fs::write(&file, "{}").unwrap();
+
+        let got = derive_project_from_outbox_path(&file)
+            .unwrap()
+            .expect("canonical outbox should derive project");
+        let expected = std::fs::canonicalize(&project_dir)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn stale_legacy_session_path_is_not_routable_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_agent = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_agent = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&canonical_agent).unwrap();
+        std::fs::create_dir_all(&stale_agent).unwrap();
+
+        assert!(!crate::config::workspace::path_uses_stale_legacy_workspace(
+            &canonical_agent
+        ));
+        assert!(crate::config::workspace::path_uses_stale_legacy_workspace(
+            &stale_agent
+        ));
+    }
+
+    #[test]
+    fn filter_sessions_by_fqn_ignores_stale_live_target_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_agent = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_agent = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&canonical_agent).unwrap();
+        std::fs::create_dir_all(&stale_agent).unwrap();
+
+        let pool = vec![make_session_info(
+            "uuid-stale",
+            "alice-stale",
+            &path_string(&stale_agent),
+            crate::session::session::SessionStatus::Idle,
+            true,
+        )];
+
+        let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
+
+        assert!(hits.is_empty(), "stale legacy live target must be ignored");
+    }
+
+    #[test]
+    fn filter_sessions_by_fqn_prefers_canonical_live_target_when_both_exist() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_agent = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_agent = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&canonical_agent).unwrap();
+        std::fs::create_dir_all(&stale_agent).unwrap();
+
+        let pool = vec![
+            make_session_info(
+                "uuid-stale",
+                "alice-stale",
+                &path_string(&stale_agent),
+                crate::session::session::SessionStatus::Idle,
+                true,
+            ),
+            make_session_info(
+                "uuid-canonical",
+                "alice-canonical",
+                &path_string(&canonical_agent),
+                crate::session::session::SessionStatus::Idle,
+                true,
+            ),
+        ];
+
+        let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "uuid-canonical");
+    }
+
+    #[test]
+    fn filter_sessions_by_fqn_accepts_legacy_only_live_target() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let legacy_agent = temp
+            .path()
+            .join("proj-x")
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&legacy_agent).unwrap();
+
+        let pool = vec![make_session_info(
+            "uuid-legacy",
+            "alice-legacy",
+            &path_string(&legacy_agent),
+            crate::session::session::SessionStatus::Idle,
+            true,
+        )];
+
+        let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "uuid-legacy");
+    }
+
+    #[test]
+    fn wg_session_fallback_ignores_stale_sibling_when_canonical_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_target = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_target = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_sibling = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_bob");
+        std::fs::create_dir_all(&canonical_target).unwrap();
+        std::fs::create_dir_all(&stale_target).unwrap();
+        std::fs::create_dir_all(&stale_sibling).unwrap();
+
+        let dirs = vec![(Uuid::nil(), path_string(&stale_sibling))];
+
+        assert!(resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice").is_none());
+    }
+
+    #[test]
+    fn wg_session_fallback_returns_canonical_when_stale_sibling_is_first() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let canonical_target = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let canonical_sibling = project_dir
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_bob");
+        let stale_target = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let stale_sibling = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_bob");
+        std::fs::create_dir_all(&canonical_target).unwrap();
+        std::fs::create_dir_all(&canonical_sibling).unwrap();
+        std::fs::create_dir_all(&stale_target).unwrap();
+        std::fs::create_dir_all(&stale_sibling).unwrap();
+
+        let dirs = vec![
+            (Uuid::nil(), path_string(&stale_sibling)),
+            (Uuid::nil(), path_string(&canonical_sibling)),
+        ];
+
+        let got = resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice")
+            .expect("canonical sibling should resolve target");
+
+        assert_eq!(
+            std::fs::canonicalize(got).unwrap(),
+            std::fs::canonicalize(canonical_target).unwrap()
+        );
+    }
+
+    #[test]
+    fn wg_session_fallback_accepts_legacy_only_sibling() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let legacy_target = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let legacy_sibling = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_bob");
+        std::fs::create_dir_all(&legacy_target).unwrap();
+        std::fs::create_dir_all(&legacy_sibling).unwrap();
+
+        let dirs = vec![(Uuid::nil(), path_string(&legacy_sibling))];
+
+        let got = resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice")
+            .expect("legacy-only sibling should resolve target");
+
+        assert_eq!(
+            std::fs::canonicalize(got).unwrap(),
+            std::fs::canonicalize(legacy_target).unwrap()
+        );
     }
 
     #[test]
@@ -3646,7 +3962,7 @@ mod tests {
         std::fs::create_dir_all(&outbox).unwrap();
         let file = outbox.join("msg.json");
         std::fs::write(&file, "{}").unwrap();
-        assert!(derive_project_from_outbox_path(&file).is_none());
+        assert!(derive_project_from_outbox_path(&file).unwrap().is_none());
     }
 
     #[test]
@@ -3659,7 +3975,7 @@ mod tests {
         std::fs::create_dir_all(&app_outbox).unwrap();
         let file = app_outbox.join("msg.json");
         std::fs::write(&file, "{}").unwrap();
-        assert!(derive_project_from_outbox_path(&file).is_none());
+        assert!(derive_project_from_outbox_path(&file).unwrap().is_none());
     }
 
     fn write_project_refresh_request_fixture(

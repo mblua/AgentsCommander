@@ -774,16 +774,8 @@ fn canonical_or_original(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn find_ac_new_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
-    path.ancestors()
-        .find(|ancestor| {
-            ancestor
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.eq_ignore_ascii_case(".ac-new"))
-                .unwrap_or(false)
-        })
-        .map(canonical_or_original)
+fn find_workspace_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    crate::config::workspace::find_workspace_ancestor(path).map(|p| canonical_or_original(&p))
 }
 
 fn write_combined_context_file(
@@ -846,11 +838,11 @@ fn has_agent_matrix_dir_name(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn path_parent_is_ac_new(path: &Path) -> bool {
+fn path_parent_is_workspace(path: &Path) -> bool {
     path.parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
-        .map(|name| name.eq_ignore_ascii_case(".ac-new"))
+        .map(crate::config::workspace::is_workspace_dir_name)
         .unwrap_or(false)
 }
 
@@ -871,7 +863,7 @@ fn is_canonical_agent_matrix_dir(cwd: &str) -> bool {
     let Ok(canonical_path) = std::fs::canonicalize(path) else {
         return false;
     };
-    has_agent_matrix_dir_name(&canonical_path) && path_parent_is_ac_new(&canonical_path)
+    has_agent_matrix_dir_name(&canonical_path) && path_parent_is_workspace(&canonical_path)
 }
 
 fn is_agent_dir(cwd: &str) -> bool {
@@ -880,7 +872,7 @@ fn is_agent_dir(cwd: &str) -> bool {
         || super::root_agent::is_root_agent_dir_name(cwd)
 }
 
-/// Build the GIT_CEILING_DIRECTORIES value for agent sessions rooted in `.ac-new`.
+/// Build the GIT_CEILING_DIRECTORIES value for agent sessions rooted in an AC workspace.
 /// This blocks Git from traversing upward into the parent project repo when the
 /// current directory is an agent matrix, a WG replica, or a descendant of those roots.
 pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
@@ -899,8 +891,8 @@ pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
         }
     };
 
-    if let Some(ac_new_root) = find_ac_new_root(cwd_path) {
-        push_unique(ac_new_root);
+    if let Some(workspace_root) = find_workspace_root(cwd_path) {
+        push_unique(workspace_root);
     }
 
     push_unique(cwd_path.to_path_buf());
@@ -1437,9 +1429,9 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
         )
     };
     let git_scope = if matrix_root.is_some() {
-        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these `.ac-new` roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` or legacy `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
     } else {
-        "Your agent directory is typically inside a parent repository's `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these `.ac-new` roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+        "Your agent directory is typically inside a parent repository's `.ac/` or legacy `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
     };
     let peer_name_format = match &messaging_mode {
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),

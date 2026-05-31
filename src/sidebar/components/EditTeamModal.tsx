@@ -1,5 +1,6 @@
 import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
 import { EntityAPI } from "../../shared/ipc";
+import { AC_WORKSPACE_DIR, LEGACY_AC_WORKSPACE_DIR } from "../../shared/constants";
 import { projectStore } from "../stores/project";
 import type { AcTeam, TeamWizardAgentEntry, TeamWizardRepoEntry, TeamWizardStep } from "../../shared/types";
 
@@ -38,10 +39,10 @@ const EditTeamModal: Component<{
       return normalized;
     }
     const trimmed = normalized.replace(/^\.\/+/, "").replace(/^(\.\.\/)+/, "");
-    if (trimmed.startsWith(".ac-new/")) {
+    if (trimmed.startsWith(`${AC_WORKSPACE_DIR}/`) || trimmed.startsWith(`${LEGACY_AC_WORKSPACE_DIR}/`)) {
       return `${currentProjectRoot()}/${trimmed}`;
     }
-    return `${currentProjectRoot()}/.ac-new/${trimmed}`;
+    return `${currentProjectRoot()}/${AC_WORKSPACE_DIR}/${trimmed}`;
   };
 
   const agentsByProject = createMemo(() => {
@@ -93,7 +94,7 @@ const EditTeamModal: Component<{
       const discoveredNorm = new Set(entries.map((e) => norm(e.path)));
 
       // Synthesize entries for cross-project agents not found in discovered agents.
-      // Team config is stored relative to .ac-new for portability; older configs
+      // Team config is stored relative to the AC workspace for portability; older configs
       // may still contain absolute paths. Resolve before comparing with discovery.
       for (const configPath of teamConfig.agents) {
         const resolvedPath = resolveConfigAgentPath(configPath);
@@ -103,9 +104,15 @@ const EditTeamModal: Component<{
           // Extract agent name from _agent_{name} dir
           const agentDir = parts[parts.length - 1] || "";
           const agentName = agentDir.replace(/^_agent_/, "");
-          // Extract project name: parent of .ac-new
-          const acNewIdx = parts.lastIndexOf(".ac-new");
-          const projectName = acNewIdx > 0 ? parts[acNewIdx - 1] : "external";
+          // Extract project name: parent of the workspace dir.
+          let workspaceIdx = -1;
+          for (let i = parts.length - 1; i >= 0; i--) {
+            if (parts[i] === AC_WORKSPACE_DIR || parts[i] === LEGACY_AC_WORKSPACE_DIR) {
+              workspaceIdx = i;
+              break;
+            }
+          }
+          const projectName = workspaceIdx > 0 ? parts[workspaceIdx - 1] : "external";
           entries.push({ name: agentName, path: resolvedPath, projectName });
         }
       }

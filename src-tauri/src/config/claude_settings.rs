@@ -503,11 +503,11 @@ fn discriminant_label(v: &serde_json::Value) -> &'static str {
     }
 }
 
-/// Walks every `<project_root>/.ac-new/` and returns absolute paths to every
+/// Walks every `<project_root>/<workspace>/` and returns absolute paths to every
 /// `_agent_*` matrix and every `__agent_*` replica (inside `wg-*` dirs).
 ///
 /// **`project_paths` semantics.** Each entry may be either (a) a project root
-/// that directly contains `.ac-new/`, or (b) a parent dir holding many such
+/// that directly contains an AC workspace, or (b) a parent dir holding many such
 /// project roots as immediate children. We probe both shapes — base + non-
 /// hidden children — mirroring the existing pattern in
 /// `commands/ac_discovery.rs::discover_ac_agents` (~line 596) and
@@ -611,7 +611,7 @@ pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::
         }
 
         // Build the candidate list: the base itself, plus its non-hidden
-        // immediate children. Each candidate is probed for `.ac-new/`. This
+        // immediate children. Each candidate is probed for an AC workspace. This
         // matches the convention used by `commands/ac_discovery.rs` and
         // `commands/repos.rs`, where `project_paths` may be a parent dir.
         //
@@ -639,10 +639,9 @@ pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::
         }
 
         for repo_dir in candidates {
-            let ac_new = repo_dir.join(".ac-new");
-            if !ac_new.is_dir() {
+            let Some(ac_new) = crate::config::workspace::existing_workspace_dir(&repo_dir) else {
                 continue;
-            }
+            };
             scan_ac_new(&ac_new, &mut out, &mut seen);
         }
     }

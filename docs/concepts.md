@@ -30,7 +30,7 @@ You can detach a session into its own window, attach a Telegram bot to it, or ta
 
 ## Team
 
-A coordinator agent plus one or more worker agents working toward a shared goal. Teams are defined in a JSON config under `.ac-new/_team_<name>/` and discovered automatically.
+A coordinator agent plus one or more worker agents working toward a shared goal. Teams are defined in a JSON config under `.ac/_team_<name>/` and discovered automatically.
 
 The **coordinator** is the only member that can:
 - send messages to any team member (members can only send to the coordinator and to peers they share a team with),
@@ -39,19 +39,19 @@ The **coordinator** is the only member that can:
 
 ## Workgroup
 
-A workgroup is a Team **in action** on a specific task. When the coordinator decides "we are working on task X," AC creates `.ac-new/wg-<N>-<team>/` and replicates the team's agent directories into it as **replicas** (`__agent_<name>/`). The replicas are isolated working copies — every replica has its own scratch space, inbox, and outbox.
+A workgroup is a Team **in action** on a specific task. When the coordinator decides "we are working on task X," AC creates `.ac/wg-<N>-<team>/` and replicates the team's agent directories into it as **replicas** (`__agent_<name>/`). The replicas are isolated working copies — every replica has its own scratch space, inbox, and outbox.
 
 You can run multiple workgroups for the same team in parallel.
 
 ## Brief
 
-The plain-language description of the workgroup's goal. Lives at `.ac-new/wg-<N>-<team>/TASK.md` with YAML frontmatter for the title and a freeform body for context, links, and constraints.
+The plain-language description of the workgroup's goal. Lives at `.ac/wg-<N>-<team>/TASK.md` with YAML frontmatter for the title and a freeform body for context, links, and constraints.
 
 The coordinator is the only agent that should be writing to the brief directly. Workers reference it and update their own outboxes.
 
 ## Messaging
 
-Inter-agent communication is **file-based**. Every message is a markdown file at `.ac-new/wg-<N>-<team>/messaging/` with a UTC-timestamped filename:
+Inter-agent communication is **file-based**. Every message is a markdown file at `.ac/wg-<N>-<team>/messaging/` with a UTC-timestamped filename:
 
 ```
 YYYYMMDD-HHMMSS-wg<N>-<from>-to-wg<N>-<to>-<slug>.md
