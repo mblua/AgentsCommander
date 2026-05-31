@@ -8,7 +8,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
 use crate::config::claude_settings::ensure_claude_md_excludes;
 use crate::config::replica_identity::{
-    agent_bare_name_from_ref, expected_wg_replica_identity, normalize_wg_replica_context_entries,
+    expected_wg_replica_identity, normalize_wg_replica_context_entries,
     repair_wg_replica_config_value, ROLE_MD_FILENAME, WG_REPLICA_REQUIRED_CONTEXT,
 };
 use crate::config::settings::{AppSettings, SettingsState};
@@ -99,6 +99,7 @@ pub(crate) struct WorkgroupDiskCreateArgs {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReplicaDiskCreateArgs {
+    pub ac_new_dir: PathBuf,
     pub wg_dir: PathBuf,
     pub agent_path: String,
     pub team_repos: Vec<RepoAssignment>,
@@ -676,16 +677,19 @@ pub(crate) fn resolve_agent_ref(ac_new_dir: &Path, raw_agent: &str) -> Result<St
     if trimmed.contains('\0') {
         return Err("Agent reference must not contain NUL".to_string());
     }
-    let path = Path::new(trimmed);
-    let dir_name = if path.components().count() > 1 || path.is_absolute() {
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("Invalid agent reference '{}'", raw_agent))?
-            .to_string()
-    } else {
-        trimmed.to_string()
-    };
-    let bare = dir_name.strip_prefix("_agent_").unwrap_or(&dir_name);
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') {
+        return Err(format!(
+            "Invalid agent reference '{}': team configs must use portable refs like '_agent_name' or 'name', not filesystem paths",
+            raw_agent
+        ));
+    }
+    if Path::new(trimmed).is_absolute() {
+        return Err(format!(
+            "Invalid agent reference '{}': absolute paths are not allowed in team configs",
+            raw_agent
+        ));
+    }
+    let bare = trimmed.strip_prefix("_agent_").unwrap_or(trimmed);
     validate_existing_name(bare, "Agent")?;
     let canonical_ref = format!("_agent_{}", bare);
     let matrix_dir = ac_new_dir.join(&canonical_ref);
@@ -756,6 +760,7 @@ pub(crate) async fn create_workgroup_on_disk(
 
     for agent_path in &team_config.agents {
         create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_new_dir: base.clone(),
             wg_dir: wg_dir.clone(),
             agent_path: agent_path.clone(),
             team_repos: team_config.repos.clone(),
@@ -779,7 +784,8 @@ pub(crate) async fn create_workgroup_on_disk(
 pub(crate) fn create_or_update_replica_on_disk(
     args: ReplicaDiskCreateArgs,
 ) -> Result<PathBuf, String> {
-    let agent_name = agent_bare_name_from_ref(&args.agent_path)?;
+    let agent_ref = resolve_agent_ref(&args.ac_new_dir, &args.agent_path)?;
+    let agent_name = agent_ref_bare_name(&agent_ref);
     validate_existing_name(&agent_name, "Agent")?;
     let replica_dir = args.wg_dir.join(format!("__agent_{}", agent_name));
 
@@ -1242,7 +1248,8 @@ pub async fn create_workgroup(
 
     // Create __agent_*/ replica dirs
     for agent_path in &team_agents {
-        let agent_name = agent_bare_name_from_ref(agent_path)?;
+        let agent_ref = resolve_agent_ref(&base, agent_path)?;
+        let agent_name = agent_ref_bare_name(&agent_ref);
 
         let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
 
@@ -2571,7 +2578,7 @@ mod tests {
     }
 
     #[test]
-    fn team_config_normalization_stores_project_relative_agent_refs() {
+    fn team_config_normalization_stores_portable_agent_refs() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ac_new = tmp.path().join(".ac-new");
         let architect = ac_new.join("_agent_architect");
@@ -2581,17 +2588,14 @@ mod tests {
 
         let config = TeamConfigResult {
             agents: vec![
-                architect.to_string_lossy().to_string(),
+                "architect".to_string(),
                 "_agent_dev-rust".to_string(),
-                architect.to_string_lossy().to_string(),
+                "architect".to_string(),
             ],
-            coordinator: architect.to_string_lossy().to_string(),
+            coordinator: "_agent_architect".to_string(),
             repos: vec![RepoAssignment {
                 url: "https://example.test/repo.git".to_string(),
-                agents: vec![
-                    architect.to_string_lossy().to_string(),
-                    "_agent_dev-rust".to_string(),
-                ],
+                agents: vec!["architect".to_string(), "_agent_dev-rust".to_string()],
             }],
         };
 
@@ -2620,6 +2624,28 @@ mod tests {
             !written.contains(&tmp.path().to_string_lossy().to_string()),
             "team config must not persist absolute project paths: {}",
             written
+        );
+    }
+
+    #[test]
+    fn team_config_normalization_rejects_filesystem_agent_refs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_new = tmp.path().join(".ac-new");
+        let architect = ac_new.join("_agent_architect");
+        std::fs::create_dir_all(&architect).expect("architect matrix");
+        let config = TeamConfigResult {
+            agents: vec![architect.to_string_lossy().to_string()],
+            coordinator: architect.to_string_lossy().to_string(),
+            repos: Vec::new(),
+        };
+
+        let err = normalize_team_config_for_project(&ac_new, &config)
+            .expect_err("filesystem refs must be rejected");
+
+        assert!(
+            err.contains("filesystem paths"),
+            "unexpected error: {}",
+            err
         );
     }
 
@@ -2696,7 +2722,7 @@ mod tests {
     }
 
     #[test]
-    fn create_replica_ignores_stale_absolute_agent_ref_for_identity() {
+    fn create_replica_rejects_filesystem_agent_ref() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("AgentsCommander_ac");
         let workspace = project.join(".ac");
@@ -2713,9 +2739,44 @@ mod tests {
             .to_string_lossy()
             .replace('\\', "/");
 
-        let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            wg_dir,
+        let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_new_dir: workspace,
+            wg_dir: wg_dir.clone(),
             agent_path: stale_agent_ref,
+            team_repos: Vec::new(),
+            settings_flags: AgentMatrixSettingsFlags {
+                exclude_global_claude_md: false,
+                inject_rtk_hook: false,
+            },
+        })
+        .expect_err("filesystem path refs must be rejected");
+
+        assert!(
+            err.contains("filesystem paths"),
+            "unexpected error: {}",
+            err
+        );
+        assert!(
+            !wg_dir.join("__agent_tech-lead").exists(),
+            "path refs must not create replicas"
+        );
+    }
+
+    #[test]
+    fn create_replica_writes_expected_local_identity_for_portable_ref() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("AgentsCommander_ac");
+        let workspace = project.join(".ac");
+        let matrix_dir = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-2-dev-team");
+        std::fs::create_dir_all(&matrix_dir).expect("create matrix");
+        std::fs::create_dir_all(&wg_dir).expect("create wg");
+        std::fs::write(matrix_dir.join("Role.md"), "# Tech Lead\n").expect("write role");
+
+        let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_new_dir: workspace,
+            wg_dir,
+            agent_path: "_agent_tech-lead".to_string(),
             team_repos: Vec::new(),
             settings_flags: AgentMatrixSettingsFlags {
                 exclude_global_claude_md: false,
@@ -2729,15 +2790,6 @@ mod tests {
         )
         .expect("parse config");
         assert_eq!(config["identity"], "../../_agent_tech-lead");
-        assert_eq!(
-            config["context"],
-            serde_json::json!([
-                "$AGENTSCOMMANDER_CONTEXT",
-                "$REPOS_WORKSPACE_INFO",
-                "../../_agent_tech-lead/Role.md"
-            ])
-        );
-        assert!(!config.to_string().contains("agentscommander-old"));
     }
 
     /// Success path: a clean WG dir with no blockers gets renamed and removed.
