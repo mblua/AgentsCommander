@@ -213,10 +213,104 @@ pub struct WgCoordinatorReplica {
     pub replica_dir: PathBuf,
 }
 
-fn canonical_path_string(path: &Path) -> Option<String> {
-    let canon = std::fs::canonicalize(path).ok()?;
-    let s = canon.to_string_lossy().to_string();
-    Some(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string())
+/// Normalize a path string to a stable comparison form.
+///
+/// - Strip the Windows extended-length (`\\?\`) prefix.
+/// - Replace `\` with `/`.
+/// - Lowercase (case-insensitive comparison; matches the convention used by
+///   `cli/list_peers::norm_path`).
+/// - Trim trailing `/`.
+fn normalize_path_for_compare(s: &str) -> String {
+    let stripped = s.strip_prefix(r"\\?\").unwrap_or(s);
+    stripped
+        .replace('\\', "/")
+        .to_lowercase()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Logical resolution of `.` and `..` components in a path string (no disk
+/// access). Used as a fallback when `std::fs::canonicalize()` fails because
+/// the target doesn't exist — e.g., legacy identity refs that point to a
+/// previous workspace folder name (see #299).
+///
+/// Returns a forward-slash string. `..` components above the root of an
+/// absolute path are dropped; `..` components at the front of a purely
+/// relative path are preserved.
+fn logical_path_resolve(path: &Path) -> String {
+    use std::path::Component;
+    let mut components: Vec<Component> = Vec::new();
+    let mut rooted = false;
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                rooted = true;
+                components.push(component);
+            }
+            Component::Normal(_) => {
+                components.push(component);
+            }
+            Component::ParentDir => {
+                if matches!(components.last(), Some(Component::Normal(_))) {
+                    components.pop();
+                } else if !rooted {
+                    components.push(component);
+                }
+                // else: rooted with no Normal segments to pop → drop the `..`.
+            }
+            Component::CurDir => {}
+        }
+    }
+    let mut out = String::new();
+    for c in &components {
+        match c {
+            Component::Prefix(p) => {
+                out.push_str(&p.as_os_str().to_string_lossy());
+            }
+            Component::RootDir => {
+                out.push('/');
+            }
+            Component::Normal(s) => {
+                if !out.is_empty() && !out.ends_with('/') {
+                    out.push('/');
+                }
+                out.push_str(&s.to_string_lossy());
+            }
+            Component::ParentDir => {
+                if !out.is_empty() && !out.ends_with('/') {
+                    out.push('/');
+                }
+                out.push_str("..");
+            }
+            Component::CurDir => {}
+        }
+    }
+    out
+}
+
+/// Stable comparison key for an identity ref path.
+///
+/// 1. Prefers `std::fs::canonicalize()` — same behavior as the legacy
+///    `canonical_path_string` when the target exists on disk.
+/// 2. Falls back to pure logical resolution when canonicalize fails (the
+///    typical post-workspace-rename state, where both the team coordinator
+///    ref and the replica identity ref point to a folder that no longer
+///    exists — see #299).
+///
+/// Both branches feed `normalize_path_for_compare`, so two refs pointing at
+/// the same conceptual location produce equal keys whether or not the
+/// target exists on disk.
+///
+/// Identity-based authorization is preserved: the comparison uses only the
+/// declared `identity` field from `config.json`, never the replica directory
+/// name (`__agent_*`). A spoofed replica that declares a different matrix
+/// path still produces a different key from the team coordinator ref.
+fn identity_compare_key(path: &Path) -> String {
+    let raw = match std::fs::canonicalize(path) {
+        Ok(canon) => canon.to_string_lossy().into_owned(),
+        Err(_) => logical_path_resolve(path),
+    };
+    normalize_path_for_compare(&raw)
 }
 
 pub fn resolve_wg_coordinator_replica(
@@ -234,7 +328,7 @@ pub fn resolve_wg_coordinator_replica(
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())?;
     let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
-    let coordinator_abs = canonical_path_string(&team_dir.join(coordinator_ref))?;
+    let coordinator_key = identity_compare_key(&team_dir.join(coordinator_ref));
 
     for replica_entry in std::fs::read_dir(wg_dir).ok()?.flatten() {
         let replica_dir = replica_entry.path();
@@ -257,11 +351,8 @@ pub fn resolve_wg_coordinator_replica(
             Some(i) => i,
             None => continue,
         };
-        let identity_abs = match canonical_path_string(&replica_dir.join(identity_ref)) {
-            Some(path) => path,
-            None => continue,
-        };
-        if identity_abs == coordinator_abs {
+        let identity_key = identity_compare_key(&replica_dir.join(identity_ref));
+        if identity_key == coordinator_key {
             return Some(WgCoordinatorReplica {
                 project,
                 team,
@@ -1102,8 +1193,8 @@ mod tests {
         assert_eq!(resolved.wg_name, "wg-1-dev-team");
         assert_eq!(resolved.agent_name, "tech-lead");
         assert_eq!(
-            canonical_path_string(&resolved.replica_dir),
-            canonical_path_string(&wg_dir.join("__agent_tech-lead"))
+            identity_compare_key(&resolved.replica_dir),
+            identity_compare_key(&wg_dir.join(format!("__agent_{}", resolved.agent_name)))
         );
     }
 
@@ -1114,6 +1205,208 @@ mod tests {
         let wg_dir = ac_new.join("wg-1-dev-team");
 
         assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
+    }
+
+    /// Build a fixture where both team config and replica configs reference
+    /// a legacy folder name (`legacy-workspace`) that no longer exists on disk.
+    /// Mirrors the post-workspace-rename state from #299: `canonicalize()` fails
+    /// for both refs, but logical resolution should still produce equal keys.
+    fn make_stale_coordinator_fixture(
+        replica_spoofs_identity: bool,
+    ) -> (FixtureRoot, PathBuf, PathBuf) {
+        let tmp = FixtureRoot::new("teams-stale-coord-fixture");
+        let project = tmp.path().join("proj-a");
+        let ac_new = project.join(".ac-new");
+        let team_dir = ac_new.join("_team_test-team");
+        let wg_dir = ac_new.join("wg-1-test-team");
+        let alpha_replica = wg_dir.join("__agent_test-alpha");
+        let beta_replica = wg_dir.join("__agent_test-beta");
+
+        for dir in [&team_dir, &alpha_replica, &beta_replica] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        // Stale absolute path (the `legacy-workspace` folder is never created).
+        let stale_coord = tmp
+            .path()
+            .join("legacy-workspace")
+            .join(".ac-new")
+            .join("_agent_test-alpha");
+        let stale_coord_str = stale_coord.to_string_lossy().replace('\\', "/");
+
+        // Team config: coordinator points to the stale absolute path.
+        std::fs::write(
+            team_dir.join("config.json"),
+            format!(r#"{{"coordinator":"{}"}}"#, stale_coord_str),
+        )
+        .unwrap();
+
+        // Test-alpha replica identity: also stale. If `replica_spoofs_identity`,
+        // points to a DIFFERENT stale matrix (the test-beta slot) — must reject.
+        let alpha_identity = if replica_spoofs_identity {
+            tmp.path()
+                .join("legacy-workspace")
+                .join(".ac-new")
+                .join("_agent_test-beta")
+                .to_string_lossy()
+                .replace('\\', "/")
+        } else {
+            stale_coord_str.clone()
+        };
+        std::fs::write(
+            alpha_replica.join("config.json"),
+            format!(r#"{{"identity":"{}"}}"#, alpha_identity),
+        )
+        .unwrap();
+
+        // Test-beta replica identity: stale, points at the test-beta matrix.
+        // Not the coordinator — must not match.
+        let beta_identity = tmp
+            .path()
+            .join("legacy-workspace")
+            .join(".ac-new")
+            .join("_agent_test-beta")
+            .to_string_lossy()
+            .replace('\\', "/");
+        std::fs::write(
+            beta_replica.join("config.json"),
+            format!(r#"{{"identity":"{}"}}"#, beta_identity),
+        )
+        .unwrap();
+
+        (tmp, ac_new, wg_dir)
+    }
+
+    /// #299: legacy stale absolute identity refs (workspace renamed; refs point
+    /// at a folder that no longer exists) must still resolve the coordinator
+    /// via logical (no-disk) path comparison.
+    #[test]
+    fn resolve_wg_coordinator_replica_tolerates_stale_absolute_refs() {
+        let (_tmp, ac_new, wg_dir) = make_stale_coordinator_fixture(false);
+
+        let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir)
+            .expect("tolerant comparison should resolve coordinator with stale refs");
+
+        assert_eq!(resolved.agent_name, "test-alpha");
+        assert_eq!(resolved.team, "test-team");
+        assert_eq!(resolved.wg_name, "wg-1-test-team");
+    }
+
+    /// #299: even when refs are stale, spoofing must still be rejected — a
+    /// replica that declares a stale identity ref naming a DIFFERENT matrix
+    /// (e.g. `_agent_test-beta`) must not be accepted as coordinator.
+    #[test]
+    fn resolve_wg_coordinator_replica_rejects_spoofed_stale_identity() {
+        let (_tmp, ac_new, wg_dir) = make_stale_coordinator_fixture(true);
+
+        // The test-alpha replica has been spoofed to claim the test-beta matrix.
+        // The test-beta replica claims the test-beta matrix too. Neither matches
+        // the team's coordinator ref (`_agent_test-alpha`), so no coordinator
+        // is resolved.
+        assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
+    }
+
+    /// #299: identity ref expressed as a relative path traversing out of the
+    /// workspace into a legacy folder (the typical post-rename shape) must
+    /// produce the same logical key as a team coordinator ref expressed as a
+    /// stale absolute path pointing at the same legacy folder.
+    #[test]
+    fn resolve_wg_coordinator_replica_tolerates_stale_relative_identity() {
+        let tmp = FixtureRoot::new("teams-stale-rel-fixture");
+        let project = tmp.path().join("proj-a");
+        let ac_new = project.join(".ac-new");
+        let team_dir = ac_new.join("_team_test-team");
+        let wg_dir = ac_new.join("wg-1-test-team");
+        let alpha_replica = wg_dir.join("__agent_test-alpha");
+
+        for dir in [&team_dir, &alpha_replica] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        // Team config: stale absolute coordinator path
+        // → tmp/legacy-workspace/.ac-new/_agent_test-alpha
+        let stale_abs = tmp
+            .path()
+            .join("legacy-workspace")
+            .join(".ac-new")
+            .join("_agent_test-alpha");
+        let stale_abs_str = stale_abs.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            team_dir.join("config.json"),
+            format!(r#"{{"coordinator":"{}"}}"#, stale_abs_str),
+        )
+        .unwrap();
+
+        // Replica identity: relative path that traverses out to the same
+        // legacy folder. From `<tmp>/proj-a/.ac-new/wg-1-test-team/__agent_test-alpha`,
+        // `../../../../legacy-workspace/.ac-new/_agent_test-alpha` resolves to
+        // `<tmp>/legacy-workspace/.ac-new/_agent_test-alpha` — the same logical
+        // target as the team coordinator ref.
+        std::fs::write(
+            alpha_replica.join("config.json"),
+            r#"{"identity":"../../../../legacy-workspace/.ac-new/_agent_test-alpha"}"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir)
+            .expect("tolerant comparison should bridge stale absolute and relative refs");
+        assert_eq!(resolved.agent_name, "test-alpha");
+    }
+
+    // ── #299 logical_path_resolve unit tests ──────────────────────────
+
+    #[test]
+    fn logical_path_resolve_resolves_parent_dirs() {
+        let p = Path::new("/a/b/c/../d");
+        assert_eq!(logical_path_resolve(p), "/a/b/d");
+    }
+
+    #[test]
+    fn logical_path_resolve_drops_parent_above_root() {
+        let p = Path::new("/a/../../b");
+        // `/a/..` → `/`, then `/..` is dropped (can't go above root).
+        assert_eq!(logical_path_resolve(p), "/b");
+    }
+
+    #[test]
+    fn logical_path_resolve_preserves_relative_parent_prefix() {
+        let p = Path::new("../../foo");
+        assert_eq!(logical_path_resolve(p), "../../foo");
+    }
+
+    #[test]
+    fn logical_path_resolve_strips_current_dir() {
+        let p = Path::new("/a/./b/./c");
+        assert_eq!(logical_path_resolve(p), "/a/b/c");
+    }
+
+    // ── #299 identity_compare_key unit tests ──────────────────────────
+
+    #[test]
+    fn identity_compare_key_equal_for_stale_paths_pointing_to_same_target() {
+        // Two refs expressed differently but logically pointing at the same
+        // non-existent legacy location should produce equal keys.
+        let a = Path::new("/some/where/legacy/.ac-new/_agent_test-alpha");
+        let b = Path::new("/some/where/proj/.ac-new/wg-1-test-team/__agent_test-alpha/../../../../legacy/.ac-new/_agent_test-alpha");
+        assert_eq!(identity_compare_key(a), identity_compare_key(b));
+    }
+
+    #[test]
+    fn identity_compare_key_differs_for_different_matrix_names() {
+        // Stale refs to different matrix dirs must produce different keys —
+        // protects spoofing when both refs are stale.
+        let a = Path::new("/some/where/legacy/.ac-new/_agent_test-alpha");
+        let b = Path::new("/some/where/legacy/.ac-new/_agent_test-beta");
+        assert_ne!(identity_compare_key(a), identity_compare_key(b));
+    }
+
+    #[test]
+    fn identity_compare_key_case_insensitive() {
+        // Comparison is case-insensitive (Windows convention; matches
+        // cli/list_peers::norm_path).
+        let a = Path::new("/Some/Where/.ac-new/_Agent_Test-Alpha");
+        let b = Path::new("/some/where/.ac-new/_agent_test-alpha");
+        assert_eq!(identity_compare_key(a), identity_compare_key(b));
     }
 
     #[test]
