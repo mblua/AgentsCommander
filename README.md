@@ -134,7 +134,9 @@ Also: Tauri, SolidJS, xterm.js, portable-pty, axum, tokio; the toolchain layer t
 
 ## Author
 
-**Mariano Blua**: [GitHub](https://github.com/mblua)
+Mariano is passionate about software development, AI, and blockchain. He approaches the world with deep curiosity, always amazed by life and the universe. Above all, he is a father, which remains the most wonderful part of his life.
+
+**Mariano Blua**: [GitHub](https://github.com/mblua) · [LinkedIn](https://www.linkedin.com/in/mariano-blua/) · [🇦🇷 MarianoBlua](https://x.com/MarianoBlua) · [🇺🇸 MarianoBluaEN (English)](https://x.com/MarianoBluaEN)
 
 ## License
 
