@@ -559,7 +559,9 @@ pub(crate) fn read_team_config(
     }
     let content = std::fs::read_to_string(&config_path)
         .map_err(|e| format!("Failed to read config.json: {}", e))?;
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse config.json: {}", e))
+    let config: TeamConfigResult = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
+    normalize_team_config_for_project(ac_new_dir, &config)
 }
 
 pub(crate) fn write_team_config(
@@ -673,16 +675,19 @@ pub(crate) fn resolve_agent_ref(ac_new_dir: &Path, raw_agent: &str) -> Result<St
     if trimmed.contains('\0') {
         return Err("Agent reference must not contain NUL".to_string());
     }
-    let path = Path::new(trimmed);
-    let dir_name = if path.components().count() > 1 || path.is_absolute() {
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("Invalid agent reference '{}'", raw_agent))?
-            .to_string()
-    } else {
-        trimmed.to_string()
-    };
-    let bare = dir_name.strip_prefix("_agent_").unwrap_or(&dir_name);
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') {
+        return Err(format!(
+            "Invalid agent reference '{}': team configs must use portable refs like '_agent_name' or 'name', not filesystem paths",
+            raw_agent
+        ));
+    }
+    if Path::new(trimmed).is_absolute() {
+        return Err(format!(
+            "Invalid agent reference '{}': absolute paths are not allowed in team configs",
+            raw_agent
+        ));
+    }
+    let bare = trimmed.strip_prefix("_agent_").unwrap_or(trimmed);
     validate_existing_name(bare, "Agent")?;
     let canonical_ref = format!("_agent_{}", bare);
     let matrix_dir = ac_new_dir.join(&canonical_ref);
@@ -777,10 +782,11 @@ pub(crate) async fn create_workgroup_on_disk(
 pub(crate) fn create_or_update_replica_on_disk(
     args: ReplicaDiskCreateArgs,
 ) -> Result<PathBuf, String> {
-    let agent_dir_name = Path::new(&args.agent_path)
+    let agent_ref = resolve_agent_ref(&args.ac_new_dir, &args.agent_path)?;
+    let agent_dir_name = Path::new(&agent_ref)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(&args.agent_path);
+        .unwrap_or(&agent_ref);
     let agent_name = agent_dir_name
         .strip_prefix("_agent_")
         .unwrap_or(agent_dir_name);
@@ -822,20 +828,12 @@ pub(crate) fn create_or_update_replica_on_disk(
         })
         .collect();
 
-    let identity_rel = compute_relative_identity(&args.agent_path, &replica_dir, &args.ac_new_dir);
+    let identity_rel = compute_relative_identity(&agent_ref, &replica_dir, &args.ac_new_dir);
     let mut context_entries: Vec<String> = vec![
         "$AGENTSCOMMANDER_CONTEXT".to_string(),
         "$REPOS_WORKSPACE_INFO".to_string(),
     ];
-    let matrix_dir = if Path::new(&args.agent_path).is_absolute() {
-        Path::new(&args.agent_path).to_path_buf()
-    } else {
-        args.ac_new_dir.join(
-            args.agent_path
-                .trim_start_matches("../")
-                .trim_start_matches("./"),
-        )
-    };
+    let matrix_dir = args.ac_new_dir.join(&agent_ref);
     if matrix_dir.join("Role.md").exists() {
         context_entries.push(format!("{}/Role.md", identity_rel));
     }
@@ -1167,17 +1165,7 @@ pub async fn create_workgroup(
         );
     }
 
-    // Read team config
-    let team_dir = base.join(format!("_team_{}", safe_team));
-    let team_config_path = team_dir.join("config.json");
-    if !team_config_path.exists() {
-        return Err(format!("Team '{}' not found (no config.json)", safe_team));
-    }
-
-    let team_config_str = std::fs::read_to_string(&team_config_path)
-        .map_err(|e| format!("Failed to read team config: {}", e))?;
-    let team_config: serde_json::Value = serde_json::from_str(&team_config_str)
-        .map_err(|e| format!("Failed to parse team config: {}", e))?;
+    let team_config = read_team_config(&base, &safe_team)?;
 
     // Determine next WG number
     let wg_number = determine_next_wg_number(&base);
@@ -1197,38 +1185,8 @@ pub async fn create_workgroup(
     std::fs::write(wg_dir.join("TASK.md"), &task_content)
         .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
 
-    // Parse team agents and repos
-    let team_agents: Vec<String> = team_config
-        .get("agents")
-        .and_then(|a| a.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let team_repos: Vec<RepoAssignment> = team_config
-        .get("repos")
-        .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| {
-                    let url = v.get("url")?.as_str()?.to_string();
-                    let agents = v
-                        .get("agents")
-                        .and_then(|a| a.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    Some(RepoAssignment { url, agents })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let team_agents = team_config.agents;
+    let team_repos = team_config.repos;
 
     // Collect unique repo URLs and their directory names
     let mut unique_repos: Vec<(String, String)> = Vec::new(); // (url, dir_name)
@@ -1861,33 +1819,7 @@ pub async fn sync_workgroup_repos(
         return Err(format!("Team '{}' not found", team_name));
     }
 
-    // Read team config and parse repo assignments
-    let config_content = std::fs::read_to_string(team_dir.join("config.json"))
-        .map_err(|e| format!("Failed to read team config: {}", e))?;
-    let config: serde_json::Value = serde_json::from_str(&config_content)
-        .map_err(|e| format!("Failed to parse team config: {}", e))?;
-
-    let repos: Vec<RepoAssignment> = config
-        .get("repos")
-        .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| {
-                    let url = v.get("url")?.as_str()?.to_string();
-                    let agents = v
-                        .get("agents")
-                        .and_then(|a| a.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    Some(RepoAssignment { url, agents })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let repos = read_team_config(&base, &team_name)?.repos;
 
     sync_workgroup_repos_inner(
         &base,
@@ -1931,19 +1863,7 @@ pub async fn get_team_config(
 ) -> Result<TeamConfigResult, String> {
     validate_existing_name(&team_name, "Team")?;
     let base = selected_workspace_dir(Path::new(&project_path))?;
-
-    let team_dir = base.join(format!("_team_{}", team_name));
-    let config_path = team_dir.join("config.json");
-    if !config_path.exists() {
-        return Err(format!("Team '{}' config not found", team_name));
-    }
-
-    let content = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read config.json: {}", e))?;
-    let result: TeamConfigResult = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
-
-    Ok(result)
+    read_team_config(&base, &team_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -2684,7 +2604,7 @@ mod tests {
     }
 
     #[test]
-    fn team_config_normalization_stores_project_relative_agent_refs() {
+    fn team_config_normalization_stores_portable_agent_refs() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ac_new = tmp.path().join(".ac-new");
         let architect = ac_new.join("_agent_architect");
@@ -2694,15 +2614,15 @@ mod tests {
 
         let config = TeamConfigResult {
             agents: vec![
-                architect.to_string_lossy().to_string(),
+                "_agent_architect".to_string(),
                 "_agent_dev-rust".to_string(),
-                architect.to_string_lossy().to_string(),
+                "_agent_architect".to_string(),
             ],
-            coordinator: architect.to_string_lossy().to_string(),
+            coordinator: "_agent_architect".to_string(),
             repos: vec![RepoAssignment {
                 url: "https://example.test/repo.git".to_string(),
                 agents: vec![
-                    architect.to_string_lossy().to_string(),
+                    "_agent_architect".to_string(),
                     "_agent_dev-rust".to_string(),
                 ],
             }],
@@ -2733,6 +2653,76 @@ mod tests {
             !written.contains(&tmp.path().to_string_lossy().to_string()),
             "team config must not persist absolute project paths: {}",
             written
+        );
+    }
+
+    #[test]
+    fn team_config_normalization_rejects_filesystem_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_new = tmp.path().join(".ac-new");
+        std::fs::create_dir_all(ac_new.join("_agent_architect")).expect("architect matrix");
+
+        let absolute_config = TeamConfigResult {
+            agents: vec![ac_new
+                .join("_agent_architect")
+                .to_string_lossy()
+                .to_string()],
+            coordinator: "_agent_architect".to_string(),
+            repos: Vec::new(),
+        };
+        let err = normalize_team_config_for_project(&ac_new, &absolute_config)
+            .expect_err("absolute path refs must be rejected");
+        assert!(
+            err.contains("filesystem paths"),
+            "unexpected error: {}",
+            err
+        );
+
+        let windows_config = TeamConfigResult {
+            agents: vec![r"C:\Users\maria\project\.ac-new\_agent_architect".to_string()],
+            coordinator: "_agent_architect".to_string(),
+            repos: Vec::new(),
+        };
+        let err = normalize_team_config_for_project(&ac_new, &windows_config)
+            .expect_err("windows path refs must be rejected");
+        assert!(
+            err.contains("filesystem paths"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn replica_creation_rejects_filesystem_agent_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_new = tmp.path().join(".ac-new");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+        let matrix_dir = ac_new.join("_agent_architect");
+        std::fs::create_dir_all(&matrix_dir).expect("architect matrix");
+        std::fs::create_dir_all(&wg_dir).expect("workgroup");
+
+        let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_new_dir: ac_new.clone(),
+            wg_dir: wg_dir.clone(),
+            agent_path: matrix_dir.to_string_lossy().to_string(),
+            team_repos: Vec::new(),
+            settings_flags: AgentMatrixSettingsFlags {
+                exclude_global_claude_md: false,
+                inject_rtk_hook: false,
+            },
+        })
+        .expect_err("absolute path refs must be rejected");
+
+        assert!(
+            err.contains("filesystem paths"),
+            "unexpected error: {}",
+            err
+        );
+        assert!(
+            !wg_dir
+                .join(format!("__agent_{}", matrix_dir.to_string_lossy()))
+                .exists(),
+            "replica creation must not create path-derived agent directories"
         );
     }
 

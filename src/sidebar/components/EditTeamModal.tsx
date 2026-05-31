@@ -1,6 +1,6 @@
 import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
 import { EntityAPI } from "../../shared/ipc";
-import { AC_WORKSPACE_DIR, LEGACY_AC_WORKSPACE_DIR } from "../../shared/constants";
+import { LEGACY_AC_WORKSPACE_DIR } from "../../shared/constants";
 import { projectStore } from "../stores/project";
 import type { AcTeam, TeamWizardAgentEntry, TeamWizardRepoEntry, TeamWizardStep } from "../../shared/types";
 
@@ -26,24 +26,6 @@ const EditTeamModal: Component<{
     const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
     return idx >= 0 ? p.slice(idx + 1) : p;
   });
-
-  const currentProjectRoot = createMemo(() =>
-    props.projectPath.replace(/[\\/]+$/, "").replace(/\\/g, "/")
-  );
-
-  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-
-  const resolveConfigAgentPath = (agentRef: string) => {
-    const normalized = agentRef.replace(/\\/g, "/");
-    if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
-      return normalized;
-    }
-    const trimmed = normalized.replace(/^\.\/+/, "").replace(/^(\.\.\/)+/, "");
-    if (trimmed.startsWith(`${AC_WORKSPACE_DIR}/`) || trimmed.startsWith(`${LEGACY_AC_WORKSPACE_DIR}/`)) {
-      return `${currentProjectRoot()}/${trimmed}`;
-    }
-    return `${currentProjectRoot()}/${AC_WORKSPACE_DIR}/${trimmed}`;
-  };
 
   const agentsByProject = createMemo(() => {
     const filter = agentFilter().toLowerCase();
@@ -72,6 +54,11 @@ const EditTeamModal: Component<{
     allAgents().filter((a) => selectedAgents().has(a.path))
   );
 
+  const portableAgentRef = (path: string) => {
+    const last = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
+    return last.startsWith("_agent_") ? last : `_agent_${last}`;
+  };
+
   const canNext2 = createMemo(() =>
     selectedAgents().size > 0 && coordinator() !== ""
   );
@@ -91,44 +78,33 @@ const EditTeamModal: Component<{
         projectName: a.projectName,
       }));
 
-      const discoveredNorm = new Set(entries.map((e) => norm(e.path)));
+      const discoveredRefs = new Set(entries.map((e) => portableAgentRef(e.path)));
 
-      // Synthesize entries for cross-project agents not found in discovered agents.
-      // Team config is stored relative to the AC workspace for portability; older configs
-      // may still contain absolute paths. Resolve before comparing with discovery.
+      // Synthesize entries for portable refs not found in discovered agents.
       for (const configPath of teamConfig.agents) {
-        const resolvedPath = resolveConfigAgentPath(configPath);
-        if (!discoveredNorm.has(norm(resolvedPath))) {
-          const normalized = resolvedPath.replace(/\\/g, "/");
-          const parts = normalized.split("/");
-          // Extract agent name from _agent_{name} dir
-          const agentDir = parts[parts.length - 1] || "";
-          const agentName = agentDir.replace(/^_agent_/, "");
-          // Extract project name: parent of the workspace dir.
-          let workspaceIdx = -1;
-          for (let i = parts.length - 1; i >= 0; i--) {
-            if (parts[i] === AC_WORKSPACE_DIR || parts[i] === LEGACY_AC_WORKSPACE_DIR) {
-              workspaceIdx = i;
-              break;
-            }
-          }
-          const projectName = workspaceIdx > 0 ? parts[workspaceIdx - 1] : "external";
-          entries.push({ name: agentName, path: resolvedPath, projectName });
+        const agentRef = portableAgentRef(configPath);
+        if (!discoveredRefs.has(agentRef)) {
+          const agentName = agentRef.replace(/^_agent_/, "");
+          const fallbackPath =
+            `${props.projectPath.replace(/[\\/]+$/, "")}/${LEGACY_AC_WORKSPACE_DIR}/${agentRef}`;
+          entries.push({
+            name: agentName,
+            path: fallbackPath,
+            projectName: currentProjectName(),
+          });
         }
       }
 
       setAllAgents(entries);
-      const entryPathByNorm = new Map(entries.map((e) => [norm(e.path), e.path]));
+      const entryPathByRef = new Map(entries.map((e) => [portableAgentRef(e.path), e.path]));
       const configPathForUi = (agentRef: string) =>
-        entryPathByNorm.get(norm(resolveConfigAgentPath(agentRef))) ?? agentRef;
+        entryPathByRef.get(portableAgentRef(agentRef)) ?? agentRef;
 
       // Pre-select agents matching config paths
-      const configAgentNorm = new Set(
-        teamConfig.agents.map((p) => norm(resolveConfigAgentPath(p)))
-      );
+      const configAgentRefs = new Set(teamConfig.agents.map(portableAgentRef));
       const matched = new Set<string>();
       for (const entry of entries) {
-        if (configAgentNorm.has(norm(entry.path))) {
+        if (configAgentRefs.has(portableAgentRef(entry.path))) {
           matched.add(entry.path);
         }
       }
@@ -136,8 +112,8 @@ const EditTeamModal: Component<{
 
       // Pre-select coordinator
       if (teamConfig.coordinator) {
-        const coordNorm = norm(resolveConfigAgentPath(teamConfig.coordinator));
-        const coordEntry = entries.find((e) => norm(e.path) === coordNorm);
+        const coordRef = portableAgentRef(teamConfig.coordinator);
+        const coordEntry = entries.find((e) => portableAgentRef(e.path) === coordRef);
         if (coordEntry) {
           setCoordinator(coordEntry.path);
         }
@@ -224,13 +200,13 @@ const EditTeamModal: Component<{
     try {
       const repoData = repos().map((r) => ({
         url: r.url,
-        agents: Array.from(r.agents),
+        agents: Array.from(r.agents).map(portableAgentRef),
       }));
       await EntityAPI.updateTeam(
         props.projectPath,
         props.team.name,
-        Array.from(selectedAgents()),
-        coordinator(),
+        Array.from(selectedAgents()).map(portableAgentRef),
+        portableAgentRef(coordinator()),
         repoData
       );
       await projectStore.reloadProject(props.projectPath);
