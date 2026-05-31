@@ -560,20 +560,20 @@ fn resolve_wg_coordinator(workspace_dir: &Path, wg_dir: &Path) -> Option<String>
 
 /// Read role from a WG replica's identity matrix Role.md, falling back to CLAUDE.md.
 fn read_wg_role(replica_dir: &Path) -> String {
-    let config: serde_json::Value = match std::fs::read_to_string(replica_dir.join("config.json"))
-        .ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-    {
-        Some(v) => v,
-        None => return "WG replica agent.".to_string(),
+    let matrix_dir = match crate::config::replica_identity::read_and_repair_wg_replica_config(
+        replica_dir,
+        crate::config::replica_identity::WG_REPLICA_REQUIRED_CONTEXT,
+    ) {
+        Ok((_config, identity)) => identity.matrix_dir,
+        Err(e) => {
+            log::warn!(
+                "[list-peers] Rejected invalid WG replica identity for '{}': {}",
+                replica_dir.display(),
+                e
+            );
+            return "WG replica agent.".to_string();
+        }
     };
-
-    let identity_ref = match config.get("identity").and_then(|i| i.as_str()) {
-        Some(i) => i,
-        None => return "WG replica agent.".to_string(),
-    };
-
-    let matrix_dir = replica_dir.join(identity_ref);
     let role_path = matrix_dir.join("Role.md");
     match std::fs::read_to_string(&role_path) {
         Ok(content) => extract_role_section(&content, 3, "WG replica agent."),
@@ -1460,6 +1460,49 @@ mod tests {
             my_project: "proj-a".to_string(),
         };
         assert!(build_root_agent_synthetic_peer(&wg, &paths).is_none());
+    }
+
+    #[test]
+    fn build_root_agent_synthetic_peer_repairs_stale_same_basename_identity() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("AgentsCommander_ac");
+        let workspace = project.join(".ac");
+        let team_dir = workspace.join("_team_dev-team");
+        let matrix = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-2-dev-team");
+        let replica = wg_dir.join("__agent_tech-lead");
+        for dir in [&team_dir, &matrix, &replica] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../../../agentscommander-old/.ac-new/_agent_tech-lead"}"#,
+        )
+        .unwrap();
+
+        let wg = WgReplicaInfo {
+            my_agent_name: "tech-lead".to_string(),
+            my_wg_name: "wg-2-dev-team".to_string(),
+            my_wg_dir: wg_dir,
+            workspace_dir: workspace,
+            my_project: "AgentsCommander_ac".to_string(),
+        };
+        let paths = vec![temp.path().to_string_lossy().to_string()];
+
+        let peer = build_root_agent_synthetic_peer(&wg, &paths)
+            .expect("stale same-basename identity should repair before root verification");
+        assert_eq!(peer.name, crate::config::root_agent::ROOT_AGENT_SENDER);
+
+        let repaired: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(replica.join("config.json")).expect("read repaired config"),
+        )
+        .expect("parse repaired config");
+        assert_eq!(repaired["identity"], "../../_agent_tech-lead");
     }
 
     #[test]

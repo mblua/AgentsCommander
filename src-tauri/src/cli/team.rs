@@ -2,7 +2,8 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::cli::workgroup::{
-    clone_missing_for_config, push_unique, resolve_cli_project, write_refresh,
+    clone_missing_for_config, push_unique, resolve_cli_project, resolve_cli_workspace,
+    write_refresh,
 };
 use crate::commands::entity_creation::{
     agent_ref_bare_name, create_or_update_replica_on_disk, normalize_team_config_for_project,
@@ -106,12 +107,12 @@ pub fn execute(args: TeamArgs) -> i32 {
 
 fn list(args: TeamListArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
-    let ac_new = project_path.join(".ac-new");
+    let workspace_dir = resolve_cli_workspace(&project_path)?;
     let mut items = Vec::new();
     if let Some(workgroup) = args.workgroup {
         validate_existing_name(&workgroup, "Workgroup")?;
         let team = parse_team_from_workgroup_name(&workgroup)?;
-        let config = read_team_config(&ac_new, &team)?;
+        let config = read_team_config(&workspace_dir, &team)?;
         items.push(TeamListItem {
             team,
             workgroup: Some(workgroup),
@@ -119,7 +120,7 @@ fn list(args: TeamListArgs) -> Result<(), String> {
             coordinator: config.coordinator,
             repos: config.repos,
         });
-    } else if let Ok(entries) = std::fs::read_dir(&ac_new) {
+    } else if let Ok(entries) = std::fs::read_dir(&workspace_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
@@ -129,7 +130,7 @@ fn list(args: TeamListArgs) -> Result<(), String> {
             let Some(team) = name.strip_prefix("_team_") else {
                 continue;
             };
-            if let Ok(config) = read_team_config(&ac_new, team) {
+            if let Ok(config) = read_team_config(&workspace_dir, team) {
                 items.push(TeamListItem {
                     team: team.to_string(),
                     workgroup: None,
@@ -147,15 +148,17 @@ fn list(args: TeamListArgs) -> Result<(), String> {
 fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
-    let ac_new = project_path.join(".ac-new");
-    let wg_dir = ac_new.join(&args.workgroup);
+    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let wg_dir = workspace_dir.join(&args.workgroup);
     if !wg_dir.is_dir() {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
-    let mut config =
-        normalize_team_config_for_project(&ac_new, &read_team_config(&ac_new, &team)?)?;
-    let agent_ref = resolve_agent_ref(&ac_new, &args.agent)?;
+    let mut config = normalize_team_config_for_project(
+        &workspace_dir,
+        &read_team_config(&workspace_dir, &team)?,
+    )?;
+    let agent_ref = resolve_agent_ref(&workspace_dir, &args.agent)?;
     let was_present = config.agents.contains(&agent_ref);
     push_unique(&mut config.agents, agent_ref.clone());
     if args.coordinator {
@@ -164,11 +167,10 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
     if !config.coordinator.is_empty() && !config.agents.contains(&config.coordinator) {
         return Err("Coordinator must be one of the selected agents".to_string());
     }
-    write_team_config(&ac_new, &team, &config)?;
+    write_team_config(&workspace_dir, &team, &config)?;
 
     let settings = crate::config::settings::load_settings_for_cli();
     let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-        ac_new_dir: ac_new.clone(),
         wg_dir: wg_dir.clone(),
         agent_path: agent_ref.clone(),
         team_repos: config.repos.clone(),
@@ -197,15 +199,17 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
 fn remove_member(args: TeamRemoveMemberArgs) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
-    let ac_new = project_path.join(".ac-new");
-    let wg_dir = ac_new.join(&args.workgroup);
+    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let wg_dir = workspace_dir.join(&args.workgroup);
     if !wg_dir.is_dir() {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
-    let mut config =
-        normalize_team_config_for_project(&ac_new, &read_team_config(&ac_new, &team)?)?;
-    let agent_ref = resolve_agent_ref(&ac_new, &args.agent)?;
+    let mut config = normalize_team_config_for_project(
+        &workspace_dir,
+        &read_team_config(&workspace_dir, &team)?,
+    )?;
+    let agent_ref = resolve_agent_ref(&workspace_dir, &args.agent)?;
     if config.coordinator == agent_ref {
         return Err(
             "Cannot remove the current coordinator without choosing a replacement".to_string(),
@@ -219,7 +223,7 @@ fn remove_member(args: TeamRemoveMemberArgs) -> Result<(), String> {
     for repo in &mut config.repos {
         repo.agents.retain(|agent| agent != &agent_ref);
     }
-    write_team_config(&ac_new, &team, &config)?;
+    write_team_config(&workspace_dir, &team, &config)?;
     remove_replica_dir(&replica_dir)?;
     write_refresh(
         &project_path,

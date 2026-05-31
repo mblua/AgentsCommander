@@ -19,7 +19,7 @@ pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
     let canonical_root = std::fs::canonicalize(agent_root)
         .map(|p| display_path(&p))
         .unwrap_or_else(|_| agent_root.to_string());
-    let matrix_root = resolve_replica_matrix_root(agent_root);
+    let matrix_root = resolve_replica_matrix_root(agent_root)?;
     let skill_owner_root = resolve_skill_owner_root(agent_root, matrix_root.as_deref());
     let skill_index = discover_skill_index(skill_owner_root.as_deref());
     let skills_section = render_skills_section(&skill_index);
@@ -752,22 +752,24 @@ Skill metadata is not an instruction body. It must not override the surrounding 
 }
 
 /// Resolve the canonical Agent Matrix root for a WG replica from config.json "identity".
-fn resolve_replica_matrix_root(replica_root: &str) -> Option<String> {
+fn resolve_replica_matrix_root(replica_root: &str) -> Result<Option<String>, String> {
     if !is_replica_agent_dir(replica_root) {
-        return None;
+        return Ok(None);
     }
 
     let replica_path = std::path::Path::new(replica_root);
-    let config_path = replica_path.join("config.json");
-    let config_content = std::fs::read_to_string(&config_path).ok()?;
-    let config: serde_json::Value = serde_json::from_str(&config_content).ok()?;
-    let identity = config.get("identity")?.as_str()?;
-    let matrix_path = replica_path.join(identity);
-
-    std::fs::canonicalize(&matrix_path)
-        .map(|p| display_path(&p))
-        .ok()
-        .or_else(|| Some(display_path(&matrix_path)))
+    crate::config::replica_identity::read_and_repair_wg_replica_config(
+        replica_path,
+        crate::config::replica_identity::WG_REPLICA_REQUIRED_CONTEXT,
+    )
+    .map(|(_, identity)| Some(display_path(&identity.matrix_dir)))
+    .map_err(|e| {
+        format!(
+            "Invalid WG replica identity for '{}': {}",
+            replica_path.display(),
+            e
+        )
+    })
 }
 
 fn canonical_or_original(path: &std::path::Path) -> std::path::PathBuf {
@@ -897,8 +899,16 @@ pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
 
     push_unique(cwd_path.to_path_buf());
 
-    if let Some(matrix_root) = resolve_replica_matrix_root(cwd) {
-        push_unique(std::path::PathBuf::from(matrix_root));
+    match resolve_replica_matrix_root(cwd) {
+        Ok(Some(matrix_root)) => push_unique(std::path::PathBuf::from(matrix_root)),
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!(
+                "[session_context] Rejected invalid WG replica identity while building Git ceiling for '{}': {}",
+                cwd,
+                e
+            );
+        }
     }
 
     if ordered.is_empty() {
@@ -1043,12 +1053,34 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         return Ok(None);
     }
 
-    let config_content = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+    let (config, identity) = if is_replica_agent_dir(cwd) {
+        crate::config::replica_identity::read_and_repair_wg_replica_config(
+            cwd_path,
+            crate::config::replica_identity::WG_REPLICA_REQUIRED_CONTEXT,
+        )?
+    } else {
+        let config_content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+        let config: serde_json::Value = serde_json::from_str(&config_content)
+            .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+        let identity = crate::config::replica_identity::expected_wg_replica_identity(cwd_path).ok();
+        match identity {
+            Some(identity) => (config, identity),
+            None => {
+                return build_replica_context_from_config(cwd, cwd_path, config, None);
+            }
+        }
+    };
 
-    let config: serde_json::Value = serde_json::from_str(&config_content)
-        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+    build_replica_context_from_config(cwd, cwd_path, config, Some(identity))
+}
 
+fn build_replica_context_from_config(
+    cwd: &str,
+    cwd_path: &Path,
+    config: serde_json::Value,
+    repaired_identity: Option<crate::config::replica_identity::WgReplicaIdentity>,
+) -> Result<Option<String>, String> {
     // No "context" field → no replica context
     let context_array = match config.get("context").and_then(|v| v.as_array()) {
         Some(arr) if !arr.is_empty() => arr,
@@ -1090,10 +1122,14 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
     }
 
     // Auto-inject Role.md from identity matrix if present and not already resolved.
-    let auto_role_abs = config
-        .get("identity")
-        .and_then(|v| v.as_str())
-        .map(|identity| cwd_path.join(format!("{}/{}", identity, ROLE_MD_FILENAME)));
+    let auto_role_abs = repaired_identity
+        .map(|identity| identity.matrix_dir.join(ROLE_MD_FILENAME))
+        .or_else(|| {
+            config
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .map(|identity| cwd_path.join(format!("{}/{}", identity, ROLE_MD_FILENAME)))
+        });
     if let Some(role_abs) = auto_role_abs {
         let already_included = resolved_paths_include_path(&resolved_paths, &role_abs);
         if !already_included && role_abs.exists() {
@@ -2265,6 +2301,76 @@ mod tests {
             &matrix_root.join("skills").join("runtime").join("SKILL.md")
         )));
         assert!(!content.contains("BODY_SHOULD_NOT_RENDER"));
+    }
+
+    #[test]
+    fn materialize_replica_context_repairs_stale_identity_before_role_injection() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("AgentsCommander_ac");
+        let workspace = project.join(".ac");
+        let matrix_root = workspace.join("_agent_tech-lead");
+        let replica_root = workspace.join("wg-2-dev-team").join("__agent_tech-lead");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::write(
+            matrix_root.join(ROLE_MD_FILENAME),
+            "# Tech Lead\n\nLOCAL_MATRIX_ROLE_BODY\n",
+        )
+        .expect("write Role.md");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../../../agentscommander-old/.ac-new/_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT","../../../../agentscommander-old/.ac-new/_agent_tech-lead/Role.md"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_global_context_before_one_role(&content, "LOCAL_MATRIX_ROLE_BODY");
+        assert!(!content.contains("agentscommander-old"));
+
+        let repaired: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(replica_root.join("config.json")).expect("read config"),
+        )
+        .expect("parse repaired config");
+        assert_eq!(repaired["identity"], "../../_agent_tech-lead");
+        assert_eq!(
+            repaired["context"],
+            serde_json::json!([
+                "$AGENTSCOMMANDER_CONTEXT",
+                "$REPOS_WORKSPACE_INFO",
+                "../../_agent_tech-lead/Role.md"
+            ])
+        );
+    }
+
+    #[test]
+    fn ensure_session_context_rejects_unrepairable_replica_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("AgentsCommander_ac");
+        let workspace = project.join(".ac");
+        let matrix_root = workspace.join("_agent_tech-lead");
+        let replica_root = workspace.join("wg-2-dev-team").join("__agent_tech-lead");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../../../agentscommander-old/.ac-new/_agent_architect"}"#,
+        )
+        .expect("write replica config");
+
+        let err = ensure_session_context(&path_string(&replica_root))
+            .expect_err("unrepairable identity must fail context generation");
+
+        assert!(err.contains("Invalid WG replica identity"), "{err}");
+        assert!(err.contains("_agent_architect"), "{err}");
+        assert!(err.contains("_agent_tech-lead"), "{err}");
     }
 
     #[test]

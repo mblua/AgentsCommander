@@ -8,11 +8,11 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
+use crate::config::settings::SettingsState;
 use crate::config::workspace::{
     canonical_workspace_dir_label, existing_workspace_dir, find_workspace_segment,
     has_workspace_dir, workspace_dir_for_project,
 };
-use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
 
@@ -141,6 +141,62 @@ fn extract_origin_project(identity_abs_path: &std::path::Path) -> Option<String>
     let s = identity_abs_path.to_string_lossy().replace('\\', "/");
     let parts: Vec<&str> = s.split('/').collect();
     find_workspace_segment(&parts).and_then(|i| (i > 0).then(|| parts[i - 1].to_string()))
+}
+
+struct ReplicaIdentityRead {
+    config: Option<serde_json::Value>,
+    identity: Option<crate::config::replica_identity::WgReplicaIdentity>,
+    invalid_identity: bool,
+}
+
+fn read_replica_config_with_valid_identity(replica_dir: &Path) -> ReplicaIdentityRead {
+    if !replica_dir.join("config.json").exists() {
+        return ReplicaIdentityRead {
+            config: None,
+            identity: None,
+            invalid_identity: false,
+        };
+    }
+
+    match crate::config::replica_identity::read_and_repair_wg_replica_config(
+        replica_dir,
+        crate::config::replica_identity::WG_REPLICA_REQUIRED_CONTEXT,
+    ) {
+        Ok((config, identity)) => ReplicaIdentityRead {
+            config: Some(config),
+            identity: Some(identity),
+            invalid_identity: false,
+        },
+        Err(e) => {
+            log::warn!(
+                "[ac-discovery] Rejected invalid WG replica identity for '{}': {}",
+                replica_dir.display(),
+                e
+            );
+            let config = std::fs::read_to_string(replica_dir.join("config.json"))
+                .ok()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+            ReplicaIdentityRead {
+                config,
+                identity: None,
+                invalid_identity: true,
+            }
+        }
+    }
+}
+
+fn origin_project_for_replica_identity(
+    project_folder: &str,
+    identity_read: &ReplicaIdentityRead,
+) -> Option<String> {
+    if identity_read.invalid_identity {
+        return None;
+    }
+    identity_read
+        .identity
+        .as_ref()
+        .and_then(|identity| extract_origin_project(&identity.matrix_dir))
+        .or_else(|| Some(project_folder.to_string()))
 }
 
 /// Derive agent display name from its path.
@@ -659,8 +715,7 @@ impl DiscoveryBranchWatcher {
             mgr.get_sessions_working_dirs().await
         };
         for (id, cwd) in sessions {
-            if let Some(task_path) =
-                crate::session::session::find_workgroup_task_path_for_cwd(&cwd)
+            if let Some(task_path) = crate::session::session::find_workgroup_task_path_for_cwd(&cwd)
             {
                 if let Some(parent) = task_path.parent() {
                     wg_roots
@@ -968,46 +1023,28 @@ pub async fn discover_ac_agents(
                                     .unwrap_or(&wg_dir_name)
                                     .to_string();
 
-                                let replica_config = wg_path
-                                    .join("config.json")
-                                    .exists()
-                                    .then(|| {
-                                        std::fs::read_to_string(wg_path.join("config.json")).ok()
-                                    })
-                                    .flatten()
-                                    .and_then(|content| {
-                                        serde_json::from_str::<serde_json::Value>(&content).ok()
-                                    });
+                                let identity_read =
+                                    read_replica_config_with_valid_identity(&wg_path);
 
-                                let identity_path = replica_config
+                                let identity_path = identity_read
+                                    .identity
                                     .as_ref()
-                                    .and_then(|v| v.get("identity")?.as_str().map(String::from));
+                                    .map(|identity| identity.identity.clone());
 
-                                // Resolve identity to determine origin project
-                                let origin_project = identity_path.as_ref()
-                                    .and_then(|rel| {
-                                        let target = wg_path.join(rel);
-                                        std::fs::canonicalize(&target)
-                                            .inspect_err(|e| {
-                                                log::warn!(
-                                                    "[ac-discovery] identity canonicalize failed — replica='{}' target='{}' err={}",
-                                                    wg_path.display(),
-                                                    target.display(),
-                                                    e
-                                                );
-                                            })
-                                            .ok()
-                                            .and_then(|abs| extract_origin_project(&abs))
-                                    })
-                                    .or_else(|| Some(project_folder.clone()));
+                                let origin_project = origin_project_for_replica_identity(
+                                    &project_folder,
+                                    &identity_read,
+                                );
 
                                 // Resolve identity to matrix dir and read its lastCodingAgent
-                                let preferred_agent_id = identity_path.as_ref().and_then(|rel| {
-                                    read_preferred_agent_id(&wg_path.join(rel), &cfg.agents)
-                                });
+                                let preferred_agent_id =
+                                    identity_read.identity.as_ref().and_then(|identity| {
+                                        read_preferred_agent_id(&identity.matrix_dir, &cfg.agents)
+                                    });
 
                                 // Extract repos from config.json and resolve to absolute paths
-                                let repo_paths: Vec<String> = replica_config
+                                let repo_paths: Vec<String> = identity_read
+                                    .config
                                     .as_ref()
                                     .and_then(|v| v.get("repos")?.as_array().cloned())
                                     .unwrap_or_default()
@@ -1035,10 +1072,13 @@ pub async fn discover_ac_agents(
                                 // (mirrors `agent_fqn_from_path`'s `<proj>:<wg>/<agent>`
                                 // shape). Covered by
                                 // teams::tests::is_any_coordinator_requires_qualified_fqn.
-                                let is_coordinator = crate::config::teams::is_any_coordinator(
-                                    &format!("{}:{}/{}", project_folder, dir_name, replica_name),
-                                    &teams_snapshot,
-                                );
+                                let is_coordinator =
+                                    crate::config::teams::resolve_wg_coordinator_replica(
+                                        &workspace_dir,
+                                        &path,
+                                    )
+                                    .map(|resolved| resolved.agent_name == replica_name)
+                                    .unwrap_or(false);
 
                                 log::debug!(
                                     "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
@@ -1405,42 +1445,23 @@ pub async fn discover_project(
                             .unwrap_or(&wg_dir_name)
                             .to_string();
 
-                        let replica_config = wg_path
-                            .join("config.json")
-                            .exists()
-                            .then(|| std::fs::read_to_string(wg_path.join("config.json")).ok())
-                            .flatten()
-                            .and_then(|content| {
-                                serde_json::from_str::<serde_json::Value>(&content).ok()
+                        let identity_read = read_replica_config_with_valid_identity(&wg_path);
+
+                        let identity_path = identity_read
+                            .identity
+                            .as_ref()
+                            .map(|identity| identity.identity.clone());
+
+                        let origin_project =
+                            origin_project_for_replica_identity(&project_folder, &identity_read);
+
+                        let preferred_agent_id =
+                            identity_read.identity.as_ref().and_then(|identity| {
+                                read_preferred_agent_id(&identity.matrix_dir, &cfg.agents)
                             });
 
-                        let identity_path = replica_config
-                            .as_ref()
-                            .and_then(|v| v.get("identity")?.as_str().map(String::from));
-
-                        // Resolve identity to determine origin project
-                        let origin_project = identity_path.as_ref()
-                            .and_then(|rel| {
-                                let target = wg_path.join(rel);
-                                std::fs::canonicalize(&target)
-                                    .inspect_err(|e| {
-                                        log::warn!(
-                                            "[ac-discovery] identity canonicalize failed — replica='{}' target='{}' err={}",
-                                            wg_path.display(),
-                                            target.display(),
-                                            e
-                                        );
-                                    })
-                                    .ok()
-                                    .and_then(|abs| extract_origin_project(&abs))
-                            })
-                            .or_else(|| Some(project_folder.clone()));
-
-                        let preferred_agent_id = identity_path.as_ref().and_then(|rel| {
-                            read_preferred_agent_id(&wg_path.join(rel), &cfg.agents)
-                        });
-
-                        let repo_paths: Vec<String> = replica_config
+                        let repo_paths: Vec<String> = identity_read
+                            .config
                             .as_ref()
                             .and_then(|v| v.get("repos")?.as_array().cloned())
                             .unwrap_or_default()
@@ -1466,10 +1487,12 @@ pub async fn discover_project(
                         // (mirrors `agent_fqn_from_path`'s `<proj>:<wg>/<agent>`
                         // shape). Covered by
                         // teams::tests::is_any_coordinator_requires_qualified_fqn.
-                        let is_coordinator = crate::config::teams::is_any_coordinator(
-                            &format!("{}:{}/{}", project_folder, dir_name, replica_name),
-                            &teams_snapshot,
-                        );
+                        let is_coordinator = crate::config::teams::resolve_wg_coordinator_replica(
+                            &workspace_dir,
+                            &entry_path,
+                        )
+                        .map(|resolved| resolved.agent_name == replica_name)
+                        .unwrap_or(false);
 
                         log::debug!(
                             "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
@@ -1933,5 +1956,57 @@ mod tests {
         assert_eq!(note_discovery_timeout(p1), 2);
         assert_eq!(note_discovery_timeout(p2), 1);
         assert_eq!(note_discovery_timeout(p1), 3);
+    }
+
+    #[test]
+    fn invalid_replica_identity_is_not_reported_as_repaired_discovery_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("AgentsCommander_ac");
+        let workspace = project.join(".ac");
+        let team_dir = workspace.join("_team_dev-team");
+        let matrix_dir = workspace.join("_agent_tech-lead");
+        let wg_dir = workspace.join("wg-2-dev-team");
+        let replica_dir = wg_dir.join("__agent_tech-lead");
+
+        for dir in [&team_dir, &matrix_dir, &replica_dir] {
+            std::fs::create_dir_all(dir).expect("create fixture dir");
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .expect("write team config");
+        std::fs::write(
+            replica_dir.join("config.json"),
+            r#"{"identity":"tech-lead"}"#,
+        )
+        .expect("write invalid replica config");
+
+        let identity_read = read_replica_config_with_valid_identity(&replica_dir);
+
+        assert!(identity_read.invalid_identity);
+        assert!(identity_read.config.is_some());
+        assert!(
+            identity_read.identity.is_none(),
+            "invalid persisted identity must not become a repaired identity path"
+        );
+        assert_eq!(
+            origin_project_for_replica_identity("AgentsCommander_ac", &identity_read),
+            None,
+            "invalid identity must not be masked as the local origin project"
+        );
+        assert!(
+            crate::config::teams::resolve_wg_coordinator_replica(&workspace, &wg_dir).is_none(),
+            "invalid identity must not grant coordinator/root authority"
+        );
+
+        let preferred_agent_id = identity_read
+            .identity
+            .as_ref()
+            .and_then(|identity| read_preferred_agent_id(&identity.matrix_dir, &[]));
+        assert!(
+            preferred_agent_id.is_none(),
+            "invalid identity must not be used to read preferred coding agent"
+        );
     }
 }

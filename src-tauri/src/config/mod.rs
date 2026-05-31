@@ -4,6 +4,7 @@ pub mod claude_settings;
 pub mod daemon_pid;
 pub mod profile;
 pub mod projects;
+pub mod replica_identity;
 pub mod root_agent;
 pub mod session_context;
 pub mod sessions_persistence;
