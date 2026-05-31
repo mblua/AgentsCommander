@@ -105,9 +105,9 @@ These are not accidents.
 
 | Platform | Status |
 |---|---|
-| **Windows** | Primary target; every release is built and tested here. |
-| **Linux** | Compatible; builds cleanly with less day-to-day testing. |
-| **macOS** | Built on Windows. Runs on Linux. Works on macOS; see [issue #320](https://github.com/mblua/AgentsCommander/issues/320) (help wanted on verification). File issues, we will fix them. |
+| **Windows** | Primary version where most development happens. |
+| **Linux** | Testing is beginning. |
+| **macOS** | Untested. |
 
 ## Trust
 
@@ -134,7 +134,9 @@ Also: Tauri, SolidJS, xterm.js, portable-pty, axum, tokio; the toolchain layer t
 
 ## Author
 
-**Mariano Blua**: [GitHub](https://github.com/mblua)
+Mariano is passionate about software development, AI, and blockchain. He approaches the world with deep curiosity, always amazed by life and the universe. Above all, he is a father, which remains the most wonderful part of his life.
+
+**Mariano Blua**: [GitHub](https://github.com/mblua) · [LinkedIn](https://www.linkedin.com/in/mariano-blua/) · [🇦🇷 MarianoBlua](https://x.com/MarianoBlua) · [🇺🇸 MarianoBluaEN (English)](https://x.com/MarianoBluaEN)
 
 ## License
 

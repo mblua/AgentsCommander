@@ -69,6 +69,11 @@ const NewTeamModal: Component<{
     allAgents().filter((a) => selectedAgents().has(a.path))
   );
 
+  const portableAgentRef = (path: string) => {
+    const last = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
+    return last.startsWith("_agent_") ? last : `_agent_${last}`;
+  };
+
   const canNext1 = createMemo(() => {
     const n = teamName().trim();
     return n.length > 0 && !n.includes("/") && !n.includes("\\") && !n.includes(" ");
@@ -160,13 +165,13 @@ const NewTeamModal: Component<{
     try {
       const repoData = repos().map((r) => ({
         url: r.url,
-        agents: Array.from(r.agents),
+        agents: Array.from(r.agents).map(portableAgentRef),
       }));
       await EntityAPI.createTeam(
         props.projectPath,
         teamName().trim(),
-        Array.from(selectedAgents()),
-        coordinator(),
+        Array.from(selectedAgents()).map(portableAgentRef),
+        portableAgentRef(coordinator()),
         repoData
       );
       await projectStore.reloadProject(props.projectPath);

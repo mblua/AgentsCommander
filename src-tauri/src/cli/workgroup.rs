@@ -12,6 +12,7 @@ use crate::commands::entity_creation::{
     WgDeleteOutcome, WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
+use crate::config::workspace::existing_workspace_dir;
 
 #[derive(Args)]
 pub struct WorkgroupArgs {
@@ -98,6 +99,15 @@ pub(crate) fn resolve_cli_project(project: &str) -> Result<PathBuf, String> {
     Ok(resolved.path)
 }
 
+pub(crate) fn resolve_cli_workspace(project_path: &Path) -> Result<PathBuf, String> {
+    existing_workspace_dir(project_path).ok_or_else(|| {
+        format!(
+            "AC workspace not found in {} (.ac or legacy .ac-new)",
+            project_path.display()
+        )
+    })
+}
+
 pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str, reason: &str) {
     let request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
@@ -114,8 +124,8 @@ pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str
 
 fn list(args: WorkgroupListArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
-    let ac_new = project_path.join(".ac-new");
-    let items: Vec<WorkgroupListItem> = list_workgroup_dirs(&ac_new)
+    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let items: Vec<WorkgroupListItem> = list_workgroup_dirs(&workspace_dir)
         .into_iter()
         .filter_map(|path| {
             let name = path.file_name()?.to_str()?.to_string();
@@ -139,10 +149,10 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
 
 fn add(args: WorkgroupAddArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
-    let ac_new = project_path.join(".ac-new");
+    let workspace_dir = resolve_cli_workspace(&project_path)?;
     let safe_team = sanitize_name(&args.team)?;
     let final_config = build_final_team_config(
-        &ac_new,
+        &workspace_dir,
         &safe_team,
         &args.coordinator,
         &args.agents,
@@ -178,8 +188,8 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
 fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
-    let ac_new = project_path.join(".ac-new");
-    let wg_dir = ac_new.join(&args.workgroup);
+    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let wg_dir = workspace_dir.join(&args.workgroup);
     if !wg_dir.is_dir() {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }

@@ -563,7 +563,9 @@ pub(crate) fn read_team_config(
     }
     let content = std::fs::read_to_string(&config_path)
         .map_err(|e| format!("Failed to read config.json: {}", e))?;
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse config.json: {}", e))
+    let config: TeamConfigResult = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
+    normalize_team_config_for_project(ac_new_dir, &config)
 }
 
 pub(crate) fn write_team_config(
@@ -1159,17 +1161,7 @@ pub async fn create_workgroup(
         );
     }
 
-    // Read team config
-    let team_dir = base.join(format!("_team_{}", safe_team));
-    let team_config_path = team_dir.join("config.json");
-    if !team_config_path.exists() {
-        return Err(format!("Team '{}' not found (no config.json)", safe_team));
-    }
-
-    let team_config_str = std::fs::read_to_string(&team_config_path)
-        .map_err(|e| format!("Failed to read team config: {}", e))?;
-    let team_config: serde_json::Value = serde_json::from_str(&team_config_str)
-        .map_err(|e| format!("Failed to parse team config: {}", e))?;
+    let team_config = read_team_config(&base, &safe_team)?;
 
     // Determine next WG number
     let wg_number = determine_next_wg_number(&base);
@@ -1189,38 +1181,8 @@ pub async fn create_workgroup(
     std::fs::write(wg_dir.join("TASK.md"), &task_content)
         .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
 
-    // Parse team agents and repos
-    let team_agents: Vec<String> = team_config
-        .get("agents")
-        .and_then(|a| a.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let team_repos: Vec<RepoAssignment> = team_config
-        .get("repos")
-        .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| {
-                    let url = v.get("url")?.as_str()?.to_string();
-                    let agents = v
-                        .get("agents")
-                        .and_then(|a| a.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    Some(RepoAssignment { url, agents })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let team_agents = team_config.agents;
+    let team_repos = team_config.repos;
 
     // Collect unique repo URLs and their directory names
     let mut unique_repos: Vec<(String, String)> = Vec::new(); // (url, dir_name)
@@ -1835,33 +1797,7 @@ pub async fn sync_workgroup_repos(
         return Err(format!("Team '{}' not found", team_name));
     }
 
-    // Read team config and parse repo assignments
-    let config_content = std::fs::read_to_string(team_dir.join("config.json"))
-        .map_err(|e| format!("Failed to read team config: {}", e))?;
-    let config: serde_json::Value = serde_json::from_str(&config_content)
-        .map_err(|e| format!("Failed to parse team config: {}", e))?;
-
-    let repos: Vec<RepoAssignment> = config
-        .get("repos")
-        .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| {
-                    let url = v.get("url")?.as_str()?.to_string();
-                    let agents = v
-                        .get("agents")
-                        .and_then(|a| a.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    Some(RepoAssignment { url, agents })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let repos = read_team_config(&base, &team_name)?.repos;
 
     sync_workgroup_repos_inner(
         &base,
@@ -1905,19 +1841,7 @@ pub async fn get_team_config(
 ) -> Result<TeamConfigResult, String> {
     validate_existing_name(&team_name, "Team")?;
     let base = selected_workspace_dir(Path::new(&project_path))?;
-
-    let team_dir = base.join(format!("_team_{}", team_name));
-    let config_path = team_dir.join("config.json");
-    if !config_path.exists() {
-        return Err(format!("Team '{}' config not found", team_name));
-    }
-
-    let content = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read config.json: {}", e))?;
-    let result: TeamConfigResult = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
-
-    Ok(result)
+    read_team_config(&base, &team_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -2628,24 +2552,72 @@ mod tests {
     }
 
     #[test]
-    fn team_config_normalization_rejects_filesystem_agent_refs() {
+    fn team_config_normalization_rejects_filesystem_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ac_new = tmp.path().join(".ac-new");
-        let architect = ac_new.join("_agent_architect");
-        std::fs::create_dir_all(&architect).expect("architect matrix");
-        let config = TeamConfigResult {
-            agents: vec![architect.to_string_lossy().to_string()],
-            coordinator: architect.to_string_lossy().to_string(),
+        std::fs::create_dir_all(ac_new.join("_agent_architect")).expect("architect matrix");
+
+        let absolute_config = TeamConfigResult {
+            agents: vec![ac_new
+                .join("_agent_architect")
+                .to_string_lossy()
+                .to_string()],
+            coordinator: "_agent_architect".to_string(),
             repos: Vec::new(),
         };
+        let err = normalize_team_config_for_project(&ac_new, &absolute_config)
+            .expect_err("absolute path refs must be rejected");
+        assert!(
+            err.contains("filesystem paths"),
+            "unexpected error: {}",
+            err
+        );
 
-        let err = normalize_team_config_for_project(&ac_new, &config)
-            .expect_err("filesystem refs must be rejected");
+        let windows_config = TeamConfigResult {
+            agents: vec![r"C:\Users\maria\project\.ac-new\_agent_architect".to_string()],
+            coordinator: "_agent_architect".to_string(),
+            repos: Vec::new(),
+        };
+        let err = normalize_team_config_for_project(&ac_new, &windows_config)
+            .expect_err("windows path refs must be rejected");
+        assert!(
+            err.contains("filesystem paths"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn replica_creation_rejects_filesystem_agent_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_new = tmp.path().join(".ac-new");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+        let matrix_dir = ac_new.join("_agent_architect");
+        std::fs::create_dir_all(&matrix_dir).expect("architect matrix");
+        std::fs::create_dir_all(&wg_dir).expect("workgroup");
+
+        let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
+            ac_new_dir: ac_new.clone(),
+            wg_dir: wg_dir.clone(),
+            agent_path: matrix_dir.to_string_lossy().to_string(),
+            team_repos: Vec::new(),
+            settings_flags: AgentMatrixSettingsFlags {
+                exclude_global_claude_md: false,
+                inject_rtk_hook: false,
+            },
+        })
+        .expect_err("absolute path refs must be rejected");
 
         assert!(
             err.contains("filesystem paths"),
             "unexpected error: {}",
             err
+        );
+        assert!(
+            !wg_dir
+                .join(format!("__agent_{}", matrix_dir.to_string_lossy()))
+                .exists(),
+            "replica creation must not create path-derived agent directories"
         );
     }
 
