@@ -1077,7 +1077,7 @@ pub async fn create_session(
 
     // If agentId provided and shell not explicitly set, use that agent's command
     let (shell, shell_args, agent_label) = match (&shell, &agent_id) {
-        (None, Some(aid)) => resolve_agent_command(aid, &cfg),
+        (None, Some(aid)) => resolve_agent_command(aid, &cfg)?,
         _ => {
             let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
             let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
@@ -1553,7 +1553,7 @@ pub async fn restart_session(
     let requested_agent_id = agent_id;
     let (shell, shell_args, agent_label) = if let Some(ref aid) = requested_agent_id {
         let cfg = settings.read().await;
-        let resolved = resolve_agent_command(aid, &cfg);
+        let resolved = resolve_agent_command(aid, &cfg)?;
         drop(cfg);
         resolved
     } else {
@@ -1711,10 +1711,12 @@ pub(crate) fn executable_basename(s: &str) -> String {
         .to_lowercase()
 }
 
+type ResolvedRootAgentCommand = (String, Vec<String>, Option<String>, Option<String>);
+
 fn resolve_agent_command(
     agent_id: &str,
     settings: &AppSettings,
-) -> (String, Vec<String>, Option<String>) {
+) -> Result<(String, Vec<String>, Option<String>), String> {
     if let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) {
         log::info!(
             "[session] Agent resolved: id={:?}, label={:?}, command={:?}",
@@ -1722,62 +1724,54 @@ fn resolve_agent_command(
             agent.label,
             agent.command
         );
-        let parts: Vec<String> = agent
-            .command
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect();
-        if let Some((cmd, args)) = parts.split_first() {
-            (cmd.clone(), args.to_vec(), Some(agent.label.clone()))
-        } else {
-            (
-                settings.default_shell.clone(),
-                settings.default_shell_args.clone(),
-                Some(agent.label.clone()),
-            )
-        }
+        let source = format!("selected agent '{}'", agent_id);
+        let (shell, shell_args) = normalize_agent_command_for_source(agent, &source)?;
+        Ok((shell, shell_args, Some(agent.label.clone())))
     } else {
         log::warn!(
             "[session] Agent NOT found for aid={:?}. Falling back to default shell.",
             agent_id
         );
-        (
+        Ok((
             settings.default_shell.clone(),
             settings.default_shell_args.clone(),
             None,
-        )
+        ))
     }
 }
 
-fn split_agent_command(command: &str) -> Option<(String, Vec<String>)> {
-    let parts: Vec<String> = command.split_whitespace().map(|s| s.to_string()).collect();
-    parts
-        .split_first()
-        .map(|(cmd, args)| (cmd.clone(), args.to_vec()))
+fn normalize_agent_command_for_source(
+    agent: &crate::config::settings::AgentConfig,
+    source: &str,
+) -> Result<(String, Vec<String>), String> {
+    crate::config::agent_command::normalize_legacy_agent_command(&agent.command)
+        .map(|cmd| (cmd.shell, cmd.shell_args))
+        .map_err(|e| {
+            format!(
+                "Invalid agent command from {} (agent id '{}', label '{}'): {}. command={:?}",
+                source, agent.id, agent.label, e, agent.command
+            )
+        })
 }
 
 fn resolve_root_agent_command(
     settings: &AppSettings,
     requested_agent_id: Option<&str>,
     last_coding_agent: Option<&str>,
-) -> (String, Vec<String>, Option<String>, Option<String>) {
+) -> Result<ResolvedRootAgentCommand, String> {
     let resolve_configured =
         |agent_id: &str| settings.agents.iter().find(|agent| agent.id == agent_id);
 
     if let Some(agent_id) = requested_agent_id {
         if let Some(agent) = resolve_configured(agent_id) {
-            if let Some((shell, shell_args)) = split_agent_command(&agent.command) {
-                return (
-                    shell,
-                    shell_args,
-                    Some(agent.id.clone()),
-                    Some(agent.label.clone()),
-                );
-            }
-            log::warn!(
-                "[root-agent] Requested coding agent '{}' has an empty command; falling back",
-                agent_id
-            );
+            let source = format!("requested root agent '{}'", agent_id);
+            let (shell, shell_args) = normalize_agent_command_for_source(agent, &source)?;
+            return Ok((
+                shell,
+                shell_args,
+                Some(agent.id.clone()),
+                Some(agent.label.clone()),
+            ));
         } else {
             log::warn!(
                 "[root-agent] Requested coding agent '{}' no longer exists; falling back",
@@ -1788,18 +1782,14 @@ fn resolve_root_agent_command(
 
     if let Some(agent_id) = last_coding_agent {
         if let Some(agent) = resolve_configured(agent_id) {
-            if let Some((shell, shell_args)) = split_agent_command(&agent.command) {
-                return (
-                    shell,
-                    shell_args,
-                    Some(agent.id.clone()),
-                    Some(agent.label.clone()),
-                );
-            }
-            log::warn!(
-                "[root-agent] lastCodingAgent '{}' has an empty command; falling back",
-                agent_id
-            );
+            let source = format!("root lastCodingAgent '{}'", agent_id);
+            let (shell, shell_args) = normalize_agent_command_for_source(agent, &source)?;
+            return Ok((
+                shell,
+                shell_args,
+                Some(agent.id.clone()),
+                Some(agent.label.clone()),
+            ));
         } else {
             log::warn!(
                 "[root-agent] lastCodingAgent '{}' no longer exists; falling back",
@@ -1809,26 +1799,22 @@ fn resolve_root_agent_command(
     }
 
     if let Some(agent) = settings.agents.first() {
-        if let Some((shell, shell_args)) = split_agent_command(&agent.command) {
-            return (
-                shell,
-                shell_args,
-                Some(agent.id.clone()),
-                Some(agent.label.clone()),
-            );
-        }
-        log::warn!(
-            "[root-agent] First configured coding agent '{}' has an empty command; using default shell",
-            agent.id
-        );
+        let source = format!("first configured root agent '{}'", agent.id);
+        let (shell, shell_args) = normalize_agent_command_for_source(agent, &source)?;
+        return Ok((
+            shell,
+            shell_args,
+            Some(agent.id.clone()),
+            Some(agent.label.clone()),
+        ));
     }
 
-    (
+    Ok((
         settings.default_shell.clone(),
         settings.default_shell_args.clone(),
         None,
         None,
-    )
+    ))
 }
 
 fn resolve_agent_label(agent_id: &str, settings: &AppSettings) -> Option<String> {
@@ -1846,6 +1832,31 @@ fn resolve_actual_agent(
     requested_agent_label: Option<&str>,
     settings: &AppSettings,
 ) -> (Option<String>, Option<String>) {
+    if let Some(agent_id) = requested_agent_id {
+        if let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) {
+            match crate::config::agent_command::normalize_legacy_agent_command(&agent.command) {
+                Ok(normalized)
+                    if normalized.shell == shell && normalized.shell_args == shell_args =>
+                {
+                    return (
+                        Some(agent.id.clone()),
+                        requested_agent_label
+                            .map(ToString::to_string)
+                            .or_else(|| Some(agent.label.clone())),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    log::debug!(
+                        "[session] Requested agent_id='{}' command did not normalize during metadata resolution: {}",
+                        agent_id,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
     let detected = resolve_agent_from_shell(shell, shell_args, settings);
 
     if let Some(agent_id) = requested_agent_id {
@@ -1886,16 +1897,26 @@ fn resolve_agent_from_shell(
     shell_args: &[String],
     settings: &AppSettings,
 ) -> (Option<String>, Option<String>) {
-    // Collect all tokens from shell + args, extract basenames for comparison
-    let full_cmd = format!("{} {}", shell, shell_args.join(" "));
-    let cmd_basenames: Vec<String> = full_cmd
-        .split_whitespace()
-        .map(executable_basename)
-        .collect();
+    // Compare against already-normalized launch tokens without re-splitting shell.
+    let mut cmd_basenames: Vec<String> = Vec::with_capacity(shell_args.len() + 1);
+    cmd_basenames.push(executable_basename(shell));
+    cmd_basenames.extend(shell_args.iter().map(|arg| executable_basename(arg)));
 
     for agent in &settings.agents {
-        let agent_exec = agent.command.split_whitespace().next().unwrap_or("");
-        let agent_basename = executable_basename(agent_exec);
+        let normalized = match crate::config::agent_command::normalize_legacy_agent_command(
+            &agent.command,
+        ) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                log::debug!(
+                    "[session] Skipping agent '{}' during shell auto-detection because its command is invalid: {}",
+                    agent.id,
+                    e
+                );
+                continue;
+            }
+        };
+        let agent_basename = executable_basename(&normalized.shell);
         if !agent_basename.is_empty() && cmd_basenames.contains(&agent_basename) {
             log::info!(
                 "Auto-detected agent '{}' ({}) from shell command",
@@ -2000,7 +2021,7 @@ pub(crate) async fn create_root_agent_inner(
             &cfg,
             requested_agent_id.as_deref(),
             last_coding_agent.as_deref(),
-        )
+        )?
     };
 
     let info = create_session_inner(
@@ -2063,8 +2084,9 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_existing_root, inject_codex_resume, resolve_actual_agent,
-        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
+        classify_existing_root, inject_codex_resume, resolve_actual_agent, resolve_agent_command,
+        resolve_agent_from_shell, resolve_root_agent_command, should_inject_continue,
+        ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
@@ -2099,7 +2121,7 @@ mod tests {
         let settings = test_settings();
 
         let (shell, args, agent_id, label) =
-            resolve_root_agent_command(&settings, Some("codex"), Some("claude"));
+            resolve_root_agent_command(&settings, Some("codex"), Some("claude")).unwrap();
 
         assert_eq!(shell, "codex");
         assert!(args.is_empty());
@@ -2112,7 +2134,7 @@ mod tests {
         let settings = test_settings();
 
         let (shell, _args, agent_id, label) =
-            resolve_root_agent_command(&settings, None, Some("codex"));
+            resolve_root_agent_command(&settings, None, Some("codex")).unwrap();
 
         assert_eq!(shell, "codex");
         assert_eq!(agent_id.as_deref(), Some("codex"));
@@ -2124,7 +2146,7 @@ mod tests {
         let settings = test_settings();
 
         let (shell, _args, agent_id, label) =
-            resolve_root_agent_command(&settings, Some("stale"), Some("also-stale"));
+            resolve_root_agent_command(&settings, Some("stale"), Some("also-stale")).unwrap();
 
         assert_eq!(shell, "claude");
         assert_eq!(agent_id.as_deref(), Some("claude"));
@@ -2141,12 +2163,82 @@ mod tests {
         settings.agents.clear();
 
         let (shell, args, agent_id, label) =
-            resolve_root_agent_command(&settings, Some("stale"), Some("also-stale"));
+            resolve_root_agent_command(&settings, Some("stale"), Some("also-stale")).unwrap();
 
         assert_eq!(shell, "pwsh");
         assert_eq!(args, vec!["-NoLogo".to_string()]);
         assert!(agent_id.is_none());
         assert!(label.is_none());
+    }
+
+    #[test]
+    fn resolve_agent_command_preserves_args() {
+        let mut settings = test_settings();
+        settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap()
+            .command = "codex --yolo".to_string();
+
+        let (shell, args, label) = resolve_agent_command("codex", &settings).unwrap();
+
+        assert_eq!(shell, "codex");
+        assert_eq!(args, vec!["--yolo".to_string()]);
+        assert_eq!(label.as_deref(), Some("Codex"));
+    }
+
+    #[test]
+    fn resolve_agent_command_rejects_invalid_selected_command() {
+        let mut settings = test_settings();
+        settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap()
+            .command = "codex \"unterminated".to_string();
+
+        let err = resolve_agent_command("codex", &settings).unwrap_err();
+
+        assert!(err.contains("selected agent 'codex'"));
+        assert!(err.contains("agent id 'codex'"));
+        assert!(err.contains("unclosed double quote"));
+    }
+
+    #[test]
+    fn resolve_root_agent_command_preserves_args() {
+        let mut settings = test_settings();
+        settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap()
+            .command = "codex --yolo".to_string();
+
+        let (shell, args, agent_id, label) =
+            resolve_root_agent_command(&settings, Some("codex"), None).unwrap();
+
+        assert_eq!(shell, "codex");
+        assert_eq!(args, vec!["--yolo".to_string()]);
+        assert_eq!(agent_id.as_deref(), Some("codex"));
+        assert_eq!(label.as_deref(), Some("Codex"));
+    }
+
+    #[test]
+    fn resolve_root_agent_command_rejects_invalid_last_coding_agent_command() {
+        let mut settings = test_settings();
+        settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap()
+            .command = "codex \"unterminated".to_string();
+
+        let err = resolve_root_agent_command(&settings, None, Some("codex")).unwrap_err();
+
+        assert!(err.contains("root lastCodingAgent 'codex'"));
+        assert!(err.contains("agent id 'codex'"));
+        assert!(err.contains("unclosed double quote"));
     }
 
     #[test]
@@ -2394,6 +2486,35 @@ mod tests {
     }
 
     #[test]
+    fn resolve_actual_agent_keeps_requested_agent_when_normalized_command_matches() {
+        let mut settings = test_settings();
+        settings.agents.push(AgentConfig {
+            id: "codex-yolo".to_string(),
+            label: "Codex Yolo".to_string(),
+            command: "codex --yolo".to_string(),
+            color: "#10b981".to_string(),
+            git_pull_before: false,
+            exclude_global_claude_md: false,
+        });
+
+        let resolved = resolve_actual_agent(
+            "codex",
+            &["--yolo".to_string()],
+            Some("codex-yolo"),
+            Some("Codex Yolo"),
+            &settings,
+        );
+
+        assert_eq!(
+            resolved,
+            (
+                Some("codex-yolo".to_string()),
+                Some("Codex Yolo".to_string())
+            )
+        );
+    }
+
+    #[test]
     fn resolve_actual_agent_falls_back_to_detected_label_when_validated_match_has_no_stored_label()
     {
         let settings = test_settings();
@@ -2437,6 +2558,23 @@ mod tests {
             resolved,
             (Some("claude".to_string()), Some("Claude Code".to_string()))
         );
+    }
+
+    #[test]
+    fn resolve_agent_from_shell_skips_invalid_configured_command() {
+        let mut settings = test_settings();
+        settings.agents = vec![AgentConfig {
+            id: "broken-codex".to_string(),
+            label: "Broken Codex".to_string(),
+            command: "codex \"unterminated".to_string(),
+            color: "#10b981".to_string(),
+            git_pull_before: false,
+            exclude_global_claude_md: false,
+        }];
+
+        let resolved = resolve_agent_from_shell("codex", &[], &settings);
+
+        assert_eq!(resolved, (None, None));
     }
 
     #[test]
