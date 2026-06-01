@@ -4,6 +4,29 @@ All notable user-facing changes are tracked here and in [GitHub Releases](https:
 
 This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) shape: one section per release in reverse-chronological order. Each entry groups changes under **Added / Changed / Removed / Fixed / Security** where useful.
 
+## 0.8.45 - 2026-06-01
+
+Identity trust fixes, legacy cleanup, and improved peer discovery.
+
+### Added
+
+- Regression coverage for cross-WG peer discovery.
+
+### Changed
+
+- Documentation: clarified OS support status in README and updated author social links.
+
+### Fixed
+
+- Wake command normalization (#387).
+- Codex: Stale WG replica identity trust and production release identity (#380, #388).
+- Stale WG coordinator identity refs (#370).
+- Rejected filesystem paths in team agent refs (#373).
+
+### Removed
+
+- `.ac-new` legacy workspace support (#383).
+
 ## 0.8.43 — 2026-05-27
 
 Public-push release: repo cleanup, documentation rewrite scaffolding, and factual corrections to public copy. See umbrella issue [#313](https://github.com/mblua/AgentsCommander/issues/313).

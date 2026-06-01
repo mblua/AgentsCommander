@@ -443,7 +443,7 @@ pub fn load_sessions_raw() -> Vec<PersistedSession> {
     if !path.exists() {
         return vec![];
     }
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => vec![],
     }
@@ -472,7 +472,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
         return vec![];
     }
 
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<Vec<PersistedSession>>(&contents) {
             Ok(sessions) => {
                 // Safety net: filter out [temp] sessions that should never survive a restart
@@ -1119,6 +1119,7 @@ pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), St
     persist_current_state_to_dir_for_project_paths_result(mgr, &dir, Some(&project_paths)).await
 }
 
+#[allow(dead_code)]
 async fn persist_current_state_to_dir_result(
     mgr: &SessionManager,
     dir: &Path,
@@ -1992,7 +1993,7 @@ mod tests {
         super::save_sessions_to_dir(tmp.path(), &sessions).expect("save");
 
         let path = tmp.path().join("sessions.json");
-        let contents = std::fs::read_to_string(&path).expect("read");
+        let contents = std::fs::read_to_string(path).expect("read");
         let back: Vec<PersistedSession> = serde_json::from_str(&contents).expect("parse");
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].name, "solo");

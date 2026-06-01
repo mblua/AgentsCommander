@@ -54,8 +54,7 @@ pub fn agent_bare_name_from_ref(raw_agent: &str) -> Result<String, String> {
     let normalized = trimmed.replace('\\', "/");
     let dir_name = normalized
         .split('/')
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .ok_or_else(|| format!("Invalid agent reference '{}'", raw_agent))?;
     let bare = dir_name
         .strip_prefix("__agent_")
@@ -77,8 +76,7 @@ fn persisted_identity_agent_name(identity: &str) -> Result<String, String> {
     let normalized = trimmed.replace('\\', "/");
     let dir_name = normalized
         .split('/')
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .ok_or_else(|| format!("Invalid WG replica identity '{}'", identity))?;
 
     #[cfg(windows)]
