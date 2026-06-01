@@ -53,15 +53,45 @@ fn write_settings(config_dir: &Path, project_parent: &Path) {
     .expect("write settings");
 }
 
-fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
+#[derive(Clone, Copy)]
+enum WorkspaceLayout {
+    Canonical,
+    Legacy,
+    Both,
+}
+
+fn active_workspace(project: &Path, layout: WorkspaceLayout) -> PathBuf {
+    match layout {
+        WorkspaceLayout::Canonical | WorkspaceLayout::Both => project.join(".ac"),
+        WorkspaceLayout::Legacy => project.join(".ac-new"),
+    }
+}
+
+fn project_with_agents_layout(
+    tmp: &Path,
+    agents: &[&str],
+    layout: WorkspaceLayout,
+) -> (PathBuf, PathBuf) {
     let project = tmp.join("ProjectAlpha");
-    let workspace_dir = project.join(".ac");
-    std::fs::create_dir_all(&workspace_dir).expect("create .ac");
+    if matches!(layout, WorkspaceLayout::Canonical | WorkspaceLayout::Both) {
+        std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
+    }
+    if matches!(layout, WorkspaceLayout::Legacy | WorkspaceLayout::Both) {
+        std::fs::create_dir_all(project.join(".ac-new")).expect("create .ac-new");
+    }
+
+    let workspace_dir = active_workspace(&project, layout);
     for agent in agents {
         let dir = workspace_dir.join(format!("_agent_{}", agent));
         std::fs::create_dir_all(dir.join("memory")).expect("agent memory");
         std::fs::write(dir.join("Role.md"), format!("# {}\n", agent)).expect("role");
     }
+
+    (project, workspace_dir)
+}
+
+fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
+    let (project, _) = project_with_agents_layout(tmp, agents, WorkspaceLayout::Canonical);
     project
 }
 
@@ -150,6 +180,84 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     assert_eq!(list[0]["team"], "dev-team");
     assert_eq!(list[0]["hasTask"], true);
     assert_eq!(list[0]["hasMessaging"], true);
+}
+
+#[test]
+fn workgroup_add_uses_legacy_workspace_when_canonical_absent() {
+    let tmp = Tmp::new("cli-workgroup-add-legacy");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let (_project, workspace) = project_with_agents_layout(
+        tmp.path(),
+        &["architect", "dev-rust"],
+        WorkspaceLayout::Legacy,
+    );
+
+    let json = run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build the thing",
+            "--coordinator",
+            "architect",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+
+    let wg_dir = workspace.join("wg-1-dev-team");
+    assert_eq!(json["path"], wg_dir.to_string_lossy().as_ref());
+    assert!(wg_dir.join("TASK.md").is_file());
+
+    let list = run_json(&bin, &["workgroup", "list", "--project", "ProjectAlpha"]);
+    assert_eq!(list.as_array().expect("array").len(), 1);
+    assert_eq!(list[0]["path"], wg_dir.to_string_lossy().as_ref());
+}
+
+#[test]
+fn workgroup_add_and_list_prefer_ac_when_both_workspaces_exist() {
+    let tmp = Tmp::new("cli-workgroup-both-add");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let (project, workspace) =
+        project_with_agents_layout(tmp.path(), &["architect"], WorkspaceLayout::Both);
+    let legacy = project.join(".ac-new");
+    std::fs::create_dir_all(legacy.join("wg-1-stale-team")).expect("stale wg");
+
+    let json = run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+            "--coordinator",
+            "architect",
+        ],
+    );
+
+    let wg_dir = workspace.join("wg-1-dev-team");
+    assert_eq!(json["path"], wg_dir.to_string_lossy().as_ref());
+    assert!(wg_dir.is_dir());
+    assert!(!legacy.join("wg-1-dev-team").exists());
+
+    let list = run_json(&bin, &["workgroup", "list", "--project", "ProjectAlpha"]);
+    let items = list.as_array().expect("array");
+    assert_eq!(items.len(), 1, "legacy stale workgroup must be ignored");
+    assert_eq!(items[0]["name"], "wg-1-dev-team");
+    assert_eq!(items[0]["path"], wg_dir.to_string_lossy().as_ref());
 }
 
 #[test]
@@ -388,4 +496,44 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     );
     assert_eq!(removed["removed"], true);
     assert!(!replica.exists());
+}
+
+#[test]
+fn team_list_prefers_ac_over_stale_legacy_config() {
+    let tmp = Tmp::new("cli-team-both-list");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let (project, _workspace) =
+        project_with_agents_layout(tmp.path(), &["architect"], WorkspaceLayout::Both);
+
+    let _wg = run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+            "--coordinator",
+            "architect",
+        ],
+    );
+
+    let legacy_team_dir = project.join(".ac-new").join("_team_dev-team");
+    std::fs::create_dir_all(&legacy_team_dir).expect("legacy team dir");
+    std::fs::write(
+        legacy_team_dir.join("config.json"),
+        r#"{"agents":["_agent_stale"],"coordinator":"_agent_stale","repos":[]}"#,
+    )
+    .expect("legacy config");
+
+    let teams = run_json(&bin, &["team", "list", "--project", "ProjectAlpha"]);
+    assert_eq!(teams.as_array().expect("teams").len(), 1);
+    assert_eq!(teams[0]["team"], "dev-team");
+    assert_eq!(teams[0]["coordinator"], "_agent_architect");
+    assert_ne!(teams[0]["coordinator"], "_agent_stale");
 }

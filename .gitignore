@@ -14,6 +14,7 @@ _logbooks/
 
 # AgentsCommander workgroup replicas (always per-machine state).
 .ac/wg-*/
+.ac-new/wg-*/
 
 # Per-session agent context materialized by default_context()
 CLAUDE.md

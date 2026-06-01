@@ -7,6 +7,7 @@ Assumptions:
   $env:USERPROFILE\0_repos\AgentsCommander_ac
 - Override -AcRoot if the checkout moved.
 - Workgroup folders are immediate children of the AgentsCommander_ac .ac directory and match ^wg-\d+.
+- Legacy .ac-new is used only when .ac is absent.
 - The script reads from each workgroup repo and writes only to -Destination.
 
 Destination filename convention:
@@ -16,6 +17,7 @@ Destination filename convention:
 
 [CmdletBinding()]
 param(
+    [Alias('AcNewRoot')]
     [string]$AcRoot = (Join-Path $env:USERPROFILE '0_repos\AgentsCommander_ac\.ac'),
     [string]$Destination = 'C:\Users\maria\0_mmb\0_AC',
     [switch]$Overwrite
@@ -35,11 +37,21 @@ function Resolve-AcRoot {
     }
 
     $candidate = [System.IO.Path]::GetFullPath($Path)
+    $leaf = Split-Path -Leaf $candidate
 
-    if ((Split-Path -Leaf $candidate) -ne '.ac') {
-        $nested = Join-Path $candidate '.ac'
-        if (Test-Path -LiteralPath $nested -PathType Container) {
-            return (Resolve-Path -LiteralPath $nested).ProviderPath
+    if ($leaf -ne '.ac' -and $leaf -ne '.ac-new') {
+        foreach ($workspaceName in @('.ac', '.ac-new')) {
+            $nested = Join-Path $candidate $workspaceName
+            if (Test-Path -LiteralPath $nested -PathType Container) {
+                return (Resolve-Path -LiteralPath $nested).ProviderPath
+            }
+        }
+    }
+
+    if ($leaf -eq '.ac-new') {
+        $canonicalSibling = Join-Path (Split-Path -Parent $candidate) '.ac'
+        if (Test-Path -LiteralPath $canonicalSibling -PathType Container) {
+            return (Resolve-Path -LiteralPath $canonicalSibling).ProviderPath
         }
     }
 
@@ -47,7 +59,14 @@ function Resolve-AcRoot {
         return (Resolve-Path -LiteralPath $candidate).ProviderPath
     }
 
-    throw "AgentsCommander_ac .ac directory not found: $candidate"
+    if ($leaf -eq '.ac') {
+        $legacySibling = Join-Path (Split-Path -Parent $candidate) '.ac-new'
+        if (Test-Path -LiteralPath $legacySibling -PathType Container) {
+            return (Resolve-Path -LiteralPath $legacySibling).ProviderPath
+        }
+    }
+
+    throw "AgentsCommander_ac .ac/.ac-new directory not found: $candidate"
 }
 
 function ConvertTo-SafeFileName {
@@ -84,7 +103,7 @@ $workgroups = @(
         Sort-Object Name
 )
 
-Write-Host "AgentsCommander .ac root: $acRootPath"
+Write-Host "AgentsCommander AC root: $acRootPath"
 Write-Host "Destination: $destinationPath"
 Write-Host "Overwrite conflicts: $($Overwrite.IsPresent)"
 Write-Host ''

@@ -1,24 +1,34 @@
 use std::path::{Path, PathBuf};
 
 pub const CANONICAL_WORKSPACE_DIR: &str = ".ac";
-pub const WORKSPACE_DIR_NAMES: [&str; 1] = [CANONICAL_WORKSPACE_DIR];
+pub const LEGACY_WORKSPACE_DIR: &str = ".ac-new";
+pub const WORKSPACE_DIR_NAMES: [&str; 2] = [CANONICAL_WORKSPACE_DIR, LEGACY_WORKSPACE_DIR];
 
 pub fn canonical_workspace_dir_label() -> &'static str {
     CANONICAL_WORKSPACE_DIR
 }
 
 pub fn workspace_dir_label() -> &'static str {
-    ".ac"
+    ".ac or legacy .ac-new"
 }
 
 pub fn workspace_dir_for_project(project: &Path) -> PathBuf {
     project.join(CANONICAL_WORKSPACE_DIR)
 }
 
+pub fn legacy_workspace_dir_for_project(project: &Path) -> PathBuf {
+    project.join(LEGACY_WORKSPACE_DIR)
+}
+
 pub fn existing_workspace_dir(project: &Path) -> Option<PathBuf> {
     let canonical = workspace_dir_for_project(project);
     if canonical.is_dir() {
         return Some(canonical);
+    }
+
+    let legacy = legacy_workspace_dir_for_project(project);
+    if legacy.is_dir() {
+        return Some(legacy);
     }
 
     None
@@ -90,8 +100,14 @@ pub fn ensure_authoritative_workspace_dir(workspace_dir: &Path) -> Result<(), St
     if same_existing_path(workspace_dir, &authoritative) {
         Ok(())
     } else {
+        let prefix = if workspace_name.eq_ignore_ascii_case(LEGACY_WORKSPACE_DIR) {
+            "stale legacy workspace"
+        } else {
+            "workspace"
+        };
         Err(format!(
-            "workspace '{}' rejected because authoritative workspace '{}' exists",
+            "{} '{}' rejected because authoritative workspace '{}' exists",
+            prefix,
             workspace_dir.display(),
             authoritative.display()
         ))

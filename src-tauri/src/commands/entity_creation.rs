@@ -543,8 +543,12 @@ fn default_agent_matrix_config() -> serde_json::Value {
 }
 
 fn selected_workspace_dir(project: &Path) -> Result<PathBuf, String> {
-    existing_workspace_dir(project)
-        .ok_or_else(|| format!(".ac directory not found in {}", project.display()))
+    existing_workspace_dir(project).ok_or_else(|| {
+        format!(
+            ".ac or legacy .ac-new directory not found in {}",
+            project.display()
+        )
+    })
 }
 
 pub(crate) fn read_team_config(

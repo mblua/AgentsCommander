@@ -39,6 +39,16 @@ pub struct TaskSetTitleArgs {
     pub title: String,
 }
 
+fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
+    let workspace_dir = wg_root.parent().ok_or_else(|| {
+        format!(
+            "workgroup root '{}' has no parent workspace directory",
+            wg_root.display()
+        )
+    })?;
+    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)
+}
+
 pub fn execute(args: TaskSetTitleArgs) -> i32 {
     let root = match args.root {
         Some(ref r) => r.clone(),
@@ -108,6 +118,10 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
             return 1;
         }
     };
+    if let Err(e) = ensure_workgroup_root_is_authoritative(&wg_root) {
+        eprintln!("Error: {}", e);
+        return 1;
+    }
 
     // Hand off to task_ops::perform.
     // NIT-2: include `pid={}` so an auditor can cross-reference the AC process
@@ -318,6 +332,29 @@ mod tests {
         );
         let code = execute(args);
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn set_title_rejects_stale_legacy_workgroup_when_canonical_exists() {
+        let fix = FixtureRoot::new("task-stale-legacy");
+        let project = fix.path().join("proj");
+        let canonical_wg = project.join(".ac").join("wg-1-test");
+        let legacy_wg = project.join(".ac-new").join("wg-1-test");
+        std::fs::create_dir_all(&canonical_wg).unwrap();
+        std::fs::create_dir_all(&legacy_wg).unwrap();
+
+        let err = ensure_workgroup_root_is_authoritative(&legacy_wg).unwrap_err();
+
+        assert!(err.contains("stale legacy workspace"));
+    }
+
+    #[test]
+    fn set_title_accepts_legacy_workgroup_when_canonical_absent() {
+        let fix = FixtureRoot::new("task-legacy-only");
+        let legacy_wg = fix.path().join("proj").join(".ac-new").join("wg-1-test");
+        std::fs::create_dir_all(&legacy_wg).unwrap();
+
+        ensure_workgroup_root_is_authoritative(&legacy_wg).expect("legacy fallback accepted");
     }
 
     // ── I16: help text documents the verb ───────────────────────────────

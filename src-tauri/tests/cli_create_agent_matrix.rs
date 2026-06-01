@@ -75,9 +75,24 @@ fn settings_with_project_paths(paths: &[&Path]) -> serde_json::Value {
     })
 }
 
-fn project_with_workspace(tmp: &Path) -> PathBuf {
+fn project_with_workspace_name(tmp: &Path, workspace_name: &str) -> PathBuf {
     let project = tmp.join("ProjectAlpha");
-    std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
+    std::fs::create_dir_all(project.join(workspace_name)).expect("create workspace");
+    project
+}
+
+fn project_with_workspace(tmp: &Path) -> PathBuf {
+    project_with_workspace_name(tmp, ".ac")
+}
+
+fn project_with_workspaces(tmp: &Path, canonical: bool, legacy: bool) -> PathBuf {
+    let project = tmp.join("ProjectAlpha");
+    if canonical {
+        std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
+    }
+    if legacy {
+        std::fs::create_dir_all(project.join(".ac-new")).expect("create .ac-new");
+    }
     project
 }
 
@@ -107,7 +122,11 @@ fn project_refresh_request_paths(config_dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn assert_single_project_refresh_request(config_dir: &Path, project: &Path) -> serde_json::Value {
+fn assert_single_project_refresh_request_for_agent(
+    config_dir: &Path,
+    project: &Path,
+    agent_dir: &Path,
+) -> serde_json::Value {
     let requests = project_refresh_request_paths(config_dir);
     assert_eq!(
         requests.len(),
@@ -119,7 +138,6 @@ fn assert_single_project_refresh_request(config_dir: &Path, project: &Path) -> s
             .expect("project refresh request json");
     uuid::Uuid::parse_str(request["id"].as_str().expect("id")).expect("id should be a uuid");
     assert!(!request["timestamp"].as_str().expect("timestamp").is_empty());
-    let agent_dir = project.join(".ac").join("_agent_architect");
     assert_eq!(
         request["projectPath"].as_str().expect("projectPath"),
         std::fs::canonicalize(project)
@@ -137,6 +155,14 @@ fn assert_single_project_refresh_request(config_dir: &Path, project: &Path) -> s
     assert_eq!(request["agentName"], "ProjectAlpha/architect");
     assert_eq!(request["reason"], "createAgentMatrix");
     request
+}
+
+fn assert_single_project_refresh_request(config_dir: &Path, project: &Path) -> serde_json::Value {
+    assert_single_project_refresh_request_for_agent(
+        config_dir,
+        project,
+        &project.join(".ac").join("_agent_architect"),
+    )
 }
 
 #[test]
@@ -187,6 +213,87 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
     for dir in ["memory", "plans", "skills", "inbox", "outbox"] {
         assert!(agent_dir.join(dir).is_dir(), "missing {}", dir);
     }
+}
+
+#[test]
+fn create_agent_matrix_uses_legacy_workspace_when_canonical_absent() {
+    let tmp = Tmp::new("cli-create-agent-matrix-legacy");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let project = project_with_workspace_name(tmp.path(), ".ac-new");
+    write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
+
+    let out = Command::new(&bin)
+        .args([
+            "create-agent-matrix",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Architect",
+            "--description",
+            "Build plans",
+        ])
+        .output()
+        .expect("spawn binary");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    assert_eq!(
+        json["agentPath"].as_str().expect("agentPath"),
+        agent_dir.to_string_lossy().as_ref()
+    );
+    assert!(agent_dir.join("Role.md").is_file());
+    assert_single_project_refresh_request_for_agent(&config_dir, &project, &agent_dir);
+}
+
+#[test]
+fn create_agent_matrix_prefers_ac_when_both_workspaces_exist() {
+    let tmp = Tmp::new("cli-create-agent-matrix-both");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let project = project_with_workspaces(tmp.path(), true, true);
+    write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
+
+    let out = Command::new(&bin)
+        .args([
+            "create-agent-matrix",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Architect",
+            "--description",
+            "Build plans",
+        ])
+        .output()
+        .expect("spawn binary");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+    let agent_dir = project.join(".ac").join("_agent_architect");
+    assert_eq!(
+        json["agentPath"].as_str().expect("agentPath"),
+        agent_dir.to_string_lossy().as_ref()
+    );
+    assert!(agent_dir.join("Role.md").is_file());
+    assert!(!project.join(".ac-new").join("_agent_architect").exists());
+    assert_single_project_refresh_request_for_agent(&config_dir, &project, &agent_dir);
 }
 
 #[test]
