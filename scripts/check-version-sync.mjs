@@ -52,7 +52,7 @@ const checks = [
     /(?:\r?\n)\s*name\s*=\s*"agentscommander-new"\s*(?:\r?\n)version\s*=\s*"([^"]+)"/,
   ),
   extract(
-    'src-tauri/Cargo.lock:agentscommander-new.version',
+    'src-tauri/Cargo.lock:internal-crate.version',
     'src-tauri/Cargo.lock',
     /(?:\r?\n)\s*name\s*=\s*"agentscommander-new"\s*(?:\r?\n)version\s*=\s*"([^"]+)"/,
   ),
