@@ -14,13 +14,13 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: ''
+            args: '--config src-tauri/tauri.prod.conf.json'
           - platform: ubuntu-22.04
-            args: ''
+            args: '--config src-tauri/tauri.prod.conf.json'
           - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
+            args: '--config src-tauri/tauri.prod.conf.json --target aarch64-apple-darwin'
           - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
+            args: '--config src-tauri/tauri.prod.conf.json --target x86_64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
 

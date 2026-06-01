@@ -15,7 +15,7 @@
 //   - package.json                             "version"
 //   - package-lock.json                        root "version" + packages[""].version
 //   - src-tauri/Cargo.toml                     [package] version
-//   - src-tauri/Cargo.lock                     agentscommander-new entry version
+//   - src-tauri/Cargo.lock                     internal Cargo crate entry version
 //   - src-tauri/tauri.conf.json                "version"
 //
 // Re-running with the same X.Y.Z target is supported and intentional: it
@@ -43,7 +43,7 @@ Updates every project version location:
   - package.json
   - package-lock.json (root + packages[""])
   - src-tauri/Cargo.toml
-  - src-tauri/Cargo.lock (agentscommander-new entry)
+  - src-tauri/Cargo.lock (internal Cargo crate entry)
   - src-tauri/tauri.conf.json
 
 Re-running with the same X.Y.Z target re-synchronizes drifted locations.
@@ -54,6 +54,8 @@ Re-running with the same X.Y.Z target re-synchronizes drifted locations.
 // nearby fields so we can never accidentally rewrite a dependency version.
 // Line-end tokens use \r?\n so files with either LF or CRLF endings are
 // preserved byte-for-byte outside the version literal.
+// The Rust crate is still named agentscommander-new for Cargo/test binary
+// compatibility. Production bundle identity comes from Tauri config.
 const PATCHES = [
   {
     file: 'package.json',
@@ -77,7 +79,7 @@ const PATCHES = [
   },
   {
     file: 'src-tauri/Cargo.lock',
-    label: 'agentscommander-new entry',
+    label: 'internal Cargo crate entry',
     re: /(\r?\n\s*name\s*=\s*"agentscommander-new"\s*\r?\nversion\s*=\s*)"[^"]+"/,
   },
   {

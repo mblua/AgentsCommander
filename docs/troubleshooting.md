@@ -9,7 +9,7 @@ For developers hitting an error. Skim the headings for the symptom that matches 
 The Windows release is signed by SignPath, but a freshly-released asset may not have reputation yet. Click **More info → Run anyway**. To verify the signature first:
 
 ```powershell
-Get-AuthenticodeSignature "AgentsCommander_0.8.43_x64-setup.exe"
+Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
 ```
 
 `Status` should read `Valid`. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
