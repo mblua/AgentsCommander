@@ -1754,7 +1754,9 @@ fn normalize_agent_command_for_source(
         })
 }
 
-fn resolve_root_agent_command(
+type ResolvedRootAgentCommand = (String, Vec<String>, Option<String>, Option<String>);
+
+pub(crate) fn resolve_root_agent_command(
     settings: &AppSettings,
     requested_agent_id: Option<&str>,
     last_coding_agent: Option<&str>,
@@ -1809,12 +1811,7 @@ fn resolve_root_agent_command(
         ));
     }
 
-    Ok((
-        settings.default_shell.clone(),
-        settings.default_shell_args.clone(),
-        None,
-        None,
-    ))
+    Err("No resolvable coding agent is configured for the Root Agent. Configure a coding agent before launching the Root Agent.".to_string())
 }
 
 fn resolve_agent_label(agent_id: &str, settings: &AppSettings) -> Option<String> {
@@ -2154,7 +2151,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_root_agent_command_falls_back_to_default_shell_without_agents() {
+    fn resolve_root_agent_command_rejects_default_shell_without_agents() {
         let mut settings = AppSettings {
             default_shell: "pwsh".to_string(),
             default_shell_args: vec!["-NoLogo".to_string()],
@@ -2162,13 +2159,10 @@ mod tests {
         };
         settings.agents.clear();
 
-        let (shell, args, agent_id, label) =
-            resolve_root_agent_command(&settings, Some("stale"), Some("also-stale")).unwrap();
+        let err =
+            resolve_root_agent_command(&settings, Some("stale"), Some("also-stale")).unwrap_err();
 
-        assert_eq!(shell, "pwsh");
-        assert_eq!(args, vec!["-NoLogo".to_string()]);
-        assert!(agent_id.is_none());
-        assert!(label.is_none());
+        assert!(err.contains("No resolvable coding agent"));
     }
 
     #[test]
