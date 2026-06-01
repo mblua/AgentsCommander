@@ -1754,8 +1754,6 @@ fn normalize_agent_command_for_source(
         })
 }
 
-type ResolvedRootAgentCommand = (String, Vec<String>, Option<String>, Option<String>);
-
 pub(crate) fn resolve_root_agent_command(
     settings: &AppSettings,
     requested_agent_id: Option<&str>,
