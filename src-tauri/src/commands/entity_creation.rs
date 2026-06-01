@@ -502,6 +502,58 @@ pub(crate) fn create_agent_matrix_on_disk(
     })
 }
 
+pub(crate) struct CreateAgentMatrixFromRoleArgs<'a> {
+    pub workspace_dir: &'a Path,
+    pub safe_name: &'a str,
+    pub role_bytes: &'a [u8],
+}
+
+pub(crate) fn create_agent_matrix_from_role(
+    args: CreateAgentMatrixFromRoleArgs<'_>,
+) -> Result<CreatedAgentMatrixOnDisk, String> {
+    if sanitize_name(args.safe_name)? != args.safe_name {
+        return Err(format!(
+            "Agent '{}' must already be a lowercase slug",
+            args.safe_name
+        ));
+    }
+    validate_existing_name(args.safe_name, "Agent")?;
+    let agent_dir = args
+        .workspace_dir
+        .join(format!("_agent_{}", args.safe_name));
+    if agent_dir.exists() {
+        return Err(format!("Agent '{}' already exists", args.safe_name));
+    }
+    create_new_agent_matrix_layout(&agent_dir).map_err(|(sub, e)| match (sub, e.kind()) {
+        ("agent_dir", std::io::ErrorKind::AlreadyExists) => {
+            format!("Agent '{}' already exists", args.safe_name)
+        }
+        ("agent_dir", _) => format!("Failed to create agent directory: {}", e),
+        _ => format!("Failed to create {} directory: {}", sub, e),
+    })?;
+
+    let role_path = agent_dir.join("Role.md");
+    std::fs::write(&role_path, args.role_bytes)
+        .map_err(|e| format!("Failed to write Role.md: {}", e))?;
+
+    let mut config_str = serde_json::to_string_pretty(&default_agent_matrix_config())
+        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
+    config_str.push('\n');
+    std::fs::write(agent_dir.join("config.json"), config_str)
+        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+
+    let project_path = args
+        .workspace_dir
+        .parent()
+        .ok_or_else(|| "Workspace has no project parent".to_string())?;
+    Ok(CreatedAgentMatrixOnDisk {
+        agent_dir,
+        display_name: agent_matrix_display_name(project_path, args.safe_name),
+        safe_name: args.safe_name.to_string(),
+        role_path,
+    })
+}
+
 pub(crate) fn apply_agent_matrix_settings_files(
     agent_dir: &Path,
     flags: AgentMatrixSettingsFlags,
@@ -3340,5 +3392,70 @@ mod tests {
             "human-readable description body must keep the original characters; got:\n{}",
             out
         );
+    }
+
+    #[test]
+    fn create_agent_matrix_from_role_writes_role_bytes_exactly() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let role_bytes = b"\xEF\xBB\xBF# Variant\r\n\r\nKeep bytes.\r\n";
+
+        let created = create_agent_matrix_from_role(CreateAgentMatrixFromRoleArgs {
+            workspace_dir: &workspace,
+            safe_name: "tech-lead-control",
+            role_bytes,
+        })
+        .expect("create matrix from role");
+
+        assert_eq!(
+            std::fs::read(&created.role_path).expect("read role"),
+            role_bytes
+        );
+        assert!(created.agent_dir.join("config.json").is_file());
+        for dir in AGENT_MATRIX_DIRS {
+            assert!(
+                created.agent_dir.join(dir).is_dir(),
+                "missing expected matrix dir {}",
+                dir
+            );
+        }
+    }
+
+    #[test]
+    fn create_agent_matrix_from_role_rejects_existing_target() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(workspace.join("_agent_tech-lead-control"))
+            .expect("existing target");
+
+        let err = create_agent_matrix_from_role(CreateAgentMatrixFromRoleArgs {
+            workspace_dir: &workspace,
+            safe_name: "tech-lead-control",
+            role_bytes: b"# Role\n",
+        })
+        .unwrap_err();
+
+        assert!(err.contains("already exists"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn create_agent_matrix_from_role_requires_slug_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        let workspace = project.join(".ac");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+
+        let err = create_agent_matrix_from_role(CreateAgentMatrixFromRoleArgs {
+            workspace_dir: &workspace,
+            safe_name: "Tech Lead",
+            role_bytes: b"# Role\n",
+        })
+        .unwrap_err();
+
+        assert!(err.contains("lowercase slug"), "unexpected error: {}", err);
+        assert!(!workspace.join("_agent_Tech Lead").exists());
     }
 }
