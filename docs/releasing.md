@@ -75,7 +75,7 @@ The release shows up under [Releases](https://github.com/mblua/AgentsCommander/r
 - **Asset count.** Every platform produced an installer. Re-run the failing job if one is missing.
 - **Windows signature.** Right-click the installer → Properties → Digital Signatures → SignPath Foundation. Or:
   ```powershell
-  Get-AuthenticodeSignature "Agents.Commander_X.Y.Z_x64-setup.exe"
+  Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
   ```
 - **Changelog.** Add curated highlights at the top (the auto-generated list goes underneath). Use the previous release as a tone reference.
 - **Tag matches the bump.** If you tagged `v0.8.42` but the binary reports `0.8.41`, abort and re-bump.

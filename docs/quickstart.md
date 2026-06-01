@@ -18,7 +18,7 @@ Download the latest installer for your platform from [the releases page](https:/
 
 | Platform | Asset |
 |---|---|
-| Windows 10 1809+ | `AgentsCommander_*_x64-setup.exe` (signed) or the portable `agentscommander.exe` |
+| Windows 10 1809+ | `Agents Commander_X.Y.Z_x64-setup.exe` (signed) or the portable `agentscommander.exe` |
 | Linux | `agentscommander_*_amd64.AppImage` |
 | macOS | `AgentsCommander_*.dmg` (Apple Silicon + Intel) |
 
