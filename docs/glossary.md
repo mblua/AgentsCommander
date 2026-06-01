@@ -48,7 +48,7 @@ A renamed copy of `agentscommander.exe` (with an `_<suffix>` like `agentscommand
 
 ## Project (AC project)
 
-A folder containing an `.ac/` workspace. AC manages all agents, teams, and workgroups under that workspace. Legacy `.ac-new/` workspaces remain supported.
+A folder containing an `.ac/` workspace. AC manages all agents, teams, and workgroups under that workspace.
 
 ## PTY
 

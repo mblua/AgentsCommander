@@ -7,7 +7,7 @@ use tauri::Manager;
 use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
-use crate::config::settings::SettingsState;
+use crate::config::settings::{AgentConfig, SettingsState};
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
@@ -126,6 +126,92 @@ fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBa
     }
 
     batch
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedWakeAgentCommand {
+    shell: String,
+    shell_args: Vec<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    source: String,
+    raw_command: String,
+}
+
+fn normalize_agent_for_wake(
+    agent: &AgentConfig,
+    source: String,
+) -> Result<ResolvedWakeAgentCommand, String> {
+    let normalized = crate::config::agent_command::normalize_legacy_agent_command(&agent.command)
+        .map_err(|e| {
+            format!(
+                "Invalid agent command from {} (agent id '{}', label '{}'): {}. command={:?}",
+                source, agent.id, agent.label, e, agent.command
+            )
+        })?;
+
+    Ok(ResolvedWakeAgentCommand {
+        shell: normalized.shell,
+        shell_args: normalized.shell_args,
+        agent_id: Some(agent.id.clone()),
+        agent_label: Some(agent.label.clone()),
+        source,
+        raw_command: agent.command.clone(),
+    })
+}
+
+fn resolve_wake_agent_command_from_sources(
+    agents: &[AgentConfig],
+    preferred_agent: &str,
+    destination_last_agent: Option<&str>,
+    destination_config_path: Option<&Path>,
+    sender_agent: Option<&str>,
+) -> Result<Option<ResolvedWakeAgentCommand>, String> {
+    if preferred_agent != "auto" {
+        if let Some(agent) = agents.iter().find(|a| a.id == preferred_agent) {
+            return normalize_agent_for_wake(
+                agent,
+                format!("preferredAgent '{}'", preferred_agent),
+            )
+            .map(Some);
+        }
+        log::warn!(
+            "[mailbox] wake: preferredAgent '{}' did not match a configured agent id; falling back to auto resolution",
+            preferred_agent
+        );
+    }
+
+    if let Some(agent_id) = destination_last_agent {
+        if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
+            let source = match destination_config_path {
+                Some(path) => format!("lastCodingAgent '{}' from {}", agent_id, path.display()),
+                None => format!("lastCodingAgent '{}'", agent_id),
+            };
+            return normalize_agent_for_wake(agent, source).map(Some);
+        }
+        log::debug!(
+            "[mailbox] wake: lastCodingAgent '{}' did not match a configured agent id; falling back",
+            agent_id
+        );
+    }
+
+    if let Some(agent_id) = sender_agent {
+        if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
+            return normalize_agent_for_wake(agent, format!("senderAgent '{}'", agent_id))
+                .map(Some);
+        }
+        log::debug!(
+            "[mailbox] wake: senderAgent '{}' did not match a configured agent id; falling back",
+            agent_id
+        );
+    }
+
+    agents
+        .first()
+        .map(|agent| {
+            normalize_agent_for_wake(agent, format!("first configured agent '{}'", agent.id))
+        })
+        .transpose()
 }
 
 fn validate_root_sender_route(
@@ -430,16 +516,8 @@ pub(crate) fn filter_sessions_by_fqn<'a>(
         .collect()
 }
 
-fn routable_agent_fqn_from_path(path: &str) -> Option<String> {
-    if crate::config::workspace::path_uses_stale_legacy_workspace(Path::new(path)) {
-        None
-    } else {
-        Some(crate::config::teams::agent_fqn_from_path(path))
-    }
-}
-
 fn session_cwd_matches_fqn(cwd: &str, target: &str) -> bool {
-    routable_agent_fqn_from_path(cwd).as_deref() == Some(target)
+    crate::config::teams::agent_fqn_from_path(cwd) == target
 }
 
 fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) -> Option<String> {
@@ -451,10 +529,6 @@ fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) 
 
     let wg_marker = format!("/{}/", wg_name);
     for (_, cwd) in dirs {
-        if routable_agent_fqn_from_path(cwd).is_none() {
-            continue;
-        }
-
         let normalized = cwd.replace('\\', "/");
         if let Some(wg_pos) = normalized.rfind(&wg_marker) {
             let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
@@ -463,9 +537,7 @@ fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) 
                 continue;
             }
 
-            let Some(candidate_fqn) = routable_agent_fqn_from_path(&candidate) else {
-                continue;
-            };
+            let candidate_fqn = crate::config::teams::agent_fqn_from_path(&candidate);
             if let Some(want) = target_project {
                 let (cand_project, _) = crate::config::teams::split_project_prefix(&candidate_fqn);
                 if cand_project != Some(want) {
@@ -1313,9 +1385,12 @@ impl MailboxPoller {
             };
         }
 
-        let agent_command = self.resolve_agent_command(app, msg).await;
-        let (shell, shell_args) = agent_command.ok_or_else(|| {
-            format!("No agent command resolved for '{}' — cannot spawn session. Configure lastCodingAgent or agents in settings.", msg.to)
+        let resolved_command = self.resolve_agent_command(app, msg).await?;
+        let resolved_command = resolved_command.ok_or_else(|| {
+            format!(
+                "No agent command resolved for '{}'; preferredAgent={:?}. Configure lastCodingAgent or agents in settings.",
+                msg.to, msg.preferred_agent
+            )
         })?;
 
         let dest_path = self.resolve_repo_path(&msg.to, app).await;
@@ -1334,9 +1409,6 @@ impl MailboxPoller {
             }
         };
 
-        // Resolve agent_id and label from lastCodingAgent config
-        let (agent_id, agent_label) = self.resolve_agent_id_and_label(app, &cwd).await;
-
         // §AR2-session-name: strip optional `<project>:` prefix from the display
         // name so the sidebar label stays short (e.g. "wg-1-devs/tech-lead" not
         // "proj-a:wg-1-devs/tech-lead"). The canonical FQN stays recoverable via
@@ -1349,22 +1421,41 @@ impl MailboxPoller {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
+        let spawn_source = resolved_command.source.clone();
+        let spawn_shell = resolved_command.shell.clone();
+        let spawn_args = resolved_command.shell_args.clone();
+        let spawn_raw = resolved_command.raw_command.clone();
+
+        log::info!(
+            "[mailbox] wake: spawning '{}' from {}: raw_command={:?}, shell={:?}, args={:?}",
+            msg.to,
+            spawn_source,
+            spawn_raw,
+            spawn_shell,
+            spawn_args
+        );
+
         let info = crate::commands::session::create_session_inner(
             app,
             session_mgr.inner(),
             pty_mgr.inner(),
-            shell,
-            shell_args,
+            resolved_command.shell,
+            resolved_command.shell_args,
             cwd,
             Some(session_name), // readable name, no [temp] prefix
-            agent_id,           // links to agent config
-            agent_label,        // human-readable label
+            resolved_command.agent_id, // links to agent config
+            resolved_command.agent_label, // human-readable label
             false,              // skip_tooling_save = false → persist lastCodingAgent
             Vec::new(),         // git_repos
             wake_spawn_skip_auto_resume(spawn_with_resume), // see deliver_wake top
         )
         .await
-        .map_err(|e| format!("Failed to spawn session for '{}': {}", msg.to, e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to spawn session for '{}': command from {} resolved raw_command={:?}, shell={:?}, args={:?}: {}",
+                msg.to, spawn_source, spawn_raw, spawn_shell, spawn_args, e
+            )
+        })?;
 
         let session_id =
             Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {}", e))?;
@@ -2393,9 +2484,7 @@ impl MailboxPoller {
         };
 
         let hits_agent = |cwd: &str| -> bool {
-            let Some(path_fqn) = routable_agent_fqn_from_path(cwd) else {
-                return false;
-            };
+            let path_fqn = crate::config::teams::agent_fqn_from_path(cwd);
             if is_qualified {
                 path_fqn == agent_name
             } else {
@@ -2532,73 +2621,36 @@ impl MailboxPoller {
         &self,
         app: &tauri::AppHandle,
         msg: &OutboxMessage,
-    ) -> Option<(String, Vec<String>)> {
-        let settings = app.state::<SettingsState>();
-        let cfg = settings.read().await;
+    ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
+        let agents = {
+            let settings = app.state::<SettingsState>();
+            let cfg = settings.read().await;
+            cfg.agents.clone()
+        };
 
-        // If specific agent requested
-        if msg.preferred_agent != "auto" {
-            if let Some(agent) = cfg.agents.iter().find(|a| a.id == msg.preferred_agent) {
-                return Some((agent.command.clone(), vec![]));
-            }
-        }
+        let mut destination_last_agent: Option<String> = None;
+        let mut destination_config_path: Option<PathBuf> = None;
 
-        // Try lastCodingAgent from destination's config.json
         if let Some(dest_path) = self.resolve_repo_path(&msg.to, app).await {
             let config_path = Path::new(&dest_path)
                 .join(crate::config::agent_local_dir_name())
                 .join("config.json");
+            destination_config_path = Some(config_path.clone());
+
             if let Ok(content) = std::fs::read_to_string(&config_path) {
                 if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&content) {
-                    if let Some(last_agent) = local_config.tooling.last_coding_agent.as_deref() {
-                        if let Some(agent) = cfg.agents.iter().find(|a| a.id == last_agent) {
-                            return Some((agent.command.clone(), vec![]));
-                        }
-                    }
+                    destination_last_agent = local_config.tooling.last_coding_agent;
                 }
             }
         }
 
-        // Fallback: use sender's agent if known
-        if let Some(ref sender_agent) = msg.sender_agent {
-            if let Some(agent) = cfg.agents.iter().find(|a| a.id == *sender_agent) {
-                return Some((agent.command.clone(), vec![]));
-            }
-        }
-
-        // Last resort: use first configured agent
-        cfg.agents.first().map(|a| (a.command.clone(), vec![]))
-    }
-
-    /// Resolve agent_id and agent_label for a destination agent.
-    /// Reads lastCodingAgent from the dest's config.json, then looks up the label in settings.
-    async fn resolve_agent_id_and_label(
-        &self,
-        app: &tauri::AppHandle,
-        cwd: &str,
-    ) -> (Option<String>, Option<String>) {
-        let config_path = std::path::Path::new(cwd)
-            .join(crate::config::agent_local_dir_name())
-            .join("config.json");
-
-        let last_agent_id = std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|content| serde_json::from_str::<AgentLocalConfig>(&content).ok())
-            .and_then(|cfg| cfg.tooling.last_coding_agent);
-
-        let Some(ref agent_id) = last_agent_id else {
-            return (None, None);
-        };
-
-        let settings = app.state::<SettingsState>();
-        let cfg = settings.read().await;
-        let label = cfg
-            .agents
-            .iter()
-            .find(|a| a.id == *agent_id)
-            .map(|a| a.label.clone());
-
-        (last_agent_id, label)
+        resolve_wake_agent_command_from_sources(
+            &agents,
+            &msg.preferred_agent,
+            destination_last_agent.as_deref(),
+            destination_config_path.as_deref(),
+            msg.sender_agent.as_deref(),
+        )
     }
 
     /// Fallback path resolution for WG agents: find a sibling session in the same WG,
@@ -2907,11 +2959,11 @@ mod tests {
     ) -> (tempfile::TempDir, Vec<String>) {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let ac_new = project.join(".ac-new");
-        let team_dir = ac_new.join("_team_dev-team");
-        let origin_tech_lead = ac_new.join("_agent_tech-lead");
-        let origin_dev_rust = ac_new.join("_agent_dev-rust");
-        let wg_dir = ac_new.join("wg-1-dev-team");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
+        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -2972,6 +3024,142 @@ mod tests {
         }
     }
 
+    fn wake_agent(id: &str, label: &str, command: &str) -> AgentConfig {
+        AgentConfig {
+            id: id.into(),
+            label: label.into(),
+            command: command.into(),
+            color: "#10b981".into(),
+            git_pull_before: false,
+            exclude_global_claude_md: false,
+        }
+    }
+
+    fn wake_agents() -> Vec<AgentConfig> {
+        vec![
+            wake_agent("codex", "Codex", "codex --yolo"),
+            wake_agent("claude", "Claude", "claude"),
+        ]
+    }
+
+    #[test]
+    fn wake_agent_command_normalizes_preferred_agent_command() {
+        let agents = wake_agents();
+
+        let resolved =
+            resolve_wake_agent_command_from_sources(&agents, "codex", Some("claude"), None, None)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(resolved.shell, "codex");
+        assert_eq!(resolved.shell_args, vec!["--yolo"]);
+        assert_eq!(resolved.agent_id.as_deref(), Some("codex"));
+        assert!(resolved.source.contains("preferredAgent 'codex'"));
+    }
+
+    #[test]
+    fn wake_agent_command_stale_preferred_agent_falls_back_to_last_coding_agent() {
+        let agents = wake_agents();
+        let config_path = Path::new("C:/repo/.agentscommander/config.json");
+
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "missing",
+            Some("codex"),
+            Some(config_path),
+            Some("claude"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.shell, "codex");
+        assert_eq!(resolved.shell_args, vec!["--yolo"]);
+        assert!(resolved.source.contains("lastCodingAgent 'codex'"));
+    }
+
+    #[test]
+    fn wake_agent_command_normalizes_last_coding_agent_command() {
+        let agents = wake_agents();
+
+        let resolved =
+            resolve_wake_agent_command_from_sources(&agents, "auto", Some("codex"), None, None)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(resolved.shell, "codex");
+        assert_eq!(resolved.shell_args, vec!["--yolo"]);
+        assert!(resolved.source.contains("lastCodingAgent"));
+    }
+
+    #[test]
+    fn wake_agent_command_uses_sender_agent_after_missing_last_coding_agent() {
+        let agents = wake_agents();
+
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "auto",
+            Some("missing"),
+            None,
+            Some("claude"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.shell, "claude");
+        assert!(resolved.shell_args.is_empty());
+        assert_eq!(resolved.agent_id.as_deref(), Some("claude"));
+        assert!(resolved.source.contains("senderAgent 'claude'"));
+    }
+
+    #[test]
+    fn wake_agent_command_uses_first_configured_agent_as_last_resort() {
+        let agents = wake_agents();
+
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "auto",
+            Some("missing"),
+            None,
+            Some("also-missing"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.shell, "codex");
+        assert_eq!(resolved.shell_args, vec!["--yolo"]);
+        assert_eq!(resolved.agent_id.as_deref(), Some("codex"));
+        assert!(resolved.source.contains("first configured agent 'codex'"));
+    }
+
+    #[test]
+    fn wake_agent_command_rejects_invalid_quoted_command_with_source() {
+        let agents = vec![wake_agent("codex", "Codex", "codex \"unterminated")];
+
+        let err = resolve_wake_agent_command_from_sources(&agents, "codex", None, None, None)
+            .unwrap_err();
+
+        assert!(err.contains("preferredAgent 'codex'"));
+        assert!(err.contains("agent id 'codex'"));
+        assert!(err.contains("label 'Codex'"));
+        assert!(err.contains("command=\"codex \\\"unterminated\""));
+        assert!(err.contains("unclosed double quote"));
+    }
+
+    #[test]
+    fn wake_agent_command_selected_agent_preserves_args() {
+        let agents = wake_agents();
+
+        let resolved =
+            resolve_wake_agent_command_from_sources(&agents, "codex", None, None, Some("claude"))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(resolved.shell, "codex");
+        assert_eq!(resolved.shell_args, vec!["--yolo"]);
+        assert_eq!(resolved.agent_id.as_deref(), Some("codex"));
+        assert_eq!(resolved.agent_label.as_deref(), Some("Codex"));
+    }
+
     #[test]
     fn sender_name_for_session_cwd_with_root_flag_uses_root_sender() {
         assert_eq!(
@@ -2980,7 +3168,7 @@ mod tests {
         );
         assert_eq!(
             sender_name_for_session_cwd_with_root_flag(
-                "C:/tmp/proj-a/.ac-new/wg-1-dev-team/__agent_tech-lead",
+                "C:/tmp/proj-a/.ac/wg-1-dev-team/__agent_tech-lead",
                 false
             ),
             "proj-a:wg-1-dev-team/tech-lead"
@@ -3248,7 +3436,7 @@ mod tests {
         let s = make_session_info(
             "uuid-1",
             "alice",
-            r"C:\proj\.ac-new\wg-1-devs\__agent_alice",
+            r"C:\proj\.ac\wg-1-devs\__agent_alice",
             crate::session::session::SessionStatus::Idle,
             true,
         );
@@ -3267,7 +3455,7 @@ mod tests {
         let s = make_session_info(
             "uuid-1",
             "bob",
-            r"C:\proj\.ac-new\wg-1-devs\__agent_bob",
+            r"C:\proj\.ac\wg-1-devs\__agent_bob",
             crate::session::session::SessionStatus::Active,
             false,
         );
@@ -3284,7 +3472,7 @@ mod tests {
         let mut active = make_session_info(
             "uuid-a",
             "alice-active",
-            r"C:\proj\.ac-new\wg-1-devs\__agent_alice",
+            r"C:\proj\.ac\wg-1-devs\__agent_alice",
             crate::session::session::SessionStatus::Active,
             false,
         );
@@ -3292,14 +3480,14 @@ mod tests {
         let idle = make_session_info(
             "uuid-b",
             "alice-idle",
-            r"C:\proj\.ac-new\wg-1-devs\__agent_alice",
+            r"C:\proj\.ac\wg-1-devs\__agent_alice",
             crate::session::session::SessionStatus::Idle,
             true,
         );
         let exited = make_session_info(
             "uuid-c",
             "alice-exited",
-            r"C:\proj\.ac-new\wg-1-devs\__agent_alice",
+            r"C:\proj\.ac\wg-1-devs\__agent_alice",
             crate::session::session::SessionStatus::Exited(0),
             false,
         );
@@ -3669,7 +3857,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let project_dir = temp.path().join("proj-x");
         let outbox = project_dir
-            .join(".ac-new")
+            .join(".ac")
             .join("wg-1-devs")
             .join("__agent_alice")
             .join(".agentscommander") // matches agent_local_dir_name() shape
@@ -3690,54 +3878,22 @@ mod tests {
     }
 
     #[test]
-    fn derive_project_from_outbox_path_rejects_stale_legacy_when_canonical_exists() {
+    fn derive_project_from_outbox_path_accepts_ac_outbox() {
         let temp = tempfile::TempDir::new().unwrap();
         let project_dir = temp.path().join("proj-x");
-        let canonical_outbox = project_dir
+        let outbox = project_dir
             .join(".ac")
             .join("wg-1-devs")
             .join("__agent_alice")
             .join(".agentscommander")
             .join("outbox");
-        let stale_outbox = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice")
-            .join(".agentscommander")
-            .join("outbox");
-        std::fs::create_dir_all(&canonical_outbox).unwrap();
-        std::fs::create_dir_all(&stale_outbox).unwrap();
-        let file = stale_outbox.join("msg-42.json");
-        std::fs::write(&file, "{}").unwrap();
-
-        let err = derive_project_from_outbox_path(&file).unwrap_err();
-        assert!(err.contains("stale legacy workspace"));
-    }
-
-    #[test]
-    fn derive_project_from_outbox_path_accepts_canonical_when_both_exist() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let project_dir = temp.path().join("proj-x");
-        let canonical_outbox = project_dir
-            .join(".ac")
-            .join("wg-1-devs")
-            .join("__agent_alice")
-            .join(".agentscommander")
-            .join("outbox");
-        let stale_outbox = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice")
-            .join(".agentscommander")
-            .join("outbox");
-        std::fs::create_dir_all(&canonical_outbox).unwrap();
-        std::fs::create_dir_all(&stale_outbox).unwrap();
-        let file = canonical_outbox.join("msg-42.json");
+        std::fs::create_dir_all(&outbox).unwrap();
+        let file = outbox.join("msg-42.json");
         std::fs::write(&file, "{}").unwrap();
 
         let got = derive_project_from_outbox_path(&file)
             .unwrap()
-            .expect("canonical outbox should derive project");
+            .expect(".ac outbox should derive project");
         let expected = std::fs::canonicalize(&project_dir)
             .unwrap()
             .to_str()
@@ -3747,109 +3903,20 @@ mod tests {
     }
 
     #[test]
-    fn stale_legacy_session_path_is_not_routable_when_canonical_exists() {
+    fn filter_sessions_by_fqn_accepts_ac_live_target() {
         let temp = tempfile::TempDir::new().unwrap();
-        let project_dir = temp.path().join("proj-x");
-        let canonical_agent = project_dir
-            .join(".ac")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        let stale_agent = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        std::fs::create_dir_all(&canonical_agent).unwrap();
-        std::fs::create_dir_all(&stale_agent).unwrap();
-
-        assert!(!crate::config::workspace::path_uses_stale_legacy_workspace(
-            &canonical_agent
-        ));
-        assert!(crate::config::workspace::path_uses_stale_legacy_workspace(
-            &stale_agent
-        ));
-    }
-
-    #[test]
-    fn filter_sessions_by_fqn_ignores_stale_live_target_when_canonical_exists() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let project_dir = temp.path().join("proj-x");
-        let canonical_agent = project_dir
-            .join(".ac")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        let stale_agent = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        std::fs::create_dir_all(&canonical_agent).unwrap();
-        std::fs::create_dir_all(&stale_agent).unwrap();
-
-        let pool = vec![make_session_info(
-            "uuid-stale",
-            "alice-stale",
-            &path_string(&stale_agent),
-            crate::session::session::SessionStatus::Idle,
-            true,
-        )];
-
-        let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
-
-        assert!(hits.is_empty(), "stale legacy live target must be ignored");
-    }
-
-    #[test]
-    fn filter_sessions_by_fqn_prefers_canonical_live_target_when_both_exist() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let project_dir = temp.path().join("proj-x");
-        let canonical_agent = project_dir
-            .join(".ac")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        let stale_agent = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        std::fs::create_dir_all(&canonical_agent).unwrap();
-        std::fs::create_dir_all(&stale_agent).unwrap();
-
-        let pool = vec![
-            make_session_info(
-                "uuid-stale",
-                "alice-stale",
-                &path_string(&stale_agent),
-                crate::session::session::SessionStatus::Idle,
-                true,
-            ),
-            make_session_info(
-                "uuid-canonical",
-                "alice-canonical",
-                &path_string(&canonical_agent),
-                crate::session::session::SessionStatus::Idle,
-                true,
-            ),
-        ];
-
-        let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
-
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "uuid-canonical");
-    }
-
-    #[test]
-    fn filter_sessions_by_fqn_accepts_legacy_only_live_target() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let legacy_agent = temp
+        let agent = temp
             .path()
             .join("proj-x")
-            .join(".ac-new")
+            .join(".ac")
             .join("wg-1-devs")
             .join("__agent_alice");
-        std::fs::create_dir_all(&legacy_agent).unwrap();
+        std::fs::create_dir_all(&agent).unwrap();
 
         let pool = vec![make_session_info(
-            "uuid-legacy",
-            "alice-legacy",
-            &path_string(&legacy_agent),
+            "uuid-ac",
+            "alice-ac",
+            &path_string(&agent),
             crate::session::session::SessionStatus::Idle,
             true,
         )];
@@ -3857,103 +3924,54 @@ mod tests {
         let hits = filter_sessions_by_fqn(&pool, "proj-x:wg-1-devs/alice");
 
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "uuid-legacy");
+        assert_eq!(hits[0].id, "uuid-ac");
     }
 
     #[test]
-    fn wg_session_fallback_ignores_stale_sibling_when_canonical_exists() {
+    fn wg_session_fallback_returns_none_without_target_agent() {
         let temp = tempfile::TempDir::new().unwrap();
         let project_dir = temp.path().join("proj-x");
-        let canonical_target = project_dir
+        let sibling = project_dir
             .join(".ac")
             .join("wg-1-devs")
-            .join("__agent_alice");
-        let stale_target = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        let stale_sibling = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
             .join("__agent_bob");
-        std::fs::create_dir_all(&canonical_target).unwrap();
-        std::fs::create_dir_all(&stale_target).unwrap();
-        std::fs::create_dir_all(&stale_sibling).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
 
-        let dirs = vec![(Uuid::nil(), path_string(&stale_sibling))];
+        let dirs = vec![(Uuid::nil(), path_string(&sibling))];
 
         assert!(resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice").is_none());
     }
 
     #[test]
-    fn wg_session_fallback_returns_canonical_when_stale_sibling_is_first() {
+    fn wg_session_fallback_returns_ac_target_from_sibling() {
         let temp = tempfile::TempDir::new().unwrap();
         let project_dir = temp.path().join("proj-x");
-        let canonical_target = project_dir
+        let target = project_dir
             .join(".ac")
             .join("wg-1-devs")
             .join("__agent_alice");
-        let canonical_sibling = project_dir
+        let sibling = project_dir
             .join(".ac")
             .join("wg-1-devs")
             .join("__agent_bob");
-        let stale_target = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        let stale_sibling = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_bob");
-        std::fs::create_dir_all(&canonical_target).unwrap();
-        std::fs::create_dir_all(&canonical_sibling).unwrap();
-        std::fs::create_dir_all(&stale_target).unwrap();
-        std::fs::create_dir_all(&stale_sibling).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
 
-        let dirs = vec![
-            (Uuid::nil(), path_string(&stale_sibling)),
-            (Uuid::nil(), path_string(&canonical_sibling)),
-        ];
+        let dirs = vec![(Uuid::nil(), path_string(&sibling))];
 
         let got = resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice")
-            .expect("canonical sibling should resolve target");
+            .expect(".ac sibling should resolve target");
 
         assert_eq!(
             std::fs::canonicalize(got).unwrap(),
-            std::fs::canonicalize(canonical_target).unwrap()
-        );
-    }
-
-    #[test]
-    fn wg_session_fallback_accepts_legacy_only_sibling() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let project_dir = temp.path().join("proj-x");
-        let legacy_target = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        let legacy_sibling = project_dir
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_bob");
-        std::fs::create_dir_all(&legacy_target).unwrap();
-        std::fs::create_dir_all(&legacy_sibling).unwrap();
-
-        let dirs = vec![(Uuid::nil(), path_string(&legacy_sibling))];
-
-        let got = resolve_wg_path_from_session_dirs(&dirs, "proj-x:wg-1-devs/alice")
-            .expect("legacy-only sibling should resolve target");
-
-        assert_eq!(
-            std::fs::canonicalize(got).unwrap(),
-            std::fs::canonicalize(legacy_target).unwrap()
+            std::fs::canonicalize(target).unwrap()
         );
     }
 
     #[test]
     fn derive_project_from_outbox_path_rejects_non_wg_layout() {
         let temp = tempfile::TempDir::new().unwrap();
-        // A path with the right tail but missing the `.ac-new` ancestor.
+        // A path with the right tail but missing the `.ac` ancestor.
         let outbox = temp
             .path()
             .join("random")
@@ -3988,7 +4006,7 @@ mod tests {
             id: id.to_string(),
             project_path: project_path.to_string_lossy().to_string(),
             agent_path: project_path
-                .join(".ac-new")
+                .join(".ac")
                 .join("_agent_architect")
                 .to_string_lossy()
                 .to_string(),
@@ -4045,7 +4063,7 @@ mod tests {
         let requests_dir = temp.path().join("project-refresh-requests");
         std::fs::create_dir_all(&requests_dir).unwrap();
         let project = temp.path().join("ProjectAlpha");
-        std::fs::create_dir_all(project.join(".ac-new").join("_agent_architect")).unwrap();
+        std::fs::create_dir_all(project.join(".ac").join("_agent_architect")).unwrap();
         write_project_refresh_request_fixture(
             &requests_dir.join("a.json"),
             "request-a",

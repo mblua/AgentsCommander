@@ -11,8 +11,8 @@
 use clap::Args;
 use std::path::Path;
 
-use super::task_ops::{self, TaskOp, EditOutcome};
 use super::send::agent_name_from_root;
+use super::task_ops::{self, EditOutcome, TaskOp};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -114,7 +114,9 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
     // tree. `sender=` and `wg=` are both caller-derived (--root) and a forged
     // --root produces a forged-but-consistent line; pid disambiguates.
     match task_ops::perform(&wg_root, TaskOp::SetTitle(args.title.clone())) {
-        Ok(EditOutcome::Wrote { backup: Some(bp), .. }) => {
+        Ok(EditOutcome::Wrote {
+            backup: Some(bp), ..
+        }) => {
             log::info!(
                 "[task] set-title: sender={} wg={} pid={} backup={}",
                 sender,
@@ -192,7 +194,7 @@ mod tests {
     fn make_wg_fixture(tmp: &Path) -> PathBuf {
         let agent_root = tmp
             .join("proj")
-            .join(".ac-new")
+            .join(".ac")
             .join("wg-1-test")
             .join("__agent_alice");
         std::fs::create_dir_all(&agent_root).unwrap();
@@ -305,7 +307,7 @@ mod tests {
     fn set_title_rejects_when_root_is_workgroup_root_directly() {
         let fix = FixtureRoot::new("task-i18");
         let _agent_root = make_wg_fixture(fix.path());
-        let wg_root = fix.path().join("proj").join(".ac-new").join("wg-1-test");
+        let wg_root = fix.path().join("proj").join(".ac").join("wg-1-test");
         // Coordinator running directly from the WG dir (no __agent_*) — the
         // is_any_coordinator gate fails closed (sender is not a coordinator).
         let token = uuid::Uuid::new_v4().to_string();

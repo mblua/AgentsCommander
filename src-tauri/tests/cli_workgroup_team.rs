@@ -55,10 +55,10 @@ fn write_settings(config_dir: &Path, project_parent: &Path) {
 
 fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     let project = tmp.join("ProjectAlpha");
-    let ac_new = project.join(".ac-new");
-    std::fs::create_dir_all(&ac_new).expect("create .ac-new");
+    let workspace_dir = project.join(".ac");
+    std::fs::create_dir_all(&workspace_dir).expect("create .ac");
     for agent in agents {
-        let dir = ac_new.join(format!("_agent_{}", agent));
+        let dir = workspace_dir.join(format!("_agent_{}", agent));
         std::fs::create_dir_all(dir.join("memory")).expect("agent memory");
         std::fs::write(dir.join("Role.md"), format!("# {}\n", agent)).expect("role");
     }
@@ -119,7 +119,7 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
         ],
     );
 
-    let wg_dir = project.join(".ac-new").join("wg-1-dev-team");
+    let wg_dir = project.join(".ac").join("wg-1-dev-team");
     assert_eq!(json["path"], wg_dir.to_string_lossy().as_ref());
     assert!(wg_dir.join("TASK.md").is_file());
     assert!(wg_dir.join("messaging").is_dir());
@@ -132,7 +132,7 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
         .join("config.json")
         .is_file());
     let team_config_path = project
-        .join(".ac-new")
+        .join(".ac")
         .join("_team_dev-team")
         .join("config.json");
     let team_config: serde_json::Value =
@@ -159,7 +159,7 @@ fn workgroup_add_uses_global_lowest_free_number() {
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect"]);
-    std::fs::create_dir_all(project.join(".ac-new").join("wg-1-dev-team")).expect("wg1");
+    std::fs::create_dir_all(project.join(".ac").join("wg-1-dev-team")).expect("wg1");
 
     let json = run_json(
         &bin,
@@ -206,7 +206,7 @@ fn workgroup_remove_deletes_and_reuses_number() {
             "architect",
         ],
     );
-    let wg_dir = project.join(".ac-new").join("wg-1-dev-team");
+    let wg_dir = project.join(".ac").join("wg-1-dev-team");
     assert_eq!(created["path"], wg_dir.to_string_lossy().as_ref());
     assert!(wg_dir.is_dir());
 
@@ -280,7 +280,7 @@ fn workgroup_add_normalizes_include_and_exclude_repo_assignments() {
     );
 
     let config_path = project
-        .join(".ac-new")
+        .join(".ac")
         .join("_team_dev-team")
         .join("config.json");
     let config: serde_json::Value =
@@ -341,14 +341,14 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
         ],
     );
     let replica = project
-        .join(".ac-new")
+        .join(".ac")
         .join("wg-1-dev-team")
         .join("__agent_dev-rust");
     assert_eq!(added["added"], true);
     assert!(replica.join("config.json").is_file());
 
     let sender_root = project
-        .join(".ac-new")
+        .join(".ac")
         .join("wg-1-dev-team")
         .join("__agent_architect");
     let out = Command::new(&bin)

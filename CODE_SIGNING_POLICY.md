@@ -25,7 +25,7 @@ You can verify the digital signature of any `.exe` or `.msi` file:
 
 **PowerShell**:
 ```powershell
-Get-AuthenticodeSignature "Agents Commander_x64-setup.exe"
+Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
 ```
 
 ## Privacy

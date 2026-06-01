@@ -443,7 +443,7 @@ pub fn load_sessions_raw() -> Vec<PersistedSession> {
     if !path.exists() {
         return vec![];
     }
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => vec![],
     }
@@ -472,7 +472,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
         return vec![];
     }
 
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<Vec<PersistedSession>>(&contents) {
             Ok(sessions) => {
                 // Safety net: filter out [temp] sessions that should never survive a restart
@@ -1119,13 +1119,6 @@ pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), St
     persist_current_state_to_dir_for_project_paths_result(mgr, &dir, Some(&project_paths)).await
 }
 
-async fn persist_current_state_to_dir_result(
-    mgr: &SessionManager,
-    dir: &Path,
-) -> Result<(), String> {
-    persist_current_state_to_dir_for_project_paths_result(mgr, dir, None).await
-}
-
 async fn persist_current_state_to_dir_for_project_paths_result(
     mgr: &SessionManager,
     dir: &Path,
@@ -1138,6 +1131,14 @@ async fn persist_current_state_to_dir_for_project_paths_result(
         None => snapshot,
     };
     save_sessions_to_dir(dir, &snapshot)
+}
+
+#[cfg(test)]
+async fn persist_current_state_to_dir_result(
+    mgr: &SessionManager,
+    dir: &Path,
+) -> Result<(), String> {
+    persist_current_state_to_dir_for_project_paths_result(mgr, dir, None).await
 }
 
 pub async fn persist_current_state(mgr: &SessionManager) {
@@ -1167,7 +1168,7 @@ mod tests {
             name: "alice".into(),
             shell: "claude".into(),
             shell_args: vec!["--continue".into()],
-            working_directory: r"C:\proj\.ac-new\wg-1-devs\__agent_alice".into(),
+            working_directory: r"C:\proj\.ac\wg-1-devs\__agent_alice".into(),
             was_active: false,
             git_repos: vec![],
             is_coordinator: false,
@@ -1379,21 +1380,21 @@ mod tests {
         let sessions = vec![
             PersistedSession {
                 name: "kept-coordinator".into(),
-                working_directory: "C:/projects/current/.ac-new/wg-1/__agent_tech-lead".into(),
+                working_directory: "C:/projects/current/.ac/wg-1/__agent_tech-lead".into(),
                 is_coordinator: true,
                 status: Some(SessionStatus::Running),
                 ..Default::default()
             },
             PersistedSession {
                 name: "orphan-coordinator".into(),
-                working_directory: "C:/projects/removed/.ac-new/wg-1/__agent_tech-lead".into(),
+                working_directory: "C:/projects/removed/.ac/wg-1/__agent_tech-lead".into(),
                 is_coordinator: true,
                 status: Some(SessionStatus::Running),
                 ..Default::default()
             },
             PersistedSession {
                 name: "orphan-member".into(),
-                working_directory: "C:/projects/removed/.ac-new/wg-1/__agent_dev-rust".into(),
+                working_directory: "C:/projects/removed/.ac/wg-1/__agent_dev-rust".into(),
                 is_coordinator: false,
                 status: Some(SessionStatus::Exited(0)),
                 ..Default::default()
@@ -1411,8 +1412,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let current = temp.path().join("current");
         let removed = temp.path().join("removed");
-        let current_agent = current.join(".ac-new").join("wg-1").join("__agent_keep");
-        let removed_agent = removed.join(".ac-new").join("wg-1").join("__agent_old");
+        let current_agent = current.join(".ac").join("wg-1").join("__agent_keep");
+        let removed_agent = removed.join(".ac").join("wg-1").join("__agent_old");
         std::fs::create_dir_all(&current_agent).expect("create current agent");
         std::fs::create_dir_all(&removed_agent).expect("create removed agent");
 
@@ -1449,11 +1450,11 @@ mod tests {
         let project_paths = vec!["C:/repo/foo".to_string()];
 
         assert!(working_directory_under_any_project_path(
-            "C:/repo/foo/.ac-new/wg-1/__agent_a",
+            "C:/repo/foo/.ac/wg-1/__agent_a",
             &project_paths
         ));
         assert!(!working_directory_under_any_project_path(
-            "C:/repo/foobar/.ac-new/wg-1/__agent_a",
+            "C:/repo/foobar/.ac/wg-1/__agent_a",
             &project_paths
         ));
     }
@@ -1464,7 +1465,7 @@ mod tests {
         let project_paths = vec![r"C:\Users\Maria\Project".to_string()];
 
         assert!(working_directory_under_any_project_path(
-            r"c:\users\maria\project\.ac-new\wg-1\__agent_a",
+            r"c:\users\maria\project\.ac\wg-1\__agent_a",
             &project_paths
         ));
     }
@@ -1754,7 +1755,7 @@ mod tests {
                 name: "coord-x".into(),
                 shell: "claude".into(),
                 shell_args: vec![],
-                working_directory: "C:/proj/.ac-new/_agent_architect".into(),
+                working_directory: "C:/proj/.ac/_agent_architect".into(),
                 was_active: true,
                 git_repos: vec![],
                 is_coordinator: true,

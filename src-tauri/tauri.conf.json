@@ -1,8 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/dev/packages/tauri-utils/schema.json",
   "productName": "Agents Commander",
-  "version": "0.8.44",
-  "identifier": "dev.agentscommander-new.app",
+  "version": "0.8.46",
+  "identifier": "dev.agentscommander.app",
+  "mainBinaryName": "agentscommander",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",

@@ -18,15 +18,15 @@ Download the latest installer for your platform from [the releases page](https:/
 
 | Platform | Asset |
 |---|---|
-| Windows 10 1809+ | `AgentsCommander_*_x64-setup.exe` (signed) or the portable `agentscommander.exe` |
+| Windows 10 1809+ | `Agents Commander_X.Y.Z_x64-setup.exe` (signed) or the portable `agentscommander.exe` |
 | Linux | `agentscommander_*_amd64.AppImage` |
-| macOS | `AgentsCommander_*.dmg` (Apple Silicon + Intel) |
+| macOS | `Agents Commander_*.dmg` (Apple Silicon + Intel) |
 
 Run the installer, or drop the portable `.exe` into any folder and double-click. On first launch AC creates its config directory next to the binary (e.g. `.agentscommander/` on Windows). See [Portable instances](features/portable-instances.md) for the rules.
 
 ## 2. Open or create an AC project
 
-An **AC project** is a folder with an `.ac/` workspace inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable. Existing `.ac-new/` workspaces still open as a legacy fallback.
+An **AC project** is a folder with an `.ac/` workspace inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable.
 
 In the sidebar, click **New Project** and point at any folder, empty or an existing repo. AC creates `.ac/` with a sensible `.gitignore` and registers the project in your sidebar.
 

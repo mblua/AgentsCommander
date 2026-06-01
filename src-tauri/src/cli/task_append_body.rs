@@ -11,8 +11,8 @@
 use clap::Args;
 use std::path::Path;
 
-use super::task_ops::{self, TaskOp, EditOutcome};
 use super::send::agent_name_from_root;
+use super::task_ops::{self, EditOutcome, TaskOp};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -117,7 +117,9 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
     // tree. `sender=` and `wg=` are both caller-derived (--root) and a forged
     // --root produces a forged-but-consistent line; pid disambiguates.
     match task_ops::perform(&wg_root, TaskOp::AppendBody(args.text.clone())) {
-        Ok(EditOutcome::Wrote { backup: Some(bp), .. }) => {
+        Ok(EditOutcome::Wrote {
+            backup: Some(bp), ..
+        }) => {
             log::info!(
                 "[task] append-body: sender={} wg={} pid={} backup={}",
                 sender,
@@ -188,7 +190,7 @@ mod tests {
     fn make_wg_fixture(tmp: &Path) -> PathBuf {
         let agent_root = tmp
             .join("proj")
-            .join(".ac-new")
+            .join(".ac")
             .join("wg-1-test")
             .join("__agent_alice");
         std::fs::create_dir_all(&agent_root).unwrap();

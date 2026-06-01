@@ -318,23 +318,19 @@ mod tests {
 
     #[test]
     fn find_workgroup_task_path_returns_path_when_cwd_is_workgroup_root() {
-        let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac-new\wg-3-team");
+        let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team");
         assert_eq!(
             p,
-            Some(std::path::PathBuf::from(
-                r"C:\proj\.ac-new\wg-3-team\TASK.md"
-            ))
+            Some(std::path::PathBuf::from(r"C:\proj\.ac\wg-3-team\TASK.md"))
         );
     }
 
     #[test]
     fn find_workgroup_task_path_walks_up_from_replica_dir() {
-        let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac-new\wg-3-team\__agent_dev-rust");
+        let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team\__agent_dev-rust");
         assert_eq!(
             p,
-            Some(std::path::PathBuf::from(
-                r"C:\proj\.ac-new\wg-3-team\TASK.md"
-            ))
+            Some(std::path::PathBuf::from(r"C:\proj\.ac\wg-3-team\TASK.md"))
         );
     }
 
@@ -349,7 +345,7 @@ mod tests {
         // §9.4 strips the prefix downstream when embedding into the prompt.
         // This test documents that the walk-up still finds the wg-* ancestor
         // even when the input carries the prefix.
-        let p = find_workgroup_task_path_for_cwd(r"\\?\C:\proj\.ac-new\wg-3-team");
+        let p = find_workgroup_task_path_for_cwd(r"\\?\C:\proj\.ac\wg-3-team");
         assert!(p.is_some());
         let p = p.unwrap().to_string_lossy().to_string();
         assert!(p.ends_with(r"\wg-3-team\TASK.md"));

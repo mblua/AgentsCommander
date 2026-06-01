@@ -54,8 +54,7 @@ pub fn agent_bare_name_from_ref(raw_agent: &str) -> Result<String, String> {
     let normalized = trimmed.replace('\\', "/");
     let dir_name = normalized
         .split('/')
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .ok_or_else(|| format!("Invalid agent reference '{}'", raw_agent))?;
     let bare = dir_name
         .strip_prefix("__agent_")
@@ -77,8 +76,7 @@ fn persisted_identity_agent_name(identity: &str) -> Result<String, String> {
     let normalized = trimmed.replace('\\', "/");
     let dir_name = normalized
         .split('/')
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .ok_or_else(|| format!("Invalid WG replica identity '{}'", identity))?;
 
     #[cfg(windows)]
@@ -416,7 +414,7 @@ mod tests {
         let stale_sibling = temp
             .path()
             .join("agentscommander-old")
-            .join(".ac-new")
+            .join(".ac")
             .join("_agent_tech-lead");
         std::fs::create_dir_all(stale_sibling).expect("create stale sibling");
 
@@ -442,7 +440,7 @@ mod tests {
         let stale = temp
             .path()
             .join("agentscommander-old")
-            .join(".ac-new")
+            .join(".ac")
             .join("_agent_tech-lead")
             .to_string_lossy()
             .replace('\\', "/");
@@ -452,7 +450,7 @@ mod tests {
                 "identity": stale,
                 "context": [
                     "$AGENTSCOMMANDER_CONTEXT",
-                    "../../../../agentscommander-old/.ac-new/_agent_tech-lead/Role.md",
+                    "../../../../agentscommander-old/.ac/_agent_tech-lead/Role.md",
                     "notes.md",
                     "../../_agent_tech-lead/Role.md"
                 ],
@@ -497,7 +495,7 @@ mod tests {
             .join("__agent_tech-lead");
         std::fs::write(
             replica.join("config.json"),
-            r#"{"identity":"../../../../agentscommander-old/.ac-new/_agent_architect"}"#,
+            r#"{"identity":"../../../../agentscommander-old/.ac/_agent_architect"}"#,
         )
         .expect("write config");
 
@@ -564,7 +562,7 @@ mod tests {
             .join("__agent_tech-lead");
         std::fs::write(
             replica.join("config.json"),
-            r#"{"identity":"../../../../agentscommander-old/.ac-new/_Agent_Tech-Lead"}"#,
+            r#"{"identity":"../../../../agentscommander-old/.ac/_Agent_Tech-Lead"}"#,
         )
         .expect("write config");
 

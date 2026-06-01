@@ -171,7 +171,7 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
 
     let settings = crate::config::settings::load_settings_for_cli();
     let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-        ac_new_dir: workspace_dir.clone(),
+        workspace_dir: workspace_dir.clone(),
         wg_dir: wg_dir.clone(),
         agent_path: agent_ref.clone(),
         team_repos: config.repos.clone(),

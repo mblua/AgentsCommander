@@ -1,34 +1,24 @@
 use std::path::{Path, PathBuf};
 
 pub const CANONICAL_WORKSPACE_DIR: &str = ".ac";
-pub const LEGACY_WORKSPACE_DIR: &str = ".ac-new";
-pub const WORKSPACE_DIR_NAMES: [&str; 2] = [CANONICAL_WORKSPACE_DIR, LEGACY_WORKSPACE_DIR];
+pub const WORKSPACE_DIR_NAMES: [&str; 1] = [CANONICAL_WORKSPACE_DIR];
 
 pub fn canonical_workspace_dir_label() -> &'static str {
     CANONICAL_WORKSPACE_DIR
 }
 
 pub fn workspace_dir_label() -> &'static str {
-    ".ac or legacy .ac-new"
+    ".ac"
 }
 
 pub fn workspace_dir_for_project(project: &Path) -> PathBuf {
     project.join(CANONICAL_WORKSPACE_DIR)
 }
 
-pub fn legacy_workspace_dir_for_project(project: &Path) -> PathBuf {
-    project.join(LEGACY_WORKSPACE_DIR)
-}
-
 pub fn existing_workspace_dir(project: &Path) -> Option<PathBuf> {
     let canonical = workspace_dir_for_project(project);
     if canonical.is_dir() {
         return Some(canonical);
-    }
-
-    let legacy = legacy_workspace_dir_for_project(project);
-    if legacy.is_dir() {
-        return Some(legacy);
     }
 
     None
@@ -101,32 +91,9 @@ pub fn ensure_authoritative_workspace_dir(workspace_dir: &Path) -> Result<(), St
         Ok(())
     } else {
         Err(format!(
-            "stale legacy workspace '{}' rejected because authoritative workspace '{}' exists",
+            "workspace '{}' rejected because authoritative workspace '{}' exists",
             workspace_dir.display(),
             authoritative.display()
         ))
     }
-}
-
-pub fn stale_legacy_workspace_error_for_path(path: &Path) -> Option<String> {
-    let workspace_dir = find_workspace_ancestor(path)?;
-    let workspace_name = workspace_dir.file_name().and_then(|name| name.to_str())?;
-    if !workspace_name.eq_ignore_ascii_case(LEGACY_WORKSPACE_DIR) {
-        return None;
-    }
-    let project_dir = workspace_dir.parent()?;
-    let canonical = workspace_dir_for_project(project_dir);
-    if canonical.is_dir() && !same_existing_path(&workspace_dir, &canonical) {
-        Some(format!(
-            "stale legacy workspace '{}' rejected because authoritative workspace '{}' exists",
-            workspace_dir.display(),
-            canonical.display()
-        ))
-    } else {
-        None
-    }
-}
-
-pub fn path_uses_stale_legacy_workspace(path: &Path) -> bool {
-    stale_legacy_workspace_error_for_path(path).is_some()
 }
