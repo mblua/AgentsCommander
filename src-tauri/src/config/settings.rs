@@ -37,6 +37,74 @@ pub enum MainSidebarSide {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TelegramPollFailureLogLevel {
+    Debug,
+    Warn,
+    Error,
+}
+
+impl TelegramPollFailureLogLevel {
+    pub fn as_log_level(self) -> log::Level {
+        match self {
+            Self::Debug => log::Level::Debug,
+            Self::Warn => log::Level::Warn,
+            Self::Error => log::Level::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TelegramPollRecoveryLogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl TelegramPollRecoveryLogLevel {
+    pub fn as_log_level(self) -> log::Level {
+        match self {
+            Self::Debug => log::Level::Debug,
+            Self::Info => log::Level::Info,
+            Self::Warn => log::Level::Warn,
+            Self::Error => log::Level::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramNetworkPollErrorLogging {
+    #[serde(default = "default_telegram_network_first_failure_level")]
+    pub first_failure_level: TelegramPollFailureLogLevel,
+    #[serde(default = "default_telegram_network_transient_repeat_level")]
+    pub transient_repeat_level: TelegramPollFailureLogLevel,
+    #[serde(default = "default_telegram_network_sustained_level")]
+    pub sustained_level: TelegramPollFailureLogLevel,
+    #[serde(default = "default_telegram_network_sustained_after_seconds")]
+    pub sustained_after_seconds: u64,
+    #[serde(default = "default_telegram_network_sustained_repeat_seconds")]
+    pub sustained_repeat_seconds: u64,
+    #[serde(default = "default_telegram_network_recovery_level")]
+    pub recovery_level: TelegramPollRecoveryLogLevel,
+}
+
+impl Default for TelegramNetworkPollErrorLogging {
+    fn default() -> Self {
+        Self {
+            first_failure_level: default_telegram_network_first_failure_level(),
+            transient_repeat_level: default_telegram_network_transient_repeat_level(),
+            sustained_level: default_telegram_network_sustained_level(),
+            sustained_after_seconds: default_telegram_network_sustained_after_seconds(),
+            sustained_repeat_seconds: default_telegram_network_sustained_repeat_seconds(),
+            recovery_level: default_telegram_network_recovery_level(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -47,6 +115,10 @@ pub struct AppSettings {
     /// Configured Telegram bots for bridge
     #[serde(default)]
     pub telegram_bots: Vec<TelegramBotConfig>,
+    /// Controls log severity for transient and sustained Telegram getUpdates
+    /// network failures. Non-network poll failures still log at ERROR.
+    #[serde(default)]
+    pub telegram_network_poll_error_logging: TelegramNetworkPollErrorLogging,
     /// When true, on app start, wake coordinators whose PTY was awake at shutdown.
     /// Coordinators that were asleep at shutdown remain asleep. Non-coordinator
     /// team members are never auto-woken on startup (the user must click their
@@ -63,7 +135,11 @@ pub struct AppSettings {
     ///   - legacy `startOnlyCoordinators: false` → `restoreCoordinatorWakeState: false`
     ///
     /// In both cases the legacy value is dropped from disk on next save.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "startOnlyCoordinators")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "startOnlyCoordinators"
+    )]
     pub legacy_start_only_coordinators: Option<bool>,
     /// Keep sidebar window always on top
     #[serde(default)]
@@ -200,6 +276,30 @@ fn default_true() -> bool {
     true
 }
 
+fn default_telegram_network_first_failure_level() -> TelegramPollFailureLogLevel {
+    TelegramPollFailureLogLevel::Warn
+}
+
+fn default_telegram_network_transient_repeat_level() -> TelegramPollFailureLogLevel {
+    TelegramPollFailureLogLevel::Debug
+}
+
+fn default_telegram_network_sustained_level() -> TelegramPollFailureLogLevel {
+    TelegramPollFailureLogLevel::Error
+}
+
+fn default_telegram_network_sustained_after_seconds() -> u64 {
+    60
+}
+
+fn default_telegram_network_sustained_repeat_seconds() -> u64 {
+    60
+}
+
+fn default_telegram_network_recovery_level() -> TelegramPollRecoveryLogLevel {
+    TelegramPollRecoveryLogLevel::Info
+}
+
 fn default_gemini_model() -> String {
     "gemini-2.5-flash".to_string()
 }
@@ -241,6 +341,7 @@ impl Default for AppSettings {
             default_shell_args,
             agents: vec![],
             telegram_bots: vec![],
+            telegram_network_poll_error_logging: TelegramNetworkPollErrorLogging::default(),
             restore_coordinator_wake_state: false,
             legacy_start_only_coordinators: None,
             sidebar_always_on_top: false,
@@ -653,7 +754,10 @@ mod tests {
         assert!(err.contains("Gemini commands must not include --resume"));
     }
 
-    use super::{validate_agent_commands, AgentConfig, AppSettings, MainSidebarSide};
+    use super::{
+        validate_agent_commands, AgentConfig, AppSettings, MainSidebarSide,
+        TelegramNetworkPollErrorLogging, TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
+    };
 
     fn settings_with_agents(commands: &[(&str, &str)]) -> AppSettings {
         AppSettings {
@@ -774,6 +878,84 @@ mod tests {
         }"#;
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(s.team_idle_beep_enabled);
+    }
+
+    #[test]
+    fn telegram_network_poll_error_logging_round_trips_through_serde() {
+        let s = AppSettings {
+            telegram_network_poll_error_logging: TelegramNetworkPollErrorLogging {
+                first_failure_level: TelegramPollFailureLogLevel::Debug,
+                transient_repeat_level: TelegramPollFailureLogLevel::Warn,
+                sustained_level: TelegramPollFailureLogLevel::Error,
+                sustained_after_seconds: 12,
+                sustained_repeat_seconds: 34,
+                recovery_level: TelegramPollRecoveryLogLevel::Warn,
+            },
+            ..AppSettings::default()
+        };
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"telegramNetworkPollErrorLogging\""));
+        assert!(json.contains("\"sustainedAfterSeconds\":12"));
+
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.telegram_network_poll_error_logging
+                .sustained_after_seconds,
+            12
+        );
+        assert_eq!(
+            back.telegram_network_poll_error_logging.recovery_level,
+            TelegramPollRecoveryLogLevel::Warn
+        );
+    }
+
+    #[test]
+    fn telegram_network_poll_error_logging_defaults_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert_eq!(
+            s.telegram_network_poll_error_logging,
+            TelegramNetworkPollErrorLogging::default()
+        );
+    }
+
+    #[test]
+    fn telegram_network_poll_error_logging_field_defaults_are_backfilled() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": [],
+            "telegramNetworkPollErrorLogging": {
+                "sustainedAfterSeconds": 5
+            }
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize partial policy");
+        assert_eq!(
+            s.telegram_network_poll_error_logging
+                .sustained_after_seconds,
+            5
+        );
+        assert_eq!(
+            s.telegram_network_poll_error_logging.first_failure_level,
+            TelegramPollFailureLogLevel::Warn
+        );
+        assert_eq!(
+            s.telegram_network_poll_error_logging.transient_repeat_level,
+            TelegramPollFailureLogLevel::Debug
+        );
+        assert_eq!(
+            s.telegram_network_poll_error_logging.recovery_level,
+            TelegramPollRecoveryLogLevel::Info
+        );
     }
 
     #[test]
