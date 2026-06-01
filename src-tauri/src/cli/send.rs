@@ -51,7 +51,7 @@ pub struct SendArgs {
     #[arg(long)]
     pub command: Option<String>,
 
-    /// Agent CLI to use when `wake` spawns a new persistent session for
+    /// Configured agent id to use when `wake` spawns a new persistent session for
     /// the destination. `auto` picks the session's saved `lastCodingAgent`.
     #[arg(long, default_value = "auto")]
     pub agent: String,

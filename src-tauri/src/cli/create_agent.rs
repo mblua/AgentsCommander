@@ -81,27 +81,27 @@ pub(crate) fn build_session_request(
     session_name: String,
     agent: &crate::config::settings::AgentConfig,
 ) -> Result<SessionRequest, String> {
-    let command = agent.command.trim();
+    let command = agent
+        .command
+        .trim_matches(|c: char| c.is_ascii_whitespace());
     if command.is_empty() {
         return Err(format!("launch agent '{}' has an empty command", agent.id));
     }
 
-    let parts: Vec<&str> = command.split_whitespace().collect();
     let (shell, shell_args) = if agent.git_pull_before {
         (
             "cmd.exe".to_string(),
             vec!["/K".to_string(), format!("git pull && {}", command)],
         )
     } else {
-        (
-            parts.first().copied().unwrap_or_default().to_string(),
-            parts
-                .get(1..)
-                .unwrap_or(&[])
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-        )
+        let normalized = crate::config::agent_command::normalize_legacy_agent_command(command)
+            .map_err(|e| {
+                format!(
+                    "launch agent '{}' has an invalid command: {}. command={:?}",
+                    agent.id, e, agent.command
+                )
+            })?;
+        (normalized.shell, normalized.shell_args)
     };
 
     Ok(SessionRequest {
@@ -165,16 +165,18 @@ mod tests {
 
     #[test]
     fn find_launch_agent_matches_id_label_substring_and_command_prefix() {
-        let mut settings = AppSettings::default();
-        settings.agents = vec![
-            agent("codex", "OpenAI Codex", "codex"),
-            agent(
-                "claude",
-                "Claude Desktop",
-                "claude --dangerously-skip-permissions",
-            ),
-            agent("pwsh", "PowerShell", "powershell.exe -NoLogo"),
-        ];
+        let settings = AppSettings {
+            agents: vec![
+                agent("codex", "OpenAI Codex", "codex"),
+                agent(
+                    "claude",
+                    "Claude Desktop",
+                    "claude --dangerously-skip-permissions",
+                ),
+                agent("pwsh", "PowerShell", "powershell.exe -NoLogo"),
+            ],
+            ..AppSettings::default()
+        };
 
         assert_eq!(
             find_launch_agent(&settings, "CODEX").map(|a| a.id.as_str()),
@@ -200,11 +202,13 @@ mod tests {
 
     #[test]
     fn find_launch_agent_rejects_empty_and_whitespace_requests() {
-        let mut settings = AppSettings::default();
-        settings.agents = vec![
-            agent("codex", "OpenAI Codex", "codex"),
-            agent("claude", "Claude Desktop", "claude"),
-        ];
+        let settings = AppSettings {
+            agents: vec![
+                agent("codex", "OpenAI Codex", "codex"),
+                agent("claude", "Claude Desktop", "claude"),
+            ],
+            ..AppSettings::default()
+        };
 
         assert!(find_launch_agent(&settings, "").is_none());
         assert!(find_launch_agent(&settings, "   \t  ").is_none());
@@ -233,6 +237,52 @@ mod tests {
                 "git pull && codex --ask-for-approval never".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn build_session_request_preserves_agent_args_from_command() {
+        let launch_agent = agent("codex-yolo", "Codex Yolo", "codex --yolo");
+        let request = build_session_request(
+            "C:/repo/.ac/_agent_architect".to_string(),
+            "repo/architect".to_string(),
+            &launch_agent,
+        )
+        .unwrap();
+
+        assert_eq!(request.shell, "codex");
+        assert_eq!(request.shell_args, vec!["--yolo"]);
+    }
+
+    #[test]
+    fn build_session_request_supports_quoted_executable_path() {
+        let launch_agent = agent(
+            "codex-local",
+            "Codex Local",
+            "\"C:\\Program Files\\Codex\\codex.exe\" --yolo",
+        );
+        let request = build_session_request(
+            "C:/repo/.ac/_agent_architect".to_string(),
+            "repo/architect".to_string(),
+            &launch_agent,
+        )
+        .unwrap();
+
+        assert_eq!(request.shell, "C:\\Program Files\\Codex\\codex.exe");
+        assert_eq!(request.shell_args, vec!["--yolo"]);
+    }
+
+    #[test]
+    fn build_session_request_rejects_invalid_quoted_command() {
+        let launch_agent = agent("codex", "Codex", "codex \"unterminated");
+        let err = build_session_request(
+            "C:/repo/.ac/_agent_architect".to_string(),
+            "repo/architect".to_string(),
+            &launch_agent,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("codex"));
+        assert!(err.contains("unclosed double quote"));
     }
 
     #[test]
