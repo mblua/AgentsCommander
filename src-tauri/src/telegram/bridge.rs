@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::{Emitter, Manager};
@@ -10,6 +9,7 @@ use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::config::settings::TelegramNetworkPollErrorLogging;
 use crate::pty::manager::PtyManager;
 use crate::telegram::api;
 use crate::telegram::types::BridgeInfo;
@@ -59,48 +59,128 @@ impl TelegramErrKind {
     }
 }
 
-/// Per-task throttle. Coalesces bursts of same-kind errors into a single
-/// ERROR plus a periodic re-emit with `(suppressed_repeats=N)` or
-/// `(previously_suppressed=N kind=<prev>)` so the count is attributed to
-/// the right kind even when the dominant kind changes mid-burst
-/// (G-LOW-2 fix). Owned by `poll_task`'s local scope; never shared
-/// across tasks.
-struct ErrorThrottle {
-    window: Duration,
-    last_emit: Mutex<Option<(TelegramErrKind, Instant)>>,
-    suppressed: AtomicU32,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollNetworkLogAction {
+    Failure {
+        level: log::Level,
+        suppressed_since_last_emit: u32,
+        sustained: bool,
+    },
+    Suppressed {
+        level: log::Level,
+    },
+    Recovery {
+        level: log::Level,
+        outage_seconds: u64,
+        suppressed_total: u32,
+        sustained: bool,
+    },
+    None,
 }
 
-impl ErrorThrottle {
-    fn new(window: Duration) -> Self {
+struct PollNetworkErrorState {
+    first_failure_at: Option<Instant>,
+    last_emit_at: Option<Instant>,
+    suppressed_since_last_emit: u32,
+    suppressed_total: u32,
+    emitted_any_failure: bool,
+    emitted_sustained: bool,
+}
+
+impl PollNetworkErrorState {
+    fn new() -> Self {
         Self {
-            window,
-            last_emit: Mutex::new(None),
-            suppressed: AtomicU32::new(0),
+            first_failure_at: None,
+            last_emit_at: None,
+            suppressed_since_last_emit: 0,
+            suppressed_total: 0,
+            emitted_any_failure: false,
+            emitted_sustained: false,
         }
     }
 
-    /// Returns `(should_emit, prior_kind)`:
-    ///
-    /// * `should_emit = true` — emit the ERROR line, reset the suppressed
-    ///   counter when formatting the suffix.
-    /// * `should_emit = false` — increment the suppressed counter and emit
-    ///   at DEBUG instead.
-    ///
-    /// `prior_kind` is the kind that was in the slot before this call,
-    /// captured so the suffix can correctly attribute a count when the
-    /// dominant kind changes across the window boundary (G-LOW-2).
-    fn check(&self, kind: TelegramErrKind) -> (bool, Option<TelegramErrKind>) {
-        let mut guard = self.last_emit.lock().unwrap_or_else(|e| e.into_inner());
-        let prior_kind = guard.map(|(k, _)| k);
-        let should_emit = match *guard {
-            Some((prev_kind, t)) if prev_kind == kind && t.elapsed() < self.window => false,
-            _ => {
-                *guard = Some((kind, Instant::now()));
-                true
+    fn record_network_failure(
+        &mut self,
+        policy: &TelegramNetworkPollErrorLogging,
+    ) -> PollNetworkLogAction {
+        let now = Instant::now();
+
+        let Some(first) = self.first_failure_at else {
+            self.first_failure_at = Some(now);
+            self.last_emit_at = Some(now);
+            self.emitted_any_failure = true;
+
+            let sustained = policy.sustained_after_seconds == 0;
+            if sustained {
+                self.emitted_sustained = true;
             }
+
+            return PollNetworkLogAction::Failure {
+                level: if sustained {
+                    policy.sustained_level.as_log_level()
+                } else {
+                    policy.first_failure_level.as_log_level()
+                },
+                suppressed_since_last_emit: 0,
+                sustained,
+            };
         };
-        (should_emit, prior_kind)
+
+        let sustained = now.saturating_duration_since(first)
+            >= Duration::from_secs(policy.sustained_after_seconds);
+        let repeat_ready = self
+            .last_emit_at
+            .map(|last| {
+                now.saturating_duration_since(last)
+                    >= Duration::from_secs(policy.sustained_repeat_seconds)
+            })
+            .unwrap_or(true);
+
+        if sustained && repeat_ready {
+            let suppressed = self.suppressed_since_last_emit;
+            self.suppressed_since_last_emit = 0;
+            self.last_emit_at = Some(now);
+            self.emitted_any_failure = true;
+            self.emitted_sustained = true;
+            PollNetworkLogAction::Failure {
+                level: policy.sustained_level.as_log_level(),
+                suppressed_since_last_emit: suppressed,
+                sustained: true,
+            }
+        } else {
+            self.suppressed_since_last_emit = self.suppressed_since_last_emit.saturating_add(1);
+            self.suppressed_total = self.suppressed_total.saturating_add(1);
+            PollNetworkLogAction::Suppressed {
+                level: policy.transient_repeat_level.as_log_level(),
+            }
+        }
+    }
+
+    fn record_success(&mut self, policy: &TelegramNetworkPollErrorLogging) -> PollNetworkLogAction {
+        let Some(first) = self.first_failure_at else {
+            return PollNetworkLogAction::None;
+        };
+
+        let outage_seconds = Instant::now().saturating_duration_since(first).as_secs();
+        let should_log_recovery = self.emitted_any_failure;
+        let suppressed_total = self.suppressed_total;
+        let sustained = self.emitted_sustained;
+        *self = Self::new();
+
+        if should_log_recovery {
+            PollNetworkLogAction::Recovery {
+                level: policy.recovery_level.as_log_level(),
+                outage_seconds,
+                suppressed_total,
+                sustained,
+            }
+        } else {
+            PollNetworkLogAction::None
+        }
+    }
+
+    fn reset_without_recovery(&mut self) {
+        *self = Self::new();
     }
 }
 
@@ -150,7 +230,11 @@ impl BridgeLogger {
                 while !text_redacted.is_char_boundary(end) {
                     end -= 1;
                 }
-                format!("{}...[{}b total]", &text_redacted[..end], text_redacted.len())
+                format!(
+                    "{}...[{}b total]",
+                    &text_redacted[..end],
+                    text_redacted.len()
+                )
             } else {
                 text_redacted
             };
@@ -903,6 +987,12 @@ async fn poll_task(
 
     let mut logger = BridgeLogger::new(&session_id_str);
     let mut offset: i64 = 0;
+    let network_error_policy = {
+        let settings = app.state::<crate::config::settings::SettingsState>();
+        let cfg = settings.read().await;
+        cfg.telegram_network_poll_error_logging.clone()
+    };
+    let mut network_error_state = PollNetworkErrorState::new();
 
     // Skip old messages
     match api::get_updates(&client, &token, 0, 0).await {
@@ -917,22 +1007,60 @@ async fn poll_task(
             }
         }
         Err(e) => {
-            let msg = e.to_string();
+            let msg = crate::telegram::redact::redact(&e.to_string());
             let kind = TelegramErrKind::classify(&msg);
-            logger.log("POLL_ERR", &session_id_str, &msg);
-            log::warn!(
-                "[bridge] Initial getUpdates failed — kind={} session_id={} err={}",
-                kind.as_str(),
-                session_id_str,
-                msg
-            );
+
+            if matches!(kind, TelegramErrKind::Network) {
+                match network_error_state.record_network_failure(&network_error_policy) {
+                    PollNetworkLogAction::Failure {
+                        level,
+                        suppressed_since_last_emit,
+                        sustained,
+                    } => {
+                        logger.log("POLL_ERR", &session_id_str, &msg);
+                        let suffix = if suppressed_since_last_emit == 0 {
+                            String::new()
+                        } else {
+                            format!(" suppressed_repeats={}", suppressed_since_last_emit)
+                        };
+                        log::log!(
+                            level,
+                            "[bridge] Initial getUpdates network error kind={} session_id={} sustained={} err={}{}",
+                            kind.as_str(),
+                            session_id_str,
+                            sustained,
+                            msg,
+                            suffix
+                        );
+                    }
+                    PollNetworkLogAction::Suppressed { level } => {
+                        logger.log(
+                            "POLL_ERR_SUPPRESSED",
+                            &session_id_str,
+                            &format!("kind={} phase=initial", kind.as_str()),
+                        );
+                        log::log!(
+                            level,
+                            "[bridge] Initial getUpdates network error suppressed kind={} session_id={}",
+                            kind.as_str(),
+                            session_id_str
+                        );
+                    }
+                    PollNetworkLogAction::Recovery { .. } | PollNetworkLogAction::None => {
+                        unreachable!("record_network_failure only returns Failure or Suppressed")
+                    }
+                }
+            } else {
+                logger.log("POLL_ERR", &session_id_str, &msg);
+                log::error!(
+                    "[bridge] Initial getUpdates failed kind={} session_id={} err={}",
+                    kind.as_str(),
+                    session_id_str,
+                    msg
+                );
+            }
         }
     }
-
-    // #280 §3.2 — throttle bursty network errors in the poll loop. Created
-    // once per task so the state is naturally per-bridge-instance; drops
-    // when `poll_task` exits.
-    let throttle = ErrorThrottle::new(Duration::from_secs(60));
 
     loop {
         tokio::select! {
@@ -940,6 +1068,36 @@ async fn poll_task(
             result = api::get_updates(&client, &token, offset, 5) => {
                 match result {
                     Ok(updates) => {
+                        match network_error_state.record_success(&network_error_policy) {
+                            PollNetworkLogAction::Recovery {
+                                level,
+                                outage_seconds,
+                                suppressed_total,
+                                sustained,
+                            } => {
+                                logger.log(
+                                    "POLL_RECOVERY",
+                                    &session_id_str,
+                                    &format!(
+                                        "outage_seconds={} suppressed_total={} sustained={}",
+                                        outage_seconds, suppressed_total, sustained
+                                    ),
+                                );
+                                log::log!(
+                                    level,
+                                    "[bridge] Telegram poll recovered session_id={} outage_seconds={} suppressed_total={} sustained={}",
+                                    session_id_str,
+                                    outage_seconds,
+                                    suppressed_total,
+                                    sustained
+                                );
+                            }
+                            PollNetworkLogAction::None => {}
+                            PollNetworkLogAction::Failure { .. }
+                            | PollNetworkLogAction::Suppressed { .. } => {
+                                unreachable!("record_success only returns Recovery or None")
+                            }
+                        }
                         for update in updates {
                             offset = update.update_id + 1;
 
@@ -1041,49 +1199,66 @@ async fn poll_task(
                         }
                     }
                     Err(e) => {
-                        let msg = e.to_string();
+                        let msg = crate::telegram::redact::redact(&e.to_string());
                         let kind = TelegramErrKind::classify(&msg);
                         let pid = std::process::id();
                         let token_prefix = token.split(':').next().unwrap_or("?");
-                        logger.log("POLL_ERR", &session_id_str, &msg);
 
-                        // #280 §3.2 — throttle Network errors (the burst
-                        // shape that produced 7,872 of 11,140 ERROR lines
-                        // in the live log). Unauthorized/Conflict/Rate-
-                        // Limited are rare and signal-rich → always emit.
-                        let should_throttle = matches!(kind, TelegramErrKind::Network);
-                        let (should_emit, prior_kind) = throttle.check(kind);
-                        if !should_throttle || should_emit {
-                            let suppressed = throttle.suppressed.swap(0, Ordering::Relaxed);
-                            // G-LOW-2 — attribute the suppressed count to
-                            // the kind that was being suppressed, not the
-                            // current emit's kind. When `prior_kind` and
-                            // `kind` differ, surface that explicitly.
-                            let suffix = match (suppressed, prior_kind) {
-                                (0, _) => String::new(),
-                                (n, Some(pk)) if pk != kind => format!(
-                                    " (previously_suppressed={} kind={})",
-                                    n,
-                                    pk.as_str()
-                                ),
-                                (n, _) => format!(" (suppressed_repeats={})", n),
-                            };
+                        if !matches!(kind, TelegramErrKind::Network) {
+                            network_error_state.reset_without_recovery();
+                            logger.log("POLL_ERR", &session_id_str, &msg);
                             log::error!(
-                                "[bridge] Telegram poll error — kind={} session_id={} pid={} bot_id={} err={}{}",
+                                "[bridge] Telegram poll error kind={} session_id={} pid={} bot_id={} err={}",
                                 kind.as_str(),
                                 session_id_str,
                                 pid,
                                 token_prefix,
-                                msg,
-                                suffix
+                                msg
                             );
-                        } else {
-                            throttle.suppressed.fetch_add(1, Ordering::Relaxed);
-                            log::debug!(
-                                "[bridge] Telegram poll error suppressed — kind={} session_id={} (in throttle window)",
-                                kind.as_str(),
-                                session_id_str
-                            );
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            continue;
+                        }
+
+                        match network_error_state.record_network_failure(&network_error_policy) {
+                            PollNetworkLogAction::Failure {
+                                level,
+                                suppressed_since_last_emit,
+                                sustained,
+                            } => {
+                                logger.log("POLL_ERR", &session_id_str, &msg);
+                                let suffix = if suppressed_since_last_emit == 0 {
+                                    String::new()
+                                } else {
+                                    format!(" suppressed_repeats={}", suppressed_since_last_emit)
+                                };
+                                log::log!(
+                                    level,
+                                    "[bridge] Telegram poll network error kind={} session_id={} pid={} bot_id={} sustained={} err={}{}",
+                                    kind.as_str(),
+                                    session_id_str,
+                                    pid,
+                                    token_prefix,
+                                    sustained,
+                                    msg,
+                                    suffix
+                                );
+                            }
+                            PollNetworkLogAction::Suppressed { level } => {
+                                logger.log(
+                                    "POLL_ERR_SUPPRESSED",
+                                    &session_id_str,
+                                    &format!("kind={} phase=poll", kind.as_str()),
+                                );
+                                log::log!(
+                                    level,
+                                    "[bridge] Telegram poll network error suppressed kind={} session_id={}",
+                                    kind.as_str(),
+                                    session_id_str
+                                );
+                            }
+                            PollNetworkLogAction::Recovery { .. } | PollNetworkLogAction::None => {
+                                unreachable!("record_network_failure only returns Failure or Suppressed")
+                            }
                         }
                         tokio::time::sleep(Duration::from_secs(3)).await;
                     }
@@ -1110,7 +1285,9 @@ mod tests {
     #[test]
     fn classify_conflict() {
         assert_eq!(
-            TelegramErrKind::classify("Telegram error: Conflict: terminated by other getUpdates request"),
+            TelegramErrKind::classify(
+                "Telegram error: Conflict: terminated by other getUpdates request"
+            ),
             TelegramErrKind::Conflict
         );
     }
@@ -1130,7 +1307,9 @@ mod tests {
     #[test]
     fn classify_network() {
         assert_eq!(
-            TelegramErrKind::classify("error sending request for url (https://api.telegram.org/bot***/getUpdates)"),
+            TelegramErrKind::classify(
+                "error sending request for url (https://api.telegram.org/bot***/getUpdates)"
+            ),
             TelegramErrKind::Network
         );
         assert_eq!(
@@ -1147,53 +1326,178 @@ mod tests {
         );
     }
 
-    // ── #280 §3.2 — ErrorThrottle ────────────────────────────────
-
     #[test]
-    fn throttle_emits_on_first_kind_sighting() {
-        let t = ErrorThrottle::new(Duration::from_secs(60));
-        let (emit, prior) = t.check(TelegramErrKind::Network);
-        assert!(emit, "first sighting must emit");
-        assert!(prior.is_none());
-    }
+    fn network_policy_first_failure_uses_warn_default() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging::default();
 
-    #[test]
-    fn throttle_suppresses_same_kind_within_window() {
-        let t = ErrorThrottle::new(Duration::from_secs(60));
-        let (emit1, _) = t.check(TelegramErrKind::Network);
-        assert!(emit1);
-        let (emit2, prior) = t.check(TelegramErrKind::Network);
-        assert!(!emit2, "second sighting in window must suppress");
-        assert_eq!(prior, Some(TelegramErrKind::Network));
-    }
-
-    /// G-LOW-2 — when a different kind breaks the window, the prior kind
-    /// is returned so the caller can attribute the suppressed count to it
-    /// rather than the new kind.
-    #[test]
-    fn throttle_returns_prior_kind_across_kind_change() {
-        let t = ErrorThrottle::new(Duration::from_secs(60));
-        let _ = t.check(TelegramErrKind::Network);
-        let (emit, prior) = t.check(TelegramErrKind::Conflict);
-        assert!(emit, "different kind must always emit");
         assert_eq!(
-            prior,
-            Some(TelegramErrKind::Network),
-            "prior kind must reflect what was in the slot before this call"
+            state.record_network_failure(&policy),
+            PollNetworkLogAction::Failure {
+                level: log::Level::Warn,
+                suppressed_since_last_emit: 0,
+                sustained: false,
+            }
         );
     }
 
-    /// After the window elapses for the same kind, the throttle releases
-    /// the next sighting. We use a very short window so the test is fast.
     #[test]
-    fn throttle_emits_again_after_window_elapses() {
-        let t = ErrorThrottle::new(Duration::from_millis(20));
-        let (emit1, _) = t.check(TelegramErrKind::Network);
-        assert!(emit1);
-        std::thread::sleep(Duration::from_millis(40));
-        let (emit2, prior) = t.check(TelegramErrKind::Network);
-        assert!(emit2, "after window, same kind must re-emit");
-        assert_eq!(prior, Some(TelegramErrKind::Network));
+    fn network_policy_repeated_transient_uses_debug_default() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging::default();
+
+        let _ = state.record_network_failure(&policy);
+        assert_eq!(
+            state.record_network_failure(&policy),
+            PollNetworkLogAction::Suppressed {
+                level: log::Level::Debug
+            }
+        );
+    }
+
+    #[test]
+    fn network_policy_recovery_emits_once_after_failure() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging::default();
+
+        let _ = state.record_network_failure(&policy);
+        let action = state.record_success(&policy);
+        assert!(matches!(
+            action,
+            PollNetworkLogAction::Recovery {
+                level: log::Level::Info,
+                ..
+            }
+        ));
+        assert_eq!(state.record_success(&policy), PollNetworkLogAction::None);
+    }
+
+    #[test]
+    fn network_policy_recovery_reports_suppressed_total_once() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging::default();
+
+        let _ = state.record_network_failure(&policy);
+        let _ = state.record_network_failure(&policy);
+        let _ = state.record_network_failure(&policy);
+
+        assert!(matches!(
+            state.record_success(&policy),
+            PollNetworkLogAction::Recovery {
+                suppressed_total: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn network_policy_zero_sustained_threshold_escalates_first_failure() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging {
+            sustained_after_seconds: 0,
+            ..TelegramNetworkPollErrorLogging::default()
+        };
+
+        assert_eq!(
+            state.record_network_failure(&policy),
+            PollNetworkLogAction::Failure {
+                level: log::Level::Error,
+                suppressed_since_last_emit: 0,
+                sustained: true,
+            }
+        );
+    }
+
+    #[test]
+    fn network_policy_zero_sustained_threshold_recovers_as_sustained() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging {
+            sustained_after_seconds: 0,
+            ..TelegramNetworkPollErrorLogging::default()
+        };
+
+        let _ = state.record_network_failure(&policy);
+
+        assert!(matches!(
+            state.record_success(&policy),
+            PollNetworkLogAction::Recovery {
+                sustained: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn network_policy_zero_threshold_and_zero_repeat_logs_every_failure_at_sustained_level() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging {
+            sustained_after_seconds: 0,
+            sustained_repeat_seconds: 0,
+            ..TelegramNetworkPollErrorLogging::default()
+        };
+
+        assert!(matches!(
+            state.record_network_failure(&policy),
+            PollNetworkLogAction::Failure {
+                level: log::Level::Error,
+                sustained: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            state.record_network_failure(&policy),
+            PollNetworkLogAction::Failure {
+                level: log::Level::Error,
+                sustained: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn network_policy_initial_failure_flow_recovers_on_first_success() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging::default();
+
+        let _initial = state.record_network_failure(&policy);
+
+        assert!(matches!(
+            state.record_success(&policy),
+            PollNetworkLogAction::Recovery {
+                suppressed_total: 0,
+                sustained: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn network_policy_reset_makes_next_network_failure_fresh() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging::default();
+
+        let _ = state.record_network_failure(&policy);
+        state.reset_without_recovery();
+
+        assert_eq!(
+            state.record_network_failure(&policy),
+            PollNetworkLogAction::Failure {
+                level: log::Level::Warn,
+                suppressed_since_last_emit: 0,
+                sustained: false,
+            }
+        );
+    }
+
+    #[test]
+    fn network_policy_reset_prevents_stale_recovery() {
+        let mut state = PollNetworkErrorState::new();
+        let policy = TelegramNetworkPollErrorLogging::default();
+
+        let _ = state.record_network_failure(&policy);
+        state.reset_without_recovery();
+
+        assert_eq!(state.record_success(&policy), PollNetworkLogAction::None);
     }
 
     // ── #280 G-MED-3 / LOW-3 — call-site redaction tests ────────

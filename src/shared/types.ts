@@ -108,6 +108,23 @@ export interface TelegramBotConfig {
   color: string;
 }
 
+export type TelegramPollFailureLogLevel = "debug" | "warn" | "error";
+
+export type TelegramPollRecoveryLogLevel =
+  | "debug"
+  | "info"
+  | "warn"
+  | "error";
+
+export interface TelegramNetworkPollErrorLogging {
+  firstFailureLevel: TelegramPollFailureLogLevel;
+  transientRepeatLevel: TelegramPollFailureLogLevel;
+  sustainedLevel: TelegramPollFailureLogLevel;
+  sustainedAfterSeconds: number;
+  sustainedRepeatSeconds: number;
+  recoveryLevel: TelegramPollRecoveryLogLevel;
+}
+
 export interface BridgeInfo {
   botId: string;
   botLabel: string;
@@ -132,6 +149,7 @@ export interface AppSettings {
   defaultShellArgs: string[];
   agents: AgentConfig[];
   telegramBots: TelegramBotConfig[];
+  telegramNetworkPollErrorLogging: TelegramNetworkPollErrorLogging;
   restoreCoordinatorWakeState: boolean;
   sidebarAlwaysOnTop: boolean;
   raiseTerminalOnClick: boolean;
