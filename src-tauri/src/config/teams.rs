@@ -1181,6 +1181,64 @@ mod tests {
         (tmp, paths)
     }
 
+    fn make_portable_coordinator_fixture(
+        spoofed_coordinator_identity: bool,
+    ) -> (FixtureRoot, PathBuf, PathBuf, Vec<String>) {
+        let tmp = FixtureRoot::new("teams-portable-coord-fixture");
+        let project = tmp.path().join("proj-a");
+        let ac_new = project.join(".ac");
+        let team_dir = ac_new.join("_team_dev-team");
+        let local_tech_lead = ac_new.join("_agent_tech-lead");
+        let local_dev_rust = ac_new.join("_agent_dev-rust");
+        let origin = tmp.path().join("origin-matrix").join(".ac-new");
+        let origin_tech_lead = origin.join("_agent_tech-lead");
+        let origin_dev_rust = origin.join("_agent_dev-rust");
+        let wg_dir = ac_new.join("wg-1-dev-team");
+        let tech_lead_replica = wg_dir.join("__agent_tech-lead");
+        let dev_rust_replica = wg_dir.join("__agent_dev-rust");
+
+        for dir in [
+            &team_dir,
+            &local_tech_lead,
+            &local_dev_rust,
+            &origin_tech_lead,
+            &origin_dev_rust,
+            &tech_lead_replica,
+            &dev_rust_replica,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["_agent_dev-rust"],"coordinator":"_agent_tech-lead"}"#,
+        )
+        .unwrap();
+
+        let tech_lead_identity = if spoofed_coordinator_identity {
+            &origin_dev_rust
+        } else {
+            &origin_tech_lead
+        }
+        .to_string_lossy()
+        .replace('\\', "/");
+        std::fs::write(
+            tech_lead_replica.join("config.json"),
+            format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+        )
+        .unwrap();
+
+        let dev_rust_identity = origin_dev_rust.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            dev_rust_replica.join("config.json"),
+            format!(r#"{{"identity":"{}"}}"#, dev_rust_identity),
+        )
+        .unwrap();
+
+        let paths = vec![tmp.path().to_string_lossy().to_string()];
+        (tmp, ac_new, wg_dir, paths)
+    }
+
     #[test]
     fn resolve_wg_coordinator_replica_uses_identity_not_dir_name() {
         let (tmp, _paths) = make_coordinator_fixture(false);
@@ -1204,6 +1262,26 @@ mod tests {
         let (tmp, _paths) = make_coordinator_fixture(true);
         let ac_new = tmp.path().join("proj-a").join(".ac-new");
         let wg_dir = ac_new.join("wg-1-dev-team");
+
+        assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
+    }
+
+    #[test]
+    fn resolve_wg_coordinator_replica_accepts_portable_ref_with_external_identity() {
+        let (_tmp, ac_new, wg_dir, _paths) = make_portable_coordinator_fixture(false);
+
+        let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir)
+            .expect("portable coordinator ref should match declared identity agent");
+
+        assert_eq!(resolved.project, "proj-a");
+        assert_eq!(resolved.team, "dev-team");
+        assert_eq!(resolved.wg_name, "wg-1-dev-team");
+        assert_eq!(resolved.agent_name, "tech-lead");
+    }
+
+    #[test]
+    fn resolve_wg_coordinator_replica_rejects_portable_ref_with_spoofed_identity() {
+        let (_tmp, ac_new, wg_dir, _paths) = make_portable_coordinator_fixture(true);
 
         assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
     }
@@ -1443,6 +1521,17 @@ mod tests {
 
         let resolved = verified_wg_coordinator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
             .expect("verified coordinator");
+
+        assert_eq!(resolved.agent_name, "tech-lead");
+        assert_eq!(resolved.team, "dev-team");
+    }
+
+    #[test]
+    fn verified_wg_coordinator_target_accepts_portable_ref_with_external_identity() {
+        let (_tmp, _ac_new, _wg_dir, paths) = make_portable_coordinator_fixture(false);
+
+        let resolved = verified_wg_coordinator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
+            .expect("portable verified coordinator");
 
         assert_eq!(resolved.agent_name, "tech-lead");
         assert_eq!(resolved.team, "dev-team");

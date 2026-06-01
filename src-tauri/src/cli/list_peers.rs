@@ -1323,6 +1323,61 @@ mod tests {
         (temp, paths)
     }
 
+    fn make_portable_cross_wg_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let ac_new = project.join(".ac");
+        let team_dir = ac_new.join("_team_dev-team");
+        let local_tech_lead = ac_new.join("_agent_tech-lead");
+        let local_dev_rust = ac_new.join("_agent_dev-rust");
+        let origin = temp.path().join("origin-matrix").join(".ac-new");
+        let origin_tech_lead = origin.join("_agent_tech-lead");
+        let origin_dev_rust = origin.join("_agent_dev-rust");
+
+        for dir in [
+            &team_dir,
+            &local_tech_lead,
+            &local_dev_rust,
+            &origin_tech_lead,
+            &origin_dev_rust,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["_agent_dev-rust"],"coordinator":"_agent_tech-lead"}"#,
+        )
+        .unwrap();
+
+        let tech_lead_identity = origin_tech_lead.to_string_lossy().replace('\\', "/");
+        let dev_rust_identity = origin_dev_rust.to_string_lossy().replace('\\', "/");
+        let mut wg1_tech_lead = PathBuf::new();
+        let mut wg1_dev_rust = PathBuf::new();
+        for wg_name in ["wg-1-dev-team", "wg-2-dev-team"] {
+            let wg_dir = ac_new.join(wg_name);
+            let tech_lead_replica = wg_dir.join("__agent_tech-lead");
+            let dev_rust_replica = wg_dir.join("__agent_dev-rust");
+            std::fs::create_dir_all(&tech_lead_replica).unwrap();
+            std::fs::create_dir_all(&dev_rust_replica).unwrap();
+            std::fs::write(
+                tech_lead_replica.join("config.json"),
+                format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+            )
+            .unwrap();
+            std::fs::write(
+                dev_rust_replica.join("config.json"),
+                format!(r#"{{"identity":"{}"}}"#, dev_rust_identity),
+            )
+            .unwrap();
+            if wg_name == "wg-1-dev-team" {
+                wg1_tech_lead = tech_lead_replica;
+                wg1_dev_rust = dev_rust_replica;
+            }
+        }
+
+        (temp, wg1_tech_lead, wg1_dev_rust)
+    }
+
     #[test]
     fn detect_wg_replica_rejects_stale_legacy_when_canonical_exists() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -1383,6 +1438,38 @@ mod tests {
 
         assert!(names.contains(&"proj-a:wg-1-devs/bob"));
         assert!(!names.contains(&"proj-a:wg-1-devs/eve"));
+    }
+
+    #[test]
+    fn discover_wg_peers_for_portable_verified_coordinator_includes_cross_wg_and_root() {
+        let (_temp, wg1_tech_lead, _wg1_dev_rust) = make_portable_cross_wg_fixture();
+        let wg = detect_wg_replica(wg1_tech_lead.to_str().unwrap())
+            .unwrap()
+            .expect("portable coordinator replica");
+
+        let peers = discover_wg_peers(wg);
+        let names: Vec<&str> = peers.iter().map(|peer| peer.name.as_str()).collect();
+
+        assert!(names.contains(&"proj-a:wg-1-dev-team/dev-rust"));
+        assert!(names.contains(&"proj-a:wg-2-dev-team/tech-lead"));
+        assert!(names.contains(&crate::config::root_agent::ROOT_AGENT_SENDER));
+        assert!(!names.contains(&"proj-a:wg-2-dev-team/dev-rust"));
+    }
+
+    #[test]
+    fn discover_wg_peers_for_portable_non_coordinator_stays_wg_local_without_root() {
+        let (_temp, _wg1_tech_lead, wg1_dev_rust) = make_portable_cross_wg_fixture();
+        let wg = detect_wg_replica(wg1_dev_rust.to_str().unwrap())
+            .unwrap()
+            .expect("portable non-coordinator replica");
+
+        let peers = discover_wg_peers(wg);
+        let names: Vec<&str> = peers.iter().map(|peer| peer.name.as_str()).collect();
+
+        assert!(names.contains(&"proj-a:wg-1-dev-team/tech-lead"));
+        assert!(!names.contains(&"proj-a:wg-2-dev-team/tech-lead"));
+        assert!(!names.contains(&"proj-a:wg-2-dev-team/dev-rust"));
+        assert!(!names.contains(&crate::config::root_agent::ROOT_AGENT_SENDER));
     }
 
     #[test]
