@@ -1,4 +1,6 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -26,6 +28,8 @@ enum RoleExperimentCommand {
     Show(ExperimentArgs),
     Variant(VariantArgs),
     Validate(ValidateArgs),
+    Run(RunArgs),
+    Report(ReportArgs),
 }
 
 #[derive(Args)]
@@ -62,6 +66,36 @@ struct ValidateArgs {
     experiment: String,
     #[arg(long = "prompt-suite")]
     prompt_suite: Option<String>,
+}
+
+#[derive(Args)]
+struct RunArgs {
+    #[arg(long)]
+    project: String,
+    #[arg(long)]
+    experiment: String,
+    #[arg(long = "prompt-suite")]
+    prompt_suite: String,
+    #[arg(long, default_value_t = 1)]
+    replicates: u32,
+    #[arg(long)]
+    seed: Option<u64>,
+    #[arg(long = "run-id")]
+    run_id: Option<String>,
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+}
+
+#[derive(Args)]
+struct ReportArgs {
+    #[arg(long)]
+    project: String,
+    #[arg(long)]
+    experiment: String,
+    #[arg(long = "run-id")]
+    run_id: String,
+    #[arg(long, default_value = "text")]
+    format: String,
 }
 
 #[derive(Args)]
@@ -124,6 +158,9 @@ struct CliError {
     code: String,
     message: String,
     variant: Option<String>,
+    line: Option<usize>,
+    field: Option<String>,
+    path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +192,142 @@ struct VariantMetadata {
     updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptCase {
+    id: String,
+    title: String,
+    prompt: String,
+    tags: Vec<String>,
+    expected_behaviors: Vec<String>,
+    line: usize,
+}
+
+struct ParsedPromptSuite {
+    path: PathBuf,
+    sha256: String,
+    prompts: Vec<PromptCase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunArtifact {
+    schema_version: u32,
+    run_id: String,
+    project: String,
+    experiment: String,
+    status: String,
+    dry_run: bool,
+    created_at: String,
+    updated_at: String,
+    suite: RunSuiteArtifact,
+    seed: u64,
+    seed_provided: bool,
+    replicates: u32,
+    variants: Vec<RunVariantArtifact>,
+    attempt_count: usize,
+    artifacts: RunArtifactPaths,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunSuiteArtifact {
+    path: String,
+    sha256: String,
+    prompt_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunVariantArtifact {
+    name: String,
+    agent_name: String,
+    role_sha256: String,
+    role_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunArtifactPaths {
+    attempts: String,
+    report_json: String,
+    report_markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttemptArtifact {
+    schema_version: u32,
+    attempt_id: String,
+    run_id: String,
+    prompt_id: String,
+    prompt_title: String,
+    prompt_line: usize,
+    variant: String,
+    agent_name: String,
+    replicate: u32,
+    status: String,
+    tags: Vec<String>,
+    expected_behaviors: Vec<String>,
+    duration_ms: Option<u64>,
+    messages: Option<usize>,
+    flags: Vec<String>,
+    transcript_path: Option<String>,
+    failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportArtifact {
+    schema_version: u32,
+    run_id: String,
+    experiment: String,
+    status: String,
+    dry_run: bool,
+    generated_at: String,
+    summary: ReportSummaryArtifact,
+    variants: Vec<ReportVariantArtifact>,
+    prompts: Vec<ReportPromptArtifact>,
+    artifacts: ReportArtifactPaths,
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportSummaryArtifact {
+    prompt_count: usize,
+    variant_count: usize,
+    replicates: u32,
+    attempt_count: usize,
+    planned_attempt_count: usize,
+    completed_attempt_count: usize,
+    failed_attempt_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportVariantArtifact {
+    name: String,
+    agent_name: String,
+    planned_attempt_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportPromptArtifact {
+    id: String,
+    title: String,
+    planned_attempt_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportArtifactPaths {
+    run: String,
+    attempts: String,
+    report_markdown: String,
+}
+
 struct CommandOutput {
     data: serde_json::Value,
     warnings: Vec<CliWarning>,
@@ -165,6 +338,12 @@ struct LoadedExperiment {
     workspace_dir: PathBuf,
     experiment_dir: PathBuf,
     experiment: ExperimentMetadata,
+}
+
+struct ExperimentValidation {
+    warnings: Vec<CliWarning>,
+    errors: Vec<CliError>,
+    variant_metas: Vec<VariantMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +364,8 @@ pub fn execute(args: RoleExperimentArgs) -> i32 {
             VariantCommand::Diff(args) => ("role-experiment variant diff", variant_diff(args)),
         },
         RoleExperimentCommand::Validate(args) => ("role-experiment validate", validate(args)),
+        RoleExperimentCommand::Run(args) => ("role-experiment run", run(args)),
+        RoleExperimentCommand::Report(args) => ("role-experiment report", report(args)),
     };
 
     let envelope = match result {
@@ -712,6 +893,232 @@ fn variant_diff_loaded(
 
 fn validate(args: ValidateArgs) -> Result<CommandOutput, Vec<CliError>> {
     let loaded = load_experiment(&args.project, &args.experiment)?;
+    let validation = collect_experiment_validation(&loaded);
+    let mut errors = validation.errors;
+    let mut warnings = validation.warnings;
+    let prompt_count = if let Some(path) = args.prompt_suite.as_ref() {
+        match parse_prompt_suite(Path::new(path)) {
+            Ok(suite) => Some(suite.prompts.len()),
+            Err(mut e) => {
+                errors.append(&mut e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(count) = prompt_count {
+        if count * loaded.experiment.variants.len() > 50 {
+            warnings.push(warn(
+                "large_run_size",
+                "Prompt count multiplied by variant count exceeds 50",
+                None,
+            ));
+        }
+    }
+
+    Ok(CommandOutput {
+        data: serde_json::json!({
+            "experiment": loaded.experiment.name,
+            "variantCount": loaded.experiment.variants.len(),
+            "valid": errors.is_empty(),
+        }),
+        warnings,
+        errors,
+    })
+}
+
+fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
+    if !args.dry_run {
+        return Err(vec![err(
+            "run_execution_not_implemented",
+            "Role experiment execution is not implemented; rerun with --dry-run to plan attempts",
+            None,
+        )]);
+    }
+    validate_replicates(args.replicates)?;
+    let loaded = load_experiment(&args.project, &args.experiment)?;
+    let validation = collect_experiment_validation(&loaded);
+    if !validation.errors.is_empty() {
+        return Ok(CommandOutput {
+            data: serde_json::Value::Null,
+            warnings: validation.warnings,
+            errors: validation.errors,
+        });
+    }
+    let suite = parse_prompt_suite(Path::new(&args.prompt_suite))?;
+    let (run_id, run_dir) = match args.run_id.as_ref() {
+        Some(run_id) => (run_id.clone(), create_explicit_run_dir(&loaded, run_id)?),
+        None => create_generated_run_dir(&loaded, chrono::Utc::now())?,
+    };
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let (seed, seed_provided) = match args.seed {
+        Some(seed) => (seed, true),
+        None => (generated_seed_from_uuid(uuid::Uuid::new_v4()), false),
+    };
+    let attempts = build_attempts(
+        &run_id,
+        &suite.prompts,
+        &validation.variant_metas,
+        args.replicates,
+    );
+    let artifacts = default_run_artifact_paths();
+    let run_artifact = RunArtifact {
+        schema_version: 1,
+        run_id: run_id.clone(),
+        project: args.project.clone(),
+        experiment: loaded.experiment.name.clone(),
+        status: "dry_run".to_string(),
+        dry_run: true,
+        created_at: timestamp.clone(),
+        updated_at: timestamp.clone(),
+        suite: RunSuiteArtifact {
+            path: suite.path.to_string_lossy().to_string(),
+            sha256: suite.sha256.clone(),
+            prompt_count: suite.prompts.len(),
+        },
+        seed,
+        seed_provided,
+        replicates: args.replicates,
+        variants: validation
+            .variant_metas
+            .iter()
+            .map(|variant| RunVariantArtifact {
+                name: variant.name.clone(),
+                agent_name: variant.agent_name.clone(),
+                role_sha256: variant.role_sha256.clone(),
+                role_path: variant_matrix_path(
+                    &loaded.workspace_dir,
+                    &loaded.experiment.source_agent,
+                    &variant.name,
+                )
+                .join("Role.md")
+                .to_string_lossy()
+                .to_string(),
+            })
+            .collect(),
+        attempt_count: attempts.len(),
+        artifacts: artifacts.clone(),
+    };
+    let report_artifact = build_report_artifact(
+        &run_id,
+        &loaded.experiment.name,
+        &timestamp,
+        &suite.prompts,
+        &validation.variant_metas,
+        args.replicates,
+        attempts.len(),
+    );
+    let report_markdown = render_report_markdown(&report_artifact);
+
+    write_json_new(&run_dir.join("run.json"), &run_artifact)?;
+    write_attempts_jsonl_new(&run_dir.join("attempts.jsonl"), &attempts)?;
+    write_json_new(&run_dir.join("report.json"), &report_artifact)?;
+    write_new_file(&run_dir.join("report.md"), report_markdown.as_bytes())?;
+
+    let mut warnings = validation.warnings;
+    if attempts.len() > 50 {
+        warnings.push(warn(
+            "large_run_size",
+            "Prompt count multiplied by variant count and replicates exceeds 50",
+            None,
+        ));
+    }
+
+    Ok(CommandOutput {
+        data: serde_json::json!({
+            "experiment": loaded.experiment.name,
+            "runId": run_id,
+            "status": "dry_run",
+            "dryRun": true,
+            "runDir": run_dir.to_string_lossy(),
+            "promptCount": suite.prompts.len(),
+            "variantCount": validation.variant_metas.len(),
+            "replicates": args.replicates,
+            "attemptCount": attempts.len(),
+            "seed": seed,
+            "seedProvided": seed_provided,
+            "artifacts": {
+                "run": "run.json",
+                "attempts": artifacts.attempts,
+                "reportJson": artifacts.report_json,
+                "reportMarkdown": artifacts.report_markdown,
+            }
+        }),
+        warnings,
+        errors: Vec::new(),
+    })
+}
+
+fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
+    if args.format != "text" && args.format != "json" {
+        return Err(vec![err(
+            "report_format_invalid",
+            "--format must be text or json",
+            None,
+        )]);
+    }
+    validate_run_id(&args.run_id)?;
+    let loaded = load_experiment(&args.project, &args.experiment)?;
+    let validation = collect_experiment_validation(&loaded);
+    if !validation.errors.is_empty() {
+        return Ok(CommandOutput {
+            data: serde_json::Value::Null,
+            warnings: validation.warnings,
+            errors: validation.errors,
+        });
+    }
+    let dir = run_dir(&loaded, &args.run_id);
+    reject_link_or_reparse(&dir, "run_artifact_link_or_reparse", None)?;
+    if !dir.is_dir() {
+        return Err(vec![err_at_path(
+            "run_artifact_missing",
+            format!("Run directory not found: {}", dir.display()),
+            &dir,
+        )]);
+    }
+    let run_path = dir.join("run.json");
+    let attempts_path = dir.join("attempts.jsonl");
+    let report_path = dir.join("report.json");
+    let markdown_path = dir.join("report.md");
+    for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
+        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
+        if !path.is_file() {
+            return Err(vec![err_at_path(
+                "run_artifact_missing",
+                format!("Run artifact not found: {}", path.display()),
+                path,
+            )]);
+        }
+    }
+    let run_artifact: RunArtifact = read_json(&run_path)
+        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
+    let report_artifact: ReportArtifact = read_json(&report_path)
+        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
+    validate_report_artifacts(&loaded, &args.run_id, &run_artifact, &report_artifact)?;
+    if args.format == "json" {
+        Ok(CommandOutput {
+            data: serde_json::json!({ "report": report_artifact }),
+            warnings: validation.warnings,
+            errors: Vec::new(),
+        })
+    } else {
+        let markdown = std::fs::read_to_string(&markdown_path).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_read_failed",
+                format!("Failed to read {}: {}", markdown_path.display(), e),
+                &markdown_path,
+            )]
+        })?;
+        Ok(CommandOutput {
+            data: serde_json::json!({ "reportMarkdown": markdown }),
+            warnings: validation.warnings,
+            errors: Vec::new(),
+        })
+    }
+}
+
+fn collect_experiment_validation(loaded: &LoadedExperiment) -> ExperimentValidation {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
@@ -722,7 +1129,7 @@ fn validate(args: ValidateArgs) -> Result<CommandOutput, Vec<CliError>> {
     ) {
         errors.append(&mut e);
     }
-    let source_metadata_errors = validate_loaded_experiment_source_metadata(&loaded);
+    let source_metadata_errors = validate_loaded_experiment_source_metadata(loaded);
     let source_metadata_valid = source_metadata_errors.is_empty();
     errors.extend(source_metadata_errors);
 
@@ -773,10 +1180,10 @@ fn validate(args: ValidateArgs) -> Result<CommandOutput, Vec<CliError>> {
         if !source_metadata_valid {
             continue;
         }
-        match load_variant_metadata(&loaded, variant) {
+        match load_variant_metadata(loaded, variant) {
             Ok(meta) => {
-                errors.extend(validate_variant_metadata_paths(&loaded, variant, &meta));
-                validate_variant_files(&loaded, &meta, &mut errors);
+                errors.extend(validate_variant_metadata_paths(loaded, variant, &meta));
+                validate_variant_files(loaded, &meta, &mut errors);
                 for blocker in
                     find_live_sessions_for_variant(&loaded.workspace_dir, &meta.agent_name)
                 {
@@ -806,31 +1213,12 @@ fn validate(args: ValidateArgs) -> Result<CommandOutput, Vec<CliError>> {
         }
     }
 
-    add_diff_warnings(&loaded, &variant_metas, &mut warnings);
-    let prompt_count = if let Some(path) = args.prompt_suite.as_ref() {
-        validate_prompt_suite(Path::new(path), &mut errors)
-    } else {
-        None
-    };
-    if let Some(count) = prompt_count {
-        if count * loaded.experiment.variants.len() > 50 {
-            warnings.push(warn(
-                "large_run_size",
-                "Prompt count multiplied by variant count exceeds 50",
-                None,
-            ));
-        }
-    }
-
-    Ok(CommandOutput {
-        data: serde_json::json!({
-            "experiment": loaded.experiment.name,
-            "variantCount": loaded.experiment.variants.len(),
-            "valid": errors.is_empty(),
-        }),
+    add_diff_warnings(loaded, &variant_metas, &mut warnings);
+    ExperimentValidation {
         warnings,
         errors,
-    })
+        variant_metas,
+    }
 }
 
 fn resolve_project(project: &str) -> Result<PathBuf, Vec<CliError>> {
@@ -912,6 +1300,62 @@ fn write_json<T: Serialize>(
             code,
             format!("Failed to write {}: {}", path.display(), e),
             variant,
+        )]
+    })
+}
+
+fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), Vec<CliError>> {
+    let mut json = serde_json::to_string_pretty(value).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to serialize JSON for {}: {}", path.display(), e),
+            path,
+        )]
+    })?;
+    json.push('\n');
+    write_new_file(path, json.as_bytes())
+}
+
+fn write_attempts_jsonl_new(
+    path: &Path,
+    attempts: &[AttemptArtifact],
+) -> Result<(), Vec<CliError>> {
+    let mut content = String::new();
+    for attempt in attempts {
+        let line = serde_json::to_string(attempt).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!(
+                    "Failed to serialize attempt JSON for {}: {}",
+                    path.display(),
+                    e
+                ),
+                path,
+            )]
+        })?;
+        content.push_str(&line);
+        content.push('\n');
+    }
+    write_new_file(path, content.as_bytes())
+}
+
+fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), Vec<CliError>> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to create {}: {}", path.display(), e),
+                path,
+            )]
+        })?;
+    file.write_all(bytes).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to write {}: {}", path.display(), e),
+            path,
         )]
     })
 }
@@ -1393,72 +1837,198 @@ fn add_diff_warnings(
     }
 }
 
-fn validate_prompt_suite(path: &Path, errors: &mut Vec<CliError>) -> Option<usize> {
-    if is_link_path(path) || !path.is_file() {
-        errors.push(err(
+fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<CliError>> {
+    reject_link_or_reparse(path, "prompt_suite_missing", None)?;
+    if !path.is_file() {
+        return Err(vec![err_at_path(
             "prompt_suite_missing",
             format!("Prompt suite not found: {}", path.display()),
-            None,
-        ));
-        return None;
+            path,
+        )]);
     }
-    let content = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            errors.push(err(
-                "prompt_suite_missing",
-                format!("Failed to read prompt suite: {}", e),
-                None,
-            ));
-            return None;
-        }
-    };
-    let mut ids = BTreeSet::new();
-    let mut count = 0;
+    let bytes = std::fs::read(path).map_err(|e| {
+        vec![err_at_path(
+            "prompt_suite_missing",
+            format!("Failed to read prompt suite: {}", e),
+            path,
+        )]
+    })?;
+    let sha256 = sha256_hex(&bytes);
+    let content = String::from_utf8(bytes).map_err(|e| {
+        vec![err_at_path(
+            "prompt_suite_unparseable",
+            format!("Prompt suite is not valid UTF-8: {}", e),
+            path,
+        )]
+    })?;
+    let mut errors = Vec::new();
+    let mut prompts = Vec::new();
+    let mut ids = BTreeMap::new();
     for (idx, line) in content.lines().enumerate() {
+        let physical_line = idx + 1;
         if line.trim().is_empty() {
             continue;
         }
         let parsed: serde_json::Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(e) => {
-                errors.push(err(
+                errors.push(err_at_line(
                     "prompt_suite_unparseable",
-                    format!("Prompt suite line {} is invalid JSON: {}", idx + 1, e),
+                    format!("Prompt suite line {} is invalid JSON: {}", physical_line, e),
+                    physical_line,
                     None,
                 ));
                 continue;
             }
         };
-        let id = parsed.get("id").and_then(|v| v.as_str());
-        let title = parsed.get("title").and_then(|v| v.as_str());
-        let prompt = parsed.get("prompt").and_then(|v| v.as_str());
-        let Some(id) = id else {
-            errors.push(err(
+        let Some(object) = parsed.as_object() else {
+            errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!("Prompt suite line {} is missing string id", idx + 1),
+                format!("Prompt suite line {} must be a JSON object", physical_line),
+                physical_line,
                 None,
             ));
             continue;
         };
-        if title.is_none() || prompt.is_none() {
-            errors.push(err(
+        let Some(id) = required_prompt_string(object, "id", physical_line, &mut errors) else {
+            continue;
+        };
+        if !is_safe_prompt_id(&id) {
+            errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!("Prompt suite line {} is missing title or prompt", idx + 1),
-                None,
+                format!(
+                    "Prompt suite line {} has invalid id '{}'; use lowercase ASCII letters, digits, hyphen, or underscore",
+                    physical_line, id
+                ),
+                physical_line,
+                Some("id"),
             ));
             continue;
         }
-        if !ids.insert(id.to_string()) {
-            errors.push(err(
+        let Some(title) = required_prompt_string(object, "title", physical_line, &mut errors)
+        else {
+            continue;
+        };
+        let Some(prompt) = required_prompt_string(object, "prompt", physical_line, &mut errors)
+        else {
+            continue;
+        };
+        let Some(tags) = optional_string_array(object, "tags", physical_line, &mut errors) else {
+            continue;
+        };
+        let Some(expected_behaviors) =
+            optional_string_array(object, "expectedBehaviors", physical_line, &mut errors)
+        else {
+            continue;
+        };
+        if let Some(first_line) = ids.insert(id.clone(), physical_line) {
+            errors.push(err_at_line(
                 "prompt_suite_duplicate_id",
-                format!("Prompt suite duplicate id '{}'", id),
-                None,
+                format!(
+                    "Prompt suite duplicate id '{}' at line {}; first seen at line {}",
+                    id, physical_line, first_line
+                ),
+                physical_line,
+                Some("id"),
             ));
+            continue;
         }
-        count += 1;
+        prompts.push(PromptCase {
+            id,
+            title,
+            prompt,
+            tags,
+            expected_behaviors,
+            line: physical_line,
+        });
     }
-    Some(count)
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    if prompts.is_empty() {
+        return Err(vec![err_at_path(
+            "prompt_suite_empty",
+            "Prompt suite contains no prompt cases",
+            path,
+        )]);
+    }
+    Ok(ParsedPromptSuite {
+        path: std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+        sha256,
+        prompts,
+    })
+}
+
+fn required_prompt_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &'static str,
+    line: usize,
+    errors: &mut Vec<CliError>,
+) -> Option<String> {
+    let value = object.get(field).and_then(|v| v.as_str()).map(str::trim);
+    match value {
+        Some(value) if !value.is_empty() => Some(value.to_string()),
+        _ => {
+            errors.push(err_at_line(
+                "prompt_suite_unparseable",
+                format!(
+                    "Prompt suite line {} is missing required string field {}",
+                    line, field
+                ),
+                line,
+                Some(field),
+            ));
+            None
+        }
+    }
+}
+
+fn optional_string_array(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &'static str,
+    line: usize,
+    errors: &mut Vec<CliError>,
+) -> Option<Vec<String>> {
+    let Some(value) = object.get(field) else {
+        return Some(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        errors.push(err_at_line(
+            "prompt_suite_unparseable",
+            format!(
+                "Prompt suite line {} field {} must be an array of strings",
+                line, field
+            ),
+            line,
+            Some(field),
+        ));
+        return None;
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(item) = item.as_str() else {
+            errors.push(err_at_line(
+                "prompt_suite_unparseable",
+                format!(
+                    "Prompt suite line {} field {} must contain only strings",
+                    line, field
+                ),
+                line,
+                Some(field),
+            ));
+            return None;
+        };
+        out.push(item.to_string());
+    }
+    Some(out)
+}
+
+fn is_safe_prompt_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 fn line_diff(left_name: &str, right_name: &str, left: &str, right: &str) -> (String, DiffStats) {
@@ -1526,6 +2096,347 @@ fn experiments_dir(workspace_dir: &Path) -> PathBuf {
     workspace_dir.join("experiments")
 }
 
+fn runs_dir(loaded: &LoadedExperiment) -> PathBuf {
+    loaded.experiment_dir.join("runs")
+}
+
+fn run_dir(loaded: &LoadedExperiment, run_id: &str) -> PathBuf {
+    runs_dir(loaded).join(run_id)
+}
+
+fn create_generated_run_dir(
+    loaded: &LoadedExperiment,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(String, PathBuf), Vec<CliError>> {
+    ensure_runs_dir(loaded)?;
+    let base = generated_run_id_base(now);
+    for idx in 1..=99 {
+        let run_id = if idx == 1 {
+            base.clone()
+        } else {
+            format!("{}-{:02}", base, idx)
+        };
+        let dir = run_dir(loaded, &run_id);
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Ok((run_id, dir)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(vec![err_at_path(
+                    "run_artifact_write_failed",
+                    format!("Failed to create run directory {}: {}", dir.display(), e),
+                    &dir,
+                )]);
+            }
+        }
+    }
+    Err(vec![err(
+        "run_id_collision_exhausted",
+        "Generated run id collided through suffix -99",
+        None,
+    )])
+}
+
+fn create_explicit_run_dir(
+    loaded: &LoadedExperiment,
+    run_id: &str,
+) -> Result<PathBuf, Vec<CliError>> {
+    validate_run_id(run_id)?;
+    ensure_runs_dir(loaded)?;
+    let dir = run_dir(loaded, run_id);
+    match std::fs::create_dir(&dir) {
+        Ok(()) => Ok(dir),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(vec![err_at_path(
+            "run_id_exists",
+            format!("Run id already exists: {}", run_id),
+            &dir,
+        )]),
+        Err(e) => Err(vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to create run directory {}: {}", dir.display(), e),
+            &dir,
+        )]),
+    }
+}
+
+fn ensure_runs_dir(loaded: &LoadedExperiment) -> Result<(), Vec<CliError>> {
+    let dir = runs_dir(loaded);
+    if dir.exists() {
+        reject_link_or_reparse(&dir, "run_artifact_link_or_reparse", None)?;
+    } else {
+        reject_link_or_reparse(&loaded.experiment_dir, "run_artifact_link_or_reparse", None)?;
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to create runs directory {}: {}", dir.display(), e),
+                &dir,
+            )]
+        })?;
+    }
+    Ok(())
+}
+
+fn generated_run_id_base(now: chrono::DateTime<chrono::Utc>) -> String {
+    now.format("%Y%m%d-%H%M%S").to_string()
+}
+
+fn validate_run_id(run_id: &str) -> Result<(), Vec<CliError>> {
+    let bytes = run_id.as_bytes();
+    let valid_base = bytes.len() >= 15
+        && bytes[8] == b'-'
+        && bytes[..8].iter().all(u8::is_ascii_digit)
+        && bytes[9..15].iter().all(u8::is_ascii_digit);
+    let valid = if bytes.len() == 15 {
+        valid_base
+    } else if bytes.len() == 18 {
+        valid_base
+            && bytes[15] == b'-'
+            && bytes[16..18].iter().all(u8::is_ascii_digit)
+            && bytes[16..18] != *b"00"
+    } else {
+        false
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(vec![err(
+            "run_id_invalid",
+            "Run id must match YYYYMMDD-HHMMSS or YYYYMMDD-HHMMSS-NN",
+            None,
+        )])
+    }
+}
+
+fn validate_replicates(replicates: u32) -> Result<(), Vec<CliError>> {
+    if (1..=100).contains(&replicates) {
+        Ok(())
+    } else {
+        Err(vec![err(
+            "replicates_invalid",
+            "--replicates must be between 1 and 100",
+            None,
+        )])
+    }
+}
+
+fn generated_seed_from_uuid(uuid: uuid::Uuid) -> u64 {
+    let bytes = uuid.as_bytes();
+    u64::from_le_bytes(bytes[0..8].try_into().expect("uuid slice is 8 bytes"))
+}
+
+fn default_run_artifact_paths() -> RunArtifactPaths {
+    RunArtifactPaths {
+        attempts: "attempts.jsonl".to_string(),
+        report_json: "report.json".to_string(),
+        report_markdown: "report.md".to_string(),
+    }
+}
+
+fn default_report_artifact_paths() -> ReportArtifactPaths {
+    ReportArtifactPaths {
+        run: "run.json".to_string(),
+        attempts: "attempts.jsonl".to_string(),
+        report_markdown: "report.md".to_string(),
+    }
+}
+
+fn build_attempts(
+    run_id: &str,
+    prompts: &[PromptCase],
+    variants: &[VariantMetadata],
+    replicates: u32,
+) -> Vec<AttemptArtifact> {
+    let mut attempts = Vec::new();
+    for prompt in prompts {
+        for variant in variants {
+            for replicate in 1..=replicates {
+                attempts.push(AttemptArtifact {
+                    schema_version: 1,
+                    attempt_id: format!("{}__{}__r{}", prompt.id, variant.name, replicate),
+                    run_id: run_id.to_string(),
+                    prompt_id: prompt.id.clone(),
+                    prompt_title: prompt.title.clone(),
+                    prompt_line: prompt.line,
+                    variant: variant.name.clone(),
+                    agent_name: variant.agent_name.clone(),
+                    replicate,
+                    status: "planned".to_string(),
+                    tags: prompt.tags.clone(),
+                    expected_behaviors: prompt.expected_behaviors.clone(),
+                    duration_ms: None,
+                    messages: None,
+                    flags: Vec::new(),
+                    transcript_path: None,
+                    failure_reason: None,
+                });
+            }
+        }
+    }
+    attempts
+}
+
+fn build_report_artifact(
+    run_id: &str,
+    experiment: &str,
+    timestamp: &str,
+    prompts: &[PromptCase],
+    variants: &[VariantMetadata],
+    replicates: u32,
+    attempt_count: usize,
+) -> ReportArtifact {
+    let per_variant = prompts.len() * replicates as usize;
+    let per_prompt = variants.len() * replicates as usize;
+    ReportArtifact {
+        schema_version: 1,
+        run_id: run_id.to_string(),
+        experiment: experiment.to_string(),
+        status: "dry_run".to_string(),
+        dry_run: true,
+        generated_at: timestamp.to_string(),
+        summary: ReportSummaryArtifact {
+            prompt_count: prompts.len(),
+            variant_count: variants.len(),
+            replicates,
+            attempt_count,
+            planned_attempt_count: attempt_count,
+            completed_attempt_count: 0,
+            failed_attempt_count: 0,
+        },
+        variants: variants
+            .iter()
+            .map(|variant| ReportVariantArtifact {
+                name: variant.name.clone(),
+                agent_name: variant.agent_name.clone(),
+                planned_attempt_count: per_variant,
+            })
+            .collect(),
+        prompts: prompts
+            .iter()
+            .map(|prompt| ReportPromptArtifact {
+                id: prompt.id.clone(),
+                title: prompt.title.clone(),
+                planned_attempt_count: per_prompt,
+            })
+            .collect(),
+        artifacts: default_report_artifact_paths(),
+        notes: vec![
+            "Dry-run report contains planned attempts only.".to_string(),
+            "No sessions, messages, transcripts, scoring, or winner selection were produced."
+                .to_string(),
+        ],
+    }
+}
+
+fn render_report_markdown(report: &ReportArtifact) -> String {
+    let mut markdown = String::new();
+    markdown.push_str("# Role Experiment Dry Run Report\n\n");
+    markdown.push_str(&format!("Experiment: {}\n", report.experiment));
+    markdown.push_str(&format!("Run ID: {}\n", report.run_id));
+    markdown.push_str(&format!("Status: {}\n\n", report.status));
+    markdown.push_str("## Summary\n\n");
+    markdown.push_str(&format!("- Prompts: {}\n", report.summary.prompt_count));
+    markdown.push_str(&format!("- Variants: {}\n", report.summary.variant_count));
+    markdown.push_str(&format!("- Replicates: {}\n", report.summary.replicates));
+    markdown.push_str(&format!(
+        "- Planned attempts: {}\n\n",
+        report.summary.planned_attempt_count
+    ));
+    markdown.push_str("## Variants\n\n");
+    markdown.push_str("| Variant | Agent | Planned attempts |\n|---|---|---:|\n");
+    for variant in &report.variants {
+        markdown.push_str(&format!(
+            "| {} | {} | {} |\n",
+            markdown_table_cell(&variant.name),
+            markdown_table_cell(&variant.agent_name),
+            variant.planned_attempt_count
+        ));
+    }
+    markdown.push_str("\n## Prompts\n\n");
+    markdown.push_str("| Prompt | Title | Planned attempts |\n|---|---|---:|\n");
+    for prompt in &report.prompts {
+        markdown.push_str(&format!(
+            "| {} | {} | {} |\n",
+            markdown_table_cell(&prompt.id),
+            markdown_table_cell(&prompt.title),
+            prompt.planned_attempt_count
+        ));
+    }
+    markdown.push_str("\n## Notes\n\n");
+    markdown.push_str(
+        "This dry run produced planned attempts only. It did not create sessions, messages, transcripts, scores, or a winner.\n",
+    );
+    markdown
+}
+
+fn markdown_table_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace(['\r', '\n'], " ")
+}
+
+fn validate_report_artifacts(
+    loaded: &LoadedExperiment,
+    run_id: &str,
+    run: &RunArtifact,
+    report: &ReportArtifact,
+) -> Result<(), Vec<CliError>> {
+    let mut errors = Vec::new();
+    if run.schema_version != 1 || report.schema_version != 1 {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifacts must use schemaVersion 1",
+            None,
+        ));
+    }
+    if run.run_id != run_id || report.run_id != run_id || run.run_id != report.run_id {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact runId values do not match",
+            None,
+        ));
+    }
+    if run.experiment != loaded.experiment.name || report.experiment != loaded.experiment.name {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact experiment values do not match",
+            None,
+        ));
+    }
+    if run.status != "dry_run" || !run.dry_run {
+        errors.push(err(
+            "report_run_status_unsupported",
+            "Only dry_run run artifacts are supported in Phase 2",
+            None,
+        ));
+    }
+    if report.status != "dry_run" || !report.dry_run {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Report artifact status must be dry_run",
+            None,
+        ));
+    }
+    if report.summary.prompt_count != run.suite.prompt_count
+        || report.summary.variant_count != run.variants.len()
+        || report.summary.replicates != run.replicates
+        || report.summary.attempt_count != run.attempt_count
+        || report.summary.planned_attempt_count != run.attempt_count
+        || report.summary.completed_attempt_count != 0
+        || report.summary.failed_attempt_count != 0
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Report summary does not match run artifact",
+            None,
+        ));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 fn source_matrix_path(workspace_dir: &Path, source_agent: &str) -> PathBuf {
     workspace_dir.join(format!("_agent_{}", source_agent))
 }
@@ -1558,6 +2469,36 @@ fn err(code: &'static str, message: impl Into<String>, variant: Option<&str>) ->
         code: code.to_string(),
         message: message.into(),
         variant: variant.map(str::to_string),
+        line: None,
+        field: None,
+        path: None,
+    }
+}
+
+fn err_at_line(
+    code: &'static str,
+    message: impl Into<String>,
+    line: usize,
+    field: Option<&str>,
+) -> CliError {
+    CliError {
+        code: code.to_string(),
+        message: message.into(),
+        variant: None,
+        line: Some(line),
+        field: field.map(str::to_string),
+        path: None,
+    }
+}
+
+fn err_at_path(code: &'static str, message: impl Into<String>, path: &Path) -> CliError {
+    CliError {
+        code: code.to_string(),
+        message: message.into(),
+        variant: None,
+        line: None,
+        field: None,
+        path: Some(path.to_string_lossy().to_string()),
     }
 }
 
@@ -1784,5 +2725,33 @@ mod tests {
                 .expect_err("link ancestor should be rejected");
 
         assert!(errors.iter().any(|e| e.code == "link_error"));
+    }
+
+    #[test]
+    fn run_id_validation_accepts_only_phase2_shape() {
+        assert!(validate_run_id("20260601-181500").is_ok());
+        assert!(validate_run_id("20260601-181500-01").is_ok());
+        assert!(validate_run_id("20260601-181500-99").is_ok());
+        assert!(validate_run_id("2026060-181500").is_err());
+        assert!(validate_run_id("20260601181500").is_err());
+        assert!(validate_run_id("20260601_181500").is_err());
+        assert!(validate_run_id("20260601-18150x").is_err());
+        assert!(validate_run_id("20260601-181500-00").is_err());
+        assert!(validate_run_id("20260601-181500-100").is_err());
+    }
+
+    #[test]
+    fn generated_run_id_suffixes_existing_directories() {
+        let (_tmp, loaded) = loaded_fixture("alpha");
+        std::fs::create_dir_all(runs_dir(&loaded).join("20260601-181500")).unwrap();
+        std::fs::create_dir_all(runs_dir(&loaded).join("20260601-181500-02")).unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-01T18:15:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let (run_id, run_dir) = create_generated_run_dir(&loaded, now).unwrap();
+
+        assert_eq!(run_id, "20260601-181500-03");
+        assert!(run_dir.is_dir());
     }
 }

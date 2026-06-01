@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -89,6 +91,52 @@ fn run_ok(bin: &Path, args: &[&str]) -> serde_json::Value {
     assert_eq!(code, 0, "stdout: {}\nstderr: {}", json, stderr);
     assert_eq!(json["ok"], true, "{}", json);
     json
+}
+
+fn ac_snapshot(root: &Path) -> BTreeMap<String, Option<String>> {
+    let mut out = BTreeMap::new();
+    snapshot_into(root, root, &mut out);
+    out
+}
+
+fn snapshot_into(root: &Path, path: &Path, out: &mut BTreeMap<String, Option<String>>) {
+    if !path.exists() {
+        return;
+    }
+    let relative = path
+        .strip_prefix(root)
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/");
+    if path.is_dir() {
+        if !relative.is_empty() {
+            out.insert(relative, None);
+        }
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        entries.sort();
+        for entry in entries {
+            snapshot_into(root, &entry, out);
+        }
+    } else {
+        let bytes = std::fs::read(path).unwrap();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        out.insert(relative, Some(format!("{:x}", hasher.finish())));
+    }
+}
+
+fn write_prompt_suite(path: &Path) {
+    std::fs::write(
+        path,
+        concat!(
+            "{\"id\":\"coord-001\",\"title\":\"Bug in CI\",\"prompt\":\"Fix it\",\"tags\":[\"ci\"],\"expectedBehaviors\":[\"delegate\"]}\n",
+            "{\"id\":\"coord-002\",\"title\":\"Triage\",\"prompt\":\"Triage it\"}\n",
+        ),
+    )
+    .unwrap();
 }
 
 fn init_experiment(bin: &Path) -> serde_json::Value {
@@ -464,4 +512,350 @@ fn role_experiment_validate_reports_prompt_and_replica_errors() {
     assert!(codes.contains(&"active_variant_session".to_string()));
     assert!(codes.contains(&"prompt_suite_duplicate_id".to_string()));
     assert!(codes.contains(&"prompt_suite_unparseable".to_string()));
+    let prompt_error = json["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["code"] == "prompt_suite_unparseable")
+        .unwrap();
+    assert!(prompt_error["line"].as_u64().unwrap() >= 1);
+    assert!(prompt_error["field"].is_string());
+}
+
+#[test]
+fn role_experiment_run_without_dry_run_has_no_side_effects() {
+    let tmp = Tmp::new("role-exp-run-gated");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_source(tmp.path());
+    init_experiment(&bin);
+    let suite = tmp.path().join("prompts.jsonl");
+    write_prompt_suite(&suite);
+    let workspace = project.join(".ac");
+    let before = ac_snapshot(&workspace);
+
+    let (code, json, _stderr) = run(
+        &bin,
+        &[
+            "role-experiment",
+            "run",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--prompt-suite",
+            &suite.to_string_lossy(),
+        ],
+    );
+
+    assert_eq!(code, 1);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["errors"][0]["code"], "run_execution_not_implemented");
+    assert_eq!(before, ac_snapshot(&workspace));
+}
+
+#[test]
+fn role_experiment_dry_run_writes_planned_artifacts() {
+    let tmp = Tmp::new("role-exp-dry-run");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_source(tmp.path());
+    init_experiment(&bin);
+    let suite = tmp.path().join("prompts.jsonl");
+    write_prompt_suite(&suite);
+    let workspace = project.join(".ac");
+    let before = ac_snapshot(&workspace);
+
+    let json = run_ok(
+        &bin,
+        &[
+            "role-experiment",
+            "run",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--prompt-suite",
+            &suite.to_string_lossy(),
+            "--replicates",
+            "2",
+            "--seed",
+            "12345",
+            "--run-id",
+            "20260601-181500",
+            "--dry-run",
+        ],
+    );
+
+    assert_eq!(json["data"]["status"], "dry_run");
+    assert_eq!(json["data"]["dryRun"], true);
+    assert_eq!(json["data"]["seed"], 12345);
+    assert_eq!(json["data"]["seedProvided"], true);
+    assert_eq!(json["data"]["attemptCount"], 8);
+    let run_dir = workspace
+        .join("experiments")
+        .join("techlead-test")
+        .join("runs")
+        .join("20260601-181500");
+    let after = ac_snapshot(&workspace);
+    let new_paths: Vec<String> = after
+        .keys()
+        .filter(|path| !before.contains_key(*path))
+        .cloned()
+        .collect();
+    assert_eq!(
+        new_paths,
+        vec![
+            "experiments/techlead-test/runs/20260601-181500".to_string(),
+            "experiments/techlead-test/runs/20260601-181500/attempts.jsonl".to_string(),
+            "experiments/techlead-test/runs/20260601-181500/report.json".to_string(),
+            "experiments/techlead-test/runs/20260601-181500/report.md".to_string(),
+            "experiments/techlead-test/runs/20260601-181500/run.json".to_string(),
+        ]
+    );
+    for (path, hash) in before {
+        assert_eq!(after.get(&path), Some(&hash), "changed {}", path);
+    }
+    assert!(!run_dir.join("transcripts").exists());
+
+    let run_artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
+    assert_eq!(run_artifact["status"], "dry_run");
+    assert_eq!(run_artifact["suite"]["promptCount"], 2);
+    let attempts: Vec<serde_json::Value> = std::fs::read_to_string(run_dir.join("attempts.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let ids: Vec<String> = attempts
+        .iter()
+        .map(|attempt| attempt["attemptId"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "coord-001__control__r1",
+            "coord-001__control__r2",
+            "coord-001__strict__r1",
+            "coord-001__strict__r2",
+            "coord-002__control__r1",
+            "coord-002__control__r2",
+            "coord-002__strict__r1",
+            "coord-002__strict__r2",
+        ]
+    );
+    for attempt in attempts {
+        assert_eq!(attempt["status"], "planned");
+        assert!(attempt["durationMs"].is_null());
+        assert!(attempt["messages"].is_null());
+        assert!(attempt["transcriptPath"].is_null());
+        assert!(attempt["failureReason"].is_null());
+    }
+}
+
+#[test]
+fn role_experiment_dry_run_generates_seed_and_rejects_existing_run_id() {
+    let tmp = Tmp::new("role-exp-seed-collision");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_source(tmp.path());
+    init_experiment(&bin);
+    let suite = tmp.path().join("prompts.jsonl");
+    write_prompt_suite(&suite);
+
+    let first = run_ok(
+        &bin,
+        &[
+            "role-experiment",
+            "run",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--prompt-suite",
+            &suite.to_string_lossy(),
+            "--run-id",
+            "20260601-181500",
+            "--dry-run",
+        ],
+    );
+    assert!(first["data"]["seed"].as_u64().is_some());
+    assert_eq!(first["data"]["seedProvided"], false);
+
+    let (code, second, _stderr) = run(
+        &bin,
+        &[
+            "role-experiment",
+            "run",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--prompt-suite",
+            &suite.to_string_lossy(),
+            "--run-id",
+            "20260601-181500",
+            "--dry-run",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert_eq!(second["errors"][0]["code"], "run_id_exists");
+}
+
+#[test]
+fn role_experiment_report_reads_text_and_json_artifacts() {
+    let tmp = Tmp::new("role-exp-report");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_source(tmp.path());
+    init_experiment(&bin);
+    let suite = tmp.path().join("prompts.jsonl");
+    write_prompt_suite(&suite);
+    run_ok(
+        &bin,
+        &[
+            "role-experiment",
+            "run",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--prompt-suite",
+            &suite.to_string_lossy(),
+            "--run-id",
+            "20260601-181500",
+            "--dry-run",
+        ],
+    );
+    let run_dir = project
+        .join(".ac")
+        .join("experiments")
+        .join("techlead-test")
+        .join("runs")
+        .join("20260601-181500");
+    let mut run_artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
+    run_artifact["artifacts"]["reportMarkdown"] = serde_json::json!("..\\outside.md");
+    std::fs::write(
+        run_dir.join("run.json"),
+        serde_json::to_string_pretty(&run_artifact).unwrap(),
+    )
+    .unwrap();
+
+    let text = run_ok(
+        &bin,
+        &[
+            "role-experiment",
+            "report",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--run-id",
+            "20260601-181500",
+        ],
+    );
+    assert!(text["data"]["reportMarkdown"]
+        .as_str()
+        .unwrap()
+        .contains("Status: dry_run"));
+    let json = run_ok(
+        &bin,
+        &[
+            "role-experiment",
+            "report",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--run-id",
+            "20260601-181500",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(json["data"]["report"]["summary"]["attemptCount"], 4);
+
+    let (code, invalid, _stderr) = run(
+        &bin,
+        &[
+            "role-experiment",
+            "report",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--run-id",
+            "20260601-181500",
+            "--format",
+            "xml",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert_eq!(invalid["errors"][0]["code"], "report_format_invalid");
+}
+
+#[test]
+fn role_experiment_report_rejects_artifact_mismatch() {
+    let tmp = Tmp::new("role-exp-report-mismatch");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_source(tmp.path());
+    init_experiment(&bin);
+    let suite = tmp.path().join("prompts.jsonl");
+    write_prompt_suite(&suite);
+    run_ok(
+        &bin,
+        &[
+            "role-experiment",
+            "run",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--prompt-suite",
+            &suite.to_string_lossy(),
+            "--run-id",
+            "20260601-181500",
+            "--dry-run",
+        ],
+    );
+    let report_path = project
+        .join(".ac")
+        .join("experiments")
+        .join("techlead-test")
+        .join("runs")
+        .join("20260601-181500")
+        .join("report.json");
+    let mut report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    report["summary"]["plannedAttemptCount"] = serde_json::json!(999);
+    std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+    let (code, json, _stderr) = run(
+        &bin,
+        &[
+            "role-experiment",
+            "report",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--run-id",
+            "20260601-181500",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(json["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["code"] == "run_artifact_mismatch"));
 }
