@@ -745,6 +745,22 @@ fn role_experiment_report_reads_text_and_json_artifacts() {
         serde_json::to_string_pretty(&run_artifact).unwrap(),
     )
     .unwrap();
+    let expected_run_path = std::fs::canonicalize(run_dir.join("run.json"))
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let expected_attempts_path = std::fs::canonicalize(run_dir.join("attempts.jsonl"))
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let expected_report_json_path = std::fs::canonicalize(run_dir.join("report.json"))
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let expected_report_markdown_path = std::fs::canonicalize(run_dir.join("report.md"))
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     let text = run_ok(
         &bin,
@@ -758,6 +774,23 @@ fn role_experiment_report_reads_text_and_json_artifacts() {
             "--run-id",
             "20260601-181500",
         ],
+    );
+    assert_eq!(text["data"]["experiment"], "techlead-test");
+    assert_eq!(text["data"]["runId"], "20260601-181500");
+    assert_eq!(text["data"]["format"], "text");
+    assert_eq!(text["data"]["status"], "dry_run");
+    assert_eq!(text["data"]["artifactPaths"]["run"], expected_run_path);
+    assert_eq!(
+        text["data"]["artifactPaths"]["attempts"],
+        expected_attempts_path
+    );
+    assert_eq!(
+        text["data"]["artifactPaths"]["reportJson"],
+        expected_report_json_path
+    );
+    assert_eq!(
+        text["data"]["artifactPaths"]["reportMarkdown"],
+        expected_report_markdown_path
     );
     assert!(text["data"]["reportMarkdown"]
         .as_str()
@@ -777,6 +810,23 @@ fn role_experiment_report_reads_text_and_json_artifacts() {
             "--format",
             "json",
         ],
+    );
+    assert_eq!(json["data"]["experiment"], "techlead-test");
+    assert_eq!(json["data"]["runId"], "20260601-181500");
+    assert_eq!(json["data"]["format"], "json");
+    assert_eq!(json["data"]["status"], "dry_run");
+    assert_eq!(json["data"]["artifactPaths"]["run"], expected_run_path);
+    assert_eq!(
+        json["data"]["artifactPaths"]["attempts"],
+        expected_attempts_path
+    );
+    assert_eq!(
+        json["data"]["artifactPaths"]["reportJson"],
+        expected_report_json_path
+    );
+    assert_eq!(
+        json["data"]["artifactPaths"]["reportMarkdown"],
+        expected_report_markdown_path
     );
     assert_eq!(json["data"]["report"]["summary"]["attemptCount"], 4);
 

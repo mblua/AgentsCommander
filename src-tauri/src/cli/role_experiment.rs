@@ -1096,9 +1096,22 @@ fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
     let report_artifact: ReportArtifact = read_json(&report_path)
         .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
     validate_report_artifacts(&loaded, &args.run_id, &run_artifact, &report_artifact)?;
+    let artifact_paths = serde_json::json!({
+        "run": run_path.to_string_lossy().to_string(),
+        "attempts": attempts_path.to_string_lossy().to_string(),
+        "reportJson": report_path.to_string_lossy().to_string(),
+        "reportMarkdown": markdown_path.to_string_lossy().to_string(),
+    });
     if args.format == "json" {
         Ok(CommandOutput {
-            data: serde_json::json!({ "report": report_artifact }),
+            data: serde_json::json!({
+                "experiment": loaded.experiment.name,
+                "runId": args.run_id,
+                "format": args.format,
+                "status": report_artifact.status,
+                "artifactPaths": artifact_paths,
+                "report": report_artifact,
+            }),
             warnings: validation.warnings,
             errors: Vec::new(),
         })
@@ -1111,7 +1124,14 @@ fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
             )]
         })?;
         Ok(CommandOutput {
-            data: serde_json::json!({ "reportMarkdown": markdown }),
+            data: serde_json::json!({
+                "experiment": loaded.experiment.name,
+                "runId": args.run_id,
+                "format": args.format,
+                "status": report_artifact.status,
+                "artifactPaths": artifact_paths,
+                "reportMarkdown": markdown,
+            }),
             warnings: validation.warnings,
             errors: Vec::new(),
         })
