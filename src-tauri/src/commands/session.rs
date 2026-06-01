@@ -1968,6 +1968,8 @@ pub(crate) async fn create_root_agent_inner(
     };
     let mut waking_existing = false;
     let mut restored_telegram_bot_id: Option<String> = None;
+    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
+    let mut resolved_root_agent_command: Option<ResolvedRootAgentCommand> = None;
 
     if let Some(existing) = existing {
         let uuid = Uuid::parse_str(&existing.id).map_err(|e| e.to_string())?;
@@ -1992,6 +1994,14 @@ pub(crate) async fn create_root_agent_inner(
                 return Ok(existing);
             }
             ExistingRootAction::WakeDormant => {
+                resolved_root_agent_command = Some({
+                    let cfg = settings.read().await;
+                    resolve_root_agent_command(
+                        &cfg,
+                        requested_agent_id.as_deref(),
+                        last_coding_agent.as_deref(),
+                    )?
+                });
                 waking_existing = true;
                 restored_telegram_bot_id = existing.telegram_bot_id.clone();
                 log::info!(
@@ -2001,6 +2011,14 @@ pub(crate) async fn create_root_agent_inner(
                 force_destroy_session_inner(app, uuid).await?;
             }
             ExistingRootAction::DiscardMissingPty => {
+                resolved_root_agent_command = Some({
+                    let cfg = settings.read().await;
+                    resolve_root_agent_command(
+                        &cfg,
+                        requested_agent_id.as_deref(),
+                        last_coding_agent.as_deref(),
+                    )?
+                });
                 log::warn!(
                     "[root-agent] Discarding root session {} because it has status {:?} but no PTY",
                     existing.id,
@@ -2011,15 +2029,17 @@ pub(crate) async fn create_root_agent_inner(
         }
     }
 
-    let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
-    let (shell, shell_args, agent_id, agent_label) = {
-        let cfg = settings.read().await;
-        resolve_root_agent_command(
-            &cfg,
-            requested_agent_id.as_deref(),
-            last_coding_agent.as_deref(),
-        )?
-    };
+    let (shell, shell_args, agent_id, agent_label) =
+        if let Some(resolved) = resolved_root_agent_command {
+            resolved
+        } else {
+            let cfg = settings.read().await;
+            resolve_root_agent_command(
+                &cfg,
+                requested_agent_id.as_deref(),
+                last_coding_agent.as_deref(),
+            )?
+        };
 
     let info = create_session_inner(
         app,
@@ -2086,6 +2106,7 @@ mod tests {
         ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings};
+    use crate::session::manager::SessionManager;
     use crate::session::session::SessionStatus;
     use std::path::PathBuf;
 
@@ -2249,6 +2270,49 @@ mod tests {
             classify_existing_root(&SessionStatus::Exited(0), false),
             ExistingRootAction::WakeDormant
         );
+    }
+
+    #[tokio::test]
+    async fn dormant_root_command_resolution_failure_preserves_existing_session() {
+        let session_mgr = SessionManager::new();
+        let settings = AppSettings {
+            agents: Vec::new(),
+            ..AppSettings::default()
+        };
+
+        let dormant = {
+            let session = session_mgr
+                .create_session(
+                    "codex".to_string(),
+                    Vec::new(),
+                    "C:\\test\\ac-root-agent".to_string(),
+                    Some("codex".to_string()),
+                    Some("Codex".to_string()),
+                    Vec::new(),
+                    false,
+                )
+                .await
+                .expect("failed to create dormant root session");
+            session_mgr.set_is_root_agent(session.id, true).await;
+            session_mgr.mark_exited(session.id, 0).await;
+            session
+        };
+
+        assert_eq!(
+            classify_existing_root(&SessionStatus::Exited(0), false),
+            ExistingRootAction::WakeDormant
+        );
+
+        let err = resolve_root_agent_command(&settings, Some("stale"), Some("also-stale"))
+            .expect_err("replacement command should fail before destroying dormant root");
+
+        assert!(err.contains("No resolvable coding agent"));
+        let preserved = session_mgr.get_session(dormant.id).await;
+        assert!(matches!(
+            preserved.as_ref().map(|s| &s.status),
+            Some(SessionStatus::Exited(0))
+        ));
+        assert!(preserved.is_some_and(|s| s.is_root_agent));
     }
 
     #[test]
