@@ -624,6 +624,39 @@ fn role_experiment_dry_run_writes_planned_artifacts() {
         serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
     assert_eq!(run_artifact["status"], "dry_run");
     assert_eq!(run_artifact["suite"]["promptCount"], 2);
+    let report_artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("report.json")).unwrap())
+            .unwrap();
+    assert_eq!(report_artifact["format"], "json");
+    assert!(report_artifact.get("artifacts").is_none());
+    assert_eq!(
+        report_artifact["artifactPaths"]["run"],
+        std::fs::canonicalize(run_dir.join("run.json"))
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    );
+    assert_eq!(
+        report_artifact["artifactPaths"]["attempts"],
+        std::fs::canonicalize(run_dir.join("attempts.jsonl"))
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    );
+    assert_eq!(
+        report_artifact["artifactPaths"]["reportJson"],
+        std::fs::canonicalize(run_dir.join("report.json"))
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    );
+    assert_eq!(
+        report_artifact["artifactPaths"]["reportMarkdown"],
+        std::fs::canonicalize(run_dir.join("report.md"))
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    );
     let attempts: Vec<serde_json::Value> = std::fs::read_to_string(run_dir.join("attempts.jsonl"))
         .unwrap()
         .lines()
@@ -828,6 +861,15 @@ fn role_experiment_report_reads_text_and_json_artifacts() {
         json["data"]["artifactPaths"]["reportMarkdown"],
         expected_report_markdown_path
     );
+    let persisted_report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("report.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted_report["format"], "json");
+    assert_eq!(
+        persisted_report["artifactPaths"],
+        json["data"]["artifactPaths"]
+    );
+    assert_eq!(persisted_report, json["data"]["report"]);
     assert_eq!(json["data"]["report"]["summary"]["attemptCount"], 4);
 
     let (code, invalid, _stderr) = run(

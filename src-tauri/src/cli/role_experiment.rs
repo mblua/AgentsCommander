@@ -282,13 +282,14 @@ struct ReportArtifact {
     schema_version: u32,
     run_id: String,
     experiment: String,
+    format: String,
     status: String,
     dry_run: bool,
     generated_at: String,
     summary: ReportSummaryArtifact,
     variants: Vec<ReportVariantArtifact>,
     prompts: Vec<ReportPromptArtifact>,
-    artifacts: ReportArtifactPaths,
+    artifact_paths: ReportArtifactPaths,
     notes: Vec<String>,
 }
 
@@ -320,11 +321,12 @@ struct ReportPromptArtifact {
     planned_attempt_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportArtifactPaths {
     run: String,
     attempts: String,
+    report_json: String,
     report_markdown: String,
 }
 
@@ -1003,11 +1005,11 @@ fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
     let report_artifact = build_report_artifact(
         &run_id,
         &loaded.experiment.name,
+        &run_dir,
         &timestamp,
         &suite.prompts,
         &validation.variant_metas,
         args.replicates,
-        attempts.len(),
     );
     let report_markdown = render_report_markdown(&report_artifact);
 
@@ -1096,12 +1098,9 @@ fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
     let report_artifact: ReportArtifact = read_json(&report_path)
         .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
     validate_report_artifacts(&loaded, &args.run_id, &run_artifact, &report_artifact)?;
-    let artifact_paths = serde_json::json!({
-        "run": run_path.to_string_lossy().to_string(),
-        "attempts": attempts_path.to_string_lossy().to_string(),
-        "reportJson": report_path.to_string_lossy().to_string(),
-        "reportMarkdown": markdown_path.to_string_lossy().to_string(),
-    });
+    let expected_artifact_paths = report_artifact_paths(&dir);
+    let artifact_paths =
+        serde_json::to_value(&expected_artifact_paths).unwrap_or(serde_json::Value::Null);
     if args.format == "json" {
         Ok(CommandOutput {
             data: serde_json::json!({
@@ -2251,11 +2250,12 @@ fn default_run_artifact_paths() -> RunArtifactPaths {
     }
 }
 
-fn default_report_artifact_paths() -> ReportArtifactPaths {
+fn report_artifact_paths(run_dir: &Path) -> ReportArtifactPaths {
     ReportArtifactPaths {
-        run: "run.json".to_string(),
-        attempts: "attempts.jsonl".to_string(),
-        report_markdown: "report.md".to_string(),
+        run: run_dir.join("run.json").to_string_lossy().to_string(),
+        attempts: run_dir.join("attempts.jsonl").to_string_lossy().to_string(),
+        report_json: run_dir.join("report.json").to_string_lossy().to_string(),
+        report_markdown: run_dir.join("report.md").to_string_lossy().to_string(),
     }
 }
 
@@ -2297,18 +2297,20 @@ fn build_attempts(
 fn build_report_artifact(
     run_id: &str,
     experiment: &str,
+    run_dir: &Path,
     timestamp: &str,
     prompts: &[PromptCase],
     variants: &[VariantMetadata],
     replicates: u32,
-    attempt_count: usize,
 ) -> ReportArtifact {
     let per_variant = prompts.len() * replicates as usize;
     let per_prompt = variants.len() * replicates as usize;
+    let attempt_count = prompts.len() * variants.len() * replicates as usize;
     ReportArtifact {
         schema_version: 1,
         run_id: run_id.to_string(),
         experiment: experiment.to_string(),
+        format: "json".to_string(),
         status: "dry_run".to_string(),
         dry_run: true,
         generated_at: timestamp.to_string(),
@@ -2337,7 +2339,7 @@ fn build_report_artifact(
                 planned_attempt_count: per_prompt,
             })
             .collect(),
-        artifacts: default_report_artifact_paths(),
+        artifact_paths: report_artifact_paths(run_dir),
         notes: vec![
             "Dry-run report contains planned attempts only.".to_string(),
             "No sessions, messages, transcripts, scoring, or winner selection were produced."
@@ -2433,6 +2435,21 @@ fn validate_report_artifacts(
         errors.push(err(
             "run_artifact_mismatch",
             "Report artifact status must be dry_run",
+            None,
+        ));
+    }
+    if report.format != "json" {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Report artifact format must be json",
+            None,
+        ));
+    }
+    let expected_artifact_paths = report_artifact_paths(&run_dir(loaded, run_id));
+    if report.artifact_paths != expected_artifact_paths {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Report artifactPaths do not match the run artifact paths",
             None,
         ));
     }
