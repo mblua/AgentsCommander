@@ -217,6 +217,14 @@ pub fn execute(args: RoleExperimentArgs) -> i32 {
 }
 
 fn init(args: InitArgs) -> Result<CommandOutput, Vec<CliError>> {
+    let project_path = resolve_project(&args.project)?;
+    init_for_project_path(args, &project_path)
+}
+
+fn init_for_project_path(
+    args: InitArgs,
+    project_path: &Path,
+) -> Result<CommandOutput, Vec<CliError>> {
     validate_slug_identity(&args.name, "Experiment", "experiment_name_invalid")?;
     if args.variants.len() < 2 {
         return Err(vec![err(
@@ -226,8 +234,7 @@ fn init(args: InitArgs) -> Result<CommandOutput, Vec<CliError>> {
         )]);
     }
 
-    let project_path = resolve_project(&args.project)?;
-    let workspace_dir = resolve_workspace(&project_path)?;
+    let workspace_dir = resolve_workspace(project_path)?;
     reject_link_or_reparse(&workspace_dir, "workspace_link_or_reparse", None)?;
 
     let source_ref = map_err(
@@ -301,6 +308,7 @@ fn init(args: InitArgs) -> Result<CommandOutput, Vec<CliError>> {
     }
 
     let experiment_dir = experiments_dir(&workspace_dir).join(&args.name);
+    reject_link_or_reparse(&experiment_dir, "experiment_metadata_link_or_reparse", None)?;
     if experiment_dir.exists() {
         preflight_errors.push(err(
             "experiment_exists",
@@ -382,7 +390,7 @@ fn init(args: InitArgs) -> Result<CommandOutput, Vec<CliError>> {
             Some(variant.as_str()),
         )?;
         workgroup::write_refresh(
-            &project_path,
+            project_path,
             &created.agent_dir,
             &created.display_name,
             "roleExperimentVariantCreated",
@@ -1709,6 +1717,50 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.code == "variant_metadata_missing"));
+    }
+
+    #[test]
+    fn init_rejects_linked_experiments_parent_before_metadata_write() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let workspace_dir = project.join(".ac");
+        let source_matrix = workspace_dir.join("_agent_alpha");
+        std::fs::create_dir_all(&source_matrix).expect("source matrix");
+        std::fs::write(source_matrix.join("Role.md"), "source role\n").expect("source role");
+
+        let outside = tmp.path().join("outside-experiments");
+        std::fs::create_dir_all(&outside).expect("outside experiments");
+        let experiments = workspace_dir.join("experiments");
+
+        #[cfg(windows)]
+        let link_result = std::os::windows::fs::symlink_dir(&outside, &experiments);
+        #[cfg(unix)]
+        let link_result = std::os::unix::fs::symlink(&outside, &experiments);
+
+        if link_result.is_err() {
+            return;
+        }
+
+        let errors = match init_for_project_path(
+            InitArgs {
+                project: "project".to_string(),
+                name: "exp".to_string(),
+                source_agent: "alpha".to_string(),
+                variants: vec!["control".to_string(), "test".to_string()],
+            },
+            &project,
+        ) {
+            Ok(_) => panic!("linked experiments parent should be rejected"),
+            Err(errors) => errors,
+        };
+
+        assert!(errors
+            .iter()
+            .any(|e| e.code == "experiment_metadata_link_or_reparse"));
+        assert!(
+            !outside.join("exp").exists(),
+            "init must not write experiment metadata through linked experiments parent"
+        );
     }
 
     #[test]
