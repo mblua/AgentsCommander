@@ -13,7 +13,7 @@ This document is the definitive guide for any AI agent tasked with creating or m
 | **Workgroup** | `wg-` | `.ac/wg-N-TEAMNAME/` | An isolated working environment with cloned agents + cloned repo for parallel work |
 | **Workgroup Agent** | `__agent_` | `.ac/wg-N-TEAMNAME/__agent_NAME/` | A replica of a project-level agent inside a workgroup (double underscore) |
 
-`.ac/` is the canonical workspace directory. Legacy `.ac-new/` projects use the same layout when `.ac/` is absent.
+`.ac/` is the only supported workspace directory.
 
 **Hierarchy:** Project → Agents + Teams → Workgroups (with replicated agents + repo clones)
 

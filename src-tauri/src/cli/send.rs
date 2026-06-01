@@ -173,14 +173,6 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     };
     let root_is_root_agent = crate::config::root_agent::is_root_agent_path(&root);
-    if !root_is_root_agent {
-        if let Some(reason) =
-            crate::config::workspace::stale_legacy_workspace_error_for_path(Path::new(&root))
-        {
-            eprintln!("Error: {}", reason);
-            return 1;
-        }
-    }
     if let Err(reason) =
         validate_root_agent_delivery_kind(root_is_root_agent, args.command.as_deref())
     {
@@ -551,11 +543,11 @@ mod tests {
     fn make_verified_coordinator_fixture() -> (tempfile::TempDir, Vec<String>) {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let ac_new = project.join(".ac-new");
-        let team_dir = ac_new.join("_team_dev-team");
-        let origin_tech_lead = ac_new.join("_agent_tech-lead");
-        let origin_dev_rust = ac_new.join("_agent_dev-rust");
-        let wg_dir = ac_new.join("wg-1-dev-team");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
+        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -681,10 +673,7 @@ mod tests {
     fn derive_root_project_dir_walks_up_wg_replica_path() {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-x");
-        let agent_root = project
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
+        let agent_root = project.join(".ac").join("wg-1-devs").join("__agent_alice");
         std::fs::create_dir_all(&agent_root).unwrap();
 
         // On Windows, std::fs::canonicalize returns `\\?\C:\...` extended-length
@@ -703,55 +692,21 @@ mod tests {
     }
 
     #[test]
-    fn derive_root_project_dir_rejects_stale_legacy_when_canonical_exists() {
+    fn derive_root_project_dir_accepts_ac_workspace() {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-x");
-        let canonical_root = project.join(".ac").join("wg-1-devs").join("__agent_alice");
-        let stale_root = project
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        std::fs::create_dir_all(&canonical_root).unwrap();
-        std::fs::create_dir_all(&stale_root).unwrap();
+        let root = project.join(".ac").join("wg-1-devs").join("__agent_alice");
+        std::fs::create_dir_all(&root).unwrap();
 
-        let err = derive_root_project_dir(stale_root.to_str().unwrap()).unwrap_err();
-        assert!(err.contains("stale legacy workspace"));
-    }
-
-    #[test]
-    fn derive_root_project_dir_accepts_canonical_when_both_exist() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let project = temp.path().join("proj-x");
-        let canonical_root = project.join(".ac").join("wg-1-devs").join("__agent_alice");
-        let stale_root = project
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        std::fs::create_dir_all(&canonical_root).unwrap();
-        std::fs::create_dir_all(&stale_root).unwrap();
-
-        let got = derive_root_project_dir(canonical_root.to_str().unwrap())
+        let got = derive_root_project_dir(root.to_str().unwrap())
             .unwrap()
-            .expect("canonical workspace should be accepted");
+            .expect(".ac workspace should be accepted");
         let expected = std::fs::canonicalize(&project)
             .unwrap()
             .to_str()
             .unwrap()
             .to_string();
         assert_eq!(got, expected);
-    }
-
-    #[test]
-    fn send_file_workgroup_root_rejects_stale_legacy_when_canonical_exists() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let project = temp.path().join("proj-x");
-        let canonical_wg = project.join(".ac").join("wg-1-devs");
-        let stale_wg = project.join(".ac-new").join("wg-1-devs");
-        std::fs::create_dir_all(&canonical_wg).unwrap();
-        std::fs::create_dir_all(&stale_wg).unwrap();
-
-        let err = ensure_workgroup_root_is_authoritative(&stale_wg).unwrap_err();
-        assert!(err.contains("stale legacy workspace"));
     }
 
     #[test]
@@ -768,7 +723,7 @@ mod tests {
     #[test]
     fn derive_root_project_dir_returns_none_when_one_level_too_high() {
         let temp = tempfile::TempDir::new().unwrap();
-        let wg_dir = temp.path().join("proj-x").join(".ac-new").join("wg-1-devs");
+        let wg_dir = temp.path().join("proj-x").join(".ac").join("wg-1-devs");
         std::fs::create_dir_all(&wg_dir).unwrap();
         // Pointing at the WG dir, not the __agent_* dir → must return None.
         assert!(derive_root_project_dir(wg_dir.to_str().unwrap())

@@ -216,13 +216,13 @@ mod tests {
         launch_agent.git_pull_before = true;
 
         let request = build_session_request(
-            "C:/repo/.ac-new/_agent_architect".to_string(),
+            "C:/repo/.ac/_agent_architect".to_string(),
             "repo/architect".to_string(),
             &launch_agent,
         )
         .expect("request");
 
-        assert_eq!(request.cwd, "C:/repo/.ac-new/_agent_architect");
+        assert_eq!(request.cwd, "C:/repo/.ac/_agent_architect");
         assert_eq!(request.session_name, "repo/architect");
         assert_eq!(request.agent_id, "codex");
         assert_eq!(request.shell, "cmd.exe");
@@ -240,7 +240,7 @@ mod tests {
         for command in ["", "   \t  "] {
             let launch_agent = agent("codex", "Codex", command);
             let err = build_session_request(
-                "C:/repo/.ac-new/_agent_architect".to_string(),
+                "C:/repo/.ac/_agent_architect".to_string(),
                 "repo/architect".to_string(),
                 &launch_agent,
             )
@@ -255,7 +255,7 @@ mod tests {
     fn write_session_request_is_still_json_camel_case() {
         let request = SessionRequest {
             id: format!("test-{}", uuid::Uuid::new_v4().simple()),
-            cwd: "C:/repo/.ac-new/_agent_architect".to_string(),
+            cwd: "C:/repo/.ac/_agent_architect".to_string(),
             session_name: "repo/architect".to_string(),
             agent_id: "codex".to_string(),
             shell: "codex".to_string(),

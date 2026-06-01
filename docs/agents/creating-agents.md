@@ -12,7 +12,7 @@ An agent is a directory with a role-prompt file at its root. The directory IS th
 | Codex | `AGENTS.md` (or `CLAUDE.md` fallback) |
 | Gemini | `GEMINI.md` (or `CLAUDE.md` fallback) |
 
-When the agent dir lives inside an AC project at `.ac/_agent_<name>/`, AC promotes it to an **agent matrix** with optional `memory/`, `plans/`, `skills/`, and a canonical `Role.md`. Legacy `.ac-new/` projects use the same layout under `.ac-new/`.
+When the agent dir lives inside an AC project at `.ac/_agent_<name>/`, AC promotes it to an **agent matrix** with optional `memory/`, `plans/`, `skills/`, and a canonical `Role.md`.
 
 ## The one rule
 

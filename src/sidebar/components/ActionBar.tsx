@@ -75,9 +75,9 @@ const ActionBar: Component = () => {
     setShowDropdown(false);
     setIsPendingDialog(true);
     try {
-      const { picked, hasAcNew } = await projectStore.pickAndCheck();
+      const { picked, hasWorkspace } = await projectStore.pickAndCheck();
       if (!picked) return;
-      if (!hasAcNew) {
+      if (!hasWorkspace) {
         await projectStore.createAndLoad(picked);
       }
     } finally {
@@ -97,11 +97,11 @@ const ActionBar: Component = () => {
     try {
       const picked = await open({ directory: true, title: "Select AC Project Folder" });
       if (!picked) return;
-      const hasAcNew = await ProjectAPI.checkPath(picked);
-      if (hasAcNew) {
+      const hasWorkspace = await ProjectAPI.checkPath(picked);
+      if (hasWorkspace) {
         await projectStore.loadProject(picked);
       } else {
-        showToast("No AC project found in this folder (.ac/ not found; legacy .ac-new/ also supported)");
+        showToast("No AC project found in this folder (.ac/ not found)");
       }
     } finally {
       setIsPendingDialog(false);

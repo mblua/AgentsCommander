@@ -28,13 +28,6 @@ describe('path-extractors', () => {
     expect(extractAgentName(w)).toBeNull();
   });
 
-  it('legacy_ac_new_only_returns_project_only', () => {
-    const w = 'C:\\foo\\.ac-new';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBeNull();
-    expect(extractAgentName(w)).toBeNull();
-  });
-
   it('agent_in_wg_returns_all_three', () => {
     const w = 'C:\\foo\\.ac\\wg-19-dev-team\\__agent_tech-lead';
     expect(extractProjectName(w)).toBe('foo');
@@ -42,29 +35,22 @@ describe('path-extractors', () => {
     expect(extractAgentName(w)).toBe('tech-lead');
   });
 
-  it('legacy_agent_in_wg_returns_all_three', () => {
-    const w = 'C:\\foo\\.ac-new\\wg-19-dev-team\\__agent_tech-lead';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBe('WG-19-DEV-TEAM');
-    expect(extractAgentName(w)).toBe('tech-lead');
-  });
-
   it('repo_in_wg_returns_project_and_wg_no_agent', () => {
-    const w = 'C:\\foo\\.ac-new\\wg-19-dev-team\\repo-X';
+    const w = 'C:\\foo\\.ac\\wg-19-dev-team\\repo-X';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBe('WG-19-DEV-TEAM');
     expect(extractAgentName(w)).toBeNull();
   });
 
   it('bare_underscore_agent_returns_no_agent', () => {
-    const w = 'C:\\foo\\.ac-new\\wg-1\\__agent_';
+    const w = 'C:\\foo\\.ac\\wg-1\\__agent_';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBe('WG-1');
     expect(extractAgentName(w)).toBeNull();
   });
 
   it('nested_workspace_uses_innermost', () => {
-    const w = 'C:\\proj\\.ac-new\\wg-1-outer\\repo-AC\\.ac\\wg-2-inner\\__agent_alice';
+    const w = 'C:\\proj\\.ac\\wg-1-outer\\repo-AC\\.ac\\wg-2-inner\\__agent_alice';
     expect(extractProjectName(w)).toBe('repo-AC');
     expect(extractWorkgroupName(w)).toBe('WG-2-INNER');
     expect(extractAgentName(w)).toBe('alice');
@@ -78,21 +64,21 @@ describe('path-extractors', () => {
   });
 
   it('trailing_slash_handled', () => {
-    const w = 'C:\\foo\\.ac-new\\wg-1\\__agent_x\\';
+    const w = 'C:\\foo\\.ac\\wg-1\\__agent_x\\';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBe('WG-1');
     expect(extractAgentName(w)).toBe('x');
   });
 
   it('lax_wg_segment_rejected_no_digits', () => {
-    const w = 'C:\\foo\\.ac-new\\wg-foo\\__agent_x';
+    const w = 'C:\\foo\\.ac\\wg-foo\\__agent_x';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBeNull();
     expect(extractAgentName(w)).toBe('x');
   });
 
   it('lax_wg_segment_rejected_bare_dash', () => {
-    const w = 'C:\\foo\\.ac-new\\wg-\\__agent_x';
+    const w = 'C:\\foo\\.ac\\wg-\\__agent_x';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBeNull();
     expect(extractAgentName(w)).toBe('x');
@@ -108,13 +94,13 @@ describe('path-extractors', () => {
 
 describe('computeTrailingText', () => {
   it('project_and_agent_returns_agent_at_project', () => {
-    const w = 'C:\\foo\\.ac-new\\wg-19-dev-team\\__agent_alice';
+    const w = 'C:\\foo\\.ac\\wg-19-dev-team\\__agent_alice';
     expect(computeTrailingText(w, null)).toBe('alice@foo');
     expect(computeTrailingText(w, 'session-x')).toBe('alice@foo');
   });
 
   it('agent_only_returns_agent', () => {
-    const w = '\\.ac-new\\wg-1\\__agent_alice';
+    const w = '\\.ac\\wg-1\\__agent_alice';
     expect(extractProjectName(w)).toBeNull();
     expect(extractAgentName(w)).toBe('alice');
     expect(computeTrailingText(w, null)).toBe('alice');
@@ -122,7 +108,7 @@ describe('computeTrailingText', () => {
   });
 
   it('project_and_session_no_agent_returns_session_at_project', () => {
-    const w = 'C:\\foo\\.ac-new\\wg-1\\repo-X';
+    const w = 'C:\\foo\\.ac\\wg-1\\repo-X';
     expect(extractProjectName(w)).toBe('foo');
     expect(extractAgentName(w)).toBeNull();
     expect(computeTrailingText(w, 'my-session')).toBe('my-session@foo');
@@ -142,8 +128,8 @@ describe('computeTrailingText', () => {
     expect(computeTrailingText('C:\\nothing', null)).toBeNull();
   });
 
-  it('nested_ac_new_uses_innermost_for_trailing', () => {
-    const w = 'C:\\proj\\.ac-new\\wg-1-outer\\repo-AC\\.ac-new\\wg-2-inner\\__agent_alice';
+  it('nested_workspace_uses_innermost_for_trailing', () => {
+    const w = 'C:\\proj\\.ac\\wg-1-outer\\repo-AC\\.ac\\wg-2-inner\\__agent_alice';
     expect(computeTrailingText(w, null)).toBe('alice@repo-AC');
   });
 });

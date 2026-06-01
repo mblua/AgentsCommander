@@ -100,12 +100,8 @@ pub(crate) fn resolve_cli_project(project: &str) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn resolve_cli_workspace(project_path: &Path) -> Result<PathBuf, String> {
-    existing_workspace_dir(project_path).ok_or_else(|| {
-        format!(
-            "AC workspace not found in {} (.ac or legacy .ac-new)",
-            project_path.display()
-        )
-    })
+    existing_workspace_dir(project_path)
+        .ok_or_else(|| format!("AC workspace not found in {} (.ac)", project_path.display()))
 }
 
 pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str, reason: &str) {
@@ -231,7 +227,7 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
 }
 
 pub(crate) fn build_final_team_config(
-    ac_new: &Path,
+    workspace_dir: &Path,
     team_name: &str,
     coordinator: &str,
     agents: &[String],
@@ -239,17 +235,17 @@ pub(crate) fn build_final_team_config(
     repo_agents: &[String],
     repo_exclude_agents: &[String],
 ) -> Result<TeamConfigResult, String> {
-    let existing = read_team_config(ac_new, team_name).ok();
+    let existing = read_team_config(workspace_dir, team_name).ok();
     let mut roster = Vec::new();
     if let Some(config) = existing.as_ref() {
         for agent in &config.agents {
-            push_unique(&mut roster, resolve_agent_ref(ac_new, agent)?);
+            push_unique(&mut roster, resolve_agent_ref(workspace_dir, agent)?);
         }
     }
     for agent in agents {
-        push_unique(&mut roster, resolve_agent_ref(ac_new, agent)?);
+        push_unique(&mut roster, resolve_agent_ref(workspace_dir, agent)?);
     }
-    let coordinator = resolve_agent_ref(ac_new, coordinator)?;
+    let coordinator = resolve_agent_ref(workspace_dir, coordinator)?;
     push_unique(&mut roster, coordinator.clone());
     if roster.is_empty() {
         return Err("At least one team agent is required".to_string());
@@ -258,7 +254,13 @@ pub(crate) fn build_final_team_config(
         if repos.is_empty() && repo_agents.is_empty() && repo_exclude_agents.is_empty() {
             existing.map(|config| config.repos).unwrap_or_default()
         } else {
-            build_repo_assignments(ac_new, &roster, repos, repo_agents, repo_exclude_agents)?
+            build_repo_assignments(
+                workspace_dir,
+                &roster,
+                repos,
+                repo_agents,
+                repo_exclude_agents,
+            )?
         };
     Ok(TeamConfigResult {
         agents: roster,
@@ -268,7 +270,7 @@ pub(crate) fn build_final_team_config(
 }
 
 fn build_repo_assignments(
-    ac_new: &Path,
+    workspace_dir: &Path,
     roster: &[String],
     repos: &[String],
     repo_agents: &[String],
@@ -308,9 +310,9 @@ fn build_repo_assignments(
     let mut out = Vec::new();
     for url in order {
         let agents = if let Some(list) = include.get(&url) {
-            resolve_assignment_agents(ac_new, roster, list)?
+            resolve_assignment_agents(workspace_dir, roster, list)?
         } else if let Some(list) = exclude.get(&url) {
-            let excluded = resolve_assignment_agents(ac_new, roster, list)?;
+            let excluded = resolve_assignment_agents(workspace_dir, roster, list)?;
             roster
                 .iter()
                 .filter(|agent| !excluded.contains(agent))
@@ -355,13 +357,13 @@ fn parse_assignment_specs(
 }
 
 fn resolve_assignment_agents(
-    ac_new: &Path,
+    workspace_dir: &Path,
     roster: &[String],
     agents: &[String],
 ) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for agent in agents {
-        let resolved = resolve_agent_ref(ac_new, agent)?;
+        let resolved = resolve_agent_ref(workspace_dir, agent)?;
         if !roster.contains(&resolved) {
             return Err(format!(
                 "Repo assignment references agent '{}' which is not in the final team roster",

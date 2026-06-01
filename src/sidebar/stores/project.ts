@@ -46,7 +46,7 @@ export const projectStore = {
     setLoading(true);
     try {
       // #191 — backend owns the validation + dedup + persist atomically.
-      // Throws if `.ac/` and legacy `.ac-new/` are missing; caller (createAndLoad / pickAndCheck)
+      // Throws if `.ac/` is missing; caller (createAndLoad / pickAndCheck)
       // is responsible for creating it first via projectStore.createAndLoad
       // when that case is expected.
       const reg = await ProjectAPI.open(path);
@@ -120,15 +120,15 @@ export const projectStore = {
   },
 
   /** Full open flow: pick folder, check workspace, auto-load if found */
-  async pickAndCheck(): Promise<{ picked: string | null; hasAcNew: boolean }> {
+  async pickAndCheck(): Promise<{ picked: string | null; hasWorkspace: boolean }> {
     const picked = await AgentCreatorAPI.pickFolder();
-    if (!picked) return { picked: null, hasAcNew: false };
+    if (!picked) return { picked: null, hasWorkspace: false };
 
-    const hasAcNew = await ProjectAPI.checkPath(picked);
-    if (hasAcNew) {
+    const hasWorkspace = await ProjectAPI.checkPath(picked);
+    if (hasWorkspace) {
       await projectStore.loadProject(picked);
     }
-    return { picked, hasAcNew };
+    return { picked, hasWorkspace };
   },
 
   /** Update a replica's branch from the discovery branch watcher */

@@ -785,7 +785,7 @@ mod tests {
             .create_session(
                 "claude".into(),
                 vec![],
-                "C:\\proj\\.ac-new\\_agent_architect".into(),
+                "C:\\proj\\.ac\\_agent_architect".into(),
                 Some("aid".into()),
                 Some("Architect".into()),
                 vec![],

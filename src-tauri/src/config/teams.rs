@@ -320,22 +320,22 @@ fn identity_compare_key(path: &Path) -> String {
 }
 
 pub fn resolve_wg_coordinator_replica(
-    ac_new_dir: &Path,
+    workspace_dir: &Path,
     wg_dir: &Path,
 ) -> Option<WgCoordinatorReplica> {
-    let project = ac_new_dir.parent()?.file_name()?.to_str()?.to_string();
+    let project = workspace_dir.parent()?.file_name()?.to_str()?.to_string();
     let wg_name = wg_dir.file_name()?.to_str()?.to_string();
     let team = wg_name
         .strip_prefix("wg-")
         .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
 
-    let team_dir = ac_new_dir.join(format!("_team_{}", team));
+    let team_dir = workspace_dir.join(format!("_team_{}", team));
     let team_config: serde_json::Value = std::fs::read_to_string(team_dir.join("config.json"))
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())?;
     let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
     let coordinator_name = agent_bare_name_from_ref(coordinator_ref).ok()?;
-    if !ac_new_dir
+    if !workspace_dir
         .join(format!("_agent_{}", coordinator_name))
         .is_dir()
     {
@@ -386,14 +386,14 @@ pub fn verified_wg_coordinator_target(
         if project_name != project {
             continue;
         }
-        let Some(ac_new_dir) = existing_workspace_dir(&project_dir) else {
+        let Some(workspace_dir) = existing_workspace_dir(&project_dir) else {
             continue;
         };
-        let wg_dir = ac_new_dir.join(wg_name);
+        let wg_dir = workspace_dir.join(wg_name);
         if !wg_dir.is_dir() {
             continue;
         }
-        if let Some(resolved) = resolve_wg_coordinator_replica(&ac_new_dir, &wg_dir) {
+        if let Some(resolved) = resolve_wg_coordinator_replica(&workspace_dir, &wg_dir) {
             if resolved.agent_name == agent_name {
                 return Some(resolved);
             }
@@ -539,7 +539,7 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
 }
 
 /// Resolve an agent ref to an absolute path given the workspace directory.
-fn resolve_agent_path(ac_new_dir: &Path, agent_ref: &str) -> Option<PathBuf> {
+fn resolve_agent_path(workspace_dir: &Path, agent_ref: &str) -> Option<PathBuf> {
     let normalized = agent_ref.replace('\\', "/");
     let trimmed = normalized
         .trim_start_matches("../")
@@ -555,13 +555,13 @@ fn resolve_agent_path(ac_new_dir: &Path, agent_ref: &str) -> Option<PathBuf> {
     }
 
     // Relative to the workspace directory.
-    let candidate = ac_new_dir.join(trimmed);
+    let candidate = workspace_dir.join(trimmed);
     if candidate.is_dir() {
         return Some(candidate);
     }
 
     // Try parent of the workspace directory (project root).
-    if let Some(project_root) = ac_new_dir.parent() {
+    if let Some(project_root) = workspace_dir.parent() {
         let candidate = project_root.join(trimmed);
         if candidate.is_dir() {
             return Some(candidate);
@@ -857,7 +857,7 @@ pub fn discover_teams() -> Vec<DiscoveredTeam> {
 
 /// Discover teams in a single project directory.
 fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>) {
-    let Some(ac_new) = existing_workspace_dir(project_dir) else {
+    let Some(workspace_dir) = existing_workspace_dir(project_dir) else {
         return;
     };
 
@@ -867,7 +867,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
         .unwrap_or("unknown")
         .to_string();
 
-    let entries = match std::fs::read_dir(&ac_new) {
+    let entries = match std::fs::read_dir(&workspace_dir) {
         Ok(e) => e,
         Err(_) => return,
     };
@@ -962,7 +962,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
             .iter()
             .map(|r| {
                 let name = resolve_agent_ref(&project_folder, r);
-                let path = resolve_agent_path(&ac_new, r);
+                let path = resolve_agent_path(&workspace_dir, r);
                 (name, path)
             })
             .unzip();
@@ -979,7 +979,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
 
         let coordinator_path = coordinator_ref
             .as_ref()
-            .and_then(|r| resolve_agent_path(&ac_new, r));
+            .and_then(|r| resolve_agent_path(&workspace_dir, r));
 
         teams.push(DiscoveredTeam {
             name: team_name,
@@ -1014,8 +1014,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_fqn_from_path_legacy_wg_replica() {
-        let cwd = "C:/repos/proj-a/.ac-new/wg-1-devs/__agent_alice";
+    fn agent_fqn_from_path_wg_replica_windows_style() {
+        let cwd = "C:/repos/proj-a/.ac/wg-1-devs/__agent_alice";
         assert_eq!(agent_fqn_from_path(cwd), "proj-a:wg-1-devs/alice");
     }
 
@@ -1036,14 +1036,14 @@ mod tests {
     /// §G6 case 3: Windows UNC `\\?\` prefix must still resolve correctly.
     #[test]
     fn agent_fqn_from_path_handles_unc_prefix() {
-        let cwd = r"\\?\C:\repos\proj-a\.ac-new\wg-1-devs\__agent_alice";
+        let cwd = r"\\?\C:\repos\proj-a\.ac\wg-1-devs\__agent_alice";
         assert_eq!(agent_fqn_from_path(cwd), "proj-a:wg-1-devs/alice");
     }
 
-    /// §G6 case 2: parent path containing `.ac-new` anchors on the right-most one (rposition).
+    /// §G6 case 2: parent path containing `.ac` anchors on the right-most one (rposition).
     #[test]
-    fn agent_fqn_from_path_pathological_ac_new_prefix() {
-        let cwd = "C:/.ac-new/repos/proj-a/.ac-new/wg-1-devs/__agent_alice";
+    fn agent_fqn_from_path_parent_ac_prefix() {
+        let cwd = "C:/.ac/repos/proj-a/.ac/wg-1-devs/__agent_alice";
         assert_eq!(agent_fqn_from_path(cwd), "proj-a:wg-1-devs/alice");
     }
 
@@ -1120,10 +1120,10 @@ mod tests {
         for (proj_name, wgs) in projects {
             let proj_dir = tmp.path().join(proj_name);
             std::fs::create_dir_all(&proj_dir).unwrap();
-            let ac_new = proj_dir.join(".ac-new");
-            std::fs::create_dir_all(&ac_new).unwrap();
+            let workspace_dir = proj_dir.join(".ac");
+            std::fs::create_dir_all(&workspace_dir).unwrap();
             for (wg_name, agents) in *wgs {
-                let wg_dir = ac_new.join(wg_name);
+                let wg_dir = workspace_dir.join(wg_name);
                 std::fs::create_dir_all(&wg_dir).unwrap();
                 for agent in *agents {
                     let replica = wg_dir.join(format!("__agent_{}", agent));
@@ -1138,11 +1138,11 @@ mod tests {
     fn make_coordinator_fixture(spoofed_coordinator_identity: bool) -> (FixtureRoot, Vec<String>) {
         let tmp = FixtureRoot::new("teams-coord-fixture");
         let project = tmp.path().join("proj-a");
-        let ac_new = project.join(".ac-new");
-        let team_dir = ac_new.join("_team_dev-team");
-        let origin_tech_lead = ac_new.join("_agent_tech-lead");
-        let origin_dev_rust = ac_new.join("_agent_dev-rust");
-        let wg_dir = ac_new.join("wg-1-dev-team");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
+        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -1186,14 +1186,14 @@ mod tests {
     ) -> (FixtureRoot, PathBuf, PathBuf, Vec<String>) {
         let tmp = FixtureRoot::new("teams-portable-coord-fixture");
         let project = tmp.path().join("proj-a");
-        let ac_new = project.join(".ac");
-        let team_dir = ac_new.join("_team_dev-team");
-        let local_tech_lead = ac_new.join("_agent_tech-lead");
-        let local_dev_rust = ac_new.join("_agent_dev-rust");
-        let origin = tmp.path().join("origin-matrix").join(".ac-new");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let local_tech_lead = workspace_dir.join("_agent_tech-lead");
+        let local_dev_rust = workspace_dir.join("_agent_dev-rust");
+        let origin = tmp.path().join("origin-matrix").join(".ac");
         let origin_tech_lead = origin.join("_agent_tech-lead");
         let origin_dev_rust = origin.join("_agent_dev-rust");
-        let wg_dir = ac_new.join("wg-1-dev-team");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -1236,16 +1236,17 @@ mod tests {
         .unwrap();
 
         let paths = vec![tmp.path().to_string_lossy().to_string()];
-        (tmp, ac_new, wg_dir, paths)
+        (tmp, workspace_dir, wg_dir, paths)
     }
 
     #[test]
     fn resolve_wg_coordinator_replica_uses_identity_not_dir_name() {
         let (tmp, _paths) = make_coordinator_fixture(false);
-        let ac_new = tmp.path().join("proj-a").join(".ac-new");
-        let wg_dir = ac_new.join("wg-1-dev-team");
+        let workspace_dir = tmp.path().join("proj-a").join(".ac");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
 
-        let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir).expect("coordinator");
+        let resolved =
+            resolve_wg_coordinator_replica(&workspace_dir, &wg_dir).expect("coordinator");
 
         assert_eq!(resolved.project, "proj-a");
         assert_eq!(resolved.team, "dev-team");
@@ -1260,17 +1261,17 @@ mod tests {
     #[test]
     fn resolve_wg_coordinator_replica_rejects_spoofed_name() {
         let (tmp, _paths) = make_coordinator_fixture(true);
-        let ac_new = tmp.path().join("proj-a").join(".ac-new");
-        let wg_dir = ac_new.join("wg-1-dev-team");
+        let workspace_dir = tmp.path().join("proj-a").join(".ac");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
 
-        assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
+        assert!(resolve_wg_coordinator_replica(&workspace_dir, &wg_dir).is_none());
     }
 
     #[test]
     fn resolve_wg_coordinator_replica_accepts_portable_ref_with_external_identity() {
-        let (_tmp, ac_new, wg_dir, _paths) = make_portable_coordinator_fixture(false);
+        let (_tmp, workspace_dir, wg_dir, _paths) = make_portable_coordinator_fixture(false);
 
-        let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir)
+        let resolved = resolve_wg_coordinator_replica(&workspace_dir, &wg_dir)
             .expect("portable coordinator ref should match declared identity agent");
 
         assert_eq!(resolved.project, "proj-a");
@@ -1281,14 +1282,14 @@ mod tests {
 
     #[test]
     fn resolve_wg_coordinator_replica_rejects_portable_ref_with_spoofed_identity() {
-        let (_tmp, ac_new, wg_dir, _paths) = make_portable_coordinator_fixture(true);
+        let (_tmp, workspace_dir, wg_dir, _paths) = make_portable_coordinator_fixture(true);
 
-        assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
+        assert!(resolve_wg_coordinator_replica(&workspace_dir, &wg_dir).is_none());
     }
 
     /// Build a fixture where both team config and replica configs reference
-    /// a legacy folder name (`legacy-workspace`) that no longer exists on disk.
-    /// Mirrors the post-workspace-rename state from #299/#300: persisted refs are
+    /// a renamed folder (`renamed-workspace`) that no longer exists on disk.
+    /// Mirrors the post-workspace-rename state from #299: persisted refs are
     /// stale, but the same-workspace local matrices exist and are the only valid
     /// authority targets.
     fn make_stale_coordinator_fixture(
@@ -1296,11 +1297,11 @@ mod tests {
     ) -> (FixtureRoot, PathBuf, PathBuf) {
         let tmp = FixtureRoot::new("teams-stale-coord-fixture");
         let project = tmp.path().join("proj-a");
-        let ac_new = project.join(".ac-new");
-        let team_dir = ac_new.join("_team_test-team");
-        let wg_dir = ac_new.join("wg-1-test-team");
-        let alpha_matrix = ac_new.join("_agent_test-alpha");
-        let beta_matrix = ac_new.join("_agent_test-beta");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_test-team");
+        let wg_dir = workspace_dir.join("wg-1-test-team");
+        let alpha_matrix = workspace_dir.join("_agent_test-alpha");
+        let beta_matrix = workspace_dir.join("_agent_test-beta");
         let alpha_replica = wg_dir.join("__agent_test-alpha");
         let beta_replica = wg_dir.join("__agent_test-beta");
 
@@ -1314,11 +1315,11 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
         }
 
-        // Stale absolute path (the `legacy-workspace` folder is never created).
+        // Stale absolute path (the `renamed-workspace` folder is never created).
         let stale_coord = tmp
             .path()
-            .join("legacy-workspace")
-            .join(".ac-new")
+            .join("renamed-workspace")
+            .join(".ac")
             .join("_agent_test-alpha");
         let stale_coord_str = stale_coord.to_string_lossy().replace('\\', "/");
 
@@ -1333,8 +1334,8 @@ mod tests {
         // points to a DIFFERENT stale matrix (the test-beta slot) — must reject.
         let alpha_identity = if replica_spoofs_identity {
             tmp.path()
-                .join("legacy-workspace")
-                .join(".ac-new")
+                .join("renamed-workspace")
+                .join(".ac")
                 .join("_agent_test-beta")
                 .to_string_lossy()
                 .replace('\\', "/")
@@ -1351,8 +1352,8 @@ mod tests {
         // Not the coordinator — must not match.
         let beta_identity = tmp
             .path()
-            .join("legacy-workspace")
-            .join(".ac-new")
+            .join("renamed-workspace")
+            .join(".ac")
             .join("_agent_test-beta")
             .to_string_lossy()
             .replace('\\', "/");
@@ -1362,16 +1363,16 @@ mod tests {
         )
         .unwrap();
 
-        (tmp, ac_new, wg_dir)
+        (tmp, workspace_dir, wg_dir)
     }
 
-    /// #300: stale absolute identity refs are accepted only by repairing them
+    /// Stale absolute identity refs are accepted only by repairing them
     /// to the same-workspace local matrix with the same agent basename.
     #[test]
     fn resolve_wg_coordinator_replica_repairs_stale_absolute_refs() {
-        let (_tmp, ac_new, wg_dir) = make_stale_coordinator_fixture(false);
+        let (_tmp, workspace_dir, wg_dir) = make_stale_coordinator_fixture(false);
 
-        let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir)
+        let resolved = resolve_wg_coordinator_replica(&workspace_dir, &wg_dir)
             .expect("same-workspace repair should resolve coordinator with stale refs");
 
         assert_eq!(resolved.agent_name, "test-alpha");
@@ -1390,25 +1391,25 @@ mod tests {
     /// (e.g. `_agent_test-beta`) must not be accepted as coordinator.
     #[test]
     fn resolve_wg_coordinator_replica_rejects_spoofed_stale_identity() {
-        let (_tmp, ac_new, wg_dir) = make_stale_coordinator_fixture(true);
+        let (_tmp, workspace_dir, wg_dir) = make_stale_coordinator_fixture(true);
 
         // The test-alpha replica has been spoofed to claim the test-beta matrix.
         // The test-beta replica claims the test-beta matrix too. Neither matches
         // the team's coordinator ref (`_agent_test-alpha`), so no coordinator
         // is resolved.
-        assert!(resolve_wg_coordinator_replica(&ac_new, &wg_dir).is_none());
+        assert!(resolve_wg_coordinator_replica(&workspace_dir, &wg_dir).is_none());
     }
 
-    /// #300: relative identity traversing out of the workspace must be repaired
+    /// Relative identity traversing out of the workspace must be repaired
     /// to the same-workspace local matrix, not compared against the stale target.
     #[test]
     fn resolve_wg_coordinator_replica_repairs_stale_relative_identity() {
         let tmp = FixtureRoot::new("teams-stale-rel-fixture");
         let project = tmp.path().join("proj-a");
-        let ac_new = project.join(".ac-new");
-        let team_dir = ac_new.join("_team_test-team");
-        let wg_dir = ac_new.join("wg-1-test-team");
-        let alpha_matrix = ac_new.join("_agent_test-alpha");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_test-team");
+        let wg_dir = workspace_dir.join("wg-1-test-team");
+        let alpha_matrix = workspace_dir.join("_agent_test-alpha");
         let alpha_replica = wg_dir.join("__agent_test-alpha");
 
         for dir in [&team_dir, &alpha_matrix, &alpha_replica] {
@@ -1416,11 +1417,11 @@ mod tests {
         }
 
         // Team config: stale absolute coordinator path
-        // → tmp/legacy-workspace/.ac-new/_agent_test-alpha
+        // -> tmp/renamed-workspace/.ac/_agent_test-alpha
         let stale_abs = tmp
             .path()
-            .join("legacy-workspace")
-            .join(".ac-new")
+            .join("renamed-workspace")
+            .join(".ac")
             .join("_agent_test-alpha");
         let stale_abs_str = stale_abs.to_string_lossy().replace('\\', "/");
         std::fs::write(
@@ -1430,17 +1431,17 @@ mod tests {
         .unwrap();
 
         // Replica identity: relative path that traverses out to the same
-        // legacy folder. From `<tmp>/proj-a/.ac-new/wg-1-test-team/__agent_test-alpha`,
-        // `../../../../legacy-workspace/.ac-new/_agent_test-alpha` resolves to
-        // `<tmp>/legacy-workspace/.ac-new/_agent_test-alpha` — the same logical
+        // legacy folder. From `<tmp>/proj-a/.ac/wg-1-test-team/__agent_test-alpha`,
+        // `../../../../renamed-workspace/.ac/_agent_test-alpha` resolves to
+        // `<tmp>/renamed-workspace/.ac/_agent_test-alpha` — the same logical
         // target as the team coordinator ref.
         std::fs::write(
             alpha_replica.join("config.json"),
-            r#"{"identity":"../../../../legacy-workspace/.ac-new/_agent_test-alpha"}"#,
+            r#"{"identity":"../../../../renamed-workspace/.ac/_agent_test-alpha"}"#,
         )
         .unwrap();
 
-        let resolved = resolve_wg_coordinator_replica(&ac_new, &wg_dir)
+        let resolved = resolve_wg_coordinator_replica(&workspace_dir, &wg_dir)
             .expect("same-workspace repair should resolve stale relative identity");
         assert_eq!(resolved.agent_name, "test-alpha");
     }
@@ -1478,8 +1479,8 @@ mod tests {
     fn identity_compare_key_equal_for_stale_paths_pointing_to_same_target() {
         // Two refs expressed differently but logically pointing at the same
         // non-existent legacy location should produce equal keys.
-        let a = Path::new("/some/where/legacy/.ac-new/_agent_test-alpha");
-        let b = Path::new("/some/where/proj/.ac-new/wg-1-test-team/__agent_test-alpha/../../../../legacy/.ac-new/_agent_test-alpha");
+        let a = Path::new("/some/where/legacy/.ac/_agent_test-alpha");
+        let b = Path::new("/some/where/proj/.ac/wg-1-test-team/__agent_test-alpha/../../../../legacy/.ac/_agent_test-alpha");
         assert_eq!(identity_compare_key(a), identity_compare_key(b));
     }
 
@@ -1487,8 +1488,8 @@ mod tests {
     fn identity_compare_key_differs_for_different_matrix_names() {
         // Stale refs to different matrix dirs must produce different keys —
         // protects spoofing when both refs are stale.
-        let a = Path::new("/some/where/legacy/.ac-new/_agent_test-alpha");
-        let b = Path::new("/some/where/legacy/.ac-new/_agent_test-beta");
+        let a = Path::new("/some/where/legacy/.ac/_agent_test-alpha");
+        let b = Path::new("/some/where/legacy/.ac/_agent_test-beta");
         assert_ne!(identity_compare_key(a), identity_compare_key(b));
     }
 
@@ -1496,8 +1497,8 @@ mod tests {
     fn identity_compare_key_case_insensitive() {
         // Comparison is case-insensitive (Windows convention; matches
         // cli/list_peers::norm_path).
-        let a = Path::new("/Some/Where/.ac-new/_Agent_Test-Alpha");
-        let b = Path::new("/some/where/.ac-new/_agent_test-alpha");
+        let a = Path::new("/Some/Where/.ac/_Agent_Test-Alpha");
+        let b = Path::new("/some/where/.ac/_agent_test-alpha");
         assert_eq!(identity_compare_key(a), identity_compare_key(b));
     }
 
@@ -1528,7 +1529,7 @@ mod tests {
 
     #[test]
     fn verified_wg_coordinator_target_accepts_portable_ref_with_external_identity() {
-        let (_tmp, _ac_new, _wg_dir, paths) = make_portable_coordinator_fixture(false);
+        let (_tmp, _workspace, _wg_dir, paths) = make_portable_coordinator_fixture(false);
 
         let resolved = verified_wg_coordinator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
             .expect("portable verified coordinator");
@@ -1606,12 +1607,12 @@ mod tests {
     #[test]
     fn resolve_agent_target_two_level_scan() {
         let tmp = FixtureRoot::new("teams-two-level");
-        // Lay out: tmp/ contains proj-a/ and proj-b/, each with a .ac-new/ + colliding replica.
+        // Lay out: tmp/ contains proj-a/ and proj-b/, each with a .ac/ + colliding replica.
         for proj in ["proj-a", "proj-b"] {
             let replica = tmp
                 .path()
                 .join(proj)
-                .join(".ac-new")
+                .join(".ac")
                 .join("wg-1-devs")
                 .join("__agent_alice");
             std::fs::create_dir_all(&replica).unwrap();
@@ -1700,15 +1701,15 @@ mod tests {
         }];
 
         // Coordinator replica (any WG of the same team) resolves true.
-        let coord_cwd = "C:/repos/foo/.ac-new/wg-4-dev-team/__agent_tech-lead";
+        let coord_cwd = "C:/repos/foo/.ac/wg-4-dev-team/__agent_tech-lead";
         assert!(is_coordinator_for_cwd(coord_cwd, &teams));
 
         // Non-coordinator member of the team → false.
-        let member_cwd = "C:/repos/foo/.ac-new/wg-4-dev-team/__agent_dev-rust";
+        let member_cwd = "C:/repos/foo/.ac/wg-4-dev-team/__agent_dev-rust";
         assert!(!is_coordinator_for_cwd(member_cwd, &teams));
 
         // Unrelated agent outside any team → false.
-        let other_cwd = "C:/repos/foo/.ac-new/wg-9-other-team/__agent_dev-rust";
+        let other_cwd = "C:/repos/foo/.ac/wg-9-other-team/__agent_dev-rust";
         assert!(!is_coordinator_for_cwd(other_cwd, &teams));
     }
 
@@ -1716,7 +1717,7 @@ mod tests {
     #[test]
     fn is_coordinator_for_cwd_empty_teams() {
         let teams: Vec<DiscoveredTeam> = vec![];
-        let cwd = "C:/repos/foo/.ac-new/wg-1-dev-team/__agent_tech-lead";
+        let cwd = "C:/repos/foo/.ac/wg-1-dev-team/__agent_tech-lead";
         assert!(!is_coordinator_for_cwd(cwd, &teams));
     }
 
@@ -1772,9 +1773,9 @@ mod tests {
     fn is_coordinator_for_cwd_project_qualified() {
         let teams = vec![dev_team("proj-a"), dev_team("proj-b")];
         // tech-lead of proj-a's dev-team.
-        let coord_a_cwd = "C:/repos/proj-a/.ac-new/wg-1-dev-team/__agent_tech-lead";
+        let coord_a_cwd = "C:/repos/proj-a/.ac/wg-1-dev-team/__agent_tech-lead";
         // tech-lead of proj-b's dev-team.
-        let coord_b_cwd = "C:/repos/proj-b/.ac-new/wg-1-dev-team/__agent_tech-lead";
+        let coord_b_cwd = "C:/repos/proj-b/.ac/wg-1-dev-team/__agent_tech-lead";
         assert!(is_coordinator_for_cwd(coord_a_cwd, &teams));
         assert!(is_coordinator_for_cwd(coord_b_cwd, &teams));
     }

@@ -9,9 +9,9 @@ const Toolbar: Component = () => {
   const [confirmPath, setConfirmPath] = createSignal<string | null>(null);
 
   const handleOpenProject = async () => {
-    const { picked, hasAcNew } = await projectStore.pickAndCheck();
+    const { picked, hasWorkspace } = await projectStore.pickAndCheck();
     if (!picked) return;
-    if (!hasAcNew) {
+    if (!hasWorkspace) {
       setConfirmPath(picked);
     }
   };

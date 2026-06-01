@@ -19,7 +19,7 @@ Public-push release: repo cleanup, documentation rewrite scaffolding, and factua
 ### Changed
 
 - Documentation: `ROLE_AC_BUILDER.md` moved to `docs/agent-matrix-conventions.md`.
-- `.gitignore`: added `_logbooks/`; replaced the hand-listed `.ac-new/wg-{1,2,3}-ac-devs/` entries with the single glob `.ac-new/wg-*/`.
+- `.gitignore`: added `_logbooks/`; replaced hand-listed workgroup entries with a single workspace workgroup glob.
 - README factual fixes:
   - Supported coding agents corrected to **Claude Code · Codex · Gemini** (was: Claude Code · Codex · OpenCode — OpenCode is not yet supported; tracked in [#315](https://github.com/mblua/AgentsCommander/issues/315)).
   - Window-model description updated to reflect the unified main window (the old "Sidebar and Terminal are independent windows" description was pre-unification).

@@ -247,7 +247,7 @@ const SessionItem: Component<{
    *  Other paths: "parentFolder/name" (last 2 segments)
    *
    *  Workspace parsing is delegated to extractProjectName. The innermost
-   *  .ac or legacy .ac-new segment wins, matching the titlebar helpers. */
+   *  .ac segment wins, matching the titlebar helpers. */
   const displayName = () => {
     const wd = props.session.workingDirectory;
     if (wd) {
