@@ -146,6 +146,13 @@ pub(crate) fn should_wake_root_agent_on_restore(
     }
 }
 
+pub(crate) fn should_auto_create_root_agent_on_first_restore(
+    settings: &crate::config::settings::AppSettings,
+    last_coding_agent: Option<&str>,
+) -> bool {
+    commands::session::resolve_root_agent_command(settings, None, last_coding_agent).is_ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
@@ -745,22 +752,38 @@ pub fn run() {
                     if let Some(root_path) = root_agent_path.clone() {
                         match root_ps.as_ref() {
                             None => {
-                                match commands::session::create_root_agent_inner(
-                                    &app_handle,
-                                    &session_mgr_clone,
-                                    &pty_mgr_clone,
-                                    &tg_mgr_clone,
-                                    &settings_state_clone,
-                                    None,
-                                    true,
-                                )
-                                .await
-                                {
-                                    Ok(_) => n_woken += 1,
-                                    Err(e) => log::error!(
-                                        "[root-agent] Failed to auto-create root session: {}",
-                                        e
-                                    ),
+                                let last_coding_agent =
+                                    crate::config::root_agent::read_last_coding_agent(&root_path);
+                                let should_auto_create = {
+                                    let cfg = settings_state_clone.read().await;
+                                    should_auto_create_root_agent_on_first_restore(
+                                        &cfg,
+                                        last_coding_agent.as_deref(),
+                                    )
+                                };
+
+                                if should_auto_create {
+                                    match commands::session::create_root_agent_inner(
+                                        &app_handle,
+                                        &session_mgr_clone,
+                                        &pty_mgr_clone,
+                                        &tg_mgr_clone,
+                                        &settings_state_clone,
+                                        None,
+                                        true,
+                                    )
+                                    .await
+                                    {
+                                        Ok(_) => n_woken += 1,
+                                        Err(e) => log::error!(
+                                            "[root-agent] Failed to auto-create root session: {}",
+                                            e
+                                        ),
+                                    }
+                                } else {
+                                    log::info!(
+                                        "[root-agent] Skipping startup auto-create: no resolvable coding agent is configured"
+                                    );
                                 }
                             }
                             Some(ps)
@@ -1432,8 +1455,26 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_wake_on_restore, should_wake_root_agent_on_restore};
+    use super::{
+        should_auto_create_root_agent_on_first_restore, should_wake_on_restore,
+        should_wake_root_agent_on_restore,
+    };
+    use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
+
+    fn settings_with_agent() -> AppSettings {
+        AppSettings {
+            agents: vec![AgentConfig {
+                id: "codex".to_string(),
+                label: "Codex".to_string(),
+                command: "codex".to_string(),
+                color: "#10b981".to_string(),
+                git_pull_before: false,
+                exclude_global_claude_md: false,
+            }],
+            ..AppSettings::default()
+        }
+    }
 
     #[test]
     fn setting_off_always_defers() {
@@ -1514,5 +1555,33 @@ mod tests {
         assert!(!should_wake_root_agent_on_restore(Some(
             &SessionStatus::Exited(137)
         )));
+    }
+
+    #[test]
+    fn first_restore_does_not_auto_create_root_agent_without_agents() {
+        let settings = AppSettings::default();
+
+        assert!(!should_auto_create_root_agent_on_first_restore(
+            &settings, None
+        ));
+    }
+
+    #[test]
+    fn first_restore_auto_creates_root_agent_with_configured_agent() {
+        let settings = settings_with_agent();
+
+        assert!(should_auto_create_root_agent_on_first_restore(
+            &settings, None
+        ));
+    }
+
+    #[test]
+    fn first_restore_auto_creates_root_agent_with_valid_last_coding_agent() {
+        let settings = settings_with_agent();
+
+        assert!(should_auto_create_root_agent_on_first_restore(
+            &settings,
+            Some("codex")
+        ));
     }
 }

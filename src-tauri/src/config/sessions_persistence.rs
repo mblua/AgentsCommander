@@ -443,7 +443,7 @@ pub fn load_sessions_raw() -> Vec<PersistedSession> {
     if !path.exists() {
         return vec![];
     }
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => vec![],
     }
@@ -472,7 +472,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
         return vec![];
     }
 
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<Vec<PersistedSession>>(&contents) {
             Ok(sessions) => {
                 // Safety net: filter out [temp] sessions that should never survive a restart
@@ -1119,13 +1119,6 @@ pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), St
     persist_current_state_to_dir_for_project_paths_result(mgr, &dir, Some(&project_paths)).await
 }
 
-async fn persist_current_state_to_dir_result(
-    mgr: &SessionManager,
-    dir: &Path,
-) -> Result<(), String> {
-    persist_current_state_to_dir_for_project_paths_result(mgr, dir, None).await
-}
-
 async fn persist_current_state_to_dir_for_project_paths_result(
     mgr: &SessionManager,
     dir: &Path,
@@ -1138,6 +1131,14 @@ async fn persist_current_state_to_dir_for_project_paths_result(
         None => snapshot,
     };
     save_sessions_to_dir(dir, &snapshot)
+}
+
+#[cfg(test)]
+async fn persist_current_state_to_dir_result(
+    mgr: &SessionManager,
+    dir: &Path,
+) -> Result<(), String> {
+    persist_current_state_to_dir_for_project_paths_result(mgr, dir, None).await
 }
 
 pub async fn persist_current_state(mgr: &SessionManager) {
