@@ -463,15 +463,21 @@ fn list(args: ProjectArgs) -> Result<CommandOutput, Vec<CliError>> {
 
 fn show(args: ExperimentArgs) -> Result<CommandOutput, Vec<CliError>> {
     let loaded = load_experiment(&args.project, &args.experiment)?;
-    let mut errors = validate_experiment_metadata_paths(&loaded);
+    let mut errors = validate_loaded_experiment_source_metadata(&loaded);
     let mut variants = Vec::new();
-    for variant in &loaded.experiment.variants {
-        match load_variant_metadata(&loaded, variant) {
-            Ok(meta) => {
-                errors.extend(validate_variant_metadata_paths(&loaded, &meta));
-                variants.push(serde_json::to_value(meta).unwrap_or(serde_json::Value::Null));
+    if errors.is_empty() {
+        for variant in &loaded.experiment.variants {
+            if let Err(mut e) = validate_variant_name_request(&loaded, variant) {
+                errors.append(&mut e);
+                continue;
             }
-            Err(e) => errors.push(err("variant_metadata_missing", e, Some(variant.as_str()))),
+            match load_variant_metadata(&loaded, variant) {
+                Ok(meta) => {
+                    errors.extend(validate_variant_metadata_paths(&loaded, variant, &meta));
+                    variants.push(serde_json::to_value(meta).unwrap_or(serde_json::Value::Null));
+                }
+                Err(e) => errors.push(err("variant_metadata_missing", e, Some(variant.as_str()))),
+            }
         }
     }
     Ok(CommandOutput {
@@ -486,14 +492,11 @@ fn show(args: ExperimentArgs) -> Result<CommandOutput, Vec<CliError>> {
 
 fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<CliError>> {
     let loaded = load_experiment(&args.project, &args.experiment)?;
-    validate_slug_identity(&args.variant, "Variant", "variant_name_invalid")?;
-    if !loaded.experiment.variants.contains(&args.variant) {
-        return Err(vec![err(
-            "variant_metadata_missing",
-            format!("Variant '{}' is not in experiment metadata", args.variant),
-            Some(args.variant.as_str()),
-        )]);
+    let errors = validate_loaded_experiment_source_metadata(&loaded);
+    if !errors.is_empty() {
+        return Err(errors);
     }
+    validate_variant_name_request(&loaded, &args.variant)?;
     let mut variant = load_variant_metadata(&loaded, &args.variant).map_err(|e| {
         vec![err(
             "variant_metadata_missing",
@@ -501,7 +504,7 @@ fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<CliError>> {
             Some(args.variant.as_str()),
         )]
     })?;
-    let errors = validate_variant_metadata_paths(&loaded, &variant);
+    let errors = validate_variant_metadata_paths(&loaded, &args.variant, &variant);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -617,22 +620,39 @@ fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<CliError>> {
 
 fn variant_diff(args: VariantDiffArgs) -> Result<CommandOutput, Vec<CliError>> {
     let loaded = load_experiment(&args.project, &args.experiment)?;
-    let left = load_variant_metadata(&loaded, &args.against).map_err(|e| {
+    variant_diff_loaded(&loaded, &args)
+}
+
+fn variant_diff_loaded(
+    loaded: &LoadedExperiment,
+    args: &VariantDiffArgs,
+) -> Result<CommandOutput, Vec<CliError>> {
+    let errors = validate_loaded_experiment_source_metadata(loaded);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    validate_variant_name_request(loaded, &args.against)?;
+    validate_variant_name_request(loaded, &args.variant)?;
+    let left = load_variant_metadata(loaded, &args.against).map_err(|e| {
         vec![err(
             "variant_metadata_missing",
             e,
             Some(args.against.as_str()),
         )]
     })?;
-    let right = load_variant_metadata(&loaded, &args.variant).map_err(|e| {
+    let right = load_variant_metadata(loaded, &args.variant).map_err(|e| {
         vec![err(
             "variant_metadata_missing",
             e,
             Some(args.variant.as_str()),
         )]
     })?;
-    let mut errors = validate_variant_metadata_paths(&loaded, &left);
-    errors.extend(validate_variant_metadata_paths(&loaded, &right));
+    let mut errors = validate_variant_metadata_paths(loaded, &args.against, &left);
+    errors.extend(validate_variant_metadata_paths(
+        loaded,
+        &args.variant,
+        &right,
+    ));
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -694,32 +714,31 @@ fn validate(args: ValidateArgs) -> Result<CommandOutput, Vec<CliError>> {
     ) {
         errors.append(&mut e);
     }
-    errors.extend(validate_experiment_metadata_paths(&loaded));
+    let source_metadata_errors = validate_loaded_experiment_source_metadata(&loaded);
+    let source_metadata_valid = source_metadata_errors.is_empty();
+    errors.extend(source_metadata_errors);
 
-    let source_matrix = source_matrix_path(&loaded.workspace_dir, &loaded.experiment.source_agent);
-    let source_role = source_matrix.join("Role.md");
-    if !source_matrix.is_dir() {
-        errors.push(err(
-            "source_agent_missing",
-            format!(
-                "Source agent matrix is missing: {}",
-                source_matrix.display()
-            ),
-            None,
-        ));
-    }
-    if !source_role.is_file() {
-        errors.push(err(
-            "source_role_missing",
-            format!("Source Role.md is missing: {}", source_role.display()),
-            None,
-        ));
-    } else if is_link_path(&source_role) || is_link_path(&source_matrix) {
-        errors.push(err(
-            "source_role_link_or_reparse",
-            "Source role or matrix is a link or reparse point",
-            None,
-        ));
+    if source_metadata_valid {
+        let source_matrix =
+            source_matrix_path(&loaded.workspace_dir, &loaded.experiment.source_agent);
+        let source_role = source_matrix.join("Role.md");
+        if !source_matrix.is_dir() {
+            errors.push(err(
+                "source_agent_missing",
+                format!(
+                    "Source agent matrix is missing: {}",
+                    source_matrix.display()
+                ),
+                None,
+            ));
+        }
+        if !source_role.is_file() {
+            errors.push(err(
+                "source_role_missing",
+                format!("Source Role.md is missing: {}", source_role.display()),
+                None,
+            ));
+        }
     }
 
     let mut seen = HashSet::new();
@@ -743,9 +762,12 @@ fn validate(args: ValidateArgs) -> Result<CommandOutput, Vec<CliError>> {
                 Some(variant.as_str()),
             ));
         }
+        if !source_metadata_valid {
+            continue;
+        }
         match load_variant_metadata(&loaded, variant) {
             Ok(meta) => {
-                errors.extend(validate_variant_metadata_paths(&loaded, &meta));
+                errors.extend(validate_variant_metadata_paths(&loaded, variant, &meta));
                 validate_variant_files(&loaded, &meta, &mut errors);
                 for blocker in
                     find_live_sessions_for_variant(&loaded.workspace_dir, &meta.agent_name)
@@ -810,6 +832,7 @@ fn resolve_project(project: &str) -> Result<PathBuf, Vec<CliError>> {
 fn resolve_workspace(project_path: &Path) -> Result<PathBuf, Vec<CliError>> {
     let workspace = workgroup::resolve_cli_workspace(project_path)
         .map_err(|e| vec![err("workspace_not_found", e, None)])?;
+    reject_link_or_reparse(&workspace, "workspace_link_or_reparse", None)?;
     std::fs::canonicalize(&workspace).map_err(|e| {
         vec![err(
             "workspace_not_found",
@@ -825,6 +848,8 @@ fn load_experiment(project: &str, experiment: &str) -> Result<LoadedExperiment, 
     let workspace_dir = resolve_workspace(&project_path)?;
     let experiment_dir = experiments_dir(&workspace_dir).join(experiment);
     let metadata_path = experiment_dir.join("experiment.json");
+    reject_link_or_reparse(&experiment_dir, "experiment_metadata_link_or_reparse", None)?;
+    reject_link_or_reparse(&metadata_path, "experiment_metadata_link_or_reparse", None)?;
     let experiment = read_json::<ExperimentMetadata>(&metadata_path)
         .map_err(|e| vec![err("experiment_metadata_missing", e, None)])?;
     Ok(LoadedExperiment {
@@ -838,12 +863,20 @@ fn load_variant_metadata(
     loaded: &LoadedExperiment,
     variant: &str,
 ) -> Result<VariantMetadata, String> {
-    read_json(
-        &loaded
-            .experiment_dir
-            .join("variants")
-            .join(format!("{}.json", variant)),
-    )
+    let path = loaded
+        .experiment_dir
+        .join("variants")
+        .join(format!("{}.json", variant));
+    reject_link_or_reparse(&path, "variant_metadata_link_or_reparse", Some(variant)).map_err(
+        |errors| {
+            errors
+                .into_iter()
+                .map(|e| e.message)
+                .collect::<Vec<_>>()
+                .join("; ")
+        },
+    )?;
+    read_json(&path)
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
@@ -898,19 +931,74 @@ fn validate_experiment_metadata_paths(loaded: &LoadedExperiment) -> Vec<CliError
     errors
 }
 
+fn validate_loaded_experiment_source_metadata(loaded: &LoadedExperiment) -> Vec<CliError> {
+    let mut errors = Vec::new();
+    if let Err(mut e) = validate_slug_identity(
+        &loaded.experiment.source_agent,
+        "Source agent",
+        "metadata_path_mismatch",
+    ) {
+        errors.append(&mut e);
+        return errors;
+    }
+    errors.extend(validate_experiment_metadata_paths(loaded));
+    let source_matrix = source_matrix_path(&loaded.workspace_dir, &loaded.experiment.source_agent);
+    let source_role = source_matrix.join("Role.md");
+    if let Err(mut e) = reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)
+    {
+        errors.append(&mut e);
+    }
+    if let Err(mut e) = reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None) {
+        errors.append(&mut e);
+    }
+    errors
+}
+
+fn validate_variant_name_request(
+    loaded: &LoadedExperiment,
+    variant: &str,
+) -> Result<(), Vec<CliError>> {
+    validate_slug_identity(variant, "Variant", "variant_name_invalid")?;
+    if !loaded
+        .experiment
+        .variants
+        .iter()
+        .any(|name| name == variant)
+    {
+        return Err(vec![err(
+            "variant_metadata_missing",
+            format!("Variant '{}' is not in experiment metadata", variant),
+            Some(variant),
+        )]);
+    }
+    Ok(())
+}
+
 fn validate_variant_metadata_paths(
     loaded: &LoadedExperiment,
+    requested_variant: &str,
     variant: &VariantMetadata,
 ) -> Vec<CliError> {
     let parent = loaded.experiment_dir.join("variants");
-    let expected_agent = variant_agent_name(&loaded.experiment.source_agent, &variant.name);
+    let mut errors = Vec::new();
+    if variant.name != requested_variant {
+        errors.push(err(
+            "metadata_path_mismatch",
+            format!(
+                "Variant metadata name '{}' does not match requested variant '{}'",
+                variant.name, requested_variant
+            ),
+            Some(requested_variant),
+        ));
+        return errors;
+    }
+    let expected_agent = variant_agent_name(&loaded.experiment.source_agent, requested_variant);
     let expected_matrix = variant_matrix_path(
         &loaded.workspace_dir,
         &loaded.experiment.source_agent,
-        &variant.name,
+        requested_variant,
     );
     let expected_role = expected_matrix.join("Role.md");
-    let mut errors = Vec::new();
     if variant.source_agent != loaded.experiment.source_agent
         || variant.agent_name != expected_agent
     {
@@ -920,7 +1008,7 @@ fn validate_variant_metadata_paths(
                 "Variant '{}' metadata does not match expected source or agent name",
                 variant.name
             ),
-            Some(variant.name.as_str()),
+            Some(requested_variant),
         ));
     }
     push_path_mismatch(
@@ -929,7 +1017,7 @@ fn validate_variant_metadata_paths(
         &variant.matrix_path,
         &expected_matrix,
         "matrixPath",
-        Some(variant.name.as_str()),
+        Some(requested_variant),
     );
     push_path_mismatch(
         &mut errors,
@@ -937,7 +1025,7 @@ fn validate_variant_metadata_paths(
         &variant.role_path,
         &expected_role,
         "rolePath",
-        Some(variant.name.as_str()),
+        Some(requested_variant),
     );
     errors
 }
@@ -953,6 +1041,20 @@ fn validate_variant_files(
         &variant.name,
     );
     let role = matrix.join("Role.md");
+    if let Err(mut e) = reject_link_or_reparse(
+        &matrix,
+        "variant_role_link_or_reparse",
+        Some(variant.name.as_str()),
+    ) {
+        errors.append(&mut e);
+    }
+    if let Err(mut e) = reject_link_or_reparse(
+        &role,
+        "variant_role_link_or_reparse",
+        Some(variant.name.as_str()),
+    ) {
+        errors.append(&mut e);
+    }
     if !matrix.is_dir() {
         errors.push(err(
             "variant_matrix_missing",
@@ -970,29 +1072,11 @@ fn validate_variant_files(
             "Variant matrix resolves to source matrix",
             Some(variant.name.as_str()),
         ));
-    } else if is_link_path(&matrix) {
-        errors.push(err(
-            "variant_role_link_or_reparse",
-            format!(
-                "Variant matrix is a link or reparse point: {}",
-                matrix.display()
-            ),
-            Some(variant.name.as_str()),
-        ));
     }
     if !role.is_file() {
         errors.push(err(
             "variant_role_missing",
             format!("Variant Role.md is missing: {}", role.display()),
-            Some(variant.name.as_str()),
-        ));
-    } else if is_link_path(&role) {
-        errors.push(err(
-            "variant_role_link_or_reparse",
-            format!(
-                "Variant Role.md is a link or reparse point: {}",
-                role.display()
-            ),
             Some(variant.name.as_str()),
         ));
     }
@@ -1007,6 +1091,18 @@ fn push_path_mismatch(
     variant: Option<&str>,
 ) {
     let resolved = metadata_parent.join(stored);
+    if reject_link_or_reparse(&resolved, "metadata_path_mismatch", variant).is_err() {
+        errors.push(err(
+            "metadata_path_mismatch",
+            format!(
+                "{} resolves through a symlink or reparse point: {}",
+                field,
+                resolved.display()
+            ),
+            variant,
+        ));
+        return;
+    }
     if !paths_equivalent(&resolved, expected) {
         errors.push(err(
             "metadata_path_mismatch",
@@ -1136,15 +1232,35 @@ fn reject_link_or_reparse(
     code: &'static str,
     variant: Option<&str>,
 ) -> Result<(), Vec<CliError>> {
-    if is_link_path(path) {
-        Err(vec![err(
-            code,
-            format!("Path is a symlink or reparse point: {}", path.display()),
-            variant,
-        )])
-    } else {
-        Ok(())
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_) | Component::RootDir) {
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => {
+                return Err(vec![err(
+                    code,
+                    format!("Failed to inspect {}: {}", current.display(), e),
+                    variant,
+                )]);
+            }
+        };
+        if is_link_or_reparse(&metadata) {
+            return Err(vec![err(
+                code,
+                format!(
+                    "Path component is a symlink or reparse point: {}",
+                    current.display()
+                ),
+                variant,
+            )]);
+        }
     }
+    Ok(())
 }
 
 fn is_link_path(path: &Path) -> bool {
@@ -1442,5 +1558,179 @@ fn warn(code: &'static str, message: impl Into<String>, variant: Option<String>)
         code: code.to_string(),
         message: message.into(),
         variant,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loaded_fixture(source_agent: &str) -> (tempfile::TempDir, LoadedExperiment) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = tmp.path().join(".ac");
+        let experiment_dir = workspace_dir.join("experiments").join("exp");
+        std::fs::create_dir_all(experiment_dir.join("variants")).expect("experiment dirs");
+
+        let source_matrix = workspace_dir.join(format!("_agent_{}", source_agent));
+        std::fs::create_dir_all(&source_matrix).expect("source matrix");
+        std::fs::write(source_matrix.join("Role.md"), "source role\n").expect("source role");
+
+        for variant in ["control", "test"] {
+            let agent_name = variant_agent_name(source_agent, variant);
+            let matrix = workspace_dir.join(format!("_agent_{}", agent_name));
+            std::fs::create_dir_all(&matrix).expect("variant matrix");
+            std::fs::write(matrix.join("Role.md"), format!("{} role\n", variant))
+                .expect("variant role");
+            let metadata = VariantMetadata {
+                schema_version: 1,
+                name: variant.to_string(),
+                source_agent: source_agent.to_string(),
+                agent_name,
+                matrix_path: format!("../../../_agent_{}-{}", source_agent, variant),
+                role_path: format!("../../../_agent_{}-{}/Role.md", source_agent, variant),
+                role_sha256: sha256_hex(format!("{} role\n", variant).as_bytes()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            };
+            write_json(
+                &experiment_dir
+                    .join("variants")
+                    .join(format!("{}.json", variant)),
+                &metadata,
+                "variant_metadata_write_failed",
+                Some(variant),
+            )
+            .expect("variant metadata");
+        }
+
+        let experiment = ExperimentMetadata {
+            schema_version: 1,
+            name: "exp".to_string(),
+            project: "project".to_string(),
+            source_agent: source_agent.to_string(),
+            source_matrix_path: format!("../../_agent_{}", source_agent),
+            source_role_path: format!("../../_agent_{}/Role.md", source_agent),
+            source_role_sha256: sha256_hex(b"source role\n"),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            variants: vec!["control".to_string(), "test".to_string()],
+        };
+        let loaded = LoadedExperiment {
+            workspace_dir,
+            experiment_dir,
+            experiment,
+        };
+        (tmp, loaded)
+    }
+
+    fn diff_error_envelope(args: VariantDiffArgs, loaded: &LoadedExperiment) -> CliEnvelope {
+        match variant_diff_loaded(loaded, &args) {
+            Ok(out) => CliEnvelope {
+                ok: out.errors.is_empty(),
+                command: "role-experiment variant diff",
+                data: if out.errors.is_empty() {
+                    Some(out.data)
+                } else {
+                    None
+                },
+                warnings: out.warnings,
+                errors: out.errors,
+            },
+            Err(errors) => CliEnvelope {
+                ok: false,
+                command: "role-experiment variant diff",
+                data: None,
+                warnings: Vec::new(),
+                errors,
+            },
+        }
+    }
+
+    #[test]
+    fn tampered_source_agent_is_metadata_error_before_path_authority() {
+        let (_tmp, mut loaded) = loaded_fixture("alpha");
+        loaded.experiment.source_agent = "../evil".to_string();
+        loaded.experiment.source_matrix_path = "../../_agent_../evil".to_string();
+        loaded.experiment.source_role_path = "../../_agent_../evil/Role.md".to_string();
+
+        let errors = validate_loaded_experiment_source_metadata(&loaded);
+
+        assert!(errors.iter().any(|e| e.code == "metadata_path_mismatch"));
+    }
+
+    #[test]
+    fn variant_metadata_name_must_match_requested_key() {
+        let (_tmp, loaded) = loaded_fixture("alpha");
+        let mut metadata = load_variant_metadata(&loaded, "control").expect("variant metadata");
+        metadata.name = "test".to_string();
+
+        let errors = validate_variant_metadata_paths(&loaded, "control", &metadata);
+
+        assert!(errors.iter().any(|e| e.code == "metadata_path_mismatch"));
+    }
+
+    #[test]
+    fn variant_diff_rejects_traversal_variant_before_metadata_load() {
+        let (_tmp, loaded) = loaded_fixture("alpha");
+        let envelope = diff_error_envelope(
+            VariantDiffArgs {
+                project: "project".to_string(),
+                experiment: "exp".to_string(),
+                variant: "../x".to_string(),
+                against: "control".to_string(),
+            },
+            &loaded,
+        );
+
+        assert!(!envelope.ok);
+        assert!(envelope.data.is_none());
+        assert!(envelope
+            .errors
+            .iter()
+            .any(|e| e.code == "variant_name_invalid"));
+    }
+
+    #[test]
+    fn variant_diff_rejects_unknown_variant_before_metadata_load() {
+        let (_tmp, loaded) = loaded_fixture("alpha");
+        let envelope = diff_error_envelope(
+            VariantDiffArgs {
+                project: "project".to_string(),
+                experiment: "exp".to_string(),
+                variant: "missing".to_string(),
+                against: "control".to_string(),
+            },
+            &loaded,
+        );
+
+        assert!(!envelope.ok);
+        assert!(envelope.data.is_none());
+        assert!(envelope
+            .errors
+            .iter()
+            .any(|e| e.code == "variant_metadata_missing"));
+    }
+
+    #[test]
+    fn link_or_reparse_check_rejects_existing_ancestor_component() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("child")).expect("real child");
+        let link = tmp.path().join("link");
+
+        #[cfg(windows)]
+        let link_result = std::os::windows::fs::symlink_dir(&real, &link);
+        #[cfg(unix)]
+        let link_result = std::os::unix::fs::symlink(&real, &link);
+
+        if link_result.is_err() {
+            return;
+        }
+
+        let errors =
+            reject_link_or_reparse(&link.join("child").join("Role.md"), "link_error", None)
+                .expect_err("link ancestor should be rejected");
+
+        assert!(errors.iter().any(|e| e.code == "link_error"));
     }
 }
