@@ -6,45 +6,45 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## 0.8.45 - 2026-06-01
 
-Identity trust fixes, legacy cleanup, and improved peer discovery.
+This release resolves several identity verification issues that prevented agents from connecting in complex workgroup setups, removes legacy `.ac-new` workspace support, and improves the reliability of the `wake` command.
 
 ### Added
 
-- Regression coverage for cross-WG peer discovery.
+- Test coverage for cross-workgroup peer discovery to prevent future regressions.
 
 ### Changed
 
-- Documentation: clarified OS support status in README and updated author social links.
+- Documentation: Clarified OS support status in the README and updated author social links.
 
 ### Fixed
 
-- Wake command normalization (#387).
-- Codex: Stale WG replica identity trust and production release identity (#380, #388).
-- Stale WG coordinator identity refs (#370).
-- Rejected filesystem paths in team agent refs (#373).
+- Fixed an issue where the `wake` command failed to resolve agent names correctly (#387).
+- Fixed identity trust issues that caused Codex agents to reject valid workgroup replicas and production releases (#380, #388).
+- Fixed an issue that caused workgroup coordinators to be rejected due to stale identity references (#370).
+- Fixed a bug where valid filesystem paths in team agent references were incorrectly rejected (#373).
 
 ### Removed
 
-- `.ac-new` legacy workspace support (#383).
+- Removed legacy support for `.ac-new` workspaces. All workspaces must now use the `.ac` folder structure (#383).
 
-## 0.8.43 — 2026-05-27
+## 0.8.43 - 2026-05-27
 
 Public-push release: repo cleanup, documentation rewrite scaffolding, and factual corrections to public copy. See umbrella issue [#313](https://github.com/mblua/AgentsCommander/issues/313).
 
 ### Added
 
-- `ROADMAP.md` at repo root — Shipped / Planned / Considering tracked publicly, with links to GitHub issues.
-- `SECURITY.md` at repo root — vulnerability reporting policy + supported versions + 90-day coordinated disclosure.
-- `CHANGELOG.md` at repo root — this file.
-- `.github/ISSUE_TEMPLATE/` — `bug_report.yml`, `feature_request.yml`, and `config.yml` (directs Q&A to GitHub Discussions).
-- `.github/PULL_REQUEST_TEMPLATE.md` — short checklist for contributors.
+- `ROADMAP.md` at repo root - Shipped / Planned / Considering tracked publicly, with links to GitHub issues.    
+- `SECURITY.md` at repo root - vulnerability reporting policy + supported versions + 90-day coordinated disclosure.
+- `CHANGELOG.md` at repo root - this file.
+- `.github/ISSUE_TEMPLATE/` - `bug_report.yml`, `feature_request.yml`, and `config.yml` (directs Q&A to GitHub Discussions).
+- `.github/PULL_REQUEST_TEMPLATE.md` - short checklist for contributors.
 
 ### Changed
 
 - Documentation: `ROLE_AC_BUILDER.md` moved to `docs/agent-matrix-conventions.md`.
 - `.gitignore`: added `_logbooks/`; replaced hand-listed workgroup entries with a single workspace workgroup glob.
 - README factual fixes:
-  - Supported coding agents corrected to **Claude Code · Codex · Gemini** (was: Claude Code · Codex · OpenCode — OpenCode is not yet supported; tracked in [#315](https://github.com/mblua/AgentsCommander/issues/315)).
+  - Supported coding agents corrected to **Claude Code · Codex · Gemini** (was: Claude Code · Codex · OpenCode - OpenCode is not yet supported; tracked in [#315](https://github.com/mblua/AgentsCommander/issues/315)).        
   - Window-model description updated to reflect the unified main window (the old "Sidebar and Terminal are independent windows" description was pre-unification).
   - Settings tab name "Dark Factory" referenced as **"Teams"** in public copy. Internal code rename is tracked in [#314](https://github.com/mblua/AgentsCommander/issues/314).
   - Release-tag example updated from the stale `v0.4.9` to the current `0.8.x` line.
