@@ -22,7 +22,7 @@ The script writes the same version to every checked location:
 | `package.json` | `version` |
 | `package-lock.json` | root `version` and `packages[""].version` |
 | `src-tauri/Cargo.toml` | `[package]` version |
-| `src-tauri/Cargo.lock` | `agentscommander` entry version |
+| `src-tauri/Cargo.lock` | internal Cargo crate entry (`agentscommander-new`) version |
 | `src-tauri/tauri.conf.json` | `version` |
 
 The frontend titlebar reads its version from `tauri.conf.json` at build time, so bumping that one file is enough to update what users see — no source files need manual edits.
@@ -65,6 +65,8 @@ This creates a **draft release** with:
 - macOS `.dmg` (Apple Silicon + Intel) — unsigned today
 
 The workflow file is `.github/workflows/release.yml`.
+Every release matrix row passes `--config src-tauri/tauri.prod.conf.json`;
+the macOS rows add their `--target` after the production config.
 
 ## 5. Verify and publish
 
@@ -73,7 +75,7 @@ The release shows up under [Releases](https://github.com/mblua/AgentsCommander/r
 - **Asset count.** Every platform produced an installer. Re-run the failing job if one is missing.
 - **Windows signature.** Right-click the installer → Properties → Digital Signatures → SignPath Foundation. Or:
   ```powershell
-  Get-AuthenticodeSignature "AgentsCommander_X.Y.Z_x64-setup.exe"
+  Get-AuthenticodeSignature "Agents.Commander_X.Y.Z_x64-setup.exe"
   ```
 - **Changelog.** Add curated highlights at the top (the auto-generated list goes underneath). Use the previous release as a tone reference.
 - **Tag matches the bump.** If you tagged `v0.8.42` but the binary reports `0.8.41`, abort and re-bump.

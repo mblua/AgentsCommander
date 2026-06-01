@@ -1,5 +1,5 @@
 {
   "productName": "Agents Commander",
-  "identifier": "com.agentscommander.app",
+  "identifier": "dev.agentscommander.app",
   "mainBinaryName": "agentscommander"
 }

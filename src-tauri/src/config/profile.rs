@@ -40,7 +40,8 @@ fn capitalize_suffix(suffix: &str) -> String {
 
 /// Config directory name under $HOME.
 /// Only "dev" (via suffix or BUILD_PROFILE) gets a separate dir.
-/// Everyone else shares `.agentscommander-new`.
+/// Everyone else shares the legacy `.agentscommander-new` data directory for
+/// settings compatibility. This is internal storage, not release identity.
 pub fn config_dir_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| {
@@ -101,6 +102,8 @@ pub fn exe_name() -> &'static str {
             .ok()
             .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
             .unwrap_or_else(|| match BUILD_PROFILE {
+                // Internal dev fallback for direct cargo runs. Tauri production
+                // bundles set mainBinaryName to `agentscommander`.
                 "dev" => "agentscommander-new.exe".to_string(),
                 "stage" => "agentscommander-stage.exe".to_string(),
                 _ => "agentscommander.exe".to_string(),
