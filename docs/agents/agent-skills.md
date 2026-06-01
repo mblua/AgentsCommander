@@ -90,7 +90,7 @@ files only when they are needed.
 ## Creating a Skill
 
 1. Open the canonical Agent Matrix directory for the agent, for example
-   `.ac/_agent_dev-rust/`. Legacy `.ac-new/` projects use the same layout under `.ac-new/`.
+   `.ac/_agent_dev-rust/`.
 2. Create `skills/<skill-name>/`.
 3. Add `skills/<skill-name>/SKILL.md` with YAML frontmatter.
 4. Describe when to use the skill and the exact workflow to follow.

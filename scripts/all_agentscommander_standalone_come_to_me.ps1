@@ -5,8 +5,8 @@ all_agentscommander_standalone_come_to_me.ps1
 Assumptions:
 - By default, AgentsCommander_ac is checked out at:
   $env:USERPROFILE\0_repos\AgentsCommander_ac
-- Override -AcNewRoot if the checkout moved.
-- Workgroup folders are immediate children of the AgentsCommander_ac .ac-new directory and match ^wg-\d+.
+- Override -AcRoot if the checkout moved.
+- Workgroup folders are immediate children of the AgentsCommander_ac .ac directory and match ^wg-\d+.
 - The script reads from each workgroup repo and writes only to -Destination.
 
 Destination filename convention:
@@ -16,7 +16,7 @@ Destination filename convention:
 
 [CmdletBinding()]
 param(
-    [string]$AcNewRoot = (Join-Path $env:USERPROFILE '0_repos\AgentsCommander_ac\.ac-new'),
+    [string]$AcRoot = (Join-Path $env:USERPROFILE '0_repos\AgentsCommander_ac\.ac'),
     [string]$Destination = 'C:\Users\maria\0_mmb\0_AC',
     [switch]$Overwrite
 )
@@ -24,20 +24,20 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-function Resolve-AcNewRoot {
+function Resolve-AcRoot {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
     )
 
     if ([string]::IsNullOrWhiteSpace($Path)) {
-        throw 'AcNewRoot cannot be empty.'
+        throw 'AcRoot cannot be empty.'
     }
 
     $candidate = [System.IO.Path]::GetFullPath($Path)
 
-    if ((Split-Path -Leaf $candidate) -ne '.ac-new') {
-        $nested = Join-Path $candidate '.ac-new'
+    if ((Split-Path -Leaf $candidate) -ne '.ac') {
+        $nested = Join-Path $candidate '.ac'
         if (Test-Path -LiteralPath $nested -PathType Container) {
             return (Resolve-Path -LiteralPath $nested).ProviderPath
         }
@@ -47,7 +47,7 @@ function Resolve-AcNewRoot {
         return (Resolve-Path -LiteralPath $candidate).ProviderPath
     }
 
-    throw "AgentsCommander_ac .ac-new directory not found: $candidate"
+    throw "AgentsCommander_ac .ac directory not found: $candidate"
 }
 
 function ConvertTo-SafeFileName {
@@ -60,7 +60,7 @@ function ConvertTo-SafeFileName {
     return ($Name -replace $invalidPattern, '_')
 }
 
-$acNewRootPath = Resolve-AcNewRoot -Path $AcNewRoot
+$acRootPath = Resolve-AcRoot -Path $AcRoot
 $destinationPath = [System.IO.Path]::GetFullPath($Destination)
 
 if (-not (Test-Path -LiteralPath $destinationPath -PathType Container)) {
@@ -79,12 +79,12 @@ $stats = @{
 
 $patterns = @('agentscommander*.exe', 'agentscommander.*.exe')
 $workgroups = @(
-    Get-ChildItem -LiteralPath $acNewRootPath -Directory -ErrorAction Stop |
+    Get-ChildItem -LiteralPath $acRootPath -Directory -ErrorAction Stop |
         Where-Object { $_.Name -match '^wg-\d+' } |
         Sort-Object Name
 )
 
-Write-Host "AgentsCommander .ac-new root: $acNewRootPath"
+Write-Host "AgentsCommander .ac root: $acRootPath"
 Write-Host "Destination: $destinationPath"
 Write-Host "Overwrite conflicts: $($Overwrite.IsPresent)"
 Write-Host ''

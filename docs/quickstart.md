@@ -26,7 +26,7 @@ Run the installer, or drop the portable `.exe` into any folder and double-click.
 
 ## 2. Open or create an AC project
 
-An **AC project** is a folder with an `.ac/` workspace inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable. Existing `.ac-new/` workspaces still open as a legacy fallback.
+An **AC project** is a folder with an `.ac/` workspace inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable.
 
 In the sidebar, click **New Project** and point at any folder, empty or an existing repo. AC creates `.ac/` with a sensible `.gitignore` and registers the project in your sidebar.
 

@@ -1,6 +1,6 @@
 import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
 import { EntityAPI } from "../../shared/ipc";
-import { LEGACY_AC_WORKSPACE_DIR } from "../../shared/constants";
+import { AC_WORKSPACE_DIR } from "../../shared/constants";
 import { projectStore } from "../stores/project";
 import type { AcTeam, TeamWizardAgentEntry, TeamWizardRepoEntry, TeamWizardStep } from "../../shared/types";
 
@@ -86,7 +86,7 @@ const EditTeamModal: Component<{
         if (!discoveredRefs.has(agentRef)) {
           const agentName = agentRef.replace(/^_agent_/, "");
           const fallbackPath =
-            `${props.projectPath.replace(/[\\/]+$/, "")}/${LEGACY_AC_WORKSPACE_DIR}/${agentRef}`;
+            `${props.projectPath.replace(/[\\/]+$/, "")}/${AC_WORKSPACE_DIR}/${agentRef}`;
           entries.push({
             name: agentName,
             path: fallbackPath,

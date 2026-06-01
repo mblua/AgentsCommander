@@ -1,4 +1,4 @@
-import { AC_WORKSPACE_DIR, LEGACY_AC_WORKSPACE_DIR } from './constants';
+import { AC_WORKSPACE_DIR } from './constants';
 
 function pathParts(workDir: string): string[] {
   return workDir.replace(/\\/g, '/').split('/').filter(s => s.length > 0);
@@ -6,7 +6,7 @@ function pathParts(workDir: string): string[] {
 
 function lastWorkspaceIndex(parts: string[]): number {
   for (let i = parts.length - 1; i >= 0; i--) {
-    if (parts[i] === AC_WORKSPACE_DIR || parts[i] === LEGACY_AC_WORKSPACE_DIR) return i;
+    if (parts[i] === AC_WORKSPACE_DIR) return i;
   }
   return -1;
 }

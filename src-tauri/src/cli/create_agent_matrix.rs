@@ -20,7 +20,7 @@ use crate::config::projects::resolve_project_reference;
 #[command(after_help = "\
 NOTES:\n  \
   --project is a registered AC project folder name from settings.projectPaths. Paths are not accepted.\n  \
-  The target project must contain .ac; legacy .ac-new projects are accepted when .ac is absent.\n  \
+  The target project must contain .ac.\n  \
   --name is sanitized by the same backend as the UI into a lower-case Matrix id.\n  \
   --role-template must be an id from the same source as the New Agent picker.\n  \
   Invalid templates fail before creating the target Matrix directory.\n  \

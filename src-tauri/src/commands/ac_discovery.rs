@@ -420,22 +420,22 @@ impl DiscoveryBranchWatcher {
         })
     }
 
-    /// Update this project's replicas in the watcher. `ac_new_parent_dir` is the directory
+    /// Update this project's replicas in the watcher. `project_dir` is the directory
     /// that directly contains the AC workspace, not a grand-parent from `settings.project_paths`.
     /// See the invariant comment on the `replicas` field.
-    pub fn update_replicas_for_project(&self, ac_new_parent_dir: &str, workgroups: &[AcWorkgroup]) {
+    pub fn update_replicas_for_project(&self, project_dir: &str, workgroups: &[AcWorkgroup]) {
         // Invariant guard: catch mistaken call-site passes (e.g. a `base_path` parent)
         // in dev builds. Release builds log a warn and return to prevent silent corruption.
-        let has_workspace = has_workspace_dir(Path::new(ac_new_parent_dir));
+        let has_workspace = has_workspace_dir(Path::new(project_dir));
         debug_assert!(
             has_workspace,
             "update_replicas_for_project: {} does not contain an AC workspace",
-            ac_new_parent_dir
+            project_dir
         );
         if !has_workspace {
             log::warn!(
                 "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no AC workspace, ignoring",
-                ac_new_parent_dir
+                project_dir
             );
             return;
         }
@@ -445,13 +445,13 @@ impl DiscoveryBranchWatcher {
         // converge to one map slot per project. Without this, the same project can
         // end up with two entries (e.g. from `discover_ac_agents` reading `read_dir`
         // output vs `discover_project` receiving a user-typed path) and emit doubled.
-        let canonical_key = std::fs::canonicalize(ac_new_parent_dir)
+        let canonical_key = std::fs::canonicalize(project_dir)
             .ok()
             .map(|p| {
                 let s = p.to_string_lossy();
                 s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
             })
-            .unwrap_or_else(|| ac_new_parent_dir.to_string());
+            .unwrap_or_else(|| project_dir.to_string());
 
         // Invariant: git_repos order = replica.repo_paths order (which follows config.json `repos`).
         // Never sort or dedupe here.
@@ -1780,17 +1780,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_project_path_accepts_legacy_ac_new() {
+    async fn check_project_path_rejects_non_ac_workspace() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(tmp.path().join(".ac-new")).expect("create .ac-new");
+        std::fs::create_dir(tmp.path().join(".workspace")).expect("create non-AC workspace");
 
-        assert!(check_project_path(tmp.path().to_string_lossy().to_string())
-            .await
-            .expect("check path"));
+        assert!(
+            !check_project_path(tmp.path().to_string_lossy().to_string())
+                .await
+                .expect("check path")
+        );
     }
 
     #[tokio::test]
-    async fn create_ac_project_creates_ac_not_ac_new() {
+    async fn create_ac_project_creates_ac() {
         let tmp = tempfile::tempdir().expect("tempdir");
 
         create_ac_project(tmp.path().to_string_lossy().to_string())
@@ -1799,7 +1801,6 @@ mod tests {
 
         assert!(tmp.path().join(".ac").is_dir());
         assert!(tmp.path().join(".ac").join(".gitignore").is_file());
-        assert!(!tmp.path().join(".ac-new").exists());
     }
 
     #[test]

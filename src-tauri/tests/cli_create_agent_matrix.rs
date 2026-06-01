@@ -75,9 +75,9 @@ fn settings_with_project_paths(paths: &[&Path]) -> serde_json::Value {
     })
 }
 
-fn project_with_ac_new(tmp: &Path) -> PathBuf {
+fn project_with_workspace(tmp: &Path) -> PathBuf {
     let project = tmp.join("ProjectAlpha");
-    std::fs::create_dir_all(project.join(".ac-new")).expect("create .ac-new");
+    std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
     project
 }
 
@@ -119,7 +119,7 @@ fn assert_single_project_refresh_request(config_dir: &Path, project: &Path) -> s
             .expect("project refresh request json");
     uuid::Uuid::parse_str(request["id"].as_str().expect("id")).expect("id should be a uuid");
     assert!(!request["timestamp"].as_str().expect("timestamp").is_empty());
-    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    let agent_dir = project.join(".ac").join("_agent_architect");
     assert_eq!(
         request["projectPath"].as_str().expect("projectPath"),
         std::fs::canonicalize(project)
@@ -144,7 +144,7 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
     let tmp = Tmp::new("cli-create-agent-matrix-success");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
     let out = Command::new(&bin)
@@ -170,7 +170,7 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
 
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
-    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    let agent_dir = project.join(".ac").join("_agent_architect");
     assert_eq!(
         json["agentPath"].as_str().expect("agentPath"),
         agent_dir.to_string_lossy().as_ref()
@@ -203,7 +203,7 @@ fn create_agent_matrix_resolves_project_name_from_settings_for_unrelated_root() 
             "projectPaths": [tmp.path().to_string_lossy().to_string()]
         }),
     );
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     let root = tmp.path().join("root-agent");
     std::fs::create_dir_all(&root).expect("root dir");
     let root_s = root.to_string_lossy().to_string();
@@ -235,7 +235,7 @@ fn create_agent_matrix_resolves_project_name_from_settings_for_unrelated_root() 
 
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
-    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    let agent_dir = project.join(".ac").join("_agent_architect");
     assert_eq!(
         json["agentPath"].as_str().expect("agentPath"),
         agent_dir.to_string_lossy().as_ref()
@@ -254,8 +254,8 @@ fn create_agent_matrix_rejects_ambiguous_project_name_without_writing() {
     let parent_b = tmp.path().join("b");
     let project_a = parent_a.join("ProjectAlpha");
     let project_b = parent_b.join("ProjectAlpha");
-    std::fs::create_dir_all(project_a.join(".ac-new")).expect("project a");
-    std::fs::create_dir_all(project_b.join(".ac-new")).expect("project b");
+    std::fs::create_dir_all(project_a.join(".ac")).expect("project a");
+    std::fs::create_dir_all(project_b.join(".ac")).expect("project b");
     write_settings(
         &config_dir,
         serde_json::json!({
@@ -291,8 +291,8 @@ fn create_agent_matrix_rejects_ambiguous_project_name_without_writing() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("ambiguous"));
-    assert!(!project_a.join(".ac-new").join("_agent_architect").exists());
-    assert!(!project_b.join(".ac-new").join("_agent_architect").exists());
+    assert!(!project_a.join(".ac").join("_agent_architect").exists());
+    assert!(!project_b.join(".ac").join("_agent_architect").exists());
     assert!(project_refresh_request_paths(&config_dir).is_empty());
 }
 
@@ -310,7 +310,7 @@ fn create_agent_project_mode_requires_description() {
             "projectPaths": [tmp.path().to_string_lossy().to_string()]
         }),
     );
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
 
     let out = Command::new(&bin)
         .args([
@@ -330,7 +330,7 @@ fn create_agent_project_mode_requires_description() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("required"));
-    assert!(!project.join(".ac-new").join("_agent_architect").exists());
+    assert!(!project.join(".ac").join("_agent_architect").exists());
 }
 
 #[test]
@@ -370,7 +370,7 @@ fn create_agent_rejects_project_path_input_without_writing() {
     let tmp = Tmp::new("cli-create-agent-reject-project-path");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     let project_path = project.to_string_lossy().to_string();
 
@@ -395,7 +395,7 @@ fn create_agent_rejects_project_path_input_without_writing() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("was not found"));
-    assert!(!project.join(".ac-new").join("_agent_architect").exists());
+    assert!(!project.join(".ac").join("_agent_architect").exists());
     assert!(project_refresh_request_paths(&config_dir).is_empty());
 }
 
@@ -404,7 +404,7 @@ fn create_agent_matrix_rejects_project_path_input_without_writing() {
     let tmp = Tmp::new("cli-create-agent-matrix-reject-project-path");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     let project_path = project.to_string_lossy().to_string();
 
@@ -429,7 +429,7 @@ fn create_agent_matrix_rejects_project_path_input_without_writing() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("was not found"));
-    assert!(!project.join(".ac-new").join("_agent_architect").exists());
+    assert!(!project.join(".ac").join("_agent_architect").exists());
     assert!(project_refresh_request_paths(&config_dir).is_empty());
 }
 
@@ -438,7 +438,7 @@ fn create_agent_matrix_success_writes_project_refresh_request() {
     let tmp = Tmp::new("cli-create-agent-matrix-success-refresh");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
     let out = Command::new(&bin)
@@ -472,10 +472,10 @@ fn create_agent_matrix_project_name_resolves_from_settings_not_cwd() {
     let config_dir = config_dir_for_bin(&bin);
     let registered_parent = tmp.path().join("registered");
     let registered_project = registered_parent.join("ProjectAlpha");
-    std::fs::create_dir_all(registered_project.join(".ac-new")).expect("registered project");
+    std::fs::create_dir_all(registered_project.join(".ac")).expect("registered project");
     let caller_cwd = tmp.path().join("caller-cwd");
     let cwd_project = caller_cwd.join("ProjectAlpha");
-    std::fs::create_dir_all(cwd_project.join(".ac-new")).expect("cwd project");
+    std::fs::create_dir_all(cwd_project.join(".ac")).expect("cwd project");
     write_settings(
         &config_dir,
         serde_json::json!({
@@ -510,8 +510,8 @@ fn create_agent_matrix_project_name_resolves_from_settings_not_cwd() {
 
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
-    let registered_agent_dir = registered_project.join(".ac-new").join("_agent_architect");
-    let cwd_agent_dir = cwd_project.join(".ac-new").join("_agent_architect");
+    let registered_agent_dir = registered_project.join(".ac").join("_agent_architect");
+    let cwd_agent_dir = cwd_project.join(".ac").join("_agent_architect");
     assert_eq!(
         json["agentPath"].as_str().expect("agentPath"),
         registered_agent_dir.to_string_lossy().as_ref()
@@ -529,7 +529,7 @@ fn create_agent_project_mode_delegates_to_matrix_creation() {
     let tmp = Tmp::new("cli-create-agent-project-mode");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(
         &config_dir,
         serde_json::json!({
@@ -563,7 +563,7 @@ fn create_agent_project_mode_delegates_to_matrix_creation() {
 
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
-    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    let agent_dir = project.join(".ac").join("_agent_architect");
     assert_eq!(
         json["agentPath"].as_str().expect("agentPath"),
         agent_dir.to_string_lossy().as_ref()
@@ -584,7 +584,7 @@ fn create_agent_matrix_local_template_writes_role_and_skills() {
     let tmp = Tmp::new("cli-create-agent-matrix-local-template");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
     let template_dir = config_dir.join("agent-templates").join("planner");
     std::fs::create_dir_all(template_dir.join("skills").join("demo"))
@@ -623,7 +623,7 @@ fn create_agent_matrix_local_template_writes_role_and_skills() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    let agent_dir = project.join(".ac").join("_agent_architect");
     let role = std::fs::read_to_string(agent_dir.join("Role.md")).expect("read Role.md");
     assert!(role.contains("## Role Profile"));
     assert!(role.contains("# Planner Template"));
@@ -639,7 +639,7 @@ fn create_agent_matrix_invalid_template_exits_1_without_target_dir() {
     let tmp = Tmp::new("cli-create-agent-matrix-invalid-template");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
 
     let out = Command::new(&bin)
@@ -666,7 +666,7 @@ fn create_agent_matrix_invalid_template_exits_1_without_target_dir() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Unknown built-in role template"));
-    assert!(!project.join(".ac-new").join("_agent_architect").exists());
+    assert!(!project.join(".ac").join("_agent_architect").exists());
     assert!(
         project_refresh_request_paths(&config_dir).is_empty(),
         "invalid template must not write a project refresh request"
@@ -678,7 +678,7 @@ fn create_agent_matrix_honors_settings_flags() {
     let tmp = Tmp::new("cli-create-agent-matrix-settings");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(
         &config_dir,
         serde_json::json!({
@@ -718,7 +718,7 @@ fn create_agent_matrix_honors_settings_flags() {
     );
 
     let settings_path = project
-        .join(".ac-new")
+        .join(".ac")
         .join("_agent_architect")
         .join(".claude")
         .join("settings.local.json");
@@ -732,7 +732,7 @@ fn create_agent_matrix_launch_writes_session_request() {
     let tmp = Tmp::new("cli-create-agent-matrix-launch");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(
         &config_dir,
         serde_json::json!({
@@ -782,7 +782,7 @@ fn create_agent_matrix_launch_writes_session_request() {
     let request: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&requests[0]).expect("read request"))
             .expect("request json");
-    let agent_dir = project.join(".ac-new").join("_agent_architect");
+    let agent_dir = project.join(".ac").join("_agent_architect");
     assert_eq!(
         request["cwd"].as_str().expect("cwd"),
         agent_dir.to_string_lossy().as_ref()
@@ -798,7 +798,7 @@ fn create_agent_matrix_whitespace_launch_command_warns_without_request() {
     let tmp = Tmp::new("cli-create-agent-matrix-blank-launch");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let _project = project_with_ac_new(tmp.path());
+    let _project = project_with_workspace(tmp.path());
     write_settings(
         &config_dir,
         serde_json::json!({
@@ -853,7 +853,7 @@ fn create_agent_matrix_empty_launch_request_warns_without_request() {
     let tmp = Tmp::new("cli-create-agent-matrix-empty-launch-request");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let _project = project_with_ac_new(tmp.path());
+    let _project = project_with_workspace(tmp.path());
     write_settings(
         &config_dir,
         serde_json::json!({
@@ -908,7 +908,7 @@ fn create_agent_project_mode_blank_launch_command_warns_without_request() {
     let tmp = Tmp::new("cli-create-agent-project-blank-launch");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_ac_new(tmp.path());
+    let project = project_with_workspace(tmp.path());
     write_settings(
         &config_dir,
         serde_json::json!({
@@ -953,7 +953,7 @@ fn create_agent_project_mode_blank_launch_command_warns_without_request() {
     assert!(json["launchAgent"].is_null());
     assert_eq!(json["agentName"], "ProjectAlpha/architect");
     assert!(String::from_utf8_lossy(&out.stderr).contains("empty command"));
-    assert!(project.join(".ac-new").join("_agent_architect").is_dir());
+    assert!(project.join(".ac").join("_agent_architect").is_dir());
     assert!(
         session_request_paths(&config_dir).is_empty(),
         "blank command must not write a launch request"

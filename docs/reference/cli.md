@@ -353,7 +353,7 @@ Same locking + backup behaviour as `task-set-title`.
 
 ## `open-project`
 
-Register an existing AC project (folder with `.ac/` or legacy `.ac-new/` inside) in the GUI sidebar's project list.
+Register an existing AC project (folder with `.ac/` inside) in the GUI sidebar's project list.
 
 ```bash
 agentscommander open-project /path/to/project
@@ -365,7 +365,7 @@ agentscommander open-project /path/to/project
 
 Idempotent — re-registering the same path is a no-op (`Project already registered`).
 
-If the folder does not contain `.ac/` or legacy `.ac-new/`, the CLI suggests `new-project` instead.
+If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
 **No token required** — project registration mutates the local `settings.json`, which any shell-capable process can already write to.
 
@@ -385,7 +385,7 @@ agentscommander new-project /path/to/project
 |---|---|
 | `PATH` | Absolute or relative. Folder created if it does not yet exist. |
 
-Idempotent: re-running on a folder that already has `.ac/` or legacy `.ac-new/` only sweeps the selected workspace gitignore and deduplicates the registration.
+Idempotent: re-running on a folder that already has `.ac/` only sweeps the workspace gitignore and deduplicates the registration.
 
 **No token required** — same reasoning as `open-project`.
 

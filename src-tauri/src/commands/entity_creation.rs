@@ -99,7 +99,7 @@ pub(crate) struct WorkgroupDiskCreateArgs {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReplicaDiskCreateArgs {
-    pub ac_new_dir: PathBuf,
+    pub workspace_dir: PathBuf,
     pub wg_dir: PathBuf,
     pub agent_path: String,
     pub team_repos: Vec<RepoAssignment>,
@@ -543,20 +543,16 @@ fn default_agent_matrix_config() -> serde_json::Value {
 }
 
 fn selected_workspace_dir(project: &Path) -> Result<PathBuf, String> {
-    existing_workspace_dir(project).ok_or_else(|| {
-        format!(
-            ".ac directory not found in {} (legacy .ac-new also absent)",
-            project.display()
-        )
-    })
+    existing_workspace_dir(project)
+        .ok_or_else(|| format!(".ac directory not found in {}", project.display()))
 }
 
 pub(crate) fn read_team_config(
-    ac_new_dir: &Path,
+    workspace_dir: &Path,
     team_name: &str,
 ) -> Result<TeamConfigResult, String> {
     validate_existing_name(team_name, "Team")?;
-    let team_dir = ac_new_dir.join(format!("_team_{}", team_name));
+    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
     let config_path = team_dir.join("config.json");
     if !config_path.exists() {
         return Err(format!("Team '{}' config not found", team_name));
@@ -565,16 +561,16 @@ pub(crate) fn read_team_config(
         .map_err(|e| format!("Failed to read config.json: {}", e))?;
     let config: TeamConfigResult = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse config.json: {}", e))?;
-    normalize_team_config_for_project(ac_new_dir, &config)
+    normalize_team_config_for_project(workspace_dir, &config)
 }
 
 pub(crate) fn write_team_config(
-    ac_new_dir: &Path,
+    workspace_dir: &Path,
     team_name: &str,
     config: &TeamConfigResult,
 ) -> Result<PathBuf, String> {
     validate_existing_name(team_name, "Team")?;
-    let team_dir = ac_new_dir.join(format!("_team_{}", team_name));
+    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
     std::fs::create_dir_all(&team_dir)
         .map_err(|e| format!("Failed to create team directory: {}", e))?;
     std::fs::create_dir_all(team_dir.join("memory"))
@@ -584,7 +580,7 @@ pub(crate) fn write_team_config(
         std::fs::write(&conventions, "")
             .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
     }
-    let config = normalize_team_config_for_project(ac_new_dir, config)?;
+    let config = normalize_team_config_for_project(workspace_dir, config)?;
     let config_str = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
     std::fs::write(team_dir.join("config.json"), config_str)
@@ -593,14 +589,14 @@ pub(crate) fn write_team_config(
 }
 
 pub(crate) fn normalize_team_config_for_project(
-    ac_new_dir: &Path,
+    workspace_dir: &Path,
     config: &TeamConfigResult,
 ) -> Result<TeamConfigResult, String> {
-    let agents = normalize_team_agent_refs(ac_new_dir, &config.agents)?;
+    let agents = normalize_team_agent_refs(workspace_dir, &config.agents)?;
     let coordinator = if config.coordinator.trim().is_empty() {
         String::new()
     } else {
-        resolve_agent_ref(ac_new_dir, &config.coordinator)?
+        resolve_agent_ref(workspace_dir, &config.coordinator)?
     };
     if !coordinator.is_empty() && !agents.contains(&coordinator) {
         return Err("Coordinator must be one of the selected agents".to_string());
@@ -609,7 +605,7 @@ pub(crate) fn normalize_team_config_for_project(
     for repo in &config.repos {
         repos.push(RepoAssignment {
             url: repo.url.clone(),
-            agents: normalize_team_agent_refs(ac_new_dir, &repo.agents)?,
+            agents: normalize_team_agent_refs(workspace_dir, &repo.agents)?,
         });
     }
     Ok(TeamConfigResult {
@@ -619,10 +615,10 @@ pub(crate) fn normalize_team_config_for_project(
     })
 }
 
-fn normalize_team_agent_refs(ac_new_dir: &Path, refs: &[String]) -> Result<Vec<String>, String> {
+fn normalize_team_agent_refs(workspace_dir: &Path, refs: &[String]) -> Result<Vec<String>, String> {
     let mut normalized = Vec::new();
     for agent in refs {
-        let resolved = resolve_agent_ref(ac_new_dir, agent)?;
+        let resolved = resolve_agent_ref(workspace_dir, agent)?;
         if !normalized.contains(&resolved) {
             normalized.push(resolved);
         }
@@ -630,9 +626,9 @@ fn normalize_team_agent_refs(ac_new_dir: &Path, refs: &[String]) -> Result<Vec<S
     Ok(normalized)
 }
 
-pub(crate) fn list_workgroup_dirs(ac_new_dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn list_workgroup_dirs(workspace_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(ac_new_dir) {
+    if let Ok(entries) = std::fs::read_dir(workspace_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
@@ -671,7 +667,7 @@ pub(crate) fn parse_team_from_workgroup_name(workgroup_name: &str) -> Result<Str
     Ok(team.to_string())
 }
 
-pub(crate) fn resolve_agent_ref(ac_new_dir: &Path, raw_agent: &str) -> Result<String, String> {
+pub(crate) fn resolve_agent_ref(workspace_dir: &Path, raw_agent: &str) -> Result<String, String> {
     let trimmed = raw_agent.trim();
     if trimmed.is_empty() {
         return Err("Agent reference cannot be empty".to_string());
@@ -694,7 +690,7 @@ pub(crate) fn resolve_agent_ref(ac_new_dir: &Path, raw_agent: &str) -> Result<St
     let bare = trimmed.strip_prefix("_agent_").unwrap_or(trimmed);
     validate_existing_name(bare, "Agent")?;
     let canonical_ref = format!("_agent_{}", bare);
-    let matrix_dir = ac_new_dir.join(&canonical_ref);
+    let matrix_dir = workspace_dir.join(&canonical_ref);
     if !matrix_dir.is_dir() {
         return Err(format!("Agent '{}' not found", bare));
     }
@@ -762,7 +758,7 @@ pub(crate) async fn create_workgroup_on_disk(
 
     for agent_path in &team_config.agents {
         create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            ac_new_dir: base.clone(),
+            workspace_dir: base.clone(),
             wg_dir: wg_dir.clone(),
             agent_path: agent_path.clone(),
             team_repos: team_config.repos.clone(),
@@ -786,7 +782,7 @@ pub(crate) async fn create_workgroup_on_disk(
 pub(crate) fn create_or_update_replica_on_disk(
     args: ReplicaDiskCreateArgs,
 ) -> Result<PathBuf, String> {
-    let agent_ref = resolve_agent_ref(&args.ac_new_dir, &args.agent_path)?;
+    let agent_ref = resolve_agent_ref(&args.workspace_dir, &args.agent_path)?;
     let agent_name = agent_ref_bare_name(&agent_ref);
     validate_existing_name(&agent_name, "Agent")?;
     let replica_dir = args.wg_dir.join(format!("__agent_{}", agent_name));
@@ -1030,7 +1026,7 @@ pub async fn list_all_agents(project_paths: Vec<String>) -> Result<Vec<AgentInfo
 
     for project_path in &project_paths {
         let base = Path::new(project_path);
-        let Some(ac_new) = existing_workspace_dir(base) else {
+        let Some(workspace_dir) = existing_workspace_dir(base) else {
             continue;
         };
 
@@ -1040,7 +1036,7 @@ pub async fn list_all_agents(project_paths: Vec<String>) -> Result<Vec<AgentInfo
             .unwrap_or("unknown")
             .to_string();
 
-        let entries = match std::fs::read_dir(&ac_new) {
+        let entries = match std::fs::read_dir(&workspace_dir) {
             Ok(e) => e,
             Err(_) => continue,
         };
@@ -2099,7 +2095,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
 /// up in `taken` but is never tested by `find` and so cannot displace
 /// slot 1.
 ///
-/// Read-error degradation: if `std::fs::read_dir(ac_new_dir)` fails
+/// Read-error degradation: if `std::fs::read_dir(workspace_dir)` fails
 /// (permission denied, transient I/O, broken junction, path-too-long
 /// on Windows), the function returns `1` as a graceful fallback. The
 /// post-allocate `wg_dir.exists()` guard in `create_workgroup` will
@@ -2107,10 +2103,10 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
 /// `wg-1-{team}` is in fact present; otherwise the slot-1 creation
 /// succeeds with stale state. Surfacing the read error is tracked
 /// separately and is out of scope for #177.
-pub(crate) fn determine_next_wg_number(ac_new_dir: &Path) -> u32 {
+pub(crate) fn determine_next_wg_number(workspace_dir: &Path) -> u32 {
     let mut taken: HashSet<u32> = HashSet::new();
 
-    if let Ok(entries) = std::fs::read_dir(ac_new_dir) {
+    if let Ok(entries) = std::fs::read_dir(workspace_dir) {
         for entry in entries.flatten() {
             if !entry.path().is_dir() {
                 continue;
@@ -2275,15 +2271,15 @@ mod tests {
     }
 
     #[test]
-    fn create_agent_matrix_on_disk_falls_back_to_legacy_ac_new() {
+    fn create_agent_matrix_on_disk_rejects_non_ac_workspace() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let legacy_workspace = project.join(".ac-new");
-        std::fs::create_dir_all(&legacy_workspace).expect("create .ac-new");
+        let invalid_workspace = project.join(".workspace");
+        std::fs::create_dir_all(&invalid_workspace).expect("create invalid workspace");
         let settings = AppSettings::default();
         let project_s = project.to_string_lossy().to_string();
 
-        let created = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+        let err = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
             project_path: &project_s,
             name: "Architect",
             description: "Build plans",
@@ -2291,19 +2287,18 @@ mod tests {
             settings: &settings,
             config_dir: None,
         })
-        .expect("create matrix");
+        .unwrap_err();
 
-        assert_eq!(created.agent_dir, legacy_workspace.join("_agent_architect"));
+        assert!(err.contains(".ac directory not found"));
+        assert!(!invalid_workspace.join("_agent_architect").exists());
     }
 
     #[test]
-    fn create_agent_matrix_on_disk_prefers_ac_when_both_exist() {
+    fn create_agent_matrix_on_disk_uses_ac_workspace() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
         let workspace = project.join(".ac");
-        let legacy_workspace = project.join(".ac-new");
         std::fs::create_dir_all(&workspace).expect("create .ac");
-        std::fs::create_dir_all(&legacy_workspace).expect("create .ac-new");
         let settings = AppSettings::default();
         let project_s = project.to_string_lossy().to_string();
 
@@ -2318,16 +2313,15 @@ mod tests {
         .expect("create matrix");
 
         assert_eq!(created.agent_dir, workspace.join("_agent_architect"));
-        assert!(!legacy_workspace.join("_agent_architect").exists());
     }
 
     #[test]
     fn create_agent_matrix_on_disk_resolves_template_before_mutation() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let ac_new = project.join(".ac-new");
+        let workspace_dir = project.join(".ac");
         let config_dir = tmp.path().join("config");
-        std::fs::create_dir_all(&ac_new).expect("create .ac-new");
+        std::fs::create_dir_all(&workspace_dir).expect("create .ac");
         std::fs::create_dir_all(&config_dir).expect("create config");
         let settings = AppSettings::default();
         let project_s = project.to_string_lossy().to_string();
@@ -2344,7 +2338,7 @@ mod tests {
 
         assert!(err.contains("Unknown built-in role template"));
         assert!(
-            !ac_new.join("_agent_architect").exists(),
+            !workspace_dir.join("_agent_architect").exists(),
             "invalid template must not create the target matrix directory"
         );
     }
@@ -2353,8 +2347,8 @@ mod tests {
     fn create_agent_matrix_on_disk_existing_root_fails_without_overwrite() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let ac_new = project.join(".ac-new");
-        let agent_dir = ac_new.join("_agent_architect");
+        let workspace_dir = project.join(".ac");
+        let agent_dir = workspace_dir.join("_agent_architect");
         std::fs::create_dir_all(&agent_dir).expect("create existing matrix root");
         std::fs::write(agent_dir.join("Role.md"), "keep role").expect("write existing role");
         std::fs::write(agent_dir.join("config.json"), "keep config")
@@ -2387,10 +2381,10 @@ mod tests {
     fn create_agent_matrix_on_disk_applies_local_template_and_skills() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let ac_new = project.join(".ac-new");
+        let workspace_dir = project.join(".ac");
         let config_dir = tmp.path().join("config");
         let template_dir = config_dir.join("agent-templates").join("my-template");
-        std::fs::create_dir_all(&ac_new).expect("create .ac-new");
+        std::fs::create_dir_all(&workspace_dir).expect("create .ac");
         std::fs::create_dir_all(template_dir.join("skills").join("example"))
             .expect("create template skill dir");
         std::fs::write(
@@ -2504,9 +2498,9 @@ mod tests {
     #[test]
     fn team_config_normalization_stores_portable_agent_refs() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let ac_new = tmp.path().join(".ac-new");
-        let architect = ac_new.join("_agent_architect");
-        let dev_rust = ac_new.join("_agent_dev-rust");
+        let workspace_dir = tmp.path().join(".ac");
+        let architect = workspace_dir.join("_agent_architect");
+        let dev_rust = workspace_dir.join("_agent_dev-rust");
         std::fs::create_dir_all(&architect).expect("architect matrix");
         std::fs::create_dir_all(&dev_rust).expect("dev-rust matrix");
 
@@ -2524,7 +2518,7 @@ mod tests {
         };
 
         let normalized =
-            normalize_team_config_for_project(&ac_new, &config).expect("normalize config");
+            normalize_team_config_for_project(&workspace_dir, &config).expect("normalize config");
         assert_eq!(
             normalized.agents,
             vec![
@@ -2541,9 +2535,10 @@ mod tests {
             ]
         );
 
-        write_team_config(&ac_new, "dev-team", &config).expect("write config");
-        let written = std::fs::read_to_string(ac_new.join("_team_dev-team").join("config.json"))
-            .expect("read config");
+        write_team_config(&workspace_dir, "dev-team", &config).expect("write config");
+        let written =
+            std::fs::read_to_string(workspace_dir.join("_team_dev-team").join("config.json"))
+                .expect("read config");
         assert!(
             !written.contains(&tmp.path().to_string_lossy().to_string()),
             "team config must not persist absolute project paths: {}",
@@ -2554,18 +2549,18 @@ mod tests {
     #[test]
     fn team_config_normalization_rejects_filesystem_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let ac_new = tmp.path().join(".ac-new");
-        std::fs::create_dir_all(ac_new.join("_agent_architect")).expect("architect matrix");
+        let workspace_dir = tmp.path().join(".ac");
+        std::fs::create_dir_all(workspace_dir.join("_agent_architect")).expect("architect matrix");
 
         let absolute_config = TeamConfigResult {
-            agents: vec![ac_new
+            agents: vec![workspace_dir
                 .join("_agent_architect")
                 .to_string_lossy()
                 .to_string()],
             coordinator: "_agent_architect".to_string(),
             repos: Vec::new(),
         };
-        let err = normalize_team_config_for_project(&ac_new, &absolute_config)
+        let err = normalize_team_config_for_project(&workspace_dir, &absolute_config)
             .expect_err("absolute path refs must be rejected");
         assert!(
             err.contains("filesystem paths"),
@@ -2574,11 +2569,11 @@ mod tests {
         );
 
         let windows_config = TeamConfigResult {
-            agents: vec![r"C:\Users\maria\project\.ac-new\_agent_architect".to_string()],
+            agents: vec![r"C:\Users\maria\project\.ac\_agent_architect".to_string()],
             coordinator: "_agent_architect".to_string(),
             repos: Vec::new(),
         };
-        let err = normalize_team_config_for_project(&ac_new, &windows_config)
+        let err = normalize_team_config_for_project(&workspace_dir, &windows_config)
             .expect_err("windows path refs must be rejected");
         assert!(
             err.contains("filesystem paths"),
@@ -2590,14 +2585,14 @@ mod tests {
     #[test]
     fn replica_creation_rejects_filesystem_agent_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let ac_new = tmp.path().join(".ac-new");
-        let wg_dir = ac_new.join("wg-1-dev-team");
-        let matrix_dir = ac_new.join("_agent_architect");
+        let workspace_dir = tmp.path().join(".ac");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let matrix_dir = workspace_dir.join("_agent_architect");
         std::fs::create_dir_all(&matrix_dir).expect("architect matrix");
         std::fs::create_dir_all(&wg_dir).expect("workgroup");
 
         let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            ac_new_dir: ac_new.clone(),
+            workspace_dir: workspace_dir.clone(),
             wg_dir: wg_dir.clone(),
             agent_path: matrix_dir.to_string_lossy().to_string(),
             team_repos: Vec::new(),
@@ -2663,9 +2658,9 @@ mod tests {
     #[test]
     fn replica_identity_resolves_to_origin_matrix_role_md() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let ac_new = tmp.path().join(".ac-new");
-        let matrix_dir = ac_new.join("_agent_alpha");
-        let replica_dir = ac_new.join("wg-1-team").join("__agent_alpha");
+        let workspace_dir = tmp.path().join(".ac");
+        let matrix_dir = workspace_dir.join("_agent_alpha");
+        let replica_dir = workspace_dir.join("wg-1-team").join("__agent_alpha");
         std::fs::create_dir_all(&matrix_dir).expect("create matrix_dir");
         std::fs::create_dir_all(&replica_dir).expect("create replica_dir");
 
@@ -2678,7 +2673,7 @@ mod tests {
 
         assert_eq!(
             identity, "../../_agent_alpha",
-            "expected identity to traverse wg-1-team -> .ac-new -> _agent_alpha"
+            "expected identity to traverse wg-1-team -> .ac -> _agent_alpha"
         );
 
         let resolved = replica_dir.join(&identity).join("Role.md");
@@ -2706,13 +2701,13 @@ mod tests {
         let stale_agent_ref = tmp
             .path()
             .join("agentscommander-old")
-            .join(".ac-new")
+            .join(".ac")
             .join("_agent_tech-lead")
             .to_string_lossy()
             .replace('\\', "/");
 
         let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            ac_new_dir: workspace,
+            workspace_dir: workspace,
             wg_dir: wg_dir.clone(),
             agent_path: stale_agent_ref,
             team_repos: Vec::new(),
@@ -2746,7 +2741,7 @@ mod tests {
         std::fs::write(matrix_dir.join("Role.md"), "# Tech Lead\n").expect("write role");
 
         let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            ac_new_dir: workspace,
+            workspace_dir: workspace,
             wg_dir,
             agent_path: "_agent_tech-lead".to_string(),
             team_repos: Vec::new(),

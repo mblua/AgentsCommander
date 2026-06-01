@@ -230,7 +230,7 @@ export interface AgentInfo {
   isCoordinatorOf: string[];
 }
 
-// AC-new discovery types
+// AC discovery types
 
 export interface AcAgentMatrix {
   name: string;

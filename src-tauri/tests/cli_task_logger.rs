@@ -64,7 +64,7 @@ fn copy_binary_into(tmp: &Path) -> PathBuf {
 fn make_wg_fixture(tmp: &Path) -> PathBuf {
     let agent_root = tmp
         .join("proj")
-        .join(".ac-new")
+        .join(".ac")
         .join("wg-1-test")
         .join("__agent_alice");
     std::fs::create_dir_all(&agent_root).expect("create agent root");

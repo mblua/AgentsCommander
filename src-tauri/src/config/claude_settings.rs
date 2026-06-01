@@ -548,14 +548,14 @@ pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::
         }
     };
 
-    let scan_ac_new =
-        |ac_new: &std::path::Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
-            let entries = match std::fs::read_dir(ac_new) {
+    let scan_workspace =
+        |workspace_dir: &std::path::Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
+            let entries = match std::fs::read_dir(workspace_dir) {
                 Ok(e) => e,
                 Err(e) => {
                     log::warn!(
                         "[rtk-sweep] Cannot read {} for replica enumeration: {}",
-                        ac_new.display(),
+                        workspace_dir.display(),
                         e
                     );
                     return;
@@ -619,7 +619,7 @@ pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::
         // `push_if_new` and the `wg-*` parent re-check. Without this, a
         // symlink/junction child (e.g. `parent/Linked -> /elsewhere`) would
         // pass `p.is_dir()` (which follows links) and the sweep would write
-        // into `/elsewhere/.ac-new/_agent_*` outside the declared workspace.
+        // into `/elsewhere/.ac/_agent_*` outside the declared workspace.
         let mut candidates: Vec<PathBuf> = vec![base.to_path_buf()];
         if let Ok(entries) = std::fs::read_dir(base) {
             for entry in entries.flatten() {
@@ -639,10 +639,11 @@ pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::
         }
 
         for repo_dir in candidates {
-            let Some(ac_new) = crate::config::workspace::existing_workspace_dir(&repo_dir) else {
+            let Some(workspace_dir) = crate::config::workspace::existing_workspace_dir(&repo_dir)
+            else {
                 continue;
             };
-            scan_ac_new(&ac_new, &mut out, &mut seen);
+            scan_workspace(&workspace_dir, &mut out, &mut seen);
         }
     }
     out
@@ -876,13 +877,13 @@ mod tests {
     fn t12_enumerate_filters_team_repo_nondir() {
         let dir = tempdir("t12");
         let project = dir.join("proj");
-        let ac_new = project.join(".ac-new");
-        std::fs::create_dir_all(ac_new.join("_agent_one")).unwrap();
-        std::fs::create_dir_all(ac_new.join("wg-1-team").join("__agent_two")).unwrap();
-        std::fs::create_dir_all(ac_new.join("wg-1-team").join("__agent_three")).unwrap();
-        std::fs::create_dir_all(ac_new.join("wg-1-team").join("repo-x")).unwrap();
-        std::fs::create_dir_all(ac_new.join("_team_team")).unwrap();
-        std::fs::write(ac_new.join("readme.txt"), "hello").unwrap();
+        let workspace_dir = project.join(".ac");
+        std::fs::create_dir_all(workspace_dir.join("_agent_one")).unwrap();
+        std::fs::create_dir_all(workspace_dir.join("wg-1-team").join("__agent_two")).unwrap();
+        std::fs::create_dir_all(workspace_dir.join("wg-1-team").join("__agent_three")).unwrap();
+        std::fs::create_dir_all(workspace_dir.join("wg-1-team").join("repo-x")).unwrap();
+        std::fs::create_dir_all(workspace_dir.join("_team_team")).unwrap();
+        std::fs::write(workspace_dir.join("readme.txt"), "hello").unwrap();
 
         let project_paths = vec![project.to_string_lossy().to_string()];
         let result = enumerate_managed_agent_dirs(&project_paths);
@@ -990,8 +991,8 @@ mod tests {
     fn t19_enumerate_skips_symlinks_and_junctions() {
         let dir = tempdir("t19");
         let project = dir.join("proj");
-        let ac_new = project.join(".ac-new");
-        let wg = ac_new.join("wg-1-team");
+        let workspace_dir = project.join(".ac");
+        let wg = workspace_dir.join("wg-1-team");
         std::fs::create_dir_all(&wg).unwrap();
         let real_target = dir.join("outside-target");
         std::fs::create_dir_all(&real_target).unwrap();
@@ -1051,7 +1052,7 @@ mod tests {
     fn t20_enumerate_dedupes_by_canonical_path() {
         let dir = tempdir("t20");
         let project = dir.join("proj");
-        std::fs::create_dir_all(project.join(".ac-new").join("_agent_one")).unwrap();
+        std::fs::create_dir_all(project.join(".ac").join("_agent_one")).unwrap();
         let s = project.to_string_lossy().to_string();
         let project_paths = vec![s.clone(), s];
         let result = enumerate_managed_agent_dirs(&project_paths);
@@ -1105,7 +1106,7 @@ mod tests {
 
     #[test]
     fn t23_enumerate_descends_one_level_for_parent_project_paths() {
-        // project_paths may be either a project root (containing .ac-new/)
+        // project_paths may be either a project root (containing .ac/)
         // or a parent dir holding many such roots. Mirrors the convention in
         // commands/ac_discovery.rs::discover_ac_agents — without descending
         // one level, sweeps silently no-op for the parent-dir shape.
@@ -1113,14 +1114,8 @@ mod tests {
         let parent = dir.join("parent");
         let proj_a = parent.join("AppA");
         let proj_b = parent.join("AppB");
-        std::fs::create_dir_all(proj_a.join(".ac-new").join("_agent_alpha")).unwrap();
-        std::fs::create_dir_all(
-            proj_b
-                .join(".ac-new")
-                .join("wg-1-team")
-                .join("__agent_beta"),
-        )
-        .unwrap();
+        std::fs::create_dir_all(proj_a.join(".ac").join("_agent_alpha")).unwrap();
+        std::fs::create_dir_all(proj_b.join(".ac").join("wg-1-team").join("__agent_beta")).unwrap();
         // A hidden child should be skipped (matching ac_discovery convention).
         std::fs::create_dir_all(parent.join(".hidden")).unwrap();
 
@@ -1180,17 +1175,17 @@ mod tests {
     fn t25_enumerate_descend_skips_symlinked_child() {
         // project_paths = parent dir; one of parent's non-hidden children is a
         // symlink/junction pointing OUTSIDE the parent tree to a dir that has
-        // its own .ac-new/. The descend must NOT cross that boundary.
+        // its own .ac/. The descend must NOT cross that boundary.
         // (Grinch H1' regression test — without the M7 gate at the descend
         // step, the sweep escapes the declared workspace.)
         let dir = tempdir("t25");
         let parent = dir.join("parent");
         let real_proj = parent.join("AppA");
-        std::fs::create_dir_all(real_proj.join(".ac-new").join("_agent_real")).unwrap();
+        std::fs::create_dir_all(real_proj.join(".ac").join("_agent_real")).unwrap();
 
-        // Create the would-be-leaked target outside `parent`, with its own .ac-new.
+        // Create the would-be-leaked target outside `parent`, with its own .ac.
         let outside = dir.join("outside");
-        std::fs::create_dir_all(outside.join(".ac-new").join("_agent_outside")).unwrap();
+        std::fs::create_dir_all(outside.join(".ac").join("_agent_outside")).unwrap();
 
         // Symlink/junction parent/Linked -> outside.
         let link = parent.join("Linked");

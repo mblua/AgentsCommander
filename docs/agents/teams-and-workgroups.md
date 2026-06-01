@@ -4,7 +4,7 @@ For developers ready to compose multiple agents around a shared goal. Teams defi
 
 ## Team
 
-A **team** is one coordinator plus one or more worker agents. The team's config lives at `.ac/_team_<name>/config.json` and lists members by their canonical names. Legacy `.ac-new/` projects use the same layout under `.ac-new/`.
+A **team** is one coordinator plus one or more worker agents. The team's config lives at `.ac/_team_<name>/config.json` and lists members by their canonical names.
 
 ```
 my-project/

@@ -7,7 +7,6 @@ use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
 use crate::config::workspace::{
     ensure_authoritative_workspace_dir, existing_workspace_dir, is_workspace_dir_name,
-    stale_legacy_workspace_error_for_path,
 };
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
@@ -1130,9 +1129,6 @@ fn report_unknown_peers(unknown: &[String], available: &[String]) -> i32 {
 /// origin-agent path otherwise. Factored so `execute` and `execute_lean`
 /// share the dispatch.
 fn discover_peers(root: &str) -> Result<Vec<PeerInfo>, String> {
-    if let Some(reason) = stale_legacy_workspace_error_for_path(Path::new(root)) {
-        return Err(reason);
-    }
     if crate::config::root_agent::is_root_agent_path(root) {
         Ok(discover_root_coordinator_peers())
     } else if let Some(wg) = detect_wg_replica(root)? {
@@ -1280,11 +1276,11 @@ mod tests {
     ) -> (tempfile::TempDir, Vec<String>) {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let ac_new = project.join(".ac-new");
-        let team_dir = ac_new.join("_team_dev-team");
-        let origin_tech_lead = ac_new.join("_agent_tech-lead");
-        let origin_dev_rust = ac_new.join("_agent_dev-rust");
-        let wg_dir = ac_new.join("wg-1-dev-team");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
+        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -1326,11 +1322,11 @@ mod tests {
     fn make_portable_cross_wg_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let ac_new = project.join(".ac");
-        let team_dir = ac_new.join("_team_dev-team");
-        let local_tech_lead = ac_new.join("_agent_tech-lead");
-        let local_dev_rust = ac_new.join("_agent_dev-rust");
-        let origin = temp.path().join("origin-matrix").join(".ac-new");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let local_tech_lead = workspace_dir.join("_agent_tech-lead");
+        let local_dev_rust = workspace_dir.join("_agent_dev-rust");
+        let origin = temp.path().join("origin-matrix").join(".ac");
         let origin_tech_lead = origin.join("_agent_tech-lead");
         let origin_dev_rust = origin.join("_agent_dev-rust");
 
@@ -1354,7 +1350,7 @@ mod tests {
         let mut wg1_tech_lead = PathBuf::new();
         let mut wg1_dev_rust = PathBuf::new();
         for wg_name in ["wg-1-dev-team", "wg-2-dev-team"] {
-            let wg_dir = ac_new.join(wg_name);
+            let wg_dir = workspace_dir.join(wg_name);
             let tech_lead_replica = wg_dir.join("__agent_tech-lead");
             let dev_rust_replica = wg_dir.join("__agent_dev-rust");
             std::fs::create_dir_all(&tech_lead_replica).unwrap();
@@ -1379,65 +1375,38 @@ mod tests {
     }
 
     #[test]
-    fn detect_wg_replica_rejects_stale_legacy_when_canonical_exists() {
+    fn detect_wg_replica_accepts_ac_workspace() {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let canonical_root = project.join(".ac").join("wg-1-devs").join("__agent_alice");
-        let stale_root = project
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        std::fs::create_dir_all(&canonical_root).unwrap();
-        std::fs::create_dir_all(&stale_root).unwrap();
+        let root = project.join(".ac").join("wg-1-devs").join("__agent_alice");
+        std::fs::create_dir_all(&root).unwrap();
 
-        let err = match detect_wg_replica(stale_root.to_str().unwrap()) {
-            Ok(_) => panic!("stale legacy workspace should be rejected"),
-            Err(err) => err,
-        };
-        assert!(err.contains("stale legacy workspace"));
-        assert!(err.contains(".ac-new"));
-        assert!(err.contains(".ac"));
-    }
-
-    #[test]
-    fn detect_wg_replica_accepts_legacy_when_canonical_absent() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let project = temp.path().join("proj-a");
-        let legacy_root = project
-            .join(".ac-new")
-            .join("wg-1-devs")
-            .join("__agent_alice");
-        std::fs::create_dir_all(&legacy_root).unwrap();
-
-        let wg = detect_wg_replica(legacy_root.to_str().unwrap())
+        let wg = detect_wg_replica(root.to_str().unwrap())
             .unwrap()
-            .expect("legacy-only workspace should be accepted");
+            .expect(".ac workspace should be accepted");
         assert_eq!(wg.my_project, "proj-a");
         assert_eq!(wg.my_wg_name, "wg-1-devs");
         assert_eq!(wg.my_agent_name, "alice");
     }
 
     #[test]
-    fn discover_wg_peers_uses_only_canonical_workspace_when_both_exist() {
+    fn discover_wg_peers_lists_ac_workspace_peers() {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let canonical_wg = project.join(".ac").join("wg-1-devs");
-        let legacy_wg = project.join(".ac-new").join("wg-1-devs");
-        let canonical_root = canonical_wg.join("__agent_alice");
-        let canonical_peer = canonical_wg.join("__agent_bob");
-        let stale_peer = legacy_wg.join("__agent_eve");
-        for dir in [&canonical_root, &canonical_peer, &stale_peer] {
+        let wg_dir = project.join(".ac").join("wg-1-devs");
+        let root = wg_dir.join("__agent_alice");
+        let peer = wg_dir.join("__agent_bob");
+        for dir in [&root, &peer] {
             std::fs::create_dir_all(dir).unwrap();
         }
 
-        let wg = detect_wg_replica(canonical_root.to_str().unwrap())
+        let wg = detect_wg_replica(root.to_str().unwrap())
             .unwrap()
-            .expect("canonical workspace should be accepted");
+            .expect(".ac workspace should be accepted");
         let peers = discover_wg_peers(wg);
         let names: Vec<&str> = peers.iter().map(|peer| peer.name.as_str()).collect();
 
         assert!(names.contains(&"proj-a:wg-1-devs/bob"));
-        assert!(!names.contains(&"proj-a:wg-1-devs/eve"));
     }
 
     #[test]
@@ -1568,7 +1537,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             replica.join("config.json"),
-            r#"{"identity":"../../../../agentscommander-old/.ac-new/_agent_tech-lead"}"#,
+            r#"{"identity":"../../../../agentscommander-old/.ac/_agent_tech-lead"}"#,
         )
         .unwrap();
 

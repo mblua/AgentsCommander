@@ -47,7 +47,7 @@ pub enum ProjectError {
     PathMissing(PathBuf),
     #[error("path is not a directory: {0}")]
     NotADirectory(PathBuf),
-    #[error("no AC project at {0} (.ac/ or legacy .ac-new/ not found)")]
+    #[error("no AC project at {0} (.ac/ not found)")]
     WorkspaceMissing(PathBuf),
     #[error("failed to resolve absolute path for '{0}': {1}")]
     CwdFailure(String, std::io::Error),
@@ -139,7 +139,12 @@ pub fn register_new_project(
             let created = match std::fs::create_dir(&workspace_dir) {
                 Ok(()) => true,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-                Err(e) => return Err(ProjectError::WorkspaceCreateFailed(workspace_dir.clone(), e)),
+                Err(e) => {
+                    return Err(ProjectError::WorkspaceCreateFailed(
+                        workspace_dir.clone(),
+                        e,
+                    ))
+                }
             };
             (workspace_dir, created)
         }
@@ -156,7 +161,12 @@ pub fn register_new_project(
                 workspace_dir, e
             );
         }
-        Err(e) => return Err(ProjectError::WorkspaceGitignoreFailed(workspace_dir.clone(), e)),
+        Err(e) => {
+            return Err(ProjectError::WorkspaceGitignoreFailed(
+                workspace_dir.clone(),
+                e,
+            ))
+        }
     }
 
     let abs_str = abs.to_string_lossy().into_owned();
@@ -411,7 +421,7 @@ mod tests {
 
     #[test]
     fn open_rejects_path_without_workspace() {
-        let fix = FixtureRoot::new("proj-open-noacnew");
+        let fix = FixtureRoot::new("proj-open-no-workspace");
         let mut s = AppSettings::default();
         let r = register_existing_project(&mut s, fix.path().to_str().unwrap());
         assert!(matches!(r, Err(ProjectError::WorkspaceMissing(_))));
@@ -431,25 +441,26 @@ mod tests {
     }
 
     #[test]
-    fn open_registers_legacy_ac_new_fallback() {
-        let fix = FixtureRoot::new("proj-open-legacy-ok");
-        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+    fn open_rejects_non_ac_workspace() {
+        let fix = FixtureRoot::new("proj-open-invalid-workspace");
+        std::fs::create_dir_all(fix.path().join(".workspace")).unwrap();
         let mut s = AppSettings::default();
-        let r = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
-        assert!(r.registered);
-        assert!(!r.created);
-        assert_eq!(s.project_paths.len(), 1);
+        let r = register_existing_project(&mut s, fix.path().to_str().unwrap());
+        assert!(matches!(r, Err(ProjectError::WorkspaceMissing(_))));
+        assert!(s.project_paths.is_empty());
     }
 
     #[test]
-    fn open_prefers_ac_when_both_ac_and_ac_new_exist() {
+    fn open_registers_path_when_ac_exists() {
         let fix = FixtureRoot::new("proj-open-both");
         std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
-        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
         let mut s = AppSettings::default();
         let r = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
         assert!(r.registered);
-        assert_eq!(existing_workspace_dir(fix.path()), Some(fix.path().join(".ac")));
+        assert_eq!(
+            existing_workspace_dir(fix.path()),
+            Some(fix.path().join(".ac"))
+        );
     }
 
     #[test]
@@ -524,15 +535,14 @@ mod tests {
     }
 
     #[test]
-    fn new_uses_legacy_ac_new_when_it_is_the_only_workspace() {
-        let fix = FixtureRoot::new("proj-new-legacy-existing");
-        std::fs::create_dir_all(fix.path().join(".ac-new")).unwrap();
+    fn new_skips_creation_when_ac_already_exists_via_workspace_lookup() {
+        let fix = FixtureRoot::new("proj-new-existing-lookup");
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let mut s = AppSettings::default();
         let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
         assert!(!r.created);
         assert!(r.registered);
-        assert!(!fix.path().join(".ac").exists());
-        assert!(fix.path().join(".ac-new").is_dir());
+        assert!(fix.path().join(".ac").is_dir());
     }
 
     #[test]
@@ -659,10 +669,6 @@ mod tests {
         std::fs::create_dir_all(path.join(".ac")).unwrap();
     }
 
-    fn create_legacy_ac_project(path: &Path) {
-        std::fs::create_dir_all(path.join(".ac-new")).unwrap();
-    }
-
     #[test]
     fn resolve_project_reference_matches_registered_folder_name() {
         let fix = FixtureRoot::new("proj-resolve-name");
@@ -690,15 +696,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_project_reference_matches_legacy_child_project() {
-        let fix = FixtureRoot::new("proj-resolve-legacy-parent");
+    fn resolve_project_reference_rejects_non_ac_child_project() {
+        let fix = FixtureRoot::new("proj-resolve-invalid-workspace");
         let project = fix.path().join("ProjectAlpha");
-        create_legacy_ac_project(&project);
+        std::fs::create_dir_all(project.join(".workspace")).unwrap();
         let project_paths = vec![fix.path().to_string_lossy().to_string()];
 
-        let resolved = resolve_project_reference(&project_paths, "ProjectAlpha").unwrap();
+        let err = resolve_project_reference(&project_paths, "ProjectAlpha").unwrap_err();
 
-        assert_eq!(resolved.path, project);
+        assert!(matches!(err, ProjectResolveError::NotFound(_)));
     }
 
     #[test]
@@ -768,7 +774,7 @@ mod tests {
     fn project_registration_serializes_camel_case() {
         // Today's fields are already lowercase single-words, so no rename
         // happens. This test locks the invariant: a future field like
-        // `ac_new_dir` must serialize to `acNewDir`. If the
+        // `workspace_dir` must serialize to `workspaceDir`. If the
         // `#[serde(rename_all = "camelCase")]` attribute is ever dropped,
         // this test catches it before the FE silently breaks.
         let r = ProjectRegistration {
@@ -790,7 +796,7 @@ mod tests {
         );
         // No snake_case relics from any current field name.
         assert!(
-            !json.contains("ac_new"),
+            !json.contains("workspace_dir"),
             "snake_case field name leaked: {}",
             json
         );

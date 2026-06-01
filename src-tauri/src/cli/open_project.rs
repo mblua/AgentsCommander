@@ -21,14 +21,14 @@ use crate::config::settings::{load_settings_for_cli, save_settings};
 #[derive(Args)]
 #[command(after_help = "\
 PURPOSE: Register an existing AC project so it appears in the GUI sidebar on \
-next launch. The folder must already contain `.ac/` or legacy `.ac-new/` (use `new-project` to \
+next launch. The folder must already contain `.ac/` (use `new-project` to \
 create one).\n\n\
 PATH: Absolute or relative — relative paths are resolved against the current \
 working directory. The persisted entry is the absolute form.\n\n\
 IDEMPOTENCY: Re-registering the same path is a no-op; the verb prints \
 \"Project already registered\" and exits 0.")]
 pub struct OpenProjectArgs {
-    /// Path to an existing AC project folder (must contain `.ac/` or legacy `.ac-new/`)
+    /// Path to an existing AC project folder (must contain `.ac/`)
     #[arg(value_name = "PATH")]
     pub path: String,
 }
@@ -118,8 +118,8 @@ mod tests {
     }
 
     #[test]
-    fn open_project_returns_1_when_no_ac_new() {
-        let fix = FixtureRoot::new("cli-open-noacnew");
+    fn open_project_returns_1_when_no_ac() {
+        let fix = FixtureRoot::new("cli-open-noac");
         let code = execute(OpenProjectArgs {
             path: fix.path().to_string_lossy().into(),
         });

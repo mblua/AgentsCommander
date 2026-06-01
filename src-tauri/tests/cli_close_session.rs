@@ -119,7 +119,7 @@ fn build_fixture(tmp: &Path, agent: &str) -> Fixture {
     std::fs::write(cfg_dir.join("master-token.txt"), &master).expect("write master token");
 
     // settings.json with projectPaths pointing at <tmp> so enumerate_project_dirs
-    // discovers `<tmp>/proj` (an immediate child containing `.ac-new`).
+    // discovers `<tmp>/proj` (an immediate child containing `.ac`).
     // Required fields (no serde default): defaultShell, defaultShellArgs, agents.
     let settings = serde_json::json!({
         "defaultShell": "powershell.exe",
@@ -135,7 +135,7 @@ fn build_fixture(tmp: &Path, agent: &str) -> Fixture {
 
     let agent_root = tmp
         .join("proj")
-        .join(".ac-new")
+        .join(".ac")
         .join("wg-1-test")
         .join(format!("__agent_{}", agent));
     std::fs::create_dir_all(&agent_root).expect("create agent dir");
@@ -169,8 +169,7 @@ fn simulate_daemon_response(
         if let Ok(rd) = std::fs::read_dir(outbox_dir) {
             let found = rd.flatten().find_map(|entry| {
                 let p = entry.path();
-                (p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json"))
-                    .then_some(p)
+                (p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json")).then_some(p)
             });
             if let Some(p) = found {
                 break p;
@@ -214,12 +213,7 @@ fn run_close_session_with_simulator(
     session_ids: &[&str],
     target: &str,
 ) -> (Option<i32>, String, String) {
-    let stem = fix
-        .bin
-        .file_stem()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let stem = fix.bin.file_stem().unwrap().to_string_lossy().to_string();
     let ac_dir = fix.agent_root.join(format!(".{}", stem));
     let outbox_dir = ac_dir.join("outbox");
     let responses_dir = ac_dir.join("responses");
@@ -297,8 +291,7 @@ fn close_session_no_match_exits_zero_with_prose() {
     let fix = build_fixture(tmp.path(), "bob-not-running");
     let target = "proj:wg-1-test/bob-not-running";
 
-    let (code, stdout, stderr) =
-        run_close_session_with_simulator(&fix, "no_match", 0, &[], target);
+    let (code, stdout, stderr) = run_close_session_with_simulator(&fix, "no_match", 0, &[], target);
 
     assert_eq!(
         code,
@@ -420,12 +413,7 @@ fn close_session_response_via_outbox_relative_path_only() {
     let fix = build_fixture(tmp.path(), "frank-rel-only");
     let target = "proj:wg-1-test/frank-rel-only";
 
-    let stem = fix
-        .bin
-        .file_stem()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let stem = fix.bin.file_stem().unwrap().to_string_lossy().to_string();
     let responses_dir = fix.agent_root.join(format!(".{}", stem)).join("responses");
 
     let (code, stdout, _stderr) =

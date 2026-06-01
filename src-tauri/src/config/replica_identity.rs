@@ -416,7 +416,7 @@ mod tests {
         let stale_sibling = temp
             .path()
             .join("agentscommander-old")
-            .join(".ac-new")
+            .join(".ac")
             .join("_agent_tech-lead");
         std::fs::create_dir_all(stale_sibling).expect("create stale sibling");
 
@@ -442,7 +442,7 @@ mod tests {
         let stale = temp
             .path()
             .join("agentscommander-old")
-            .join(".ac-new")
+            .join(".ac")
             .join("_agent_tech-lead")
             .to_string_lossy()
             .replace('\\', "/");
@@ -452,7 +452,7 @@ mod tests {
                 "identity": stale,
                 "context": [
                     "$AGENTSCOMMANDER_CONTEXT",
-                    "../../../../agentscommander-old/.ac-new/_agent_tech-lead/Role.md",
+                    "../../../../agentscommander-old/.ac/_agent_tech-lead/Role.md",
                     "notes.md",
                     "../../_agent_tech-lead/Role.md"
                 ],
@@ -497,7 +497,7 @@ mod tests {
             .join("__agent_tech-lead");
         std::fs::write(
             replica.join("config.json"),
-            r#"{"identity":"../../../../agentscommander-old/.ac-new/_agent_architect"}"#,
+            r#"{"identity":"../../../../agentscommander-old/.ac/_agent_architect"}"#,
         )
         .expect("write config");
 
@@ -564,7 +564,7 @@ mod tests {
             .join("__agent_tech-lead");
         std::fs::write(
             replica.join("config.json"),
-            r#"{"identity":"../../../../agentscommander-old/.ac-new/_Agent_Tech-Lead"}"#,
+            r#"{"identity":"../../../../agentscommander-old/.ac/_Agent_Tech-Lead"}"#,
         )
         .expect("write config");
 

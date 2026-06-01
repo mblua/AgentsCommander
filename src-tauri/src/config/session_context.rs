@@ -1465,9 +1465,9 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
         )
     };
     let git_scope = if matrix_root.is_some() {
-        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` or legacy `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
     } else {
-        "Your agent directory is typically inside a parent repository's `.ac/` or legacy `.ac-new/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory — that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
+        "Your agent directory is typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
     };
     let peer_name_format = match &messaging_mode {
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
@@ -1928,7 +1928,7 @@ mod tests {
     #[test]
     fn resolve_skill_owner_root_supports_origin_matrix_sessions() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
         write_skill(
             &matrix_root,
             "example",
@@ -2271,9 +2271,11 @@ mod tests {
     #[test]
     fn materialize_agent_context_file_includes_skills_for_replica_context() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let ac_new = temp.path().join(".ac-new");
-        let matrix_root = ac_new.join("_agent_dev-rust");
-        let replica_root = ac_new.join("wg-19-dev-team").join("__agent_dev-rust");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         write_skill(
             &matrix_root,
@@ -2319,7 +2321,7 @@ mod tests {
         .expect("write Role.md");
         std::fs::write(
             replica_root.join("config.json"),
-            r#"{"identity":"../../../../agentscommander-old/.ac-new/_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT","../../../../agentscommander-old/.ac-new/_agent_tech-lead/Role.md"]}"#,
+            r#"{"identity":"../../../../agentscommander-old/.ac/_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT","../../../../agentscommander-old/.ac/_agent_tech-lead/Role.md"]}"#,
         )
         .expect("write replica config");
 
@@ -2361,7 +2363,7 @@ mod tests {
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::write(
             replica_root.join("config.json"),
-            r#"{"identity":"../../../../agentscommander-old/.ac-new/_agent_architect"}"#,
+            r#"{"identity":"../../../../agentscommander-old/.ac/_agent_architect"}"#,
         )
         .expect("write replica config");
 
@@ -2376,7 +2378,7 @@ mod tests {
     #[test]
     fn materialize_agent_context_file_includes_skills_for_direct_matrix_context() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
         write_skill(
             &matrix_root,
             "runtime",
@@ -2411,7 +2413,7 @@ mod tests {
     #[test]
     fn materialize_agent_context_file_includes_local_role_for_direct_matrix_context() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
             matrix_root.join(ROLE_MD_FILENAME),
@@ -2434,7 +2436,7 @@ mod tests {
     #[test]
     fn materialize_direct_matrix_default_config_includes_global_and_one_role() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
             matrix_root.join("config.json"),
@@ -2462,7 +2464,7 @@ mod tests {
     #[test]
     fn materialize_direct_matrix_role_only_config_prepends_global_context() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
             matrix_root.join("config.json"),
@@ -2490,7 +2492,7 @@ mod tests {
     #[test]
     fn materialize_direct_matrix_null_context_keeps_global_context_and_role() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let matrix_root = temp.path().join(".ac-new").join("_agent_dev-rust");
+        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
             matrix_root.join("config.json"),
