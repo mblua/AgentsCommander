@@ -2502,6 +2502,31 @@ fn load_and_validate_resume_artifacts(
             None,
         ));
     }
+    for (report_variant, expected_variant) in report_artifact
+        .variants
+        .iter()
+        .zip(expected_variants.iter())
+    {
+        if report_variant.name != expected_variant.name
+            || report_variant.agent_name != expected_variant.agent_name
+        {
+            errors.push(err(
+                "run_artifact_mismatch",
+                "Report variant identity does not match resume arguments",
+                Some(&report_variant.name),
+            ));
+        }
+    }
+    for (report_prompt, expected_prompt) in report_artifact.prompts.iter().zip(suite.prompts.iter())
+    {
+        if report_prompt.id != expected_prompt.id || report_prompt.title != expected_prompt.title {
+            errors.push(err(
+                "run_artifact_mismatch",
+                "Report prompt identity does not match resume arguments",
+                None,
+            ));
+        }
+    }
 
     let Some(workgroup) = run_artifact.workgroup.clone() else {
         errors.push(err(
@@ -4216,6 +4241,186 @@ mod tests {
         }
     }
 
+    fn resume_fixture() -> (
+        tempfile::TempDir,
+        LoadedExperiment,
+        ParsedPromptSuite,
+        Vec<VariantMetadata>,
+        RunArgs,
+        PathBuf,
+        String,
+        ReportArtifact,
+    ) {
+        let (tmp, loaded) = loaded_fixture("alpha");
+        let run_id = "20260601-181500".to_string();
+        let run_dir = runs_dir(&loaded).join(&run_id);
+        std::fs::create_dir_all(run_dir.join("attempt-state")).expect("run dirs");
+        let workgroup_dir = loaded.workspace_dir.join("wg-1-role-exp-exp");
+        std::fs::create_dir_all(&workgroup_dir).expect("workgroup dir");
+
+        let suite = ParsedPromptSuite {
+            path: loaded.experiment_dir.join("suite.md"),
+            sha256: sha256_hex(b"prompt suite"),
+            prompts: vec![
+                PromptCase {
+                    id: "prompt-a".to_string(),
+                    title: "Prompt A".to_string(),
+                    prompt: "Do A".to_string(),
+                    tags: vec!["one".to_string()],
+                    expected_behaviors: vec!["A happens".to_string()],
+                    line: 1,
+                },
+                PromptCase {
+                    id: "prompt-b".to_string(),
+                    title: "Prompt B".to_string(),
+                    prompt: "Do B".to_string(),
+                    tags: vec!["two".to_string()],
+                    expected_behaviors: vec!["B happens".to_string()],
+                    line: 7,
+                },
+            ],
+        };
+        let variants = loaded
+            .experiment
+            .variants
+            .iter()
+            .map(|name| load_variant_metadata(&loaded, name).expect("variant metadata"))
+            .collect::<Vec<_>>();
+        let attempts = build_attempts(&run_id, &suite.prompts, &variants, 1);
+        let workgroup = RunWorkgroupArtifact {
+            name: "wg-1-role-exp-exp".to_string(),
+            path: std::fs::canonicalize(&workgroup_dir)
+                .expect("canonical workgroup")
+                .to_string_lossy()
+                .to_string(),
+            retained: true,
+            cleanup_supported: false,
+            run_id: run_id.clone(),
+            experiment: loaded.experiment.name.clone(),
+        };
+        let report = build_report_artifact(
+            &run_id,
+            &loaded.experiment.name,
+            &run_dir,
+            "2026-06-01T18:15:00Z",
+            &suite.prompts,
+            &variants,
+            1,
+            &attempts,
+            false,
+            Some(&workgroup),
+        );
+        let run = RunArtifact {
+            schema_version: 1,
+            run_id: run_id.clone(),
+            project: loaded.experiment.project.clone(),
+            experiment: loaded.experiment.name.clone(),
+            status: report.status.clone(),
+            dry_run: false,
+            created_at: "2026-06-01T18:15:00Z".to_string(),
+            updated_at: "2026-06-01T18:15:00Z".to_string(),
+            suite: RunSuiteArtifact {
+                path: suite.path.to_string_lossy().to_string(),
+                sha256: suite.sha256.clone(),
+                prompt_count: suite.prompts.len(),
+            },
+            seed: 123,
+            seed_provided: false,
+            replicates: 1,
+            variants: variants
+                .iter()
+                .map(|variant| RunVariantArtifact {
+                    name: variant.name.clone(),
+                    agent_name: variant.agent_name.clone(),
+                    role_sha256: variant.role_sha256.clone(),
+                    role_path: variant.role_path.clone(),
+                })
+                .collect(),
+            attempt_count: attempts.len(),
+            artifacts: default_run_artifact_paths(),
+            execution: Some(RunExecutionArtifact {
+                provider: "auto".to_string(),
+                attempt_timeout_secs: 900,
+                max_parallel: 1,
+                started_at: Some("2026-06-01T18:15:00Z".to_string()),
+                completed_at: None,
+                cancellation_requested: false,
+                executor: "fake".to_string(),
+            }),
+            workgroup: Some(workgroup),
+            warnings: Vec::new(),
+        };
+
+        std::fs::write(
+            run_dir.join("run.json"),
+            serde_json::to_string_pretty(&run).expect("run json"),
+        )
+        .expect("write run");
+        std::fs::write(
+            run_dir.join("attempts.jsonl"),
+            attempts
+                .iter()
+                .map(|attempt| serde_json::to_string(attempt).expect("attempt json"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("write attempts");
+        std::fs::write(
+            run_dir.join("report.json"),
+            serde_json::to_string_pretty(&report).expect("report json"),
+        )
+        .expect("write report");
+        std::fs::write(run_dir.join("report.md"), render_report_markdown(&report))
+            .expect("write report markdown");
+
+        let args = RunArgs {
+            project: loaded.experiment.project.clone(),
+            experiment: loaded.experiment.name.clone(),
+            prompt_suite: suite.path.to_string_lossy().to_string(),
+            replicates: 1,
+            seed: None,
+            run_id: Some(run_id.clone()),
+            dry_run: false,
+            execute: true,
+            provider: "auto".to_string(),
+            attempt_timeout_secs: 900,
+            max_parallel: 1,
+            retain_workgroup: Some(true),
+            resume_run: true,
+            retry_failed: true,
+            fake_executor: true,
+        };
+
+        (tmp, loaded, suite, variants, args, run_dir, run_id, report)
+    }
+
+    fn assert_resume_report_tamper_rejected_without_mutation(
+        mut tamper: impl FnMut(&mut ReportArtifact),
+    ) {
+        let (_tmp, loaded, suite, variants, args, run_dir, run_id, mut report) = resume_fixture();
+        tamper(&mut report);
+        let report_path = run_dir.join("report.json");
+        std::fs::write(
+            &report_path,
+            serde_json::to_string_pretty(&report).expect("tampered report json"),
+        )
+        .expect("write tampered report");
+        let before = std::fs::read_to_string(&report_path).expect("read tampered report");
+
+        let errors = load_and_validate_resume_artifacts(
+            &args, &loaded, &suite, &run_id, &run_dir, &variants,
+        )
+        .expect_err("tampered report should be rejected");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.code == "run_artifact_mismatch"));
+        assert_eq!(
+            before,
+            std::fs::read_to_string(&report_path).expect("read report after validation")
+        );
+    }
+
     #[test]
     fn tampered_source_agent_is_metadata_error_before_path_authority() {
         let (_tmp, mut loaded) = loaded_fixture("alpha");
@@ -4346,6 +4551,21 @@ mod tests {
                 .expect_err("link ancestor should be rejected");
 
         assert!(errors.iter().any(|e| e.code == "link_error"));
+    }
+
+    #[test]
+    fn resume_rejects_report_variant_identity_tamper_without_mutation() {
+        assert_resume_report_tamper_rejected_without_mutation(|report| {
+            report.variants[0].name = "renamed-control".to_string();
+        });
+    }
+
+    #[test]
+    fn resume_rejects_report_prompt_identity_tamper_without_mutation() {
+        assert_resume_report_tamper_rejected_without_mutation(|report| {
+            report.prompts[0].id = "renamed-prompt".to_string();
+            report.prompts[0].title = "Renamed Prompt".to_string();
+        });
     }
 
     #[test]
