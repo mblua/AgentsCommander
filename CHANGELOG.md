@@ -4,6 +4,20 @@ All notable user-facing changes are tracked here and in [GitHub Releases](https:
 
 This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) shape: one section per release in reverse-chronological order. Each entry groups changes under **Added / Changed / Removed / Fixed / Security** where useful.
 
+## 0.8.47 - 2026-06-02
+
+### Added
+- Role Experiment features: implemented CLI phases 1 through 3a, added dry-run artifacts, and formalized the report JSON contract.
+- Added settings for Telegram network poll logging.
+
+### Fixed
+- Fixed root agent startup failing without a coding agent and ensured dormant root agents are preserved on launch config errors.
+- Fixed send delivery confirmation mechanism.
+- Fixed role experiment resume validation and metadata validation.
+
+### Removed
+- Removed the CLI sidecar binary entirely.
+
 ## 0.8.43 — 2026-05-27
 
 Public-push release: repo cleanup, documentation rewrite scaffolding, and factual corrections to public copy. See umbrella issue [#313](https://github.com/mblua/AgentsCommander/issues/313).
