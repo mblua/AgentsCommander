@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashSet};
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+use clap::builder::BoolishValueParser;
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -84,6 +85,22 @@ struct RunArgs {
     run_id: Option<String>,
     #[arg(long = "dry-run")]
     dry_run: bool,
+    #[arg(long = "execute")]
+    execute: bool,
+    #[arg(long = "provider", default_value = "auto")]
+    provider: String,
+    #[arg(long = "attempt-timeout-secs", default_value_t = 900)]
+    attempt_timeout_secs: u64,
+    #[arg(long = "max-parallel", default_value_t = 1)]
+    max_parallel: u32,
+    #[arg(long = "retain-workgroup", value_parser = BoolishValueParser::new())]
+    retain_workgroup: Option<bool>,
+    #[arg(long = "resume-run")]
+    resume_run: bool,
+    #[arg(long = "retry-failed")]
+    retry_failed: bool,
+    #[arg(long = "fake-executor", hide = true)]
+    fake_executor: bool,
 }
 
 #[derive(Args)]
@@ -203,6 +220,7 @@ struct PromptCase {
     line: usize,
 }
 
+#[derive(Clone)]
 struct ParsedPromptSuite {
     path: PathBuf,
     sha256: String,
@@ -227,6 +245,9 @@ struct RunArtifact {
     variants: Vec<RunVariantArtifact>,
     attempt_count: usize,
     artifacts: RunArtifactPaths,
+    execution: Option<RunExecutionArtifact>,
+    workgroup: Option<RunWorkgroupArtifact>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +273,33 @@ struct RunArtifactPaths {
     attempts: String,
     report_json: String,
     report_markdown: String,
+    prompts: String,
+    outputs: String,
+    transcripts: String,
+    attempt_state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunExecutionArtifact {
+    provider: String,
+    attempt_timeout_secs: u64,
+    max_parallel: u32,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    cancellation_requested: bool,
+    executor: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunWorkgroupArtifact {
+    name: String,
+    path: String,
+    retained: bool,
+    cleanup_supported: bool,
+    run_id: String,
+    experiment: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,7 +321,33 @@ struct AttemptArtifact {
     messages: Option<usize>,
     flags: Vec<String>,
     transcript_path: Option<String>,
+    session_id: Option<String>,
+    workgroup: Option<String>,
+    replica_root: Option<String>,
+    prompt_path: Option<String>,
+    output_path: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    exit_code: Option<i32>,
+    provider: Option<String>,
+    provider_transcript_path: Option<String>,
+    attempt_generation: u32,
     failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttemptOwnershipArtifact {
+    schema_version: u32,
+    run_id: String,
+    attempt_id: String,
+    attempt_generation: u32,
+    session_id: Option<String>,
+    workgroup_path: String,
+    replica_root: String,
+    prompt_path: String,
+    output_path: String,
+    started_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,8 +375,12 @@ struct ReportSummaryArtifact {
     replicates: u32,
     attempt_count: usize,
     planned_attempt_count: usize,
+    running_attempt_count: usize,
     completed_attempt_count: usize,
     failed_attempt_count: usize,
+    timed_out_attempt_count: usize,
+    inconclusive_attempt_count: usize,
+    cancelled_attempt_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +389,12 @@ struct ReportVariantArtifact {
     name: String,
     agent_name: String,
     planned_attempt_count: usize,
+    running_attempt_count: usize,
+    completed_attempt_count: usize,
+    failed_attempt_count: usize,
+    timed_out_attempt_count: usize,
+    inconclusive_attempt_count: usize,
+    cancelled_attempt_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +403,12 @@ struct ReportPromptArtifact {
     id: String,
     title: String,
     planned_attempt_count: usize,
+    running_attempt_count: usize,
+    completed_attempt_count: usize,
+    failed_attempt_count: usize,
+    timed_out_attempt_count: usize,
+    inconclusive_attempt_count: usize,
+    cancelled_attempt_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +430,27 @@ struct LoadedExperiment {
     workspace_dir: PathBuf,
     experiment_dir: PathBuf,
     experiment: ExperimentMetadata,
+}
+
+struct ExecutionPlan {
+    run_id: String,
+    run_dir: PathBuf,
+    suite: ParsedPromptSuite,
+    attempts: Vec<AttemptArtifact>,
+    variants: Vec<VariantMetadata>,
+    workgroup: RunWorkgroupArtifact,
+}
+
+struct AttemptExecutionResult {
+    attempt_id: String,
+    status: String,
+    duration_ms: Option<u64>,
+    transcript_path: Option<String>,
+    provider_transcript_path: Option<String>,
+    output_path: Option<String>,
+    failure_reason: Option<String>,
+    exit_code: Option<i32>,
+    flags: Vec<String>,
 }
 
 struct ExperimentValidation {
@@ -930,15 +1041,102 @@ fn validate(args: ValidateArgs) -> Result<CommandOutput, Vec<CliError>> {
     })
 }
 
-fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
-    if !args.dry_run {
-        return Err(vec![err(
-            "run_execution_not_implemented",
-            "Role experiment execution is not implemented; rerun with --dry-run to plan attempts",
+fn validate_run_mode(args: &RunArgs) -> Result<(), Vec<CliError>> {
+    let mut errors = Vec::new();
+    match (args.dry_run, args.execute) {
+        (false, false) => errors.push(err(
+            "run_mode_required",
+            "Specify exactly one of --dry-run or --execute",
             None,
-        )]);
+        )),
+        (true, true) => errors.push(err(
+            "run_mode_conflict",
+            "Specify only one of --dry-run or --execute",
+            None,
+        )),
+        _ => {}
     }
+    if args.fake_executor && !fake_executor_available() {
+        errors.push(err(
+            "fake_executor_not_available",
+            "--fake-executor is only available to test builds",
+            None,
+        ));
+    }
+    if args.max_parallel != 1 {
+        errors.push(err(
+            "parallel_execution_not_supported",
+            "--max-parallel must be 1 in Phase 3A",
+            None,
+        ));
+    }
+    if !(30..=86_400).contains(&args.attempt_timeout_secs) {
+        errors.push(err(
+            "attempt_timeout_invalid",
+            "--attempt-timeout-secs must be between 30 and 86400",
+            None,
+        ));
+    }
+    if matches!(args.retain_workgroup, Some(false)) {
+        errors.push(err(
+            "cleanup_not_supported",
+            "--retain-workgroup=false is not supported in Phase 3A",
+            None,
+        ));
+    }
+    if args.resume_run {
+        if !args.execute {
+            errors.push(err(
+                "resume_requires_execute",
+                "--resume-run requires --execute",
+                None,
+            ));
+        }
+        if args.run_id.is_none() {
+            errors.push(err(
+                "resume_requires_run_id",
+                "--resume-run requires --run-id",
+                None,
+            ));
+        }
+    }
+    if args.retry_failed && !args.resume_run {
+        errors.push(err(
+            "retry_failed_requires_resume",
+            "--retry-failed requires --resume-run",
+            None,
+        ));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn fake_executor_available() -> bool {
+    cfg!(test) || cfg!(debug_assertions)
+}
+
+fn execute_requires_runtime_guard(args: &RunArgs) -> Result<(), Vec<CliError>> {
+    if args.execute && !args.fake_executor {
+        Err(vec![err(
+            "execution_requires_running_app",
+            "Real role-experiment execution requires a running AgentsCommander app or daemon; Phase 3A CLI-only execution has no side effects",
+            None,
+        )])
+    } else {
+        Ok(())
+    }
+}
+
+fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
+    validate_run_mode(&args)?;
+    execute_requires_runtime_guard(&args)?;
     validate_replicates(args.replicates)?;
+    if args.execute {
+        return run_fake_execution(args);
+    }
     let loaded = load_experiment(&args.project, &args.experiment)?;
     let validation = collect_experiment_validation(&loaded);
     if !validation.errors.is_empty() {
@@ -1001,6 +1199,9 @@ fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
             .collect(),
         attempt_count: attempts.len(),
         artifacts: artifacts.clone(),
+        execution: None,
+        workgroup: None,
+        warnings: Vec::new(),
     };
     let report_artifact = build_report_artifact(
         &run_id,
@@ -1010,6 +1211,9 @@ fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         &suite.prompts,
         &validation.variant_metas,
         args.replicates,
+        &attempts,
+        true,
+        None,
     );
     let report_markdown = render_report_markdown(&report_artifact);
 
@@ -1135,6 +1339,394 @@ fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
             errors: Vec::new(),
         })
     }
+}
+
+fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
+    let (loaded, mut plan, mut warnings) = prepare_execution_plan(&args)?;
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let (seed, seed_provided) = match args.seed {
+        Some(seed) => (seed, true),
+        None => (generated_seed_from_uuid(uuid::Uuid::new_v4()), false),
+    };
+    let mut run_artifact = RunArtifact {
+        schema_version: 1,
+        run_id: plan.run_id.clone(),
+        project: args.project.clone(),
+        experiment: loaded.experiment.name.clone(),
+        status: "running".to_string(),
+        dry_run: false,
+        created_at: timestamp.clone(),
+        updated_at: timestamp.clone(),
+        suite: RunSuiteArtifact {
+            path: plan.suite.path.to_string_lossy().to_string(),
+            sha256: plan.suite.sha256.clone(),
+            prompt_count: plan.suite.prompts.len(),
+        },
+        seed,
+        seed_provided,
+        replicates: args.replicates,
+        variants: plan
+            .variants
+            .iter()
+            .map(|variant| RunVariantArtifact {
+                name: variant.name.clone(),
+                agent_name: variant.agent_name.clone(),
+                role_sha256: variant.role_sha256.clone(),
+                role_path: variant.role_path.clone(),
+            })
+            .collect(),
+        attempt_count: plan.attempts.len(),
+        artifacts: default_run_artifact_paths(),
+        execution: Some(RunExecutionArtifact {
+            provider: args.provider.clone(),
+            attempt_timeout_secs: args.attempt_timeout_secs,
+            max_parallel: args.max_parallel,
+            started_at: Some(timestamp.clone()),
+            completed_at: None,
+            cancellation_requested: false,
+            executor: "fake".to_string(),
+        }),
+        workgroup: Some(plan.workgroup.clone()),
+        warnings: vec![
+            "run_workgroup_retained".to_string(),
+            "transcript_capture_best_effort".to_string(),
+            "no_scoring".to_string(),
+            "real_execution_deferred".to_string(),
+        ],
+    };
+
+    let result = execute_attempts_with_fake_executor(&args, &loaded, &mut plan, &mut run_artifact)?;
+    let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    if let Some(execution) = run_artifact.execution.as_mut() {
+        execution.completed_at = Some(completed_at.clone());
+    }
+    run_artifact.updated_at = completed_at.clone();
+    run_artifact.status = summarize_run_status(&plan.attempts, false);
+    atomic_write_json(&plan.run_dir.join("run.json"), &run_artifact)?;
+    write_attempts_jsonl_replace(&plan.run_dir.join("attempts.jsonl"), &plan.attempts)?;
+    let report_artifact = build_report_artifact(
+        &plan.run_id,
+        &loaded.experiment.name,
+        &plan.run_dir,
+        &completed_at,
+        &plan.suite.prompts,
+        &plan.variants,
+        args.replicates,
+        &plan.attempts,
+        false,
+        Some(&plan.workgroup),
+    );
+    atomic_write_json(&plan.run_dir.join("report.json"), &report_artifact)?;
+    atomic_write_bytes(
+        &plan.run_dir.join("report.md"),
+        render_report_markdown(&report_artifact).as_bytes(),
+    )?;
+
+    warnings.extend([
+        warn(
+            "run_workgroup_retained",
+            "Run workgroup was retained for inspection; cleanup is not implemented in Phase 3A.",
+            None,
+        ),
+        warn(
+            "transcript_capture_best_effort",
+            "Provider-native transcript paths may be unavailable; use run metadata and retained workgroup for inspection.",
+            None,
+        ),
+        warn(
+            "no_scoring",
+            "Phase 3A does not score attempts or select winners.",
+            None,
+        ),
+        warn(
+            "real_execution_deferred",
+            "Real PTY execution is deferred until an app or daemon runtime bridge is available.",
+            None,
+        ),
+    ]);
+
+    Ok(CommandOutput {
+        data: serde_json::json!({
+            "experiment": loaded.experiment.name,
+            "runId": plan.run_id,
+            "status": run_artifact.status,
+            "dryRun": false,
+            "runDir": plan.run_dir.to_string_lossy(),
+            "promptCount": plan.suite.prompts.len(),
+            "variantCount": plan.variants.len(),
+            "replicates": args.replicates,
+            "attemptCount": plan.attempts.len(),
+            "resultCount": result.len(),
+            "seed": seed,
+            "seedProvided": seed_provided,
+            "artifacts": {
+                "run": "run.json",
+                "attempts": "attempts.jsonl",
+                "reportJson": "report.json",
+                "reportMarkdown": "report.md",
+                "prompts": "prompts",
+                "outputs": "outputs",
+                "transcripts": "transcripts",
+                "attemptState": "attempt-state",
+            },
+            "workgroup": run_artifact.workgroup,
+            "execution": run_artifact.execution,
+        }),
+        warnings,
+        errors: Vec::new(),
+    })
+}
+
+fn prepare_execution_plan(
+    args: &RunArgs,
+) -> Result<(LoadedExperiment, ExecutionPlan, Vec<CliWarning>), Vec<CliError>> {
+    let loaded = load_experiment(&args.project, &args.experiment)?;
+    let validation = collect_experiment_validation(&loaded);
+    if !validation.errors.is_empty() {
+        return Err(validation.errors);
+    }
+    let suite = parse_prompt_suite(Path::new(&args.prompt_suite))?;
+    let (run_id, run_dir) = if args.resume_run {
+        let run_id = args.run_id.clone().expect("validated run id");
+        validate_run_id(&run_id)?;
+        let dir = run_dir(&loaded, &run_id);
+        reject_link_or_reparse(&dir, "run_artifact_link_or_reparse", None)?;
+        if !dir.is_dir() {
+            return Err(vec![err_at_path(
+                "run_artifact_missing",
+                format!("Run directory not found: {}", dir.display()),
+                &dir,
+            )]);
+        }
+        (run_id, dir)
+    } else {
+        match args.run_id.as_ref() {
+            Some(run_id) => (run_id.clone(), create_explicit_run_dir(&loaded, run_id)?),
+            None => create_generated_run_dir(&loaded, chrono::Utc::now())?,
+        }
+    };
+    ensure_run_artifact_dirs(&run_dir)?;
+    let workgroup = if args.resume_run {
+        let run_artifact: RunArtifact = read_json(&run_dir.join("run.json")).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_unparseable",
+                e,
+                &run_dir.join("run.json"),
+            )]
+        })?;
+        if run_artifact.dry_run || run_artifact.execution.is_none() {
+            return Err(vec![err(
+                "run_artifact_mismatch",
+                "Cannot resume a dry-run artifact as execution",
+                None,
+            )]);
+        }
+        if run_artifact.suite.sha256 != suite.sha256
+            || run_artifact.experiment != loaded.experiment.name
+            || run_artifact.replicates != args.replicates
+        {
+            return Err(vec![err(
+                "run_artifact_mismatch",
+                "Resume arguments do not match run artifact",
+                None,
+            )]);
+        }
+        let Some(workgroup) = run_artifact.workgroup else {
+            return Err(vec![err(
+                "run_artifact_mismatch",
+                "Run artifact is missing workgroup metadata",
+                None,
+            )]);
+        };
+        validate_workgroup_under_workspace(&loaded.workspace_dir, &workgroup)?;
+        workgroup
+    } else {
+        create_run_workgroup_dirs(
+            &loaded.workspace_dir,
+            &loaded.experiment.name,
+            &run_id,
+            &validation.variant_metas,
+        )?
+    };
+    let attempts = if args.resume_run {
+        reconcile_mutable_artifacts(&run_dir, &workgroup, args.retry_failed)?
+    } else {
+        build_attempts(
+            &run_id,
+            &suite.prompts,
+            &validation.variant_metas,
+            args.replicates,
+        )
+    };
+    Ok((
+        loaded,
+        ExecutionPlan {
+            run_id,
+            run_dir,
+            suite,
+            attempts,
+            variants: validation.variant_metas,
+            workgroup,
+        },
+        validation.warnings,
+    ))
+}
+
+fn execute_attempts_with_fake_executor(
+    args: &RunArgs,
+    loaded: &LoadedExperiment,
+    plan: &mut ExecutionPlan,
+    run_artifact: &mut RunArtifact,
+) -> Result<Vec<AttemptExecutionResult>, Vec<CliError>> {
+    let mut results = Vec::new();
+    for idx in 0..plan.attempts.len() {
+        let should_run = if args.retry_failed {
+            matches!(
+                plan.attempts[idx].status.as_str(),
+                "failed" | "timed_out" | "inconclusive"
+            )
+        } else {
+            plan.attempts[idx].status == "planned"
+        };
+        if !should_run {
+            continue;
+        }
+        if args.retry_failed {
+            plan.attempts[idx].attempt_generation += 1;
+            plan.attempts[idx].flags.push("retry_failed".to_string());
+        }
+        let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let prompt = plan
+            .suite
+            .prompts
+            .iter()
+            .find(|prompt| prompt.id == plan.attempts[idx].prompt_id)
+            .ok_or_else(|| {
+                vec![err(
+                    "run_artifact_mismatch",
+                    "Attempt prompt id is not present in the prompt suite",
+                    None,
+                )]
+            })?;
+        let prompt_path = write_attempt_prompt_file(&plan.run_dir, &plan.attempts[idx], prompt)?;
+        let output_path = next_attempt_output_path(&plan.run_dir, &plan.attempts[idx])?;
+        let replica_root = replica_root_for_attempt(&plan.workgroup, &plan.attempts[idx])?;
+        let ownership = AttemptOwnershipArtifact {
+            schema_version: 1,
+            run_id: plan.run_id.clone(),
+            attempt_id: plan.attempts[idx].attempt_id.clone(),
+            attempt_generation: plan.attempts[idx].attempt_generation,
+            session_id: None,
+            workgroup_path: plan.workgroup.path.clone(),
+            replica_root: replica_root.to_string_lossy().to_string(),
+            prompt_path: prompt_path.to_string_lossy().to_string(),
+            output_path: output_path.to_string_lossy().to_string(),
+            started_at: started_at.clone(),
+        };
+        atomic_write_json(
+            &plan
+                .run_dir
+                .join("attempt-state")
+                .join(format!("{}.running.json", plan.attempts[idx].attempt_id)),
+            &ownership,
+        )?;
+        plan.attempts[idx].status = "running".to_string();
+        plan.attempts[idx].started_at = Some(started_at.clone());
+        plan.attempts[idx].prompt_path = Some(prompt_path.to_string_lossy().to_string());
+        plan.attempts[idx].output_path = Some(output_path.to_string_lossy().to_string());
+        plan.attempts[idx].replica_root = Some(replica_root.to_string_lossy().to_string());
+        plan.attempts[idx].workgroup = Some(plan.workgroup.name.clone());
+        plan.attempts[idx].provider = Some(args.provider.clone());
+        write_attempts_jsonl_replace(&plan.run_dir.join("attempts.jsonl"), &plan.attempts)?;
+        run_artifact.status = "running".to_string();
+        run_artifact.updated_at = started_at.clone();
+        atomic_write_json(&plan.run_dir.join("run.json"), run_artifact)?;
+
+        let result = fake_attempt_result(args, &plan.attempts[idx], &output_path);
+        let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        atomic_write_bytes(
+            &output_path,
+            fake_output_text(&result, &started_at, &completed_at).as_bytes(),
+        )?;
+        atomic_write_json(
+            &plan
+                .run_dir
+                .join("attempt-state")
+                .join(format!("{}.done.json", plan.attempts[idx].attempt_id)),
+            &ownership,
+        )?;
+        plan.attempts[idx].status = result.status.clone();
+        plan.attempts[idx].duration_ms = result.duration_ms;
+        plan.attempts[idx].transcript_path = result.transcript_path.clone();
+        plan.attempts[idx].provider_transcript_path = result.provider_transcript_path.clone();
+        plan.attempts[idx].output_path = result.output_path.clone();
+        plan.attempts[idx].failure_reason = result.failure_reason.clone();
+        plan.attempts[idx].exit_code = result.exit_code;
+        plan.attempts[idx].flags.extend(result.flags.clone());
+        plan.attempts[idx].completed_at = Some(completed_at);
+        plan.attempts[idx].session_id = None;
+        results.push(result);
+
+        let _ = loaded;
+    }
+    Ok(results)
+}
+
+fn fake_attempt_result(
+    args: &RunArgs,
+    attempt: &AttemptArtifact,
+    output_path: &Path,
+) -> AttemptExecutionResult {
+    let (status, failure_reason, flags) = match args.provider.as_str() {
+        "fake-failed" => (
+            "failed".to_string(),
+            Some("fake_executor_failure".to_string()),
+            vec!["fake_executor_failure".to_string()],
+        ),
+        "fake-timed-out" => (
+            "timed_out".to_string(),
+            Some("fake_executor_timeout".to_string()),
+            vec!["fake_executor_timeout".to_string()],
+        ),
+        "fake-no-activity" => (
+            "inconclusive".to_string(),
+            Some("no_provider_activity_after_injection".to_string()),
+            vec!["no_provider_activity_after_injection".to_string()],
+        ),
+        "fake-unexpected-shell" => (
+            "inconclusive".to_string(),
+            Some("unexpected_shell".to_string()),
+            vec!["unexpected_shell".to_string()],
+        ),
+        _ => ("completed".to_string(), None, Vec::new()),
+    };
+    AttemptExecutionResult {
+        attempt_id: attempt.attempt_id.clone(),
+        status,
+        duration_ms: Some(0),
+        transcript_path: None,
+        provider_transcript_path: None,
+        output_path: Some(output_path.to_string_lossy().to_string()),
+        failure_reason,
+        exit_code: None,
+        flags,
+    }
+}
+
+fn fake_output_text(
+    result: &AttemptExecutionResult,
+    started_at: &str,
+    completed_at: &str,
+) -> String {
+    format!(
+        "attemptId: {}\nstatus: {}\nstartedAt: {}\ncompletedAt: {}\nflags: {}\nfailureReason: {}\n",
+        result.attempt_id,
+        result.status,
+        started_at,
+        completed_at,
+        result.flags.join(","),
+        result.failure_reason.clone().unwrap_or_default()
+    )
 }
 
 fn collect_experiment_validation(loaded: &LoadedExperiment) -> ExperimentValidation {
@@ -1358,6 +1950,29 @@ fn write_attempts_jsonl_new(
     write_new_file(path, content.as_bytes())
 }
 
+fn write_attempts_jsonl_replace(
+    path: &Path,
+    attempts: &[AttemptArtifact],
+) -> Result<(), Vec<CliError>> {
+    let mut content = String::new();
+    for attempt in attempts {
+        let line = serde_json::to_string(attempt).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!(
+                    "Failed to serialize attempt JSON for {}: {}",
+                    path.display(),
+                    e
+                ),
+                path,
+            )]
+        })?;
+        content.push_str(&line);
+        content.push('\n');
+    }
+    atomic_write_bytes(path, content.as_bytes())
+}
+
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), Vec<CliError>> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -1377,6 +1992,517 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), Vec<CliError>> {
             path,
         )]
     })
+}
+
+fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Vec<CliError>> {
+    let mut json = serde_json::to_string_pretty(value).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to serialize JSON for {}: {}", path.display(), e),
+            path,
+        )]
+    })?;
+    json.push('\n');
+    atomic_write_bytes(path, json.as_bytes())
+}
+
+fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Vec<CliError>> {
+    reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
+    let parent = path.parent().ok_or_else(|| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            "Target path has no parent",
+            path,
+        )]
+    })?;
+    reject_link_or_reparse(parent, "run_artifact_link_or_reparse", None)?;
+    fs::create_dir_all(parent).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to create {}: {}", parent.display(), e),
+            parent,
+        )]
+    })?;
+    let tmp = parent.join(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| {
+                vec![err_at_path(
+                    "run_artifact_write_failed",
+                    format!("Failed to create {}: {}", tmp.display(), e),
+                    &tmp,
+                )]
+            })?;
+        file.write_all(bytes).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to write {}: {}", tmp.display(), e),
+                &tmp,
+            )]
+        })?;
+        file.flush().map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to flush {}: {}", tmp.display(), e),
+                &tmp,
+            )]
+        })?;
+    }
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs::remove_file(path).map_err(|remove_err| {
+                vec![err_at_path(
+                    "run_artifact_write_failed",
+                    format!("Failed to replace {}: {}", path.display(), remove_err),
+                    path,
+                )]
+            })?;
+            fs::rename(&tmp, path).map_err(|rename_err| {
+                let _ = fs::remove_file(&tmp);
+                vec![err_at_path(
+                    "run_artifact_write_failed",
+                    format!("Failed to replace {}: {}", path.display(), rename_err),
+                    path,
+                )]
+            })
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to replace {}: {}", path.display(), e),
+                path,
+            )])
+        }
+    }
+}
+
+fn ensure_run_artifact_dirs(run_dir: &Path) -> Result<(), Vec<CliError>> {
+    reject_link_or_reparse(run_dir, "run_artifact_link_or_reparse", None)?;
+    for name in ["prompts", "outputs", "transcripts", "attempt-state"] {
+        let dir = run_dir.join(name);
+        reject_link_or_reparse(&dir, "run_artifact_link_or_reparse", None)?;
+        fs::create_dir_all(&dir).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to create {}: {}", dir.display(), e),
+                &dir,
+            )]
+        })?;
+        let canonical_run = fs::canonicalize(run_dir).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to canonicalize {}: {}", run_dir.display(), e),
+                run_dir,
+            )]
+        })?;
+        let canonical_dir = fs::canonicalize(&dir).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to canonicalize {}: {}", dir.display(), e),
+                &dir,
+            )]
+        })?;
+        if !canonical_dir.starts_with(&canonical_run) {
+            return Err(vec![err_at_path(
+                "run_artifact_mismatch",
+                format!("Artifact directory is outside run dir: {}", dir.display()),
+                &dir,
+            )]);
+        }
+    }
+    Ok(())
+}
+
+fn write_attempt_prompt_file(
+    run_dir: &Path,
+    attempt: &AttemptArtifact,
+    prompt: &PromptCase,
+) -> Result<PathBuf, Vec<CliError>> {
+    ensure_run_artifact_dirs(run_dir)?;
+    let path = run_dir
+        .join("prompts")
+        .join(format!("{}.md", attempt.attempt_id));
+    validate_child_path(run_dir, &path)?;
+    let content = format!(
+        "# Role Experiment Attempt\n\nRun: {}\nAttempt: {}\nVariant: {}\nPrompt: {}\nReplicate: {}\n\n## Runner Instructions\n\nRespond to the prompt below. Do not modify files outside paths allowed by your session instructions.\n\n## Prompt\n\n{}\n",
+        attempt.run_id,
+        attempt.attempt_id,
+        attempt.variant,
+        attempt.prompt_id,
+        attempt.replicate,
+        prompt.prompt
+    );
+    atomic_write_bytes(&path, content.as_bytes())?;
+    Ok(path)
+}
+
+#[allow(dead_code)]
+fn build_attempt_injection(prompt_path: &Path) -> String {
+    format!(
+        "Role experiment attempt.\n\nRead the prompt file at the exact path below. The path is delimited and quoted for Windows shells:\n\n```role-experiment-path\n\"{}\"\n```\n\nWhen complete, include a concise final answer in this session.\n",
+        prompt_path.to_string_lossy()
+    )
+}
+
+fn next_attempt_output_path(
+    run_dir: &Path,
+    attempt: &AttemptArtifact,
+) -> Result<PathBuf, Vec<CliError>> {
+    let base = run_dir
+        .join("outputs")
+        .join(format!("{}.txt", attempt.attempt_id));
+    if !base.exists() {
+        validate_child_path(run_dir, &base)?;
+        return Ok(base);
+    }
+    for idx in 1..100 {
+        let retry = run_dir
+            .join("outputs")
+            .join(format!("{}.retry-{idx:02}.txt", attempt.attempt_id));
+        if !retry.exists() {
+            validate_child_path(run_dir, &retry)?;
+            return Ok(retry);
+        }
+    }
+    Err(vec![err(
+        "run_artifact_write_failed",
+        "Too many retry output files for attempt",
+        None,
+    )])
+}
+
+fn validate_child_path(root: &Path, child: &Path) -> Result<(), Vec<CliError>> {
+    reject_link_or_reparse(child, "run_artifact_link_or_reparse", None)?;
+    let parent = child.parent().unwrap_or(root);
+    let canonical_root = fs::canonicalize(root).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to canonicalize {}: {}", root.display(), e),
+            root,
+        )]
+    })?;
+    let canonical_parent = fs::canonicalize(parent).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to canonicalize {}: {}", parent.display(), e),
+            parent,
+        )]
+    })?;
+    if canonical_parent.starts_with(&canonical_root) {
+        Ok(())
+    } else {
+        Err(vec![err_at_path(
+            "run_artifact_mismatch",
+            format!("Path is outside run dir: {}", child.display()),
+            child,
+        )])
+    }
+}
+
+fn create_run_workgroup_dirs(
+    workspace_dir: &Path,
+    experiment: &str,
+    run_id: &str,
+    variants: &[VariantMetadata],
+) -> Result<RunWorkgroupArtifact, Vec<CliError>> {
+    reject_link_or_reparse(workspace_dir, "workspace_link_or_reparse", None)?;
+    let sanitized_experiment = sanitize_name(experiment).map_err(|e| {
+        vec![err(
+            "experiment_name_invalid",
+            format!("Experiment name cannot be used for workgroup: {}", e),
+            None,
+        )]
+    })?;
+    let next = next_workgroup_number(workspace_dir)?;
+    let name = format!("wg-{}-role-exp-{}", next, sanitized_experiment);
+    let path = workspace_dir.join(&name);
+    reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
+    fs::create_dir(&path).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to create {}: {}", path.display(), e),
+            &path,
+        )]
+    })?;
+    fs::create_dir(path.join("messaging")).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_write_failed",
+            format!("Failed to create messaging dir: {}", e),
+            &path.join("messaging"),
+        )]
+    })?;
+    atomic_write_bytes(
+        &path.join("TASK.md"),
+        format!(
+            "# Role Experiment Run\n\nExperiment: {}\nRun: {}\n",
+            experiment, run_id
+        )
+        .as_bytes(),
+    )?;
+    for variant in variants {
+        let replica = path.join(format!("__agent_{}", variant.agent_name));
+        reject_link_or_reparse(
+            &replica,
+            "run_artifact_link_or_reparse",
+            Some(&variant.name),
+        )?;
+        fs::create_dir(&replica).map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_write_failed",
+                format!("Failed to create {}: {}", replica.display(), e),
+                &replica,
+            )]
+        })?;
+        for child in ["memory", "plans", "skills"] {
+            fs::create_dir(replica.join(child)).map_err(|e| {
+                vec![err_at_path(
+                    "run_artifact_write_failed",
+                    format!("Failed to create replica {}: {}", child, e),
+                    &replica.join(child),
+                )]
+            })?;
+        }
+        let role_path = variant_matrix_path(workspace_dir, &variant.source_agent, &variant.name)
+            .join("Role.md");
+        let role_text = fs::read_to_string(&role_path).map_err(|e| {
+            vec![err_at_path(
+                "variant_role_missing",
+                format!("Failed to read {}: {}", role_path.display(), e),
+                &role_path,
+            )]
+        })?;
+        atomic_write_bytes(&replica.join("Role.md"), role_text.as_bytes())?;
+    }
+    Ok(RunWorkgroupArtifact {
+        name,
+        path: fs::canonicalize(&path)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string(),
+        retained: true,
+        cleanup_supported: false,
+        run_id: run_id.to_string(),
+        experiment: experiment.to_string(),
+    })
+}
+
+fn next_workgroup_number(workspace_dir: &Path) -> Result<u32, Vec<CliError>> {
+    let mut max = 0;
+    for entry in fs::read_dir(workspace_dir).map_err(|e| {
+        vec![err_at_path(
+            "workspace_not_found",
+            format!("Failed to read {}: {}", workspace_dir.display(), e),
+            workspace_dir,
+        )]
+    })? {
+        let entry = entry.map_err(|e| {
+            vec![err(
+                "workspace_not_found",
+                format!("Failed to read workspace entry: {}", e),
+                None,
+            )]
+        })?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(rest) = name.strip_prefix("wg-") {
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = digits.parse::<u32>() {
+                max = max.max(n);
+            }
+        }
+    }
+    Ok(max + 1)
+}
+
+fn validate_workgroup_under_workspace(
+    workspace_dir: &Path,
+    workgroup: &RunWorkgroupArtifact,
+) -> Result<(), Vec<CliError>> {
+    let workspace = fs::canonicalize(workspace_dir).map_err(|e| {
+        vec![err_at_path(
+            "workspace_not_found",
+            format!("Failed to canonicalize workspace: {}", e),
+            workspace_dir,
+        )]
+    })?;
+    let path = PathBuf::from(&workgroup.path);
+    reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
+    let canonical = fs::canonicalize(&path).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_mismatch",
+            format!("Failed to canonicalize workgroup: {}", e),
+            &path,
+        )]
+    })?;
+    if canonical.starts_with(workspace) && workgroup.name.starts_with("wg-") {
+        Ok(())
+    } else {
+        Err(vec![err(
+            "run_artifact_mismatch",
+            "Run workgroup is not under the current project workspace",
+            None,
+        )])
+    }
+}
+
+fn replica_root_for_attempt(
+    workgroup: &RunWorkgroupArtifact,
+    attempt: &AttemptArtifact,
+) -> Result<PathBuf, Vec<CliError>> {
+    let workgroup_path = PathBuf::from(&workgroup.path);
+    let replica = workgroup_path.join(format!("__agent_{}", attempt.agent_name));
+    reject_link_or_reparse(
+        &replica,
+        "run_artifact_link_or_reparse",
+        Some(&attempt.variant),
+    )?;
+    let canonical_workgroup = fs::canonicalize(&workgroup_path).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_mismatch",
+            format!("Failed to canonicalize workgroup: {}", e),
+            &workgroup_path,
+        )]
+    })?;
+    let canonical_replica = fs::canonicalize(&replica).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_mismatch",
+            format!("Failed to canonicalize replica: {}", e),
+            &replica,
+        )]
+    })?;
+    if canonical_replica.starts_with(canonical_workgroup) {
+        Ok(canonical_replica)
+    } else {
+        Err(vec![err(
+            "run_artifact_mismatch",
+            "Replica root is outside run workgroup",
+            Some(&attempt.variant),
+        )])
+    }
+}
+
+fn read_attempts_jsonl(path: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
+    let content = fs::read_to_string(path).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_unparseable",
+            format!("Failed to read {}: {}", path.display(), e),
+            path,
+        )]
+    })?;
+    let mut attempts = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        attempts.push(serde_json::from_str(line).map_err(|e| {
+            vec![err_at_line(
+                "run_artifact_unparseable",
+                format!("Attempt line {} is invalid JSON: {}", idx + 1, e),
+                idx + 1,
+                None,
+            )]
+        })?);
+    }
+    Ok(attempts)
+}
+
+fn reconcile_mutable_artifacts(
+    run_dir: &Path,
+    workgroup: &RunWorkgroupArtifact,
+    retry_failed: bool,
+) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {
+    let mut attempts = read_attempts_jsonl(&run_dir.join("attempts.jsonl"))?;
+    let state_dir = run_dir.join("attempt-state");
+    reject_link_or_reparse(&state_dir, "run_artifact_link_or_reparse", None)?;
+    for attempt in &mut attempts {
+        let done_path = state_dir.join(format!("{}.done.json", attempt.attempt_id));
+        let running_path = state_dir.join(format!("{}.running.json", attempt.attempt_id));
+        let done = if done_path.is_file() {
+            Some(
+                read_json::<AttemptOwnershipArtifact>(&done_path)
+                    .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &done_path)])?,
+            )
+        } else {
+            None
+        };
+        let running = if running_path.is_file() {
+            Some(
+                read_json::<AttemptOwnershipArtifact>(&running_path)
+                    .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &running_path)])?,
+            )
+        } else {
+            None
+        };
+        if let (Some(done), Some(running)) = (&done, &running) {
+            validate_ownership_pair(done, running)?;
+        }
+        if let Some(ownership) = done.as_ref().or(running.as_ref()) {
+            validate_ownership_matches_attempt(ownership, attempt, workgroup)?;
+        }
+        if done.is_some() {
+            continue;
+        }
+        if running.is_some() && !retry_failed {
+            attempt.status = "inconclusive".to_string();
+            attempt.failure_reason = Some("stale_running_attempt".to_string());
+            if !attempt
+                .flags
+                .iter()
+                .any(|flag| flag == "stale_running_attempt")
+            {
+                attempt.flags.push("stale_running_attempt".to_string());
+            }
+        }
+    }
+    write_attempts_jsonl_replace(&run_dir.join("attempts.jsonl"), &attempts)?;
+    Ok(attempts)
+}
+
+fn validate_ownership_pair(
+    done: &AttemptOwnershipArtifact,
+    running: &AttemptOwnershipArtifact,
+) -> Result<(), Vec<CliError>> {
+    if done.run_id == running.run_id
+        && done.attempt_id == running.attempt_id
+        && done.attempt_generation == running.attempt_generation
+        && done.workgroup_path == running.workgroup_path
+        && done.replica_root == running.replica_root
+    {
+        Ok(())
+    } else {
+        Err(vec![err(
+            "run_artifact_mismatch",
+            "Attempt ownership records disagree",
+            None,
+        )])
+    }
+}
+
+fn validate_ownership_matches_attempt(
+    ownership: &AttemptOwnershipArtifact,
+    attempt: &AttemptArtifact,
+    workgroup: &RunWorkgroupArtifact,
+) -> Result<(), Vec<CliError>> {
+    let expected_replica = replica_root_for_attempt(workgroup, attempt)?;
+    if ownership.run_id == attempt.run_id
+        && ownership.attempt_id == attempt.attempt_id
+        && ownership.attempt_generation == attempt.attempt_generation
+        && ownership.workgroup_path == workgroup.path
+        && Path::new(&ownership.replica_root) == expected_replica.as_path()
+    {
+        Ok(())
+    } else {
+        Err(vec![err(
+            "run_artifact_mismatch",
+            "Attempt ownership does not match attempt metadata",
+            Some(&attempt.variant),
+        )])
+    }
 }
 
 fn validate_experiment_metadata_paths(loaded: &LoadedExperiment) -> Vec<CliError> {
@@ -1786,7 +2912,7 @@ fn replica_role_overrides(workspace_dir: &Path, variant_agent_name: &str) -> Vec
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if name.starts_with("wg-") {
+            if name.starts_with("wg-") && !name.contains("-role-exp-") {
                 let role = path
                     .join(format!("__agent_{}", variant_agent_name))
                     .join("Role.md");
@@ -2247,6 +3373,10 @@ fn default_run_artifact_paths() -> RunArtifactPaths {
         attempts: "attempts.jsonl".to_string(),
         report_json: "report.json".to_string(),
         report_markdown: "report.md".to_string(),
+        prompts: "prompts".to_string(),
+        outputs: "outputs".to_string(),
+        transcripts: "transcripts".to_string(),
+        attempt_state: "attempt-state".to_string(),
     }
 }
 
@@ -2286,6 +3416,17 @@ fn build_attempts(
                     messages: None,
                     flags: Vec::new(),
                     transcript_path: None,
+                    session_id: None,
+                    workgroup: None,
+                    replica_root: None,
+                    prompt_path: None,
+                    output_path: None,
+                    started_at: None,
+                    completed_at: None,
+                    exit_code: None,
+                    provider: None,
+                    provider_transcript_path: None,
+                    attempt_generation: 1,
                     failure_reason: None,
                 });
             }
@@ -2294,6 +3435,7 @@ fn build_attempts(
     attempts
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_report_artifact(
     run_id: &str,
     experiment: &str,
@@ -2302,55 +3444,150 @@ fn build_report_artifact(
     prompts: &[PromptCase],
     variants: &[VariantMetadata],
     replicates: u32,
+    attempts: &[AttemptArtifact],
+    dry_run: bool,
+    workgroup: Option<&RunWorkgroupArtifact>,
 ) -> ReportArtifact {
-    let per_variant = prompts.len() * replicates as usize;
-    let per_prompt = variants.len() * replicates as usize;
-    let attempt_count = prompts.len() * variants.len() * replicates as usize;
+    let status = summarize_run_status(attempts, dry_run);
     ReportArtifact {
         schema_version: 1,
         run_id: run_id.to_string(),
         experiment: experiment.to_string(),
         format: "json".to_string(),
-        status: "dry_run".to_string(),
-        dry_run: true,
+        status,
+        dry_run,
         generated_at: timestamp.to_string(),
-        summary: ReportSummaryArtifact {
-            prompt_count: prompts.len(),
-            variant_count: variants.len(),
-            replicates,
-            attempt_count,
-            planned_attempt_count: attempt_count,
-            completed_attempt_count: 0,
-            failed_attempt_count: 0,
-        },
+        summary: count_attempt_statuses(prompts.len(), variants.len(), replicates, attempts),
         variants: variants
             .iter()
-            .map(|variant| ReportVariantArtifact {
-                name: variant.name.clone(),
-                agent_name: variant.agent_name.clone(),
-                planned_attempt_count: per_variant,
+            .map(|variant| {
+                let variant_attempts: Vec<AttemptArtifact> = attempts
+                    .iter()
+                    .filter(|attempt| attempt.variant == variant.name)
+                    .cloned()
+                    .collect();
+                let mut counts =
+                    count_attempt_statuses(prompts.len(), 1, replicates, &variant_attempts);
+                counts.variant_count = 1;
+                ReportVariantArtifact {
+                    name: variant.name.clone(),
+                    agent_name: variant.agent_name.clone(),
+                    planned_attempt_count: counts.planned_attempt_count,
+                    running_attempt_count: counts.running_attempt_count,
+                    completed_attempt_count: counts.completed_attempt_count,
+                    failed_attempt_count: counts.failed_attempt_count,
+                    timed_out_attempt_count: counts.timed_out_attempt_count,
+                    inconclusive_attempt_count: counts.inconclusive_attempt_count,
+                    cancelled_attempt_count: counts.cancelled_attempt_count,
+                }
             })
             .collect(),
         prompts: prompts
             .iter()
-            .map(|prompt| ReportPromptArtifact {
-                id: prompt.id.clone(),
-                title: prompt.title.clone(),
-                planned_attempt_count: per_prompt,
+            .map(|prompt| {
+                let prompt_attempts: Vec<AttemptArtifact> = attempts
+                    .iter()
+                    .filter(|attempt| attempt.prompt_id == prompt.id)
+                    .cloned()
+                    .collect();
+                let mut counts =
+                    count_attempt_statuses(1, variants.len(), replicates, &prompt_attempts);
+                counts.prompt_count = 1;
+                ReportPromptArtifact {
+                    id: prompt.id.clone(),
+                    title: prompt.title.clone(),
+                    planned_attempt_count: counts.planned_attempt_count,
+                    running_attempt_count: counts.running_attempt_count,
+                    completed_attempt_count: counts.completed_attempt_count,
+                    failed_attempt_count: counts.failed_attempt_count,
+                    timed_out_attempt_count: counts.timed_out_attempt_count,
+                    inconclusive_attempt_count: counts.inconclusive_attempt_count,
+                    cancelled_attempt_count: counts.cancelled_attempt_count,
+                }
             })
             .collect(),
         artifact_paths: report_artifact_paths(run_dir),
-        notes: vec![
+        notes: report_notes(dry_run, workgroup),
+    }
+}
+
+fn count_attempt_statuses(
+    prompt_count: usize,
+    variant_count: usize,
+    replicates: u32,
+    attempts: &[AttemptArtifact],
+) -> ReportSummaryArtifact {
+    let mut summary = ReportSummaryArtifact {
+        prompt_count,
+        variant_count,
+        replicates,
+        attempt_count: attempts.len(),
+        planned_attempt_count: 0,
+        running_attempt_count: 0,
+        completed_attempt_count: 0,
+        failed_attempt_count: 0,
+        timed_out_attempt_count: 0,
+        inconclusive_attempt_count: 0,
+        cancelled_attempt_count: 0,
+    };
+    for attempt in attempts {
+        match attempt.status.as_str() {
+            "planned" => summary.planned_attempt_count += 1,
+            "running" => summary.running_attempt_count += 1,
+            "completed" => summary.completed_attempt_count += 1,
+            "failed" => summary.failed_attempt_count += 1,
+            "timed_out" => summary.timed_out_attempt_count += 1,
+            "inconclusive" => summary.inconclusive_attempt_count += 1,
+            "cancelled" => summary.cancelled_attempt_count += 1,
+            _ => {}
+        }
+    }
+    summary
+}
+
+fn summarize_run_status(attempts: &[AttemptArtifact], dry_run: bool) -> String {
+    if dry_run {
+        return "dry_run".to_string();
+    }
+    for status in [
+        "running",
+        "failed",
+        "timed_out",
+        "inconclusive",
+        "cancelled",
+        "completed",
+    ] {
+        if attempts.iter().any(|attempt| attempt.status == status) {
+            return status.to_string();
+        }
+    }
+    "completed".to_string()
+}
+
+fn report_notes(dry_run: bool, workgroup: Option<&RunWorkgroupArtifact>) -> Vec<String> {
+    if dry_run {
+        return vec![
             "Dry-run report contains planned attempts only.".to_string(),
             "No sessions, messages, transcripts, scoring, or winner selection were produced."
                 .to_string(),
-        ],
+        ];
     }
+    let mut notes = Vec::new();
+    if let Some(workgroup) = workgroup {
+        notes.push(format!("Run workgroup retained at {}.", workgroup.path));
+    }
+    notes.push("Transcript capture is best-effort.".to_string());
+    notes.push("No scoring or winner selection performed.".to_string());
+    notes
 }
 
 fn render_report_markdown(report: &ReportArtifact) -> String {
     let mut markdown = String::new();
-    markdown.push_str("# Role Experiment Dry Run Report\n\n");
+    if report.dry_run {
+        markdown.push_str("# Role Experiment Dry Run Report\n\n");
+    } else {
+        markdown.push_str("# Role Experiment Run Report\n\n");
+    }
     markdown.push_str(&format!("Experiment: {}\n", report.experiment));
     markdown.push_str(&format!("Run ID: {}\n", report.run_id));
     markdown.push_str(&format!("Status: {}\n\n", report.status));
@@ -2362,30 +3599,56 @@ fn render_report_markdown(report: &ReportArtifact) -> String {
         "- Planned attempts: {}\n\n",
         report.summary.planned_attempt_count
     ));
+    markdown.push_str("## Status Counts\n\n");
+    markdown.push_str("| Status | Attempts |\n|---|---:|\n");
+    for (status, count) in [
+        ("planned", report.summary.planned_attempt_count),
+        ("running", report.summary.running_attempt_count),
+        ("completed", report.summary.completed_attempt_count),
+        ("failed", report.summary.failed_attempt_count),
+        ("timed_out", report.summary.timed_out_attempt_count),
+        ("inconclusive", report.summary.inconclusive_attempt_count),
+        ("cancelled", report.summary.cancelled_attempt_count),
+    ] {
+        markdown.push_str(&format!("| {} | {} |\n", status, count));
+    }
+    markdown.push('\n');
     markdown.push_str("## Variants\n\n");
-    markdown.push_str("| Variant | Agent | Planned attempts |\n|---|---|---:|\n");
+    markdown.push_str("| Variant | Agent | Planned | Running | Completed | Failed | Timed out | Inconclusive | Cancelled |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n");
     for variant in &report.variants {
         markdown.push_str(&format!(
-            "| {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             markdown_table_cell(&variant.name),
             markdown_table_cell(&variant.agent_name),
-            variant.planned_attempt_count
+            variant.planned_attempt_count,
+            variant.running_attempt_count,
+            variant.completed_attempt_count,
+            variant.failed_attempt_count,
+            variant.timed_out_attempt_count,
+            variant.inconclusive_attempt_count,
+            variant.cancelled_attempt_count
         ));
     }
     markdown.push_str("\n## Prompts\n\n");
-    markdown.push_str("| Prompt | Title | Planned attempts |\n|---|---|---:|\n");
+    markdown.push_str("| Prompt | Title | Planned | Running | Completed | Failed | Timed out | Inconclusive | Cancelled |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n");
     for prompt in &report.prompts {
         markdown.push_str(&format!(
-            "| {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             markdown_table_cell(&prompt.id),
             markdown_table_cell(&prompt.title),
-            prompt.planned_attempt_count
+            prompt.planned_attempt_count,
+            prompt.running_attempt_count,
+            prompt.completed_attempt_count,
+            prompt.failed_attempt_count,
+            prompt.timed_out_attempt_count,
+            prompt.inconclusive_attempt_count,
+            prompt.cancelled_attempt_count
         ));
     }
     markdown.push_str("\n## Notes\n\n");
-    markdown.push_str(
-        "This dry run produced planned attempts only. It did not create sessions, messages, transcripts, scores, or a winner.\n",
-    );
+    for note in &report.notes {
+        markdown.push_str(&format!("- {}\n", note));
+    }
     markdown
 }
 
@@ -2424,17 +3687,34 @@ fn validate_report_artifacts(
             None,
         ));
     }
-    if run.status != "dry_run" || !run.dry_run {
+    if !valid_run_status(&run.status) {
         errors.push(err(
             "report_run_status_unsupported",
-            "Only dry_run run artifacts are supported in Phase 2",
+            "Run artifact status is not supported",
             None,
         ));
     }
-    if report.status != "dry_run" || !report.dry_run {
+    if !valid_run_status(&report.status)
+        || report.status != run.status
+        || report.dry_run != run.dry_run
+    {
         errors.push(err(
             "run_artifact_mismatch",
-            "Report artifact status must be dry_run",
+            "Report artifact status does not match run artifact",
+            None,
+        ));
+    }
+    if !run.dry_run && run.execution.is_none() {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Real run artifacts must include execution metadata",
+            None,
+        ));
+    }
+    if !run.dry_run && run.workgroup.is_none() {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Real run artifacts must include workgroup metadata",
             None,
         ));
     }
@@ -2457,9 +3737,7 @@ fn validate_report_artifacts(
         || report.summary.variant_count != run.variants.len()
         || report.summary.replicates != run.replicates
         || report.summary.attempt_count != run.attempt_count
-        || report.summary.planned_attempt_count != run.attempt_count
-        || report.summary.completed_attempt_count != 0
-        || report.summary.failed_attempt_count != 0
+        || report_status_total(&report.summary) != run.attempt_count
     {
         errors.push(err(
             "run_artifact_mismatch",
@@ -2472,6 +3750,23 @@ fn validate_report_artifacts(
     } else {
         Err(errors)
     }
+}
+
+fn report_status_total(summary: &ReportSummaryArtifact) -> usize {
+    summary.planned_attempt_count
+        + summary.running_attempt_count
+        + summary.completed_attempt_count
+        + summary.failed_attempt_count
+        + summary.timed_out_attempt_count
+        + summary.inconclusive_attempt_count
+        + summary.cancelled_attempt_count
+}
+
+fn valid_run_status(status: &str) -> bool {
+    matches!(
+        status,
+        "dry_run" | "running" | "completed" | "failed" | "timed_out" | "inconclusive" | "cancelled"
+    )
 }
 
 fn source_matrix_path(workspace_dir: &Path, source_agent: &str) -> PathBuf {
