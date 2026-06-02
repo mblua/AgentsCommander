@@ -250,7 +250,7 @@ struct RunArtifact {
     warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunSuiteArtifact {
     path: String,
@@ -258,7 +258,7 @@ struct RunSuiteArtifact {
     prompt_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunVariantArtifact {
     name: String,
@@ -267,7 +267,7 @@ struct RunVariantArtifact {
     role_path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunArtifactPaths {
     attempts: String,
@@ -439,6 +439,7 @@ struct ExecutionPlan {
     attempts: Vec<AttemptArtifact>,
     variants: Vec<VariantMetadata>,
     workgroup: RunWorkgroupArtifact,
+    resume_run_artifact: Option<RunArtifact>,
 }
 
 struct AttemptExecutionResult {
@@ -1115,7 +1116,9 @@ fn validate_run_mode(args: &RunArgs) -> Result<(), Vec<CliError>> {
 }
 
 fn fake_executor_available() -> bool {
-    cfg!(test) || cfg!(debug_assertions)
+    cfg!(test)
+        || std::env::var("AGENTSCOMMANDER_ROLE_EXPERIMENT_TEST_FAKE_EXECUTOR")
+            .is_ok_and(|value| value == "1")
 }
 
 fn execute_requires_runtime_guard(args: &RunArgs) -> Result<(), Vec<CliError>> {
@@ -1344,55 +1347,71 @@ fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
 fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
     let (loaded, mut plan, mut warnings) = prepare_execution_plan(&args)?;
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let (seed, seed_provided) = match args.seed {
-        Some(seed) => (seed, true),
-        None => (generated_seed_from_uuid(uuid::Uuid::new_v4()), false),
-    };
-    let mut run_artifact = RunArtifact {
-        schema_version: 1,
-        run_id: plan.run_id.clone(),
-        project: args.project.clone(),
-        experiment: loaded.experiment.name.clone(),
-        status: "running".to_string(),
-        dry_run: false,
-        created_at: timestamp.clone(),
-        updated_at: timestamp.clone(),
-        suite: RunSuiteArtifact {
-            path: plan.suite.path.to_string_lossy().to_string(),
-            sha256: plan.suite.sha256.clone(),
-            prompt_count: plan.suite.prompts.len(),
-        },
-        seed,
-        seed_provided,
-        replicates: args.replicates,
-        variants: plan
-            .variants
-            .iter()
-            .map(|variant| RunVariantArtifact {
-                name: variant.name.clone(),
-                agent_name: variant.agent_name.clone(),
-                role_sha256: variant.role_sha256.clone(),
-                role_path: variant.role_path.clone(),
-            })
-            .collect(),
-        attempt_count: plan.attempts.len(),
-        artifacts: default_run_artifact_paths(),
-        execution: Some(RunExecutionArtifact {
-            provider: args.provider.clone(),
-            attempt_timeout_secs: args.attempt_timeout_secs,
-            max_parallel: args.max_parallel,
-            started_at: Some(timestamp.clone()),
-            completed_at: None,
-            cancellation_requested: false,
-            executor: "fake".to_string(),
-        }),
-        workgroup: Some(plan.workgroup.clone()),
-        warnings: vec![
-            "run_workgroup_retained".to_string(),
-            "transcript_capture_best_effort".to_string(),
-            "no_scoring".to_string(),
-            "real_execution_deferred".to_string(),
-        ],
+    let mut run_artifact = if let Some(mut run_artifact) = plan.resume_run_artifact.take() {
+        run_artifact.status = "running".to_string();
+        run_artifact.updated_at = timestamp.clone();
+        run_artifact.workgroup = Some(plan.workgroup.clone());
+        if let Some(execution) = run_artifact.execution.as_mut() {
+            execution.provider = args.provider.clone();
+            execution.attempt_timeout_secs = args.attempt_timeout_secs;
+            execution.max_parallel = args.max_parallel;
+            execution.started_at = Some(timestamp.clone());
+            execution.completed_at = None;
+            execution.cancellation_requested = false;
+            execution.executor = "fake".to_string();
+        }
+        run_artifact
+    } else {
+        let (seed, seed_provided) = match args.seed {
+            Some(seed) => (seed, true),
+            None => (generated_seed_from_uuid(uuid::Uuid::new_v4()), false),
+        };
+        RunArtifact {
+            schema_version: 1,
+            run_id: plan.run_id.clone(),
+            project: args.project.clone(),
+            experiment: loaded.experiment.name.clone(),
+            status: "running".to_string(),
+            dry_run: false,
+            created_at: timestamp.clone(),
+            updated_at: timestamp.clone(),
+            suite: RunSuiteArtifact {
+                path: plan.suite.path.to_string_lossy().to_string(),
+                sha256: plan.suite.sha256.clone(),
+                prompt_count: plan.suite.prompts.len(),
+            },
+            seed,
+            seed_provided,
+            replicates: args.replicates,
+            variants: plan
+                .variants
+                .iter()
+                .map(|variant| RunVariantArtifact {
+                    name: variant.name.clone(),
+                    agent_name: variant.agent_name.clone(),
+                    role_sha256: variant.role_sha256.clone(),
+                    role_path: variant.role_path.clone(),
+                })
+                .collect(),
+            attempt_count: plan.attempts.len(),
+            artifacts: default_run_artifact_paths(),
+            execution: Some(RunExecutionArtifact {
+                provider: args.provider.clone(),
+                attempt_timeout_secs: args.attempt_timeout_secs,
+                max_parallel: args.max_parallel,
+                started_at: Some(timestamp.clone()),
+                completed_at: None,
+                cancellation_requested: false,
+                executor: "fake".to_string(),
+            }),
+            workgroup: Some(plan.workgroup.clone()),
+            warnings: vec![
+                "run_workgroup_retained".to_string(),
+                "transcript_capture_best_effort".to_string(),
+                "no_scoring".to_string(),
+                "real_execution_deferred".to_string(),
+            ],
+        }
     };
 
     let result = execute_attempts_with_fake_executor(&args, &loaded, &mut plan, &mut run_artifact)?;
@@ -1457,8 +1476,8 @@ fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
             "replicates": args.replicates,
             "attemptCount": plan.attempts.len(),
             "resultCount": result.len(),
-            "seed": seed,
-            "seedProvided": seed_provided,
+            "seed": run_artifact.seed,
+            "seedProvided": run_artifact.seed_provided,
             "artifacts": {
                 "run": "run.json",
                 "attempts": "attempts.jsonl",
@@ -1505,50 +1524,36 @@ fn prepare_execution_plan(
             None => create_generated_run_dir(&loaded, chrono::Utc::now())?,
         }
     };
-    ensure_run_artifact_dirs(&run_dir)?;
-    let workgroup = if args.resume_run {
-        let run_artifact: RunArtifact = read_json(&run_dir.join("run.json")).map_err(|e| {
-            vec![err_at_path(
-                "run_artifact_unparseable",
-                e,
-                &run_dir.join("run.json"),
-            )]
-        })?;
-        if run_artifact.dry_run || run_artifact.execution.is_none() {
-            return Err(vec![err(
-                "run_artifact_mismatch",
-                "Cannot resume a dry-run artifact as execution",
-                None,
-            )]);
-        }
-        if run_artifact.suite.sha256 != suite.sha256
-            || run_artifact.experiment != loaded.experiment.name
-            || run_artifact.replicates != args.replicates
-        {
-            return Err(vec![err(
-                "run_artifact_mismatch",
-                "Resume arguments do not match run artifact",
-                None,
-            )]);
-        }
-        let Some(workgroup) = run_artifact.workgroup else {
-            return Err(vec![err(
-                "run_artifact_mismatch",
-                "Run artifact is missing workgroup metadata",
-                None,
-            )]);
-        };
-        validate_workgroup_under_workspace(&loaded.workspace_dir, &workgroup)?;
-        workgroup
-    } else {
-        create_run_workgroup_dirs(
-            &loaded.workspace_dir,
-            &loaded.experiment.name,
+    let resume_contract = if args.resume_run {
+        Some(load_and_validate_resume_artifacts(
+            args,
+            &loaded,
+            &suite,
             &run_id,
+            &run_dir,
             &validation.variant_metas,
-        )?
+        )?)
+    } else {
+        ensure_run_artifact_dirs(&run_dir)?;
+        None
     };
+    let (workgroup, resume_run_artifact, resume_attempts) =
+        if let Some((run_artifact, attempts, _report_artifact, workgroup)) = resume_contract {
+            (workgroup, Some(run_artifact), Some(attempts))
+        } else {
+            (
+                create_run_workgroup_dirs(
+                    &loaded.workspace_dir,
+                    &loaded.experiment.name,
+                    &run_id,
+                    &validation.variant_metas,
+                )?,
+                None,
+                None,
+            )
+        };
     let attempts = if args.resume_run {
+        let _validated_attempts = resume_attempts;
         reconcile_mutable_artifacts(&run_dir, &workgroup, args.retry_failed)?
     } else {
         build_attempts(
@@ -1567,6 +1572,7 @@ fn prepare_execution_plan(
             attempts,
             variants: validation.variant_metas,
             workgroup,
+            resume_run_artifact,
         },
         validation.warnings,
     ))
@@ -2350,6 +2356,289 @@ fn validate_workgroup_under_workspace(
             "Run workgroup is not under the current project workspace",
             None,
         )])
+    }
+}
+
+fn load_and_validate_resume_artifacts(
+    args: &RunArgs,
+    loaded: &LoadedExperiment,
+    suite: &ParsedPromptSuite,
+    run_id: &str,
+    run_dir: &Path,
+    variants: &[VariantMetadata],
+) -> Result<
+    (
+        RunArtifact,
+        Vec<AttemptArtifact>,
+        ReportArtifact,
+        RunWorkgroupArtifact,
+    ),
+    Vec<CliError>,
+> {
+    let run_path = run_dir.join("run.json");
+    let attempts_path = run_dir.join("attempts.jsonl");
+    let report_path = run_dir.join("report.json");
+    let markdown_path = run_dir.join("report.md");
+    let state_dir = run_dir.join("attempt-state");
+    for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
+        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
+        if !path.is_file() {
+            return Err(vec![err_at_path(
+                "run_artifact_missing",
+                format!("Run artifact not found: {}", path.display()),
+                path,
+            )]);
+        }
+    }
+    reject_link_or_reparse(&state_dir, "run_artifact_link_or_reparse", None)?;
+    if !state_dir.is_dir() {
+        return Err(vec![err_at_path(
+            "run_artifact_missing",
+            format!("Run artifact directory not found: {}", state_dir.display()),
+            &state_dir,
+        )]);
+    }
+
+    let run_artifact: RunArtifact = read_json(&run_path)
+        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
+    let attempts = read_attempts_jsonl(&attempts_path)?;
+    let report_artifact: ReportArtifact = read_json(&report_path)
+        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
+
+    let expected_attempts = build_attempts(run_id, &suite.prompts, variants, args.replicates);
+    let expected_variants: Vec<RunVariantArtifact> = variants
+        .iter()
+        .map(|variant| RunVariantArtifact {
+            name: variant.name.clone(),
+            agent_name: variant.agent_name.clone(),
+            role_sha256: variant.role_sha256.clone(),
+            role_path: variant.role_path.clone(),
+        })
+        .collect();
+    let expected_suite = RunSuiteArtifact {
+        path: suite.path.to_string_lossy().to_string(),
+        sha256: suite.sha256.clone(),
+        prompt_count: suite.prompts.len(),
+    };
+
+    let mut errors = Vec::new();
+    if let Err(mut report_errors) =
+        validate_report_artifacts(loaded, run_id, &run_artifact, &report_artifact)
+    {
+        errors.append(&mut report_errors);
+    }
+    if run_artifact.schema_version != 1 || run_artifact.project != args.project {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact schema or project does not match resume arguments",
+            None,
+        ));
+    }
+    if run_artifact.run_id != run_id
+        || run_artifact.experiment != loaded.experiment.name
+        || run_artifact.dry_run
+        || run_artifact.execution.is_none()
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact identity does not match resume arguments",
+            None,
+        ));
+    }
+    if run_artifact.suite != expected_suite
+        || run_artifact.replicates != args.replicates
+        || run_artifact.variants != expected_variants
+        || run_artifact.attempt_count != expected_attempts.len()
+        || run_artifact.artifacts != default_run_artifact_paths()
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact contract does not match resume arguments",
+            None,
+        ));
+    }
+    if let Some(seed) = args.seed {
+        if run_artifact.seed != seed || !run_artifact.seed_provided {
+            errors.push(err(
+                "run_artifact_mismatch",
+                "Run artifact seed does not match resume arguments",
+                None,
+            ));
+        }
+    }
+    if attempts.len() != expected_attempts.len() {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Attempt artifact count does not match resume arguments",
+            None,
+        ));
+    }
+    for (attempt, expected) in attempts.iter().zip(expected_attempts.iter()) {
+        if attempt.schema_version != 1
+            || attempt.attempt_id != expected.attempt_id
+            || attempt.run_id != expected.run_id
+            || attempt.prompt_id != expected.prompt_id
+            || attempt.prompt_title != expected.prompt_title
+            || attempt.prompt_line != expected.prompt_line
+            || attempt.variant != expected.variant
+            || attempt.agent_name != expected.agent_name
+            || attempt.replicate != expected.replicate
+            || attempt.tags != expected.tags
+            || attempt.expected_behaviors != expected.expected_behaviors
+        {
+            errors.push(err(
+                "run_artifact_mismatch",
+                "Attempt artifact identity does not match resume arguments",
+                Some(&attempt.variant),
+            ));
+        }
+    }
+    if report_artifact.variants.len() != expected_variants.len()
+        || report_artifact.prompts.len() != suite.prompts.len()
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Report artifact shape does not match resume arguments",
+            None,
+        ));
+    }
+
+    let Some(workgroup) = run_artifact.workgroup.clone() else {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run artifact is missing workgroup metadata",
+            None,
+        ));
+        return Err(errors);
+    };
+    if workgroup.run_id != run_id
+        || workgroup.experiment != loaded.experiment.name
+        || !workgroup.retained
+        || workgroup.cleanup_supported
+    {
+        errors.push(err(
+            "run_artifact_mismatch",
+            "Run workgroup metadata does not match resume arguments",
+            None,
+        ));
+    }
+    if let Err(mut workgroup_errors) =
+        validate_workgroup_under_workspace(&loaded.workspace_dir, &workgroup)
+    {
+        errors.append(&mut workgroup_errors);
+    }
+    if let Err(mut state_errors) =
+        validate_attempt_state_contract(&state_dir, &attempts, &workgroup)
+    {
+        errors.append(&mut state_errors);
+    }
+
+    if errors.is_empty() {
+        Ok((run_artifact, attempts, report_artifact, workgroup))
+    } else {
+        Err(errors)
+    }
+}
+
+fn validate_attempt_state_contract(
+    state_dir: &Path,
+    attempts: &[AttemptArtifact],
+    workgroup: &RunWorkgroupArtifact,
+) -> Result<(), Vec<CliError>> {
+    let mut errors = Vec::new();
+    let attempt_ids: HashSet<&str> = attempts
+        .iter()
+        .map(|attempt| attempt.attempt_id.as_str())
+        .collect();
+    let attempts_by_id: BTreeMap<&str, &AttemptArtifact> = attempts
+        .iter()
+        .map(|attempt| (attempt.attempt_id.as_str(), attempt))
+        .collect();
+    let entries = fs::read_dir(state_dir).map_err(|e| {
+        vec![err_at_path(
+            "run_artifact_unparseable",
+            format!("Failed to read {}: {}", state_dir.display(), e),
+            state_dir,
+        )]
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            vec![err_at_path(
+                "run_artifact_unparseable",
+                format!("Failed to read attempt-state entry: {}", e),
+                state_dir,
+            )]
+        })?;
+        let path = entry.path();
+        reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
+        if !path.is_file() {
+            errors.push(err_at_path(
+                "run_artifact_mismatch",
+                format!("Attempt-state entry is not a file: {}", path.display()),
+                &path,
+            ));
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            errors.push(err_at_path(
+                "run_artifact_mismatch",
+                format!("Attempt-state entry has invalid name: {}", path.display()),
+                &path,
+            ));
+            continue;
+        };
+        let attempt_id = file_name
+            .strip_suffix(".running.json")
+            .or_else(|| file_name.strip_suffix(".done.json"));
+        let Some(attempt_id) = attempt_id else {
+            errors.push(err_at_path(
+                "run_artifact_mismatch",
+                format!(
+                    "Attempt-state entry has unsupported name: {}",
+                    path.display()
+                ),
+                &path,
+            ));
+            continue;
+        };
+        if !attempt_ids.contains(attempt_id) {
+            errors.push(err_at_path(
+                "run_artifact_mismatch",
+                format!(
+                    "Attempt-state entry does not match a run attempt: {}",
+                    path.display()
+                ),
+                &path,
+            ));
+            continue;
+        }
+        let ownership: AttemptOwnershipArtifact = match read_json(&path) {
+            Ok(ownership) => ownership,
+            Err(e) => {
+                errors.push(err_at_path("run_artifact_unparseable", e, &path));
+                continue;
+            }
+        };
+        if ownership.schema_version != 1 {
+            errors.push(err_at_path(
+                "run_artifact_mismatch",
+                "Attempt ownership schemaVersion must be 1",
+                &path,
+            ));
+            continue;
+        }
+        if let Some(attempt) = attempts_by_id.get(attempt_id) {
+            if let Err(mut ownership_errors) =
+                validate_ownership_matches_attempt(&ownership, attempt, workgroup)
+            {
+                errors.append(&mut ownership_errors);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
 
