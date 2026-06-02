@@ -7,16 +7,19 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 ## 0.8.47 - 2026-06-02
 
 ### Added
-- Role Experiment features: implemented CLI phases 1 through 3a, added dry-run artifacts, and formalized the report JSON contract.
-- Added settings for Telegram network poll logging.
+
+- **Role Experiments**: Implemented CLI phases 1 through 3a, introduced dry-run artifacts, and formalized the report JSON contract.
+- **Telegram**: Added configuration settings for network poll logging.
 
 ### Fixed
-- Fixed root agent startup failing without a coding agent and ensured dormant root agents are preserved on launch config errors.
-- Fixed send delivery confirmation mechanism.
-- Fixed role experiment resume validation and metadata validation.
+
+- **Root Agent**: Resolved a startup failure that occurred when no coding agent was present, and ensured dormant root agents are preserved during launch configuration errors.
+- **Messaging**: Fixed the `send` delivery confirmation mechanism.
+- **Role Experiments**: Fixed resume and metadata validation.
 
 ### Removed
-- Removed the CLI sidecar binary entirely.
+
+- **CLI**: Removed the sidecar binary entirely.
 
 ## 0.8.43 — 2026-05-27
 
