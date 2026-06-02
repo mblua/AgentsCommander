@@ -54,7 +54,3 @@ tauri-build = { version = "2", features = [] }
 [lib]
 name = "agentscommander_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
-
-[[bin]]
-name = "agentscommander-cli"
-path = "src/cli_main.rs"

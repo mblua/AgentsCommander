@@ -39,22 +39,6 @@ fn fallback_binary_path() -> &'static str {
     }
 }
 
-fn preferred_cli_binary_path(exe_path: &std::path::Path) -> String {
-    let raw = exe_path.to_string_lossy().to_string();
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(parent) = exe_path.parent() {
-            let sidecar = parent.join("agentscommander-cli.exe");
-            if sidecar.is_file() {
-                return sidecar.to_string_lossy().to_string();
-            }
-        }
-    }
-
-    raw
-}
-
 pub fn build_credential_values(token: &Uuid, cwd: &str) -> CredentialValues {
     let exe = std::env::current_exe().ok();
     if exe.is_none() {
@@ -72,7 +56,7 @@ pub fn build_credential_values(token: &Uuid, cwd: &str) -> CredentialValues {
     let binary_path = {
         let raw = exe
             .as_ref()
-            .map(|p| preferred_cli_binary_path(p))
+            .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| fallback_binary_path().to_string());
         raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
     };
@@ -242,25 +226,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn preferred_cli_binary_path_falls_back_when_sidecar_is_absent() {
-        let exe = std::path::Path::new(r"C:\tools\agentscommander.exe");
-
-        assert_eq!(
-            preferred_cli_binary_path(exe),
-            r"C:\tools\agentscommander.exe"
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn preferred_cli_binary_path_uses_existing_sidecar_on_windows() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let exe = temp.path().join("agentscommander.exe");
-        let sidecar = temp.path().join("agentscommander-cli.exe");
-        std::fs::write(&exe, "").unwrap();
-        std::fs::write(&sidecar, "").unwrap();
-
-        assert_eq!(preferred_cli_binary_path(&exe), sidecar.to_string_lossy());
-    }
 }
