@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::daemon_pid::{self, DaemonState};
-use crate::session::session::SessionStatus;
+use crate::session::session::is_live_session_record;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,8 +19,7 @@ pub(crate) fn find_live_sessions_under(root: &Path) -> Vec<LiveSessionBlocker> {
 
     crate::config::sessions_persistence::load_sessions_raw()
         .into_iter()
-        .filter(|session| session.id.is_some())
-        .filter(|session| !matches!(session.status, Some(SessionStatus::Exited(_))))
+        .filter(|session| is_live_session_record(session.id.is_some(), session.status.as_ref()))
         .filter_map(|session| {
             let cwd = canonicalize_for_compare(Path::new(&session.working_directory));
             if !path_is_under(&cwd, &root) {

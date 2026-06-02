@@ -8,6 +8,7 @@ use super::session::{Session, SessionInfo, SessionRepo, SessionStatus};
 use crate::config::settings::WindowGeometry;
 use crate::errors::AppError;
 
+#[derive(Clone)]
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<Uuid, Session>>>,
     active_session: Arc<RwLock<Option<Uuid>>>,
