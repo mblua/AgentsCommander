@@ -16,13 +16,32 @@ pub mod workspace;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+fn profile_stem_from_exe_stem(stem: &str) -> &str {
+    stem.strip_suffix("-cli").unwrap_or(stem)
+}
+
+fn session_local_dir_from_env() -> Option<PathBuf> {
+    let raw = std::env::var(crate::pty::credentials::ENV_AGENTSCOMMANDER_LOCAL_DIR).ok()?;
+    let path = PathBuf::from(raw);
+    path.is_absolute().then_some(path)
+}
+
 /// Returns the local agent directory name derived from the current binary name.
 /// E.g., "agentscommander-stage.exe" → ".agentscommander-stage"
 /// E.g., "agentscommander.exe" → ".agentscommander"
 pub fn agent_local_dir_name() -> String {
+    if let Some(name) = session_local_dir_from_env()
+        .and_then(|p| p.file_name().map(|name| name.to_string_lossy().to_string()))
+    {
+        return name;
+    }
+
     let exe = std::env::current_exe()
         .ok()
-        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+        .and_then(|p| {
+            p.file_stem()
+                .map(|s| profile_stem_from_exe_stem(&s.to_string_lossy()).to_string())
+        })
         .unwrap_or_else(|| "agentscommander".to_string());
     format!(".{}", exe)
 }
@@ -35,11 +54,16 @@ pub fn agent_local_dir_name() -> String {
 pub fn config_dir() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
+        if let Some(path) = session_local_dir_from_env() {
+            return Some(path);
+        }
+
         // Primary: portable config next to the binary
         if let Ok(exe_path) = std::env::current_exe() {
             match (exe_path.parent(), exe_path.file_stem()) {
                 (Some(parent), Some(stem)) => {
-                    return Some(parent.join(format!(".{}", stem.to_string_lossy())));
+                    let stem = stem.to_string_lossy();
+                    return Some(parent.join(format!(".{}", profile_stem_from_exe_stem(&stem))));
                 }
                 _ => {
                     log::warn!(
@@ -53,4 +77,25 @@ pub fn config_dir() -> Option<PathBuf> {
         dirs::home_dir().map(|home| home.join(profile::config_dir_name()))
     })
     .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::profile_stem_from_exe_stem;
+
+    #[test]
+    fn profile_stem_strips_cli_sidecar_suffix() {
+        assert_eq!(
+            profile_stem_from_exe_stem("agentscommander_personal-cli"),
+            "agentscommander_personal"
+        );
+    }
+
+    #[test]
+    fn profile_stem_leaves_gui_stem_unchanged() {
+        assert_eq!(
+            profile_stem_from_exe_stem("agentscommander_personal"),
+            "agentscommander_personal"
+        );
+    }
 }

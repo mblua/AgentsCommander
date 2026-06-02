@@ -105,6 +105,49 @@ fn validate_root_agent_delivery_kind(
     }
 }
 
+fn wait_for_delivery_confirmation(
+    outbox_dir: &Path,
+    msg_id: &str,
+    mode_for_ack: &str,
+    to_for_ack: &str,
+    confirm_timeout: std::time::Duration,
+    confirm_poll: std::time::Duration,
+) -> Result<(), String> {
+    let delivered_path = outbox_dir
+        .join("delivered")
+        .join(format!("{}.json", msg_id));
+    let rejected_reason_path = outbox_dir
+        .join("rejected")
+        .join(format!("{}.reason.txt", msg_id));
+    let start = std::time::Instant::now();
+
+    loop {
+        if delivered_path.exists() {
+            crate::cli_println!(
+                "Delivered: {} (mode={}, to={})",
+                msg_id,
+                mode_for_ack,
+                to_for_ack
+            );
+            return Ok(());
+        }
+        if rejected_reason_path.exists() {
+            let reason = std::fs::read_to_string(&rejected_reason_path)
+                .unwrap_or_else(|_| "unknown reason".to_string());
+            return Err(format!("message rejected: {}", reason.trim()));
+        }
+        if start.elapsed() >= confirm_timeout {
+            return Err(format!(
+                "delivery confirmation timeout after {}s (message {} may still be pending in {})",
+                confirm_timeout.as_secs(),
+                msg_id,
+                outbox_dir.display()
+            ));
+        }
+        std::thread::sleep(confirm_poll);
+    }
+}
+
 /// If `root` lives inside `<project_dir>/<workspace>/wg-<N>-*/__agent_*/`,
 /// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
 /// inside a WG-replica shape OR if the resulting `project_dir` is not valid
@@ -456,45 +499,27 @@ pub fn execute(args: SendArgs) -> i32 {
         eprintln!("Error: failed to write outbox file: {}", e);
         return 1;
     }
+    log::info!(
+        "[send] queued message {} to '{}' in {}",
+        msg_id,
+        to_for_ack,
+        outbox_dir.display()
+    );
 
     // ── Poll for delivery confirmation ────────────────────────────────────
     // The MailboxPoller will pick up the file and move it to delivered/ or
     // rejected/. Wait until we know the outcome.
-    let delivered_path = outbox_dir
-        .join("delivered")
-        .join(format!("{}.json", msg_id));
-    let rejected_reason_path = outbox_dir
-        .join("rejected")
-        .join(format!("{}.reason.txt", msg_id));
-
-    let confirm_timeout = std::time::Duration::from_secs(30);
-    let confirm_poll = std::time::Duration::from_millis(250);
-    let start = std::time::Instant::now();
-
-    loop {
-        if delivered_path.exists() {
-            crate::cli_println!(
-                "Delivered: {} (mode={}, to={})",
-                msg_id,
-                mode_for_ack,
-                to_for_ack
-            );
-            break;
-        }
-        if rejected_reason_path.exists() {
-            let reason = std::fs::read_to_string(&rejected_reason_path)
-                .unwrap_or_else(|_| "unknown reason".to_string());
-            eprintln!("Error: message rejected — {}", reason.trim());
-            return 1;
-        }
-        if start.elapsed() >= confirm_timeout {
-            eprintln!(
-                "Error: delivery confirmation timeout after 30s (message {} may still be pending)",
-                msg_id
-            );
-            return 1;
-        }
-        std::thread::sleep(confirm_poll);
+    if let Err(e) = wait_for_delivery_confirmation(
+        &outbox_dir,
+        &msg_id,
+        &mode_for_ack,
+        &to_for_ack,
+        std::time::Duration::from_secs(30),
+        std::time::Duration::from_millis(250),
+    ) {
+        log::warn!("[send] {}", e);
+        eprintln!("Error: {}", e);
+        return 1;
     }
 
     // ── If --get-output, wait for response after confirmed delivery ───────
@@ -667,6 +692,64 @@ mod tests {
             validate_root_agent_delivery_kind(false, Some("compact")),
             Ok(())
         );
+    }
+
+    #[test]
+    fn wait_for_delivery_confirmation_accepts_delivered_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let delivered_dir = temp.path().join("delivered");
+        std::fs::create_dir_all(&delivered_dir).unwrap();
+        std::fs::write(delivered_dir.join("msg-1.json"), "{}").unwrap();
+
+        let result = wait_for_delivery_confirmation(
+            temp.path(),
+            "msg-1",
+            "wake",
+            "project:wg-1-team/agent",
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(1),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn wait_for_delivery_confirmation_reports_rejection_reason() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let rejected_dir = temp.path().join("rejected");
+        std::fs::create_dir_all(&rejected_dir).unwrap();
+        std::fs::write(rejected_dir.join("msg-2.reason.txt"), "bad route").unwrap();
+
+        let err = wait_for_delivery_confirmation(
+            temp.path(),
+            "msg-2",
+            "wake",
+            "project:wg-1-team/agent",
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("message rejected: bad route"));
+    }
+
+    #[test]
+    fn wait_for_delivery_confirmation_reports_pending_outbox_on_timeout() {
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let err = wait_for_delivery_confirmation(
+            temp.path(),
+            "msg-3",
+            "wake",
+            "project:wg-1-team/agent",
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("delivery confirmation timeout"));
+        assert!(err.contains("msg-3"));
+        assert!(err.contains(&temp.path().display().to_string()));
     }
 
     #[test]
