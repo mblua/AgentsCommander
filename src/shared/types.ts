@@ -330,6 +330,20 @@ export interface BlockerSession {
   cwd: string;
 }
 
+export interface IgnoredSessionRecord {
+  sessionId: string;
+  agentName: string;
+  cwd: string;
+  status: string;
+  waitingForInput: boolean;
+}
+
+export interface DiagnosticError {
+  message: string;
+  code?: number;
+  meaning?: string;
+}
+
 export interface BlockerProcess {
   pid: number;
   name: string;
@@ -344,6 +358,12 @@ export interface BlockerReport {
   rawOsError: string;
   sessions: BlockerSession[];
   processes: BlockerProcess[];
+  restartManagerAvailable?: boolean;
+  restartManagerError?: DiagnosticError;
+  rawDeleteError?: string;
+  liveSessions?: BlockerSession[];
+  exitedSessionRecordsIgnored?: IgnoredSessionRecord[];
+  externalProcesses?: BlockerProcess[];
 }
 
 // ---------------------------------------------------------------------------

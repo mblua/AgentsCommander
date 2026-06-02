@@ -130,6 +130,10 @@ pub enum SessionStatus {
     Exited(i32),
 }
 
+pub(crate) fn is_live_session_record(has_id: bool, status: Option<&SessionStatus>) -> bool {
+    has_id && !matches!(status, Some(SessionStatus::Exited(_)))
+}
+
 /// Walk up from `cwd` to the first ancestor directory whose name starts with
 /// `wg-`, and return that directory's `TASK.md` path. Returns `None` if no
 /// such ancestor exists (does NOT check that the file exists on disk — caller
@@ -312,6 +316,22 @@ mod tests {
         let json = serde_json::to_value(SessionInfo::from(&s)).expect("serialize SessionInfo");
 
         assert!(json.get("telegramBotId").is_none());
+    }
+
+    #[test]
+    fn live_session_record_requires_id_and_non_exited_status() {
+        assert!(is_live_session_record(true, Some(&SessionStatus::Active)));
+        assert!(is_live_session_record(true, Some(&SessionStatus::Running)));
+        assert!(is_live_session_record(true, Some(&SessionStatus::Idle)));
+        assert!(is_live_session_record(true, None));
+        assert!(!is_live_session_record(
+            false,
+            Some(&SessionStatus::Running)
+        ));
+        assert!(!is_live_session_record(
+            true,
+            Some(&SessionStatus::Exited(0))
+        ));
     }
 
     // ── find_workgroup_task_path_for_cwd — issue #107 ──

@@ -16,6 +16,7 @@ import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
 import AgentPickerModal from "./AgentPickerModal";
 import EditTeamModal from "./EditTeamModal";
+import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
 
 interface PendingLaunch {
   path: string;
@@ -1470,75 +1471,106 @@ const ProjectPanel: Component = () => {
                         </div>
                       </Show>
                       <Show when={wgBlockers()}>
-                        {(r) => (
-                          <div style={{
-                            "background": "var(--danger, #c0392b)",
-                            "color": "#fff",
-                            "padding": "10px 12px",
-                            "border-radius": "6px",
-                            "margin-top": "10px",
-                            "font-size": "12px",
-                            "line-height": "1.5",
-                          }}>
-                            <strong>Cannot delete:</strong> the workgroup is locked by the following:
-                            <Show when={r().sessions.length > 0}>
-                              <div style={{ "margin-top": "6px" }}><strong>AC sessions</strong></div>
-                              <ul style={{ margin: "4px 0 6px 16px", padding: "0" }}>
-                                <For each={r().sessions}>
-                                  {(s) => <li>{s.agentName} <span style={{ opacity: 0.75 }}>({s.cwd})</span></li>}
-                                </For>
-                              </ul>
-                            </Show>
-                            <Show when={r().processes.length > 0}>
-                              <div style={{ "margin-top": "6px" }}><strong>External processes</strong></div>
-                              <ul style={{ margin: "4px 0 6px 16px", padding: "0" }}>
-                                <For each={r().processes}>
-                                  {(p) => (
-                                    <li>
-                                      {p.name} (PID {p.pid})
-                                      <Show when={p.cwd}>
-                                        {(cwd) => (
-                                          <div style={{ "font-size": "11px", opacity: 0.85 }}>
-                                            CWD: {cwd()}
-                                          </div>
-                                        )}
-                                      </Show>
-                                      <Show when={p.files.length > 0}>
-                                        <ul style={{ margin: "2px 0 0 16px", padding: "0", "font-size": "11px", opacity: 0.85 }}>
-                                          <For each={p.files}>{(f) => <li>{f}</li>}</For>
-                                        </ul>
-                                      </Show>
-                                    </li>
-                                  )}
-                                </For>
-                              </ul>
-                            </Show>
-                            <Show when={!r().diagnosticAvailable}>
-                              <div style={{ "margin-top": "6px", opacity: 0.85 }}>
-                                Diagnostic not available on this platform. Raw error: <code>{r().rawOsError}</code>
-                              </div>
-                            </Show>
-                            <Show when={r().diagnosticAvailable && r().sessions.length === 0 && r().processes.length === 0}>
-                              <div style={{ "margin-top": "6px", opacity: 0.85 }}>
-                                No blockers identified. The lock may be transient — try again in a moment.
-                                Raw error: <code>{r().rawOsError}</code>
-                              </div>
-                            </Show>
-                            <div style={{ "margin-top": "8px" }}>
-                              Close the listed sessions / quit the listed processes, then click <strong>Retry</strong> below.
-                            </div>
-                            <div style={{ "margin-top": "10px", display: "flex", "justify-content": "flex-end" }}>
-                              <button
-                                class="new-agent-create-btn"
-                                style={{ "background": "#fff", "color": "var(--danger, #c0392b)", "min-width": "84px" }}
-                                disabled={wgRetryInProgress() || wgDeleteInProgress()}
-                                onClick={retryWgDelete}
+                        {(r) => {
+                          const normalized = () => normalizeBlockerReport(r());
+                          const liveSessions = () => normalized().liveSessions;
+                          const externalProcesses = () => normalized().externalProcesses;
+                          const ignoredExited = () => normalized().ignoredExited;
+                          const rawDeleteError = () => normalized().rawDeleteError;
+                          const rmError = () => normalized().restartManagerError?.message;
+                          return (
+                            <div style={{
+                              "background": "var(--danger, #c0392b)",
+                              "color": "#fff",
+                              "padding": "10px 12px",
+                              "border-radius": "6px",
+                              "margin-top": "10px",
+                              "font-size": "12px",
+                              "line-height": "1.5",
+                            }}>
+                              <strong>Cannot delete:</strong> Windows reported the workgroup is locked.
+                              <Show when={liveSessions().length > 0}>
+                                <div style={{ "margin-top": "6px" }}><strong>Live AC sessions</strong></div>
+                                <ul style={{ margin: "4px 0 6px 16px", padding: "0" }}>
+                                  <For each={liveSessions()}>
+                                    {(s) => <li>{s.agentName} <span style={{ opacity: 0.75 }}>({s.cwd})</span></li>}
+                                  </For>
+                                </ul>
+                              </Show>
+                              <Show when={externalProcesses().length > 0}>
+                                <div style={{ "margin-top": "6px" }}><strong>External processes</strong></div>
+                                <ul style={{ margin: "4px 0 6px 16px", padding: "0" }}>
+                                  <For each={externalProcesses()}>
+                                    {(p) => (
+                                      <li>
+                                        {p.name} (PID {p.pid})
+                                        <Show when={p.cwd}>
+                                          {(cwd) => (
+                                            <div style={{ "font-size": "11px", opacity: 0.85 }}>
+                                              CWD: {cwd()}
+                                            </div>
+                                          )}
+                                        </Show>
+                                        <Show when={p.files.length > 0}>
+                                          <ul style={{ margin: "2px 0 0 16px", padding: "0", "font-size": "11px", opacity: 0.85 }}>
+                                            <For each={p.files}>{(f) => <li>{f}</li>}</For>
+                                          </ul>
+                                        </Show>
+                                      </li>
+                                    )}
+                                  </For>
+                                </ul>
+                              </Show>
+                              <Show when={liveSessions().length === 0 && ignoredExited().length > 0}>
+                                <div style={{ "margin-top": "6px", opacity: 0.9 }}>
+                                  Ignored {ignoredExited().length} exited AC session record{ignoredExited().length === 1 ? "" : "s"}.
+                                  These are not treated as blockers.
+                                </div>
+                              </Show>
+                              <Show when={rmError()}>
+                                {(message) => (
+                                  <div style={{ "margin-top": "6px", opacity: 0.9 }}>
+                                    Restart Manager could not identify blockers: <code>{message()}</code>
+                                  </div>
+                                )}
+                              </Show>
+                              <Show when={!r().diagnosticAvailable && r().platform !== "windows"}>
+                                <div style={{ "margin-top": "6px", opacity: 0.85 }}>
+                                  Diagnostic not available on this platform. Raw delete error: <code>{rawDeleteError()}</code>
+                                </div>
+                              </Show>
+                              <Show when={!r().diagnosticAvailable && r().platform === "windows" && rmError()}>
+                                <div style={{ "margin-top": "6px", opacity: 0.85 }}>
+                                  Blocker identification failed. Raw delete error: <code>{rawDeleteError()}</code>
+                                </div>
+                              </Show>
+                              <Show when={liveSessions().length === 0 && externalProcesses().length === 0}>
+                                <div style={{ "margin-top": "6px", opacity: 0.85 }}>
+                                  No live AC sessions or external blocker processes were identified. Windows still rejected the delete probe.
+                                  Raw delete error: <code>{rawDeleteError()}</code>
+                                </div>
+                              </Show>
+                              <Show
+                                when={liveSessions().length > 0 || externalProcesses().length > 0}
+                                fallback={<div style={{ "margin-top": "8px" }}>Close any app that may be using files in this workgroup, then click <strong>Retry</strong> below.</div>}
                               >
-                                {wgRetryInProgress() ? "Retrying…" : "Retry"}
-                              </button>
+                                <div style={{ "margin-top": "8px" }}>
+                                  Close the listed sessions or quit the listed processes, then click <strong>Retry</strong> below.
+                                </div>
+                              </Show>
+                              <div style={{ "margin-top": "10px", display: "flex", "justify-content": "flex-end" }}>
+                                <button
+                                  class="new-agent-create-btn"
+                                  style={{ "background": "#fff", "color": "var(--danger, #c0392b)", "min-width": "84px" }}
+                                  disabled={wgRetryInProgress() || wgDeleteInProgress()}
+                                  onClick={retryWgDelete}
+                                >
+                                  {wgRetryInProgress() ? "Retrying…" : "Retry"}
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          );
+                        }}
                       </Show>
                     </div>
                     <div class="new-agent-footer">
