@@ -53,13 +53,11 @@ const SpecBoardApp: Component = () => {
 
     const appWindow = getCurrentWindow();
     unlistenClose = await appWindow.onCloseRequested(async (event) => {
+      event.preventDefault(); // Always intercept to handle async cleanup reliably
       if (specBoardStore.dirty || (!specBoardStore.path && specBoardStore.content.trim().length > 0)) {
-        event.preventDefault();
         setShowCloseModal(true);
       } else {
-        if (specBoardStore.docId) {
-          await SpecBoardAPI.close(specBoardStore.docId);
-        }
+        await forceCloseSpecBoardWindow();
       }
     });
   });
@@ -68,6 +66,25 @@ const SpecBoardApp: Component = () => {
     if (unlistenClose) unlistenClose();
     unlistens.forEach(u => u());
   });
+
+  const forceCloseSpecBoardWindow = async () => {
+    if (specBoardStore.docId) {
+      try {
+        await SpecBoardAPI.close(specBoardStore.docId);
+      } catch (err) {
+        console.warn("Best-effort backend close failed:", err);
+      }
+    }
+    if (unlistenClose) {
+      unlistenClose();
+      unlistenClose = undefined;
+    }
+    try {
+      await getCurrentWindow().destroy();
+    } catch (err) {
+      console.warn("Window destroy failed:", err);
+    }
+  };
 
   const handleSaveAndClose = async () => {
     if (specBoardStore.docId) {
@@ -78,25 +95,18 @@ const SpecBoardApp: Component = () => {
           const doc = await SpecBoardAPI.pickSave(specBoardStore.docId, specBoardStore.content, specBoardStore.repoRoot);
           if (!doc) return; // Cancelled
         }
-        await SpecBoardAPI.close(specBoardStore.docId);
-        if (unlistenClose) unlistenClose();
-        getCurrentWindow().close();
+        await forceCloseSpecBoardWindow();
       } catch (err) {
         console.error("Save failed", err);
         setSpecBoardStore("renderError", String(err));
       }
     } else {
-      if (unlistenClose) unlistenClose();
-      getCurrentWindow().close();
+      await forceCloseSpecBoardWindow();
     }
   };
 
   const handleDiscardClose = async () => {
-    if (specBoardStore.docId) {
-      await SpecBoardAPI.close(specBoardStore.docId);
-    }
-    if (unlistenClose) unlistenClose();
-    getCurrentWindow().close();
+    await forceCloseSpecBoardWindow();
   };
 
   const handleCancelClose = () => {
