@@ -68,16 +68,15 @@ const SpecBoardApp: Component = () => {
   });
 
   const forceCloseSpecBoardWindow = async () => {
-    if (specBoardStore.docId) {
-      try {
-        await SpecBoardAPI.close(specBoardStore.docId);
-      } catch (err) {
-        console.warn("Best-effort backend close failed:", err);
-      }
-    }
+    const docId = specBoardStore.docId;
     if (unlistenClose) {
       unlistenClose();
       unlistenClose = undefined;
+    }
+    if (docId) {
+      SpecBoardAPI.close(docId).catch(err => {
+        console.warn("Best-effort backend close failed:", err);
+      });
     }
     try {
       await getCurrentWindow().destroy();
