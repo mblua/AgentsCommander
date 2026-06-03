@@ -96,13 +96,6 @@ pub struct SpecBoardChangedEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SpecBoardConflictEvent {
-    pub doc_id: String,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SpecBoardFileMissingEvent {
     pub doc_id: String,
     pub path: String,
@@ -700,7 +693,7 @@ async fn start_watch_task(state: SpecBoardState, app: AppHandle, doc_id: String)
 
 enum WatchEvent {
     Changed(SpecBoardChangedEvent),
-    Conflict(SpecBoardConflictEvent),
+    Conflict(SpecBoardDocument),
 }
 
 async fn handle_external_content(
@@ -744,10 +737,7 @@ async fn handle_external_content(
                 pending_external_diagram_source: diagram_source,
                 detected_at_ms: now_ms(),
             });
-            result = Some(WatchEvent::Conflict(SpecBoardConflictEvent {
-                doc_id: doc_id.to_string(),
-                path,
-            }));
+            result = Some(WatchEvent::Conflict(doc.document.clone()));
         } else {
             doc.document.content = content;
             doc.document.diagram_source = diagram_source;
@@ -1101,17 +1091,13 @@ async fn validate_user_path(
 
     let nearest = nearest_existing_parent(path).await?;
     let canonical_parent = canonicalize_existing_dir(&nearest).await?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "Spec path must include a file name".to_string())?;
+    let suffix = relative_suffix_from_existing_parent(path, &nearest)?;
     let canonical_candidate = if must_exist && path.exists() {
         tokio::fs::canonicalize(path)
             .await
             .map_err(|e| format!("Failed to canonicalize spec path: {}", e))?
-    } else if canonical_parent == path {
-        canonical_parent.clone()
     } else {
-        canonical_parent.join(file_name)
+        canonical_parent.join(suffix)
     };
 
     for root in roots {
@@ -1173,6 +1159,34 @@ async fn nearest_existing_parent(path: &Path) -> Result<PathBuf, String> {
             .to_path_buf();
     }
     Ok(current)
+}
+
+fn relative_suffix_from_existing_parent(path: &Path, parent: &Path) -> Result<PathBuf, String> {
+    let suffix = path
+        .strip_prefix(parent)
+        .map_err(|_| "Spec path could not be resolved from its existing parent".to_string())?;
+    if suffix.as_os_str().is_empty() {
+        return Err("Spec path must include a file name".to_string());
+    }
+
+    let mut clean = PathBuf::new();
+    for component in suffix.components() {
+        match component {
+            Component::Normal(part) => clean.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err("Spec path traversal is not allowed".to_string());
+            }
+            Component::Prefix(_) | Component::RootDir => {
+                return Err("Spec path suffix must be relative".to_string());
+            }
+        }
+    }
+
+    if clean.file_name().is_none() {
+        return Err("Spec path must include a file name".to_string());
+    }
+    Ok(clean)
 }
 
 async fn canonicalize_existing_dir(path: &Path) -> Result<PathBuf, String> {
@@ -1566,6 +1580,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn path_validation_preserves_missing_intermediate_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo-Example");
+        tokio::fs::create_dir_all(repo.join("specs")).await.unwrap();
+        let settings = test_settings(vec![tmp.path().to_path_buf()]);
+        let target = repo
+            .join("specs")
+            .join("new-folder")
+            .join("nested")
+            .join("diagram.mmd");
+
+        let validated = validate_new_or_existing_user_path(&target, &settings)
+            .await
+            .unwrap();
+
+        assert_eq!(path_compare_key(&validated.path), path_compare_key(&target));
+        assert_eq!(
+            path_compare_key(&validated.repo_root),
+            path_compare_key(&repo)
+        );
+    }
+
+    #[tokio::test]
     async fn path_validation_rejects_ac_and_outside_paths() {
         let tmp = TempDir::new().unwrap();
         let repo = tmp.path().join("repo-Example");
@@ -1714,7 +1751,15 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(event, Some(WatchEvent::Conflict(_))));
+        let Some(WatchEvent::Conflict(payload)) = event else {
+            panic!("expected conflict event");
+        };
+        assert_eq!(payload.doc_id, doc_id);
+        assert_eq!(payload.content, local);
+        assert_eq!(
+            payload.conflict.as_ref().unwrap().pending_external_content,
+            external
+        );
         let mgr = state.read().await;
         let doc = mgr.get_document(&doc_id).unwrap();
         assert_eq!(doc.content, local);
