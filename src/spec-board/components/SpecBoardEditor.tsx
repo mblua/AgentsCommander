@@ -23,8 +23,6 @@ const SpecBoardEditor: Component = () => {
           if (specBoardStore.docId === currentDocId) {
             if (specBoardStore.content === value) {
               setSpecBoardStore(doc);
-            } else {
-              setSpecBoardStore({ ...doc, content: specBoardStore.content, dirty: true });
             }
           }
         } catch (err) {
