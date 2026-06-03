@@ -183,6 +183,7 @@ export interface AppSettings {
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
+  specBoardEnabled: boolean;
 }
 
 // Team grouping for sidebar
@@ -439,3 +440,50 @@ export interface RoleTemplateMeta {
   emoji?: string | null;
   hasSkills: boolean;
 }
+
+export interface SpecBoardDocument {
+  docId: string;
+  repoRoot: string;
+  path: string | null;
+  fileKind: SpecBoardFileKind;
+  content: string;
+  diagramSource: string;
+  dirty: boolean;
+  conflict: SpecBoardConflict | null;
+  versionIndex: number;
+  versionCount: number;
+  updatedAtMs: number;
+}
+
+export type SpecBoardFileKind = "mermaid" | "markdown";
+
+export interface SpecBoardConflict {
+  path: string;
+  pendingExternalContent: string;
+  pendingExternalDiagramSource: string;
+  detectedAtMs: number;
+}
+
+export interface SpecBoardSnapshot {
+  id: string;
+  label: string;
+  createdAtMs: number;
+  source: SpecBoardSnapshotSource;
+  content: string;
+  diagramSource: string;
+  hash: string;
+}
+
+export type SpecBoardSnapshotSource = "initial" | "open" | "edit" | "save" | "external" | "checkout";
+
+export interface SpecBoardChangedEvent {
+  docId: string;
+  path: string | null;
+  content: string;
+  diagramSource: string;
+  versionIndex: number;
+  versionCount: number;
+  external: boolean;
+}
+
+

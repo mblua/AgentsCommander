@@ -270,6 +270,10 @@ pub struct AppSettings {
     /// the legacy light-mode behavior. Issue #289.
     #[serde(default = "default_true")]
     pub theme_light: bool,
+    /// When true, show the Spec Board toolbar button. Defaults off because the
+    /// board is an opt-in feature enabled manually from settings.json.
+    #[serde(default)]
+    pub spec_board_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -379,6 +383,7 @@ impl Default for AppSettings {
             auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: true,
+            spec_board_enabled: false,
         }
     }
 }
@@ -1085,6 +1090,22 @@ mod tests {
     }
 
     #[test]
+    fn spec_board_enabled_round_trips_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(!s.spec_board_enabled);
+        let default_json = serde_json::to_string(&s).expect("serialize default");
+        assert!(default_json.contains("\"specBoardEnabled\":false"));
+
+        s.spec_board_enabled = true;
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"specBoardEnabled\":true"));
+
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.spec_board_enabled);
+    }
+
+    #[test]
     fn coord_sort_by_activity_round_trips_through_serde() {
         let mut s = AppSettings::default();
         assert!(!s.coord_sort_by_activity);
@@ -1399,5 +1420,18 @@ mod tests {
         }"#;
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(!s.coord_sort_by_activity);
+    }
+
+    #[test]
+    fn spec_board_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(!s.spec_board_enabled);
     }
 }

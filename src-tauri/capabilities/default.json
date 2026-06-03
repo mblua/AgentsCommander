@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for agentscommander",
-  "windows": ["main", "sidebar", "terminal", "terminal-*", "guide"],
+  "windows": ["main", "sidebar", "terminal", "terminal-*", "guide", "spec-board"],
   "permissions": [
     "core:default",
     "core:window:default",

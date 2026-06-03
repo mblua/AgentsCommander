@@ -20,6 +20,9 @@ import type {
   ProjectRegistration,
   ErrorLogEntry,
   RoleTemplateMeta,
+  SpecBoardDocument,
+  SpecBoardSnapshot,
+  SpecBoardChangedEvent
 } from "./types";
 
 export interface SessionRepoInput {
@@ -612,4 +615,42 @@ export function onWorkgroupTaskUpdated(
     "workgroup_task_updated",
     callback
   );
+}
+
+export const SpecBoardAPI = {
+  open: () => transport.invoke<void>("open_spec_board_window"),
+  new: (repoRoot?: string | null) =>
+    transport.invoke<SpecBoardDocument>("spec_board_new", { repoRoot: repoRoot ?? null }),
+  pickOpen: (repoRoot?: string | null) =>
+    transport.invoke<SpecBoardDocument | null>("spec_board_pick_open", { repoRoot: repoRoot ?? null }),
+  openFile: (path: string) =>
+    transport.invoke<SpecBoardDocument>("spec_board_open", { path }),
+  save: (docId: string, content: string) =>
+    transport.invoke<SpecBoardDocument>("spec_board_save", { docId, content }),
+  pickSave: (docId: string, content: string, repoRoot?: string | null) =>
+    transport.invoke<SpecBoardDocument | null>("spec_board_pick_save", { docId, content, repoRoot: repoRoot ?? null }),
+  updateContent: (docId: string, content: string) =>
+    transport.invoke<SpecBoardDocument>("spec_board_update_content", { docId, content }),
+  listSnapshots: (docId: string) =>
+    transport.invoke<SpecBoardSnapshot[]>("spec_board_list_snapshots", { docId }),
+  checkoutSnapshot: (docId: string, snapshotId: string) =>
+    transport.invoke<SpecBoardDocument>("spec_board_checkout_snapshot", { docId, snapshotId }),
+  applyExternal: (docId: string) =>
+    transport.invoke<SpecBoardDocument>("spec_board_apply_external", { docId }),
+  keepMine: (docId: string) =>
+    transport.invoke<SpecBoardDocument>("spec_board_keep_mine", { docId }),
+  close: (docId: string) =>
+    transport.invoke<void>("spec_board_close", { docId }),
+};
+
+export function onSpecBoardChanged(callback: (payload: SpecBoardChangedEvent) => void): Promise<UnlistenFn> {
+  return transport.listen<SpecBoardChangedEvent>("spec_board_changed", callback);
+}
+
+export function onSpecBoardConflict(callback: (payload: SpecBoardDocument) => void): Promise<UnlistenFn> {
+  return transport.listen<SpecBoardDocument>("spec_board_conflict", callback);
+}
+
+export function onSpecBoardFileMissing(callback: (payload: { docId: string; path: string }) => void): Promise<UnlistenFn> {
+  return transport.listen<{ docId: string; path: string }>("spec_board_file_missing", callback);
 }
