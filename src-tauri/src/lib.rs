@@ -53,6 +53,9 @@ pub type RtkSweepLockState = Arc<tokio::sync::Mutex<()>>;
 /// (which would mismatch the listener for the `auto-disabled` mode).
 pub type RtkStartupModeState = Arc<std::sync::OnceLock<String>>;
 
+/// Floating spec/Mermaid board document state.
+pub type SpecBoardState = Arc<tokio::sync::RwLock<commands::spec_board::SpecBoardManager>>;
+
 /// Master token generated at app startup. Allows bypassing team validation (can_reach).
 /// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See #34.
 /// Field is private — use `matches()` for constant-time comparison.
@@ -276,6 +279,9 @@ pub fn run() {
     let settings_for_web = Arc::clone(&settings);
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
+    let spec_board_state: SpecBoardState = Arc::new(tokio::sync::RwLock::new(
+        commands::spec_board::SpecBoardManager::new(),
+    ));
 
     // Issue #120 — RTK sweep mutex. Acquired by every in-process writer of
     // `.claude/settings.local.json`. See plan §7.5 for the design.
@@ -302,6 +308,7 @@ pub fn run() {
         .manage(voice_tracking)
         .manage(settings)
         .manage(detached_sessions.clone())
+        .manage(spec_board_state.clone())
         .manage(web_access_token.clone())
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
@@ -1333,8 +1340,20 @@ pub fn run() {
             commands::window::set_detached_geometry,
             commands::window::open_in_explorer,
             commands::window::open_guide_window,
+            commands::window::open_spec_board_window,
             commands::window::open_external_url,
             commands::window::focus_main_window,
+            commands::spec_board::spec_board_new,
+            commands::spec_board::spec_board_pick_open,
+            commands::spec_board::spec_board_open,
+            commands::spec_board::spec_board_save,
+            commands::spec_board::spec_board_pick_save,
+            commands::spec_board::spec_board_update_content,
+            commands::spec_board::spec_board_list_snapshots,
+            commands::spec_board::spec_board_checkout_snapshot,
+            commands::spec_board::spec_board_apply_external,
+            commands::spec_board::spec_board_keep_mine,
+            commands::spec_board::spec_board_close,
             commands::phone::phone_send_message,
             commands::phone::phone_get_inbox,
             commands::phone::phone_list_agents,
@@ -1377,12 +1396,19 @@ pub fn run() {
         .expect("error while building application")
         .run({
             let detached_set = detached_sessions.clone();
+            let spec_board_state = spec_board_state.clone();
             move |app_handle, event| match event {
                 tauri::RunEvent::WindowEvent {
                     label,
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
+                    if label == "spec-board" {
+                        let state = spec_board_state.clone();
+                        tauri::async_runtime::spawn(async move {
+                            commands::spec_board::spec_board_close_all(state).await;
+                        });
+                    }
                     // Detached-window destroyed (by any mechanism — X, Alt+F4, programmatic).
                     // Two jobs:
                     //   1) Clear from `DetachedSessionsState` — switch_session needs an
