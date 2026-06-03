@@ -9,6 +9,13 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use tokio::task::JoinHandle;
 
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+};
+
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::SpecBoardState;
 
@@ -881,9 +888,7 @@ async fn write_snapshot_atomic(dir: &Path, snapshot: &SnapshotFile) -> Result<()
     tokio::fs::write(&temp, bytes)
         .await
         .map_err(|e| format!("Failed to write snapshot: {}", e))?;
-    tokio::fs::rename(&temp, &target)
-        .await
-        .map_err(|e| format!("Failed to commit snapshot: {}", e))?;
+    commit_temp_file(&temp, &target, "snapshot").await?;
     Ok(())
 }
 
@@ -1370,10 +1375,39 @@ async fn atomic_write_utf8(path: &Path, content: &str) -> Result<(), String> {
     tokio::fs::write(&temp, content)
         .await
         .map_err(|e| format!("Failed to write temporary spec file: {}", e))?;
-    tokio::fs::rename(&temp, path)
-        .await
-        .map_err(|e| format!("Failed to commit spec file: {}", e))?;
+    commit_temp_file(&temp, path, "spec file").await?;
     Ok(())
+}
+
+async fn commit_temp_file(temp: &Path, target: &Path, label: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        replace_file_with_temp(temp, target)
+            .map_err(|e| format!("Failed to commit {}: {}", label, e))?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        tokio::fs::rename(temp, target)
+            .await
+            .map_err(|e| format!("Failed to commit {}: {}", label, e))?;
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_file_with_temp(temp: &Path, target: &Path) -> std::io::Result<()> {
+    let temp_wide: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+
+    let replaced = unsafe { MoveFileExW(temp_wide.as_ptr(), target_wide.as_ptr(), flags) };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 async fn metadata_fingerprint(path: &Path) -> Result<(u64, Option<std::time::SystemTime>), String> {
@@ -1570,6 +1604,24 @@ mod tests {
             validate_new_or_existing_user_path(&repo.join("..").join("escape.mmd"), &settings)
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_write_utf8_replaces_existing_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("diagram.mmd");
+        tokio::fs::write(&path, "flowchart TD\nA-->B\n")
+            .await
+            .unwrap();
+
+        atomic_write_utf8(&path, "flowchart TD\nA-->C\n")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            "flowchart TD\nA-->C\n"
         );
     }
 
