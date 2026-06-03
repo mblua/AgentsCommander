@@ -183,6 +183,7 @@ export interface AppSettings {
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
+  specBoardEnabled: boolean;
 }
 
 // Team grouping for sidebar

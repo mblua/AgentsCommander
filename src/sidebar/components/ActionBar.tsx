@@ -195,9 +195,11 @@ const ActionBar: Component = () => {
           </Show>
         </div>
         <div class="action-bar-icons">
-          <button class="toolbar-gear-btn" onClick={() => SpecBoardAPI.open()} title="Spec board">
-            &#x25A7;
-          </button>
+          <Show when={settingsStore.current?.specBoardEnabled === true}>
+            <button class="toolbar-gear-btn" onClick={() => SpecBoardAPI.open()} title="Spec board">
+              &#x25A7;
+            </button>
+          </Show>
 
           <button
             class={`toolbar-gear-btn home-toggle-btn ${homeStore.visible ? "active" : ""}`}
