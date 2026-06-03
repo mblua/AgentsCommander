@@ -79,12 +79,14 @@ const SpecBoardApp: Component = () => {
           if (!doc) return; // Cancelled
         }
         await SpecBoardAPI.close(specBoardStore.docId);
+        if (unlistenClose) unlistenClose();
         getCurrentWindow().close();
       } catch (err) {
         console.error("Save failed", err);
         setSpecBoardStore("renderError", String(err));
       }
     } else {
+      if (unlistenClose) unlistenClose();
       getCurrentWindow().close();
     }
   };
@@ -93,6 +95,7 @@ const SpecBoardApp: Component = () => {
     if (specBoardStore.docId) {
       await SpecBoardAPI.close(specBoardStore.docId);
     }
+    if (unlistenClose) unlistenClose();
     getCurrentWindow().close();
   };
 
