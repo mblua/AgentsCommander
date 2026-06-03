@@ -6,9 +6,15 @@ const SpecBoardToolbar: Component = () => {
   const handleNew = async () => {
     try {
       const oldDocId = specBoardStore.docId;
+      if (oldDocId) {
+        try {
+          await SpecBoardAPI.close(oldDocId);
+        } catch (e) {
+          console.error("Failed to close old doc", e);
+        }
+      }
       const doc = await SpecBoardAPI.new(specBoardStore.repoRoot);
       if (doc) {
-        if (oldDocId && oldDocId !== doc.docId) await SpecBoardAPI.close(oldDocId);
         setSpecBoardStore(doc);
       }
     } catch (e) {
@@ -21,8 +27,14 @@ const SpecBoardToolbar: Component = () => {
       const oldDocId = specBoardStore.docId;
       const doc = await SpecBoardAPI.pickOpen(specBoardStore.repoRoot);
       if (doc) {
-        if (oldDocId && oldDocId !== doc.docId) await SpecBoardAPI.close(oldDocId);
         setSpecBoardStore(doc);
+        if (oldDocId && oldDocId !== doc.docId) {
+          try {
+            await SpecBoardAPI.close(oldDocId);
+          } catch(err) {
+            console.error("Failed to close old doc", err);
+          }
+        }
       }
     } catch (e) {
       console.error(e);

@@ -21,7 +21,11 @@ const SpecBoardEditor: Component = () => {
         try {
           const doc = await SpecBoardAPI.updateContent(currentDocId, value);
           if (specBoardStore.docId === currentDocId) {
-            setSpecBoardStore(doc);
+            if (specBoardStore.content === value) {
+              setSpecBoardStore(doc);
+            } else {
+              setSpecBoardStore({ ...doc, content: specBoardStore.content, dirty: true });
+            }
           }
         } catch (err) {
           console.error("Failed to update content", err);

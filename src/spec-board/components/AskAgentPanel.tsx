@@ -15,7 +15,7 @@ const AskAgentPanel: Component = () => {
   const handleSend = async () => {
     if (!selectedSessionId() || !specBoardStore.path || !instruction()) return;
     
-    const prompt = `Please edit the spec board Mermaid file at:\n\n"${specBoardStore.path}"\n\nUser request:\n${instruction()}\n\nKeep exactly one Mermaid diagram in the file. Save the file when done. The board watches the file and will update automatically.\n`;
+    const prompt = `Please edit the spec board Mermaid file at:\n\n"${specBoardStore.path}"\n\nUser request:\n${instruction()}\n\nKeep exactly one Mermaid diagram in the file. Save the file when done. The board watches the file and will update automatically.\r`;
     
     try {
       await PtyAPI.write(selectedSessionId(), new TextEncoder().encode(prompt));
