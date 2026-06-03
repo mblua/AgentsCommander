@@ -1093,6 +1093,9 @@ mod tests {
     fn spec_board_enabled_round_trips_through_serde() {
         let mut s = AppSettings::default();
         assert!(!s.spec_board_enabled);
+        let default_json = serde_json::to_string(&s).expect("serialize default");
+        assert!(default_json.contains("\"specBoardEnabled\":false"));
+
         s.spec_board_enabled = true;
 
         let json = serde_json::to_string(&s).expect("serialize");
