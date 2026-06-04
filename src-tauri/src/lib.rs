@@ -376,16 +376,21 @@ pub fn run() {
                 }
             }
 
-            // Issue #120 — RTK startup detection. Probes PATH for `rtk`, then:
-            //   - rtk found AND inject_rtk_hook=false AND rtk_prompt_dismissed=false
-            //       → emit "rtk_startup_status" with mode="prompt-enable"
-            //   - rtk found AND inject_rtk_hook=true
-            //       → emit mode="active" + active-recovery ON-sweep (idempotent)
-            //   - rtk missing AND inject_rtk_hook=true
-            //       → persist inject_rtk_hook=false (write lock held through save —
-            //         grinch H4 + N1); sweep with enabled=false (RtkSweepLock held —
-            //         grinch M8); emit mode="auto-disabled".
-            //   - otherwise: emit mode="silent" (frontend treats as no-op).
+            // Issue #120 / #426 — RTK startup detection. Probes PATH for `rtk`,
+            // then maps (rtk_present, inject_rtk_hook, rtk_prompt_dismissed,
+            // inform_when_rtk_installed) to a mode via
+            // `crate::config::settings::compute_rtk_startup_mode`:
+            //   - prompt-enable: rtk found AND inject_rtk_hook=false AND
+            //       rtk_prompt_dismissed=false AND inform_when_rtk_installed=true.
+            //       The banner is opt-in (issue #426): default-false inform means
+            //       no banner unless the user enabled it in Settings.
+            //   - active: rtk found AND inject_rtk_hook=true. Emits mode="active"
+            //       plus an active-recovery ON-sweep (idempotent).
+            //   - auto-disabled: rtk missing AND inject_rtk_hook=true. Persists
+            //       inject_rtk_hook=false (write lock held through save: grinch
+            //       H4 + N1); sweeps with enabled=false (RtkSweepLock held: grinch
+            //       M8); emits mode="auto-disabled".
+            //   - silent: everything else (frontend treats as no-op).
             // Detached so the rest of setup is not blocked by disk I/O.
             {
                 let app_handle_for_rtk = app.handle().clone();
@@ -401,17 +406,21 @@ pub fn run() {
                     let settings_state = app_handle_for_rtk
                         .state::<crate::config::settings::SettingsState>();
 
-                    let (inject_enabled, prompt_dismissed) = {
+                    let (inject_enabled, prompt_dismissed, inform_when_installed) = {
                         let s = settings_state.read().await;
-                        (s.inject_rtk_hook, s.rtk_prompt_dismissed)
+                        (
+                            s.inject_rtk_hook,
+                            s.rtk_prompt_dismissed,
+                            s.inform_when_rtk_installed,
+                        )
                     };
 
-                    let mode: &'static str = match (rtk_present, inject_enabled, prompt_dismissed) {
-                        (true, false, false) => "prompt-enable",
-                        (true, true, _) => "active",
-                        (false, true, _) => "auto-disabled",
-                        _ => "silent",
-                    };
+                    let mode: &'static str = crate::config::settings::compute_rtk_startup_mode(
+                        rtk_present,
+                        inject_enabled,
+                        prompt_dismissed,
+                        inform_when_installed,
+                    );
 
                     // §18 — cache the boot decision BEFORE running side effects
                     // so a late-mounting banner sees the SAME mode the listener
@@ -471,11 +480,12 @@ pub fn run() {
                     );
 
                     log::info!(
-                        "[rtk-startup] mode={} rtkPresent={} injectEnabled={} promptDismissed={}",
+                        "[rtk-startup] mode={} rtkPresent={} injectEnabled={} promptDismissed={} informWhenInstalled={}",
                         mode,
                         rtk_present,
                         inject_enabled,
-                        prompt_dismissed
+                        prompt_dismissed,
+                        inform_when_installed
                     );
                 });
             }
