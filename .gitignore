@@ -19,3 +19,6 @@ _logbooks/
 CLAUDE.md
 GEMINI.md
 AGENTS.md
+
+# npm wrapper downloaded binaries
+npm/bin/

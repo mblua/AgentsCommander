@@ -37,6 +37,16 @@ const checks = [
     /(?:\r?\n)\s*"name":\s*"agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
   ),
   extract(
+    'npm/package.json:version',
+    'npm/package.json',
+    /(?:\r?\n)\s*"name":\s*"agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
+  ),
+  extract(
+    'npm/install.js:VERSION',
+    'npm/install.js',
+    /(?:\r?\n)const VERSION\s*=\s*["']([^"']+)["']/,
+  ),
+  extract(
     'package-lock.json:root.version',
     'package-lock.json',
     /(?:\r?\n)\s*"name":\s*"agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
