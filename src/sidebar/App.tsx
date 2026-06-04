@@ -109,6 +109,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
     sessionsStore.setCoordSortByActivity(appSettings.coordSortByActivity ?? false);
+    sessionsStore.setAlwaysShowSelectedWorkgroup(appSettings.alwaysShowSelectedWorkgroup ?? true);
     // Apply sidebar style from settings (remap removed themes to default)
     const style = appSettings.sidebarStyle;
     const removedThemes = ["classic", "signal-grid"];

@@ -178,6 +178,7 @@ export interface AppSettings {
   sidebarStyle: string;
   onboardingDismissed: boolean;
   coordSortByActivity: boolean;
+  alwaysShowSelectedWorkgroup?: boolean;
   injectRtkHook: boolean;
   rtkPromptDismissed: boolean;
   autoGenerateTaskTitle: boolean;
@@ -217,6 +218,7 @@ export interface SessionsState {
   teamFilter: string | null;
   showInactive: boolean;
   showCategories: boolean;
+  alwaysShowSelectedWorkgroup: boolean;
   repos: RepoMatch[];
   coordSortByActivity: boolean;
   lastActivityBySessionId: Record<string, number>;

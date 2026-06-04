@@ -842,7 +842,7 @@ const ProjectPanel: Component = () => {
                   const [selectedCollapsed, setSelectedCollapsed] = createSignal(false);
 
                   return (
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories || sessionsStore.alwaysShowSelectedWorkgroup}>
                       <div class="ac-wg-group">
                         <div
                           class="ac-wg-header ac-wg-header--collapsible"
