@@ -417,7 +417,8 @@ const ProjectPanel: Component = () => {
               }
             }
           }
-          return prev === undefined ? null : prev;
+          if (!prev) return null;
+            return proj.workgroups.find(w => w.name === prev.name) ?? null;
         });
 
         const handleRemoveProject = () => {
