@@ -1,5 +1,5 @@
 {
-  "name": "agentscommander",
+  "name": "@mblua/agentscommander",
   "version": "0.8.50",
   "description": "AgentsCommander terminal session manager",
   "bin": {
