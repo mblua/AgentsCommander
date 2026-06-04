@@ -40,6 +40,12 @@ npm install -g agentscommander
 
 The npm package downloads the matching executable for your platform from the GitHub release.
 
+If npm rejects the unscoped package name in your registry/account, install the scoped package instead:
+
+```bash
+npm install -g @mblua/agentscommander
+```
+
 ## The 30-second pitch
 
 - **Pick the coding agent per role.** Claude Code on architecture, Codex on dev, Gemini on review, or any mix. Each runs in its own real terminal with a full PTY, not a command runner.

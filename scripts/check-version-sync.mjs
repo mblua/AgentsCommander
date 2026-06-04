@@ -39,7 +39,7 @@ const checks = [
   extract(
     'npm/package.json:version',
     'npm/package.json',
-    /(?:\r?\n)\s*"name":\s*"agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
+    /(?:\r?\n)\s*"name":\s*"@mblua\/agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
   ),
   extract(
     'npm/install.js:VERSION',
