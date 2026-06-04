@@ -407,7 +407,18 @@ const ProjectPanel: Component = () => {
         const selectedCoordinatorItem = createMemo(() =>
           coordinatorItems().find((item) => replicaSession(item.wg, item.replica)?.id === sessionsStore.activeId) ?? null
         );
-        const selectedWorkgroup = createMemo(() => selectedCoordinatorItem()?.wg ?? null);
+        const selectedWorkgroup = createMemo(() => {
+          const coord = selectedCoordinatorItem();
+          if (coord) return coord.wg;
+          for (const wg of proj.workgroups) {
+            for (const replica of wg.agents) {
+              if (replicaSession(wg, replica)?.id === sessionsStore.activeId) {
+                return wg;
+              }
+            }
+          }
+          return null;
+        });
 
         const handleRemoveProject = () => {
           setShowCtxMenu(false);
@@ -845,11 +856,10 @@ const ProjectPanel: Component = () => {
                           <span class="ac-team-count">{selectedWorkgroup() ? 1 : 0}</span>
                         </div>
                         <Show when={!selectedCollapsed()}>
-                          <Show
-                            when={selectedWorkgroup()}
-                            fallback={<div class="ac-empty-hint">No selected workgroup</div>}
-                          >
-                            {(wg) => renderWorkgroupSubgroup(wg())}
+                          <Show when={selectedWorkgroup()} fallback={<div class="ac-empty-hint">No selected workgroup</div>}>
+                            <For each={[selectedWorkgroup()!]}>
+                              {(wg) => renderWorkgroupSubgroup(wg)}
+                            </For>
                           </Show>
                         </Show>
                       </div>
