@@ -234,6 +234,13 @@ const ActionBar: Component = () => {
           >
             &#x1F441;
           </button>
+          <button
+            class={`toolbar-gear-btn show-categories-btn ${sessionsStore.alwaysShowSelectedWorkgroup ? "active" : ""}`}
+            onClick={() => sessionsStore.toggleAlwaysShowSelectedWorkgroup()}
+            title={sessionsStore.alwaysShowSelectedWorkgroup ? "Don't force 'Selected Workgroup' visible" : "Always show 'Selected Workgroup'"}
+          >
+            &#x1F4CC;
+          </button>
           <button class="toolbar-gear-btn" onClick={() => GuideAPI.open()} title="Hints">
             &#x1F4A1;
           </button>

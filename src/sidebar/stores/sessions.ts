@@ -16,6 +16,7 @@ const [state, setState] = createStore<SessionsState>({
   teamFilter: null,
   showInactive: false,
   showCategories: true,
+  alwaysShowSelectedWorkgroup: true,
   repos: [],
   coordSortByActivity: false,
   lastActivityBySessionId: {},
@@ -266,6 +267,9 @@ export const sessionsStore = {
   get showCategories() {
     return state.showCategories;
   },
+  get alwaysShowSelectedWorkgroup() {
+    return state.alwaysShowSelectedWorkgroup;
+  },
   get repos() {
     return state.repos;
   },
@@ -369,6 +373,23 @@ export const sessionsStore = {
     setState("showCategories", !state.showCategories);
   },
 
+  async toggleAlwaysShowSelectedWorkgroup() {
+    if (toggleInFlight()) return;
+    setToggleInFlight(true);
+    const next = !state.alwaysShowSelectedWorkgroup;
+    setState("alwaysShowSelectedWorkgroup", next);
+    try {
+      const current = await SettingsAPI.get();
+      await SettingsAPI.update({ ...current, alwaysShowSelectedWorkgroup: next });
+      void settingsStore.refresh();
+    } catch (e) {
+      console.error("[always-show-wg] Failed to persist alwaysShowSelectedWorkgroup:", e);
+      setState("alwaysShowSelectedWorkgroup", !next);
+    } finally {
+      setToggleInFlight(false);
+    }
+  },
+
   get coordSortByActivity() {
     return state.coordSortByActivity;
   },
@@ -380,6 +401,10 @@ export const sessionsStore = {
   },
   get toggleInFlight() {
     return toggleInFlight();
+  },
+
+  setAlwaysShowSelectedWorkgroup(value: boolean) {
+    setState("alwaysShowSelectedWorkgroup", value);
   },
 
   setCoordSortByActivity(value: boolean) {
