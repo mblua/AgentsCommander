@@ -30,12 +30,13 @@ Claude Code's Bash tool emits the full command output back into the model's cont
 
 On every AC startup AC probes `PATH` for the `rtk` binary and runs one of these branches (`src-tauri/src/lib.rs:382-473`):
 
-| `rtk` on PATH? | `injectRtkHook` setting | `rtkPromptDismissed` | Behavior |
-|---|---|---|---|
-| Yes | `false` | `false` | Emits `rtk_startup_status mode=prompt-enable` — the sidebar banner offers to enable injection. |
-| Yes | `true` | any | Mode `active`. Sweeps every managed agent dir and (re)writes the `.claude/settings.local.json` inside each managed agent directory with the RTK `PreToolUse` hook. |
-| No | `true` | any | Mode `auto-disabled`. Persists `injectRtkHook=false`, then sweeps to remove any stale hooks. |
-| No | `false` | any | Mode `silent`. No-op. |
+| `rtk` on PATH? | `injectRtkHook` setting | `rtkPromptEnabled` | `rtkPromptDismissed` | Behavior |
+|---|---:|---:|---:|---|
+| Yes | `false` | `true` | `false` | Emits `rtk_startup_status mode=prompt-enable`; the main-window banner offers to enable injection. |
+| Yes | `false` | `false` | any | Mode `silent`; the prompt is hidden by default. |
+| Yes | `true` | any | any | Mode `active`. Sweeps every managed agent dir and (re)writes the `.claude/settings.local.json` inside each managed agent directory with the RTK `PreToolUse` hook. |
+| No | `true` | any | any | Mode `auto-disabled`. Persists `injectRtkHook=false`, then sweeps to remove any stale hooks. |
+| No | `false` | any | any | Mode `silent`. No-op. |
 
 The sweep loop is idempotent and serialized under an internal lock so concurrent settings updates cannot race against it.
 

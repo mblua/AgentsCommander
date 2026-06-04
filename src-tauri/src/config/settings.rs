@@ -253,6 +253,12 @@ pub struct AppSettings {
     /// ask again]` button on the banner. See issue #120.
     #[serde(default)]
     pub rtk_prompt_dismissed: bool,
+    /// When true, allow the startup banner offering to enable RTK hook injection.
+    /// Defaults off so the RTK prompt is hidden unless manually enabled in
+    /// settings.json. This does not control actual hook injection; that remains
+    /// `inject_rtk_hook`.
+    #[serde(default)]
+    pub rtk_prompt_enabled: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
     /// agent to add a YAML frontmatter `title:` line to its workgroup
     /// `TASK.md` (only if the brief is non-empty and has no `title:` yet).
@@ -270,6 +276,10 @@ pub struct AppSettings {
     /// the legacy light-mode behavior. Issue #289.
     #[serde(default = "default_true")]
     pub theme_light: bool,
+    /// When true, show the Hints toolbar button. Defaults off because this is an
+    /// opt-in feature enabled manually from settings.json.
+    #[serde(default)]
+    pub hints_enabled: bool,
     /// When true, show the Spec Board toolbar button. Defaults off because the
     /// board is an opt-in feature enabled manually from settings.json.
     #[serde(default)]
@@ -380,9 +390,11 @@ impl Default for AppSettings {
             log_level: None,
             inject_rtk_hook: false,
             rtk_prompt_dismissed: false,
+            rtk_prompt_enabled: false,
             auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: true,
+            hints_enabled: false,
             spec_board_enabled: false,
         }
     }
@@ -1106,6 +1118,22 @@ mod tests {
     }
 
     #[test]
+    fn hints_enabled_round_trips_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(!s.hints_enabled);
+        let default_json = serde_json::to_string(&s).expect("serialize default");
+        assert!(default_json.contains("\"hintsEnabled\":false"));
+
+        s.hints_enabled = true;
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"hintsEnabled\":true"));
+
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.hints_enabled);
+    }
+
+    #[test]
     fn coord_sort_by_activity_round_trips_through_serde() {
         let mut s = AppSettings::default();
         assert!(!s.coord_sort_by_activity);
@@ -1304,6 +1332,22 @@ mod tests {
         assert!(back.rtk_prompt_dismissed);
     }
 
+    #[test]
+    fn rtk_prompt_enabled_round_trips_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(!s.rtk_prompt_enabled);
+        let default_json = serde_json::to_string(&s).expect("serialize default");
+        assert!(default_json.contains("\"rtkPromptEnabled\":false"));
+
+        s.rtk_prompt_enabled = true;
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"rtkPromptEnabled\":true"));
+
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.rtk_prompt_enabled);
+    }
+
     // ── Issue #248 — legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
     //
     // The minimal JSON below carries the three fields without serde defaults
@@ -1433,5 +1477,31 @@ mod tests {
 
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(!s.spec_board_enabled);
+    }
+
+    #[test]
+    fn hints_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(!s.hints_enabled);
+    }
+
+    #[test]
+    fn rtk_prompt_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(!s.rtk_prompt_enabled);
     }
 }

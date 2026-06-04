@@ -18,7 +18,7 @@ See [Portable instances](../features/portable-instances.md) for the rule.
 
 - The file is **JSON** (not JSONC, not YAML). Comments are not allowed.
 - AC reads at startup and on `update_settings` IPC calls.
-- If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
+- If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, `hintsEnabled`, and `rtkPromptEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
 - AC tolerates unknown fields (`serde` skips them) so adding a field will not break an older binary, but the older binary will not honor it.
 
 ## Example
@@ -60,7 +60,9 @@ A minimal `settings.json`:
   "voiceAutoExecute": true,
   "voiceAutoExecuteDelay": 15,
   "themeLight": false,
-  "specBoardEnabled": false
+  "hintsEnabled": false,
+  "specBoardEnabled": false,
+  "rtkPromptEnabled": false
 }
 ```
 
@@ -109,6 +111,7 @@ A minimal `settings.json`:
 | `mainZoom` / `terminalZoom` / `sidebarZoom` / `guideZoom` | number | `1.0` | Per-window zoom (1.0 = 100%). |
 | `mainGeometry` / `sidebarGeometry` / `terminalGeometry` | object \| null | `null` | Persisted window geometry. AC writes these on close. |
 | `themeLight` | bool | `true` | Light theme on; dark theme when false. |
+| `hintsEnabled` | bool | `false` | Shows the Hints toolbar button when true. This only controls the sidebar toolbar entrypoint; backend guide commands remain callable and this is not an access-control or security boundary. |
 | `specBoardEnabled` | bool | `false` | Shows the Spec Board toolbar button when true. This only controls the sidebar toolbar entrypoint; backend Spec Board commands remain callable and this is not an access-control or security boundary. |
 | `sidebarStyle` | string | `"noir-minimal"` | Sidebar visual variant. Options: `noir-minimal`, `card-sections`, `command-center`, `deep-space`, `arctic-ops`, `obsidian-mesh`, `neon-circuit`. |
 | `soundsEnabled` | bool | `true` | Master switch for all app-emitted sounds. |
@@ -154,7 +157,8 @@ See [Telegram bridge setup](../integrations/telegram.md).
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `injectRtkHook` | bool | `false` | Inject the RTK `PreToolUse` hook into every managed agent's `.claude/settings.local.json` at startup. |
-| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected — enable hook injection?" banner for the lifetime of this settings file. |
+| `rtkPromptEnabled` | bool | `false` | Allow the startup "RTK detected, enable hook injection?" banner when RTK is on PATH, `injectRtkHook` is false, and `rtkPromptDismissed` is false. |
+| `rtkPromptDismissed` | bool | `false` | Suppress the startup RTK enablement banner for the lifetime of this settings file. Only matters when `rtkPromptEnabled` is true. |
 
 See [RTK integration](../features/rtk-integration.md).
 

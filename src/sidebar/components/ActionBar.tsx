@@ -234,9 +234,11 @@ const ActionBar: Component = () => {
           >
             &#x1F441;
           </button>
-          <button class="toolbar-gear-btn" onClick={() => GuideAPI.open()} title="Hints">
-            &#x1F4A1;
-          </button>
+          <Show when={settingsStore.current?.hintsEnabled === true}>
+            <button class="toolbar-gear-btn" onClick={() => GuideAPI.open()} title="Hints">
+              &#x1F4A1;
+            </button>
+          </Show>
           <button
             class="toolbar-gear-btn"
             disabled={!settingsStore.current}

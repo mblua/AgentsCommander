@@ -156,6 +156,25 @@ pub(crate) fn should_auto_create_root_agent_on_first_restore(
     commands::session::resolve_root_agent_command(settings, None, last_coding_agent).is_ok()
 }
 
+pub(crate) fn classify_rtk_startup_mode(
+    rtk_present: bool,
+    inject_enabled: bool,
+    prompt_dismissed: bool,
+    prompt_enabled: bool,
+) -> &'static str {
+    match (
+        rtk_present,
+        inject_enabled,
+        prompt_dismissed,
+        prompt_enabled,
+    ) {
+        (true, false, false, true) => "prompt-enable",
+        (true, true, _, _) => "active",
+        (false, true, _, _) => "auto-disabled",
+        _ => "silent",
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
@@ -385,6 +404,7 @@ pub fn run() {
 
             // Issue #120 — RTK startup detection. Probes PATH for `rtk`, then:
             //   - rtk found AND inject_rtk_hook=false AND rtk_prompt_dismissed=false
+            //     AND rtk_prompt_enabled=true
             //       → emit "rtk_startup_status" with mode="prompt-enable"
             //   - rtk found AND inject_rtk_hook=true
             //       → emit mode="active" + active-recovery ON-sweep (idempotent)
@@ -408,17 +428,21 @@ pub fn run() {
                     let settings_state = app_handle_for_rtk
                         .state::<crate::config::settings::SettingsState>();
 
-                    let (inject_enabled, prompt_dismissed) = {
+                    let (inject_enabled, prompt_dismissed, prompt_enabled) = {
                         let s = settings_state.read().await;
-                        (s.inject_rtk_hook, s.rtk_prompt_dismissed)
+                        (
+                            s.inject_rtk_hook,
+                            s.rtk_prompt_dismissed,
+                            s.rtk_prompt_enabled,
+                        )
                     };
 
-                    let mode: &'static str = match (rtk_present, inject_enabled, prompt_dismissed) {
-                        (true, false, false) => "prompt-enable",
-                        (true, true, _) => "active",
-                        (false, true, _) => "auto-disabled",
-                        _ => "silent",
-                    };
+                    let mode = classify_rtk_startup_mode(
+                        rtk_present,
+                        inject_enabled,
+                        prompt_dismissed,
+                        prompt_enabled,
+                    );
 
                     // §18 — cache the boot decision BEFORE running side effects
                     // so a late-mounting banner sees the SAME mode the listener
@@ -478,11 +502,12 @@ pub fn run() {
                     );
 
                     log::info!(
-                        "[rtk-startup] mode={} rtkPresent={} injectEnabled={} promptDismissed={}",
+                        "[rtk-startup] mode={} rtkPresent={} injectEnabled={} promptDismissed={} promptEnabled={}",
                         mode,
                         rtk_present,
                         inject_enabled,
-                        prompt_dismissed
+                        prompt_dismissed,
+                        prompt_enabled
                     );
                 });
             }
@@ -1482,8 +1507,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_auto_create_root_agent_on_first_restore, should_wake_on_restore,
-        should_wake_root_agent_on_restore,
+        classify_rtk_startup_mode, should_auto_create_root_agent_on_first_restore,
+        should_wake_on_restore, should_wake_root_agent_on_restore,
     };
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
@@ -1500,6 +1525,56 @@ mod tests {
             }],
             ..AppSettings::default()
         }
+    }
+
+    #[test]
+    fn rtk_prompt_gate_false_suppresses_prompt_enable() {
+        assert_eq!(
+            classify_rtk_startup_mode(true, false, false, false),
+            "silent"
+        );
+    }
+
+    #[test]
+    fn rtk_prompt_gate_true_allows_prompt_enable() {
+        assert_eq!(
+            classify_rtk_startup_mode(true, false, false, true),
+            "prompt-enable"
+        );
+    }
+
+    #[test]
+    fn rtk_prompt_dismissed_still_suppresses_prompt_enable() {
+        assert_eq!(classify_rtk_startup_mode(true, false, true, true), "silent");
+    }
+
+    #[test]
+    fn rtk_active_hook_remains_active_regardless_of_prompt_gate() {
+        assert_eq!(
+            classify_rtk_startup_mode(true, true, false, false),
+            "active"
+        );
+        assert_eq!(classify_rtk_startup_mode(true, true, true, true), "active");
+    }
+
+    #[test]
+    fn rtk_auto_disabled_warning_remains_ungated() {
+        assert_eq!(
+            classify_rtk_startup_mode(false, true, false, false),
+            "auto-disabled"
+        );
+        assert_eq!(
+            classify_rtk_startup_mode(false, true, true, true),
+            "auto-disabled"
+        );
+    }
+
+    #[test]
+    fn rtk_missing_and_not_injected_stays_silent() {
+        assert_eq!(
+            classify_rtk_startup_mode(false, false, false, true),
+            "silent"
+        );
     }
 
     #[test]

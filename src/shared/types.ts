@@ -180,9 +180,11 @@ export interface AppSettings {
   coordSortByActivity: boolean;
   injectRtkHook: boolean;
   rtkPromptDismissed: boolean;
+  rtkPromptEnabled: boolean;
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
+  hintsEnabled: boolean;
   specBoardEnabled: boolean;
 }
 
