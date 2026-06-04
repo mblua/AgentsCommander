@@ -407,7 +407,7 @@ const ProjectPanel: Component = () => {
         const selectedCoordinatorItem = createMemo(() =>
           coordinatorItems().find((item) => replicaSession(item.wg, item.replica)?.id === sessionsStore.activeId) ?? null
         );
-        const selectedWorkgroup = createMemo(() => {
+        const selectedWorkgroup = createMemo<AcWorkgroup | null>((prev) => {
           const coord = selectedCoordinatorItem();
           if (coord) return coord.wg;
           for (const wg of proj.workgroups) {
@@ -417,7 +417,7 @@ const ProjectPanel: Component = () => {
               }
             }
           }
-          return null;
+          return prev === undefined ? null : prev;
         });
 
         const handleRemoveProject = () => {
