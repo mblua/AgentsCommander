@@ -1,0 +1,22 @@
+{
+  "name": "agentscommander",
+  "version": "0.8.50",
+  "description": "AgentsCommander terminal session manager",
+  "bin": {
+    "agentscommander": "run.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "run.js",
+    "install.js"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mblua/AgentsCommander.git"
+  }
+}

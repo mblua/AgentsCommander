@@ -21,12 +21,24 @@
 <p align="center">
   <a href="https://github.com/mblua/AgentsCommander/releases/latest"><b>⬇ Download (latest release)</b></a>
   &nbsp;·&nbsp;
+  <a href="#installation"><b>npm install</b></a>
+  &nbsp;·&nbsp;
   <a href="#60-second-quickstart"><b>▶ 60-second quickstart</b></a>
   &nbsp;·&nbsp;
   <a href="docs/quickstart.md"><b>Quickstart</b></a>
 </p>
 
 ---
+
+## Installation
+
+Install AgentsCommander globally via npm:
+
+```bash
+npm install -g agentscommander
+```
+
+The npm package downloads the matching executable for your platform from the GitHub release.
 
 ## The 30-second pitch
 
