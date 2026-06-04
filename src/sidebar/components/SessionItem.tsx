@@ -10,6 +10,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
+import { TelegramIcon } from "./TelegramIcon";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -413,9 +414,7 @@ const SessionItem: Component<{
           onClick={handleTelegramClick}
           title={bridge() ? "Detach Telegram" : "Attach Telegram"}
           style={bridge() ? { color: bridge()!.color } : {}}
-        >
-          T
-        </button>
+        ><TelegramIcon /></button>
         <Show when={showBotMenu()}>
           <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
             <For each={availableBots()}>

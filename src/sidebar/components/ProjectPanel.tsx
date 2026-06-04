@@ -16,6 +16,7 @@ import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
 import AgentPickerModal from "./AgentPickerModal";
 import EditTeamModal from "./EditTeamModal";
+import { TelegramIcon } from "./TelegramIcon";
 
 interface PendingLaunch {
   path: string;
@@ -669,7 +670,7 @@ const ProjectPanel: Component = () => {
                   onClick={handleTelegramClick}
                   title={bridge() ? "Detach Telegram" : "Attach Telegram"}
                   style={bridge() ? { color: bridge()!.color } : {}}
-                >T</button>
+                ><TelegramIcon /></button>
                 <Show when={showBotMenu()}>
                   <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
                     <For each={availableBots()}>
