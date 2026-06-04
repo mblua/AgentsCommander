@@ -16,6 +16,7 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
 import AgentPickerModal from "./AgentPickerModal";
 import { rootAgentCodingAgentAction } from "./root-agent-action";
+import { TelegramIcon } from "./TelegramIcon";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -506,9 +507,7 @@ const RootAgentBanner: Component = () => {
               onClick={handleTelegramClick}
               title={bridge() ? "Detach Telegram" : "Attach Telegram"}
               style={bridge() ? { color: bridge()!.color } : {}}
-            >
-              T
-            </button>
+            ><TelegramIcon /></button>
             <Show when={showBotMenu()}>
               <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
                 <For each={availableBots()}>

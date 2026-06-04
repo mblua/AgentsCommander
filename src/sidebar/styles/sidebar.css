@@ -1479,10 +1479,7 @@ html.light-theme .root-agent-avatar {
   background: transparent;
   color: var(--sidebar-fg-dim);
   cursor: pointer;
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 700;
-  flex-shrink: 0;
+  border-radius: var(--radius-sm);  flex-shrink: 0;
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
@@ -1499,6 +1496,12 @@ html.light-theme .root-agent-avatar {
   color: #0088cc;
 }
 
+
+.session-item-telegram svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
 /* Bot selection dropdown on session item */
 .session-item-bot-menu {
   position: absolute;
