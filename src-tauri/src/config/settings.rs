@@ -237,6 +237,8 @@ pub struct AppSettings {
     /// Per-session timestamps live in the frontend store and are NOT persisted.
     #[serde(default)]
     pub coord_sort_by_activity: bool,
+    #[serde(default = "default_true")]
+    pub always_show_selected_workgroup: bool,
     /// Optional logger filter expression. Applied at startup if `RUST_LOG` is unset.
     /// Uses standard `env_logger` filter syntax (e.g. `info,agentscommander_lib::config::teams=trace`).
     /// Phase 1 of #93 — settings-level control with `RUST_LOG` env override (backwards-compat).
@@ -377,6 +379,7 @@ impl Default for AppSettings {
             root_token: None,
             onboarding_dismissed: false,
             coord_sort_by_activity: false,
+            always_show_selected_workgroup: true,
             log_level: None,
             inject_rtk_hook: false,
             rtk_prompt_dismissed: false,
