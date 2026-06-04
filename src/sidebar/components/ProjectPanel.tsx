@@ -407,7 +407,18 @@ const ProjectPanel: Component = () => {
         const selectedCoordinatorItem = createMemo(() =>
           coordinatorItems().find((item) => replicaSession(item.wg, item.replica)?.id === sessionsStore.activeId) ?? null
         );
-        const selectedWorkgroup = createMemo(() => selectedCoordinatorItem()?.wg ?? null);
+        const selectedWorkgroup = createMemo(() => {
+          const coord = selectedCoordinatorItem();
+          if (coord) return coord.wg;
+          for (const wg of proj.workgroups) {
+            for (const replica of wg.agents) {
+              if (replicaSession(wg, replica)?.id === sessionsStore.activeId) {
+                return wg;
+              }
+            }
+          }
+          return null;
+        });
 
         const handleRemoveProject = () => {
           setShowCtxMenu(false);
