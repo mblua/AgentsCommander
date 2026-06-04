@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { UnlistenFn } from "../../shared/transport";
-import { ProjectAPI, GuideAPI, SettingsAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
+import { ProjectAPI, GuideAPI, SettingsAPI, SpecBoardAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import { setSoundsEnabled } from "../../shared/sound";
 import { homeStore } from "../../main/stores/home";
@@ -195,6 +195,12 @@ const ActionBar: Component = () => {
           </Show>
         </div>
         <div class="action-bar-icons">
+          <Show when={settingsStore.current?.specBoardEnabled === true}>
+            <button class="toolbar-gear-btn" onClick={() => SpecBoardAPI.open()} title="Spec board">
+              &#x25A7;
+            </button>
+          </Show>
+
           <button
             class={`toolbar-gear-btn home-toggle-btn ${homeStore.visible ? "active" : ""}`}
             onClick={() => homeStore.toggle()}

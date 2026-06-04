@@ -4,6 +4,7 @@ import { isTauri } from "./shared/platform";
 import TerminalApp from "./terminal/App";
 import GuideApp from "./guide/App";
 import BrowserApp from "./browser/App";
+import SpecBoardApp from "./spec-board/App";
 import MainApp from "./main/App";
 
 const params = new URLSearchParams(window.location.search);
@@ -36,6 +37,8 @@ if (!isTauri) {
   );
 } else if (windowType === "guide") {
   render(() => <GuideApp />, root);
+} else if (windowType === "spec-board") {
+  render(() => <SpecBoardApp />, root);
 } else {
   // "main", legacy "sidebar", legacy non-detached "terminal", or no param →
   // unified MainApp.

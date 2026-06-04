@@ -18,7 +18,7 @@ use crate::session::manager::SessionManager;
 
 /// Locks the producer to the four-variant promise so the wire shape can't drift.
 /// Lowercase JSON matches the TS literal union in `src/shared/types.ts`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
     Windows,
@@ -27,18 +27,25 @@ pub enum Platform {
     Other,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockerReport {
     pub workgroup: String,
     pub platform: Platform,
     pub diagnostic_available: bool,
+    pub restart_manager_available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart_manager_error: Option<DiagnosticError>,
     pub raw_os_error: String,
+    pub raw_delete_error: String,
+    pub live_sessions: Vec<BlockerSession>,
+    pub exited_session_records_ignored: Vec<IgnoredSessionRecord>,
+    pub external_processes: Vec<BlockerProcess>,
     pub sessions: Vec<BlockerSession>,
     pub processes: Vec<BlockerProcess>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockerSession {
     pub session_id: String,
@@ -48,7 +55,27 @@ pub struct BlockerSession {
     pub cwd: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IgnoredSessionRecord {
+    pub session_id: String,
+    pub agent_name: String,
+    pub cwd: String,
+    pub status: String,
+    pub waiting_for_input: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticError {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meaning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockerProcess {
     pub pid: u32,
@@ -61,9 +88,53 @@ pub struct BlockerProcess {
     pub files: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+struct AcSessionScan {
+    live_sessions: Vec<BlockerSession>,
+    exited_session_records_ignored: Vec<IgnoredSessionRecord>,
+}
+
+#[derive(Debug, Default)]
+struct ExternalProcessScan {
+    processes: Vec<BlockerProcess>,
+    restart_manager_available: bool,
+    restart_manager_error: Option<DiagnosticError>,
+    cwd_scan_error: Option<DiagnosticError>,
+}
+
 const MAX_FILES_PER_PROCESS: usize = 5;
 #[cfg(windows)]
 const MAX_FILES_TO_PROBE: usize = 200;
+
+fn win32_meaning(code: u32) -> &'static str {
+    match code {
+        2 => "File not found",
+        5 => "Access denied",
+        32 => "Sharing violation",
+        33 => "Lock violation",
+        87 => "Invalid parameter",
+        234 => "More data available",
+        1224 => "User mapped file",
+        _ => "Unknown Win32 error",
+    }
+}
+
+fn win32_error(context: &str, code: u32) -> DiagnosticError {
+    let meaning = win32_meaning(code);
+    DiagnosticError {
+        message: format!("{}: WIN32_ERROR={} ({})", context, code, meaning),
+        code: Some(code),
+        meaning: Some(meaning.to_string()),
+    }
+}
+
+fn diagnostic_error(message: impl Into<String>) -> DiagnosticError {
+    DiagnosticError {
+        message: message.into(),
+        code: None,
+        meaning: None,
+    }
+}
 
 /// Top-level diagnostic. Always returns a `BlockerReport`; on non-Windows the body is empty
 /// and `diagnostic_available = false`.
@@ -79,7 +150,7 @@ pub async fn diagnose_blockers(
     );
     let canonical_wg = canonicalize_for_compare(wg_dir);
 
-    let sessions = scan_ac_sessions(&canonical_wg, session_mgr).await;
+    let ac_scan = scan_ac_sessions(&canonical_wg, session_mgr).await;
 
     // The Windows scan is fully synchronous (FFI + file-tree walk). We expect ~1 s
     // wall-time post-failure; running it on the current Tokio worker would block
@@ -88,49 +159,102 @@ pub async fn diagnose_blockers(
     // scan failure and falls through to the `diagnostic_available = false` path —
     // matches the FFI-error branch.
     #[cfg(windows)]
-    let (processes, diagnostic_available) = {
+    let external_scan = {
         let wg_for_scan = canonical_wg.clone();
         match tokio::task::spawn_blocking(move || scan_external_processes_windows(&wg_for_scan))
             .await
         {
-            Ok(Ok(p)) => (p, true),
-            Ok(Err(e)) => {
-                log::warn!("[wg_delete_diagnostic] external process scan failed: {}", e);
-                (Vec::new(), false)
-            }
+            Ok(scan) => scan,
             Err(join_err) => {
                 log::warn!(
                     "[wg_delete_diagnostic] external process scan join failed: {}",
                     join_err
                 );
-                (Vec::new(), false)
+                ExternalProcessScan {
+                    processes: Vec::new(),
+                    restart_manager_available: false,
+                    restart_manager_error: Some(diagnostic_error(format!(
+                        "external process scan join failed: {}",
+                        join_err
+                    ))),
+                    cwd_scan_error: None,
+                }
             }
         }
     };
 
     #[cfg(not(windows))]
-    let (processes, diagnostic_available) = {
+    let external_scan = {
         let _ = canonical_wg;
-        (Vec::<BlockerProcess>::new(), false)
+        ExternalProcessScan {
+            processes: Vec::new(),
+            restart_manager_available: false,
+            restart_manager_error: None,
+            cwd_scan_error: None,
+        }
     };
 
-    let report = BlockerReport {
-        workgroup: workgroup_name.to_string(),
-        platform: detect_platform(),
-        diagnostic_available,
-        raw_os_error: raw_os_error.to_string(),
-        sessions,
-        processes,
-    };
+    let report = build_blocker_report(
+        workgroup_name,
+        detect_platform(),
+        raw_os_error,
+        ac_scan,
+        external_scan,
+    );
 
     log::info!(
-        "[wg_delete_diagnostic] diagnostic done: {} sessions, {} processes, available={}",
-        report.sessions.len(),
-        report.processes.len(),
-        report.diagnostic_available
+        "[wg_delete_diagnostic] diagnostic done: live_sessions={}, exited_session_records_ignored={}, external_processes={}, restart_manager_available={}, restart_manager_error={}, raw_delete_error={}",
+        report.live_sessions.len(),
+        report.exited_session_records_ignored.len(),
+        report.external_processes.len(),
+        report.restart_manager_available,
+        report
+            .restart_manager_error
+            .as_ref()
+            .map(|e| e.message.as_str())
+            .unwrap_or("none"),
+        report.raw_delete_error
     );
 
     report
+}
+
+fn build_blocker_report(
+    workgroup_name: &str,
+    platform: Platform,
+    raw_os_error: &str,
+    ac_scan: AcSessionScan,
+    external_scan: ExternalProcessScan,
+) -> BlockerReport {
+    let live_sessions = ac_scan.live_sessions;
+    let ignored = ac_scan.exited_session_records_ignored;
+    let external_processes = external_scan.processes;
+    let diagnostic_available = matches!(platform, Platform::Windows)
+        && (external_scan.restart_manager_available || !external_processes.is_empty());
+    let sessions = live_sessions.clone();
+    let processes = external_processes.clone();
+
+    if let Some(cwd_err) = external_scan.cwd_scan_error.as_ref() {
+        log::warn!(
+            "[wg_delete_diagnostic] CWD fallback scan failed: {}",
+            cwd_err.message
+        );
+    }
+
+    BlockerReport {
+        workgroup: workgroup_name.to_string(),
+        platform,
+        diagnostic_available,
+        restart_manager_available: external_scan.restart_manager_available,
+        restart_manager_error: external_scan.restart_manager_error,
+        raw_os_error: raw_os_error.to_string(),
+        raw_delete_error: raw_os_error.to_string(),
+        live_sessions,
+        exited_session_records_ignored: ignored,
+        external_processes,
+        sessions,
+        processes,
+    }
 }
 
 fn detect_platform() -> Platform {
@@ -301,55 +425,92 @@ fn collect_files_to_probe(wg_dir: &Path) -> Vec<PathBuf> {
 async fn scan_ac_sessions(
     canonical_wg: &Path,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
-) -> Vec<BlockerSession> {
-    let mgr = session_mgr.read().await;
-    let sessions = mgr.list_sessions().await;
-    drop(mgr);
+) -> AcSessionScan {
+    use crate::session::session::{is_live_session_record, SessionStatus};
 
-    sessions
-        .into_iter()
-        .filter_map(|s| {
-            let cwd_canon = canonicalize_for_compare(Path::new(&s.working_directory));
-            if !cwd_canon.starts_with(canonical_wg) {
-                return None;
-            }
-            let agent_name = crate::config::teams::agent_fqn_from_path(&s.working_directory);
-            Some(BlockerSession {
+    let mgr = {
+        let guard = session_mgr.read().await;
+        guard.clone()
+    };
+    let sessions = mgr.list_sessions().await;
+
+    let mut scan = AcSessionScan::default();
+    for s in sessions {
+        let cwd_canon = canonicalize_for_compare(Path::new(&s.working_directory));
+        if !cwd_canon.starts_with(canonical_wg) {
+            continue;
+        }
+        let agent_name = crate::config::teams::agent_fqn_from_path(&s.working_directory);
+        if is_live_session_record(!s.id.is_empty(), Some(&s.status)) {
+            scan.live_sessions.push(BlockerSession {
                 session_id: s.id,
                 agent_name,
                 cwd: s.working_directory,
-            })
-        })
-        .collect()
+            });
+            continue;
+        }
+        if matches!(&s.status, SessionStatus::Exited(_)) {
+            scan.exited_session_records_ignored
+                .push(IgnoredSessionRecord {
+                    session_id: s.id,
+                    agent_name,
+                    cwd: s.working_directory,
+                    status: format!("{:?}", s.status),
+                    waiting_for_input: s.waiting_for_input,
+                });
+        }
+    }
+    scan
 }
 
 #[cfg(windows)]
-fn scan_external_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerProcess>, String> {
+fn scan_external_processes_windows(wg_dir: &Path) -> ExternalProcessScan {
     let rm = scan_restart_manager_processes_windows(wg_dir);
-    let cwd = scan_cwd_processes_windows(wg_dir);
+    let cwd = scan_cwd_processes_windows(wg_dir).map_err(diagnostic_error);
 
     match (rm, cwd) {
-        (Ok(rm_processes), Ok(cwd_processes)) => {
-            Ok(merge_blocker_processes(rm_processes, cwd_processes))
-        }
+        (Ok(rm_processes), Ok(cwd_processes)) => ExternalProcessScan {
+            processes: merge_blocker_processes(rm_processes, cwd_processes),
+            restart_manager_available: true,
+            restart_manager_error: None,
+            cwd_scan_error: None,
+        },
         (Ok(rm_processes), Err(cwd_err)) => {
             log::warn!(
                 "[wg_delete_diagnostic] CWD fallback scan failed; preserving Restart Manager result: {}",
-                cwd_err
+                cwd_err.message
             );
-            Ok(rm_processes)
+            ExternalProcessScan {
+                processes: rm_processes,
+                restart_manager_available: true,
+                restart_manager_error: None,
+                cwd_scan_error: Some(cwd_err),
+            }
         }
         (Err(rm_err), Ok(cwd_processes)) => {
             log::warn!(
                 "[wg_delete_diagnostic] Restart Manager scan failed; preserving CWD fallback result: {}",
-                rm_err
+                rm_err.message
             );
-            Ok(cwd_processes)
+            ExternalProcessScan {
+                processes: cwd_processes,
+                restart_manager_available: false,
+                restart_manager_error: Some(rm_err),
+                cwd_scan_error: None,
+            }
         }
-        (Err(rm_err), Err(cwd_err)) => Err(format!(
-            "Restart Manager scan failed: {}; CWD fallback scan failed: {}",
-            rm_err, cwd_err
-        )),
+        (Err(rm_err), Err(cwd_err)) => {
+            log::warn!(
+                "[wg_delete_diagnostic] CWD fallback scan failed after Restart Manager failure: {}",
+                cwd_err.message
+            );
+            ExternalProcessScan {
+                processes: Vec::new(),
+                restart_manager_available: false,
+                restart_manager_error: Some(rm_err),
+                cwd_scan_error: Some(cwd_err),
+            }
+        }
     }
 }
 
@@ -402,7 +563,9 @@ fn merge_blocker_processes(
 ///    `MAX_FILES_PER_PROCESS` (5) and short-circuit once every blocker PID is
 ///    saturated.
 #[cfg(windows)]
-fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerProcess>, String> {
+fn scan_restart_manager_processes_windows(
+    wg_dir: &Path,
+) -> Result<Vec<BlockerProcess>, DiagnosticError> {
     use std::collections::{HashMap, HashSet};
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::CloseHandle;
@@ -440,18 +603,18 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
         }
     }
 
-    fn rm_start() -> Result<RmSession, String> {
+    fn rm_start() -> Result<RmSession, DiagnosticError> {
         let mut handle: u32 = 0;
         // `strSessionKey` is PWSTR (mutable). Must hold CCH_RM_SESSION_KEY+1 wide chars.
         let mut key: Vec<u16> = vec![0u16; (CCH_RM_SESSION_KEY as usize) + 1];
         let rc = unsafe { RmStartSession(&mut handle, 0, key.as_mut_ptr()) };
         if rc != ERROR_SUCCESS {
-            return Err(format!("RmStartSession failed: WIN32_ERROR={}", rc));
+            return Err(win32_error("RmStartSession failed", rc));
         }
         Ok(RmSession(handle))
     }
 
-    fn rm_register(handle: u32, wide_files: &[Vec<u16>]) -> Result<(), String> {
+    fn rm_register(handle: u32, wide_files: &[Vec<u16>]) -> Result<(), DiagnosticError> {
         if wide_files.is_empty() {
             return Ok(());
         }
@@ -469,12 +632,12 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
             )
         };
         if rc != ERROR_SUCCESS {
-            return Err(format!("RmRegisterResources failed: WIN32_ERROR={}", rc));
+            return Err(win32_error("RmRegisterResources failed", rc));
         }
         Ok(())
     }
 
-    fn rm_get_list(handle: u32) -> Result<Vec<RM_PROCESS_INFO>, String> {
+    fn rm_get_list(handle: u32) -> Result<Vec<RM_PROCESS_INFO>, DiagnosticError> {
         let mut needed: u32 = 0;
         let mut have: u32 = 0;
         let mut reasons: u32 = 0;
@@ -494,7 +657,7 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
             return Ok(Vec::new());
         }
         if rc != ERROR_MORE_DATA {
-            return Err(format!("RmGetList probe failed: WIN32_ERROR={}", rc));
+            return Err(win32_error("RmGetList probe failed", rc));
         }
 
         for _ in 0..MAX_GETLIST_RETRIES {
@@ -531,9 +694,11 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
             if rc == ERROR_MORE_DATA {
                 continue; // grow on next iteration
             }
-            return Err(format!("RmGetList read failed: WIN32_ERROR={}", rc));
+            return Err(win32_error("RmGetList read failed", rc));
         }
-        Err("RmGetList: ERROR_MORE_DATA persisted past retry budget".into())
+        Err(diagnostic_error(
+            "RmGetList: ERROR_MORE_DATA persisted past retry budget",
+        ))
     }
 
     /// `RM_PROCESS_INFO::strAppName` is a fixed `[u16; 256]` array, NUL-terminated.
@@ -572,16 +737,59 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
         a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime
     }
 
+    struct RmBulkResult {
+        blockers: Vec<RM_PROCESS_INFO>,
+        systemic_error: Option<DiagnosticError>,
+        skipped_register_failures: usize,
+        skipped_register_error_codes: Vec<Option<u32>>,
+    }
+
+    impl RmBulkResult {
+        fn empty() -> Self {
+            Self {
+                blockers: Vec::new(),
+                systemic_error: None,
+                skipped_register_failures: 0,
+                skipped_register_error_codes: Vec::new(),
+            }
+        }
+
+        fn skipped(error: &DiagnosticError) -> Self {
+            Self {
+                blockers: Vec::new(),
+                systemic_error: None,
+                skipped_register_failures: 1,
+                skipped_register_error_codes: vec![error.code],
+            }
+        }
+
+        fn systemic(error: DiagnosticError) -> Self {
+            Self {
+                blockers: Vec::new(),
+                systemic_error: Some(error),
+                skipped_register_failures: 0,
+                skipped_register_error_codes: Vec::new(),
+            }
+        }
+
+        fn merge(&mut self, other: Self) {
+            self.blockers.extend(other.blockers);
+            if self.systemic_error.is_none() {
+                self.systemic_error = other.systemic_error;
+            }
+            self.skipped_register_failures += other.skipped_register_failures;
+            self.skipped_register_error_codes
+                .extend(other.skipped_register_error_codes);
+        }
+    }
+
     /// Binary-search-fallback bulk register: try the whole batch in one session;
     /// on RmRegisterResources error, drop the session, split the batch in half,
     /// and recurse. Single-bad-file isolation at `wide.len() == 1`.
     /// Bound: O(log N + bad_files) RM sessions.
-    fn collect_blockers_tolerant(
-        wide: &[Vec<u16>],
-        original_paths: &[&PathBuf],
-    ) -> Vec<RM_PROCESS_INFO> {
+    fn collect_blockers_tolerant(wide: &[Vec<u16>], original_paths: &[&PathBuf]) -> RmBulkResult {
         if wide.is_empty() {
-            return Vec::new();
+            return RmBulkResult::empty();
         }
         let session = match rm_start() {
             Ok(s) => s,
@@ -589,34 +797,42 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
                 log::warn!(
                     "[wg_delete_diagnostic] bulk-pass RmStartSession failed (giving up on this sub-batch of {}): {}",
                     wide.len(),
-                    e
+                    e.message
                 );
-                return Vec::new();
+                return RmBulkResult::systemic(e);
             }
         };
         match rm_register(session.0, wide) {
-            Ok(()) => rm_get_list(session.0).unwrap_or_else(|e| {
-                log::warn!(
-                    "[wg_delete_diagnostic] bulk-pass RmGetList failed for sub-batch of {}: {}",
-                    wide.len(),
-                    e
-                );
-                Vec::new()
-            }),
+            Ok(()) => match rm_get_list(session.0) {
+                Ok(blockers) => RmBulkResult {
+                    blockers,
+                    systemic_error: None,
+                    skipped_register_failures: 0,
+                    skipped_register_error_codes: Vec::new(),
+                },
+                Err(e) => {
+                    log::warn!(
+                        "[wg_delete_diagnostic] bulk-pass RmGetList failed for sub-batch of {}: {}",
+                        wide.len(),
+                        e.message
+                    );
+                    RmBulkResult::systemic(e)
+                }
+            },
             Err(e) if wide.len() == 1 => {
                 log::warn!(
                     "[wg_delete_diagnostic] skipping unregisterable file '{}': {}",
                     original_paths[0].display(),
-                    e
+                    e.message
                 );
-                Vec::new()
+                RmBulkResult::skipped(&e)
             }
             Err(_) => {
                 drop(session); // release before recursing
                 let mid = wide.len() / 2;
                 let mut left = collect_blockers_tolerant(&wide[..mid], &original_paths[..mid]);
                 let right = collect_blockers_tolerant(&wide[mid..], &original_paths[mid..]);
-                left.extend(right);
+                left.merge(right);
                 left
             }
         }
@@ -639,9 +855,29 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
         .collect();
 
     // ── Phase 1: bulk pass — get the set of blocker PIDs ─────────────────────
-    let bulk_list: Vec<RM_PROCESS_INFO> = collect_blockers_tolerant(&wide_files, &alive);
+    let bulk_result = collect_blockers_tolerant(&wide_files, &alive);
+    let bulk_list: Vec<RM_PROCESS_INFO> = bulk_result.blockers;
 
     if bulk_list.is_empty() {
+        if let Some(error) = bulk_result.systemic_error {
+            return Err(error);
+        }
+        if bulk_result.skipped_register_failures > 0 {
+            log::warn!(
+                "[wg_delete_diagnostic] Restart Manager skipped {} unregisterable resources",
+                bulk_result.skipped_register_failures
+            );
+        }
+        if bulk_result.skipped_register_failures == wide_files.len()
+            && bulk_result
+                .skipped_register_error_codes
+                .iter()
+                .any(|code| *code != Some(2))
+        {
+            return Err(diagnostic_error(
+                "RmRegisterResources failed for all probed resources",
+            ));
+        }
         return Ok(Vec::new());
     }
 
@@ -695,17 +931,29 @@ fn scan_restart_manager_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPr
                 log::warn!(
                     "[wg_delete_diagnostic] per-file RmStartSession failed for {}: {}",
                     path.display(),
-                    e
+                    e.message
                 );
                 continue;
             }
         };
-        if rm_register(session.0, single).is_err() {
+        if let Err(e) = rm_register(session.0, single) {
+            log::warn!(
+                "[wg_delete_diagnostic] per-file RmRegisterResources failed for {}: {}",
+                path.display(),
+                e.message
+            );
             continue; // file vanished mid-scan or RM rejected it; non-fatal
         }
         let list = match rm_get_list(session.0) {
             Ok(l) => l,
-            Err(_) => continue,
+            Err(e) => {
+                log::warn!(
+                    "[wg_delete_diagnostic] per-file RmGetList failed for {}: {}",
+                    path.display(),
+                    e.message
+                );
+                continue;
+            }
         };
         drop(session); // explicit RmEndSession before next iteration
 
@@ -1283,12 +1531,102 @@ mod tests {
         let canonical_wg = canonicalize_for_compare(&wg_dir);
         let blockers = scan_ac_sessions(&canonical_wg, &mgr).await;
 
-        assert_eq!(blockers.len(), 1, "exactly one session inside wg_dir");
-        assert!(
-            blockers[0].cwd.contains("__agent_inside"),
-            "filtered session must be the inside one, got cwd={}",
-            blockers[0].cwd
+        assert_eq!(
+            blockers.live_sessions.len(),
+            1,
+            "exactly one session inside wg_dir"
         );
+        assert!(
+            blockers.live_sessions[0].cwd.contains("__agent_inside"),
+            "filtered session must be the inside one, got cwd={}",
+            blockers.live_sessions[0].cwd
+        );
+        assert!(blockers.exited_session_records_ignored.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scan_ac_sessions_ignores_exited_records_under_workgroup() {
+        use crate::session::manager::SessionManager;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wg_dir = tmp.path().join("wg-test");
+        let inside_session_dir = wg_dir.join("__agent_inside");
+        std::fs::create_dir_all(&inside_session_dir).expect("create inside dir");
+
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".into(),
+                vec![],
+                inside_session_dir.to_string_lossy().to_string(),
+                None,
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .expect("create inside session");
+        mgr.mark_exited(session.id, 0).await;
+        let mgr = Arc::new(tokio::sync::RwLock::new(mgr));
+
+        let canonical_wg = canonicalize_for_compare(&wg_dir);
+        let blockers = scan_ac_sessions(&canonical_wg, &mgr).await;
+
+        assert!(blockers.live_sessions.is_empty());
+        assert_eq!(blockers.exited_session_records_ignored.len(), 1);
+        let ignored = &blockers.exited_session_records_ignored[0];
+        assert_eq!(ignored.status, "Exited(0)");
+        assert!(!ignored.waiting_for_input);
+    }
+
+    #[tokio::test]
+    async fn scan_ac_sessions_splits_live_and_exited_records() {
+        use crate::session::manager::SessionManager;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wg_dir = tmp.path().join("wg-test");
+        let live_dir = wg_dir.join("__agent_live");
+        let exited_dir = wg_dir.join("__agent_exited");
+        std::fs::create_dir_all(&live_dir).expect("create live dir");
+        std::fs::create_dir_all(&exited_dir).expect("create exited dir");
+
+        let mgr = SessionManager::new();
+        let _live = mgr
+            .create_session(
+                "powershell.exe".into(),
+                vec![],
+                live_dir.to_string_lossy().to_string(),
+                None,
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .expect("create live session");
+        let exited = mgr
+            .create_session(
+                "powershell.exe".into(),
+                vec![],
+                exited_dir.to_string_lossy().to_string(),
+                None,
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .expect("create exited session");
+        mgr.mark_exited(exited.id, 0).await;
+        let mgr = Arc::new(tokio::sync::RwLock::new(mgr));
+
+        let canonical_wg = canonicalize_for_compare(&wg_dir);
+        let blockers = scan_ac_sessions(&canonical_wg, &mgr).await;
+
+        assert_eq!(blockers.live_sessions.len(), 1);
+        assert_eq!(blockers.exited_session_records_ignored.len(), 1);
+        assert!(blockers.live_sessions[0].cwd.contains("__agent_live"));
+        assert!(blockers.exited_session_records_ignored[0]
+            .cwd
+            .contains("__agent_exited"));
     }
 
     /// §7.4 (with R.1.a fix): `BlockerReport` JSON shape preserves camelCase
@@ -1299,7 +1637,32 @@ mod tests {
             workgroup: "wg-7-dev-team".into(),
             platform: Platform::Windows,
             diagnostic_available: true,
+            restart_manager_available: false,
+            restart_manager_error: Some(DiagnosticError {
+                message: "RmStartSession failed: WIN32_ERROR=5 (Access denied)".into(),
+                code: Some(5),
+                meaning: Some("Access denied".into()),
+            }),
             raw_os_error: "...".into(),
+            raw_delete_error: "... (os error 32)".into(),
+            live_sessions: vec![BlockerSession {
+                session_id: "abc".into(),
+                agent_name: "agentscommander:wg-7-dev-team/architect".into(),
+                cwd: r"C:\foo".into(),
+            }],
+            exited_session_records_ignored: vec![IgnoredSessionRecord {
+                session_id: "def".into(),
+                agent_name: "agentscommander:wg-7-dev-team/dev-rust".into(),
+                cwd: r"C:\foo\__agent_dev-rust".into(),
+                status: "Exited(0)".into(),
+                waiting_for_input: false,
+            }],
+            external_processes: vec![BlockerProcess {
+                pid: 42,
+                name: "git.exe".into(),
+                cwd: Some(r"C:\foo".into()),
+                files: vec![r"C:\foo\bar".into()],
+            }],
             sessions: vec![BlockerSession {
                 session_id: "abc".into(),
                 agent_name: "agentscommander:wg-7-dev-team/architect".into(),
@@ -1318,7 +1681,13 @@ mod tests {
             "workgroup",
             "platform",
             "diagnosticAvailable",
+            "restartManagerAvailable",
+            "restartManagerError",
             "rawOsError",
+            "rawDeleteError",
+            "liveSessions",
+            "exitedSessionRecordsIgnored",
+            "externalProcesses",
             "sessions",
             "processes",
         ] {
@@ -1331,21 +1700,32 @@ mod tests {
             "Platform enum must serialize to lowercase string"
         );
         // BlockerSession fields
-        let s = &json["sessions"][0];
+        let s = &json["liveSessions"][0];
         for k in &["sessionId", "agentName", "cwd"] {
             assert!(s.get(*k).is_some(), "missing session field: {}", k);
         }
         // BlockerProcess fields
-        let p = &json["processes"][0];
+        let p = &json["externalProcesses"][0];
         for k in &["pid", "name", "cwd", "files"] {
             assert!(p.get(*k).is_some(), "missing process field: {}", k);
+        }
+        let ignored = &json["exitedSessionRecordsIgnored"][0];
+        for k in &["sessionId", "agentName", "cwd", "status", "waitingForInput"] {
+            assert!(ignored.get(*k).is_some(), "missing ignored field: {}", k);
         }
         // Snake-case must NOT leak at the wire boundary.
         for k in &[
             "diagnostic_available",
+            "restart_manager_available",
+            "restart_manager_error",
             "raw_os_error",
+            "raw_delete_error",
+            "live_sessions",
+            "exited_session_records_ignored",
+            "external_processes",
             "session_id",
             "agent_name",
+            "waiting_for_input",
         ] {
             assert!(
                 json.get(*k).is_none(),
@@ -1360,6 +1740,142 @@ mod tests {
                 k
             );
         }
+        assert!(ignored.get("waiting_for_input").is_none());
+    }
+
+    #[test]
+    fn win32_error_formats_access_denied() {
+        let err = win32_error("RmStartSession failed", 5);
+        assert_eq!(err.code, Some(5));
+        assert_eq!(err.meaning.as_deref(), Some("Access denied"));
+        assert!(err.message.contains("WIN32_ERROR=5 (Access denied)"));
+    }
+
+    #[test]
+    fn win32_error_formats_unknown_code() {
+        let err = win32_error("RmGetList failed", 99999);
+        assert_eq!(err.code, Some(99999));
+        assert_eq!(err.meaning.as_deref(), Some("Unknown Win32 error"));
+        assert!(err
+            .message
+            .contains("WIN32_ERROR=99999 (Unknown Win32 error)"));
+    }
+
+    fn sample_live_session(name: &str) -> BlockerSession {
+        BlockerSession {
+            session_id: format!("session-{name}"),
+            agent_name: format!("agentscommander:wg-7-dev-team/{name}"),
+            cwd: format!(r"C:\work\wg-7-dev-team\__agent_{name}"),
+        }
+    }
+
+    fn sample_ignored_session(name: &str) -> IgnoredSessionRecord {
+        IgnoredSessionRecord {
+            session_id: format!("session-{name}"),
+            agent_name: format!("agentscommander:wg-7-dev-team/{name}"),
+            cwd: format!(r"C:\work\wg-7-dev-team\__agent_{name}"),
+            status: "Exited(0)".into(),
+            waiting_for_input: false,
+        }
+    }
+
+    fn sample_process(pid: u32) -> BlockerProcess {
+        BlockerProcess {
+            pid,
+            name: "powershell.exe".into(),
+            cwd: Some(r"C:\work\wg-7-dev-team".into()),
+            files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn build_blocker_report_live_and_ignored_sessions() {
+        let ac_scan = AcSessionScan {
+            live_sessions: vec![sample_live_session("dev-rust")],
+            exited_session_records_ignored: vec![sample_ignored_session("architect")],
+        };
+        let report = build_blocker_report(
+            "wg-7-dev-team",
+            Platform::Windows,
+            "sharing violation",
+            ac_scan,
+            ExternalProcessScan::default(),
+        );
+
+        assert_eq!(report.live_sessions.len(), 1);
+        assert_eq!(report.exited_session_records_ignored.len(), 1);
+        assert_eq!(report.sessions, report.live_sessions);
+        assert_eq!(report.processes, report.external_processes);
+        assert_eq!(report.raw_os_error, "sharing violation");
+        assert_eq!(report.raw_delete_error, "sharing violation");
+    }
+
+    #[test]
+    fn build_blocker_report_rm_failure_with_cwd_processes() {
+        let rm_error = win32_error("RmStartSession failed", 5);
+        let report = build_blocker_report(
+            "wg-7-dev-team",
+            Platform::Windows,
+            "sharing violation",
+            AcSessionScan::default(),
+            ExternalProcessScan {
+                processes: vec![sample_process(42)],
+                restart_manager_available: false,
+                restart_manager_error: Some(rm_error.clone()),
+                cwd_scan_error: None,
+            },
+        );
+
+        assert_eq!(report.restart_manager_error, Some(rm_error));
+        assert!(!report.restart_manager_available);
+        assert!(report.diagnostic_available);
+        assert_eq!(report.processes, report.external_processes);
+        assert_eq!(report.sessions, report.live_sessions);
+    }
+
+    #[test]
+    fn build_blocker_report_rm_failure_no_processes() {
+        let rm_error = win32_error("RmGetList probe failed", 87);
+        let report = build_blocker_report(
+            "wg-7-dev-team",
+            Platform::Windows,
+            "lock violation",
+            AcSessionScan::default(),
+            ExternalProcessScan {
+                processes: Vec::new(),
+                restart_manager_available: false,
+                restart_manager_error: Some(rm_error.clone()),
+                cwd_scan_error: None,
+            },
+        );
+
+        assert_eq!(report.restart_manager_error, Some(rm_error));
+        assert!(!report.restart_manager_available);
+        assert!(!report.diagnostic_available);
+        assert_eq!(report.raw_os_error, "lock violation");
+        assert_eq!(report.raw_delete_error, "lock violation");
+        assert_eq!(report.processes, report.external_processes);
+        assert_eq!(report.sessions, report.live_sessions);
+    }
+
+    #[test]
+    fn blocker_report_serializes_without_windows_scanner_fields_present() {
+        let report = build_blocker_report(
+            "wg-7-dev-team",
+            Platform::Linux,
+            "permission denied",
+            AcSessionScan::default(),
+            ExternalProcessScan::default(),
+        );
+
+        let json: serde_json::Value = serde_json::to_value(&report).expect("serialize");
+        assert_eq!(
+            json.get("restartManagerAvailable")
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert!(json.get("restartManagerError").is_none());
+        assert!(json.get("externalProcesses").is_some());
     }
 
     /// §7.1 (Windows variant): `is_file_in_use_error` matches `ERROR_SHARING_VIOLATION` (32).

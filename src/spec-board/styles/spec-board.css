@@ -1,0 +1,204 @@
+
+.spec-board-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: "Geist", "Outfit", "General Sans", sans-serif;
+}
+
+.spec-board-titlebar {
+  height: 30px;
+  background-color: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  user-select: none;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.spec-board-titlebar-title {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.spec-board-titlebar-controls button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 8px;
+  font-size: 14px;
+}
+.spec-board-titlebar-controls button:hover {
+  color: var(--text-primary);
+}
+
+.spec-board-toolbar {
+  display: flex;
+  padding: 8px;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  gap: 8px;
+  align-items: center;
+}
+
+.spec-board-toolbar button {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.spec-board-toolbar button:hover {
+  background-color: var(--bg-hover);
+}
+.spec-board-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.spec-board-main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.spec-board-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-color);
+  background-color: var(--bg-primary);
+}
+
+.spec-board-editor textarea {
+  flex: 1;
+  background: none;
+  color: var(--text-primary);
+  border: none;
+  padding: 10px;
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 13px;
+  resize: none;
+  outline: none;
+}
+
+.spec-board-preview {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-secondary);
+  overflow: hidden;
+  position: relative;
+  cursor: grab;
+}
+
+.spec-board-preview:active {
+  cursor: grabbing;
+}
+
+.spec-board-preview-inner {
+  transform-origin: 0 0;
+  transition: transform 0.05s linear;
+}
+
+.spec-board-footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 10px;
+  font-size: 11px;
+  background-color: var(--bg-secondary);
+  color: var(--text-muted);
+  border-top: 1px solid var(--border-color);
+}
+
+.spec-board-modal-overlay {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.spec-board-modal {
+  background: var(--bg-secondary);
+  padding: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.spec-board-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.spec-board-conflict-banner {
+  background-color: var(--color-warning, #856404);
+  color: #fff;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+}
+
+.spec-board-conflict-banner-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.spec-board-ask-agent {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  width: 300px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  z-index: 100;
+}
+
+.spec-board-ask-agent select, .spec-board-ask-agent textarea {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 6px;
+  font-size: 12px;
+}
+.spec-board-ask-agent textarea {
+  resize: none;
+  height: 80px;
+}
+.spec-board-error {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background-color: var(--color-error, #721c24);
+  color: #fff;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  max-width: 300px;
+  z-index: 10;
+}
