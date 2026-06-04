@@ -856,11 +856,10 @@ const ProjectPanel: Component = () => {
                           <span class="ac-team-count">{selectedWorkgroup() ? 1 : 0}</span>
                         </div>
                         <Show when={!selectedCollapsed()}>
-                          <Show
-                            when={selectedWorkgroup()}
-                            fallback={<div class="ac-empty-hint">No selected workgroup</div>}
-                          >
-                            {(wg) => renderWorkgroupSubgroup(wg())}
+                          <Show when={selectedWorkgroup()} fallback={<div class="ac-empty-hint">No selected workgroup</div>}>
+                            <For each={[selectedWorkgroup()!]}>
+                              {(wg) => renderWorkgroupSubgroup(wg)}
+                            </For>
                           </Show>
                         </Show>
                       </div>
