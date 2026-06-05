@@ -1,6 +1,7 @@
 pub mod close_session;
 pub mod create_agent;
 pub mod create_agent_matrix;
+pub mod harness;
 pub mod list_peers;
 pub mod list_sessions;
 pub mod new_project;
@@ -119,6 +120,8 @@ pub enum Commands {
     Workgroup(workgroup::WorkgroupArgs),
     /// Manage team membership in an AC workgroup
     Team(team::TeamArgs),
+    /// Execute commands through the policy harness
+    Harness(harness::HarnessArgs),
 }
 
 /// Attach to parent console (or allocate a new one) ONLY if both stdout and stderr
@@ -239,6 +242,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::TelegramSendImage(args) => telegram_send_image::execute(args),
         Commands::Workgroup(args) => workgroup::execute(args),
         Commands::Team(args) => team::execute(args),
+        Commands::Harness(args) => harness::execute(args),
     };
 
     flush_outputs();
