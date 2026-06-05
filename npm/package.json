@@ -1,7 +1,7 @@
 {
   "name": "@mblua/agentscommander",
   "version": "0.8.50",
-  "description": "AgentsCommander terminal session manager",
+  "description": "Install and run AgentsCommander, the local terminal session manager for AI coding agent teams.",
   "bin": {
     "agentscommander": "run.js"
   },
@@ -15,6 +15,17 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "homepage": "https://github.com/mblua/AgentsCommander#readme",
+  "bugs": {
+    "url": "https://github.com/mblua/AgentsCommander/issues"
+  },
+  "keywords": [
+    "agentscommander",
+    "ai-agents",
+    "coding-agents",
+    "tauri",
+    "terminal"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/mblua/AgentsCommander.git"

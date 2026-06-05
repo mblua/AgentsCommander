@@ -19,9 +19,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mblua/AgentsCommander/releases/latest"><b>⬇ Download (latest release)</b></a>
-  &nbsp;·&nbsp;
   <a href="#installation"><b>npm install</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/mblua/AgentsCommander/releases/latest"><b>Download desktop installer</b></a>
   &nbsp;·&nbsp;
   <a href="#60-second-quickstart"><b>▶ 60-second quickstart</b></a>
   &nbsp;·&nbsp;
@@ -47,6 +47,8 @@ agentscommander new-project /path/to/project
 
 The npm package is `@mblua/agentscommander`. The installed command is still `agentscommander`.
 
+Prefer a desktop installer or a manual download? Get the signed Windows installer, Linux AppImage, macOS dmg, or portable assets from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
+
 ## The 30-second pitch
 
 - **Pick the coding agent per role.** Claude Code on architecture, Codex on dev, Gemini on review, or any mix. Each runs in its own real terminal with a full PTY, not a command runner.
@@ -67,11 +69,22 @@ You bring the coding agents. AgentsCommander coordinates them.
 
 ## 60-second quickstart
 
-1. **Download** the latest installer for your platform from [the releases page](https://github.com/mblua/AgentsCommander/releases/latest). Windows `.exe`, Linux `.AppImage`, and macOS `.dmg` are built on every release.
-2. **Run** the installer (or run the portable `.exe` directly; see [Portable instances](docs/features/portable-instances.md)).
-3. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates an `.ac/` workspace there.
-4. **Create a Team**: add a coordinator and one worker agent, each with a role prompt. [Teams and workgroups](docs/agents/teams-and-workgroups.md) walks through this.
-5. **Launch the coordinator**: pick Claude Code, Codex, or Gemini from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
+1. **Install** AgentsCommander from npm:
+
+   ```bash
+   npm install -g @mblua/agentscommander
+   ```
+
+   Then start it:
+
+   ```bash
+   agentscommander
+   ```
+
+   Prefer a desktop installer or portable binary? Use [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
+2. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates an `.ac/` workspace there.
+3. **Create a Team**: add a coordinator and one worker agent, each with a role prompt. [Teams and workgroups](docs/agents/teams-and-workgroups.md) walks through this.
+4. **Launch the coordinator**: pick Claude Code, Codex, or Gemini from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
 
 Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
@@ -113,7 +126,7 @@ These are not accidents.
 
 ## Documentation
 
-- [Quickstart](docs/quickstart.md): 60-second download to first running agent
+- [Quickstart](docs/quickstart.md): 60-second install to first running agent
 - [Concepts](docs/concepts.md): agent, team, workgroup, coordinator, brief
 - [Teams and workgroups](docs/agents/teams-and-workgroups.md): coordinators, members, briefs, messaging
 - [Features](docs/features/): Telegram bridge with image and screenshot sends, voice-to-text, portable instances, RTK integration

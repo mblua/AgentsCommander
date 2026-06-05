@@ -7,14 +7,29 @@ By the end of this guide you will have AgentsCommander installed, an AC project 
 ## Prerequisites
 
 - One of [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and authenticated on your machine. You can install more than one — AC will let you pick per agent.
+- Node.js 18+ and npm if you install AgentsCommander from npm.
 - Git installed.
 - A repo you want the agents to work on (it can be empty).
 
-You do **not** need Node.js or Rust to run AgentsCommander. Those are only needed if you want to build from source — see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+You do **not** need Rust to run AgentsCommander. Rust is only needed if you want to build from source — see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
-## 1. Download and install
+## 1. Install AgentsCommander
 
-Download the latest installer for your platform from [the releases page](https://github.com/mblua/AgentsCommander/releases/latest):
+The fastest install path is npm:
+
+```bash
+npm install -g @mblua/agentscommander
+```
+
+Start AgentsCommander:
+
+```bash
+agentscommander
+```
+
+The npm package is `@mblua/agentscommander`. The installed command is still `agentscommander`.
+
+If you prefer a desktop installer or manual download, get the latest asset for your platform from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest):
 
 | Platform | Asset |
 |---|---|
