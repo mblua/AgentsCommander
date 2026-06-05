@@ -32,19 +32,20 @@
 
 ## Installation
 
-Install AgentsCommander globally via npm:
-
-```bash
-npm install -g agentscommander
-```
-
-The npm package downloads the matching executable for your platform from the GitHub release.
-
-If npm rejects the unscoped package name in your registry/account, install the scoped package instead:
+### Install from npm
 
 ```bash
 npm install -g @mblua/agentscommander
 ```
+
+Then run the CLI:
+
+```bash
+agentscommander --help
+agentscommander new-project /path/to/project
+```
+
+The npm package is `@mblua/agentscommander`. The installed command is still `agentscommander`.
 
 ## The 30-second pitch
 
