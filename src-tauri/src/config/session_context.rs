@@ -857,6 +857,21 @@ fn read_context_template(agent_root: &str, filename: &str) -> Result<Option<Stri
     })
 }
 
+fn read_or_create_context_template(
+    agent_root: &str,
+    filename: &str,
+    default_content: &str,
+) -> Result<Option<String>, String> {
+    let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
+        return Ok(None);
+    };
+    if let Some(content) = read_context_template(agent_root, filename)? {
+        return Ok(Some(content));
+    }
+    write_template_if_missing(&context_dir.join(filename), default_content)?;
+    read_context_template(agent_root, filename)
+}
+
 fn write_combined_context_file(
     cwd: &str,
     resolved_paths: &[(String, std::path::PathBuf)],
@@ -1374,8 +1389,12 @@ fn resolve_session_context_content(
     })?;
 
     if is_coordinator {
-        let coordinator_body = read_context_template(cwd, COORDINATOR_CONTEXT_TEMPLATE_FILENAME)?
-            .unwrap_or_else(|| get_default_coordinator_template().to_string());
+        let coordinator_body = read_or_create_context_template(
+            cwd,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            get_default_coordinator_template(),
+        )?
+        .unwrap_or_else(|| get_default_coordinator_template().to_string());
         if !coordinator_body.trim().is_empty() {
             content.push_str("\n\n---\n\n# Coordinator Context\n\n");
             content.push_str(&coordinator_body);
@@ -1597,8 +1616,12 @@ fn resolve_agent_context(
     matrix_root: Option<&str>,
     skills_section: &str,
 ) -> Result<String, String> {
-    let template = read_context_template(agent_root, AGENT_CONTEXT_TEMPLATE_FILENAME)?
-        .unwrap_or_else(|| default_context(agent_root, matrix_root, skills_section));
+    let template = read_or_create_context_template(
+        agent_root,
+        AGENT_CONTEXT_TEMPLATE_FILENAME,
+        get_default_agent_template(),
+    )?
+    .unwrap_or_else(|| default_context(agent_root, matrix_root, skills_section));
     if template == default_context(agent_root, matrix_root, skills_section) {
         Ok(template)
     } else {
@@ -2349,6 +2372,35 @@ mod tests {
     }
 
     #[test]
+    fn edited_agent_template_is_used_for_all_provider_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let template_path = workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(&template_path, "CUSTOM_AGENT_BODY").expect("write custom agent template");
+
+        for (target, expected_filename) in [
+            (ManagedContextTarget::Codex, "AGENTS.md"),
+            (ManagedContextTarget::Claude, "CLAUDE.md"),
+            (ManagedContextTarget::Gemini, "GEMINI.md"),
+        ] {
+            let materialized =
+                materialize_agent_context_file(&path_string(&matrix_root), target, false)
+                    .expect("materialize context")
+                    .expect("context path");
+            assert!(materialized.ends_with(expected_filename));
+            let content = std::fs::read_to_string(materialized).expect("read materialized context");
+            assert!(content.contains("CUSTOM_AGENT_BODY"));
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(template_path).expect("read agent template"),
+            "CUSTOM_AGENT_BODY"
+        );
+    }
+
+    #[test]
     fn custom_coordinator_template_appends_only_for_coordinator() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
@@ -2383,18 +2435,24 @@ mod tests {
             std::fs::read_to_string(coordinator).expect("read coordinator context");
         assert!(coordinator_content.contains("# Coordinator Context"));
         assert!(coordinator_content.contains("CUSTOM_COORDINATOR_BODY"));
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read coordinator template"),
+            "CUSTOM_COORDINATOR_BODY"
+        );
     }
 
     #[test]
-    fn missing_templates_fall_back_to_hardcoded_defaults() {
+    fn missing_templates_are_created_and_used_during_regeneration() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let matrix_root = temp.path().join(".ac").join("_agent_dev-rust");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
 
         let materialized = materialize_agent_context_file(
             &path_string(&matrix_root),
             ManagedContextTarget::Codex,
-            false,
+            true,
         )
         .expect("materialize context")
         .expect("context path");
@@ -2402,6 +2460,18 @@ mod tests {
 
         assert!(content.contains("# AgentsCommander Context"));
         assert!(content.contains("When finishing a delegated task or getting blocked"));
+        assert!(content.contains("# Coordinator Context"));
+        assert!(content.contains("You are the coordinator for your team"));
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read created agent template"),
+            get_default_agent_template()
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read created coordinator template"),
+            get_default_coordinator_template()
+        );
     }
 
     #[test]
