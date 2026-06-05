@@ -487,7 +487,7 @@ struct WgReplicaInfo {
     my_wg_name: String,
     my_wg_dir: PathBuf,
     workspace_dir: PathBuf,
-    /// Project folder name (the dir containing the AC workspace). Forms the
+    /// Project folder name (the dir containing the Project AC Root). Forms the
     /// LHS of the canonical FQN for WG replicas.
     my_project: String,
 }
@@ -581,7 +581,7 @@ fn read_wg_role(replica_dir: &Path) -> String {
 }
 
 /// Build a PeerInfo for a WG replica directory. Also bootstraps IPC dirs.
-/// `project` is the project folder name (dir containing the AC workspace) and forms
+/// `project` is the project folder name (dir containing the Project AC Root) and forms
 /// the LHS of the canonical FQN.
 fn build_wg_peer(
     project: &str,
@@ -858,7 +858,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
     }
 
     // ── WG replica discovery ──────────────────────────────────────────────
-    // Scan project_paths for workspace wg-*/__agent_* replicas
+    // Scan project_paths for Project AC Root wg-*/__agent_* replicas
     let settings = crate::config::settings::load_settings();
     for base_path in &settings.project_paths {
         let base = Path::new(base_path);

@@ -136,7 +136,7 @@ pub struct AcDiscoveryResult {
 }
 
 /// Extract the origin project name from a resolved identity path.
-/// Looks for the folder immediately before the rightmost AC workspace marker.
+/// Looks for the folder immediately before the rightmost Project AC Root marker.
 fn extract_origin_project(identity_abs_path: &std::path::Path) -> Option<String> {
     let s = identity_abs_path.to_string_lossy().replace('\\', "/");
     let parts: Vec<&str> = s.split('/').collect();
@@ -201,7 +201,7 @@ fn origin_project_for_replica_identity(
 
 /// Derive agent display name from its path.
 /// Format: "{project_folder}/{agent_name}" where:
-/// - project_folder = directory containing the AC workspace
+/// - project_folder = directory containing the Project AC Root
 /// - agent_name = folder name with "_agent_" prefix stripped
 fn agent_display_name(project_folder: &str, dir_name: &str) -> String {
     let agent_name = dir_name.strip_prefix("_agent_").unwrap_or(dir_name);
@@ -211,14 +211,14 @@ fn agent_display_name(project_folder: &str, dir_name: &str) -> String {
 /// Resolve an agent ref to a display name. Handles both relative refs
 /// (e.g. "../_agent_tech-lead") and absolute paths.
 /// For relative refs, uses project_folder as origin. For absolute paths,
-/// extracts the origin project from the folder before the workspace marker.
+/// extracts the origin project from the folder before the Project AC Root marker.
 fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
     let normalized = agent_ref.replace('\\', "/");
     let trimmed = normalized
         .trim_start_matches("../")
         .trim_start_matches("./");
     if trimmed.contains(':') || trimmed.starts_with('/') {
-        // Absolute path: extract origin project from folder before the workspace marker
+        // Absolute path: extract origin project from folder before the Project AC Root marker
         let parts: Vec<&str> = trimmed.split('/').collect();
         let origin = find_workspace_segment(&parts)
             .and_then(|i| (i > 0).then_some(parts[i - 1]))
@@ -384,7 +384,7 @@ struct TaskUpdatedPayload {
 pub struct DiscoveryBranchWatcher {
     app_handle: AppHandle,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-    /// Keyed by the project directory that directly contains the AC workspace, not by
+    /// Keyed by the project directory that directly contains the Project AC Root, not by
     /// `settings.project_paths` entries (which may be parent dirs holding many projects).
     /// Keying by the direct parent prevents both (a) the original overwrite-across-projects
     /// bug (Grinch #1) and (b) the double-registration that occurs when `project_paths`
@@ -421,7 +421,7 @@ impl DiscoveryBranchWatcher {
     }
 
     /// Update this project's replicas in the watcher. `project_dir` is the directory
-    /// that directly contains the AC workspace, not a grand-parent from `settings.project_paths`.
+    /// that directly contains the Project AC Root, not a grand-parent from `settings.project_paths`.
     /// See the invariant comment on the `replicas` field.
     pub fn update_replicas_for_project(&self, project_dir: &str, workgroups: &[AcWorkgroup]) {
         // Invariant guard: catch mistaken call-site passes (e.g. a `base_path` parent)
@@ -888,7 +888,7 @@ impl DiscoveryBranchWatcher {
     }
 }
 
-/// Discover AC agent matrices from workspace directories within configured repo paths.
+/// Discover AC agent matrices from Project AC Root directories within configured repo paths.
 #[tauri::command]
 pub async fn discover_ac_agents(
     app: AppHandle,
@@ -907,7 +907,7 @@ pub async fn discover_ac_agents(
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
     let mut teams: Vec<AcTeam> = Vec::new();
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
-    // Track the workspace-containing dir each workgroup originated from. Keys are
+    // Track the Project AC Root-containing dir each workgroup originated from. Keys are
     // `wg.name` values (unique within a discovery run; workgroup dir names include
     // the team name which collides only intentionally across projects). Populated as
     // we push to `workgroups` so we can later call `update_replicas_for_project` once
@@ -1201,7 +1201,7 @@ pub async fn discover_ac_agents(
         }
     }
 
-    // Update the branch watcher per-project. Each workspace-containing dir gets its own
+    // Update the branch watcher per-project. Each Project AC Root-containing dir gets its own
     // slot so multi-project setups don't overwrite each other (Grinch #1 + #12).
     let mut by_project: HashMap<String, Vec<AcWorkgroup>> = HashMap::new();
     for wg in &workgroups {
@@ -1250,13 +1250,13 @@ pub async fn discover_ac_agents(
     })
 }
 
-/// Check if a folder has an AC workspace subdirectory.
+/// Check if a folder has a Project AC Root subdirectory.
 #[tauri::command]
 pub async fn check_project_path(path: String) -> Result<bool, String> {
     Ok(existing_workspace_dir(Path::new(&path)).is_some())
 }
 
-/// Ensure the workspace .gitignore exists and contains all required exclusion patterns.
+/// Ensure the Project AC Root .gitignore exists and contains all required exclusion patterns.
 /// Called during project creation, workgroup creation, and opportunistically during discovery.
 pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), String> {
     let gitignore_path = workspace_dir.join(".gitignore");

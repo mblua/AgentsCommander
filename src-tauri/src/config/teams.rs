@@ -19,7 +19,7 @@ fn note_missing_team_config(project: &str, team_dir: &str) -> bool {
     g.insert((project.to_string(), team_dir.to_string()))
 }
 
-/// A team discovered from `_team_*/config.json` in AC workspace directories.
+/// A team discovered from `_team_*/config.json` in Project AC Root directories.
 #[derive(Debug, Clone)]
 pub struct DiscoveredTeam {
     pub name: String,
@@ -180,14 +180,14 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
             continue;
         }
 
-        // Include base itself if it contains an AC workspace.
+        // Include base itself if it contains a Project AC Root.
         if has_workspace_dir(base) {
             if let Some(name) = base.file_name().and_then(|n| n.to_str()) {
                 out.push((name.to_string(), base.to_path_buf()));
             }
         }
 
-        // Plus immediate non-dot children that contain an AC workspace.
+        // Plus immediate non-dot children that contain a Project AC Root.
         if let Ok(entries) = std::fs::read_dir(base) {
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -516,7 +516,7 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
         .trim_start_matches("./");
 
     if trimmed.contains(':') || trimmed.starts_with('/') {
-        // Absolute path: extract origin project from folder before the workspace marker
+        // Absolute path: extract origin project from folder before the Project AC Root marker
         let parts: Vec<&str> = trimmed.split('/').collect();
         let origin = find_workspace_segment(&parts)
             .and_then(|i| (i > 0).then_some(parts[i - 1]))

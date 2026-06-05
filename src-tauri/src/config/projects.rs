@@ -73,7 +73,7 @@ pub enum ProjectResolveError {
 }
 
 /// Validate an existing AC project and register it in `settings.project_paths`.
-/// Errors when the path is missing, not a directory, or has no AC workspace.
+/// Errors when the path is missing, not a directory, or has no Project AC Root.
 ///
 /// On success, mutates `settings.project_paths` (appends if new) and
 /// `settings.project_path` (legacy single-project field — kept in sync with

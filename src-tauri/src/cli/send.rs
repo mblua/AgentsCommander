@@ -148,7 +148,7 @@ fn wait_for_delivery_confirmation(
     }
 }
 
-/// If `root` lives inside `<project_dir>/<workspace>/wg-<N>-*/__agent_*/`,
+/// If `root` lives inside `<project_dir>/<Project AC Root>/wg-<N>-*/__agent_*/`,
 /// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
 /// inside a WG-replica shape OR if the resulting `project_dir` is not valid
 /// UTF-8 (parity with `list_peers::detect_wg_replica`, which also uses
