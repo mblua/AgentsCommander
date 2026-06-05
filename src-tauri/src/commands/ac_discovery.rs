@@ -1323,6 +1323,15 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
 /// Create a canonical .ac/ directory inside the given path.
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
+    create_ac_project_impl(&path, |workspace_dir| {
+        crate::config::session_context::create_default_context_templates(workspace_dir)
+    })
+}
+
+fn create_ac_project_impl<F>(path: &str, create_context_templates: F) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
     let workspace_dir = workspace_dir_for_project(Path::new(&path));
     let created = !workspace_dir.exists();
     std::fs::create_dir_all(&workspace_dir).map_err(|e| {
@@ -1332,9 +1341,21 @@ pub async fn create_ac_project(path: String) -> Result<(), String> {
             e
         )
     })?;
-    ensure_workspace_gitignore(&workspace_dir)?;
     if created {
-        crate::config::session_context::create_default_context_templates(&workspace_dir)?;
+        if let Err(err) = ensure_workspace_gitignore(&workspace_dir)
+            .and_then(|_| create_context_templates(&workspace_dir))
+        {
+            if let Err(cleanup_err) = std::fs::remove_dir_all(&workspace_dir) {
+                log::warn!(
+                    "Failed to clean up newly created {} directory after setup failure: {}",
+                    workspace_dir.display(),
+                    cleanup_err
+                );
+            }
+            return Err(err);
+        }
+    } else {
+        ensure_workspace_gitignore(&workspace_dir)?;
     }
     Ok(())
 }
@@ -1816,6 +1837,58 @@ mod tests {
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(!tmp.path().join(".ac").join("templates").exists());
+    }
+
+    #[tokio::test]
+    async fn create_ac_project_retries_after_failed_fresh_seed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().to_string_lossy().to_string();
+
+        let first_result = create_ac_project_impl(&path, |workspace_dir| {
+            std::fs::write(
+                workspace_dir.join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME),
+                crate::config::session_context::get_default_agent_template(),
+            )
+            .expect("write partial agent context");
+            Err("injected seed failure".to_string())
+        });
+
+        assert!(first_result.is_err());
+        assert!(
+            !tmp.path().join(".ac").exists(),
+            "fresh .ac directory should be cleaned up after seed failure"
+        );
+
+        create_ac_project(path).await.expect("retry create project");
+
+        assert!(tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+    }
+
+    #[tokio::test]
+    async fn create_ac_project_does_not_backfill_existing_ac_contexts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create .ac");
+
+        create_ac_project(tmp.path().to_string_lossy().to_string())
+            .await
+            .expect("create project");
+
+        assert!(!workspace
+            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+        assert!(!workspace
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
     }
 
     #[test]
