@@ -44,20 +44,21 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
     }, 100);
   });
 
-  const handleKeyDown = (e: KeyboardEvent) => {
+  const handleEscape = () => {
     const repo = selectedRepo();
 
-    if (e.key === "Escape") {
-      if (repo && !props.initialRepo) {
-        // Go back to repo list (only if we navigated there ourselves)
-        setSelectedRepo(null);
-        setHighlightIndex(0);
-        requestAnimationFrame(() => inputRef?.focus());
-      } else {
-        props.onClose();
-      }
-      return;
+    if (repo && !props.initialRepo) {
+      // Go back to repo list (only if we navigated there ourselves)
+      setSelectedRepo(null);
+      setHighlightIndex(0);
+      requestAnimationFrame(() => inputRef?.focus());
+    } else {
+      props.onClose();
     }
+  };
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    const repo = selectedRepo();
 
     if (!repo) {
       // Repo list navigation
@@ -89,6 +90,13 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
     }
   };
 
+  const handleDocumentKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") handleEscape();
+  };
+
+  document.addEventListener("keydown", handleDocumentKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
+
   const launchAgent = (repo: RepoMatch, agent: AgentConfig) => {
     // Build the command: parse command string into executable + args
     const parts = agent.command.trim().split(/\s+/);
@@ -119,14 +127,8 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
     props.onClose();
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-      props.onClose();
-    }
-  };
-
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick} onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal">
         {/* Header */}
         <Show

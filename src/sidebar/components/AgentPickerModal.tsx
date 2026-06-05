@@ -41,14 +41,8 @@ const AgentPickerModal: Component<{
     }
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-      props.onClose();
-    }
-  };
-
   return (
-    <div ref={overlayRef} class="modal-overlay" tabIndex={0} onClick={handleOverlayClick} onKeyDown={handleKeyDown}>
+    <div ref={overlayRef} class="modal-overlay" tabIndex={0} onKeyDown={handleKeyDown}>
       <div class="agent-modal new-agent-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">

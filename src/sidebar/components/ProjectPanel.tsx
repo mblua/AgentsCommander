@@ -1,4 +1,4 @@
-import { Component, For, Show, createMemo, createSignal, onMount, onCleanup } from "solid-js";
+import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
@@ -245,6 +245,28 @@ const ProjectPanel: Component = () => {
           retryGen++;
           setDeletingWg(null);
         };
+        const closeTeamDeleteModal = () => {
+          setDeleteError("");
+          setDeleteInProgress(false);
+          setDeletingTeam(null);
+        };
+        createEffect(() => {
+          if (!deletingAgent() && !deletingWg() && !deletingTeam()) return;
+          const handleDeleteModalKeyDown = (e: KeyboardEvent) => {
+            if (e.key !== "Escape") return;
+            if (deletingAgent()) {
+              closeAgentDeleteModal();
+              return;
+            }
+            if (deletingWg()) {
+              closeWgDeleteModal();
+              return;
+            }
+            closeTeamDeleteModal();
+          };
+          document.addEventListener("keydown", handleDeleteModalKeyDown);
+          onCleanup(() => document.removeEventListener("keydown", handleDeleteModalKeyDown));
+        });
         const retryWgDelete = async () => {
           if (wgRetryInProgress()) return;
           const wg = deletingWg();
@@ -1121,15 +1143,7 @@ const ProjectPanel: Component = () => {
                     {/* Delete agent confirmation */}
                     {deletingAgent() && (
                       <Portal>
-                        <div
-                          class="modal-overlay"
-                          onClick={(e) => {
-                            if ((e.target as HTMLElement).classList.contains("modal-overlay")) closeAgentDeleteModal();
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Escape") closeAgentDeleteModal();
-                          }}
-                        >
+                        <div class="modal-overlay">
                           <div class="agent-modal" style={{ "max-width": "360px" }}>
                             <div class="agent-modal-header">
                               <span class="agent-modal-title">Delete Agent</span>
@@ -1427,15 +1441,7 @@ const ProjectPanel: Component = () => {
             {/* Delete WG confirmation */}
             {deletingWg() && (
               <Portal>
-                <div
-                  class="modal-overlay"
-                  onClick={(e) => {
-                    if ((e.target as HTMLElement).classList.contains("modal-overlay")) closeWgDeleteModal();
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") closeWgDeleteModal();
-                  }}
-                >
+                <div class="modal-overlay">
                   <div class="agent-modal" style={{ "max-width": "360px" }}>
                     <div class="agent-modal-header">
                       <span class="agent-modal-title">Delete Workgroup</span>
@@ -1669,21 +1675,7 @@ const ProjectPanel: Component = () => {
             {/* Delete team confirmation */}
             {deletingTeam() && (
               <Portal>
-                <div
-                  class="modal-overlay"
-                  onClick={(e) => {
-                    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-                      setDeleteError("");
-                      setDeletingTeam(null);
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      setDeleteError("");
-                      setDeletingTeam(null);
-                    }
-                  }}
-                >
+                <div class="modal-overlay">
                   <div class="agent-modal" style={{ "max-width": "360px" }}>
                     <div class="agent-modal-header">
                       <span class="agent-modal-title">Delete Team</span>
@@ -1699,10 +1691,7 @@ const ProjectPanel: Component = () => {
                     <div class="new-agent-footer">
                       <button
                         class="new-agent-cancel-btn"
-                        onClick={() => {
-                          setDeleteError("");
-                          setDeletingTeam(null);
-                        }}
+                        onClick={closeTeamDeleteModal}
                       >
                         Cancel
                       </button>
@@ -1723,9 +1712,7 @@ const ProjectPanel: Component = () => {
                             setDeleteInProgress(false);
                             return;
                           }
-                          setDeleteError("");
-                          setDeleteInProgress(false);
-                          setDeletingTeam(null);
+                          closeTeamDeleteModal();
                         }}
                       >
                         {deleteInProgress() ? "Deleting..." : "Delete"}

@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import { isTauri } from "../../shared/platform";
 import type {
@@ -276,11 +276,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     props.onClose();
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-      props.onClose();
-    }
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") props.onClose();
   };
+
+  document.addEventListener("keydown", handleKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
 
   // ── Tab renderers ──
 
@@ -789,13 +790,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   );
 
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick}>
+    <div class="modal-overlay">
       <div class="modal-container modal-container-lg">
         <div class="modal-header">
           <span class="modal-title">Settings</span>
-          <button class="modal-close" onClick={props.onClose}>
-            &#x2715;
-          </button>
         </div>
 
         {/* Tab bar */}
