@@ -188,37 +188,45 @@ fn evaluate_argv_policy(
     denials: &mut Vec<String>,
 ) {
     let tokens: Vec<String> = input.argv.iter().map(|s| normalize_token(s)).collect();
+    evaluate_normalized_argv_policy(&tokens, warnings, denials);
+}
+
+fn evaluate_normalized_argv_policy(
+    tokens: &[String],
+    warnings: &mut Vec<String>,
+    denials: &mut Vec<String>,
+) {
     if tokens.is_empty() {
         return;
     }
 
     warn_nested_shell(&tokens[0], warnings);
-    warn_branch_name(&tokens, warnings);
+    warn_branch_name(tokens, warnings);
 
     let cmd = tokens[0].as_str();
-    if cmd == "rm" && has_rm_recursive_force(&tokens) && tokens.iter().any(|t| is_root_target(t)) {
+    if cmd == "rm" && has_rm_recursive_force(tokens) && tokens.iter().any(|t| is_root_target(t)) {
         denials.push("denied destructive root removal".to_string());
     }
 
     if cmd == "remove-item"
-        && has_any_token(&tokens, &["-recurse", "-r"])
-        && has_any_token(&tokens, &["-force", "-fo"])
+        && has_any_token(tokens, &["-recurse", "-r"])
+        && has_any_token(tokens, &["-force", "-fo"])
         && tokens.iter().any(|t| is_root_target(t))
     {
         denials.push("denied destructive Remove-Item root removal".to_string());
     }
 
     if (cmd == "rd" || cmd == "rmdir")
-        && has_token(&tokens, "/s")
-        && has_token(&tokens, "/q")
+        && has_token(tokens, "/s")
+        && has_token(tokens, "/q")
         && tokens.iter().any(|t| is_root_target(t))
     {
         denials.push("denied destructive recursive directory removal".to_string());
     }
 
     if cmd == "del"
-        && has_token(&tokens, "/s")
-        && has_token(&tokens, "/q")
+        && has_token(tokens, "/s")
+        && has_token(tokens, "/q")
         && tokens.iter().any(|t| is_root_target(t))
     {
         denials.push("denied destructive recursive file deletion".to_string());
@@ -238,23 +246,21 @@ fn evaluate_raw_policy(input: &PolicyInput, warnings: &mut Vec<String>, denials:
         warn_branch_name(&words, warnings);
     }
 
-    let chained = raw.contains(';') || raw.contains("&&") || raw.contains("||");
-    let destructive = (raw.contains("rm -rf") && raw_contains_root_target(&raw))
-        || (raw.contains("remove-item")
-            && raw.contains("-recurse")
-            && raw.contains("-force")
-            && raw_contains_root_target(&raw))
-        || ((raw.contains("rd /s /q") || raw.contains("rmdir /s /q"))
-            && raw_contains_root_target(&raw))
-        || (raw.contains("del /s /q") && raw_contains_root_target(&raw));
+    let chained = raw_command_is_chained(&raw);
+    let before = denials.len();
+    for tokens in tokenize_raw_command_segments(&input.raw_display) {
+        let tokens: Vec<String> = tokens.iter().map(|s| normalize_token(s)).collect();
+        evaluate_normalized_argv_policy(&tokens, warnings, denials);
+    }
 
-    if destructive {
-        let reason = if chained {
-            "denied destructive command in raw shell chain"
-        } else {
-            "denied destructive raw shell command"
-        };
-        denials.push(reason.to_string());
+    if denials.len() > before {
+        for reason in denials.iter_mut().skip(before) {
+            *reason = if chained {
+                "denied destructive command in raw shell chain".to_string()
+            } else {
+                "denied destructive raw shell command".to_string()
+            };
+        }
     }
 }
 
@@ -326,14 +332,60 @@ fn is_root_target(token: &str) -> bool {
     matches!(token, "/" | "\\" | "c:\\" | "c:/" | "%systemdrive%\\")
 }
 
-fn raw_contains_root_target(raw: &str) -> bool {
-    raw.split(|c: char| c.is_whitespace() || [';', '&', '|', '(', ')'].contains(&c))
-        .any(is_root_target)
-        || raw.contains(" / ")
-        || raw.contains(" '/'")
-        || raw.contains(" \"/\"")
-        || raw.contains(" c:\\")
-        || raw.contains(" c:/")
+fn raw_command_is_chained(raw: &str) -> bool {
+    raw.contains(';') || raw.contains("&&") || raw.contains("||")
+}
+
+fn tokenize_raw_command_segments(raw: &str) -> Vec<Vec<String>> {
+    let mut segments = Vec::new();
+    let mut current = Vec::new();
+    let mut token = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = raw.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else {
+                token.push(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            ch if ch.is_whitespace() => push_raw_token(&mut current, &mut token),
+            ';' | '(' | ')' => finish_raw_segment(&mut segments, &mut current, &mut token),
+            '&' | '|' => {
+                if chars.peek().is_some_and(|next| *next == ch) {
+                    chars.next();
+                }
+                finish_raw_segment(&mut segments, &mut current, &mut token);
+            }
+            _ => token.push(ch),
+        }
+    }
+
+    finish_raw_segment(&mut segments, &mut current, &mut token);
+    segments
+}
+
+fn push_raw_token(current: &mut Vec<String>, token: &mut String) {
+    if !token.is_empty() {
+        current.push(std::mem::take(token));
+    }
+}
+
+fn finish_raw_segment(
+    segments: &mut Vec<Vec<String>>,
+    current: &mut Vec<String>,
+    token: &mut String,
+) {
+    push_raw_token(current, token);
+    if !current.is_empty() {
+        segments.push(std::mem::take(current));
+    }
 }
 
 fn normalize_token(value: &str) -> String {
@@ -386,7 +438,7 @@ fn write_audit_log(
     std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log_path = log_dir.join("harness.log");
 
-    let redacted = redact_secrets(&input.raw_display);
+    let redacted = redacted_display(input);
     let (command, command_truncated) = cap_logged_command(&redacted);
     let (decision_name, reasons) = decision_parts(decision);
     let entry = HarnessLogEntry {
@@ -479,6 +531,43 @@ pub(crate) fn redact_secrets(command: &str) -> String {
     out.join(" ")
 }
 
+fn redact_argv(argv: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut redact_next = false;
+    for token in argv {
+        let lower = token.to_ascii_lowercase();
+        if redact_next {
+            out.push("[REDACTED]".to_string());
+            redact_next = false;
+            continue;
+        }
+
+        if lower == "bearer" {
+            out.push("Bearer".to_string());
+            redact_next = true;
+        } else if is_secret_assignment(&lower) {
+            out.push(redact_assignment(token));
+            if lower.contains("bearer") {
+                redact_next = true;
+            }
+        } else if is_secret_flag(&lower) {
+            out.push(token.clone());
+            redact_next = true;
+        } else {
+            out.push(token.clone());
+        }
+    }
+    out
+}
+
+fn redacted_display(input: &PolicyInput) -> String {
+    if input.raw_shell {
+        redact_secrets(&input.raw_display)
+    } else {
+        display_argv(&redact_argv(&input.argv))
+    }
+}
+
 fn is_secret_assignment(lower: &str) -> bool {
     lower.contains("token=")
         || lower.contains("_authtoken=")
@@ -557,6 +646,42 @@ mod tests {
     }
 
     #[test]
+    fn raw_destructive_unix_flag_variants_are_denied() {
+        for raw in ["rm -fr /", "rm -r -f /"] {
+            let input = PolicyInput {
+                raw_display: raw.to_string(),
+                argv: Vec::new(),
+                raw_shell: true,
+            };
+            assert!(matches!(evaluate_policy(&input), PolicyDecision::Deny(_)));
+        }
+    }
+
+    #[test]
+    fn raw_destructive_windows_flag_variants_are_denied() {
+        for raw in ["rd /q /s C:\\", "Remove-Item -r -fo C:\\"] {
+            let input = PolicyInput {
+                raw_display: raw.to_string(),
+                argv: Vec::new(),
+                raw_shell: true,
+            };
+            assert!(matches!(evaluate_policy(&input), PolicyDecision::Deny(_)));
+        }
+    }
+
+    #[test]
+    fn raw_destructive_chained_variants_are_denied() {
+        for raw in ["echo ok && rm -fr /", "echo ok; rd /q /s C:\\"] {
+            let input = PolicyInput {
+                raw_display: raw.to_string(),
+                argv: Vec::new(),
+                raw_shell: true,
+            };
+            assert!(matches!(evaluate_policy(&input), PolicyDecision::Deny(_)));
+        }
+    }
+
+    #[test]
     fn branch_guardrail_warns_without_denying() {
         let input = PolicyInput {
             raw_display: "git checkout -b bad branch".to_string(),
@@ -599,5 +724,25 @@ mod tests {
         assert!(!redacted.contains("abc"));
         assert!(!redacted.contains("hunter2"));
         assert!(!redacted.contains("secret _authToken"));
+    }
+
+    #[test]
+    fn redacts_argv_secret_flag_value_before_display_join() {
+        let input = PolicyInput {
+            raw_display: display_argv(&[
+                "echo".to_string(),
+                "--token".to_string(),
+                "secret-leak-check".to_string(),
+            ]),
+            argv: vec![
+                "echo".to_string(),
+                "--token".to_string(),
+                "secret-leak-check".to_string(),
+            ],
+            raw_shell: false,
+        };
+        let redacted = redacted_display(&input);
+        assert!(redacted.contains("--token\u{1f}[REDACTED]"));
+        assert!(!redacted.contains("secret-leak-check"));
     }
 }

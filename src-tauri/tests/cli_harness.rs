@@ -132,6 +132,24 @@ fn harness_secret_redaction_is_applied_in_logs() {
 }
 
 #[test]
+fn harness_argv_secret_redaction_is_applied_in_logs() {
+    let tmp = Tmp::new("harness-argv-redact");
+    let bin = copy_binary_into(tmp.path());
+    let secret = "secret-leak-check";
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &["harness", "--dry-run", "--", "echo", "--token", secret],
+    );
+    assert_eq!(code, Some(0), "stdout: {}\nstderr: {}", stdout, stderr);
+
+    let lines = log_lines(&bin);
+    let command = lines[0]["command"].as_str().unwrap();
+    assert!(command.contains("--token\u{1f}[REDACTED]"));
+    assert!(!command.contains(secret));
+}
+
+#[test]
 fn harness_log_uses_config_dir_logs_harness_log() {
     let tmp = Tmp::new("harness-log-path");
     let bin = copy_binary_into(tmp.path());
@@ -154,6 +172,37 @@ fn harness_deny_exit_code_is_one() {
 
     let (code, stdout, stderr) = run(&bin, &["harness", "--raw-command", "echo ok && rm -rf /"]);
     assert_eq!(code, Some(1), "stdout: {}\nstderr: {}", stdout, stderr);
+}
+
+#[test]
+fn harness_raw_destructive_flag_variants_are_denied() {
+    let tmp = Tmp::new("harness-raw-deny-variants");
+    let bin = copy_binary_into(tmp.path());
+
+    for raw in [
+        "rm -fr /",
+        "rm -r -f /",
+        "rd /q /s C:\\",
+        "echo ok && rm -fr /",
+        "Remove-Item -r -fo C:\\",
+    ] {
+        let (code, stdout, stderr) = run(&bin, &["harness", "--dry-run", "--raw-command", raw]);
+        assert_eq!(
+            code,
+            Some(1),
+            "raw: {}\nstdout: {}\nstderr: {}",
+            raw,
+            stdout,
+            stderr
+        );
+        assert!(
+            stderr.contains("harness: deny"),
+            "raw: {}\nstdout: {}\nstderr: {}",
+            raw,
+            stdout,
+            stderr
+        );
+    }
 }
 
 #[test]
