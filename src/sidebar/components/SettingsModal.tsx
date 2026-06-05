@@ -276,10 +276,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     props.onClose();
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-      props.onClose();
-    }
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") props.onClose();
   };
 
   // ── Tab renderers ──
@@ -772,13 +770,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   );
 
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick}>
+    <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="modal-container modal-container-lg">
         <div class="modal-header">
           <span class="modal-title">Settings</span>
-          <button class="modal-close" onClick={props.onClose}>
-            &#x2715;
-          </button>
         </div>
 
         {/* Tab bar */}

@@ -223,12 +223,8 @@ const EditTeamModal: Component<{
     if (e.key === "Escape") props.onClose();
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) props.onClose();
-  };
-
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick} onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal entity-wizard-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">Edit Team: {props.team.name}</span>

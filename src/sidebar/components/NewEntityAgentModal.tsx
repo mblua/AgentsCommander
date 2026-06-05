@@ -94,10 +94,6 @@ const NewEntityAgentModal: Component<{
     }
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) props.onClose();
-  };
-
   // Roving Tab/Arrow navigation across picker rows. Enter activates the focused
   // row via the browser default; the list container then swallows Enter so it
   // never bubbles up to the overlay's create-on-Enter handler.
@@ -152,7 +148,7 @@ const NewEntityAgentModal: Component<{
   };
 
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick} onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal new-agent-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Agent</span>

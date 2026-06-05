@@ -1123,9 +1123,6 @@ const ProjectPanel: Component = () => {
                       <Portal>
                         <div
                           class="modal-overlay"
-                          onClick={(e) => {
-                            if ((e.target as HTMLElement).classList.contains("modal-overlay")) closeAgentDeleteModal();
-                          }}
                           onKeyDown={(e) => {
                             if (e.key === "Escape") closeAgentDeleteModal();
                           }}
@@ -1429,9 +1426,6 @@ const ProjectPanel: Component = () => {
               <Portal>
                 <div
                   class="modal-overlay"
-                  onClick={(e) => {
-                    if ((e.target as HTMLElement).classList.contains("modal-overlay")) closeWgDeleteModal();
-                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") closeWgDeleteModal();
                   }}
@@ -1671,12 +1665,6 @@ const ProjectPanel: Component = () => {
               <Portal>
                 <div
                   class="modal-overlay"
-                  onClick={(e) => {
-                    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-                      setDeleteError("");
-                      setDeletingTeam(null);
-                    }
-                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
                       setDeleteError("");

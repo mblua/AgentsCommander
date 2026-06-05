@@ -145,14 +145,8 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
     }
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-      props.onClose();
-    }
-  };
-
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick} onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal new-agent-modal">
         <Show
           when={stage() === "form"}

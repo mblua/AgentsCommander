@@ -116,19 +116,12 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
     }
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-      if (done()) props.onClose();
-      else void dismissAndClose();
-    }
-  };
-
   let overlayRef!: HTMLDivElement;
   let modalRef!: HTMLDivElement;
   onMount(() => overlayRef.focus());
 
   return (
-    <div class="modal-overlay" ref={overlayRef} onClick={handleOverlayClick} onKeyDown={handleKeyDown} tabIndex={0}>
+    <div class="modal-overlay" ref={overlayRef} onKeyDown={handleKeyDown} tabIndex={0}>
       <div class="agent-modal onboarding-modal" ref={modalRef}>
         <div class="agent-modal-header">
           <span class="agent-modal-title">Welcome</span>
