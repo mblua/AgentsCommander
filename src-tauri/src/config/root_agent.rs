@@ -9,6 +9,11 @@ pub const ROOT_AGENT_SESSION_NAME: &str = "Root Agent";
 pub const ROOT_AGENT_SENDER: &str = "agentscommander://root-agent";
 pub const ROOT_AGENT_SHORT_NAME: &str = "root";
 static ROOT_ROLE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static FAIL_ROOT_ROLE_WRITE_ONCE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+const FAIL_ROOT_ROLE_WRITE_MARKER: &str = "FAIL_ROOT_ROLE_WRITE_ONCE";
 
 /// Returns `true` iff `target` is the canonical Root Agent reply name.
 ///
@@ -199,17 +204,9 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
     }
     let context_text = context_text.expect("checked above");
 
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(role_path)
-    {
-        Ok(mut file) => {
-            write_role_file(&mut file, role_path, &context_text)?;
-            return Ok(());
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(format!("Failed to create {}: {}", role_path.display(), e)),
+    match create_missing_role(role_path, &context_text)? {
+        CreateMissingRole::Created => return Ok(()),
+        CreateMissingRole::AlreadyExists => {}
     }
 
     let existing = std::fs::read_to_string(role_path)
@@ -323,11 +320,74 @@ fn atomic_write_role(role_path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+enum CreateMissingRole {
+    Created,
+    AlreadyExists,
+}
+
+fn create_missing_role(role_path: &Path, content: &str) -> Result<CreateMissingRole, String> {
+    let parent = role_path.parent().ok_or_else(|| {
+        format!(
+            "Could not resolve parent directory for {}",
+            role_path.display()
+        )
+    })?;
+    let temp_path = unique_role_temp_path(role_path);
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+    {
+        Ok(file) => file,
+        Err(e) => {
+            return Err(format!(
+                "Failed to create temporary role file {}: {}",
+                temp_path.display(),
+                e
+            ))
+        }
+    };
+
+    if let Err(e) = write_role_file(&mut file, role_path, content) {
+        drop(file);
+        cleanup_temp_role(&temp_path);
+        return Err(e);
+    }
+    drop(file);
+
+    let published = match publish_missing_role_file(&temp_path, role_path) {
+        Ok(published) => published,
+        Err(e) => {
+            cleanup_temp_role(&temp_path);
+            return Err(e);
+        }
+    };
+
+    cleanup_temp_role(&temp_path);
+
+    if published {
+        sync_role_dir(parent);
+        Ok(CreateMissingRole::Created)
+    } else {
+        Ok(CreateMissingRole::AlreadyExists)
+    }
+}
+
 fn write_role_file(
     file: &mut std::fs::File,
     role_path: &Path,
     content: &str,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    if content.contains(FAIL_ROOT_ROLE_WRITE_MARKER)
+        && FAIL_ROOT_ROLE_WRITE_ONCE.swap(false, Ordering::SeqCst)
+    {
+        return Err(format!(
+            "Failed to write {}: injected failure",
+            role_path.display()
+        ));
+    }
+
     file.write_all(content.as_bytes())
         .map_err(|e| format!("Failed to write {}: {}", role_path.display(), e))?;
     file.flush()
@@ -359,6 +419,31 @@ fn cleanup_temp_role(path: &Path) {
                 e
             );
         }
+    }
+}
+
+fn sync_role_dir(parent: &Path) {
+    if let Ok(dir) = std::fs::File::open(parent) {
+        if let Err(e) = dir.sync_all() {
+            log::warn!(
+                "Failed to sync root agent role directory {}: {}",
+                parent.display(),
+                e
+            );
+        }
+    }
+}
+
+fn publish_missing_role_file(temp_path: &Path, role_path: &Path) -> Result<bool, String> {
+    match std::fs::hard_link(temp_path, role_path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(format!(
+            "Failed to publish missing role file {} from {}: {}",
+            role_path.display(),
+            temp_path.display(),
+            e
+        )),
     }
 }
 
@@ -557,6 +642,35 @@ mod tests {
         std::fs::write(&template_path, custom_template).expect("write template");
 
         ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("Role.md")).expect("read role"),
+            custom_template
+        );
+    }
+
+    #[test]
+    fn failed_missing_role_seed_leaves_no_final_role_and_retry_creates_complete_role() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let template_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let custom_template = format!(
+            "# Custom Root Template\n\n{FAIL_ROOT_ROLE_WRITE_MARKER}\n\nComplete seed body.\n"
+        );
+        std::fs::write(&template_path, &custom_template).expect("write template");
+
+        FAIL_ROOT_ROLE_WRITE_ONCE.store(true, Ordering::SeqCst);
+        let err = ensure_root_agent_dir_at(&root).expect_err("injected seed write must fail");
+
+        assert!(err.contains("injected failure"), "{err}");
+        assert!(
+            !root.join("Role.md").exists(),
+            "failed missing-role seed must not publish final Role.md"
+        );
+
+        ensure_root_agent_dir_at(&root).expect("retry ensure root");
 
         assert_eq!(
             std::fs::read_to_string(root.join("Role.md")).expect("read role"),
