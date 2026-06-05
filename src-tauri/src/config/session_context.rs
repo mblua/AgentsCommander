@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub const AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
+pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
+static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
 /// root path interpolated into the GOLDEN RULE. For WG replicas, also exposes
@@ -36,11 +41,9 @@ pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
     let hash = simple_hash(agent_root);
     let file_path = context_dir.join(format!("ac-context-{}.md", hash));
 
-    std::fs::write(
-        &file_path,
-        default_context(&canonical_root, matrix_root.as_deref(), &skills_section),
-    )
-    .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
+    let content = resolve_agent_context(&canonical_root, matrix_root.as_deref(), &skills_section)?;
+    std::fs::write(&file_path, content)
+        .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
     log::info!(
         "Refreshed per-agent AgentsCommanderContext.md for {} → {:?}",
         agent_root,
@@ -780,6 +783,198 @@ fn find_workspace_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
     crate::config::workspace::find_workspace_ancestor(path).map(|p| canonical_or_original(&p))
 }
 
+pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(workspace_dir).map_err(|e| {
+        format!(
+            "failed to create context templates directory {}: {}",
+            workspace_dir.display(),
+            e
+        )
+    })?;
+    write_template_if_missing(
+        &workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+        get_default_agent_template(),
+    )?;
+    write_template_if_missing(
+        &workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+        get_default_coordinator_template(),
+    )?;
+    Ok(())
+}
+
+fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
+    write_template_if_missing_with(path, content, |path| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    })
+}
+
+fn write_template_if_missing_with<W, F>(
+    path: &Path,
+    content: &str,
+    open_new: F,
+) -> Result<(), String>
+where
+    W: ContextTemplateWriter,
+    F: FnOnce(&Path) -> std::io::Result<W>,
+{
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "failed to inspect context template {}: {}",
+                path.display(),
+                e
+            ))
+        }
+    }
+
+    let temp_path = unique_context_template_temp_path(path);
+    let mut file = open_new(&temp_path).map_err(|e| {
+        format!(
+            "failed to create temporary context template {}: {}",
+            temp_path.display(),
+            e
+        )
+    })?;
+
+    if let Err(e) = file.write_all(content.as_bytes()) {
+        drop(file);
+        cleanup_failed_context_template(&temp_path);
+        return Err(format!(
+            "failed to write context template {}: {}",
+            path.display(),
+            e
+        ));
+    }
+    if let Err(e) = file.flush() {
+        drop(file);
+        cleanup_failed_context_template(&temp_path);
+        return Err(format!(
+            "failed to flush context template {}: {}",
+            path.display(),
+            e
+        ));
+    }
+    if let Err(e) = file.sync_all() {
+        drop(file);
+        cleanup_failed_context_template(&temp_path);
+        return Err(format!(
+            "failed to sync context template {}: {}",
+            path.display(),
+            e
+        ));
+    }
+    drop(file);
+
+    match std::fs::hard_link(&temp_path, path) {
+        Ok(()) => {
+            cleanup_failed_context_template(&temp_path);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            cleanup_failed_context_template(&temp_path);
+            Ok(())
+        }
+        Err(e) => {
+            cleanup_failed_context_template(&temp_path);
+            Err(format!(
+                "failed to publish context template {}: {}",
+                path.display(),
+                e
+            ))
+        }
+    }
+}
+
+trait ContextTemplateWriter: Write {
+    fn sync_all(&mut self) -> std::io::Result<()>;
+}
+
+impl ContextTemplateWriter for std::fs::File {
+    fn sync_all(&mut self) -> std::io::Result<()> {
+        std::fs::File::sync_all(self)
+    }
+}
+
+fn unique_context_template_temp_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Context.template.md");
+    let counter = CONTEXT_TEMPLATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let process_id = std::process::id();
+    parent.join(format!(".{file_name}.{process_id}.{counter}.tmp"))
+}
+
+fn cleanup_failed_context_template(path: &Path) {
+    if let Err(e) = std::fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            log::warn!(
+                "failed to remove incomplete context template {} after write failure: {}",
+                path.display(),
+                e
+            );
+        }
+    }
+}
+
+fn resolve_workspace_context_dir(agent_root: &Path) -> Option<PathBuf> {
+    find_workspace_root(agent_root)
+}
+
+fn read_context_template(agent_root: &str, filename: &str) -> Result<Option<String>, String> {
+    let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
+        return Ok(None);
+    };
+    let path = context_dir.join(filename);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect context template {}: {}",
+                path.display(),
+                e
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "Context template {} exists but is not a regular file",
+            path.display()
+        ));
+    }
+    let bytes = std::fs::read(&path)
+        .map_err(|e| format!("Failed to read context template {}: {}", path.display(), e))?;
+    String::from_utf8(bytes).map(Some).map_err(|e| {
+        format!(
+            "Context template {} is not valid UTF-8: {}",
+            path.display(),
+            e
+        )
+    })
+}
+
+fn read_or_create_context_template(
+    agent_root: &str,
+    filename: &str,
+    default_content: &str,
+) -> Result<Option<String>, String> {
+    let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
+        return Ok(None);
+    };
+    if let Some(content) = read_context_template(agent_root, filename)? {
+        return Ok(Some(content));
+    }
+    write_template_if_missing(&context_dir.join(filename), default_content)?;
+    read_context_template(agent_root, filename)
+}
+
 fn write_combined_context_file(
     cwd: &str,
     resolved_paths: &[(String, std::path::PathBuf)],
@@ -1297,31 +1492,16 @@ fn resolve_session_context_content(
     })?;
 
     if is_coordinator {
-        let coordinator_notice = "\n\n---\n\n# Coordinator Context\n\n\
-            You are the coordinator for your team. You must:\n\
-            - Keep your base role; coordination is an additional assignment, not a replacement.\n\
-            - Receive team work requests.\n\
-            - Clarify scope, outcome, constraints, and acceptance criteria.\n\
-            - Always route work to the team member best prepared for each part of the request based on role, skills, and current assignment.\n\
-            - Delegate work instead of absorbing technical work when a more specialized agent is available.\n\
-            - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
-            - Follow up after assignment to verify the assigned agent is active and working.\n\
-            - Contact silent or inactive assigned agents up to three total attempts.\n\
-            - Require assigned agents to explicitly report completion, outcome, blockers, and verification.\n\
-            - Not infer completion solely from files/logs/artifacts when the assigned agent has not reported the outcome.\n\
-            - Give recommendations to help an agent work better without removing or overriding that agent's role/scope.\n\n\
-            ## Sending Screenshots\n\
-            As a coordinator, you may need to send screenshots. Use the CLI subcommand:\n\
-                telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
-            - --path is required. --caption is optional and limited to 1024 UTF-16 units.\n\
-            - If multiple Telegram bots are configured, use --bot-id or --bot-label.\n\
-            - jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB.\n\
-            - Symlinks/junctions are rejected.\n\n\
-            **Screenshot Capture Paths:**\n\
-            - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work. Important: cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
-            - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels. In that case ask the user to capture with Greenshot, use latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
-            - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n";
-        content.push_str(coordinator_notice);
+        let coordinator_body = read_or_create_context_template(
+            cwd,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            get_default_coordinator_template(),
+        )?
+        .unwrap_or_else(|| get_default_coordinator_template().to_string());
+        if !coordinator_body.trim().is_empty() {
+            content.push_str("\n\n---\n\n# Coordinator Context\n\n");
+            content.push_str(&coordinator_body);
+        }
     }
 
     Ok(Some(content))
@@ -1379,6 +1559,336 @@ fn simple_hash(s: &str) -> u64 {
 /// Generate the default agent context with a per-agent GOLDEN RULE that embeds
 /// the agent's own replica root path and, for WG replicas, the allowed Agent
 /// Matrix scope.
+pub fn get_default_agent_template() -> &'static str {
+    r#"# AgentsCommander Context
+
+You are running inside an AgentsCommander session — a terminal session manager that coordinates multiple AI agents.
+
+## GOLDEN RULE — Repository Write Restrictions
+
+**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in the entries listed below:
+
+1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
+2. **Your own agent replica directory and its subdirectories** — your assigned root:
+   ```
+   {{AGENT_ROOT}}
+   ```
+   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT write into other agents' replica directories.
+
+{{MATRIX_SECTION}}{{MESSAGING_EXCEPTION}}Any repository or directory outside the allowed entries above is READ-ONLY, except for the AgentsCommander CLI operations exception documented below.
+
+- **Allowed**: Read-only operations on ANY path (reading files, searching, git log, git status, git diff)
+- **Allowed**: Full read/write inside `repo-*` folders
+- **Allowed**: Full read/write inside your own replica root ({{AGENT_ROOT}}) and its subdirectories
+{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}- **FORBIDDEN**: Any write operation outside {{FORBIDDEN_SCOPE}}, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
+
+**Clarification on git operations:** {{GIT_SCOPE}}
+
+**Exception - AgentsCommander CLI operations:**
+
+When the user explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`, the command is authorized as an AgentsCommander operation. The agent may execute documented AgentsCommander CLI subcommands even if their filesystem effects create, modify, or delete files outside the normal repository/replica write zones. Those filesystem effects are governed by AgentsCommander itself, not by the agent's repository write restrictions.
+
+This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
+
+If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.
+
+## Delegated Task Reporting
+
+When finishing a delegated task or getting blocked, you must explicitly reply to the coordinator or peer with a concrete artifact or message. Do not just remain idle, waiting, or set working to false.
+
+{{SKILLS_SECTION}}
+
+## CLI executable
+
+Your AgentsCommander session credentials are available as environment variables:
+
+- `AGENTSCOMMANDER_TOKEN`: your session authentication token
+- `AGENTSCOMMANDER_ROOT`: your working directory (agent root)
+- `AGENTSCOMMANDER_BINARY`: the CLI binary name
+- `AGENTSCOMMANDER_BINARY_PATH`: the full path to the CLI executable you must use
+- `AGENTSCOMMANDER_LOCAL_DIR`: the config directory name for this instance
+
+Use `AGENTSCOMMANDER_BINARY_PATH` when invoking the CLI. This ensures you use the correct binary for your instance, whether it is the installed version or a dev/WG build.
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" <subcommand> [args]
+```
+
+**RULE:** Never hardcode or guess the binary path. Use the environment variables above. If they are unavailable in an agent session, restart or respawn the session.
+
+## Self-discovery via --help
+
+The CLI `--help` output documents every subcommand, flag, and accepted value. Use it as a FALLBACK reference for commands or flags NOT covered inline in this context.
+
+**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly — you do NOT need to consult `--help` to confirm their syntax.
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
+"<AGENTSCOMMANDER_BINARY_PATH>" send --help             # Full docs for sending messages
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help  # Full docs for discovering peers
+```
+
+**RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly.
+
+## Session credentials
+
+Your session credentials are delivered only through the `AGENTSCOMMANDER_*` environment variables listed above.
+
+Live token refresh without respawn is not supported, because a parent process cannot portably mutate an already-running child process environment. If credential validation fails, restart or respawn the session so AgentsCommander can create a new child process with fresh env values.
+
+Your agent root is your current working directory.
+
+## Inter-Agent Messaging
+
+### Send a message to another agent
+
+**MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers-lean`. Never guess agent names.
+
+**Peer name format** (canonical FQN, exactly what `list-peers-lean` emits in the `name` field):
+
+{{PEER_NAME_FORMAT}}
+
+**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk paths only — they are not peer names. The `list-peers-lean` JSON `name` field is the only authoritative source. If `list-peers-lean` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk — that produces invalid `--to` values. Stop and report the empty result instead.
+
+{{SEND_MESSAGE_INSTRUCTIONS}}
+
+The recipient receives a short notification pointing to your file's absolute
+path and reads the content via filesystem. Do NOT use `--get-output` — it
+blocks and is only for non-interactive sessions. After sending, stay idle and
+wait for the reply.
+
+### List available peers
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>"
+```
+"#
+}
+
+pub fn get_default_coordinator_template() -> &'static str {
+    "You are the coordinator for your team. You must:\n\
+     - Keep your base role; coordination is an additional assignment, not a replacement.\n\
+     - Receive team work requests.\n\
+     - Clarify scope, outcome, constraints, and acceptance criteria.\n\
+     - Always route work to the team member best prepared for each part of the request based on role, skills, and current assignment.\n\
+     - Delegate work instead of absorbing technical work when a more specialized agent is available.\n\
+     - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+     - Follow up after assignment to verify the assigned agent is active and working.\n\
+     - Contact silent or inactive assigned agents up to three total attempts.\n\
+     - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete.\n\
+     - Not infer completion solely from files/logs/artifacts/status flags when the assigned agent has not reported the outcome.\n\
+     - Give recommendations to help an agent work better without removing or overriding that agent's role/scope.\n\n\
+     ## Sending Screenshots\n\
+     As a coordinator, you may need to send screenshots. Use the CLI subcommand:\n\
+         telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+     - --path is required. --caption is optional and limited to 1024 UTF-16 units.\n\
+     - If multiple Telegram bots are configured, use --bot-id or --bot-label.\n\
+     - jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB.\n\
+     - Symlinks/junctions are rejected.\n\n\
+     **Screenshot Capture Paths:**\n\
+     - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work. Important: cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+     - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels. In that case ask the user to capture with Greenshot, use latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n"
+}
+
+fn render_agent_context_template(
+    template: &str,
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> String {
+    let rendered = default_context_dynamic_values(agent_root, matrix_root, skills_section);
+    template
+        .replace("{{AGENT_ROOT}}", agent_root)
+        .replace("{{MATRIX_SECTION}}", &rendered.matrix_section)
+        .replace("{{MATRIX_ALLOWED}}", &rendered.matrix_allowed)
+        .replace("{{MESSAGING_EXCEPTION}}", &rendered.messaging_exception)
+        .replace("{{MESSAGING_ALLOWED}}", &rendered.messaging_allowed)
+        .replace("{{FORBIDDEN_SCOPE}}", &rendered.forbidden_scope)
+        .replace("{{GIT_SCOPE}}", &rendered.git_scope)
+        .replace("{{PEER_NAME_FORMAT}}", &rendered.peer_name_format)
+        .replace(
+            "{{SEND_MESSAGE_INSTRUCTIONS}}",
+            &rendered.send_message_instructions,
+        )
+        .replace("{{SKILLS_SECTION}}", skills_section)
+}
+
+fn resolve_agent_context(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> Result<String, String> {
+    let template = read_or_create_context_template(
+        agent_root,
+        AGENT_CONTEXT_TEMPLATE_FILENAME,
+        get_default_agent_template(),
+    )?
+    .unwrap_or_else(|| default_context(agent_root, matrix_root, skills_section));
+    if template == default_context(agent_root, matrix_root, skills_section) {
+        Ok(template)
+    } else {
+        Ok(render_agent_context_template(
+            &template,
+            agent_root,
+            matrix_root,
+            skills_section,
+        ))
+    }
+}
+
+struct DefaultContextDynamicValues {
+    matrix_section: String,
+    matrix_allowed: String,
+    messaging_exception: String,
+    messaging_allowed: String,
+    forbidden_scope: String,
+    git_scope: String,
+    peer_name_format: String,
+    send_message_instructions: String,
+}
+
+fn default_context_dynamic_values(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    _skills_section: &str,
+) -> DefaultContextDynamicValues {
+    enum MessagingContextMode {
+        None,
+        Workgroup(String),
+        Root(String),
+    }
+
+    let matrix_section = match matrix_root {
+        Some(matrix_root) => format!(
+            "3. **Your origin Agent Matrix, but only for the canonical agent state listed below:**\n   ```\n   {matrix_root}\n   ```\n   Allowed there:\n   - `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`\n\n",
+            matrix_root = matrix_root,
+        ),
+        None => String::new(),
+    };
+    let matrix_allowed = match matrix_root {
+        Some(matrix_root) => format!(
+            "- **Allowed**: Full read/write inside your origin Agent Matrix's `memory/`, `plans/`, `skills/`, and `Role.md` ({matrix_root})\n",
+            matrix_root = matrix_root,
+        ),
+        None => String::new(),
+    };
+    let messaging_mode = if super::root_agent::is_root_agent_dir_name(agent_root) {
+        MessagingContextMode::Root(display_path(
+            &std::path::Path::new(agent_root).join(crate::phone::messaging::MESSAGING_DIR_NAME),
+        ))
+    } else {
+        match crate::phone::messaging::workgroup_root(std::path::Path::new(agent_root)) {
+            Ok(wg) => MessagingContextMode::Workgroup(display_path(
+                &wg.join(crate::phone::messaging::MESSAGING_DIR_NAME),
+            )),
+            Err(_) => MessagingContextMode::None,
+        }
+    };
+    let messaging_exception = match &messaging_mode {
+        MessagingContextMode::Workgroup(path) => format!(
+            "**Narrow exception — workgroup messaging directory:**\n\n\
+             You MAY create message files inside this directory:\n\n\
+             ```\n\
+             {path}\n\
+             ```\n\n\
+             Strictly limited to canonical inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (the CLI rejects any other shape). Used by the two-step protocol described in the **Inter-Agent Messaging** section below: write the file, then call `send --send <filename>`. Do NOT modify or delete any message file once written. Do NOT write any other kind of file here.\n\n",
+            path = path,
+        ),
+        MessagingContextMode::Root(path) => format!(
+            "**Narrow exception — Root Agent messaging directory:**\n\n\
+             You MAY create message files inside this directory:\n\n\
+             ```\n\
+             {path}\n\
+             ```\n\n\
+             Strictly limited to canonical Root Agent inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` (the CLI rejects any other shape). Used by the Root Agent coordinator-only protocol described in the **Inter-Agent Messaging** section below: write the file, then call `send --send <filename>`. Do NOT modify or delete any message file once written. Do NOT write any other kind of file here.\n\n",
+            path = path,
+        ),
+        MessagingContextMode::None => String::new(),
+    };
+    let messaging_allowed = match &messaging_mode {
+        MessagingContextMode::Workgroup(path) => format!(
+            "- **Allowed (narrow)**: Create canonical inter-agent message files in your workgroup messaging directory ({path}). No other writes there.\n",
+            path = path,
+        ),
+        MessagingContextMode::Root(path) => format!(
+            "- **Allowed (narrow)**: Create canonical Root Agent inter-agent message files in your Root Agent messaging directory ({path}). No other writes there.\n",
+            path = path,
+        ),
+        MessagingContextMode::None => String::new(),
+    };
+    let has_messaging_exception = !matches!(messaging_mode, MessagingContextMode::None);
+    let workspace_root_phrase = if has_messaging_exception {
+        "the workspace root (other than the narrow messaging exception above)"
+    } else {
+        "the workspace root"
+    };
+    let forbidden_scope = if matrix_root.is_some() {
+        format!(
+            "the entries listed above — including other agents' replica directories, any other files inside the Agent Matrix, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
+            ws = workspace_root_phrase,
+        )
+    } else {
+        format!(
+            "the entries listed above — including other agents' replica directories, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
+            ws = workspace_root_phrase,
+        )
+    };
+    let git_scope = if matrix_root.is_some() {
+        "Your replica directory and origin Agent Matrix are typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside either location, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.".to_string()
+    } else {
+        "Your agent directory is typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these AC workspace roots for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots.".to_string()
+    };
+    let peer_name_format = match &messaging_mode {
+        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
+        _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>` — e.g. `agentscommander/architect`.".to_string(),
+    };
+    let send_message_instructions = match &messaging_mode {
+        MessagingContextMode::Root(path) => format!(
+            "Before sending, run `list-peers-lean`; in Root Agent sessions it returns verified WG coordinator replicas only. Use only the JSON `name` values returned by `list-peers-lean`.\n\n\
+             Root messaging is **file-based** to avoid PTY truncation. Two steps:\n\n\
+             1. Write your message to a new file in the Root Agent messaging directory:\n\n\
+             ```\n\
+             {path}\n\
+             ```\n\n\
+             Filename must follow the pattern `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` (UTC timestamp, sanitized kebab-case slug ≤50 chars).\n\
+             2. Fire the send:\n\n\
+             ```\n\
+             \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<coordinator_name>\" --send <filename> --mode wake\n\
+             ```\n\n\
+             **IMPORTANT: `--send` takes the filename ONLY — never a path.**\n\n\
+             Origin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.\n",
+            path = path,
+        ),
+        _ => "Messaging is **file-based** to avoid PTY truncation. Two steps:\n\n\
+             1. Write your message to a new file in the workgroup messaging directory. The\n\
+                directory lives at `<workgroup-root>/messaging/` (walk up from your root\n\
+                until you find the parent `wg-<N>-*` folder). Filename must follow the\n\
+                pattern `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (UTC\n\
+                timestamp, sanitized kebab-case slug ≤50 chars).\n\
+             2. Fire the send:\n\n\
+             ```\n\
+             \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<agent_name>\" --send <filename> --mode wake\n\
+             ```\n\n\
+             **IMPORTANT: `--send` takes the filename ONLY — never a path.**\n\n\
+             - BAD:  `--send \"C:\\...\\messaging\\20260419-143052-wg3-you-to-wg3-peer-hello.md\"`\n\
+             - GOOD: `--send \"20260419-143052-wg3-you-to-wg3-peer-hello.md\"`\n\n\
+             The CLI resolves the filename against `<workgroup-root>/messaging/` automatically. Passing a path triggers `filename '...' contains path separators or traversal`.\n"
+            .to_string(),
+    };
+
+    DefaultContextDynamicValues {
+        matrix_section,
+        matrix_allowed,
+        messaging_exception,
+        messaging_allowed,
+        forbidden_scope,
+        git_scope,
+        peer_name_format,
+        send_message_instructions,
+    }
+}
+
 fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: &str) -> String {
     enum MessagingContextMode {
         None,
@@ -1540,6 +2050,10 @@ This exception applies only to invocations of the configured AgentsCommander CLI
 
 If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.
 
+## Delegated Task Reporting
+
+When finishing a delegated task or getting blocked, you must explicitly reply to the coordinator or peer with a concrete artifact or message. Do not just remain idle, waiting, or set working to false.
+
 {skills_section}
 
 ## CLI executable
@@ -1633,6 +2147,7 @@ fn is_replica_agent_dir(cwd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{mpsc, Arc, Barrier};
 
     fn no_skill_section() -> String {
         render_skills_section(&discover_skill_index(None))
@@ -1640,6 +2155,73 @@ mod tests {
 
     fn path_string(path: &Path) -> String {
         path.to_string_lossy().to_string()
+    }
+
+    struct PartialFailWriter {
+        file: std::fs::File,
+        bytes_written: usize,
+        fail_after_bytes: usize,
+    }
+
+    impl Write for PartialFailWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.bytes_written >= self.fail_after_bytes {
+                return Err(std::io::Error::other("injected write failure"));
+            }
+
+            let remaining = self.fail_after_bytes - self.bytes_written;
+            let write_len = remaining.min(buf.len());
+            let written = self.file.write(&buf[..write_len])?;
+            self.bytes_written += written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.file.flush()
+        }
+    }
+
+    impl ContextTemplateWriter for PartialFailWriter {
+        fn sync_all(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct BlockingPartialWriter {
+        file: std::fs::File,
+        bytes_written: usize,
+        first_chunk_len: usize,
+        partial_written_tx: Option<mpsc::Sender<()>>,
+        release_barrier: Arc<Barrier>,
+    }
+
+    impl Write for BlockingPartialWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.bytes_written == 0 {
+                let write_len = self.first_chunk_len.min(buf.len());
+                let written = self.file.write(&buf[..write_len])?;
+                self.bytes_written += written;
+                if let Some(tx) = self.partial_written_tx.take() {
+                    tx.send(()).expect("notify partial write");
+                }
+                self.release_barrier.wait();
+                return Ok(written);
+            }
+
+            let written = self.file.write(buf)?;
+            self.bytes_written += written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.file.flush()
+        }
+    }
+
+    impl ContextTemplateWriter for BlockingPartialWriter {
+        fn sync_all(&mut self) -> std::io::Result<()> {
+            self.file.sync_all()
+        }
     }
 
     fn write_skill(matrix_root: &Path, folder: &str, content: &str) -> PathBuf {
@@ -1910,6 +2492,376 @@ mod tests {
         assert!(!lower.contains(&legacy_compat));
         assert!(!lower.contains(&legacy_refresh_notice));
         assert!(!lower.contains(&legacy_visible_refresh));
+    }
+
+    #[test]
+    fn default_context_documents_delegated_task_reporting() {
+        let out = default_context("C:/tmp/fake-agent", None, &no_skill_section());
+        assert!(out.contains("When finishing a delegated task or getting blocked"));
+        assert!(out.contains("Do not just remain idle, waiting, or set working to false"));
+    }
+
+    #[test]
+    fn custom_agent_template_is_used_for_wg_replica() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
+        std::fs::write(
+            workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+            "root={{AGENT_ROOT}}\n{{MATRIX_SECTION}}\n{{MESSAGING_EXCEPTION}}\n{{SKILLS_SECTION}}",
+        )
+        .expect("write custom agent template");
+        write_skill(
+            &matrix_root,
+            "templated",
+            "---\nname: templated\ndescription: Template skill.\n---\n",
+        );
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains(&format!("root={}", display_path(&replica_root))));
+        assert!(content.contains("3. **Your origin Agent Matrix"));
+        assert!(content.contains("Narrow exception"));
+        assert!(content.contains("Template skill."));
+    }
+
+    #[test]
+    fn edited_agent_template_is_used_for_all_provider_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let template_path = workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(&template_path, "CUSTOM_AGENT_BODY").expect("write custom agent template");
+
+        for (target, expected_filename) in [
+            (ManagedContextTarget::Codex, "AGENTS.md"),
+            (ManagedContextTarget::Claude, "CLAUDE.md"),
+            (ManagedContextTarget::Gemini, "GEMINI.md"),
+        ] {
+            let materialized =
+                materialize_agent_context_file(&path_string(&matrix_root), target, false)
+                    .expect("materialize context")
+                    .expect("context path");
+            assert!(materialized.ends_with(expected_filename));
+            let content = std::fs::read_to_string(materialized).expect("read materialized context");
+            assert!(content.contains("CUSTOM_AGENT_BODY"));
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(template_path).expect("read agent template"),
+            "CUSTOM_AGENT_BODY"
+        );
+    }
+
+    #[test]
+    fn custom_coordinator_template_appends_only_for_coordinator() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_tech-lead");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            "CUSTOM_COORDINATOR_BODY",
+        )
+        .expect("write custom coordinator template");
+
+        let non_coordinator = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize non-coordinator")
+        .expect("context path");
+        let non_coordinator_content =
+            std::fs::read_to_string(non_coordinator).expect("read non-coordinator context");
+        assert!(!non_coordinator_content.contains("CUSTOM_COORDINATOR_BODY"));
+        assert!(!non_coordinator_content.contains("# Coordinator Context"));
+
+        let coordinator = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            true,
+        )
+        .expect("materialize coordinator")
+        .expect("context path");
+        let coordinator_content =
+            std::fs::read_to_string(coordinator).expect("read coordinator context");
+        assert!(coordinator_content.contains("# Coordinator Context"));
+        assert!(coordinator_content.contains("CUSTOM_COORDINATOR_BODY"));
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read coordinator template"),
+            "CUSTOM_COORDINATOR_BODY"
+        );
+    }
+
+    #[test]
+    fn missing_templates_are_created_and_used_during_regeneration() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            true,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("# AgentsCommander Context"));
+        assert!(content.contains("When finishing a delegated task or getting blocked"));
+        assert!(content.contains("# Coordinator Context"));
+        assert!(content.contains("You are the coordinator for your team"));
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read created agent template"),
+            get_default_agent_template()
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read created coordinator template"),
+            get_default_coordinator_template()
+        );
+    }
+
+    #[test]
+    fn failed_template_seed_removes_partial_file_and_retry_uses_complete_defaults() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+
+        for (filename, default_content) in [
+            (
+                AGENT_CONTEXT_TEMPLATE_FILENAME,
+                get_default_agent_template(),
+            ),
+            (
+                COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+                get_default_coordinator_template(),
+            ),
+        ] {
+            let path = workspace_dir.join(filename);
+            let err = write_template_if_missing_with::<PartialFailWriter, _>(
+                &path,
+                default_content,
+                |path| {
+                    let file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)?;
+                    Ok(PartialFailWriter {
+                        file,
+                        bytes_written: 0,
+                        fail_after_bytes: 8,
+                    })
+                },
+            )
+            .expect_err("injected partial write must fail");
+
+            assert!(err.contains("failed to write context template"), "{err}");
+            assert!(
+                !path.exists(),
+                "partial {filename} must be removed after write failure"
+            );
+            let temp_leftovers = std::fs::read_dir(&workspace_dir)
+                .expect("read workspace dir")
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .contains(&format!(".{filename}."))
+                })
+                .count();
+            assert_eq!(temp_leftovers, 0, "failed seed must remove temp files");
+        }
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            true,
+        )
+        .expect("retry materializes context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("# AgentsCommander Context"));
+        assert!(content.contains("When finishing a delegated task or getting blocked"));
+        assert!(content.contains("# Coordinator Context"));
+        assert!(content.contains("You are the coordinator for your team"));
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read retried agent template"),
+            get_default_agent_template()
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read retried coordinator template"),
+            get_default_coordinator_template()
+        );
+    }
+
+    #[test]
+    fn concurrent_template_seed_never_exposes_partial_default_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_tech-lead");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+
+        let path = workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let (partial_written_tx, partial_written_rx) = mpsc::channel();
+        let release_barrier = Arc::new(Barrier::new(2));
+        let writer_release_barrier = Arc::clone(&release_barrier);
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            write_template_if_missing_with::<BlockingPartialWriter, _>(
+                &writer_path,
+                get_default_agent_template(),
+                |path| {
+                    let file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)?;
+                    Ok(BlockingPartialWriter {
+                        file,
+                        bytes_written: 0,
+                        first_chunk_len: 8,
+                        partial_written_tx: Some(partial_written_tx),
+                        release_barrier: writer_release_barrier,
+                    })
+                },
+            )
+        });
+
+        partial_written_rx
+            .recv()
+            .expect("blocked writer reaches partial temp write");
+        assert!(
+            !path.exists(),
+            "final template must not exist while temp content is partial"
+        );
+        assert_eq!(
+            read_context_template(&path_string(&matrix_root), AGENT_CONTEXT_TEMPLATE_FILENAME)
+                .expect("read context template"),
+            None
+        );
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let materialized_content =
+            std::fs::read_to_string(materialized).expect("read materialized context");
+        assert!(materialized_content.contains("# AgentsCommander Context"));
+        assert!(materialized_content.contains("When finishing a delegated task or getting blocked"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read created agent template"),
+            get_default_agent_template()
+        );
+
+        release_barrier.wait();
+        writer
+            .join()
+            .expect("join blocked writer")
+            .expect("blocked writer returns success after existing final wins");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read final agent template"),
+            get_default_agent_template()
+        );
+    }
+
+    #[test]
+    fn empty_agent_and_coordinator_templates_are_valid_empty_intent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_tech-lead");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME), "")
+            .expect("write empty agent template");
+        std::fs::write(
+            workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            "   \n\t",
+        )
+        .expect("write empty coordinator template");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            true,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn existing_non_file_agent_template_returns_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+            .expect("create template directory");
+
+        let err = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect_err("directory template must error");
+
+        assert!(err.contains("Context template"));
+        assert!(err.contains("not a regular file"));
+    }
+
+    #[test]
+    fn invalid_utf8_agent_template_returns_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+            [0xff, 0xfe],
+        )
+        .expect("write invalid utf8 template");
+
+        let err = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect_err("invalid utf8 template must error");
+
+        assert!(err.contains("not valid UTF-8"));
+        assert!(err.contains(AGENT_CONTEXT_TEMPLATE_FILENAME));
     }
 
     #[test]
