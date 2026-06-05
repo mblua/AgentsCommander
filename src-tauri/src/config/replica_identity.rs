@@ -128,7 +128,7 @@ fn relative_path(from: &Path, to: &Path) -> Result<String, String> {
 
     if common == 0 {
         return Err(format!(
-            "cannot compute same-workspace identity between '{}' and '{}'",
+            "cannot compute same-Project AC Root identity between '{}' and '{}'",
             display_path(from),
             display_path(to)
         ));
@@ -185,7 +185,7 @@ fn validate_local_matrix(
         .map(strip_unc)
         .map_err(|e| {
             format!(
-                "Failed to canonicalize AC workspace '{}': {}",
+                "Failed to canonicalize Project AC Root '{}': {}",
                 display_path(workspace_dir),
                 e
             )
@@ -201,7 +201,7 @@ fn validate_local_matrix(
         })?;
     if !matrix_abs.starts_with(&workspace_abs) {
         return Err(format!(
-            "WG replica identity target '{}' escapes authoritative workspace '{}'",
+            "WG replica identity target '{}' escapes authoritative Project AC Root '{}'",
             display_path(&matrix_abs),
             display_path(&workspace_abs)
         ));
@@ -249,7 +249,7 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
 
     let workspace_dir = find_workspace_ancestor(replica_dir).ok_or_else(|| {
         format!(
-            "WG replica directory '{}' is not inside an AC workspace",
+            "WG replica directory '{}' is not inside a Project AC Root",
             display_path(replica_dir)
         )
     })?;

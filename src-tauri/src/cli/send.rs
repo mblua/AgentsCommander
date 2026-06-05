@@ -200,7 +200,7 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
 fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
     let workspace_dir = wg_root.parent().ok_or_else(|| {
         format!(
-            "workgroup root '{}' has no parent workspace directory",
+            "workgroup root '{}' has no parent Project AC Root directory",
             wg_root.display()
         )
     })?;
