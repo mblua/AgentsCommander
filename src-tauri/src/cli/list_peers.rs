@@ -1383,7 +1383,7 @@ mod tests {
 
         let wg = detect_wg_replica(root.to_str().unwrap())
             .unwrap()
-            .expect(".ac workspace should be accepted");
+            .expect("Project AC Root should be accepted");
         assert_eq!(wg.my_project, "proj-a");
         assert_eq!(wg.my_wg_name, "wg-1-devs");
         assert_eq!(wg.my_agent_name, "alice");
@@ -1402,7 +1402,7 @@ mod tests {
 
         let wg = detect_wg_replica(root.to_str().unwrap())
             .unwrap()
-            .expect(".ac workspace should be accepted");
+            .expect("Project AC Root should be accepted");
         let peers = discover_wg_peers(wg);
         let names: Vec<&str> = peers.iter().map(|peer| peer.name.as_str()).collect();
 

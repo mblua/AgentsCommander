@@ -53,7 +53,7 @@ pub enum ProjectError {
     CwdFailure(String, std::io::Error),
     #[error("failed to create .ac directory at {0}: {1}")]
     WorkspaceCreateFailed(PathBuf, std::io::Error),
-    #[error("failed to write workspace .gitignore at {0}: {1}")]
+    #[error("failed to write Project AC Root .gitignore at {0}: {1}")]
     WorkspaceGitignoreFailed(PathBuf, String),
 }
 
@@ -157,7 +157,7 @@ pub fn register_new_project(
         Ok(()) => {}
         Err(e) if !created => {
             log::warn!(
-                "[projects] gitignore sweep failed on pre-existing AC workspace at {:?}: {} (best-effort, continuing)",
+                "[projects] gitignore sweep failed on pre-existing Project AC Root at {:?}: {} (best-effort, continuing)",
                 workspace_dir, e
             );
         }

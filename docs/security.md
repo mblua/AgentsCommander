@@ -37,7 +37,7 @@ The `send` CLI enforces team-membership and coordinator-only routing at the daem
 
 - A worker can only message peers it shares a team with, plus its coordinator.
 - A coordinator can message any of its team members.
-- Cross-team coordination requires the Root Agent (workspace-level coordinator).
+- Cross-team coordination requires the Root Agent (Project AC Root-level coordinator).
 
 Token validation:
 

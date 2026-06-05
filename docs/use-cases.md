@@ -2,7 +2,7 @@
 
 For developers deciding whether AgentsCommander fits their workflow. Four worked examples — pick the one closest to your problem and adapt.
 
-Every example assumes you have the [Quickstart](quickstart.md) finished: a project with an `.ac/` workspace and at least one coding agent (Claude Code, Codex, or Gemini) installed.
+Every example assumes you have the [Quickstart](quickstart.md) finished: a project with a Project AC Root (`.ac/`) and at least one coding agent (Claude Code, Codex, or Gemini) installed.
 
 ## 1. Parallel feature development
 
@@ -85,7 +85,7 @@ A few configurations that look reasonable but cause pain:
 - **One agent doing everything.** AC's value is multi-agent. If you only have one agent, you are paying for a Tauri shell around the coding agent CLI you already have — use the CLI directly.
 - **Two role prompts in one directory.** Forbidden. The second agent will read the first one's role file and lose its identity. One agent = one directory.
 - **Sharing `TASK.md` across teams.** Each workgroup has its own brief. Sharing one brief across teams will produce coordinator conflicts on the YAML frontmatter title.
-- **Cross-coordinator messaging via shared files.** Coordinators on different teams cannot send each other messages directly. Use the Root Agent (workspace-level) if you need a top-level coordinator.
+- **Cross-coordinator messaging via shared files.** Coordinators on different teams cannot send each other messages directly. Use the Root Agent (Project AC Root-level) if you need a top-level coordinator.
 
 ---
 

@@ -380,6 +380,23 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Inject RTK hook into agent replicas</span>
         </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.informWhenRtkInstalled}
+            disabled={saving()}
+            onChange={(e) =>
+              updateField("informWhenRtkInstalled", e.currentTarget.checked)
+            }
+          />
+          <span>Show the startup banner when RTK is installed but not enabled</span>
+        </label>
+        <div class="settings-hint">
+          Off by default. When on, AC offers to enable RTK injection via a sidebar
+          banner at startup. This banner setting is read once at launch, so changes
+          to it take effect the next time AC starts.
+        </div>
       </div>
 
       <div class="settings-section">

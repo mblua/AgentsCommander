@@ -545,7 +545,7 @@ pub(crate) fn create_agent_matrix_from_role(
     let project_path = args
         .workspace_dir
         .parent()
-        .ok_or_else(|| "Workspace has no project parent".to_string())?;
+        .ok_or_else(|| "Project AC Root has no project parent".to_string())?;
     Ok(CreatedAgentMatrixOnDisk {
         agent_dir,
         display_name: agent_matrix_display_name(project_path, args.safe_name),
@@ -770,7 +770,7 @@ pub(crate) async fn create_workgroup_on_disk(
 
     if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
         log::warn!(
-            "[create_workgroup] Failed to ensure workspace .gitignore: {}",
+            "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
             e
         );
     }
@@ -1018,7 +1018,7 @@ pub async fn delete_agent_matrix(project_path: String, agent_name: String) -> Re
     let agent_dir_name = format!("_agent_{}", agent_name);
     let mut referencing_teams: Vec<String> = Vec::new();
     let entries = std::fs::read_dir(&base)
-        .map_err(|e| format!("Cannot read workspace directory for integrity check: {}", e))?;
+        .map_err(|e| format!("Cannot read Project AC Root directory for integrity check: {}", e))?;
     for entry in entries {
         let entry = entry
             .map_err(|e| format!("Cannot read directory entry during integrity check: {}", e))?;
@@ -1204,7 +1204,7 @@ pub async fn create_workgroup(
     // Ensure gitignore protects workgroup clones from parent repo operations
     if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
         log::warn!(
-            "[create_workgroup] Failed to ensure workspace .gitignore: {}",
+            "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
             e
         );
     }

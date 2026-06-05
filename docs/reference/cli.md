@@ -375,7 +375,7 @@ If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
 ## `new-project`
 
-Create an AC project at PATH (mkdir `.ac/` if no workspace exists) and register it.
+Create an AC project at PATH (mkdir `.ac/` if no Project AC Root exists) and register it.
 
 ```bash
 agentscommander new-project /path/to/project
@@ -385,7 +385,7 @@ agentscommander new-project /path/to/project
 |---|---|
 | `PATH` | Absolute or relative. Folder created if it does not yet exist. |
 
-Idempotent: re-running on a folder that already has `.ac/` only sweeps the workspace gitignore and deduplicates the registration.
+Idempotent: re-running on a folder that already has `.ac/` only sweeps the Project AC Root gitignore and deduplicates the registration.
 
 **No token required** — same reasoning as `open-project`.
 
