@@ -24,12 +24,12 @@ This document is the definitive guide for any AI agent tasked with creating or m
 AgentsCommander creates editable context templates for new projects under:
 
 ```text
-.ac/templates/
+.ac/
 ├── Context.agent.md
 └── Context.coordinator.md
 ```
 
-`Context.agent.md` is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` for matrix agents and workgroup replicas. `Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator template should contain only the body text.
+`.ac/Context.agent.md` is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` for matrix agents and workgroup replicas. `.ac/Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator file should contain only the body text.
 
 Existing projects that do not have these files keep using the built-in defaults. If a template file exists and is empty, that is treated as intentional user configuration. If a template exists but cannot be read, is not UTF-8, or is not a regular file, session context generation fails with a path-specific error instead of silently discarding the customization.
 

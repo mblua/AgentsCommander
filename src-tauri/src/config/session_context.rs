@@ -3,7 +3,6 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub const CONTEXT_TEMPLATES_DIR: &str = "templates";
 pub const AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
 
@@ -783,20 +782,19 @@ fn find_workspace_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), String> {
-    let templates_dir = workspace_dir.join(CONTEXT_TEMPLATES_DIR);
-    std::fs::create_dir_all(&templates_dir).map_err(|e| {
+    std::fs::create_dir_all(workspace_dir).map_err(|e| {
         format!(
             "failed to create context templates directory {}: {}",
-            templates_dir.display(),
+            workspace_dir.display(),
             e
         )
     })?;
     write_template_if_missing(
-        &templates_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+        &workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
         get_default_agent_template(),
     )?;
     write_template_if_missing(
-        &templates_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+        &workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
         get_default_coordinator_template(),
     )?;
     Ok(())
@@ -822,15 +820,15 @@ fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
     }
 }
 
-fn resolve_workspace_templates_dir(agent_root: &Path) -> Option<PathBuf> {
-    find_workspace_root(agent_root).map(|workspace_dir| workspace_dir.join(CONTEXT_TEMPLATES_DIR))
+fn resolve_workspace_context_dir(agent_root: &Path) -> Option<PathBuf> {
+    find_workspace_root(agent_root)
 }
 
 fn read_context_template(agent_root: &str, filename: &str) -> Result<Option<String>, String> {
-    let Some(templates_dir) = resolve_workspace_templates_dir(Path::new(agent_root)) else {
+    let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
         return Ok(None);
     };
-    let path = templates_dir.join(filename);
+    let path = context_dir.join(filename);
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -2317,11 +2315,10 @@ mod tests {
         let replica_root = workspace_dir
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let templates_dir = workspace_dir.join(CONTEXT_TEMPLATES_DIR);
         std::fs::create_dir_all(&replica_root).expect("create replica root");
-        std::fs::create_dir_all(&templates_dir).expect("create templates dir");
+        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
         std::fs::write(
-            templates_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+            workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
             "root={{AGENT_ROOT}}\n{{MATRIX_SECTION}}\n{{MESSAGING_EXCEPTION}}\n{{SKILLS_SECTION}}",
         )
         .expect("write custom agent template");
@@ -2356,11 +2353,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
         let matrix_root = workspace_dir.join("_agent_tech-lead");
-        let templates_dir = workspace_dir.join(CONTEXT_TEMPLATES_DIR);
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::create_dir_all(&templates_dir).expect("create templates dir");
         std::fs::write(
-            templates_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             "CUSTOM_COORDINATOR_BODY",
         )
         .expect("write custom coordinator template");
@@ -2414,13 +2409,11 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
         let matrix_root = workspace_dir.join("_agent_tech-lead");
-        let templates_dir = workspace_dir.join(CONTEXT_TEMPLATES_DIR);
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::create_dir_all(&templates_dir).expect("create templates dir");
-        std::fs::write(templates_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME), "")
+        std::fs::write(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME), "")
             .expect("write empty agent template");
         std::fs::write(
-            templates_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             "   \n\t",
         )
         .expect("write empty coordinator template");
@@ -2442,9 +2435,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
         let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let templates_dir = workspace_dir.join(CONTEXT_TEMPLATES_DIR);
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::create_dir_all(templates_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+        std::fs::create_dir_all(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
             .expect("create template directory");
 
         let err = materialize_agent_context_file(
@@ -2463,11 +2455,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
         let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let templates_dir = workspace_dir.join(CONTEXT_TEMPLATES_DIR);
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::create_dir_all(&templates_dir).expect("create templates dir");
         std::fs::write(
-            templates_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+            workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
             [0xff, 0xfe],
         )
         .expect("write invalid utf8 template");

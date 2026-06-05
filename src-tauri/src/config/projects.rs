@@ -512,15 +512,14 @@ mod tests {
         assert!(fix
             .path()
             .join(".ac")
-            .join(crate::config::session_context::CONTEXT_TEMPLATES_DIR)
             .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(fix
             .path()
             .join(".ac")
-            .join(crate::config::session_context::CONTEXT_TEMPLATES_DIR)
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
+        assert!(!fix.path().join(".ac").join("templates").exists());
     }
 
     #[test]
@@ -556,10 +555,10 @@ mod tests {
     #[test]
     fn new_does_not_overwrite_existing_context_templates() {
         let fix = FixtureRoot::new("proj-new-template-existing");
-        let templates_dir = fix.path().join(".ac").join("templates");
-        std::fs::create_dir_all(&templates_dir).unwrap();
-        let agent_template = templates_dir.join("Context.agent.md");
-        let coordinator_template = templates_dir.join("Context.coordinator.md");
+        let workspace_dir = fix.path().join(".ac");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        let agent_template = workspace_dir.join("Context.agent.md");
+        let coordinator_template = workspace_dir.join("Context.coordinator.md");
         std::fs::write(&agent_template, "CUSTOM_AGENT").unwrap();
         std::fs::write(&coordinator_template, "CUSTOM_COORDINATOR").unwrap();
 
@@ -586,6 +585,12 @@ mod tests {
         let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
 
         assert!(!r.created);
+        assert!(!fix.path().join(".ac").join("Context.agent.md").exists());
+        assert!(!fix
+            .path()
+            .join(".ac")
+            .join("Context.coordinator.md")
+            .exists());
         assert!(!fix.path().join(".ac").join("templates").exists());
     }
 
