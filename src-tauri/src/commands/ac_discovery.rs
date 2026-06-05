@@ -429,12 +429,12 @@ impl DiscoveryBranchWatcher {
         let has_workspace = has_workspace_dir(Path::new(project_dir));
         debug_assert!(
             has_workspace,
-            "update_replicas_for_project: {} does not contain an AC workspace",
+            "update_replicas_for_project: {} does not contain a Project AC Root",
             project_dir
         );
         if !has_workspace {
             log::warn!(
-                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no AC workspace, ignoring",
+                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no Project AC Root, ignoring",
                 project_dir
             );
             return;
@@ -1291,7 +1291,7 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
 
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(&gitignore_path)
-            .map_err(|e| format!("Failed to read workspace .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to read Project AC Root .gitignore: {}", e))?;
 
         let mut additions = String::new();
         for (pattern, comment) in required_entries {
@@ -1306,7 +1306,7 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
                 &gitignore_path,
                 format!("{}{}{}", content, separator, additions),
             )
-            .map_err(|e| format!("Failed to update workspace .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to update Project AC Root .gitignore: {}", e))?;
         }
     } else {
         let mut content = String::new();
@@ -1314,7 +1314,7 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
             content.push_str(&format!("{}\n{}\n\n", comment, pattern));
         }
         std::fs::write(&gitignore_path, content)
-            .map_err(|e| format!("Failed to create workspace .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to create Project AC Root .gitignore: {}", e))?;
     }
 
     Ok(())
@@ -1384,7 +1384,7 @@ pub async fn discover_project(
 
     let entries = match std::fs::read_dir(&workspace_dir) {
         Ok(e) => e,
-        Err(e) => return Err(format!("Failed to read AC workspace directory: {}", e)),
+        Err(e) => return Err(format!("Failed to read Project AC Root directory: {}", e)),
     };
 
     for entry in entries.flatten() {

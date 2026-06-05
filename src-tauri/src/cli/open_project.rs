@@ -43,7 +43,7 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
         Err(e) => {
             eprintln!("Error: {}", e);
             // Append CLI-specific guidance when the user pointed at a folder
-            // without an AC workspace. The bare error string is GUI-friendly
+            // without a Project AC Root. The bare error string is GUI-friendly
             // (Round-1 G8); only the CLI knows about `new-project`.
             if matches!(e, ProjectError::WorkspaceMissing(_)) {
                 eprintln!("Hint: use `new-project <PATH>` to create the .ac structure.");
