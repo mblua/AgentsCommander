@@ -48,7 +48,11 @@ A renamed copy of `agentscommander.exe` (with an `_<suffix>` like `agentscommand
 
 ## Project (AC project)
 
-A folder containing an `.ac/` workspace. AC manages all agents, teams, and workgroups under that workspace.
+A folder containing a Project AC Root (`.ac/`). AC manages all agents, teams, and workgroups under that root.
+
+## Project AC Root
+
+The `.ac/` container folder at the project root holding origin agent state, configuration, and team structures. *(Note: Previously called "Workspace" or "AC Workspace". CLI flags and internal files may still contain "workspace" during the transition).*
 
 ## PTY
 
@@ -64,7 +68,7 @@ A reusable agent definition (prompt + optional skills) that AC clones when you c
 
 ## Root Agent
 
-A workspace-level coordinator that can route messages between coordinators of different teams. Identity-verified WG coordinators see it as a synthetic `agentscommander://root-agent` peer.
+A Project AC Root-level coordinator that can route messages between coordinators of different teams. Identity-verified WG coordinators see it as a synthetic `agentscommander://root-agent` peer.
 
 ## RTK (Rust Token Killer)
 
@@ -93,6 +97,10 @@ A UUID issued per session. The CLI shape-validates it; the daemon mailbox identi
 ## Voice-to-text
 
 Push-to-talk transcription via the Google Gemini API. Dictate a prompt; AC writes the transcription into the session's PTY. See [Voice-to-text](features/voice-to-text.md).
+
+## Workspace (Deprecated)
+
+*Deprecated alias.* See **Project AC Root**.
 
 ## Workgroup
 
