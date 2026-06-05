@@ -55,6 +55,8 @@ pub enum ProjectError {
     WorkspaceCreateFailed(PathBuf, std::io::Error),
     #[error("failed to write workspace .gitignore at {0}: {1}")]
     WorkspaceGitignoreFailed(PathBuf, String),
+    #[error("failed to create context templates in .ac directory at {0}: {1}")]
+    ContextTemplatesCreateFailed(PathBuf, String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -167,6 +169,11 @@ pub fn register_new_project(
                 e,
             ))
         }
+    }
+
+    if created {
+        crate::config::session_context::create_default_context_templates(&workspace_dir)
+            .map_err(|e| ProjectError::ContextTemplatesCreateFailed(workspace_dir.clone(), e))?;
     }
 
     let abs_str = abs.to_string_lossy().into_owned();
@@ -502,6 +509,18 @@ mod tests {
         assert!(r.registered);
         assert!(fix.path().join(".ac").is_dir());
         assert!(fix.path().join(".ac").join(".gitignore").is_file());
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::CONTEXT_TEMPLATES_DIR)
+            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::CONTEXT_TEMPLATES_DIR)
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
     }
 
     #[test]
@@ -532,6 +551,42 @@ mod tests {
         assert!(r.registered);
         // gitignore swept opportunistically even though .ac pre-existed
         assert!(fix.path().join(".ac").join(".gitignore").is_file());
+    }
+
+    #[test]
+    fn new_does_not_overwrite_existing_context_templates() {
+        let fix = FixtureRoot::new("proj-new-template-existing");
+        let templates_dir = fix.path().join(".ac").join("templates");
+        std::fs::create_dir_all(&templates_dir).unwrap();
+        let agent_template = templates_dir.join("Context.agent.md");
+        let coordinator_template = templates_dir.join("Context.coordinator.md");
+        std::fs::write(&agent_template, "CUSTOM_AGENT").unwrap();
+        std::fs::write(&coordinator_template, "CUSTOM_COORDINATOR").unwrap();
+
+        let mut s = AppSettings::default();
+        let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
+
+        assert!(!r.created);
+        assert_eq!(
+            std::fs::read_to_string(agent_template).unwrap(),
+            "CUSTOM_AGENT"
+        );
+        assert_eq!(
+            std::fs::read_to_string(coordinator_template).unwrap(),
+            "CUSTOM_COORDINATOR"
+        );
+    }
+
+    #[test]
+    fn new_does_not_backfill_templates_when_ac_already_exists() {
+        let fix = FixtureRoot::new("proj-new-template-no-backfill");
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
+        let mut s = AppSettings::default();
+
+        let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
+
+        assert!(!r.created);
+        assert!(!fix.path().join(".ac").join("templates").exists());
     }
 
     #[test]
