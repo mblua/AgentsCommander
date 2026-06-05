@@ -1324,6 +1324,7 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
     let workspace_dir = workspace_dir_for_project(Path::new(&path));
+    let created = !workspace_dir.exists();
     std::fs::create_dir_all(&workspace_dir).map_err(|e| {
         format!(
             "Failed to create {} directory: {}",
@@ -1332,6 +1333,9 @@ pub async fn create_ac_project(path: String) -> Result<(), String> {
         )
     })?;
     ensure_workspace_gitignore(&workspace_dir)?;
+    if created {
+        crate::config::session_context::create_default_context_templates(&workspace_dir)?;
+    }
     Ok(())
 }
 
@@ -1801,6 +1805,17 @@ mod tests {
 
         assert!(tmp.path().join(".ac").is_dir());
         assert!(tmp.path().join(".ac").join(".gitignore").is_file());
+        assert!(tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(tmp
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(!tmp.path().join(".ac").join("templates").exists());
     }
 
     #[test]
