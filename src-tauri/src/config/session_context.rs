@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
+pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
@@ -802,7 +803,7 @@ pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), Stri
     Ok(())
 }
 
-fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
+pub(crate) fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
     write_template_if_missing_with(path, content, |path| {
         std::fs::OpenOptions::new()
             .write(true)
