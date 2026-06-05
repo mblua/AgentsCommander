@@ -7,6 +7,7 @@ import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
+import { preserveVisibleOrder } from "../stores/sessions-helpers";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
@@ -73,6 +74,10 @@ function isSessionLive(session: Session | undefined): boolean {
   if (!session) return false;
   if (typeof session.status === "object" && "exited" in session.status) return false;
   return true;
+}
+
+function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }): string {
+  return `${item.wg.path}\u0000${item.replica.path}`;
 }
 
 /** Get replicas in a workgroup that have active (live) sessions */
@@ -385,7 +390,7 @@ const ProjectPanel: Component = () => {
         };
 
         const hasTeams = () => proj.teams.length > 0;
-        const coordinatorItems = createMemo(() => {
+        const coordinatorItems = createMemo((previous: { replica: AcAgentReplica; wg: AcWorkgroup }[] | undefined) => {
           const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
           for (const wg of proj.workgroups) {
             for (const replica of wg.agents) {
@@ -402,6 +407,9 @@ const ProjectPanel: Component = () => {
               return activityMap[session.id] ?? 0;
             };
             result.sort((a, b) => tsFor(b) - tsFor(a));
+            if (sessionsStore.sidebarPointerInside) {
+              return preserveVisibleOrder(result, previous, coordinatorItemKey);
+            }
           }
           return result;
         });

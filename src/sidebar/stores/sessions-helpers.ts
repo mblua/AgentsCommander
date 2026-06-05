@@ -31,3 +31,36 @@ export function upsertSessionList(prev: Session[], incoming: Session): Session[]
   next[idx] = { ...prev[idx], ...incoming };
   return next;
 }
+
+/**
+ * Keep the previous visible order while allowing removals and appending new
+ * items. Used to prevent activity-driven coordinator sorting from moving rows
+ * under the pointer during Sidebar interaction.
+ */
+export function preserveVisibleOrder<T>(
+  next: T[],
+  previous: T[] | undefined,
+  keyFor: (item: T) => string,
+): T[] {
+  if (!previous || previous.length === 0) return next;
+
+  const nextByKey = new Map(next.map((item) => [keyFor(item), item]));
+  const used = new Set<string>();
+  const ordered: T[] = [];
+
+  for (const previousItem of previous) {
+    const key = keyFor(previousItem);
+    const nextItem = nextByKey.get(key);
+    if (!nextItem) continue;
+    ordered.push(nextItem);
+    used.add(key);
+  }
+
+  for (const nextItem of next) {
+    const key = keyFor(nextItem);
+    if (used.has(key)) continue;
+    ordered.push(nextItem);
+  }
+
+  return ordered;
+}

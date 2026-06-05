@@ -8,6 +8,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { isRuntimeStringStatus, upsertSessionList } from "./sessions-helpers";
 
 const [toggleInFlight, setToggleInFlight] = createSignal(false);
+const [sidebarPointerInside, setSidebarPointerInside] = createSignal(false);
 
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
@@ -402,9 +403,16 @@ export const sessionsStore = {
   get toggleInFlight() {
     return toggleInFlight();
   },
+  get sidebarPointerInside() {
+    return sidebarPointerInside();
+  },
 
   setAlwaysShowSelectedWorkgroup(value: boolean) {
     setState("alwaysShowSelectedWorkgroup", value);
+  },
+
+  setSidebarPointerInside(value: boolean) {
+    setSidebarPointerInside(value);
   },
 
   setCoordSortByActivity(value: boolean) {
