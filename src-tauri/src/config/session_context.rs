@@ -2,9 +2,11 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
+static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
 /// root path interpolated into the GOLDEN RULE. For WG replicas, also exposes
@@ -815,38 +817,98 @@ fn write_template_if_missing_with<W, F>(
     open_new: F,
 ) -> Result<(), String>
 where
-    W: Write,
+    W: ContextTemplateWriter,
     F: FnOnce(&Path) -> std::io::Result<W>,
 {
-    match open_new(path) {
-        Ok(mut file) => {
-            if let Err(e) = file.write_all(content.as_bytes()) {
-                drop(file);
-                cleanup_failed_context_template(path);
-                return Err(format!(
-                    "failed to write context template {}: {}",
-                    path.display(),
-                    e
-                ));
-            }
-            if let Err(e) = file.flush() {
-                drop(file);
-                cleanup_failed_context_template(path);
-                return Err(format!(
-                    "failed to flush context template {}: {}",
-                    path.display(),
-                    e
-                ));
-            }
-            Ok(())
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "failed to inspect context template {}: {}",
+                path.display(),
+                e
+            ))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(format!(
-            "failed to create context template {}: {}",
+    }
+
+    let temp_path = unique_context_template_temp_path(path);
+    let mut file = open_new(&temp_path).map_err(|e| {
+        format!(
+            "failed to create temporary context template {}: {}",
+            temp_path.display(),
+            e
+        )
+    })?;
+
+    if let Err(e) = file.write_all(content.as_bytes()) {
+        drop(file);
+        cleanup_failed_context_template(&temp_path);
+        return Err(format!(
+            "failed to write context template {}: {}",
             path.display(),
             e
-        )),
+        ));
     }
+    if let Err(e) = file.flush() {
+        drop(file);
+        cleanup_failed_context_template(&temp_path);
+        return Err(format!(
+            "failed to flush context template {}: {}",
+            path.display(),
+            e
+        ));
+    }
+    if let Err(e) = file.sync_all() {
+        drop(file);
+        cleanup_failed_context_template(&temp_path);
+        return Err(format!(
+            "failed to sync context template {}: {}",
+            path.display(),
+            e
+        ));
+    }
+    drop(file);
+
+    match std::fs::hard_link(&temp_path, path) {
+        Ok(()) => {
+            cleanup_failed_context_template(&temp_path);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            cleanup_failed_context_template(&temp_path);
+            Ok(())
+        }
+        Err(e) => {
+            cleanup_failed_context_template(&temp_path);
+            Err(format!(
+                "failed to publish context template {}: {}",
+                path.display(),
+                e
+            ))
+        }
+    }
+}
+
+trait ContextTemplateWriter: Write {
+    fn sync_all(&mut self) -> std::io::Result<()>;
+}
+
+impl ContextTemplateWriter for std::fs::File {
+    fn sync_all(&mut self) -> std::io::Result<()> {
+        std::fs::File::sync_all(self)
+    }
+}
+
+fn unique_context_template_temp_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Context.template.md");
+    let counter = CONTEXT_TEMPLATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let process_id = std::process::id();
+    parent.join(format!(".{file_name}.{process_id}.{counter}.tmp"))
 }
 
 fn cleanup_failed_context_template(path: &Path) {
@@ -2085,6 +2147,7 @@ fn is_replica_agent_dir(cwd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{mpsc, Arc, Barrier};
 
     fn no_skill_section() -> String {
         render_skills_section(&discover_skill_index(None))
@@ -2103,10 +2166,7 @@ mod tests {
     impl Write for PartialFailWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             if self.bytes_written >= self.fail_after_bytes {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "injected write failure",
-                ));
+                return Err(std::io::Error::other("injected write failure"));
             }
 
             let remaining = self.fail_after_bytes - self.bytes_written;
@@ -2118,6 +2178,49 @@ mod tests {
 
         fn flush(&mut self) -> std::io::Result<()> {
             self.file.flush()
+        }
+    }
+
+    impl ContextTemplateWriter for PartialFailWriter {
+        fn sync_all(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct BlockingPartialWriter {
+        file: std::fs::File,
+        bytes_written: usize,
+        first_chunk_len: usize,
+        partial_written_tx: Option<mpsc::Sender<()>>,
+        release_barrier: Arc<Barrier>,
+    }
+
+    impl Write for BlockingPartialWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.bytes_written == 0 {
+                let write_len = self.first_chunk_len.min(buf.len());
+                let written = self.file.write(&buf[..write_len])?;
+                self.bytes_written += written;
+                if let Some(tx) = self.partial_written_tx.take() {
+                    tx.send(()).expect("notify partial write");
+                }
+                self.release_barrier.wait();
+                return Ok(written);
+            }
+
+            let written = self.file.write(buf)?;
+            self.bytes_written += written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.file.flush()
+        }
+    }
+
+    impl ContextTemplateWriter for BlockingPartialWriter {
+        fn sync_all(&mut self) -> std::io::Result<()> {
+            self.file.sync_all()
         }
     }
 
@@ -2582,6 +2685,17 @@ mod tests {
                 !path.exists(),
                 "partial {filename} must be removed after write failure"
             );
+            let temp_leftovers = std::fs::read_dir(&workspace_dir)
+                .expect("read workspace dir")
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .contains(&format!(".{filename}."))
+                })
+                .count();
+            assert_eq!(temp_leftovers, 0, "failed seed must remove temp files");
         }
 
         let materialized = materialize_agent_context_file(
@@ -2606,6 +2720,78 @@ mod tests {
             std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read retried coordinator template"),
             get_default_coordinator_template()
+        );
+    }
+
+    #[test]
+    fn concurrent_template_seed_never_exposes_partial_default_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_tech-lead");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+
+        let path = workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let (partial_written_tx, partial_written_rx) = mpsc::channel();
+        let release_barrier = Arc::new(Barrier::new(2));
+        let writer_release_barrier = Arc::clone(&release_barrier);
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            write_template_if_missing_with::<BlockingPartialWriter, _>(
+                &writer_path,
+                get_default_agent_template(),
+                |path| {
+                    let file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)?;
+                    Ok(BlockingPartialWriter {
+                        file,
+                        bytes_written: 0,
+                        first_chunk_len: 8,
+                        partial_written_tx: Some(partial_written_tx),
+                        release_barrier: writer_release_barrier,
+                    })
+                },
+            )
+        });
+
+        partial_written_rx
+            .recv()
+            .expect("blocked writer reaches partial temp write");
+        assert!(
+            !path.exists(),
+            "final template must not exist while temp content is partial"
+        );
+        assert_eq!(
+            read_context_template(&path_string(&matrix_root), AGENT_CONTEXT_TEMPLATE_FILENAME)
+                .expect("read context template"),
+            None
+        );
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let materialized_content =
+            std::fs::read_to_string(materialized).expect("read materialized context");
+        assert!(materialized_content.contains("# AgentsCommander Context"));
+        assert!(materialized_content.contains("When finishing a delegated task or getting blocked"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read created agent template"),
+            get_default_agent_template()
+        );
+
+        release_barrier.wait();
+        writer
+            .join()
+            .expect("join blocked writer")
+            .expect("blocked writer returns success after existing final wins");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read final agent template"),
+            get_default_agent_template()
         );
     }
 
