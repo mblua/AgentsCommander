@@ -112,7 +112,7 @@ pub enum Commands {
     TaskAppendBody(task_append_body::TaskAppendBodyArgs),
     /// Register an existing AC project (.ac must already exist) in settings
     OpenProject(open_project::OpenProjectArgs),
-    /// Create an AC project (mkdir .ac if no workspace exists) and register it in settings
+    /// Create an AC project (create `.ac/` Project AC Root if missing) and register it in settings
     NewProject(new_project::NewProjectArgs),
     /// Send a local image/file to a configured Telegram bot (no GUI required)
     TelegramSendImage(telegram_send_image::TelegramSendImageArgs),

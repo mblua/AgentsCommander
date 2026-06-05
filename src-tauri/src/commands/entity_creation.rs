@@ -2129,7 +2129,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
     }
 }
 
-/// Scan the selected workspace for existing `wg-<N>-{team_name}/` dirs and return the
+/// Scan the selected Project AC Root for existing `wg-<N>-{team_name}/` dirs and return the
 /// **lowest free positive integer** starting at 1.
 ///
 /// Issue #177: previously this returned `max(existing) + 1`, which left

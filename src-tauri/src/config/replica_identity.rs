@@ -211,7 +211,7 @@ fn validate_local_matrix(
 }
 
 /// Derive the only valid identity for a WG replica:
-/// `<project>/<workspace>/wg-N-team/__agent_NAME` -> `<project>/<workspace>/_agent_NAME`.
+/// `<project>/<Project AC Root>/wg-N-team/__agent_NAME` -> `<project>/<Project AC Root>/_agent_NAME`.
 pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdentity, String> {
     let replica_dir_name = replica_dir
         .file_name()

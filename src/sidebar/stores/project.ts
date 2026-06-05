@@ -76,7 +76,7 @@ export const projectStore = {
       // Round-1 G11 deferred: surface this to the user via toast/sidebar
       // chip in a follow-up. For now, preserve the existing swallow-and-log
       // so behaviour is no worse than today (initFromSettings silently drops
-      // a project whose workspace was deleted between sessions.
+      // a project whose Project AC Root was deleted between sessions.
       console.error("Failed to load project:", e);
     } finally {
       loadingCount--;
@@ -96,10 +96,10 @@ export const projectStore = {
     }
   },
 
-  /** Create .ac in path (if no workspace exists) and register/load it. */
+  /** Create `.ac/` Project AC Root in path if missing and register/load it. */
   async createAndLoad(path: string) {
     const reg = await ProjectAPI.new(path);
-    // After ensuring a workspace exists and persistence is set, run discovery for UI.
+    // After ensuring Project AC Root exists and persistence is set, run discovery for UI.
     const result = await ProjectAPI.discover(reg.path);
     const folderName =
       reg.path.replace(/\\/g, "/").split("/").pop() ?? "unknown";
@@ -119,7 +119,7 @@ export const projectStore = {
     });
   },
 
-  /** Full open flow: pick folder, check workspace, auto-load if found */
+  /** Full open flow: pick folder, check Project AC Root, auto-load if found */
   async pickAndCheck(): Promise<{ picked: string | null; hasWorkspace: boolean }> {
     const picked = await AgentCreatorAPI.pickFolder();
     if (!picked) return { picked: null, hasWorkspace: false };

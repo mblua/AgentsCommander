@@ -1069,7 +1069,7 @@ fn is_agent_dir(cwd: &str) -> bool {
         || super::root_agent::is_root_agent_dir_name(cwd)
 }
 
-/// Build the GIT_CEILING_DIRECTORIES value for agent sessions rooted in an AC workspace.
+/// Build the GIT_CEILING_DIRECTORIES value for agent sessions rooted in a Project AC Root.
 /// This blocks Git from traversing upward into the parent project repo when the
 /// current directory is an agent matrix, a WG replica, or a descendant of those roots.
 pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
