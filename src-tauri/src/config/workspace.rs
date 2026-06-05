@@ -63,26 +63,26 @@ pub fn ensure_authoritative_workspace_dir(workspace_dir: &Path) -> Result<(), St
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
             format!(
-                "workspace path '{}' has no valid directory name",
+                "Project AC Root path '{}' has no valid directory name",
                 workspace_dir.display()
             )
         })?;
     if !is_workspace_dir_name(workspace_name) {
         return Err(format!(
-            "workspace path '{}' is not an AC workspace directory",
+            "Project AC Root path '{}' is not a Project AC Root directory",
             workspace_dir.display()
         ));
     }
 
     let project_dir = workspace_dir.parent().ok_or_else(|| {
         format!(
-            "workspace path '{}' has no parent project directory",
+            "Project AC Root path '{}' has no parent project directory",
             workspace_dir.display()
         )
     })?;
     let Some(authoritative) = existing_workspace_dir(project_dir) else {
         return Err(format!(
-            "project '{}' has no AC workspace directory",
+            "project '{}' has no Project AC Root directory",
             project_dir.display()
         ));
     };
@@ -91,7 +91,7 @@ pub fn ensure_authoritative_workspace_dir(workspace_dir: &Path) -> Result<(), St
         Ok(())
     } else {
         Err(format!(
-            "workspace '{}' rejected because authoritative workspace '{}' exists",
+            "Project AC Root '{}' rejected because authoritative Project AC Root '{}' exists",
             workspace_dir.display(),
             authoritative.display()
         ))

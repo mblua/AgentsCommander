@@ -101,7 +101,7 @@ pub(crate) fn resolve_cli_project(project: &str) -> Result<PathBuf, String> {
 
 pub(crate) fn resolve_cli_workspace(project_path: &Path) -> Result<PathBuf, String> {
     existing_workspace_dir(project_path)
-        .ok_or_else(|| format!("AC workspace not found in {} (.ac)", project_path.display()))
+        .ok_or_else(|| format!("Project AC Root not found in {} (.ac)", project_path.display()))
 }
 
 pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str, reason: &str) {
