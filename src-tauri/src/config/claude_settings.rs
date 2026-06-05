@@ -503,7 +503,7 @@ fn discriminant_label(v: &serde_json::Value) -> &'static str {
     }
 }
 
-/// Walks every `<project_root>/<workspace>/` and returns absolute paths to every
+/// Walks every `<project_root>/<project_ac_root>/` and returns absolute paths to every
 /// `_agent_*` matrix and every `__agent_*` replica (inside `wg-*` dirs).
 ///
 /// **`project_paths` semantics.** Each entry may be either (a) a project root
@@ -619,7 +619,7 @@ pub fn enumerate_managed_agent_dirs(project_paths: &[String]) -> Vec<std::path::
         // `push_if_new` and the `wg-*` parent re-check. Without this, a
         // symlink/junction child (e.g. `parent/Linked -> /elsewhere`) would
         // pass `p.is_dir()` (which follows links) and the sweep would write
-        // into `/elsewhere/.ac/_agent_*` outside the declared workspace.
+        // into `/elsewhere/.ac/_agent_*` outside the declared Project AC Root.
         let mut candidates: Vec<PathBuf> = vec![base.to_path_buf()];
         if let Ok(entries) = std::fs::read_dir(base) {
             for entry in entries.flatten() {
@@ -1177,7 +1177,7 @@ mod tests {
         // symlink/junction pointing OUTSIDE the parent tree to a dir that has
         // its own .ac/. The descend must NOT cross that boundary.
         // (Grinch H1' regression test — without the M7 gate at the descend
-        // step, the sweep escapes the declared workspace.)
+        // step, the sweep escapes the declared Project AC Root.)
         let dir = tempdir("t25");
         let parent = dir.join("parent");
         let real_proj = parent.join("AppA");

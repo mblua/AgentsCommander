@@ -538,7 +538,7 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
     }
 }
 
-/// Resolve an agent ref to an absolute path given the workspace directory.
+/// Resolve an agent ref to an absolute path given the Project AC Root directory.
 fn resolve_agent_path(workspace_dir: &Path, agent_ref: &str) -> Option<PathBuf> {
     let normalized = agent_ref.replace('\\', "/");
     let trimmed = normalized
@@ -554,13 +554,13 @@ fn resolve_agent_path(workspace_dir: &Path, agent_ref: &str) -> Option<PathBuf> 
         return None;
     }
 
-    // Relative to the workspace directory.
+    // Relative to the Project AC Root directory.
     let candidate = workspace_dir.join(trimmed);
     if candidate.is_dir() {
         return Some(candidate);
     }
 
-    // Try parent of the workspace directory (project root).
+    // Try parent of the Project AC Root directory (project root).
     if let Some(project_root) = workspace_dir.parent() {
         let candidate = project_root.join(trimmed);
         if candidate.is_dir() {
@@ -799,7 +799,7 @@ pub fn can_communicate(from: &str, to: &str, teams: &[DiscoveredTeam]) -> bool {
 }
 
 /// Discover all teams from all known project paths.
-/// Scans settings.project_paths (and immediate children) for workspace `_team_*/config.json`.
+/// Scans settings.project_paths (and immediate children) for Project AC Root `_team_*/config.json`.
 pub fn discover_teams() -> Vec<DiscoveredTeam> {
     let settings = crate::config::settings::load_settings();
     let mut teams = Vec::new();

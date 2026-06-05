@@ -492,7 +492,7 @@ struct WgReplicaInfo {
     my_project: String,
 }
 
-/// Detect if `root` is a WG replica: path matches `*/<workspace>/wg-*/__agent_*/`.
+/// Detect if `root` is a WG replica: path matches `*/<project_ac_root>/wg-*/__agent_*/`.
 fn detect_wg_replica(root: &str) -> Result<Option<WgReplicaInfo>, String> {
     let path = PathBuf::from(root);
     let canon = match std::fs::canonicalize(&path) {
@@ -550,7 +550,7 @@ fn detect_wg_replica(root: &str) -> Result<Option<WgReplicaInfo>, String> {
 }
 
 /// Resolve the coordinator agent name for a WG by matching replica identity
-/// paths against the team coordinator path in the workspace `_team_*/config.json`.
+/// paths against the team coordinator path in Project AC Root `_team_*/config.json`.
 /// Only checks the team whose name matches the WG suffix (e.g. `wg-1-ac-devs` → `_team_ac-devs`).
 fn resolve_wg_coordinator(workspace_dir: &Path, wg_dir: &Path) -> Option<String> {
     crate::config::teams::resolve_wg_coordinator_replica(workspace_dir, wg_dir)
@@ -687,7 +687,7 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
         ));
     }
 
-    // Coordinator also sees coordinators of other WGs in the same workspace
+    // Coordinator also sees coordinators of other WGs in the same Project AC Root
     // (same project, different WG — still qualified with `wg.my_project`).
     if i_am_coordinator {
         if let Ok(entries) = std::fs::read_dir(&wg.workspace_dir) {
@@ -882,7 +882,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
             let Some(workspace_dir) = existing_workspace_dir(&repo_dir) else {
                 continue;
             };
-            // Project folder name (parent of workspace) is the LHS of the canonical FQN.
+            // Project folder name (parent of Project AC Root) is the LHS of the canonical FQN.
             let project_folder = match repo_dir.file_name().and_then(|n| n.to_str()) {
                 Some(n) => n.to_string(),
                 None => continue,
