@@ -47,7 +47,7 @@ AutoGen (and the community fork AG2) is Microsoft's multi-agent conversational f
 CrewAI defines role-based agent teams with hierarchical processes — in Python.
 
 **Where AC wins**:
-- Ships as a desktop app with a portable installer. You can demo it in 60 seconds.
+- Installs from npm, with desktop and portable installers still available from GitHub Releases. You can demo it in 60 seconds.
 - No `pip install`, no config-by-code, no rewriting your tools as CrewAI primitives.
 
 **Where CrewAI wins**:
