@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
@@ -801,15 +801,44 @@ pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), Stri
 }
 
 fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
+    write_template_if_missing_with(path, content, |path| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    })
+}
+
+fn write_template_if_missing_with<W, F>(
+    path: &Path,
+    content: &str,
+    open_new: F,
+) -> Result<(), String>
+where
+    W: Write,
+    F: FnOnce(&Path) -> std::io::Result<W>,
+{
+    match open_new(path) {
         Ok(mut file) => {
-            use std::io::Write;
-            file.write_all(content.as_bytes())
-                .map_err(|e| format!("failed to write context template {}: {}", path.display(), e))
+            if let Err(e) = file.write_all(content.as_bytes()) {
+                drop(file);
+                cleanup_failed_context_template(path);
+                return Err(format!(
+                    "failed to write context template {}: {}",
+                    path.display(),
+                    e
+                ));
+            }
+            if let Err(e) = file.flush() {
+                drop(file);
+                cleanup_failed_context_template(path);
+                return Err(format!(
+                    "failed to flush context template {}: {}",
+                    path.display(),
+                    e
+                ));
+            }
+            Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(format!(
@@ -817,6 +846,18 @@ fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
             path.display(),
             e
         )),
+    }
+}
+
+fn cleanup_failed_context_template(path: &Path) {
+    if let Err(e) = std::fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            log::warn!(
+                "failed to remove incomplete context template {} after write failure: {}",
+                path.display(),
+                e
+            );
+        }
     }
 }
 
@@ -2053,6 +2094,33 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
+    struct PartialFailWriter {
+        file: std::fs::File,
+        bytes_written: usize,
+        fail_after_bytes: usize,
+    }
+
+    impl Write for PartialFailWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.bytes_written >= self.fail_after_bytes {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "injected write failure",
+                ));
+            }
+
+            let remaining = self.fail_after_bytes - self.bytes_written;
+            let write_len = remaining.min(buf.len());
+            let written = self.file.write(&buf[..write_len])?;
+            self.bytes_written += written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.file.flush()
+        }
+    }
+
     fn write_skill(matrix_root: &Path, folder: &str, content: &str) -> PathBuf {
         let skill_dir = matrix_root.join(SKILLS_DIR_NAME).join(folder);
         std::fs::create_dir_all(&skill_dir).expect("create skill dir");
@@ -2470,6 +2538,73 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read created coordinator template"),
+            get_default_coordinator_template()
+        );
+    }
+
+    #[test]
+    fn failed_template_seed_removes_partial_file_and_retry_uses_complete_defaults() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+
+        for (filename, default_content) in [
+            (
+                AGENT_CONTEXT_TEMPLATE_FILENAME,
+                get_default_agent_template(),
+            ),
+            (
+                COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+                get_default_coordinator_template(),
+            ),
+        ] {
+            let path = workspace_dir.join(filename);
+            let err = write_template_if_missing_with::<PartialFailWriter, _>(
+                &path,
+                default_content,
+                |path| {
+                    let file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)?;
+                    Ok(PartialFailWriter {
+                        file,
+                        bytes_written: 0,
+                        fail_after_bytes: 8,
+                    })
+                },
+            )
+            .expect_err("injected partial write must fail");
+
+            assert!(err.contains("failed to write context template"), "{err}");
+            assert!(
+                !path.exists(),
+                "partial {filename} must be removed after write failure"
+            );
+        }
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            true,
+        )
+        .expect("retry materializes context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("# AgentsCommander Context"));
+        assert!(content.contains("When finishing a delegated task or getting blocked"));
+        assert!(content.contains("# Coordinator Context"));
+        assert!(content.contains("You are the coordinator for your team"));
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read retried agent template"),
+            get_default_agent_template()
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read retried coordinator template"),
             get_default_coordinator_template()
         );
     }
