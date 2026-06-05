@@ -117,6 +117,19 @@ pub fn register_new_project(
     settings: &mut AppSettings,
     raw_path: &str,
 ) -> Result<ProjectRegistration, ProjectError> {
+    register_new_project_impl(settings, raw_path, |workspace_dir| {
+        crate::config::session_context::create_default_context_templates(workspace_dir)
+    })
+}
+
+fn register_new_project_impl<F>(
+    settings: &mut AppSettings,
+    raw_path: &str,
+    create_context_templates: F,
+) -> Result<ProjectRegistration, ProjectError>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
     let abs = absolutise(raw_path)?;
     // Allow PATH to not yet exist as a directory. Reject if PATH exists and
     // is a regular file (caller almost certainly fat-fingered).
@@ -151,29 +164,32 @@ pub fn register_new_project(
             (workspace_dir, created)
         }
     };
-    // Gitignore sweep (Round-1 G15): mandatory when we just created `.ac`
-    // (a fresh AC project must ship with the protective patterns), best-effort
-    // when `.ac` pre-existed (a transient FS error on someone else's
-    // gitignore should not fail registration of a perfectly valid project).
-    match crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
-        Ok(()) => {}
-        Err(e) if !created => {
+    if created {
+        if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
+            cleanup_new_workspace_after_setup_failure(&workspace_dir);
+            return Err(ProjectError::WorkspaceGitignoreFailed(
+                workspace_dir.clone(),
+                e,
+            ));
+        }
+
+        if let Err(e) = create_context_templates(&workspace_dir) {
+            cleanup_new_workspace_after_setup_failure(&workspace_dir);
+            return Err(ProjectError::ContextTemplatesCreateFailed(
+                workspace_dir.clone(),
+                e,
+            ));
+        }
+    } else {
+        // Gitignore sweep (Round-1 G15): best-effort when `.ac` pre-existed
+        // because a transient FS error on someone else's gitignore should not
+        // fail registration of a valid project.
+        if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
             log::warn!(
                 "[projects] gitignore sweep failed on pre-existing AC workspace at {:?}: {} (best-effort, continuing)",
                 workspace_dir, e
             );
         }
-        Err(e) => {
-            return Err(ProjectError::WorkspaceGitignoreFailed(
-                workspace_dir.clone(),
-                e,
-            ))
-        }
-    }
-
-    if created {
-        crate::config::session_context::create_default_context_templates(&workspace_dir)
-            .map_err(|e| ProjectError::ContextTemplatesCreateFailed(workspace_dir.clone(), e))?;
     }
 
     let abs_str = abs.to_string_lossy().into_owned();
@@ -183,6 +199,16 @@ pub fn register_new_project(
         registered,
         created,
     })
+}
+
+fn cleanup_new_workspace_after_setup_failure(workspace_dir: &Path) {
+    if let Err(cleanup_err) = std::fs::remove_dir_all(workspace_dir) {
+        log::warn!(
+            "Failed to clean up newly created AC workspace at {:?} after setup failure: {}",
+            workspace_dir,
+            cleanup_err
+        );
+    }
 }
 
 pub fn resolve_project_reference(
@@ -574,6 +600,49 @@ mod tests {
             std::fs::read_to_string(coordinator_template).unwrap(),
             "CUSTOM_COORDINATOR"
         );
+    }
+
+    #[test]
+    fn new_retries_after_failed_fresh_context_seed() {
+        let fix = FixtureRoot::new("proj-new-template-retry");
+        let mut s = AppSettings::default();
+
+        let first_result =
+            register_new_project_impl(&mut s, fix.path().to_str().unwrap(), |workspace_dir| {
+                std::fs::write(
+                    workspace_dir
+                        .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME),
+                    crate::config::session_context::get_default_agent_template(),
+                )
+                .expect("write partial agent context");
+                Err("injected seed failure".to_string())
+            });
+
+        assert!(matches!(
+            first_result,
+            Err(ProjectError::ContextTemplatesCreateFailed(_, _))
+        ));
+        assert!(
+            !fix.path().join(".ac").exists(),
+            "fresh .ac directory should be cleaned up after seed failure"
+        );
+        assert!(s.project_paths.is_empty());
+
+        let retry = register_new_project(&mut s, fix.path().to_str().unwrap())
+            .expect("retry register new project");
+
+        assert!(retry.created);
+        assert!(retry.registered);
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
     }
 
     #[test]
