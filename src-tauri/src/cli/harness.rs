@@ -333,7 +333,11 @@ fn is_root_target(token: &str) -> bool {
 }
 
 fn raw_command_is_chained(raw: &str) -> bool {
-    raw.contains(';') || raw.contains("&&") || raw.contains("||")
+    raw.contains(';')
+        || raw.contains("&&")
+        || raw.contains("||")
+        || raw.contains('\n')
+        || raw.contains('\r')
 }
 
 fn tokenize_raw_command_segments(raw: &str) -> Vec<Vec<String>> {
@@ -355,6 +359,7 @@ fn tokenize_raw_command_segments(raw: &str) -> Vec<Vec<String>> {
 
         match ch {
             '"' | '\'' => quote = Some(ch),
+            '\n' | '\r' => finish_raw_segment(&mut segments, &mut current, &mut token),
             ch if ch.is_whitespace() => push_raw_token(&mut current, &mut token),
             ';' | '(' | ')' => finish_raw_segment(&mut segments, &mut current, &mut token),
             '&' | '|' => {
@@ -671,7 +676,11 @@ mod tests {
 
     #[test]
     fn raw_destructive_chained_variants_are_denied() {
-        for raw in ["echo ok && rm -fr /", "echo ok; rd /q /s C:\\"] {
+        for raw in [
+            "echo ok && rm -fr /",
+            "echo ok; rd /q /s C:\\",
+            "echo ok\nrm -fr /",
+        ] {
             let input = PolicyInput {
                 raw_display: raw.to_string(),
                 argv: Vec::new(),

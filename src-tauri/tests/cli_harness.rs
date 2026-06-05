@@ -184,6 +184,7 @@ fn harness_raw_destructive_flag_variants_are_denied() {
         "rm -r -f /",
         "rd /q /s C:\\",
         "echo ok && rm -fr /",
+        "echo ok\nrm -fr /",
         "Remove-Item -r -fo C:\\",
     ] {
         let (code, stdout, stderr) = run(&bin, &["harness", "--dry-run", "--raw-command", raw]);
