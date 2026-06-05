@@ -1,4 +1,4 @@
-import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
 import { EntityAPI } from "../../shared/ipc";
 import { AC_WORKSPACE_DIR } from "../../shared/constants";
 import { projectStore } from "../stores/project";
@@ -223,12 +223,11 @@ const EditTeamModal: Component<{
     if (e.key === "Escape") props.onClose();
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) props.onClose();
-  };
+  document.addEventListener("keydown", handleKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
 
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick} onKeyDown={handleKeyDown}>
+    <div class="modal-overlay">
       <div class="agent-modal entity-wizard-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">Edit Team: {props.team.name}</span>

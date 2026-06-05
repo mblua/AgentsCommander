@@ -1,4 +1,4 @@
-import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
 import { EntityAPI, RoleTemplateAPI } from "../../shared/ipc";
 import type { RoleTemplateMeta } from "../../shared/types";
 import {
@@ -87,16 +87,18 @@ const NewEntityAgentModal: Component<{
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onClose();
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       handleCreate();
     }
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) props.onClose();
+  const handleDocumentKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") props.onClose();
   };
+
+  document.addEventListener("keydown", handleDocumentKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   // Roving Tab/Arrow navigation across picker rows. Enter activates the focused
   // row via the browser default; the list container then swallows Enter so it
@@ -152,7 +154,7 @@ const NewEntityAgentModal: Component<{
   };
 
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick} onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal new-agent-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Agent</span>

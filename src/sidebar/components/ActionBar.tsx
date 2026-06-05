@@ -54,6 +54,20 @@ const ActionBar: Component = () => {
 
   onCleanup(() => document.removeEventListener("mousedown", onClickAway));
 
+  const onConfirmKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") setConfirmPath(null);
+  };
+
+  createEffect(() => {
+    if (confirmPath()) {
+      window.addEventListener("keydown", onConfirmKeyDown);
+    } else {
+      window.removeEventListener("keydown", onConfirmKeyDown);
+    }
+  });
+
+  onCleanup(() => window.removeEventListener("keydown", onConfirmKeyDown));
+
   // Cross-window / same-window trigger to open the Settings modal (e.g. from a
   // disabled mic button prompting the user to configure voice). The optional
   // `section` argument targets a specific tab — SettingsModal picks it up via
@@ -269,7 +283,7 @@ const ActionBar: Component = () => {
         />
       )}
       <Show when={confirmPath()}>
-        <div class="confirm-overlay" onClick={() => setConfirmPath(null)}>
+        <div class="confirm-overlay">
           <div class="confirm-dialog" onClick={(e) => e.stopPropagation()}>
             <p class="confirm-text">
               This folder does not have an AC project. Do you want to create a new project here?
