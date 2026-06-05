@@ -1,4 +1,4 @@
-import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
 import { EntityAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
 
@@ -185,12 +185,18 @@ const NewTeamModal: Component<{
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onClose();
     if (e.key === "Enter" && !e.shiftKey && step() === 1) {
       e.preventDefault();
       if (canNext1()) setStep(2);
     }
   };
+
+  const handleDocumentKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") props.onClose();
+  };
+
+  document.addEventListener("keydown", handleDocumentKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>

@@ -1,4 +1,4 @@
-import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
 import type { AgentConfig } from "../../shared/types";
 import { AgentCreatorAPI, SessionAPI, SettingsAPI } from "../../shared/ipc";
 import { homeStore } from "../../main/stores/home";
@@ -114,16 +114,6 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      if (stage() === "launch") {
-        // Can't go back — folder is already created
-        props.onClose();
-      } else {
-        props.onClose();
-      }
-      return;
-    }
-
     if (stage() === "form" && e.key === "Enter") {
       e.preventDefault();
       handleCreate();
@@ -144,6 +134,13 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
       }
     }
   };
+
+  const handleDocumentKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") props.onClose();
+  };
+
+  document.addEventListener("keydown", handleDocumentKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>

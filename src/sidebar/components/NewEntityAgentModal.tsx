@@ -1,4 +1,4 @@
-import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
 import { EntityAPI, RoleTemplateAPI } from "../../shared/ipc";
 import type { RoleTemplateMeta } from "../../shared/types";
 import {
@@ -87,12 +87,18 @@ const NewEntityAgentModal: Component<{
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onClose();
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       handleCreate();
     }
   };
+
+  const handleDocumentKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") props.onClose();
+  };
+
+  document.addEventListener("keydown", handleDocumentKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   // Roving Tab/Arrow navigation across picker rows. Enter activates the focused
   // row via the browser default; the list container then swallows Enter so it
