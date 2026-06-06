@@ -3477,6 +3477,9 @@ mod tests {
             .path()
             .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
         crate::config::root_agent::ensure_root_agent_dir_at(&root).expect("ensure root agent dir");
+        let root_context_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
 
         let materialized =
             materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
@@ -3487,7 +3490,24 @@ mod tests {
         assert!(content.contains("# AgentsCommander Context"));
         assert!(content.contains("You are the AgentsCommander Root Agent"));
         assert!(content.contains("verified workgroup coordinator replicas only"));
+        assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
         assert!(!content.contains("Direct file-based workgroup messaging is not available"));
+
+        std::fs::write(
+            &root_context_path,
+            "# Live Root Context\n\nLIVE_ROOT_CONTEXT_BODY\n",
+        )
+        .expect("edit root context");
+
+        let materialized =
+            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
+                .expect("rematerialize context")
+                .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("LIVE_ROOT_CONTEXT_BODY"));
+        assert!(!content.contains("You are the AgentsCommander Root Agent"));
+        assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
     }
 
     #[test]
