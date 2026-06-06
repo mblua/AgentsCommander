@@ -64,3 +64,29 @@ export function preserveVisibleOrder<T>(
 
   return ordered;
 }
+
+/**
+ * Reconcile a frozen visible key order with a freshly recomputed key set:
+ * existing keys keep their frozen positions, disappeared keys are removed, and
+ * newly visible keys append in the recomputed order.
+ */
+export function reconcileVisibleOrderKeys(nextKeys: string[], frozenKeys: string[] | undefined): string[] {
+  if (!frozenKeys || frozenKeys.length === 0) return nextKeys;
+
+  const nextKeySet = new Set(nextKeys);
+  const used = new Set<string>();
+  const ordered: string[] = [];
+
+  for (const key of frozenKeys) {
+    if (!nextKeySet.has(key)) continue;
+    ordered.push(key);
+    used.add(key);
+  }
+
+  for (const key of nextKeys) {
+    if (used.has(key)) continue;
+    ordered.push(key);
+  }
+
+  return ordered;
+}

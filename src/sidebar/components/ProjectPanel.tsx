@@ -7,7 +7,6 @@ import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import { preserveVisibleOrder } from "../stores/sessions-helpers";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
@@ -390,7 +389,7 @@ const ProjectPanel: Component = () => {
         };
 
         const hasTeams = () => proj.teams.length > 0;
-        const coordinatorItems = createMemo((previous: { replica: AcAgentReplica; wg: AcWorkgroup }[] | undefined) => {
+        const naturalCoordinatorItems = createMemo(() => {
           const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
           for (const wg of proj.workgroups) {
             for (const replica of wg.agents) {
@@ -407,11 +406,23 @@ const ProjectPanel: Component = () => {
               return activityMap[session.id] ?? 0;
             };
             result.sort((a, b) => tsFor(b) - tsFor(a));
-            if (sessionsStore.sidebarPointerInside) {
-              return preserveVisibleOrder(result, previous, coordinatorItemKey);
-            }
           }
           return result;
+        });
+        const coordinatorItems = createMemo(() => {
+          const naturalItems = naturalCoordinatorItems();
+          if (!sessionsStore.coordSortByActivity) {
+            sessionsStore.recordCoordinatorVisibleOrder(proj.path, naturalItems.map(coordinatorItemKey));
+            return naturalItems;
+          }
+
+          const naturalByKey = new Map(naturalItems.map((item) => [coordinatorItemKey(item), item]));
+          const visibleKeys = sessionsStore.coordinatorVisibleOrder(proj.path, naturalItems.map(coordinatorItemKey));
+          const visibleItems = visibleKeys
+            .map((key) => naturalByKey.get(key))
+            .filter((item): item is { replica: AcAgentReplica; wg: AcWorkgroup } => item !== undefined);
+          sessionsStore.recordCoordinatorVisibleOrder(proj.path, visibleKeys);
+          return visibleItems;
         });
         const selectedCoordinatorItem = createMemo(() =>
           coordinatorItems().find((item) => replicaSession(item.wg, item.replica)?.id === sessionsStore.activeId) ?? null
