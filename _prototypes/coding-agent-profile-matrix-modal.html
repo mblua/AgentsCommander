@@ -921,7 +921,7 @@
           <div class="preview-card">
             <div class="preview-meta">
               <span>JSON preview</span>
-              <span>.ac/coding-agent-profiles.json</span>
+              <span>coding-agent-profiles.json</span>
             </div>
             <pre id="jsonPreview"></pre>
           </div>
@@ -957,7 +957,7 @@
       },
       "claude-code": {
         A: { model: "claude-opus-4.1", effort: "high", defaultArgs: "--dangerously-skip-permissions=false", extraArgs: "--plan", priority: "primary", fallback: "Codex/A", enabled: true },
-        B: { model: "claude-sonnet-4", effort: "medium", defaultArgs: "--permission-mode default", extraArgs: "--continue", priority: "standard", fallback: "Codex/B", enabled: true },
+        B: { model: "claude-sonnet-4", effort: "medium", defaultArgs: "--permission-mode default", extraArgs: "", priority: "standard", fallback: "Codex/B", enabled: true },
         C: { model: "claude-sonnet-4", effort: "high", defaultArgs: "--permission-mode acceptEdits", extraArgs: "--review", priority: "standard", fallback: "Gemini/C", enabled: true },
         D: { model: "claude-haiku-4", effort: "low", defaultArgs: "--permission-mode default", extraArgs: "--quick", priority: "fallback", fallback: "OpenCode/D", enabled: true }
       },
@@ -968,10 +968,10 @@
         D: { model: "gemini-2.5-flash-lite", effort: "low", defaultArgs: "--approval-mode default", extraArgs: "--summary", priority: "fallback", fallback: "OpenCode/D", enabled: false }
       },
       opencode: {
-        A: { model: "provider/default-large", effort: "high", defaultArgs: "--config .ac/opencode.json", extraArgs: "--profile a", priority: "standard", fallback: "Codex/A", enabled: true },
-        B: { model: "provider/default", effort: "medium", defaultArgs: "--config .ac/opencode.json", extraArgs: "--profile b", priority: "standard", fallback: "Claude Code/B", enabled: true },
-        C: { model: "provider/reviewer", effort: "high", defaultArgs: "--config .ac/opencode.json", extraArgs: "--profile c", priority: "experimental", fallback: "Gemini/C", enabled: true },
-        D: { model: "provider/local", effort: "low", defaultArgs: "--config .ac/opencode.json", extraArgs: "--offline", priority: "fallback", fallback: "Codex/D", enabled: true }
+        A: { model: "provider/default-large", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile a", priority: "standard", fallback: "Codex/A", enabled: true },
+        B: { model: "provider/default", effort: "medium", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile b", priority: "standard", fallback: "Claude Code/B", enabled: true },
+        C: { model: "provider/reviewer", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile c", priority: "experimental", fallback: "Gemini/C", enabled: true },
+        D: { model: "provider/local", effort: "low", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--offline", priority: "fallback", fallback: "Codex/D", enabled: true }
       }
     };
 
@@ -1079,7 +1079,8 @@
       jsonPreview.textContent = JSON.stringify({
         scope: "ac-root",
         acRoot: "C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac",
-        file: ".ac/coding-agent-profiles.json",
+        configPath: "C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac\\coding-agent-profiles.json",
+        fileName: "coding-agent-profiles.json",
         version: 1,
         profileLetters: letters,
         agents: normalized
