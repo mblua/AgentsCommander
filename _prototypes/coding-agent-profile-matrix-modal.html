@@ -847,20 +847,12 @@
           <span>B</span>
         </div>
         <div class="session">
-          <div class="dot" style="background:#eab308"></div>
-          <div>
-            <div class="session-name">Gemini</div>
-            <div class="session-detail">Large context review</div>
-          </div>
-          <span>C</span>
-        </div>
-        <div class="session">
           <div class="dot" style="background:#f97316"></div>
           <div>
             <div class="session-name">OpenCode</div>
             <div class="session-detail">Local CLI fallback</div>
           </div>
-          <span>D</span>
+          <span>C</span>
         </div>
       </aside>
       <main class="content">
@@ -913,7 +905,6 @@
                   <th class="agent-col">Profile</th>
                   <th>Codex</th>
                   <th>Claude Code</th>
-                  <th>Gemini</th>
                   <th>OpenCode</th>
                 </tr>
               </thead>
@@ -1004,7 +995,6 @@
     const agents = [
       { id: "codex", label: "Codex", command: "codex", color: "#00d4ff" },
       { id: "claude-code", label: "Claude Code", command: "claude", color: "#a78bfa" },
-      { id: "gemini", label: "Gemini", command: "gemini", color: "#eab308" },
       { id: "opencode", label: "OpenCode", command: "opencode", color: "#f97316" }
     ];
 
@@ -1014,25 +1004,19 @@
       codex: {
         A: { model: "gpt-5-codex", effort: "high", defaultArgs: "--sandbox workspace-write", extraArgs: "--search", priority: "primary", fallback: "Codex/B", enabled: true },
         B: { model: "gpt-5-codex-mini", effort: "medium", defaultArgs: "--sandbox workspace-write", extraArgs: "--fast", priority: "standard", fallback: "Claude Code/B", enabled: true },
-        C: { model: "gpt-5-codex", effort: "max", defaultArgs: "--sandbox workspace-write", extraArgs: "--review --long-context", priority: "standard", fallback: "Gemini/C", enabled: true },
+        C: { model: "gpt-5-codex", effort: "max", defaultArgs: "--sandbox workspace-write", extraArgs: "--review --long-context", priority: "standard", fallback: "Claude Code/C", enabled: true },
         D: { model: "gpt-5-codex-mini", effort: "low", defaultArgs: "--sandbox read-only", extraArgs: "--dry-run", priority: "fallback", fallback: "OpenCode/D", enabled: true }
       },
       "claude-code": {
         A: { model: "claude-opus-4.1", effort: "high", defaultArgs: "--dangerously-skip-permissions=false", extraArgs: "--plan", priority: "primary", fallback: "Codex/A", enabled: true },
         B: { model: "claude-sonnet-4", effort: "medium", defaultArgs: "--permission-mode default", extraArgs: "", priority: "standard", fallback: "Codex/B", enabled: true },
-        C: { model: "claude-sonnet-4", effort: "high", defaultArgs: "--permission-mode acceptEdits", extraArgs: "--review", priority: "standard", fallback: "Gemini/C", enabled: true },
+        C: { model: "claude-sonnet-4", effort: "high", defaultArgs: "--permission-mode acceptEdits", extraArgs: "--review", priority: "standard", fallback: "Codex/C", enabled: true },
         D: { model: "claude-haiku-4", effort: "low", defaultArgs: "--permission-mode default", extraArgs: "--quick", priority: "fallback", fallback: "OpenCode/D", enabled: true }
-      },
-      gemini: {
-        A: { model: "gemini-2.5-pro", effort: "high", defaultArgs: "--approval-mode default", extraArgs: "--deep-research", priority: "standard", fallback: "Codex/A", enabled: true },
-        B: { model: "gemini-2.5-flash", effort: "medium", defaultArgs: "--approval-mode default", extraArgs: "--fast", priority: "standard", fallback: "Claude Code/B", enabled: true },
-        C: { model: "gemini-2.5-pro", effort: "max", defaultArgs: "--approval-mode default", extraArgs: "--context=max", priority: "primary", fallback: "Codex/C", enabled: true },
-        D: { model: "gemini-2.5-flash-lite", effort: "low", defaultArgs: "--approval-mode default", extraArgs: "--summary", priority: "fallback", fallback: "OpenCode/D", enabled: false }
       },
       opencode: {
         A: { model: "provider/default-large", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile a", priority: "standard", fallback: "Codex/A", enabled: true },
         B: { model: "provider/default", effort: "medium", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile b", priority: "standard", fallback: "Claude Code/B", enabled: true },
-        C: { model: "provider/reviewer", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile c", priority: "experimental", fallback: "Gemini/C", enabled: true },
+        C: { model: "provider/reviewer", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile c", priority: "experimental", fallback: "Codex/C", enabled: true },
         D: { model: "provider/local", effort: "low", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--offline", priority: "fallback", fallback: "Codex/D", enabled: true }
       }
     };

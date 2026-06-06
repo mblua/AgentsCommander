@@ -13,6 +13,11 @@ const dom = new JSDOM(html, {
 const preview = dom.window.document.getElementById('jsonPreview');
 assert.ok(preview, 'JSON preview element should exist');
 
+const headers = Array.from(dom.window.document.querySelectorAll('thead th'), (th) =>
+  th.textContent?.trim()
+);
+assert.deepEqual(headers, ['Profile', 'Codex', 'Claude Code', 'OpenCode']);
+
 const text = preview.textContent ?? '';
 const expectedAcRoot = 'C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac';
 const expectedConfigPath = `${expectedAcRoot}\\coding-agent-profiles.json`;
@@ -28,3 +33,6 @@ assert.ok(!text.includes('C:Usersmaria'), 'serialized JSON preview should not co
 const data = JSON.parse(text);
 assert.equal(data.acRoot, expectedAcRoot);
 assert.equal(data.configPath, expectedConfigPath);
+assert.deepEqual(data.codingAgents, ['codex', 'claude-code', 'opencode']);
+assert.ok(!text.toLowerCase().includes('gemini'), 'JSON preview should not include Gemini');
+assert.ok(!dom.window.document.body.textContent.toLowerCase().includes('gemini'), 'prototype should not render Gemini');
