@@ -75,6 +75,10 @@ function isSessionLive(session: Session | undefined): boolean {
   return true;
 }
 
+function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }): string {
+  return `${item.wg.path}\u0000${item.replica.path}`;
+}
+
 /** Get replicas in a workgroup that have active (live) sessions */
 function getActiveReplicasForWg(wg: AcWorkgroup): AcAgentReplica[] {
   return (wg.agents ?? []).filter(replica => isSessionLive(replicaSession(wg, replica)));
@@ -407,7 +411,7 @@ const ProjectPanel: Component = () => {
         };
 
         const hasTeams = () => proj.teams.length > 0;
-        const coordinatorItems = createMemo(() => {
+        const naturalCoordinatorItems = createMemo(() => {
           const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
           for (const wg of proj.workgroups) {
             for (const replica of wg.agents) {
@@ -426,6 +430,21 @@ const ProjectPanel: Component = () => {
             result.sort((a, b) => tsFor(b) - tsFor(a));
           }
           return result;
+        });
+        const coordinatorItems = createMemo(() => {
+          const naturalItems = naturalCoordinatorItems();
+          if (!sessionsStore.coordSortByActivity) {
+            sessionsStore.recordCoordinatorVisibleOrder(proj.path, naturalItems.map(coordinatorItemKey));
+            return naturalItems;
+          }
+
+          const naturalByKey = new Map(naturalItems.map((item) => [coordinatorItemKey(item), item]));
+          const visibleKeys = sessionsStore.coordinatorVisibleOrder(proj.path, naturalItems.map(coordinatorItemKey));
+          const visibleItems = visibleKeys
+            .map((key) => naturalByKey.get(key))
+            .filter((item): item is { replica: AcAgentReplica; wg: AcWorkgroup } => item !== undefined);
+          sessionsStore.recordCoordinatorVisibleOrder(proj.path, visibleKeys);
+          return visibleItems;
         });
         const selectedCoordinatorItem = createMemo(() =>
           coordinatorItems().find((item) => replicaSession(item.wg, item.replica)?.id === sessionsStore.activeId) ?? null

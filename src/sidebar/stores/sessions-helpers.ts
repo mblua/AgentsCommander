@@ -31,3 +31,62 @@ export function upsertSessionList(prev: Session[], incoming: Session): Session[]
   next[idx] = { ...prev[idx], ...incoming };
   return next;
 }
+
+/**
+ * Keep the previous visible order while allowing removals and appending new
+ * items. Used to prevent activity-driven coordinator sorting from moving rows
+ * under the pointer during Sidebar interaction.
+ */
+export function preserveVisibleOrder<T>(
+  next: T[],
+  previous: T[] | undefined,
+  keyFor: (item: T) => string,
+): T[] {
+  if (!previous || previous.length === 0) return next;
+
+  const nextByKey = new Map(next.map((item) => [keyFor(item), item]));
+  const used = new Set<string>();
+  const ordered: T[] = [];
+
+  for (const previousItem of previous) {
+    const key = keyFor(previousItem);
+    const nextItem = nextByKey.get(key);
+    if (!nextItem) continue;
+    ordered.push(nextItem);
+    used.add(key);
+  }
+
+  for (const nextItem of next) {
+    const key = keyFor(nextItem);
+    if (used.has(key)) continue;
+    ordered.push(nextItem);
+  }
+
+  return ordered;
+}
+
+/**
+ * Reconcile a frozen visible key order with a freshly recomputed key set:
+ * existing keys keep their frozen positions, disappeared keys are removed, and
+ * newly visible keys append in the recomputed order.
+ */
+export function reconcileVisibleOrderKeys(nextKeys: string[], frozenKeys: string[] | undefined): string[] {
+  if (!frozenKeys || frozenKeys.length === 0) return nextKeys;
+
+  const nextKeySet = new Set(nextKeys);
+  const used = new Set<string>();
+  const ordered: string[] = [];
+
+  for (const key of frozenKeys) {
+    if (!nextKeySet.has(key)) continue;
+    ordered.push(key);
+    used.add(key);
+  }
+
+  for (const key of nextKeys) {
+    if (used.has(key)) continue;
+    ordered.push(key);
+  }
+
+  return ordered;
+}

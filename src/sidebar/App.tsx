@@ -299,13 +299,18 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (cleanupZoom) cleanupZoom();
     if (cleanupGeometry) cleanupGeometry();
     if (stopTeamIdleWatcher) stopTeamIdleWatcher();
+    sessionsStore.setSidebarPointerInside(false);
     document.removeEventListener("mousedown", handleRaiseTerminal);
     document.removeEventListener("contextmenu", blockContextMenu);
   });
 
   return (
     <>
-      <div class="sidebar-layout">
+      <div
+        class="sidebar-layout"
+        onPointerEnter={() => sessionsStore.setSidebarPointerInside(true)}
+        onPointerLeave={() => sessionsStore.setSidebarPointerInside(false)}
+      >
         <Show when={!props.embedded}>
           <Titlebar />
         </Show>
