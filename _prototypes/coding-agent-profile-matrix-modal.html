@@ -369,6 +369,13 @@
       gap: var(--spacing-sm);
     }
 
+    .panel-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+      flex: 0 0 auto;
+    }
+
     .settings-section-title {
       color: var(--sidebar-fg-dim);
       font-size: 11px;
@@ -428,7 +435,7 @@
     }
 
     th.agent-col {
-      width: 128px;
+      width: 132px;
       left: 0;
       z-index: 3;
     }
@@ -439,6 +446,21 @@
       z-index: 1;
       padding: 10px;
       background: #10101a;
+    }
+
+    .profile-row-head {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      padding: 10px;
+      background: #10101a;
+    }
+
+    .profile-row-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
     }
 
     .agent-label {
@@ -472,6 +494,10 @@
       transition: background var(--transition-fast);
     }
 
+    .profile-cell.disabled {
+      opacity: 0.58;
+    }
+
     .profile-cell:hover,
     .profile-cell.selected {
       background: rgba(0, 212, 255, 0.055);
@@ -500,6 +526,39 @@
       background: rgba(0, 212, 255, 0.08);
       font-weight: 700;
       font-size: 11px;
+    }
+
+    .icon-btn {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.025);
+      color: var(--sidebar-fg-dim);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+    }
+
+    .icon-btn:hover:not(:disabled) {
+      background: rgba(0, 212, 255, 0.08);
+      border-color: rgba(0, 212, 255, 0.28);
+      color: var(--sidebar-accent);
+    }
+
+    .icon-btn.delete:hover:not(:disabled) {
+      background: rgba(255, 59, 92, 0.1);
+      border-color: rgba(255, 59, 92, 0.35);
+      color: var(--status-exited);
+    }
+
+    .icon-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
     }
 
     .priority {
@@ -840,7 +899,10 @@
           <div class="panel-header">
             <div>
               <div class="settings-section-title">Matrix</div>
-              <p class="settings-hint">Each letter is resolved per coding agent when launching or dispatching work. Click a cell to edit its model, effort, arguments, and fallback priority.</p>
+              <p class="settings-hint">Profiles are rows; coding agents are columns. Each letter resolves per coding agent when launching or dispatching work. Click a cell to edit its model, effort, arguments, and fallback priority.</p>
+            </div>
+            <div class="panel-actions">
+              <button id="addProfileBtn" class="modal-btn save" type="button">+ Profile</button>
             </div>
           </div>
 
@@ -848,11 +910,11 @@
             <table aria-label="Coding agent profile matrix">
               <thead>
                 <tr>
-                  <th class="agent-col">Agent</th>
-                  <th>Profile A</th>
-                  <th>Profile B</th>
-                  <th>Profile C</th>
-                  <th>Profile D</th>
+                  <th class="agent-col">Profile</th>
+                  <th>Codex</th>
+                  <th>Claude Code</th>
+                  <th>Gemini</th>
+                  <th>OpenCode</th>
                 </tr>
               </thead>
               <tbody id="matrixBody"></tbody>
@@ -864,16 +926,16 @@
           <div class="editor-card">
             <div class="editor-title">
               <span>Selected cell</span>
-              <span id="selectedKey">Codex / A</span>
+              <span id="selectedKey">A / Codex</span>
             </div>
             <div class="field-grid">
               <label class="settings-field">
-                <span class="settings-label">Agent</span>
-                <select id="agentSelect" class="settings-select"></select>
+                <span class="settings-label">Profile</span>
+                <select id="letterSelect" class="settings-select"></select>
               </label>
               <label class="settings-field">
-                <span class="settings-label">Letter</span>
-                <select id="letterSelect" class="settings-select"></select>
+                <span class="settings-label">Agent</span>
+                <select id="agentSelect" class="settings-select"></select>
               </label>
             </div>
             <label class="settings-field">
@@ -979,6 +1041,7 @@
 
     const body = document.getElementById("matrixBody");
     const selectedKey = document.getElementById("selectedKey");
+    const addProfileBtn = document.getElementById("addProfileBtn");
     const agentSelect = document.getElementById("agentSelect");
     const letterSelect = document.getElementById("letterSelect");
     const modelInput = document.getElementById("modelInput");
@@ -1008,15 +1071,15 @@
     }
 
     function renderMatrix() {
-      body.innerHTML = agents.map((agent) => {
-        const cells = letters.map((letter) => {
+      body.innerHTML = letters.map((letter) => {
+        const cells = agents.map((agent) => {
           const profile = matrix[agent.id][letter];
           const selectedClass = selected.agent === agent.id && selected.letter === letter ? " selected" : "";
           const disabled = profile.enabled ? "" : " disabled";
           return `
             <td class="profile-cell${selectedClass}${disabled}" data-agent="${agent.id}" data-letter="${letter}">
               <div class="cell-head">
-                <span class="letter-pill">${letter}</span>
+                <span class="agent-label"><span class="agent-dot" style="background:${agent.color}"></span>${agent.label}</span>
                 <span class="priority">${escapeHtml(profile.priority)}</span>
               </div>
               <div class="cell-line"><span class="cell-key">Model</span><span class="cell-value">${escapeHtml(profile.model)}</span></div>
@@ -1029,9 +1092,12 @@
 
         return `
           <tr>
-            <td class="agent-name">
-              <div class="agent-label"><span class="agent-dot" style="background:${agent.color}"></span>${agent.label}</div>
-              <div class="agent-command">${agent.command}</div>
+            <td class="profile-row-head">
+              <div class="profile-row-title">
+                <span class="letter-pill">${letter}</span>
+                <button class="icon-btn delete" type="button" title="Delete profile ${letter}" aria-label="Delete profile ${letter}" data-delete-letter="${letter}" ${letters.length === 1 ? "disabled" : ""}>x</button>
+              </div>
+              <div class="agent-command">Profile ${letter}</div>
             </td>
             ${cells}
           </tr>
@@ -1045,6 +1111,12 @@
           renderMatrix();
         });
       });
+      document.querySelectorAll("[data-delete-letter]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          deleteProfile(button.dataset.deleteLetter);
+        });
+      });
     }
 
     function currentProfile() {
@@ -1054,7 +1126,7 @@
     function syncEditor() {
       const agent = agents.find((item) => item.id === selected.agent);
       const profile = currentProfile();
-      selectedKey.textContent = `${agent.label} / ${selected.letter}`;
+      selectedKey.textContent = `${selected.letter} / ${agent.label}`;
       agentSelect.value = selected.agent;
       letterSelect.value = selected.letter;
       modelInput.value = profile.model;
@@ -1069,10 +1141,10 @@
 
     function renderPreview() {
       const normalized = {};
-      agents.forEach((agent) => {
-        normalized[agent.id] = {};
-        letters.forEach((letter) => {
-          normalized[agent.id][letter] = matrix[agent.id][letter];
+      letters.forEach((letter) => {
+        normalized[letter] = {};
+        agents.forEach((agent) => {
+          normalized[letter][agent.id] = matrix[agent.id][letter];
         });
       });
 
@@ -1083,7 +1155,8 @@
         fileName: "coding-agent-profiles.json",
         version: 1,
         profileLetters: letters,
-        agents: normalized
+        codingAgents: agents.map((agent) => agent.id),
+        profiles: normalized
       }, null, 2);
     }
 
@@ -1100,9 +1173,69 @@
       renderPreview();
     }
 
+    function nextProfileLetter() {
+      for (let code = 65; code <= 90; code += 1) {
+        const letter = String.fromCharCode(code);
+        if (!letters.includes(letter)) {
+          return letter;
+        }
+      }
+      return `P${letters.length + 1}`;
+    }
+
+    function createDefaultProfile(agent, letter) {
+      return {
+        model: `${agent.command}/default`,
+        effort: "medium",
+        defaultArgs: agent.id === "opencode" ? "--config {acRoot}\\opencode.json" : "",
+        extraArgs: `--profile ${letter.toLowerCase()}`,
+        priority: "standard",
+        fallback: `Codex/${letter}`,
+        enabled: true
+      };
+    }
+
+    function addProfile() {
+      const letter = nextProfileLetter();
+      letters.push(letter);
+      agents.forEach((agent) => {
+        matrix[agent.id][letter] = createDefaultProfile(agent, letter);
+      });
+      selected = { agent: agents[0].id, letter };
+      renderSelectors();
+      renderMatrix();
+      syncEditor();
+    }
+
+    function deleteProfile(letter) {
+      if (letters.length === 1) {
+        return;
+      }
+
+      const index = letters.indexOf(letter);
+      if (index === -1) {
+        return;
+      }
+
+      letters.splice(index, 1);
+      agents.forEach((agent) => {
+        delete matrix[agent.id][letter];
+      });
+
+      if (selected.letter === letter) {
+        selected = { agent: selected.agent, letter: letters[Math.min(index, letters.length - 1)] };
+      }
+
+      renderSelectors();
+      renderMatrix();
+      syncEditor();
+    }
+
     renderSelectors();
     renderMatrix();
     syncEditor();
+
+    addProfileBtn.addEventListener("click", addProfile);
 
     agentSelect.addEventListener("change", () => {
       selected.agent = agentSelect.value;
