@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
+pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes a per-agent copy of AgentsCommanderContext.md with the agent's own
@@ -802,7 +803,7 @@ pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), Stri
     Ok(())
 }
 
-fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
+pub(crate) fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
     write_template_if_missing_with(path, content, |path| {
         std::fs::OpenOptions::new()
             .write(true)
@@ -3476,6 +3477,9 @@ mod tests {
             .path()
             .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
         crate::config::root_agent::ensure_root_agent_dir_at(&root).expect("ensure root agent dir");
+        let root_context_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
 
         let materialized =
             materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
@@ -3486,7 +3490,24 @@ mod tests {
         assert!(content.contains("# AgentsCommander Context"));
         assert!(content.contains("You are the AgentsCommander Root Agent"));
         assert!(content.contains("verified workgroup coordinator replicas only"));
+        assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
         assert!(!content.contains("Direct file-based workgroup messaging is not available"));
+
+        std::fs::write(
+            &root_context_path,
+            "# Live Root Context\n\nLIVE_ROOT_CONTEXT_BODY\n",
+        )
+        .expect("edit root context");
+
+        let materialized =
+            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
+                .expect("rematerialize context")
+                .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("LIVE_ROOT_CONTEXT_BODY"));
+        assert!(!content.contains("You are the AgentsCommander Root Agent"));
+        assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
     }
 
     #[test]
