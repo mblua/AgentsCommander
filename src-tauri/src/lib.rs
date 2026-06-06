@@ -849,6 +849,10 @@ pub fn run() {
                                                 ps.telegram_bot_id.as_deref(),
                                             )
                                             .await;
+                                            if let Some(ref prompt) = ps.last_prompt {
+                                                let mgr = session_mgr_clone.read().await;
+                                                mgr.set_last_prompt(uuid, prompt.clone()).await;
+                                            }
                                         }
                                         should_create = false;
                                     }
@@ -882,6 +886,13 @@ pub fn run() {
                                                     ps.telegram_bot_id.as_deref(),
                                                 )
                                                 .await;
+                                            }
+
+                                            if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                                if let Some(ref prompt) = ps.last_prompt {
+                                                    let mgr = session_mgr_clone.read().await;
+                                                    mgr.set_last_prompt(uuid, prompt.clone()).await;
+                                                }
                                             }
 
                                             if ps.was_detached {
@@ -958,6 +969,9 @@ pub fn run() {
                                             ps.telegram_bot_id.as_deref(),
                                         )
                                         .await;
+                                        if let Some(ref prompt) = ps.last_prompt {
+                                            mgr.set_last_prompt(uuid, prompt.clone()).await;
+                                        }
                                     }
                                     if ps.was_active {
                                         active_id = Some(existing.id.clone());
@@ -988,6 +1002,9 @@ pub fn run() {
                                             if let Some(ref geo) = ps.detached_geometry {
                                                 mgr.set_detached_geometry(session.id, geo.clone())
                                                     .await;
+                                            }
+                                            if let Some(ref prompt) = ps.last_prompt {
+                                                mgr.set_last_prompt(session.id, prompt.clone()).await;
                                             }
                                             commands::session::preserve_deferred_telegram_intent_if_valid(
                                                 &mgr,
@@ -1083,6 +1100,9 @@ pub fn run() {
                                     if let Some(ref geo) = ps.detached_geometry {
                                         mgr.set_detached_geometry(session.id, geo.clone()).await;
                                     }
+                                    if let Some(ref prompt) = ps.last_prompt {
+                                        mgr.set_last_prompt(session.id, prompt.clone()).await;
+                                    }
                                     commands::session::preserve_deferred_telegram_intent_if_valid(
                                         &mgr,
                                         &settings_state_clone,
@@ -1153,6 +1173,13 @@ pub fn run() {
                                         ps.telegram_bot_id.as_deref(),
                                     )
                                     .await;
+                                }
+
+                                if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                    if let Some(ref prompt) = ps.last_prompt {
+                                        let mgr = session_mgr_clone.read().await;
+                                        mgr.set_last_prompt(uuid, prompt.clone()).await;
+                                    }
                                 }
 
                                 // Phase 3 restore: reconstruct detach state for the live session.

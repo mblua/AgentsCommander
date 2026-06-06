@@ -1695,6 +1695,7 @@ pub async fn set_last_prompt(
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     let mgr = session_mgr.read().await;
     mgr.set_last_prompt(uuid, text.clone()).await;
+    crate::config::sessions_persistence::persist_current_state(&mgr).await;
     let _ = app.emit(
         "last_prompt",
         serde_json::json!({ "sessionId": id, "text": text }),
