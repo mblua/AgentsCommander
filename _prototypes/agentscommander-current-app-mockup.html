@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentsCommander Current App Mockup</title>
+  <style>
+    :root {
+      --bg: #05070b;
+      --bg-2: #080b12;
+      --panel: #0c1018;
+      --panel-2: #111623;
+      --panel-3: #151a2b;
+      --panel-hot: #17182c;
+      --line: rgba(148, 163, 184, 0.12);
+      --line-strong: rgba(0, 212, 255, 0.28);
+      --text: #d7e1ee;
+      --muted: #7f8da3;
+      --dim: #4e5c70;
+      --cyan: #00d4ff;
+      --cyan-soft: rgba(0, 212, 255, 0.12);
+      --green: #35f2a6;
+      --yellow: #f8c657;
+      --orange: #ff9f43;
+      --purple: #9d7cff;
+      --red: #ff5d73;
+      --font-ui: "Geist", "Outfit", "General Sans", "Segoe UI", sans-serif;
+      --font-mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      --radius-sm: 4px;
+      --radius-md: 7px;
+      --shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      letter-spacing: 0;
+    }
+
+    body {
+      overflow: hidden;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    .app-shell {
+      width: 100vw;
+      height: 100vh;
+      min-width: 920px;
+      display: grid;
+      grid-template-rows: 36px minmax(0, 1fr);
+      background:
+        linear-gradient(90deg, rgba(0, 212, 255, 0.035), transparent 24%),
+        radial-gradient(circle at 76% 0%, rgba(157, 124, 255, 0.08), transparent 30%),
+        var(--bg);
+    }
+
+    .titlebar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 0 10px 0 14px;
+      background: rgba(7, 10, 16, 0.96);
+      border-bottom: 1px solid rgba(148, 163, 184, 0.09);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
+      user-select: none;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      color: #ecf7ff;
+      text-transform: uppercase;
+    }
+
+    .brand-mark {
+      width: 18px;
+      height: 18px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid rgba(0, 212, 255, 0.5);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.1);
+      color: var(--cyan);
+      font-size: 10px;
+    }
+
+    .top-meta {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 20px;
+      padding: 2px 7px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.035);
+      color: #aab6c7;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      line-height: 1;
+    }
+
+    .badge.cyan {
+      color: var(--cyan);
+      border-color: rgba(0, 212, 255, 0.25);
+      background: var(--cyan-soft);
+    }
+
+    .badge.purple {
+      color: #bba7ff;
+      border-color: rgba(157, 124, 255, 0.24);
+      background: rgba(157, 124, 255, 0.1);
+    }
+
+    .identity {
+      color: #b8c6da;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .window-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .icon-btn {
+      width: 24px;
+      height: 24px;
+      display: inline-grid;
+      place-items: center;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--muted);
+      cursor: default;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .icon-btn:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+    }
+
+    .app-main {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(560px, 1fr) 380px;
+    }
+
+    .terminal-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      background: #05070b;
+      border-right: 1px solid rgba(148, 163, 184, 0.1);
+    }
+
+    .transcript {
+      min-height: 0;
+      overflow: hidden;
+      padding: 18px 18px 10px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.45;
+      color: #c8d5e6;
+    }
+
+    .task-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: #d6e6f7;
+      font-weight: 700;
+    }
+
+    .task-label {
+      color: var(--yellow);
+    }
+
+    .last-prompt {
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border-left: 2px solid var(--cyan);
+      background: rgba(0, 212, 255, 0.045);
+    }
+
+    .last-prompt-label {
+      display: block;
+      color: var(--cyan);
+      font-size: 10px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .command-block {
+      margin: 0 0 13px;
+      padding: 0 0 0 18px;
+      position: relative;
+    }
+
+    .command-block::before {
+      content: "";
+      position: absolute;
+      left: 1px;
+      top: 5px;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 14px rgba(53, 242, 166, 0.45);
+    }
+
+    .ran {
+      color: #e6f3ff;
+      font-weight: 700;
+    }
+
+    .ran span {
+      color: var(--green);
+      font-weight: 700;
+    }
+
+    .ps,
+    .output {
+      margin: 6px 0 0;
+      padding: 9px 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(148, 163, 184, 0.08);
+      background: rgba(255, 255, 255, 0.025);
+      white-space: pre-wrap;
+      overflow: hidden;
+    }
+
+    .ps {
+      color: #bfe8ff;
+    }
+
+    .ps .cmd {
+      color: #7dd3fc;
+    }
+
+    .ps .arg {
+      color: #c4b5fd;
+    }
+
+    .ps .str {
+      color: #facc15;
+    }
+
+    .output {
+      color: #a9b7c9;
+      background: rgba(8, 11, 18, 0.72);
+    }
+
+    .output .json-key {
+      color: #81d4ff;
+    }
+
+    .output .ok {
+      color: var(--green);
+    }
+
+    .output .warn {
+      color: var(--yellow);
+    }
+
+    .separator {
+      height: 1px;
+      margin: 10px 0;
+      background: linear-gradient(90deg, rgba(0, 212, 255, 0.22), transparent);
+    }
+
+    .working {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 5px;
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      background: rgba(248, 198, 87, 0.1);
+      color: var(--yellow);
+      font-size: 11px;
+    }
+
+    .composer {
+      display: grid;
+      gap: 6px;
+      padding: 10px 16px 12px;
+      border-top: 1px solid rgba(148, 163, 184, 0.1);
+      background: rgba(6, 9, 15, 0.96);
+      font-family: var(--font-mono);
+    }
+
+    .composer-input {
+      min-height: 34px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border: 1px solid rgba(0, 212, 255, 0.17);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.03);
+      color: #dce8f6;
+      font-size: 12px;
+    }
+
+    .composer-input .hint {
+      color: var(--dim);
+      font-size: 10px;
+    }
+
+    .status-command {
+      color: #91a0b5;
+      font-size: 11px;
+    }
+
+    .status-command span {
+      color: var(--cyan);
+    }
+
+    .sidebar {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      background: linear-gradient(180deg, #0c1018, #070a10);
+      color: #c8d5e6;
+    }
+
+    .side-toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+    }
+
+    .new-open {
+      height: 28px;
+      border: 1px solid rgba(0, 212, 255, 0.24);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.09);
+      color: #dff7ff;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-align: left;
+      padding: 0 10px;
+    }
+
+    .toolbar-icons {
+      display: flex;
+      gap: 2px;
+    }
+
+    .side-scroll {
+      min-height: 0;
+      overflow: hidden;
+      padding: 10px;
+    }
+
+    .root-card,
+    .project-card,
+    .workgroup-panel {
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.035);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    }
+
+    .root-card {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      margin-bottom: 11px;
+    }
+
+    .root-icon {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius-sm);
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 212, 255, 0.26);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .card-title {
+      color: #eef6ff;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+
+    .card-subtitle,
+    .section-kicker {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .section-kicker {
+      margin: 13px 4px 7px;
+      letter-spacing: 0.08em;
+    }
+
+    .project-list {
+      display: grid;
+      gap: 6px;
+    }
+
+    .project-card {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 8px;
+      padding: 8px;
+      border-left: 2px solid transparent;
+      background: rgba(255, 255, 255, 0.028);
+    }
+
+    .project-card.selected {
+      border-left-color: var(--cyan);
+      background: linear-gradient(90deg, rgba(0, 212, 255, 0.13), rgba(157, 124, 255, 0.12));
+      box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.12) inset;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      margin-top: 4px;
+      border-radius: 999px;
+      background: var(--muted);
+      box-shadow: 0 0 12px currentColor;
+      color: var(--muted);
+    }
+
+    .dot.green {
+      background: var(--green);
+      color: var(--green);
+    }
+
+    .dot.cyan {
+      background: var(--cyan);
+      color: var(--cyan);
+    }
+
+    .dot.yellow {
+      background: var(--yellow);
+      color: var(--yellow);
+    }
+
+    .dot.purple {
+      background: var(--purple);
+      color: var(--purple);
+    }
+
+    .dot.red {
+      background: var(--red);
+      color: var(--red);
+    }
+
+    .project-meta,
+    .agent-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 5px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 17px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.045);
+      color: #9daabe;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+    }
+
+    .chip.codex {
+      color: #96e8ff;
+      background: rgba(0, 212, 255, 0.1);
+    }
+
+    .chip.coord {
+      color: #d8c7ff;
+      background: rgba(157, 124, 255, 0.13);
+    }
+
+    .chip.branch {
+      color: #b5f7d4;
+      background: rgba(53, 242, 166, 0.09);
+      text-transform: none;
+    }
+
+    .workgroup-panel {
+      padding: 9px;
+      margin-top: 6px;
+      background: rgba(13, 17, 28, 0.76);
+    }
+
+    .workgroup-header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: start;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.09);
+    }
+
+    .workgroup-title {
+      font-family: var(--font-mono);
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .workgroup-subtitle {
+      margin-top: 3px;
+      color: #97a5b8;
+      font-size: 11px;
+      line-height: 1.25;
+    }
+
+    .agent-list {
+      display: grid;
+      gap: 2px;
+      padding-top: 7px;
+    }
+
+    .agent-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 4px 5px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.018);
+    }
+
+    .agent-row.active {
+      background: rgba(0, 212, 255, 0.065);
+    }
+
+    .agent-name {
+      font-size: 11px;
+      color: #d7e3f1;
+    }
+
+    .agent-state {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+    }
+
+    .future-workgroups {
+      display: grid;
+      gap: 5px;
+      margin-top: 6px;
+    }
+
+    .wg-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 7px;
+      align-items: center;
+      padding: 6px 7px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.025);
+      color: #b9c6d8;
+      font-size: 11px;
+    }
+
+    .component-capture-toast {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 3000;
+      width: min(620px, calc(100vw - 32px));
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(160px, 0.65fr);
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid rgba(0, 212, 255, 0.28);
+      border-radius: var(--radius-md);
+      background: rgba(8, 8, 13, 0.96);
+      box-shadow: var(--shadow);
+      color: var(--text);
+      pointer-events: none;
+    }
+
+    .component-capture-id,
+    .component-capture-detail {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .component-capture-id {
+      color: var(--cyan);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .component-capture-detail {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-align: right;
+    }
+
+    .component-capture-highlight {
+      position: fixed;
+      z-index: 2999;
+      border: 2px solid rgba(0, 212, 255, 0.92);
+      border-radius: var(--radius-sm);
+      box-shadow:
+        0 0 0 1px rgba(8, 8, 13, 0.75),
+        0 0 18px rgba(0, 212, 255, 0.35);
+      pointer-events: none;
+      animation: component-capture-blink 420ms ease-out 2;
+    }
+
+    @keyframes component-capture-blink {
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.18;
+      }
+    }
+
+    @media (max-width: 1120px) {
+      body {
+        overflow: auto;
+      }
+
+      .app-shell {
+        min-width: 0;
+        height: auto;
+        min-height: 100vh;
+      }
+
+      .app-main {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .terminal-pane {
+        min-height: 640px;
+        border-right: 0;
+      }
+
+      .sidebar {
+        min-height: 520px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .top-meta {
+        display: none;
+      }
+
+      .transcript {
+        padding: 12px;
+        font-size: 11px;
+      }
+
+      .component-capture-toast {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell" data-component="current app full desktop shell">
+    <header class="titlebar" data-component="top header with brand version workgroup identity and window controls">
+      <div class="brand" data-tauri-drag-region>
+        <span class="brand-mark">AC</span>
+        <span>Agents Commander</span>
+      </div>
+      <div class="top-meta" data-tauri-drag-region>
+        <span class="badge">v0.8.50</span>
+        <span class="badge cyan">AC</span>
+        <span class="badge purple">WG-7-DEV-TEAM</span>
+        <span class="identity">tech-lead@AgentsCommander_ac</span>
+      </div>
+      <div class="window-actions" data-component="right side window and utility controls">
+        <button class="icon-btn" type="button" title="Search">/</button>
+        <button class="icon-btn" type="button" title="Pin">^</button>
+        <button class="icon-btn" type="button" title="Minimize">-</button>
+        <button class="icon-btn" type="button" title="Maximize">[]</button>
+        <button class="icon-btn" type="button" title="Close">x</button>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <section class="terminal-pane" data-component="main left terminal transcript workspace">
+        <div class="transcript" data-component="terminal transcript area with current task prompt and command blocks">
+          <div class="task-line" data-component="task line">
+            <span class="task-label">TASK:</span>
+            <span>CODING AGENT, MODEL AND EFFORT POR AGENTE.</span>
+          </div>
+
+          <div class="last-prompt" data-component="last prompt panel with copied message request">
+            <span class="last-prompt-label">LAST PROMPT</span>
+            En otro html quiero que hagas una maqueta REAL DE TODA la app actual. te paso un screenshot que podes usar de ejemplo para reproducir una situacion real de la app. Cuando haga right click copiame el identificador entre comillas y dejame el toast 15 segundos para pegarlo en el chat.
+          </div>
+
+          <article class="command-block" data-component="command block read workgroup message">
+            <div class="ran"><span>Ran</span> Get-Content message file</div>
+            <pre class="ps"><span class="cmd">Get-Content</span> <span class="arg">-LiteralPath</span> <span class="str">'C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-7-dev-team\messaging\20260607-200304-wg7-tech-lead-to-wg7-dev-webpage-ui-full-current-app-mockup.md'</span></pre>
+            <pre class="output"><span class="ok">Please create a new standalone HTML prototype/mockup</span>
+Repo: C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-7-dev-team\repo-AgentsCommander
+Branch: feature/384-coding-agent-profile-modal-html</pre>
+          </article>
+
+          <article class="command-block" data-component="command block peer discovery">
+            <div class="ran"><span>Ran</span> AgentsCommander list-peers-lean</div>
+            <pre class="ps"><span class="cmd">&amp; $env:AGENTSCOMMANDER_BINARY_PATH</span> list-peers-lean <span class="arg">--token</span> $env:AGENTSCOMMANDER_TOKEN <span class="arg">--root</span> $env:AGENTSCOMMANDER_ROOT</pre>
+            <pre class="output">[
+  { "<span class="json-key">name</span>": "AgentsCommander_ac:wg-7-dev-team/architect", "<span class="json-key">waitingForInput</span>": true },
+  { "<span class="json-key">name</span>": "AgentsCommander_ac:wg-7-dev-team/dev-rust", "<span class="json-key">sessionStatus</span>": "waiting" },
+  { "<span class="json-key">name</span>": "AgentsCommander_ac:wg-7-dev-team/tech-lead", "<span class="json-key">working</span>": true }
+]</pre>
+          </article>
+
+          <article class="command-block" data-component="command block prototype search">
+            <div class="ran"><span>Ran</span> rg --files _prototypes</div>
+            <pre class="output">_prototypes\coding-agent-profile-matrix-modal.html
+_prototypes\agentscommander-current-app-mockup.html</pre>
+            <div class="separator"></div>
+            <pre class="output"><span class="warn">Working (2m 25s - esc to interrupt)</span>
+Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.</pre>
+          </article>
+
+          <article class="command-block" data-component="command block npm smoke and typecheck">
+            <div class="ran"><span>Ran</span> npm run smoke:current-app</div>
+            <pre class="ps"><span class="cmd">node</span> scripts/smoke-current-app-mockup.mjs</pre>
+            <pre class="output"><span class="ok">PASS</span> helper installed, header/sidebar/transcript found, right-click copied quoted component identifier, toast timer 15000ms, highlight blink animation count 2.</pre>
+          </article>
+        </div>
+
+        <footer class="composer" data-component="bottom prompt composer and status command">
+          <div class="composer-input" data-component="prompt composer input line">
+            <span>hacer la maqueta real de toda la app actual usando este estado de pantalla</span>
+            <span class="hint">tab to queue message</span>
+          </div>
+          <div class="status-command" data-component="bottom status command">
+            <span>codex resume --last</span> -m gpt-5.5 -c reasoning_effort=xhigh --yolo
+          </div>
+        </footer>
+      </section>
+
+      <aside class="sidebar" data-component="right AgentsCommander navigation control sidebar">
+        <div class="side-toolbar" data-component="sidebar toolbar with new open and icons">
+          <button class="new-open" type="button">New / Open</button>
+          <div class="toolbar-icons">
+            <button class="icon-btn" type="button" title="Refresh">r</button>
+            <button class="icon-btn" type="button" title="Layout">[]</button>
+            <button class="icon-btn" type="button" title="Settings">*</button>
+          </div>
+        </div>
+
+        <div class="side-scroll">
+          <section class="root-card" data-component="root agent card">
+            <span class="root-icon">AC</span>
+            <div>
+              <div class="card-title">Agent's Commander</div>
+              <div class="card-subtitle">ROOT AGENT</div>
+            </div>
+            <span class="dot cyan"></span>
+          </section>
+
+          <div class="section-kicker" data-component="project section label">Project: AgentsCommander_ac</div>
+          <section class="project-list" data-component="project task list">
+            <article class="project-card" data-component="project card release workflow">
+              <span class="dot green"></span>
+              <div>
+                <div class="card-title">Release validation and smoke pass</div>
+                <div class="project-meta">
+                  <span class="chip branch">feature/381-smoke</span>
+                  <span class="chip codex">Codex</span>
+                  <span class="chip">WG-2</span>
+                </div>
+              </div>
+            </article>
+            <article class="project-card selected" data-component="selected project coding agent model and effort task">
+              <span class="dot cyan"></span>
+              <div>
+                <div class="card-title">CODING AGENT, MODEL AND EFFORT POR AGENTE.</div>
+                <div class="project-meta">
+                  <span class="chip branch">feature/384-coding-agent-profile-modal-html</span>
+                  <span class="chip codex">Codex</span>
+                  <span class="chip coord">COORDINATOR</span>
+                  <span class="chip">WG-7</span>
+                </div>
+              </div>
+            </article>
+            <article class="project-card" data-component="project card ui polish queue">
+              <span class="dot yellow"></span>
+              <div>
+                <div class="card-title">Sidebar density and terminal chrome polish</div>
+                <div class="project-meta">
+                  <span class="chip branch">feature/ui-density</span>
+                  <span class="chip codex">Codex</span>
+                  <span class="chip">WG-3</span>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <div class="section-kicker" data-component="selected workgroup section label">Selected Workgroup</div>
+          <section class="workgroup-panel" data-component="selected workgroup panel">
+            <div class="workgroup-header" data-component="selected workgroup header">
+              <div>
+                <div class="workgroup-title">WG-7-DEV-TEAM</div>
+                <div class="workgroup-subtitle">CODING AGENT, MODEL AND EFFORT POR AGENTE.</div>
+              </div>
+              <span class="chip codex">active</span>
+            </div>
+
+            <div class="agent-list" data-component="selected workgroup agent list">
+              <div class="agent-row" data-component="agent row ac-cli-tester">
+                <span class="dot"></span><div><div class="agent-name">ac-cli-tester</div><div class="agent-state">exited</div></div><span class="chip codex">Codex</span>
+              </div>
+              <div class="agent-row" data-component="agent row architect">
+                <span class="dot yellow"></span><div><div class="agent-name">architect</div><div class="agent-state">waiting for input</div></div><span class="chip codex">Codex</span>
+              </div>
+              <div class="agent-row" data-component="agent row ccusage-expert">
+                <span class="dot"></span><div><div class="agent-name">ccusage-expert</div><div class="agent-state">not started</div></div><span class="chip">tool</span>
+              </div>
+              <div class="agent-row" data-component="agent row claude-code-expert">
+                <span class="dot"></span><div><div class="agent-name">claude-code-expert</div><div class="agent-state">not started</div></div><span class="chip">docs</span>
+              </div>
+              <div class="agent-row" data-component="agent row dev-rust">
+                <span class="dot green"></span><div><div class="agent-name">dev-rust</div><div class="agent-state">waiting</div></div><span class="chip codex">Codex</span>
+              </div>
+              <div class="agent-row" data-component="agent row dev-rust-grinch">
+                <span class="dot purple"></span><div><div class="agent-name">dev-rust-grinch</div><div class="agent-state">review-ready</div></div><span class="chip codex">Codex</span>
+              </div>
+              <div class="agent-row active" data-component="agent row dev-webpage-ui active">
+                <span class="dot cyan"></span><div><div class="agent-name">dev-webpage-ui</div><div class="agent-state">working on mockup</div></div><span class="chip codex">Codex</span>
+              </div>
+              <div class="agent-row" data-component="agent row shipper">
+                <span class="dot"></span><div><div class="agent-name">shipper</div><div class="agent-state">exited</div></div><span class="chip">ship</span>
+              </div>
+              <div class="agent-row active" data-component="agent row tech-lead active coordinator">
+                <span class="dot green"></span><div><div class="agent-name">tech-lead</div><div class="agent-state">coordinating</div></div><span class="chip coord">Lead</span>
+              </div>
+            </div>
+          </section>
+
+          <div class="section-kicker" data-component="workgroups section label">Workgroups</div>
+          <section class="future-workgroups" data-component="workgroups list starting below selected workgroup">
+            <div class="wg-row" data-component="workgroup row wg-1-dev-team">
+              <span class="dot green"></span><span>WG-1-DEV-TEAM</span><span class="chip">3 agents</span>
+            </div>
+            <div class="wg-row" data-component="workgroup row wg-2-dev-team">
+              <span class="dot yellow"></span><span>WG-2-DEV-TEAM</span><span class="chip">smoke</span>
+            </div>
+            <div class="wg-row" data-component="workgroup row wg-3-dev-team">
+              <span class="dot purple"></span><span>WG-3-DEV-TEAM</span><span class="chip">ui</span>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    function truncateComponentText(value, limit = 96) {
+      const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+      return normalized.length > limit ? `${normalized.slice(0, limit - 1).trim()}...` : normalized;
+    }
+
+    function classDetail(element) {
+      const classes = Array.from(element.classList ?? []).slice(0, 4);
+      return `${element.tagName.toLowerCase()}${classes.length ? ` .${classes.join(".")}` : ""}`;
+    }
+
+    function representativeText(element) {
+      const explicit = element.closest("[data-component]")?.getAttribute("data-component");
+      if (explicit) {
+        return truncateComponentText(explicit);
+      }
+
+      const heading = element.querySelector?.("h1, h2, h3, strong");
+      if (heading?.textContent?.trim()) {
+        return truncateComponentText(heading.textContent);
+      }
+
+      const labelledBy = element.getAttribute?.("aria-labelledby");
+      if (labelledBy) {
+        const label = document.getElementById(labelledBy);
+        if (label?.textContent?.trim()) {
+          return truncateComponentText(label.textContent);
+        }
+      }
+
+      const label = element.getAttribute?.("aria-label") || element.getAttribute?.("title");
+      if (label) {
+        return truncateComponentText(label);
+      }
+
+      return truncateComponentText(element.innerText || element.textContent || element.value || "unlabeled");
+    }
+
+    function nearestComponent(target) {
+      if (!(target instanceof Element)) {
+        return document.body;
+      }
+
+      const marked = target.closest("[data-component]");
+      if (marked) {
+        return marked;
+      }
+
+      return target.closest(
+        "section, article, aside, header, footer, main, nav, table, tr, td, th, button, label, input, select, textarea, pre"
+      ) || target;
+    }
+
+    function writeClipboardWithFallback(text) {
+      if (navigator.clipboard?.writeText) {
+        return navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+      }
+
+      return fallbackCopy(text);
+    }
+
+    function fallbackCopy(text) {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+
+      try {
+        if (typeof document.execCommand === "function") {
+          document.execCommand("copy");
+        }
+      } finally {
+        textarea.remove();
+      }
+
+      return Promise.resolve();
+    }
+
+    function showCaptureToast(identifier, detail) {
+      document.querySelector(".component-capture-toast")?.remove();
+
+      const toast = document.createElement("div");
+      toast.className = "component-capture-toast";
+      toast.setAttribute("role", "status");
+      toast.innerHTML = `
+        <div class="component-capture-id"></div>
+        <div class="component-capture-detail"></div>
+      `;
+      toast.querySelector(".component-capture-id").textContent = identifier;
+      toast.querySelector(".component-capture-detail").textContent = detail;
+      document.body.appendChild(toast);
+
+      window.clearTimeout(window.__componentCaptureToastTimer);
+      window.__componentCaptureToastTimer = window.setTimeout(() => {
+        toast.remove();
+      }, 15000);
+
+      return toast;
+    }
+
+    function showCaptureHighlight(element) {
+      document.querySelector(".component-capture-highlight")?.remove();
+
+      const rect = element.getBoundingClientRect();
+      const highlight = document.createElement("div");
+      highlight.className = "component-capture-highlight";
+      highlight.style.left = `${Math.max(0, rect.left)}px`;
+      highlight.style.top = `${Math.max(0, rect.top)}px`;
+      highlight.style.width = `${Math.max(0, rect.width)}px`;
+      highlight.style.height = `${Math.max(0, rect.height)}px`;
+      document.body.appendChild(highlight);
+
+      const remove = () => highlight.remove();
+      highlight.addEventListener("animationend", remove, { once: true });
+      window.setTimeout(remove, 950);
+
+      return highlight;
+    }
+
+    function captureComponentAtTarget(pageName, target) {
+      const component = nearestComponent(target);
+      const tag = component.tagName.toLowerCase();
+      const name = representativeText(component);
+      const identifier = `${pageName} / ${tag} / ${name}`;
+      const quotedIdentifier = `"${identifier}"`;
+      const detail = classDetail(component);
+
+      showCaptureHighlight(component);
+      showCaptureToast(quotedIdentifier, detail);
+
+      const copyResult = writeClipboardWithFallback(quotedIdentifier).then(() => ({
+        component,
+        detail,
+        identifier,
+        quotedIdentifier
+      }));
+      window.__componentCaptureLastResult = copyResult;
+      return copyResult;
+    }
+
+    function installComponentCapture(pageName) {
+      document.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        window.__componentCaptureLastResult = captureComponentAtTarget(pageName, event.target);
+      });
+    }
+
+    window.installComponentCapture = installComponentCapture;
+    window.captureComponentAtTarget = captureComponentAtTarget;
+
+    installComponentCapture("AgentsCommander Current App");
+  </script>
+</body>
+</html>

@@ -16,7 +16,8 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke:profile-matrix": "node scripts/smoke-profile-matrix-preview.mjs"
+    "smoke:profile-matrix": "node scripts/smoke-profile-matrix-preview.mjs",
+    "smoke:current-app": "node scripts/smoke-current-app-mockup.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
