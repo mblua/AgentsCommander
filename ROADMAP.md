@@ -8,7 +8,7 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 - Multi-agent workgroups with file-based inter-agent messaging
 - Cross-coding-agent profiles: Claude Code · Codex · Gemini
-- Agents Agency role-template picker (vendored snapshot of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents))
+- Agents Agency role-template picker (explicit downloaded cache from [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents))
 - Telegram bridge (PTY-mode + JSONL reader-mode per agent, plus photo/image sends for screenshots and artifacts)
 - Voice-to-text via Gemini API with auto-execute
 - Portable instances (rename the `.exe` → isolated workspace, ports, mutex, config)

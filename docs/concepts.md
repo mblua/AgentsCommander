@@ -65,7 +65,7 @@ See [Inter-agent messaging](agents/inter-agent-messaging.md).
 
 ## Agents Agency
 
-A community library of agent role templates at [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). AC ships a **vendored snapshot** so the role picker works offline. When you create a new agent, the picker lists every role from the snapshot plus your local templates.
+A community library of agent role templates at [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). AC uses an explicit downloaded cache so the role picker works offline after `agency-templates update`. When you create a new agent, the picker lists cached Agency roles plus your local templates.
 
 The Agency does not run anything — it is a catalog of well-written role prompts. See [Coding agents and the Agents Agency picker](integrations/coding-agents.md).
 

@@ -62,12 +62,12 @@ You can change the choice for a session later: right-click → **Launch with…*
 
 When you create a new agent through the UI you can pick a role template. The picker shows two sources:
 
-1. **Agency templates** — read from the vendored snapshot at `src-tauri/src/commands/agency_agents_snapshot.json`, regenerated via `scripts/generate-agency-snapshot.mjs`.
+1. **Agency templates** — read from the validated offline cache at `<config-dir>/agency-agents_templates`, refreshed only by `agency-templates update`.
 2. **Local templates** — read from `<config-dir>/agent-templates/<folder>/` (override the path via `settings.agentTemplatesPath`).
 
 Each template provides metadata (name, description, category, accent color) and a markdown role body. AC writes the body into the new agent's `Role.md` and `CLAUDE.md`.
 
-> AC's role-template picker is powered by a vendored snapshot of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). The snapshot is regenerated via `scripts/generate-agency-snapshot.mjs`. If you author a new role and want it discoverable in AC by default, submit it upstream to the agency-agents catalog.
+> AC's role-template picker can use a downloaded cache of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). If you author a new role and want it discoverable in AC by default, submit it upstream to the agency-agents catalog, then refresh the cache with `agency-templates update`.
 
 ## Adding a custom coding-agent profile
 

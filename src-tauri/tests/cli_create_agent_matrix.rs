@@ -63,6 +63,32 @@ fn write_settings(config_dir: &Path, settings: serde_json::Value) {
     .expect("write settings.json");
 }
 
+fn seed_agency_cache(config_dir: &Path) {
+    let role_dir = config_dir
+        .join("agency-agents_templates")
+        .join("testing")
+        .join("accessibility-auditor");
+    std::fs::create_dir_all(&role_dir).expect("create agency cache");
+    std::fs::write(
+        role_dir.join("Role.md"),
+        "---\nname: Accessibility Auditor\n---\n\n# Agency Cached Role\n\nUse cached guidance.\n",
+    )
+    .expect("write agency role");
+    std::fs::write(
+        config_dir
+            .join("agency-agents_templates")
+            .join("manifest.json"),
+        serde_json::json!({
+            "repo": "https://github.com/msitarzewski/agency-agents",
+            "ref": "main",
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "templateCount": 1
+        })
+        .to_string(),
+    )
+    .expect("write agency manifest");
+}
+
 fn settings_with_project_paths(paths: &[&Path]) -> serde_json::Value {
     serde_json::json!({
         "defaultShell": "powershell.exe",
@@ -665,12 +691,54 @@ fn create_agent_matrix_invalid_template_exits_1_without_target_dir() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Unknown built-in role template"));
+    assert!(
+        stderr.contains("Unknown Agency role template") || stderr.contains("missing"),
+        "stderr: {}",
+        stderr
+    );
     assert!(!project.join(".ac").join("_agent_architect").exists());
     assert!(
         project_refresh_request_paths(&config_dir).is_empty(),
         "invalid template must not write a project refresh request"
     );
+}
+
+#[test]
+fn create_agent_matrix_from_cached_agency_template_seeds_role_without_skills() {
+    let tmp = Tmp::new("cli-create-agent-matrix-agency-template");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let project = project_with_workspace(tmp.path());
+    write_settings(&config_dir, settings_with_project_paths(&[tmp.path()]));
+    seed_agency_cache(&config_dir);
+
+    let out = Command::new(&bin)
+        .args([
+            "create-agent-matrix",
+            "--project",
+            "ProjectAlpha",
+            "--name",
+            "Auditor",
+            "--description",
+            "Audit accessibility",
+            "--role-template",
+            "agency:testing-accessibility-auditor",
+        ])
+        .output()
+        .expect("spawn binary");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let agent_dir = project.join(".ac").join("_agent_auditor");
+    let role = std::fs::read_to_string(agent_dir.join("Role.md")).expect("read Role.md");
+    assert!(role.contains("# Agency Cached Role"));
+    assert!(role.contains("Use cached guidance."));
+    assert!(!agent_dir.join("skills").join("demo").exists());
 }
 
 #[test]
