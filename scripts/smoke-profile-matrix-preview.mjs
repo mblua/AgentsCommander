@@ -6,6 +6,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 const prototypePath = resolve('_prototypes/coding-agent-profile-matrix-modal.html');
 const html = await readFile(prototypePath, 'utf8');
 const runtimeErrors = [];
+let copiedText = '';
 const virtualConsole = new VirtualConsole();
 virtualConsole.sendTo(console);
 virtualConsole.on('jsdomError', (error) => {
@@ -19,6 +20,13 @@ const dom = new JSDOM(html, {
     window.addEventListener('error', (event) => {
       runtimeErrors.push(event.error ?? event.message);
     });
+    window.document.execCommand = (command) => {
+      if (command === 'copy') {
+        copiedText = window.document.querySelector('textarea')?.value ?? '';
+        return true;
+      }
+      return false;
+    };
   },
 });
 
@@ -250,4 +258,51 @@ click(addCell);
 data = parsePreview();
 assert.equal(data.profiles.D['claude-code'].model, 'claude/default');
 assert.equal(data.profiles.D['claude-code'].enabled, true);
+assertNoRuntimeErrors();
+
+const captureTarget = dom.window.document.querySelector('[data-agent="claude-code"][data-letter="D"] .cell-value');
+assert.ok(captureTarget, 'profile cell content should exist for component capture');
+const capturedCell = captureTarget.closest('[data-component]');
+assert.ok(capturedCell, 'profile cell should expose a data-component capture marker');
+capturedCell.getBoundingClientRect = () => ({
+  left: 24,
+  top: 32,
+  width: 180,
+  height: 90,
+  right: 204,
+  bottom: 122,
+  x: 24,
+  y: 32,
+  toJSON: () => {},
+});
+const contextMenu = new dom.window.MouseEvent('contextmenu', {
+  bubbles: true,
+  cancelable: true,
+});
+const contextMenuAllowed = captureTarget.dispatchEvent(contextMenu);
+assert.equal(contextMenuAllowed, false, 'right click should prevent the native context menu path');
+assert.equal(contextMenu.defaultPrevented, true, 'contextmenu event should be marked defaultPrevented');
+
+const captureResult = await dom.window.__componentCaptureLastResult;
+assert.equal(
+  captureResult.quotedIdentifier,
+  '"Coding Agent Profile Matrix / td / Claude Code D-LOW COST configured profile cell"'
+);
+assert.equal(copiedText, captureResult.quotedIdentifier, 'fallback clipboard copy should include double quotes');
+
+const toast = dom.window.document.querySelector('.component-capture-toast');
+assert.ok(toast, 'component capture toast should appear');
+assert.match(toast?.textContent ?? '', /"Coding Agent Profile Matrix \/ td \/ Claude Code D-LOW COST configured profile cell"/);
+assert.match(toast?.textContent ?? '', /td \.profile-cell/);
+
+const highlight = dom.window.document.querySelector('.component-capture-highlight');
+assert.ok(highlight, 'component capture highlight should appear');
+assert.equal(highlight?.style.left, '24px');
+assert.equal(highlight?.style.top, '32px');
+highlight?.dispatchEvent(new dom.window.Event('animationend', { bubbles: true }));
+assert.equal(
+  dom.window.document.querySelector('.component-capture-highlight'),
+  null,
+  'component capture highlight should remove after its two-blink animation completes'
+);
 assertNoRuntimeErrors();

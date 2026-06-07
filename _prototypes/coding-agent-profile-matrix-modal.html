@@ -1264,6 +1264,68 @@
       background: var(--toolbar-btn-hover);
     }
 
+    .component-capture-toast {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 3000;
+      width: min(620px, calc(100vw - 32px));
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(160px, 0.65fr);
+      gap: var(--spacing-md);
+      padding: 10px 12px;
+      border: 1px solid rgba(0, 212, 255, 0.28);
+      border-radius: var(--radius-md);
+      background: rgba(8, 8, 13, 0.96);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+      color: var(--sidebar-fg);
+      pointer-events: none;
+    }
+
+    .component-capture-id,
+    .component-capture-detail {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .component-capture-id {
+      color: var(--sidebar-accent);
+      font-family: var(--font-terminal);
+      font-size: 11px;
+    }
+
+    .component-capture-detail {
+      color: var(--sidebar-fg-dim);
+      font-family: var(--font-terminal);
+      font-size: 10px;
+      text-align: right;
+    }
+
+    .component-capture-highlight {
+      position: fixed;
+      z-index: 2999;
+      border: 2px solid rgba(0, 212, 255, 0.92);
+      border-radius: var(--radius-sm);
+      box-shadow:
+        0 0 0 1px rgba(8, 8, 13, 0.75),
+        0 0 18px rgba(0, 212, 255, 0.35);
+      pointer-events: none;
+      animation: component-capture-blink 420ms ease-out 2;
+    }
+
+    @keyframes component-capture-blink {
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.18;
+      }
+    }
+
     @media (max-width: 980px) {
       .main {
         grid-template-columns: 220px 1fr;
@@ -1321,6 +1383,15 @@
 
       .modal-actions {
         justify-content: flex-end;
+      }
+
+      .component-capture-toast {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+
+      .component-capture-detail {
+        text-align: left;
       }
     }
   </style>
@@ -1386,8 +1457,8 @@
   </div>
 
   <div class="modal-overlay">
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
-      <header class="modal-header">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title" data-component="Coding Agent Profile Matrix modal">
+      <header class="modal-header" data-component="Profile Matrix header">
         <div>
           <div class="modal-kicker">AC Root configuration</div>
           <h1 id="profile-modal-title" class="modal-title">Coding Agent Profile Matrix</h1>
@@ -1395,7 +1466,7 @@
         <button class="modal-close" type="button" aria-label="Close">x</button>
       </header>
 
-      <div class="scope-strip">
+      <div class="scope-strip" data-component="AC Root configuration scope">
         <div>
           <div class="scope-label">Configuration file</div>
           <div class="scope-path">C:\Users\maria\0_repos\AgentsCommander_ac\.ac\coding-agent-profiles.json</div>
@@ -1404,7 +1475,7 @@
       </div>
 
       <div class="modal-body">
-        <section class="panel">
+        <section class="panel" data-component="Profile matrix editor">
           <div class="panel-header">
             <div>
               <div class="settings-section-title">Matrix</div>
@@ -1414,7 +1485,7 @@
 
           <div class="fallback-rule"><strong>Fallback:</strong> each missing profile uses the immediately higher row; D uses C, C uses B, B uses A, and A is the final fallback.</div>
 
-          <div class="matrix-wrap">
+          <div class="matrix-wrap" data-component="Coding agent profile matrix table">
             <table aria-label="Coding agent profile matrix">
               <thead>
                 <tr id="matrixHead"></tr>
@@ -1427,8 +1498,8 @@
           </div>
         </section>
 
-        <aside class="panel side">
-          <div class="editor-card">
+        <aside class="panel side" data-component="Selected profile detail panel">
+          <div class="editor-card" data-component="Selected cell editor">
             <div class="editor-title">
               <span>Selected cell</span>
               <span id="selectedKey">A / Codex</span>
@@ -1473,7 +1544,7 @@
             <button id="addSelectedCellBtn" class="modal-btn save" type="button" hidden>Add selected cell</button>
           </div>
 
-          <div class="preview-card">
+          <div class="preview-card" data-component="coding-agent-profiles JSON preview">
             <div class="preview-meta">
               <span>JSON preview</span>
               <span>coding-agent-profiles.json</span>
@@ -1482,7 +1553,7 @@
           </div>
         </aside>
 
-        <section class="support-surfaces" aria-label="Additional coding-agent profile default mockups">
+        <section class="support-surfaces" aria-label="Additional coding-agent profile default mockups" data-component="Additional profile default mockups">
           <div class="surface-tabs" aria-label="Profile support surfaces">
             <button class="surface-tab active" type="button">Defaults</button>
             <button class="surface-tab" type="button">New Agent</button>
@@ -1492,7 +1563,7 @@
           </div>
 
           <div class="surface-grid">
-            <section class="surface-card wide" aria-labelledby="defaults-surface-title">
+            <section class="surface-card wide" aria-labelledby="defaults-surface-title" data-component="Defaults tab in Profile Matrix settings">
               <div class="surface-card-head">
                 <div>
                   <div id="defaults-surface-title" class="surface-title">Defaults tab in Profile Matrix settings</div>
@@ -1575,7 +1646,7 @@
               </div>
             </section>
 
-            <section class="surface-card" aria-labelledby="create-surface-title">
+            <section class="surface-card" aria-labelledby="create-surface-title" data-component="New Agent creation modal">
               <div class="surface-card-head">
                 <div>
                   <div id="create-surface-title" class="surface-title">New Agent creation modal</div>
@@ -1620,7 +1691,7 @@
               </div>
             </section>
 
-            <section class="surface-card wide" aria-labelledby="existing-surface-title">
+            <section class="surface-card wide" aria-labelledby="existing-surface-title" data-component="Individual Agent profile assignment modal">
               <div class="surface-card-head">
                 <div>
                   <div id="existing-surface-title" class="surface-title">Individual Agent profile assignment modal</div>
@@ -1693,7 +1764,7 @@
               </div>
             </section>
 
-            <section class="surface-card wide" aria-labelledby="diagnostics-surface-title">
+            <section class="surface-card wide" aria-labelledby="diagnostics-surface-title" data-component="Diagnostics and resolution view">
               <div class="surface-card-head">
                 <div>
                   <div id="diagnostics-surface-title" class="surface-title">Diagnostics and resolution view</div>
@@ -1739,7 +1810,7 @@
               </div>
             </section>
 
-            <section class="surface-card wide" aria-labelledby="dispatch-surface-title">
+            <section class="surface-card wide" aria-labelledby="dispatch-surface-title" data-component="Workgroup dispatch and agent list visibility">
               <div class="surface-card-head">
                 <div>
                   <div id="dispatch-surface-title" class="surface-title">Workgroup dispatch and agent list visibility</div>
@@ -1849,6 +1920,160 @@
     const legacyAgentAssignProfile = document.getElementById("legacyAgentAssignProfile");
     const legacyAgentAssignmentNotice = document.getElementById("legacyAgentAssignmentNotice");
 
+    function truncateComponentText(value, limit = 96) {
+      const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+      return normalized.length > limit ? `${normalized.slice(0, limit - 1).trim()}...` : normalized;
+    }
+
+    function classDetail(element) {
+      const classes = Array.from(element.classList ?? []).slice(0, 4);
+      return `${element.tagName.toLowerCase()}${classes.length ? ` .${classes.join(".")}` : ""}`;
+    }
+
+    function representativeText(element) {
+      const explicit = element.closest("[data-component]")?.getAttribute("data-component");
+      if (explicit) {
+        return truncateComponentText(explicit);
+      }
+
+      const heading = element.querySelector?.("h1, h2, h3, strong");
+      if (heading?.textContent?.trim()) {
+        return truncateComponentText(heading.textContent);
+      }
+
+      const labelledBy = element.getAttribute?.("aria-labelledby");
+      if (labelledBy) {
+        const label = document.getElementById(labelledBy);
+        if (label?.textContent?.trim()) {
+          return truncateComponentText(label.textContent);
+        }
+      }
+
+      const label = element.getAttribute?.("aria-label") || element.getAttribute?.("title");
+      if (label) {
+        return truncateComponentText(label);
+      }
+
+      return truncateComponentText(element.innerText || element.textContent || element.value || "unlabeled");
+    }
+
+    function nearestComponent(target) {
+      if (!(target instanceof Element)) {
+        return document.body;
+      }
+
+      const marked = target.closest("[data-component]");
+      if (marked) {
+        return marked;
+      }
+
+      return target.closest(
+        "section, article, aside, header, footer, main, nav, table, tr, td, th, button, label, input, select, textarea, pre"
+      ) || target;
+    }
+
+    function writeClipboardWithFallback(text) {
+      if (navigator.clipboard?.writeText) {
+        return navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+      }
+
+      return fallbackCopy(text);
+    }
+
+    function fallbackCopy(text) {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+
+      try {
+        if (typeof document.execCommand === "function") {
+          document.execCommand("copy");
+        }
+      } finally {
+        textarea.remove();
+      }
+
+      return Promise.resolve();
+    }
+
+    function showCaptureToast(identifier, detail) {
+      document.querySelector(".component-capture-toast")?.remove();
+
+      const toast = document.createElement("div");
+      toast.className = "component-capture-toast";
+      toast.setAttribute("role", "status");
+      toast.innerHTML = `
+        <div class="component-capture-id"></div>
+        <div class="component-capture-detail"></div>
+      `;
+      toast.querySelector(".component-capture-id").textContent = identifier;
+      toast.querySelector(".component-capture-detail").textContent = detail;
+      document.body.appendChild(toast);
+
+      window.clearTimeout(window.__componentCaptureToastTimer);
+      window.__componentCaptureToastTimer = window.setTimeout(() => {
+        toast.remove();
+      }, 3200);
+
+      return toast;
+    }
+
+    function showCaptureHighlight(element) {
+      document.querySelector(".component-capture-highlight")?.remove();
+
+      const rect = element.getBoundingClientRect();
+      const highlight = document.createElement("div");
+      highlight.className = "component-capture-highlight";
+      highlight.style.left = `${Math.max(0, rect.left)}px`;
+      highlight.style.top = `${Math.max(0, rect.top)}px`;
+      highlight.style.width = `${Math.max(0, rect.width)}px`;
+      highlight.style.height = `${Math.max(0, rect.height)}px`;
+      document.body.appendChild(highlight);
+
+      const remove = () => highlight.remove();
+      highlight.addEventListener("animationend", remove, { once: true });
+      window.setTimeout(remove, 950);
+
+      return highlight;
+    }
+
+    function captureComponentAtTarget(pageName, target) {
+      const component = nearestComponent(target);
+      const tag = component.tagName.toLowerCase();
+      const name = representativeText(component);
+      const identifier = `${pageName} / ${tag} / ${name}`;
+      const quotedIdentifier = `"${identifier}"`;
+      const detail = classDetail(component);
+
+      showCaptureHighlight(component);
+      showCaptureToast(quotedIdentifier, detail);
+
+      const copyResult = writeClipboardWithFallback(quotedIdentifier).then(() => ({
+        component,
+        detail,
+        identifier,
+        quotedIdentifier
+      }));
+      window.__componentCaptureLastResult = copyResult;
+      return copyResult;
+    }
+
+    function installComponentCapture(pageName) {
+      document.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        window.__componentCaptureLastResult = captureComponentAtTarget(pageName, event.target);
+      });
+    }
+
+    window.installComponentCapture = installComponentCapture;
+    window.captureComponentAtTarget = captureComponentAtTarget;
+
     function escapeHtml(value) {
       return String(value)
         .replace(/&/g, "&amp;")
@@ -1946,7 +2171,7 @@
 
           if (missing) {
             return `
-              <td class="profile-cell${selectedClass}${missingClass}" style="${style}" data-agent="${agent.id}" data-letter="${letter}">
+              <td class="profile-cell${selectedClass}${missingClass}" style="${style}" data-agent="${agent.id}" data-letter="${letter}" data-component="${escapeHtml(`${agent.label} ${profileLabel(letter)} missing profile cell`)}">
                 <div class="missing-cell">
                   <button class="add-cell-btn" type="button" title="Add ${agent.label} ${profileLabel(letter)}" aria-label="Add ${agent.label} ${profileLabel(letter)}" data-add-agent="${agent.id}" data-add-letter="${letter}">+</button>
                   <div class="missing-label">Missing; uses ${escapeHtml(fallbackFor(letter))}</div>
@@ -1956,7 +2181,7 @@
           }
 
           return `
-            <td class="profile-cell${selectedClass}${requiredClass}${enabledClass}" style="${style}" data-agent="${agent.id}" data-letter="${letter}">
+            <td class="profile-cell${selectedClass}${requiredClass}${enabledClass}" style="${style}" data-agent="${agent.id}" data-letter="${letter}" data-component="${escapeHtml(`${agent.label} ${profileLabel(letter)} configured profile cell`)}">
               <div class="cell-head">
                 <span class="agent-label"><span class="agent-dot" style="background:${agent.color}"></span>${agent.label}</span>
                 ${required ? `<span class="required-badge">Required</span>` : `<button class="icon-btn delete cell-delete-btn" type="button" title="Remove ${agent.label} ${profileLabel(letter)}" aria-label="Remove ${agent.label} ${profileLabel(letter)}" data-remove-agent="${agent.id}" data-remove-letter="${letter}">x</button>`}
@@ -1971,7 +2196,7 @@
 
         return `
           <tr>
-            <td class="profile-row-head">
+            <td class="profile-row-head" data-component="${escapeHtml(`${profileLabel(letter)} profile row header`)}">
               <div class="profile-row-title">
                 <label class="profile-row-label" aria-label="Profile ${letter} custom name">
                   <span class="letter-pill">${letter}</span>
@@ -2286,6 +2511,8 @@
       input.addEventListener("change", renderIndividualAgentPreview);
     });
     legacyAgentAssignProfile.addEventListener("change", renderLegacyAssignmentPreview);
+
+    installComponentCapture("Coding Agent Profile Matrix");
   </script>
 </body>
 </html>
