@@ -44,6 +44,53 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
     bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
+fn run_git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout: {}\nstderr: {}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn file_url(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        format!("file:///{}", path)
+    } else {
+        format!("file://{}", path)
+    }
+}
+
+fn create_agency_source_repo(root: &Path) {
+    std::fs::create_dir_all(root.join("Engineering")).expect("create source division");
+    std::fs::write(
+        root.join("Engineering").join("Planner.md"),
+        "---\nname: Planner\ndescription: Plans backend work\n---\n\nPlan backend work.\n",
+    )
+    .expect("write source role");
+    run_git(root, &["init"]);
+    run_git(root, &["checkout", "-B", "main"]);
+    run_git(root, &["config", "user.email", "test@example.com"]);
+    run_git(root, &["config", "user.name", "Test User"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-m", "seed agency templates"]);
+}
+
+fn write_git_redirect_config(path: &Path, source_repo: &Path) {
+    let body = format!(
+        "[url \"{}\"]\n\tinsteadOf = https://github.com/ac-test/agency-agents\n",
+        file_url(source_repo)
+    );
+    std::fs::write(path, body).expect("write git redirect config");
+}
+
 fn seed_cache(config_dir: &Path) {
     let cache = config_dir
         .join("agency-agents_templates")
@@ -68,6 +115,61 @@ fn seed_cache(config_dir: &Path) {
         .to_string(),
     )
     .expect("write manifest");
+}
+
+#[test]
+fn agency_templates_update_prints_json_on_success_and_noop() {
+    let tmp = Tmp::new("agency-update-json");
+    let bin = copy_binary_into(tmp.path());
+    let source_repo = tmp.path().join("source");
+    std::fs::create_dir_all(&source_repo).expect("create source repo");
+    create_agency_source_repo(&source_repo);
+    let git_config = tmp.path().join("gitconfig");
+    write_git_redirect_config(&git_config, &source_repo);
+
+    let run_update = || {
+        Command::new(&bin)
+            .env("GIT_CONFIG_GLOBAL", &git_config)
+            .args([
+                "agency-templates",
+                "update",
+                "--repo",
+                "https://github.com/ac-test/agency-agents",
+                "--ref",
+                "main",
+                "--json",
+            ])
+            .output()
+            .expect("run update")
+    };
+
+    let output = run_update();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(!output.stdout.is_empty(), "update stdout must contain JSON");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("update json");
+    assert_eq!(value["repo"], "https://github.com/ac-test/agency-agents");
+    assert_eq!(value["ref"], "main");
+    assert_eq!(value["templateCount"], 1);
+    assert_eq!(value["updated"], true);
+    assert!(value["commit"].as_str().unwrap_or_default().len() == 40);
+    assert!(value["path"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("agency-agents_templates"));
+
+    let output = run_update();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(
+        !output.stdout.is_empty(),
+        "noop update stdout must contain JSON"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("noop update json");
+    assert_eq!(value["templateCount"], 1);
+    assert_eq!(value["updated"], false);
 }
 
 #[test]

@@ -352,6 +352,25 @@ fn update(args: AgencyTemplatesUpdateArgs) -> Result<(), String> {
 
     parse_github_repo(&args.repo)?;
     let commit = resolve_commit_with_git(&args.repo, &args.reference)?;
+    let destination = agency_templates_dir(&config_dir);
+    if let Ok(current) = current_manifest_if_valid(&config_dir) {
+        if current.repo == args.repo
+            && current.reference == args.reference
+            && current.commit == commit
+        {
+            return print_json(
+                &UpdateResult {
+                    repo: current.repo,
+                    reference: current.reference,
+                    commit: current.commit,
+                    template_count: current.template_count,
+                    path: destination.to_string_lossy().to_string(),
+                    updated: false,
+                },
+                false,
+            );
+        }
+    }
     let extracted = fetch_repo_with_git(&args.repo, &commit, &config_dir)?;
     let extracted = TempCacheDir::new(extracted);
     let staging = config_dir.join(format!(
@@ -401,13 +420,25 @@ fn update(args: AgencyTemplatesUpdateArgs) -> Result<(), String> {
             reference: manifest.reference,
             commit: manifest.commit,
             template_count: manifest.template_count,
-            path: agency_templates_dir(&config_dir)
-                .to_string_lossy()
-                .to_string(),
+            path: destination.to_string_lossy().to_string(),
             updated: true,
         },
         false,
     )
+}
+
+fn current_manifest_if_valid(config_dir: &Path) -> Result<AgencyTemplatesManifest, String> {
+    let root = agency_templates_dir(config_dir);
+    let templates = collect_agency_templates_from_dir(&root)?;
+    let manifest: AgencyTemplatesManifest = serde_json::from_str(
+        &fs::read_to_string(root.join(AGENCY_MANIFEST_FILE))
+            .map_err(|e| format!("Failed to read cached manifest: {}", e))?,
+    )
+    .map_err(|e| format!("Failed to parse cached manifest: {}", e))?;
+    if templates.len() != manifest.template_count {
+        return Err("Cached manifest template count mismatch".into());
+    }
+    Ok(manifest)
 }
 
 fn parse_github_repo(input: &str) -> Result<(), String> {
