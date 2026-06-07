@@ -939,7 +939,11 @@ fn cleanup_failed_context_template(path: &Path) {
 }
 
 fn resolve_workspace_context_dir(agent_root: &Path) -> Option<PathBuf> {
-    find_workspace_root(agent_root)
+    find_workspace_root(agent_root).or_else(|| {
+        super::root_agent::is_root_agent_dir_name(&agent_root.to_string_lossy())
+            .then(|| agent_root.parent().map(canonical_or_original))
+            .flatten()
+    })
 }
 
 fn read_context_template(agent_root: &str, filename: &str) -> Result<Option<String>, String> {
@@ -3906,7 +3910,12 @@ mod tests {
 
         assert!(content.contains("# AgentsCommander Context"));
         assert!(content.contains("You are the AgentsCommander Root Agent"));
-        assert!(content.contains("verified workgroup coordinator replicas only"));
+        assert!(content.contains("verified WG coordinator replicas only"));
+        assert_eq!(
+            content.matches("Root messaging is **file-based**").count(),
+            1,
+            "root operational messaging instructions should come only from the global context"
+        );
         assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
         assert!(!content.contains("Direct file-based workgroup messaging is not available"));
 
@@ -3924,7 +3933,55 @@ mod tests {
 
         assert!(content.contains("LIVE_ROOT_CONTEXT_BODY"));
         assert!(!content.contains("You are the AgentsCommander Root Agent"));
+        assert_eq!(
+            content.matches("Root messaging is **file-based**").count(),
+            1,
+            "custom root context must not receive global operational fallback"
+        );
         assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
+    }
+
+    #[test]
+    fn materialize_root_context_uses_standalone_sibling_global_template() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let global_template_path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(
+            root.join("config.json"),
+            r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","../Context.root-agent.md","Role.md"]}"#,
+        )
+        .expect("write config");
+        std::fs::write(root.join("Role.md"), "# Root Role\n\nROOT_ROLE_BODY\n")
+            .expect("write role");
+        std::fs::write(
+            temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+            "# Root Context\n\nROOT_TEMPLATE_BODY\n",
+        )
+        .expect("write root context");
+        std::fs::write(
+            &global_template_path,
+            "CUSTOM_STANDALONE_GLOBAL {{AGENT_ROOT}}",
+        )
+        .expect("write global template");
+
+        let materialized =
+            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
+                .expect("materialize context")
+                .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("CUSTOM_STANDALONE_GLOBAL"));
+        assert!(content.contains(&display_path(&root)));
+        assert!(content.contains("ROOT_TEMPLATE_BODY"));
+        assert!(content.contains("ROOT_ROLE_BODY"));
+        assert!(!content.contains("# AgentsCommander Context"));
+        assert_eq!(
+            std::fs::read_to_string(global_template_path).expect("read global template"),
+            "CUSTOM_STANDALONE_GLOBAL {{AGENT_ROOT}}"
+        );
     }
 
     #[test]

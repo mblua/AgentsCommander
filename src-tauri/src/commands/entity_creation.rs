@@ -1743,7 +1743,7 @@ async fn sync_workgroup_repos_inner(
 
             config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
                 &existing_context,
-                &["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"],
+                &["$AGENTSCOMMANDER_CONTEXT"],
                 &identity.identity,
                 identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
             ));
