@@ -31,6 +31,10 @@ const dom = new JSDOM(html, {
 });
 
 const documentText = () => dom.window.document.body.textContent ?? '';
+const cssBlockFor = (selector) => {
+  const blockPattern = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{(?<body>[^}]*)\\}`);
+  return html.match(blockPattern)?.groups?.body ?? '';
+};
 const assertNoRuntimeErrors = () => {
   assert.equal(
     runtimeErrors.length,
@@ -47,6 +51,9 @@ assert.ok(dom.window.document.querySelector('[data-component="terminal transcrip
 assert.ok(dom.window.document.querySelector('[data-component="right AgentsCommander navigation control sidebar"]'));
 assert.ok(dom.window.document.querySelector('[data-component="selected project coding agent model and effort task"]'));
 assert.ok(dom.window.document.querySelector('[data-component="selected workgroup panel"]'));
+const sideScrollCss = cssBlockFor('.side-scroll');
+assert.match(sideScrollCss, /overflow-y:\s*auto;/, 'sidebar content should allow vertical scrolling');
+assert.match(sideScrollCss, /overflow-x:\s*hidden;/, 'sidebar content should keep horizontal overflow hidden');
 assert.match(documentText(), /Agents Commander/);
 assert.match(documentText(), /v0\.8\.50/);
 assert.match(documentText(), /WG-7-DEV-TEAM/);
@@ -60,6 +67,39 @@ assert.match(documentText(), /dev-webpage-ui/);
 assert.match(documentText(), /WG-1-DEV-TEAM/);
 assert.equal(/<img\b/i.test(html), false, 'mockup should not embed the screenshot as an image');
 assertNoRuntimeErrors();
+
+const sideScroll = dom.window.document.querySelector('.side-scroll');
+const workgroupsLabel = dom.window.document.querySelector('[data-component="workgroups section label"]');
+assert.ok(sideScroll, 'sidebar scroll container should exist');
+assert.ok(workgroupsLabel, 'workgroups label should exist');
+
+const desktopSidebarTop = 46;
+const desktopSidebarVisibleHeight = 682;
+const workgroupsOffsetTop = 760;
+Object.defineProperties(sideScroll, {
+  clientHeight: { configurable: true, value: desktopSidebarVisibleHeight },
+  scrollHeight: { configurable: true, value: 860 },
+});
+workgroupsLabel.getBoundingClientRect = () => ({
+  left: 995,
+  top: desktopSidebarTop + workgroupsOffsetTop - sideScroll.scrollTop,
+  width: 340,
+  height: 18,
+  right: 1335,
+  bottom: desktopSidebarTop + workgroupsOffsetTop - sideScroll.scrollTop + 18,
+  x: 995,
+  y: desktopSidebarTop + workgroupsOffsetTop - sideScroll.scrollTop,
+  toJSON: () => {},
+});
+const isWorkgroupsReachable = () => {
+  const rect = workgroupsLabel.getBoundingClientRect();
+  return rect.top >= desktopSidebarTop && rect.bottom <= desktopSidebarTop + sideScroll.clientHeight;
+};
+
+assert.equal(isWorkgroupsReachable(), false, 'workgroups should start below the 1365x768 sidebar viewport');
+sideScroll.scrollTop = sideScroll.scrollHeight - sideScroll.clientHeight;
+assert.equal(sideScroll.scrollTop > 0, true, 'sidebar should accept a positive scrollTop');
+assert.equal(isWorkgroupsReachable(), true, 'workgroups should be reachable after scrolling the sidebar');
 
 const captureTarget = dom.window.document.querySelector('[data-component="selected project coding agent model and effort task"] .card-title');
 assert.ok(captureTarget, 'selected project capture target should exist');
