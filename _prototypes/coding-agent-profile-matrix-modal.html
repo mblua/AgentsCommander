@@ -434,6 +434,20 @@
       text-transform: uppercase;
     }
 
+    th.agent-header {
+      padding-top: 7px;
+      border-top: 2px solid var(--agent-color);
+      background:
+        linear-gradient(180deg, var(--agent-tint), transparent 70%),
+        #11111d;
+    }
+
+    .agent-column-label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
     th.agent-col {
       width: 132px;
       left: 0;
@@ -456,11 +470,15 @@
       background: #10101a;
     }
 
-    .profile-row-title {
+    .profile-row-title,
+    .profile-row-label {
       display: flex;
       align-items: center;
-      justify-content: space-between;
       gap: 8px;
+    }
+
+    .profile-row-label {
+      min-width: 0;
     }
 
     .agent-label {
@@ -479,6 +497,26 @@
       font-size: 10px;
     }
 
+    .profile-name-input {
+      width: 100%;
+      min-width: 0;
+      height: 24px;
+      border: 1px solid rgba(255, 255, 255, 0.055);
+      border-radius: var(--radius-sm);
+      outline: none;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--sidebar-fg);
+      font-family: var(--font-ui);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 0 6px;
+    }
+
+    .profile-name-input:focus {
+      border-color: rgba(0, 212, 255, 0.45);
+      background: rgba(0, 212, 255, 0.055);
+    }
+
     .agent-dot {
       width: 8px;
       height: 8px;
@@ -492,10 +530,21 @@
       background: transparent;
       cursor: pointer;
       transition: background var(--transition-fast);
+      border-top: 2px solid var(--agent-color);
+    }
+
+    .profile-cell.required {
+      cursor: default;
     }
 
     .profile-cell.disabled {
       opacity: 0.58;
+    }
+
+    .profile-cell.missing {
+      background:
+        linear-gradient(180deg, var(--agent-tint), transparent),
+        rgba(255, 255, 255, 0.01);
     }
 
     .profile-cell:hover,
@@ -561,12 +610,68 @@
       cursor: default;
     }
 
-    .priority {
-      color: var(--status-pending);
-      font-size: 10px;
+    .cell-delete-btn {
+      width: 20px;
+      height: 20px;
+      font-size: 12px;
+    }
+
+    .required-badge {
+      color: var(--sidebar-fg-dim);
+      font-size: 9px;
       font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+
+    .missing-cell {
+      min-height: 108px;
+      display: grid;
+      place-items: center;
+      gap: 6px;
+      color: var(--sidebar-fg-dim);
+      text-align: center;
+    }
+
+    .missing-label {
+      font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.3px;
+    }
+
+    .add-cell-btn {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(0, 212, 255, 0.25);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.06);
+      color: var(--sidebar-accent);
+      font-family: var(--font-ui);
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      transition: background var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .add-cell-btn:hover {
+      background: rgba(0, 212, 255, 0.12);
+      border-color: rgba(0, 212, 255, 0.4);
+    }
+
+    .fallback-rule {
+      padding: 9px 10px;
+      border: 1px solid rgba(0, 212, 255, 0.16);
+      border-radius: var(--radius-md);
+      background: rgba(0, 212, 255, 0.055);
+      color: var(--sidebar-fg);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .fallback-rule strong {
+      color: var(--sidebar-accent);
     }
 
     .cell-line {
@@ -662,6 +767,10 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: var(--spacing-sm);
+    }
+
+    .field-grid.single {
+      grid-template-columns: 1fr;
     }
 
     .toggle-row {
@@ -850,7 +959,7 @@
           <div class="dot" style="background:#f97316"></div>
           <div>
             <div class="session-name">OpenCode</div>
-            <div class="session-detail">Local CLI fallback</div>
+            <div class="session-detail">Local CLI option</div>
           </div>
           <span>C</span>
         </div>
@@ -891,22 +1000,19 @@
           <div class="panel-header">
             <div>
               <div class="settings-section-title">Matrix</div>
-              <p class="settings-hint">Profiles are rows; coding agents are columns. Each letter resolves per coding agent when launching or dispatching work. Click a cell to edit its model, effort, arguments, and fallback priority.</p>
+              <p class="settings-hint">Profiles are rows; coding agents are columns. Each column color comes from the current coding-agent configuration. Click a configured cell to edit its model, effort, and arguments.</p>
             </div>
             <div class="panel-actions">
               <button id="addProfileBtn" class="modal-btn save" type="button">+ Profile</button>
             </div>
           </div>
 
+          <div class="fallback-rule"><strong>Fallback:</strong> each missing profile uses the immediately higher row; D uses C, C uses B, B uses A, and A is the final fallback.</div>
+
           <div class="matrix-wrap">
             <table aria-label="Coding agent profile matrix">
               <thead>
-                <tr>
-                  <th class="agent-col">Profile</th>
-                  <th>Codex</th>
-                  <th>Claude Code</th>
-                  <th>OpenCode</th>
-                </tr>
+                <tr id="matrixHead"></tr>
               </thead>
               <tbody id="matrixBody"></tbody>
             </table>
@@ -933,7 +1039,7 @@
               <span class="settings-label">Model</span>
               <input id="modelInput" class="settings-input mono" type="text">
             </label>
-            <div class="field-grid">
+            <div class="field-grid single">
               <label class="settings-field">
                 <span class="settings-label">Effort</span>
                 <select id="effortSelect" class="settings-select">
@@ -941,15 +1047,6 @@
                   <option>medium</option>
                   <option>high</option>
                   <option>max</option>
-                </select>
-              </label>
-              <label class="settings-field">
-                <span class="settings-label">Priority</span>
-                <select id="prioritySelect" class="settings-select">
-                  <option>primary</option>
-                  <option>standard</option>
-                  <option>fallback</option>
-                  <option>experimental</option>
                 </select>
               </label>
             </div>
@@ -960,10 +1057,6 @@
             <label class="settings-field">
               <span class="settings-label">Extra args</span>
               <input id="extraArgsInput" class="settings-input mono" type="text">
-            </label>
-            <label class="settings-field">
-              <span class="settings-label">Fallback</span>
-              <input id="fallbackInput" class="settings-input mono" type="text">
             </label>
             <label class="toggle-row">
               <input id="enabledInput" type="checkbox">
@@ -999,41 +1092,46 @@
     ];
 
     const letters = ["A", "B", "C", "D"];
+    const profileNames = {
+      A: "FULL POWER",
+      B: "BALANCED",
+      C: "REVIEW",
+      D: "LOW COST"
+    };
 
     const matrix = {
       codex: {
-        A: { model: "gpt-5-codex", effort: "high", defaultArgs: "--sandbox workspace-write", extraArgs: "--search", priority: "primary", fallback: "Codex/B", enabled: true },
-        B: { model: "gpt-5-codex-mini", effort: "medium", defaultArgs: "--sandbox workspace-write", extraArgs: "--fast", priority: "standard", fallback: "Claude Code/B", enabled: true },
-        C: { model: "gpt-5-codex", effort: "max", defaultArgs: "--sandbox workspace-write", extraArgs: "--review --long-context", priority: "standard", fallback: "Claude Code/C", enabled: true },
-        D: { model: "gpt-5-codex-mini", effort: "low", defaultArgs: "--sandbox read-only", extraArgs: "--dry-run", priority: "fallback", fallback: "OpenCode/D", enabled: true }
+        A: { model: "gpt-5-codex", effort: "high", defaultArgs: "--sandbox workspace-write", extraArgs: "--search", enabled: true },
+        B: { model: "gpt-5-codex-mini", effort: "medium", defaultArgs: "--sandbox workspace-write", extraArgs: "--fast", enabled: true },
+        C: { model: "gpt-5-codex", effort: "max", defaultArgs: "--sandbox workspace-write", extraArgs: "--review --long-context", enabled: true },
+        D: null
       },
       "claude-code": {
-        A: { model: "claude-opus-4.1", effort: "high", defaultArgs: "--dangerously-skip-permissions=false", extraArgs: "--plan", priority: "primary", fallback: "Codex/A", enabled: true },
-        B: { model: "claude-sonnet-4", effort: "medium", defaultArgs: "--permission-mode default", extraArgs: "", priority: "standard", fallback: "Codex/B", enabled: true },
-        C: { model: "claude-sonnet-4", effort: "high", defaultArgs: "--permission-mode acceptEdits", extraArgs: "--review", priority: "standard", fallback: "Codex/C", enabled: true },
-        D: { model: "claude-haiku-4", effort: "low", defaultArgs: "--permission-mode default", extraArgs: "--quick", priority: "fallback", fallback: "OpenCode/D", enabled: true }
+        A: { model: "claude-opus-4.1", effort: "high", defaultArgs: "--dangerously-skip-permissions=false", extraArgs: "--plan", enabled: true },
+        B: { model: "claude-sonnet-4", effort: "medium", defaultArgs: "--permission-mode default", extraArgs: "", enabled: true },
+        C: { model: "claude-sonnet-4", effort: "high", defaultArgs: "--permission-mode acceptEdits", extraArgs: "--review", enabled: true },
+        D: { model: "claude-haiku-4", effort: "low", defaultArgs: "--permission-mode default", extraArgs: "--quick", enabled: true }
       },
       opencode: {
-        A: { model: "provider/default-large", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile a", priority: "standard", fallback: "Codex/A", enabled: true },
-        B: { model: "provider/default", effort: "medium", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile b", priority: "standard", fallback: "Claude Code/B", enabled: true },
-        C: { model: "provider/reviewer", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile c", priority: "experimental", fallback: "Codex/C", enabled: true },
-        D: { model: "provider/local", effort: "low", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--offline", priority: "fallback", fallback: "Codex/D", enabled: true }
+        A: { model: "provider/default-large", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile a", enabled: true },
+        B: null,
+        C: { model: "provider/reviewer", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--profile c", enabled: true },
+        D: { model: "provider/local", effort: "low", defaultArgs: "--config {acRoot}\\opencode.json", extraArgs: "--offline", enabled: true }
       }
     };
 
     let selected = { agent: "codex", letter: "A" };
 
     const body = document.getElementById("matrixBody");
+    const matrixHead = document.getElementById("matrixHead");
     const selectedKey = document.getElementById("selectedKey");
     const addProfileBtn = document.getElementById("addProfileBtn");
     const agentSelect = document.getElementById("agentSelect");
     const letterSelect = document.getElementById("letterSelect");
     const modelInput = document.getElementById("modelInput");
     const effortSelect = document.getElementById("effortSelect");
-    const prioritySelect = document.getElementById("prioritySelect");
     const defaultArgsInput = document.getElementById("defaultArgsInput");
     const extraArgsInput = document.getElementById("extraArgsInput");
-    const fallbackInput = document.getElementById("fallbackInput");
     const enabledInput = document.getElementById("enabledInput");
     const jsonPreview = document.getElementById("jsonPreview");
 
@@ -1045,6 +1143,34 @@
         .replace(/"/g, "&quot;");
     }
 
+    function colorToTint(hex, alpha = 0.12) {
+      const value = hex.replace("#", "");
+      const red = parseInt(value.slice(0, 2), 16);
+      const green = parseInt(value.slice(2, 4), 16);
+      const blue = parseInt(value.slice(4, 6), 16);
+      return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+    }
+
+    function profileLabel(letter) {
+      const name = profileNames[letter]?.trim();
+      return name ? `${letter}-${name}` : letter;
+    }
+
+    function fallbackFor(letter) {
+      const index = letters.indexOf(letter);
+      return index <= 0 ? "final fallback" : profileLabel(letters[index - 1]);
+    }
+
+    function selectCell(agentId, letter) {
+      if (!matrix[agentId][letter]) {
+        return;
+      }
+
+      selected = { agent: agentId, letter };
+      syncEditor();
+      renderMatrix();
+    }
+
     function renderSelectors() {
       agentSelect.innerHTML = agents.map((agent) =>
         `<option value="${agent.id}">${agent.label}</option>`
@@ -1054,22 +1180,50 @@
       ).join("");
     }
 
+    function renderHeaders() {
+      matrixHead.innerHTML = `
+        <th class="agent-col">Profile</th>
+        ${agents.map((agent) => `
+          <th class="agent-header" style="--agent-color:${agent.color};--agent-tint:${colorToTint(agent.color)}">
+            <span class="agent-column-label"><span class="agent-dot" style="background:${agent.color}"></span>${agent.label}</span>
+          </th>
+        `).join("")}
+      `;
+    }
+
     function renderMatrix() {
       body.innerHTML = letters.map((letter) => {
         const cells = agents.map((agent) => {
           const profile = matrix[agent.id][letter];
           const selectedClass = selected.agent === agent.id && selected.letter === letter ? " selected" : "";
-          const disabled = profile.enabled ? "" : " disabled";
+          const required = letter === "A";
+          const missing = !profile;
+          const requiredClass = required ? " required" : "";
+          const missingClass = missing ? " missing" : "";
+          const enabledClass = profile?.enabled === false ? " disabled" : "";
+          const style = `--agent-color:${agent.color};--agent-tint:${colorToTint(agent.color)}`;
+
+          if (missing) {
+            return `
+              <td class="profile-cell${missingClass}" style="${style}" data-agent="${agent.id}" data-letter="${letter}">
+                <div class="missing-cell">
+                  <button class="add-cell-btn" type="button" title="Add ${agent.label} ${profileLabel(letter)}" aria-label="Add ${agent.label} ${profileLabel(letter)}" data-add-agent="${agent.id}" data-add-letter="${letter}">+</button>
+                  <div class="missing-label">Missing; uses ${escapeHtml(fallbackFor(letter))}</div>
+                </div>
+              </td>
+            `;
+          }
+
           return `
-            <td class="profile-cell${selectedClass}${disabled}" data-agent="${agent.id}" data-letter="${letter}">
+            <td class="profile-cell${selectedClass}${requiredClass}${enabledClass}" style="${style}" data-agent="${agent.id}" data-letter="${letter}">
               <div class="cell-head">
                 <span class="agent-label"><span class="agent-dot" style="background:${agent.color}"></span>${agent.label}</span>
-                <span class="priority">${escapeHtml(profile.priority)}</span>
+                ${required ? `<span class="required-badge">Required</span>` : `<button class="icon-btn delete cell-delete-btn" type="button" title="Remove ${agent.label} ${profileLabel(letter)}" aria-label="Remove ${agent.label} ${profileLabel(letter)}" data-remove-agent="${agent.id}" data-remove-letter="${letter}">x</button>`}
               </div>
               <div class="cell-line"><span class="cell-key">Model</span><span class="cell-value">${escapeHtml(profile.model)}</span></div>
               <div class="cell-line"><span class="cell-key">Effort</span><span class="cell-value">${escapeHtml(profile.effort)}</span></div>
               <div class="cell-line"><span class="cell-key">Args</span><span class="cell-value">${escapeHtml(profile.extraArgs)}</span></div>
-              <div class="cell-line"><span class="cell-key">Fallback</span><span class="cell-value">${escapeHtml(profile.fallback)}</span></div>
+              <div class="cell-line"><span class="cell-key">If missing</span><span class="cell-value">uses ${escapeHtml(fallbackFor(letter))}</span></div>
             </td>
           `;
         }).join("");
@@ -1078,10 +1232,12 @@
           <tr>
             <td class="profile-row-head">
               <div class="profile-row-title">
-                <span class="letter-pill">${letter}</span>
-                <button class="icon-btn delete" type="button" title="Delete profile ${letter}" aria-label="Delete profile ${letter}" data-delete-letter="${letter}" ${letters.length === 1 ? "disabled" : ""}>x</button>
+                <label class="profile-row-label" aria-label="Profile ${letter} custom name">
+                  <span class="letter-pill">${letter}</span>
+                  <input class="profile-name-input" type="text" value="${escapeHtml(profileNames[letter] ?? "")}" data-profile-name="${letter}" aria-label="Custom name for profile ${letter}">
+                </label>
               </div>
-              <div class="agent-command">Profile ${letter}</div>
+              <div class="agent-command">${escapeHtml(profileLabel(letter))}</div>
             </td>
             ${cells}
           </tr>
@@ -1090,15 +1246,33 @@
 
       document.querySelectorAll(".profile-cell").forEach((cell) => {
         cell.addEventListener("click", () => {
-          selected = { agent: cell.dataset.agent, letter: cell.dataset.letter };
-          syncEditor();
-          renderMatrix();
+          selectCell(cell.dataset.agent, cell.dataset.letter);
         });
       });
-      document.querySelectorAll("[data-delete-letter]").forEach((button) => {
+      document.querySelectorAll("[data-remove-agent]").forEach((button) => {
         button.addEventListener("click", (event) => {
           event.stopPropagation();
-          deleteProfile(button.dataset.deleteLetter);
+          removeCell(button.dataset.removeAgent, button.dataset.removeLetter);
+        });
+      });
+      document.querySelectorAll("[data-add-agent]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          addCell(button.dataset.addAgent, button.dataset.addLetter);
+        });
+      });
+      document.querySelectorAll("[data-profile-name]").forEach((input) => {
+        input.addEventListener("input", () => {
+          profileNames[input.dataset.profileName] = input.value;
+          const rowLabel = input.closest(".profile-row-head")?.querySelector(".agent-command");
+          if (rowLabel) {
+            rowLabel.textContent = profileLabel(input.dataset.profileName);
+          }
+          if (selected.letter === input.dataset.profileName) {
+            const agent = agents.find((item) => item.id === selected.agent);
+            selectedKey.textContent = `${profileLabel(selected.letter)} / ${agent.label}`;
+          }
+          renderPreview();
         });
       });
     }
@@ -1110,15 +1284,13 @@
     function syncEditor() {
       const agent = agents.find((item) => item.id === selected.agent);
       const profile = currentProfile();
-      selectedKey.textContent = `${selected.letter} / ${agent.label}`;
+      selectedKey.textContent = `${profileLabel(selected.letter)} / ${agent.label}`;
       agentSelect.value = selected.agent;
       letterSelect.value = selected.letter;
       modelInput.value = profile.model;
       effortSelect.value = profile.effort;
-      prioritySelect.value = profile.priority;
       defaultArgsInput.value = profile.defaultArgs;
       extraArgsInput.value = profile.extraArgs;
-      fallbackInput.value = profile.fallback;
       enabledInput.checked = profile.enabled;
       renderPreview();
     }
@@ -1128,7 +1300,15 @@
       letters.forEach((letter) => {
         normalized[letter] = {};
         agents.forEach((agent) => {
-          normalized[letter][agent.id] = matrix[agent.id][letter];
+          const profile = matrix[agent.id][letter];
+          if (profile) {
+            normalized[letter][agent.id] = profile;
+          } else {
+            normalized[letter][agent.id] = {
+              missing: true,
+              usesFixedFallback: fallbackFor(letter)
+            };
+          }
         });
       });
 
@@ -1138,8 +1318,19 @@
         configPath: "C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac\\coding-agent-profiles.json",
         fileName: "coding-agent-profiles.json",
         version: 1,
-        profileLetters: letters,
-        codingAgents: agents.map((agent) => agent.id),
+        fallbackRule: "Each missing profile uses the immediately higher row; A is the final fallback.",
+        profileLetters: letters.map((letter) => ({
+          letter,
+          name: profileNames[letter] ?? "",
+          label: profileLabel(letter),
+          fixedFallback: fallbackFor(letter)
+        })),
+        codingAgents: agents.map((agent) => ({
+          id: agent.id,
+          label: agent.label,
+          command: agent.command,
+          colorFromCodingAgentConfig: agent.color
+        })),
         profiles: normalized
       }, null, 2);
     }
@@ -1148,10 +1339,8 @@
       const profile = currentProfile();
       profile.model = modelInput.value;
       profile.effort = effortSelect.value;
-      profile.priority = prioritySelect.value;
       profile.defaultArgs = defaultArgsInput.value;
       profile.extraArgs = extraArgsInput.value;
-      profile.fallback = fallbackInput.value;
       profile.enabled = enabledInput.checked;
       renderMatrix();
       renderPreview();
@@ -1173,8 +1362,6 @@
         effort: "medium",
         defaultArgs: agent.id === "opencode" ? "--config {acRoot}\\opencode.json" : "",
         extraArgs: `--profile ${letter.toLowerCase()}`,
-        priority: "standard",
-        fallback: `Codex/${letter}`,
         enabled: true
       };
     }
@@ -1182,6 +1369,7 @@
     function addProfile() {
       const letter = nextProfileLetter();
       letters.push(letter);
+      profileNames[letter] = "";
       agents.forEach((agent) => {
         matrix[agent.id][letter] = createDefaultProfile(agent, letter);
       });
@@ -1191,31 +1379,34 @@
       syncEditor();
     }
 
-    function deleteProfile(letter) {
-      if (letters.length === 1) {
+    function removeCell(agentId, letter) {
+      if (letter === "A") {
         return;
       }
 
-      const index = letters.indexOf(letter);
-      if (index === -1) {
+      matrix[agentId][letter] = null;
+      if (selected.agent === agentId && selected.letter === letter) {
+        selected = { agent: "codex", letter: "A" };
+      }
+
+      renderMatrix();
+      syncEditor();
+    }
+
+    function addCell(agentId, letter) {
+      const agent = agents.find((item) => item.id === agentId);
+      if (!agent) {
         return;
       }
 
-      letters.splice(index, 1);
-      agents.forEach((agent) => {
-        delete matrix[agent.id][letter];
-      });
-
-      if (selected.letter === letter) {
-        selected = { agent: selected.agent, letter: letters[Math.min(index, letters.length - 1)] };
-      }
-
-      renderSelectors();
+      matrix[agentId][letter] = createDefaultProfile(agent, letter);
+      selected = { agent: agentId, letter };
       renderMatrix();
       syncEditor();
     }
 
     renderSelectors();
+    renderHeaders();
     renderMatrix();
     syncEditor();
 
@@ -1233,10 +1424,10 @@
       renderMatrix();
     });
 
-    [modelInput, defaultArgsInput, extraArgsInput, fallbackInput].forEach((input) => {
+    [modelInput, defaultArgsInput, extraArgsInput].forEach((input) => {
       input.addEventListener("input", updateSelectedProfile);
     });
-    [effortSelect, prioritySelect, enabledInput].forEach((input) => {
+    [effortSelect, enabledInput].forEach((input) => {
       input.addEventListener("change", updateSelectedProfile);
     });
   </script>
