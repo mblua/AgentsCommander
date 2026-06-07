@@ -1,13 +1,25 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
-import { JSDOM } from 'jsdom';
+import { JSDOM, VirtualConsole } from 'jsdom';
 
 const prototypePath = resolve('_prototypes/coding-agent-profile-matrix-modal.html');
 const html = await readFile(prototypePath, 'utf8');
+const runtimeErrors = [];
+const virtualConsole = new VirtualConsole();
+virtualConsole.sendTo(console);
+virtualConsole.on('jsdomError', (error) => {
+  runtimeErrors.push(error);
+});
 
 const dom = new JSDOM(html, {
   runScripts: 'dangerously',
+  virtualConsole,
+  beforeParse(window) {
+    window.addEventListener('error', (event) => {
+      runtimeErrors.push(event.error ?? event.message);
+    });
+  },
 });
 
 const preview = dom.window.document.getElementById('jsonPreview');
@@ -17,6 +29,17 @@ const documentText = () => dom.window.document.body.textContent ?? '';
 const parsePreview = () => JSON.parse(preview.textContent ?? '{}');
 const click = (element) => {
   element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+};
+const change = (element, value) => {
+  element.value = value;
+  element.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+};
+const assertNoRuntimeErrors = () => {
+  assert.equal(
+    runtimeErrors.length,
+    0,
+    `prototype should not throw runtime errors: ${runtimeErrors.map((error) => error?.stack ?? error).join('\n')}`
+  );
 };
 
 const headers = Array.from(dom.window.document.querySelectorAll('thead th'), (th) =>
@@ -32,6 +55,11 @@ assert.ok(profileAName, 'profile A should expose an editable custom name');
 profileAName.value = 'MAXIMUM';
 profileAName.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 assert.match(documentText(), /A-MAXIMUM/);
+assert.ok(
+  !documentText().includes('uses A-FULL POWER'),
+  'matrix fallback labels should not retain stale profile A names after rename'
+);
+assertNoRuntimeErrors();
 
 assert.match(
   documentText(),
@@ -67,6 +95,8 @@ assert.deepEqual(
 assert.equal(data.profileLetters[0].label, 'A-MAXIMUM');
 assert.equal(data.profileLetters[0].fixedFallback, 'final fallback');
 assert.equal(data.profileLetters[1].fixedFallback, 'A-MAXIMUM');
+assert.equal(data.profiles.B.codex.usesFixedFallback, undefined);
+assert.equal(data.profiles.B.opencode.usesFixedFallback, 'A-MAXIMUM');
 assert.ok(!JSON.stringify(data.profiles).includes('"priority"'));
 assert.ok(!JSON.stringify(data.profiles).includes('"fallback"'));
 assert.ok(!text.toLowerCase().includes('gemini'), 'JSON preview should not include Gemini');
@@ -82,6 +112,17 @@ assert.equal(
   null,
   'row A cells should not expose add buttons'
 );
+
+const letterSelect = dom.window.document.getElementById('letterSelect');
+assert.ok(letterSelect, 'profile selector should be present');
+change(letterSelect, 'D');
+assertNoRuntimeErrors();
+assert.match(
+  dom.window.document.getElementById('selectedKey')?.textContent ?? '',
+  /D-LOW COST \/ Codex - Missing; uses C-REVIEW/
+);
+assert.equal(dom.window.document.getElementById('modelInput')?.disabled, true);
+assert.equal(dom.window.document.getElementById('addSelectedCellBtn')?.hidden, false);
 
 const removableCell = dom.window.document.querySelector(
   '[data-remove-agent="claude-code"][data-remove-letter="D"]'
@@ -100,3 +141,4 @@ click(addCell);
 data = parsePreview();
 assert.equal(data.profiles.D['claude-code'].model, 'claude/default');
 assert.equal(data.profiles.D['claude-code'].enabled, true);
+assertNoRuntimeErrors();

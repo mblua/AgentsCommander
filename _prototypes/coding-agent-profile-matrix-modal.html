@@ -1062,6 +1062,7 @@
               <input id="enabledInput" type="checkbox">
               Enabled for launcher and workgroup dispatch
             </label>
+            <button id="addSelectedCellBtn" class="modal-btn save" type="button" hidden>Add selected cell</button>
           </div>
 
           <div class="preview-card">
@@ -1133,6 +1134,7 @@
     const defaultArgsInput = document.getElementById("defaultArgsInput");
     const extraArgsInput = document.getElementById("extraArgsInput");
     const enabledInput = document.getElementById("enabledInput");
+    const addSelectedCellBtn = document.getElementById("addSelectedCellBtn");
     const jsonPreview = document.getElementById("jsonPreview");
 
     function escapeHtml(value) {
@@ -1162,7 +1164,7 @@
     }
 
     function selectCell(agentId, letter) {
-      if (!matrix[agentId][letter]) {
+      if (!matrix[agentId]) {
         return;
       }
 
@@ -1205,7 +1207,7 @@
 
           if (missing) {
             return `
-              <td class="profile-cell${missingClass}" style="${style}" data-agent="${agent.id}" data-letter="${letter}">
+              <td class="profile-cell${selectedClass}${missingClass}" style="${style}" data-agent="${agent.id}" data-letter="${letter}">
                 <div class="missing-cell">
                   <button class="add-cell-btn" type="button" title="Add ${agent.label} ${profileLabel(letter)}" aria-label="Add ${agent.label} ${profileLabel(letter)}" data-add-agent="${agent.id}" data-add-letter="${letter}">+</button>
                   <div class="missing-label">Missing; uses ${escapeHtml(fallbackFor(letter))}</div>
@@ -1263,30 +1265,58 @@
       });
       document.querySelectorAll("[data-profile-name]").forEach((input) => {
         input.addEventListener("input", () => {
-          profileNames[input.dataset.profileName] = input.value;
-          const rowLabel = input.closest(".profile-row-head")?.querySelector(".agent-command");
-          if (rowLabel) {
-            rowLabel.textContent = profileLabel(input.dataset.profileName);
-          }
-          if (selected.letter === input.dataset.profileName) {
-            const agent = agents.find((item) => item.id === selected.agent);
-            selectedKey.textContent = `${profileLabel(selected.letter)} / ${agent.label}`;
-          }
-          renderPreview();
+          updateProfileName(input.dataset.profileName, input.value, input.selectionStart, input.selectionEnd);
         });
       });
+    }
+
+    function updateProfileName(letter, value, selectionStart, selectionEnd) {
+      profileNames[letter] = value;
+      renderMatrix();
+      syncEditor();
+
+      const input = document.querySelector(`[data-profile-name="${letter}"]`);
+      if (input) {
+        input.focus();
+        if (selectionStart !== null && selectionEnd !== null) {
+          input.setSelectionRange(selectionStart, selectionEnd);
+        }
+      }
     }
 
     function currentProfile() {
       return matrix[selected.agent][selected.letter];
     }
 
+    function setEditorInputsDisabled(disabled) {
+      [modelInput, effortSelect, defaultArgsInput, extraArgsInput, enabledInput].forEach((input) => {
+        input.disabled = disabled;
+      });
+    }
+
     function syncEditor() {
       const agent = agents.find((item) => item.id === selected.agent);
       const profile = currentProfile();
-      selectedKey.textContent = `${profileLabel(selected.letter)} / ${agent.label}`;
       agentSelect.value = selected.agent;
       letterSelect.value = selected.letter;
+
+      if (!profile) {
+        selectedKey.textContent = `${profileLabel(selected.letter)} / ${agent.label} - Missing; uses ${fallbackFor(selected.letter)}`;
+        modelInput.value = "";
+        effortSelect.value = "medium";
+        defaultArgsInput.value = "";
+        extraArgsInput.value = "";
+        enabledInput.checked = false;
+        setEditorInputsDisabled(true);
+        addSelectedCellBtn.hidden = false;
+        addSelectedCellBtn.textContent = `Add ${agent.label} ${profileLabel(selected.letter)}`;
+        renderPreview();
+        return;
+      }
+
+      selectedKey.textContent = `${profileLabel(selected.letter)} / ${agent.label}`;
+      setEditorInputsDisabled(false);
+      addSelectedCellBtn.hidden = true;
       modelInput.value = profile.model;
       effortSelect.value = profile.effort;
       defaultArgsInput.value = profile.defaultArgs;
@@ -1337,6 +1367,10 @@
 
     function updateSelectedProfile() {
       const profile = currentProfile();
+      if (!profile) {
+        return;
+      }
+
       profile.model = modelInput.value;
       profile.effort = effortSelect.value;
       profile.defaultArgs = defaultArgsInput.value;
@@ -1411,6 +1445,9 @@
     syncEditor();
 
     addProfileBtn.addEventListener("click", addProfile);
+    addSelectedCellBtn.addEventListener("click", () => {
+      addCell(selected.agent, selected.letter);
+    });
 
     agentSelect.addEventListener("change", () => {
       selected.agent = agentSelect.value;
