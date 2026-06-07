@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::config::workspace::{ensure_authoritative_workspace_dir, find_workspace_ancestor};
 
 pub const ROLE_MD_FILENAME: &str = "Role.md";
-pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] =
-    &["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"];
+pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT"];
+const DEPRECATED_REPOS_WORKSPACE_CONTEXT: &str = "$REPOS_WORKSPACE_INFO";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgReplicaIdentity {
@@ -317,7 +317,10 @@ pub fn normalize_wg_replica_context_entries(
     }
 
     for entry in existing_context {
-        if required_prefix.contains(&entry.as_str()) || is_identity_role_context_entry(entry) {
+        if entry == DEPRECATED_REPOS_WORKSPACE_CONTEXT
+            || required_prefix.contains(&entry.as_str())
+            || is_identity_role_context_entry(entry)
+        {
             continue;
         }
         if seen.insert(entry.clone()) {
@@ -346,19 +349,23 @@ pub fn repair_wg_replica_config_value(
     )?;
     config["identity"] = Value::String(identity.identity.clone());
 
-    if let Some(context_array) = config.get("context").and_then(|value| value.as_array()) {
-        let existing_context: Vec<String> = context_array
-            .iter()
-            .filter_map(|value| value.as_str().map(String::from))
-            .collect();
-        let role_exists = identity.matrix_dir.join(ROLE_MD_FILENAME).exists();
-        config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
-            &existing_context,
-            required_context_prefix,
-            &identity.identity,
-            role_exists,
-        ));
-    }
+    let existing_context: Vec<String> = config
+        .get("context")
+        .and_then(|value| value.as_array())
+        .map(|context_array| {
+            context_array
+                .iter()
+                .filter_map(|value| value.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let role_exists = identity.matrix_dir.join(ROLE_MD_FILENAME).exists();
+    config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
+        &existing_context,
+        required_context_prefix,
+        &identity.identity,
+        role_exists,
+    ));
 
     Ok(identity)
 }
@@ -470,7 +477,6 @@ mod tests {
             config["context"],
             serde_json::json!([
                 "$AGENTSCOMMANDER_CONTEXT",
-                "$REPOS_WORKSPACE_INFO",
                 "notes.md",
                 "../../_agent_tech-lead/Role.md"
             ])

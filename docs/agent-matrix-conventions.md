@@ -21,19 +21,35 @@ This document is the definitive guide for any AI agent tasked with creating or m
 
 ## Project Context Templates
 
-AgentsCommander creates editable context templates for new projects under:
+Project `.ac` creation seeds the editable global and coordinator context templates under:
 
 ```text
 .ac/
-├── Context.agent.md
+├── Context.AgentsCommander.md
 └── Context.coordinator.md
 ```
 
-`.ac/Context.agent.md` is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` for matrix agents and workgroup replicas. `.ac/Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator file should contain only the body text.
+`.ac/Context.AgentsCommander.md` is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` for matrix agents and workgroup replicas. `.ac/Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator file should contain only the body text.
 
-Existing projects that do not have these files keep using the built-in defaults. If a template file exists and is empty, that is treated as intentional user configuration. If a template exists but cannot be read, is not UTF-8, or is not a regular file, session context generation fails with a path-specific error instead of silently discarding the customization.
+`.ac/Context.root-agent.md` is appended only for the canonical `ac-root-agent` session. It is static supplemental root prose for identity, durable root state, and high-level coordination scope. It does not receive placeholder rendering or mandatory global fallback blocks; operational write restrictions, credentials, CLI usage, inter-agent messaging, workspace repo context, skills, and runtime safety blocks belong in `.ac/Context.AgentsCommander.md`.
 
-The agent template supports these runtime tokens:
+Standalone/root AC directories and root-agent provisioning seed `Context.AgentsCommander.md`, `Context.coordinator.md`, and `Context.root-agent.md` next to `ac-root-agent`. Fresh root-agent creation seeds all three while preserving existing custom files.
+
+Existing projects with a legacy `.ac/Context.agent.md` are migrated on demand to `.ac/Context.AgentsCommander.md` when the new file does not already exist. Existing projects that do not have these files keep using the built-in defaults. If the global template file exists and is empty, AgentsCommander still injects the mandatory safety and runtime blocks listed below. If a template exists but cannot be read, is not UTF-8, or is not a regular file, session context generation fails with a path-specific error instead of silently discarding the customization.
+
+The global template must preserve these mandatory runtime tokens. If any are missing, AgentsCommander appends them during rendering so critical safety and runtime data is not dropped:
+
+| Token | Meaning |
+|---|---|
+| `{{WRITE_RESTRICTIONS}}` | Runtime write restrictions and allowed scopes |
+| `{{DELEGATED_TASK_REPORTING}}` | Required completion/blocker reporting instructions |
+| `{{SKILLS_SECTION}}` | Runtime skill index |
+| `{{WORKSPACE_REPOS}}` | Repo list rendered from the replica config `repos` field |
+| `{{CLI_CONTEXT}}` | CLI binary and help usage rules |
+| `{{SESSION_CREDENTIALS}}` | Environment-variable credential rules |
+| `{{INTER_AGENT_MESSAGING}}` | Peer discovery and file-based messaging instructions |
+
+Legacy custom templates also support these older runtime tokens:
 
 | Token | Meaning |
 |---|---|
@@ -239,7 +255,6 @@ Workgroups are isolated working environments created when a team needs to work o
 {
   "context": [
     "$AGENTSCOMMANDER_CONTEXT",
-    "$REPOS_WORKSPACE_INFO",
     "../../_agent_NAME/Role.md"
   ],
   "identity": "../../_agent_NAME",
@@ -251,7 +266,7 @@ Workgroups are isolated working environments created when a team needs to work o
 
 | Field | Description |
 |---|---|
-| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` and `$REPOS_WORKSPACE_INFO` are AC-injected variables. The third entry is the path to the Role.md that defines this agent's personality. |
+| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{WORKSPACE_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
 | `identity` | Path to the parent agent folder. This is the canonical identity — the workgroup agent is a replica of this. |
 | `repos` | Relative paths to the repo clones inside this workgroup. |
 
@@ -378,7 +393,6 @@ This should return all team members. If empty, the team config is misconfigured 
 ```json
 "context": [
   "$AGENTSCOMMANDER_CONTEXT",
-  "$REPOS_WORKSPACE_INFO",
   "../../_agent_NAME/Role.md"
 ]
 ```

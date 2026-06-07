@@ -1829,7 +1829,7 @@ mod tests {
         assert!(tmp
             .path()
             .join(".ac")
-            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(tmp
             .path()
@@ -1846,7 +1846,8 @@ mod tests {
 
         let first_result = create_ac_project_impl(&path, |workspace_dir| {
             std::fs::write(
-                workspace_dir.join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME),
+                workspace_dir
+                    .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
                 crate::config::session_context::get_default_agent_template(),
             )
             .expect("write partial agent context");
@@ -1864,7 +1865,7 @@ mod tests {
         assert!(tmp
             .path()
             .join(".ac")
-            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(tmp
             .path()
@@ -1884,7 +1885,7 @@ mod tests {
             .expect("create project");
 
         assert!(!workspace
-            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .exists());
         assert!(!workspace
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
