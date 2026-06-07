@@ -44,10 +44,16 @@ pub struct AgencyTemplatesUpdateArgs {
     pub repo: String,
     #[arg(long = "ref", default_value = "main")]
     pub reference: String,
+    /// Compatibility no-op. agency-templates commands always print JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args)]
 pub struct AgencyTemplatesListArgs {
+    /// Compatibility no-op. agency-templates list always prints JSON.
+    #[arg(long)]
+    pub json: bool,
     /// Pretty-print JSON
     #[arg(long)]
     pub pretty: bool,
@@ -55,6 +61,9 @@ pub struct AgencyTemplatesListArgs {
 
 #[derive(Args)]
 pub struct AgencyTemplatesStatusArgs {
+    /// Compatibility no-op. agency-templates status always prints JSON.
+    #[arg(long)]
+    pub json: bool,
     /// Pretty-print JSON
     #[arg(long)]
     pub pretty: bool,
@@ -75,6 +84,26 @@ struct UpdateResult {
 struct CacheLock {
     path: PathBuf,
     _file: File,
+}
+
+struct TempCacheDir {
+    path: PathBuf,
+}
+
+impl TempCacheDir {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempCacheDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 #[derive(Serialize)]
@@ -267,6 +296,7 @@ fn print_json<T: Serialize>(value: &T, pretty: bool) -> Result<(), String> {
 }
 
 fn status(args: AgencyTemplatesStatusArgs) -> Result<(), String> {
+    let _ = args.json;
     let config_dir = config_dir_or_err()?;
     match CacheLock::acquire(&config_dir) {
         Ok(_lock) => {
@@ -296,6 +326,7 @@ fn status(args: AgencyTemplatesStatusArgs) -> Result<(), String> {
 }
 
 fn list(args: AgencyTemplatesListArgs) -> Result<(), String> {
+    let _ = args.json;
     let config_dir = config_dir_or_err()?;
     match CacheLock::acquire(&config_dir) {
         Ok(_lock) => {
@@ -317,10 +348,12 @@ fn update(args: AgencyTemplatesUpdateArgs) -> Result<(), String> {
     let _lock = CacheLock::acquire(&config_dir)?;
     let _ = recover_interrupted_publish(&config_dir)?;
     cleanup_publish_residue(&config_dir);
+    let _ = args.json;
 
     parse_github_repo(&args.repo)?;
     let commit = resolve_commit_with_git(&args.repo, &args.reference)?;
     let extracted = fetch_repo_with_git(&args.repo, &commit, &config_dir)?;
+    let extracted = TempCacheDir::new(extracted);
     let staging = config_dir.join(format!(
         "{}.next-{}",
         AGENCY_TEMPLATES_DIR,
@@ -332,9 +365,10 @@ fn update(args: AgencyTemplatesUpdateArgs) -> Result<(), String> {
             staging.display()
         ));
     }
+    let staging = TempCacheDir::new(staging);
     normalize_extracted_repo_to_cache(
-        &extracted,
-        &staging,
+        extracted.path(),
+        staging.path(),
         AgencyTemplatesManifest {
             repo: args.repo,
             reference: args.reference,
@@ -342,24 +376,24 @@ fn update(args: AgencyTemplatesUpdateArgs) -> Result<(), String> {
             template_count: 0,
         },
     )?;
-    let templates = collect_agency_templates_from_dir(&staging)
+    let templates = collect_agency_templates_from_dir(staging.path())
         .map_err(|e| format!("Staged Agency cache failed validation: {}", e))?;
     let mut manifest: AgencyTemplatesManifest = serde_json::from_str(
-        &fs::read_to_string(staging.join(AGENCY_MANIFEST_FILE))
+        &fs::read_to_string(staging.path().join(AGENCY_MANIFEST_FILE))
             .map_err(|e| format!("Failed to read staged manifest: {}", e))?,
     )
     .map_err(|e| format!("Failed to parse staged manifest: {}", e))?;
     manifest.template_count = templates.len();
     fs::write(
-        staging.join(AGENCY_MANIFEST_FILE),
+        staging.path().join(AGENCY_MANIFEST_FILE),
         serde_json::to_string_pretty(&manifest)
             .map_err(|e| format!("Failed to encode manifest: {}", e))?,
     )
     .map_err(|e| format!("Failed to write staged manifest: {}", e))?;
-    collect_agency_templates_from_dir(&staging)
+    collect_agency_templates_from_dir(staging.path())
         .map_err(|e| format!("Staged Agency cache failed validation: {}", e))?;
 
-    publish_staging(&config_dir, &staging)?;
+    publish_staging(&config_dir, staging.path())?;
     cleanup_publish_residue(&config_dir);
     print_json(
         &UpdateResult {
@@ -485,79 +519,14 @@ pub(crate) fn normalize_extracted_repo_to_cache(
             ));
         }
         let division_slug = slug_segment(&division_name)?;
-        for file in fs::read_dir(division.path())
-            .map_err(|e| format!("Failed to read Agency division {}: {}", division_name, e))?
-        {
-            let file = file.map_err(|e| format!("Failed to read Agency role file: {}", e))?;
-            let path = file.path();
-            let file_name = file.file_name().to_string_lossy().to_string();
-            if matches!(file_name.as_str(), "CLAUDE.md" | "AGENTS.md" | "GEMINI.md") {
-                return Err(format!(
-                    "Agency division {} contains managed prompt file {}",
-                    division_name, file_name
-                ));
-            }
-            let meta = lstat_no_links(&path, "Agency role file")?;
-            if !meta.is_file() {
-                return Err(format!(
-                    "Agency role entry {} is not a regular file",
-                    path.display()
-                ));
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| format!("Agency role file has invalid name: {}", path.display()))?;
-            let stem_slug = slug_segment(stem)?;
-            let id = format!("agency:{}-{}", division_slug, stem_slug);
-            if !ids.insert(id.clone()) {
-                return Err(format!(
-                    "Duplicate Agency template id after slugging: {}",
-                    id
-                ));
-            }
-            let path_key = format!("{}\\{}", division_slug, stem_slug).to_ascii_lowercase();
-            if !paths_ci.insert(path_key) {
-                return Err(format!(
-                    "Duplicate Agency template output path after slugging: {}/{}",
-                    division_slug, stem_slug
-                ));
-            }
-            let raw = fs::read_to_string(&path).map_err(|e| {
-                format!("Failed to read Agency role file {}: {}", path.display(), e)
-            })?;
-            let fm = parse_agency_template_frontmatter(&raw);
-            let body = strip_yaml_frontmatter_for_role_template(&raw)
-                .trim()
-                .to_string();
-            validate_role_template_body(&id, &body)?;
-            let name = fm.name.unwrap_or_else(|| title_case_slug(&stem_slug));
-            let mut normalized = String::new();
-            normalized.push_str("---\n");
-            normalized.push_str(&format!("name: {}\n", yaml_scalar(&name)));
-            if let Some(description) = fm.description {
-                normalized.push_str(&format!("description: {}\n", yaml_scalar(&description)));
-            }
-            if let Some(color) = fm.color {
-                normalized.push_str(&format!("color: {}\n", yaml_scalar(&color)));
-            }
-            normalized.push_str("---\n\n");
-            normalized.push_str(&body);
-            normalized.push('\n');
-            let role_path = staging
-                .join(&division_slug)
-                .join(&stem_slug)
-                .join("Role.md");
-            if let Some(parent) = role_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create normalized role dir: {}", e))?;
-            }
-            fs::write(&role_path, normalized)
-                .map_err(|e| format!("Failed to write normalized Role.md: {}", e))?;
-        }
+        normalize_agency_role_tree(
+            &division.path(),
+            &division.path(),
+            &division_slug,
+            staging,
+            &mut ids,
+            &mut paths_ci,
+        )?;
     }
     manifest.template_count = ids.len();
     if manifest.template_count == 0 {
@@ -572,6 +541,148 @@ pub(crate) fn normalize_extracted_repo_to_cache(
     collect_agency_templates_from_dir(staging)
         .map_err(|e| format!("Normalized Agency cache failed validation: {}", e))?;
     Ok(())
+}
+
+fn normalize_agency_role_tree(
+    division_root: &Path,
+    current_dir: &Path,
+    division_slug: &str,
+    staging: &Path,
+    ids: &mut std::collections::HashSet<String>,
+    paths_ci: &mut std::collections::HashSet<String>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(current_dir).map_err(|e| {
+        format!(
+            "Failed to read Agency role directory {}: {}",
+            current_dir.display(),
+            e
+        )
+    })? {
+        let entry = entry.map_err(|e| format!("Failed to read Agency role entry: {}", e))?;
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if matches!(file_name.as_str(), "CLAUDE.md" | "AGENTS.md" | "GEMINI.md") {
+            return Err(format!(
+                "Agency role tree {} contains managed prompt file {}",
+                division_root.display(),
+                file_name
+            ));
+        }
+        let meta = lstat_no_links(&path, "Agency role entry")?;
+        if meta.is_dir() {
+            if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                return Err(format!(
+                    "Agency role entry {} is not a regular file",
+                    path.display()
+                ));
+            }
+            normalize_agency_role_tree(
+                division_root,
+                &path,
+                division_slug,
+                staging,
+                ids,
+                paths_ci,
+            )?;
+            continue;
+        }
+        if !meta.is_file() {
+            return Err(format!(
+                "Agency role entry {} is not a regular file",
+                path.display()
+            ));
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        normalize_agency_role_file(&path, division_root, division_slug, staging, ids, paths_ci)?;
+    }
+    Ok(())
+}
+
+fn normalize_agency_role_file(
+    path: &Path,
+    division_root: &Path,
+    division_slug: &str,
+    staging: &Path,
+    ids: &mut std::collections::HashSet<String>,
+    paths_ci: &mut std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(division_root)
+        .map_err(|e| format!("Failed to relativize Agency role file: {}", e))?;
+    let mut slug_parts = Vec::new();
+    for component in relative.components() {
+        let value = component
+            .as_os_str()
+            .to_str()
+            .ok_or_else(|| format!("Agency role file has invalid name: {}", path.display()))?;
+        let segment = if relative.file_name() == Some(component.as_os_str()) {
+            Path::new(value)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| format!("Agency role file has invalid name: {}", path.display()))?
+        } else {
+            value
+        };
+        slug_parts.push(slug_segment(segment)?);
+    }
+    if slug_parts.is_empty() {
+        return Err(format!(
+            "Agency role file has invalid name: {}",
+            path.display()
+        ));
+    }
+    let role_slug = slug_parts.join("-");
+    let id = format!("agency:{}-{}", division_slug, role_slug);
+    if !ids.insert(id.clone()) {
+        return Err(format!(
+            "Duplicate Agency template id after slugging: {}",
+            id
+        ));
+    }
+    let path_key = format!("{}\\{}", division_slug, role_slug).to_ascii_lowercase();
+    if !paths_ci.insert(path_key) {
+        return Err(format!(
+            "Duplicate Agency template output path after slugging: {}/{}",
+            division_slug, role_slug
+        ));
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read Agency role file {}: {}", path.display(), e))?;
+    let fm = parse_agency_template_frontmatter(&raw);
+    let stripped = strip_yaml_frontmatter_for_role_template(&raw);
+    let body = sanitize_agency_role_body(stripped.trim())
+        .trim()
+        .to_string();
+    validate_role_template_body(&id, &body)?;
+    let name = fm.name.unwrap_or_else(|| title_case_slug(&role_slug));
+    let mut normalized = String::new();
+    normalized.push_str("---\n");
+    normalized.push_str(&format!("name: {}\n", yaml_scalar(&name)));
+    if let Some(description) = fm.description {
+        normalized.push_str(&format!("description: {}\n", yaml_scalar(&description)));
+    }
+    if let Some(color) = fm.color {
+        normalized.push_str(&format!("color: {}\n", yaml_scalar(&color)));
+    }
+    normalized.push_str("---\n\n");
+    normalized.push_str(&body);
+    normalized.push('\n');
+    let role_path = staging.join(division_slug).join(&role_slug).join("Role.md");
+    if let Some(parent) = role_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create normalized role dir: {}", e))?;
+    }
+    fs::write(&role_path, normalized)
+        .map_err(|e| format!("Failed to write normalized Role.md: {}", e))?;
+    Ok(())
+}
+
+fn sanitize_agency_role_body(body: &str) -> String {
+    body.chars()
+        .filter(|ch| !(*ch == '\0' || (ch.is_control() && !matches!(*ch, '\t' | '\n' | '\r'))))
+        .collect()
 }
 
 fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
@@ -785,6 +896,66 @@ mod tests {
             .join("planner")
             .join("Role.md")
             .is_file());
+    }
+
+    #[test]
+    fn normalize_and_publish_handles_upstream_worktree_with_nested_roles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path().join("config");
+        let extracted = tmp.path().join("extracted");
+        let direct = extracted.join("Game Development");
+        let nested = direct.join("Unity");
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::create_dir_all(&nested).expect("create nested division");
+        for name in [
+            ".gitattributes",
+            ".gitignore",
+            "CONTRIBUTING.md",
+            "LICENSE",
+            "README.md",
+            "SECURITY.md",
+        ] {
+            fs::write(extracted.join(name), "repo metadata\n").expect("write metadata file");
+        }
+        fs::write(
+            direct.join("game-designer.md"),
+            "---\nname: Game Designer\n---\n\nDesign game systems.\n",
+        )
+        .expect("write direct role");
+        fs::write(
+            nested.join("unity-architect.md"),
+            "---\nname: Unity Architect\n---\n\nDesign\u{4} Unity architecture.\n",
+        )
+        .expect("write nested role");
+
+        normalize_extracted_repo_to_cache(&extracted, &staging, manifest(0))
+            .expect("normalize repo");
+        publish_staging(&config_dir, &staging).expect("publish cache");
+
+        let live = agency_templates_dir(&config_dir);
+        let manifest: AgencyTemplatesManifest = serde_json::from_str(
+            &fs::read_to_string(live.join(AGENCY_MANIFEST_FILE)).expect("read manifest"),
+        )
+        .expect("parse manifest");
+        assert_eq!(manifest.template_count, 2);
+        assert!(live
+            .join("game-development")
+            .join("game-designer")
+            .join("Role.md")
+            .is_file());
+        assert!(live
+            .join("game-development")
+            .join("unity-unity-architect")
+            .join("Role.md")
+            .is_file());
+        let nested_body = fs::read_to_string(
+            live.join("game-development")
+                .join("unity-unity-architect")
+                .join("Role.md"),
+        )
+        .expect("read nested role");
+        assert!(!nested_body.contains('\u{4}'));
     }
 
     #[test]

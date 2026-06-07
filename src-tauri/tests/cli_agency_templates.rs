@@ -75,7 +75,7 @@ fn agency_templates_status_missing_cache_returns_json() {
     let tmp = Tmp::new("agency-status-missing");
     let bin = copy_binary_into(tmp.path());
     let output = Command::new(&bin)
-        .args(["agency-templates", "status"])
+        .args(["agency-templates", "status", "--json"])
         .output()
         .expect("run status");
 
@@ -92,7 +92,7 @@ fn agency_templates_list_missing_cache_returns_empty_array() {
     let tmp = Tmp::new("agency-list-missing");
     let bin = copy_binary_into(tmp.path());
     let output = Command::new(&bin)
-        .args(["agency-templates", "list"])
+        .args(["agency-templates", "list", "--json"])
         .output()
         .expect("run list");
 
