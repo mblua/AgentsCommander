@@ -476,6 +476,9 @@ pub(crate) fn normalize_extracted_repo_to_cache(
         }
         let meta = lstat_no_links(&division.path(), "Agency division")?;
         if !meta.is_dir() {
+            if meta.is_file() {
+                continue;
+            }
             return Err(format!(
                 "Agency division {} is not a regular directory",
                 division_name
@@ -747,6 +750,41 @@ mod tests {
             .expect_err("directory named md must be rejected");
 
         assert!(err.contains("not a regular file"));
+    }
+
+    #[test]
+    fn normalize_skips_root_metadata_files_and_loads_valid_division() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let extracted = tmp.path().join("extracted");
+        let division = extracted.join("Engineering");
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(&division).expect("create division");
+        for name in [
+            ".gitattributes",
+            ".gitignore",
+            "CONTRIBUTING.md",
+            "LICENSE",
+            "README.md",
+            "SECURITY.md",
+        ] {
+            fs::write(extracted.join(name), "repo metadata\n").expect("write metadata file");
+        }
+        fs::write(
+            division.join("Planner.md"),
+            "---\nname: Planner\n---\n\nPlan backend work.\n",
+        )
+        .expect("write role");
+
+        normalize_extracted_repo_to_cache(&extracted, &staging, manifest(0))
+            .expect("normalize repo");
+
+        let templates = collect_agency_templates_from_dir(&staging).expect("collect templates");
+        assert_eq!(templates.len(), 1);
+        assert!(staging
+            .join("engineering")
+            .join("planner")
+            .join("Role.md")
+            .is_file());
     }
 
     #[test]
