@@ -825,6 +825,280 @@
       white-space: pre;
     }
 
+    .support-surfaces {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+      padding-top: var(--spacing-sm);
+    }
+
+    .surface-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--spacing-xs);
+      padding: 4px;
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.018);
+    }
+
+    .surface-tab {
+      height: 26px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--sidebar-fg-dim);
+      font-family: var(--font-ui);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .surface-tab.active {
+      border-color: rgba(0, 212, 255, 0.3);
+      background: rgba(0, 212, 255, 0.08);
+      color: var(--sidebar-accent);
+    }
+
+    .surface-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--spacing-md);
+    }
+
+    .surface-card {
+      min-width: 0;
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.018);
+      overflow: hidden;
+    }
+
+    .surface-card.wide {
+      grid-column: 1 / -1;
+    }
+
+    .surface-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--spacing-md);
+      padding: 10px var(--spacing-md);
+      border-bottom: 1px solid var(--sidebar-border);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .surface-title {
+      color: var(--sidebar-fg);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .surface-subtitle {
+      margin-top: 2px;
+      color: var(--sidebar-fg-dim);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .surface-body {
+      padding: var(--spacing-md);
+    }
+
+    .rule-table {
+      min-width: 920px;
+    }
+
+    .rule-table th {
+      position: static;
+    }
+
+    .rule-table td {
+      padding: 9px 10px;
+      color: var(--sidebar-fg);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .rule-scope {
+      color: var(--sidebar-fg-dim);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.35px;
+    }
+
+    .profile-token {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+      padding: 3px 7px;
+      border: 1px solid rgba(0, 212, 255, 0.28);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.065);
+      color: var(--sidebar-fg);
+      font-family: var(--font-terminal);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .profile-token.warn {
+      border-color: rgba(234, 179, 8, 0.35);
+      background: rgba(234, 179, 8, 0.08);
+      color: #f6d365;
+    }
+
+    .profile-token.safe {
+      border-color: rgba(34, 197, 94, 0.35);
+      background: rgba(34, 197, 94, 0.08);
+      color: var(--status-waiting);
+    }
+
+    .mini-preview-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--spacing-sm);
+      margin-top: var(--spacing-md);
+    }
+
+    .mini-preview {
+      min-height: 96px;
+      padding: 9px;
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-md);
+      background: var(--sidebar-hover);
+    }
+
+    .mini-preview strong {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--sidebar-fg);
+      font-size: 11px;
+    }
+
+    .mini-preview-line {
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 6px;
+      margin-top: 4px;
+      color: var(--sidebar-fg-dim);
+      font-size: 10px;
+    }
+
+    .flow-layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+      gap: var(--spacing-md);
+      align-items: start;
+    }
+
+    .form-panel {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+    }
+
+    .resolution-panel {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-sm);
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-md);
+      background: #0b0b12;
+    }
+
+    .resolution-row {
+      display: grid;
+      grid-template-columns: 116px 1fr;
+      gap: var(--spacing-sm);
+      align-items: center;
+      min-height: 27px;
+      color: var(--sidebar-fg);
+      font-size: 11px;
+    }
+
+    .resolution-key {
+      color: var(--sidebar-fg-dim);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .warning-strip {
+      padding: 8px 10px;
+      border: 1px solid rgba(234, 179, 8, 0.28);
+      border-radius: var(--radius-sm);
+      background: rgba(234, 179, 8, 0.075);
+      color: #f6d365;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .agent-settings-list {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--spacing-sm);
+    }
+
+    .agent-settings-card {
+      padding: 10px;
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-md);
+      background: var(--sidebar-hover);
+    }
+
+    .agent-settings-card.legacy {
+      border-color: rgba(234, 179, 8, 0.24);
+      background: rgba(234, 179, 8, 0.04);
+    }
+
+    .diagnostic-chain {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      color: var(--sidebar-fg-dim);
+      font-size: 10px;
+    }
+
+    .chain-arrow {
+      color: var(--sidebar-fg-dim);
+    }
+
+    .command-preview {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: var(--spacing-sm);
+      margin-top: var(--spacing-sm);
+    }
+
+    .command-part {
+      min-height: 58px;
+      padding: 8px;
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-sm);
+      background: #08080d;
+    }
+
+    .command-label {
+      color: var(--sidebar-fg-dim);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .command-value {
+      margin-top: 6px;
+      color: #b9d8df;
+      font-family: var(--font-terminal);
+      font-size: 10px;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
     .modal-footer {
       display: flex;
       align-items: center;
@@ -884,6 +1158,21 @@
       }
 
       .modal-body {
+        grid-template-columns: 1fr;
+      }
+
+      .surface-grid,
+      .flow-layout,
+      .agent-settings-list,
+      .command-preview {
+        grid-template-columns: 1fr;
+      }
+
+      .surface-card.wide {
+        grid-column: auto;
+      }
+
+      .mini-preview-grid {
         grid-template-columns: 1fr;
       }
 
@@ -1079,6 +1368,273 @@
             <pre id="jsonPreview"></pre>
           </div>
         </aside>
+
+        <section class="support-surfaces" aria-label="Additional coding-agent profile default mockups">
+          <div class="surface-tabs" aria-label="Profile support surfaces">
+            <button class="surface-tab active" type="button">Defaults</button>
+            <button class="surface-tab" type="button">New Agent</button>
+            <button class="surface-tab" type="button">Existing Agent</button>
+            <button class="surface-tab" type="button">Diagnostics</button>
+            <button class="surface-tab" type="button">Dispatch</button>
+          </div>
+
+          <div class="surface-grid">
+            <section class="surface-card wide" aria-labelledby="defaults-surface-title">
+              <div class="surface-card-head">
+                <div>
+                  <div id="defaults-surface-title" class="surface-title">Defaults tab in Profile Matrix settings</div>
+                  <div class="surface-subtitle">Default rules live beside the matrix and resolve by specific source before falling back to profile A.</div>
+                </div>
+                <span class="profile-token safe">A - final fallback</span>
+              </div>
+              <div class="surface-body">
+                <div class="matrix-wrap">
+                  <table class="rule-table" aria-label="Default profile rules">
+                    <thead>
+                      <tr>
+                        <th>Rule source</th>
+                        <th>Scope</th>
+                        <th>Default profile</th>
+                        <th>Effective per-coding-agent preview</th>
+                        <th>Warnings</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>No template / global</td>
+                        <td><span class="rule-scope">AC Root</span></td>
+                        <td><span class="profile-token" data-default-profile="global">B - BALANCED</span></td>
+                        <td>Codex B, Claude Code B, OpenCode requests B and resolves A</td>
+                        <td><span class="profile-token warn">OpenCode B missing; fixed fallback A</span></td>
+                      </tr>
+                      <tr>
+                        <td>Agency role template</td>
+                        <td><span class="rule-scope">agency/local</span></td>
+                        <td><span class="profile-token">C - REVIEW</span></td>
+                        <td>All coding agents request review profile before workgroup launch</td>
+                        <td>None</td>
+                      </tr>
+                      <tr>
+                        <td>Local role template: dev-webpage-ui</td>
+                        <td><span class="rule-scope">role template</span></td>
+                        <td><span class="profile-token">B - BALANCED</span></td>
+                        <td>Codex B, Claude Code B, OpenCode requests B and resolves A</td>
+                        <td><span class="profile-token warn">Rule is valid; one provider cell falls back</span></td>
+                      </tr>
+                      <tr>
+                        <td>Agent type: coding-agent</td>
+                        <td><span class="rule-scope">type rule</span></td>
+                        <td><span class="profile-token">B - BALANCED</span></td>
+                        <td>Used when no role template default exists</td>
+                        <td>None</td>
+                      </tr>
+                      <tr>
+                        <td>Mold: review-helper</td>
+                        <td><span class="rule-scope">mold rule</span></td>
+                        <td><span class="profile-token">C - REVIEW</span></td>
+                        <td>Review mold requests C for all coding agents</td>
+                        <td>Disabled cells show before create</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="mini-preview-grid" aria-label="Effective coding-agent preview">
+                  <div class="mini-preview">
+                    <strong>Codex</strong>
+                    <div class="mini-preview-line"><span>Requested</span><span>B - BALANCED</span></div>
+                    <div class="mini-preview-line"><span>Resolved</span><span>B - BALANCED</span></div>
+                    <div class="mini-preview-line"><span>Source</span><span>dev-webpage-ui template</span></div>
+                  </div>
+                  <div class="mini-preview">
+                    <strong>Claude Code</strong>
+                    <div class="mini-preview-line"><span>Requested</span><span>B - BALANCED</span></div>
+                    <div class="mini-preview-line"><span>Resolved</span><span>B - BALANCED</span></div>
+                    <div class="mini-preview-line"><span>Source</span><span>dev-webpage-ui template</span></div>
+                  </div>
+                  <div class="mini-preview">
+                    <strong>OpenCode</strong>
+                    <div class="mini-preview-line"><span>Requested</span><span>B - BALANCED</span></div>
+                    <div class="mini-preview-line"><span>Resolved</span><span>A - FULL POWER</span></div>
+                    <div class="mini-preview-line"><span>Reason</span><span>B cell missing; A final fallback</span></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="surface-card" aria-labelledby="create-surface-title">
+              <div class="surface-card-head">
+                <div>
+                  <div id="create-surface-title" class="surface-title">New Agent creation modal</div>
+                  <div class="surface-subtitle">Template and mold selection drive the default; the creator can override before Create.</div>
+                </div>
+              </div>
+              <div class="surface-body flow-layout">
+                <div class="form-panel">
+                  <label class="settings-field">
+                    <span class="settings-label">Role template</span>
+                    <select id="newAgentTemplate" class="settings-select">
+                      <option value="dev-webpage-ui">dev-webpage-ui</option>
+                      <option value="review-helper">review-helper</option>
+                      <option value="no-template">No template</option>
+                    </select>
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">Agent type / mold</span>
+                    <select id="newAgentMold" class="settings-select">
+                      <option value="implementation">coding-agent / implementation</option>
+                      <option value="review">coding-agent / review-helper</option>
+                    </select>
+                  </label>
+                  <label class="settings-field">
+                    <span class="settings-label">Profile override</span>
+                    <select id="newAgentOverride" class="settings-select">
+                      <option value="inherit">Use template default</option>
+                      <option value="A">A - FULL POWER</option>
+                      <option value="B">B - BALANCED</option>
+                      <option value="C">C - REVIEW</option>
+                      <option value="D">D - LOW COST</option>
+                    </select>
+                  </label>
+                  <button class="modal-btn save" type="button">Create</button>
+                </div>
+                <div class="resolution-panel" aria-live="polite">
+                  <div class="resolution-row"><span class="resolution-key">Rule source</span><span id="newAgentRuleSource">Local role template: dev-webpage-ui</span></div>
+                  <div class="resolution-row"><span class="resolution-key">Requested</span><span id="newAgentRequested">B - BALANCED</span></div>
+                  <div class="resolution-row"><span class="resolution-key">Resolved</span><span id="newAgentResolved">B - BALANCED for Codex and Claude Code; A - FULL POWER for OpenCode</span></div>
+                  <div id="newAgentFallbackNotice" class="warning-strip">OpenCode has no B cell, so the effective launch profile resolves to A. The stored request remains B.</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="surface-card" aria-labelledby="existing-surface-title">
+              <div class="surface-card-head">
+                <div>
+                  <div id="existing-surface-title" class="surface-title">Existing Agent settings</div>
+                  <div class="surface-subtitle">Existing agents show stored requested profile, editable profile, and legacy no-profile state without silent migration.</div>
+                </div>
+              </div>
+              <div class="surface-body">
+                <div class="agent-settings-list">
+                  <div class="agent-settings-card">
+                    <div class="surface-title">dev-webpage-ui</div>
+                    <div class="mini-preview-line"><span>Requested</span><span>B - BALANCED</span></div>
+                    <label class="settings-field">
+                      <span class="settings-label">Assigned profile</span>
+                      <select class="settings-select">
+                        <option>B - BALANCED</option>
+                        <option>C - REVIEW</option>
+                        <option>D - LOW COST</option>
+                      </select>
+                    </label>
+                    <span class="profile-token safe">Resolved: B - BALANCED</span>
+                  </div>
+                  <div class="agent-settings-card">
+                    <div class="surface-title">review-auditor</div>
+                    <div class="mini-preview-line"><span>Requested</span><span>C - REVIEW</span></div>
+                    <label class="settings-field">
+                      <span class="settings-label">Assigned profile</span>
+                      <select class="settings-select">
+                        <option>C - REVIEW</option>
+                        <option>B - BALANCED</option>
+                        <option>A - FULL POWER</option>
+                      </select>
+                    </label>
+                    <span class="profile-token safe">Resolved: C - REVIEW</span>
+                  </div>
+                  <div class="agent-settings-card legacy">
+                    <div class="surface-title">legacy-helper</div>
+                    <div class="mini-preview-line"><span>Requested</span><span>None stored</span></div>
+                    <label class="settings-field">
+                      <span class="settings-label">Assigned profile</span>
+                      <select class="settings-select">
+                        <option>Inherit safe default</option>
+                        <option>B - BALANCED</option>
+                        <option>A - FULL POWER</option>
+                      </select>
+                    </label>
+                    <div class="warning-strip">Legacy no-profile agents inherit the current default at launch. Saving here records an explicit request.</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="surface-card wide" aria-labelledby="diagnostics-surface-title">
+              <div class="surface-card-head">
+                <div>
+                  <div id="diagnostics-surface-title" class="surface-title">Diagnostics and resolution view</div>
+                  <div class="surface-subtitle">Shows why a profile was selected, where fallback occurred, and the selected coding agent/provider command components.</div>
+                </div>
+                <span class="profile-token warn">No raw shell string</span>
+              </div>
+              <div class="surface-body">
+                <div class="flow-layout">
+                  <div class="resolution-panel">
+                    <div class="resolution-row"><span class="resolution-key">Agent</span><span>dev-webpage-ui / OpenCode</span></div>
+                    <div class="resolution-row"><span class="resolution-key">Rule source</span><span>Local role template: dev-webpage-ui</span></div>
+                    <div class="resolution-row"><span class="resolution-key">Requested</span><span>B - BALANCED</span></div>
+                    <div class="resolution-row"><span class="resolution-key">Resolved</span><span>A - FULL POWER</span></div>
+                    <div class="diagnostic-chain">
+                      <span class="profile-token warn">B missing</span>
+                      <span class="chain-arrow">-&gt;</span>
+                      <span class="profile-token safe">A final fallback</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="settings-section-title">Final coding-agent/provider command preview</div>
+                    <div class="command-preview">
+                      <div class="command-part">
+                        <div class="command-label">Executable</div>
+                        <div class="command-value">opencode</div>
+                      </div>
+                      <div class="command-part">
+                        <div class="command-label">Provider model</div>
+                        <div class="command-value">provider/default-large</div>
+                      </div>
+                      <div class="command-part">
+                        <div class="command-label">Default args</div>
+                        <div class="command-value">--config {acRoot}\opencode.json</div>
+                      </div>
+                      <div class="command-part">
+                        <div class="command-label">Extra args</div>
+                        <div class="command-value">--profile a</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="surface-card wide" aria-labelledby="dispatch-surface-title">
+              <div class="surface-card-head">
+                <div>
+                  <div id="dispatch-surface-title" class="surface-title">Workgroup dispatch and agent list visibility</div>
+                  <div class="surface-subtitle">Small badges on launch surfaces prevent hidden profile changes when dispatching agents from templates.</div>
+                </div>
+              </div>
+              <div class="surface-body mini-preview-grid">
+                <div class="mini-preview">
+                  <strong>Template picker row</strong>
+                  <div class="mini-preview-line"><span>Template</span><span>dev-webpage-ui</span></div>
+                  <div class="mini-preview-line"><span>Default</span><span>B - BALANCED</span></div>
+                  <div class="mini-preview-line"><span>Preview</span><span>3 agents, 1 provider fallback</span></div>
+                </div>
+                <div class="mini-preview">
+                  <strong>Session list badge</strong>
+                  <div class="mini-preview-line"><span>Agent</span><span>dev-webpage-ui</span></div>
+                  <div class="mini-preview-line"><span>Profile</span><span>Requested B; effective B</span></div>
+                  <div class="mini-preview-line"><span>Action</span><span>Open settings to edit</span></div>
+                </div>
+                <div class="mini-preview">
+                  <strong>Blocked launch warning</strong>
+                  <div class="mini-preview-line"><span>Condition</span><span>Requested cell disabled</span></div>
+                  <div class="mini-preview-line"><span>Fallback</span><span>Use fixed chain to A</span></div>
+                  <div class="mini-preview-line"><span>CTA</span><span>Review diagnostics</span></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
       </div>
 
       <footer class="modal-footer">
@@ -1142,6 +1698,13 @@
     const enabledInput = document.getElementById("enabledInput");
     const addSelectedCellBtn = document.getElementById("addSelectedCellBtn");
     const jsonPreview = document.getElementById("jsonPreview");
+    const newAgentTemplate = document.getElementById("newAgentTemplate");
+    const newAgentMold = document.getElementById("newAgentMold");
+    const newAgentOverride = document.getElementById("newAgentOverride");
+    const newAgentRuleSource = document.getElementById("newAgentRuleSource");
+    const newAgentRequested = document.getElementById("newAgentRequested");
+    const newAgentResolved = document.getElementById("newAgentResolved");
+    const newAgentFallbackNotice = document.getElementById("newAgentFallbackNotice");
 
     function escapeHtml(value) {
       return String(value)
@@ -1162,6 +1725,11 @@
     function profileLabel(letter) {
       const name = profileNames[letter]?.trim();
       return name ? `${letter}-${name}` : letter;
+    }
+
+    function profileDisplayLabel(letter) {
+      const name = profileNames[letter]?.trim();
+      return name ? `${letter} - ${name}` : letter;
     }
 
     function fallbackFor(letter) {
@@ -1445,10 +2013,38 @@
       syncEditor();
     }
 
+    function profileFromTemplate(template, mold) {
+      if (mold === "review" || template === "review-helper") {
+        return { letter: "C", source: "Mold rule: review-helper" };
+      }
+      if (template === "no-template") {
+        return { letter: "B", source: "No template / global default" };
+      }
+      return { letter: "B", source: "Local role template: dev-webpage-ui" };
+    }
+
+    function renderNewAgentPreview() {
+      const inherited = profileFromTemplate(newAgentTemplate.value, newAgentMold.value);
+      const requestedLetter = newAgentOverride.value === "inherit" ? inherited.letter : newAgentOverride.value;
+      const requested = profileDisplayLabel(requestedLetter);
+      const source = newAgentOverride.value === "inherit" ? inherited.source : "User override before Create";
+      const opencodeProfile = matrix.opencode[requestedLetter];
+      const opencodeResolved = opencodeProfile ? requested : profileDisplayLabel("A");
+
+      newAgentRuleSource.textContent = source;
+      newAgentRequested.textContent = requested;
+      newAgentResolved.textContent = `${requested} for Codex and Claude Code; ${opencodeResolved} for OpenCode`;
+      newAgentFallbackNotice.hidden = Boolean(opencodeProfile);
+      newAgentFallbackNotice.textContent = opencodeProfile
+        ? ""
+        : `OpenCode has no ${requestedLetter} cell, so the effective launch profile resolves to ${profileDisplayLabel("A")}. The stored request remains ${requestedLetter}.`;
+    }
+
     renderSelectors();
     renderHeaders();
     renderMatrix();
     syncEditor();
+    renderNewAgentPreview();
 
     addProfileBtn.addEventListener("click", addProfile);
     addSelectedCellBtn.addEventListener("click", () => {
@@ -1472,6 +2068,9 @@
     });
     [effortSelect, enabledInput].forEach((input) => {
       input.addEventListener("change", updateSelectedProfile);
+    });
+    [newAgentTemplate, newAgentMold, newAgentOverride].forEach((input) => {
+      input.addEventListener("change", renderNewAgentPreview);
     });
   </script>
 </body>

@@ -42,7 +42,7 @@ const assertNoRuntimeErrors = () => {
   );
 };
 
-const headers = Array.from(dom.window.document.querySelectorAll('thead th'), (th) =>
+const headers = Array.from(dom.window.document.querySelectorAll('table[aria-label="Coding agent profile matrix"] thead th'), (th) =>
   th.textContent?.trim()
 );
 assert.deepEqual(headers, ['Profile', 'Codex', 'Claude Code', 'OpenCode']);
@@ -101,6 +101,46 @@ assert.ok(!JSON.stringify(data.profiles).includes('"priority"'));
 assert.ok(!JSON.stringify(data.profiles).includes('"fallback"'));
 assert.ok(!text.toLowerCase().includes('gemini'), 'JSON preview should not include Gemini');
 assert.ok(!documentText().toLowerCase().includes('gemini'), 'prototype should not render Gemini');
+assert.match(documentText(), /Defaults tab in Profile Matrix settings/);
+assert.match(documentText(), /No template \/ global/);
+assert.match(documentText(), /Local role template: dev-webpage-ui/);
+assert.match(documentText(), /Agent type: coding-agent/);
+assert.match(documentText(), /Mold: review-helper/);
+assert.match(documentText(), /OpenCode B missing; fixed fallback A/);
+assert.match(documentText(), /New Agent creation modal/);
+assert.match(documentText(), /Existing Agent settings/);
+assert.match(documentText(), /Legacy no-profile agents inherit the current default at launch/);
+assert.match(documentText(), /Diagnostics and resolution view/);
+assert.match(documentText(), /No raw shell string/);
+assert.match(documentText(), /Workgroup dispatch and agent list visibility/);
+
+const newAgentTemplate = dom.window.document.getElementById('newAgentTemplate');
+const newAgentMold = dom.window.document.getElementById('newAgentMold');
+const newAgentOverride = dom.window.document.getElementById('newAgentOverride');
+const newAgentRuleSource = dom.window.document.getElementById('newAgentRuleSource');
+const newAgentRequested = dom.window.document.getElementById('newAgentRequested');
+const newAgentResolved = dom.window.document.getElementById('newAgentResolved');
+const newAgentFallbackNotice = dom.window.document.getElementById('newAgentFallbackNotice');
+assert.ok(newAgentTemplate, 'new agent template selector should exist');
+assert.ok(newAgentMold, 'new agent mold selector should exist');
+assert.ok(newAgentOverride, 'new agent override selector should exist');
+assert.equal(newAgentRuleSource?.textContent, 'Local role template: dev-webpage-ui');
+assert.equal(newAgentRequested?.textContent, 'B - BALANCED');
+assert.match(newAgentResolved?.textContent ?? '', /A - FULL POWER for OpenCode/);
+assert.equal(newAgentFallbackNotice?.hidden, false);
+
+change(newAgentMold, 'review');
+assert.equal(newAgentRuleSource?.textContent, 'Mold rule: review-helper');
+assert.equal(newAgentRequested?.textContent, 'C - REVIEW');
+assert.match(newAgentResolved?.textContent ?? '', /C - REVIEW for OpenCode/);
+assert.equal(newAgentFallbackNotice?.hidden, true);
+
+change(newAgentOverride, 'D');
+assert.equal(newAgentRuleSource?.textContent, 'User override before Create');
+assert.equal(newAgentRequested?.textContent, 'D - LOW COST');
+assert.match(newAgentResolved?.textContent ?? '', /D - LOW COST for OpenCode/);
+assert.equal(newAgentFallbackNotice?.hidden, true);
+assertNoRuntimeErrors();
 
 assert.equal(
   dom.window.document.querySelector('[data-remove-agent="codex"][data-remove-letter="A"]'),
