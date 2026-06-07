@@ -275,6 +275,21 @@ capturedCell.getBoundingClientRect = () => ({
   y: 32,
   toJSON: () => {},
 });
+
+let fakeTimerId = 0;
+const activeTimers = new Map();
+const clearedTimers = [];
+dom.window.setTimeout = (callback, delay, ...args) => {
+  const id = ++fakeTimerId;
+  activeTimers.set(id, { callback, delay, args });
+  return id;
+};
+dom.window.clearTimeout = (id) => {
+  clearedTimers.push(id);
+  activeTimers.delete(id);
+};
+const getTimersByDelay = (delay) => Array.from(activeTimers.entries()).filter(([, timer]) => timer.delay === delay);
+
 const contextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,
   cancelable: true,
@@ -295,6 +310,14 @@ assert.ok(toast, 'component capture toast should appear');
 assert.match(toast?.textContent ?? '', /"Coding Agent Profile Matrix \/ td \/ Claude Code D-LOW COST configured profile cell"/);
 assert.match(toast?.textContent ?? '', /td \.profile-cell/);
 
+const toastTimers = getTimersByDelay(15000);
+assert.equal(toastTimers.length, 1, 'component capture toast should schedule a 15-second removal timer');
+assert.equal(
+  dom.window.document.querySelector('.component-capture-toast'),
+  toast,
+  'component capture toast should stay visible before the 15-second timer fires'
+);
+
 const highlight = dom.window.document.querySelector('.component-capture-highlight');
 assert.ok(highlight, 'component capture highlight should appear');
 assert.equal(highlight?.style.left, '24px');
@@ -304,5 +327,27 @@ assert.equal(
   dom.window.document.querySelector('.component-capture-highlight'),
   null,
   'component capture highlight should remove after its two-blink animation completes'
+);
+
+const secondCaptureResult = await dom.window.captureComponentAtTarget('Coding Agent Profile Matrix', captureTarget);
+assert.equal(secondCaptureResult.quotedIdentifier, captureResult.quotedIdentifier);
+assert.equal(
+  clearedTimers.includes(toastTimers[0][0]),
+  true,
+  'a new component capture should reset the previous toast timer'
+);
+assert.equal(
+  getTimersByDelay(15000).length,
+  1,
+  'a new component capture should leave one active 15-second toast timer'
+);
+const latestToast = dom.window.document.querySelector('.component-capture-toast');
+assert.ok(latestToast, 'replacement component capture toast should appear');
+const latestToastTimer = getTimersByDelay(15000)[0][1];
+latestToastTimer.callback(...latestToastTimer.args);
+assert.equal(
+  dom.window.document.querySelector('.component-capture-toast'),
+  null,
+  'component capture toast should remove when the 15-second timer fires'
 );
 assertNoRuntimeErrors();
