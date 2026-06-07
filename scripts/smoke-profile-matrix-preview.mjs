@@ -108,7 +108,12 @@ assert.match(documentText(), /Agent type: coding-agent/);
 assert.match(documentText(), /Mold: review-helper/);
 assert.match(documentText(), /OpenCode B missing; fixed fallback A/);
 assert.match(documentText(), /New Agent creation modal/);
-assert.match(documentText(), /Existing Agent settings/);
+assert.match(documentText(), /Individual Agent profile assignment modal/);
+assert.ok(
+  dom.window.document.querySelector('[aria-label="Assign profile to individual agent"]'),
+  'individual agent assignment modal mockup should exist'
+);
+assert.match(documentText(), /from template: dev-webpage-ui/);
 assert.match(documentText(), /Legacy no-profile agents inherit the current default at launch/);
 assert.match(documentText(), /Diagnostics and resolution view/);
 assert.match(documentText(), /No raw shell string/);
@@ -150,6 +155,44 @@ assert.match(newAgentResolved?.textContent ?? '', /D - LOW COST for Claude Code/
 assert.match(newAgentResolved?.textContent ?? '', /D - LOW COST for OpenCode/);
 assert.match(newAgentFallbackNotice?.textContent ?? '', /Codex has no D cell/);
 assert.equal(newAgentFallbackNotice?.hidden, false);
+assertNoRuntimeErrors();
+
+const individualAgentTool = dom.window.document.getElementById('individualAgentTool');
+const individualAgentProfile = dom.window.document.getElementById('individualAgentProfile');
+const individualAgentHeaderToken = dom.window.document.getElementById('individualAgentHeaderToken');
+const individualAgentSource = dom.window.document.getElementById('individualAgentSource');
+const individualAgentRequested = dom.window.document.getElementById('individualAgentRequested');
+const individualAgentEffective = dom.window.document.getElementById('individualAgentEffective');
+const individualAgentFallbackNotice = dom.window.document.getElementById('individualAgentFallbackNotice');
+const legacyAgentAssignProfile = dom.window.document.getElementById('legacyAgentAssignProfile');
+const legacyAgentAssignmentNotice = dom.window.document.getElementById('legacyAgentAssignmentNotice');
+assert.ok(individualAgentTool, 'individual agent coding tool selector should exist');
+assert.ok(individualAgentProfile, 'individual agent profile selector should exist');
+assert.equal(individualAgentTool?.value, 'opencode');
+assert.equal(individualAgentProfile?.value, 'B');
+assert.equal(individualAgentHeaderToken?.textContent, 'B - BALANCED');
+assert.equal(individualAgentSource?.textContent, 'from template: dev-webpage-ui');
+assert.equal(individualAgentRequested?.textContent, 'B - BALANCED');
+assert.match(individualAgentEffective?.textContent ?? '', /A - FULL POWER for OpenCode/);
+assert.match(individualAgentEffective?.textContent ?? '', /B -> A - FULL POWER/);
+assert.match(individualAgentFallbackNotice?.textContent ?? '', /OpenCode has no B cell/);
+assert.equal(individualAgentFallbackNotice?.hidden, false);
+
+change(individualAgentProfile, 'inherit');
+assert.equal(individualAgentSource?.textContent, 'from template: dev-webpage-ui');
+assert.equal(individualAgentRequested?.textContent, 'B - BALANCED');
+assert.match(individualAgentEffective?.textContent ?? '', /A - MAXIMUM for OpenCode/);
+assert.equal(individualAgentFallbackNotice?.hidden, false);
+
+change(individualAgentTool, 'codex');
+assert.match(individualAgentEffective?.textContent ?? '', /B - BALANCED for Codex/);
+assert.equal(individualAgentFallbackNotice?.hidden, true);
+
+assert.ok(legacyAgentAssignProfile, 'legacy no-profile assignment selector should exist');
+assert.match(legacyAgentAssignmentNotice?.textContent ?? '', /until the user explicitly saves an assigned profile/);
+change(legacyAgentAssignProfile, 'B');
+assert.match(legacyAgentAssignmentNotice?.textContent ?? '', /Saving records explicit B - BALANCED/);
+assert.match(legacyAgentAssignmentNotice?.textContent ?? '', /not silent migration/);
 assertNoRuntimeErrors();
 
 assert.equal(

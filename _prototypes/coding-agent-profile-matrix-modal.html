@@ -1055,6 +1055,118 @@
       background: rgba(234, 179, 8, 0.04);
     }
 
+    .individual-agent-shell {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.1fr);
+      gap: var(--spacing-md);
+      align-items: stretch;
+    }
+
+    .individual-agent-modal {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 360px;
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-md);
+      background: #090910;
+      overflow: hidden;
+    }
+
+    .individual-agent-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--spacing-md);
+      padding: var(--spacing-md);
+      border-bottom: 1px solid var(--sidebar-border);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .individual-agent-title {
+      color: var(--sidebar-fg);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .individual-agent-context {
+      margin-top: 3px;
+      color: var(--sidebar-fg-dim);
+      font-family: var(--font-terminal);
+      font-size: 10px;
+    }
+
+    .individual-agent-body {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+      padding: var(--spacing-md);
+    }
+
+    .profile-source-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 2px 7px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--sidebar-fg-dim);
+      font-size: 10px;
+    }
+
+    .resolution-stack {
+      display: grid;
+      gap: var(--spacing-xs);
+    }
+
+    .provider-resolution {
+      display: grid;
+      grid-template-columns: 84px 1fr;
+      gap: var(--spacing-sm);
+      align-items: center;
+      min-height: 30px;
+      padding: 6px 8px;
+      border: 1px solid var(--sidebar-border);
+      border-radius: var(--radius-sm);
+      background: var(--sidebar-hover);
+      font-size: 10px;
+    }
+
+    .provider-resolution strong {
+      color: var(--sidebar-fg);
+      font-size: 10px;
+    }
+
+    .provider-resolution span:last-child {
+      color: var(--sidebar-fg-dim);
+      overflow-wrap: anywhere;
+    }
+
+    .individual-agent-footer {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-md);
+      border-top: 1px solid var(--sidebar-border);
+      background: rgba(255, 255, 255, 0.012);
+    }
+
+    .legacy-assignment-panel {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-md);
+      border: 1px solid rgba(234, 179, 8, 0.24);
+      border-radius: var(--radius-md);
+      background: rgba(234, 179, 8, 0.04);
+    }
+
+    .legacy-assignment-title {
+      color: var(--sidebar-fg);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
     .diagnostic-chain {
       display: flex;
       flex-wrap: wrap;
@@ -1163,6 +1275,7 @@
 
       .surface-grid,
       .flow-layout,
+      .individual-agent-shell,
       .agent-settings-list,
       .command-preview {
         grid-template-columns: 1fr;
@@ -1507,53 +1620,74 @@
               </div>
             </section>
 
-            <section class="surface-card" aria-labelledby="existing-surface-title">
+            <section class="surface-card wide" aria-labelledby="existing-surface-title">
               <div class="surface-card-head">
                 <div>
-                  <div id="existing-surface-title" class="surface-title">Existing Agent settings</div>
-                  <div class="surface-subtitle">Existing agents show stored requested profile, editable profile, and legacy no-profile state without silent migration.</div>
+                  <div id="existing-surface-title" class="surface-title">Individual Agent profile assignment modal</div>
+                  <div class="surface-subtitle">Mirrors the current Settings modal shape: selected agent context, an explicit profile selector, Save/Cancel, and no silent migration for legacy agents.</div>
                 </div>
+                <span class="profile-token" id="individualAgentHeaderToken">B - BALANCED</span>
               </div>
               <div class="surface-body">
-                <div class="agent-settings-list">
-                  <div class="agent-settings-card">
-                    <div class="surface-title">dev-webpage-ui</div>
-                    <div class="mini-preview-line"><span>Requested</span><span>B - BALANCED</span></div>
-                    <label class="settings-field">
-                      <span class="settings-label">Assigned profile</span>
-                      <select class="settings-select">
-                        <option>B - BALANCED</option>
-                        <option>C - REVIEW</option>
-                        <option>D - LOW COST</option>
-                      </select>
-                    </label>
-                    <span class="profile-token safe">Resolved: B - BALANCED</span>
+                <div class="individual-agent-shell">
+                  <div class="individual-agent-modal" aria-label="Assign profile to individual agent">
+                    <div class="individual-agent-header">
+                      <div>
+                        <div class="individual-agent-title">Edit Agent</div>
+                        <div class="individual-agent-context">wg-7-dev-team / dev-webpage-ui</div>
+                      </div>
+                      <span class="profile-source-pill">OpenCode selected</span>
+                    </div>
+                    <div class="individual-agent-body">
+                      <label class="settings-field">
+                        <span class="settings-label">Coding agent / tool</span>
+                        <select id="individualAgentTool" class="settings-select">
+                          <option value="opencode">OpenCode</option>
+                          <option value="codex">Codex</option>
+                          <option value="claude-code">Claude Code</option>
+                        </select>
+                      </label>
+                      <label class="settings-field">
+                        <span class="settings-label">Assigned profile</span>
+                        <select id="individualAgentProfile" class="settings-select">
+                          <option value="inherit">Use inherited default</option>
+                          <option value="A">A - FULL POWER</option>
+                          <option value="B" selected>B - BALANCED</option>
+                          <option value="C">C - REVIEW</option>
+                          <option value="D">D - LOW COST</option>
+                        </select>
+                      </label>
+                      <div class="resolution-panel" aria-live="polite">
+                        <div class="resolution-row"><span class="resolution-key">Source</span><span id="individualAgentSource">from template: dev-webpage-ui</span></div>
+                        <div class="resolution-row"><span class="resolution-key">Requested</span><span id="individualAgentRequested">B - BALANCED</span></div>
+                        <div class="resolution-row"><span class="resolution-key">Effective</span><span id="individualAgentEffective">A - FULL POWER for OpenCode (B -> A - FULL POWER)</span></div>
+                        <div id="individualAgentFallbackNotice" class="warning-strip">OpenCode has no B cell, so this agent keeps requested B while launch resolves through A final fallback.</div>
+                      </div>
+                    </div>
+                    <div class="individual-agent-footer">
+                      <button class="modal-btn cancel" type="button">Cancel</button>
+                      <button class="modal-btn save" type="button">Save</button>
+                    </div>
                   </div>
-                  <div class="agent-settings-card">
-                    <div class="surface-title">review-auditor</div>
-                    <div class="mini-preview-line"><span>Requested</span><span>C - REVIEW</span></div>
+
+                  <div class="legacy-assignment-panel">
+                    <div class="legacy-assignment-title">Legacy no-profile state</div>
+                    <div class="mini-preview-line"><span>Agent</span><span>legacy-helper</span></div>
+                    <div class="mini-preview-line"><span>Stored</span><span>None stored; no migration on open</span></div>
                     <label class="settings-field">
-                      <span class="settings-label">Assigned profile</span>
-                      <select class="settings-select">
-                        <option>C - REVIEW</option>
-                        <option>B - BALANCED</option>
-                        <option>A - FULL POWER</option>
+                      <span class="settings-label">Assign profile</span>
+                      <select id="legacyAgentAssignProfile" class="settings-select">
+                        <option value="none">Leave as no-profile legacy agent</option>
+                        <option value="B">B - BALANCED</option>
+                        <option value="A">A - FULL POWER</option>
                       </select>
                     </label>
-                    <span class="profile-token safe">Resolved: C - REVIEW</span>
-                  </div>
-                  <div class="agent-settings-card legacy">
-                    <div class="surface-title">legacy-helper</div>
-                    <div class="mini-preview-line"><span>Requested</span><span>None stored</span></div>
-                    <label class="settings-field">
-                      <span class="settings-label">Assigned profile</span>
-                      <select class="settings-select">
-                        <option>Inherit safe default</option>
-                        <option>B - BALANCED</option>
-                        <option>A - FULL POWER</option>
-                      </select>
-                    </label>
-                    <div class="warning-strip">Legacy no-profile agents inherit the current default at launch. Saving here records an explicit request.</div>
+                    <div id="legacyAgentAssignmentNotice" class="warning-strip">Legacy no-profile agents inherit the current default at launch until the user explicitly saves an assigned profile.</div>
+                    <div class="resolution-stack">
+                      <div class="provider-resolution"><strong>Codex</strong><span>B - BALANCED from current default if launched now</span></div>
+                      <div class="provider-resolution"><strong>Claude Code</strong><span>B - BALANCED from current default if launched now</span></div>
+                      <div class="provider-resolution"><strong>OpenCode</strong><span>A - FULL POWER because B is missing and A is final fallback</span></div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1705,6 +1839,15 @@
     const newAgentRequested = document.getElementById("newAgentRequested");
     const newAgentResolved = document.getElementById("newAgentResolved");
     const newAgentFallbackNotice = document.getElementById("newAgentFallbackNotice");
+    const individualAgentTool = document.getElementById("individualAgentTool");
+    const individualAgentProfile = document.getElementById("individualAgentProfile");
+    const individualAgentHeaderToken = document.getElementById("individualAgentHeaderToken");
+    const individualAgentSource = document.getElementById("individualAgentSource");
+    const individualAgentRequested = document.getElementById("individualAgentRequested");
+    const individualAgentEffective = document.getElementById("individualAgentEffective");
+    const individualAgentFallbackNotice = document.getElementById("individualAgentFallbackNotice");
+    const legacyAgentAssignProfile = document.getElementById("legacyAgentAssignProfile");
+    const legacyAgentAssignmentNotice = document.getElementById("legacyAgentAssignmentNotice");
 
     function escapeHtml(value) {
       return String(value)
@@ -2075,11 +2218,43 @@
         : "";
     }
 
+    function renderIndividualAgentPreview() {
+      const inherited = profileFromTemplate("dev-webpage-ui", "implementation");
+      const requestedLetter = individualAgentProfile.value === "inherit" ? inherited.letter : individualAgentProfile.value;
+      const source = individualAgentProfile.value === "inherit" || requestedLetter === inherited.letter
+        ? `from template: dev-webpage-ui`
+        : "user-selected override for this agent";
+      const requested = profileDisplayLabel(requestedLetter);
+      const selectedAgent = agents.find((agent) => agent.id === individualAgentTool.value) ?? agents[0];
+      const resolution = resolveProfileForAgent(selectedAgent.id, requestedLetter);
+      const resolved = profileDisplayLabel(resolution.resolvedLetter);
+
+      individualAgentHeaderToken.textContent = requested;
+      individualAgentSource.textContent = source;
+      individualAgentRequested.textContent = requested;
+      individualAgentEffective.textContent = resolution.usedFallback
+        ? `${resolved} for ${selectedAgent.label} (${resolution.requestedLetter} -> ${resolved})`
+        : `${resolved} for ${selectedAgent.label}`;
+      individualAgentFallbackNotice.hidden = !resolution.usedFallback;
+      individualAgentFallbackNotice.textContent = resolution.usedFallback
+        ? `${selectedAgent.label} has no ${resolution.requestedLetter} cell, so this agent keeps requested ${resolution.requestedLetter} while launch resolves through ${resolved}.`
+        : "";
+    }
+
+    function renderLegacyAssignmentPreview() {
+      const selectedValue = legacyAgentAssignProfile.value;
+      legacyAgentAssignmentNotice.textContent = selectedValue === "none"
+        ? "Legacy no-profile agents inherit the current default at launch until the user explicitly saves an assigned profile."
+        : `Saving records explicit ${profileDisplayLabel(selectedValue)} for legacy-helper; this is a user action, not silent migration.`;
+    }
+
     renderSelectors();
     renderHeaders();
     renderMatrix();
     syncEditor();
     renderNewAgentPreview();
+    renderIndividualAgentPreview();
+    renderLegacyAssignmentPreview();
 
     addProfileBtn.addEventListener("click", addProfile);
     addSelectedCellBtn.addEventListener("click", () => {
@@ -2107,6 +2282,10 @@
     [newAgentTemplate, newAgentMold, newAgentOverride].forEach((input) => {
       input.addEventListener("change", renderNewAgentPreview);
     });
+    [individualAgentTool, individualAgentProfile].forEach((input) => {
+      input.addEventListener("change", renderIndividualAgentPreview);
+    });
+    legacyAgentAssignProfile.addEventListener("change", renderLegacyAssignmentPreview);
   </script>
 </body>
 </html>
