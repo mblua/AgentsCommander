@@ -113,6 +113,22 @@ assert.equal(
   'row A cells should not expose add buttons'
 );
 
+const addProfileBtn = dom.window.document.getElementById('addProfileBtn');
+const matrixWrap = dom.window.document.querySelector('.matrix-wrap');
+assert.ok(addProfileBtn, '+ Profile button should be present');
+assert.ok(matrixWrap, 'matrix wrapper should be present');
+assert.equal(
+  Boolean(matrixWrap.compareDocumentPosition(addProfileBtn) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING),
+  true,
+  '+ Profile should render after the matrix'
+);
+click(addProfileBtn);
+data = parsePreview();
+assert.equal(data.profileLetters.at(-1).letter, 'E');
+assert.equal(dom.window.document.getElementById('letterSelect')?.value, 'E');
+assert.equal(data.profiles.E.codex.model, 'codex/default');
+assertNoRuntimeErrors();
+
 const letterSelect = dom.window.document.getElementById('letterSelect');
 assert.ok(letterSelect, 'profile selector should be present');
 change(letterSelect, 'D');

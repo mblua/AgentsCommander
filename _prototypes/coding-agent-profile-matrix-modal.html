@@ -376,6 +376,12 @@
       flex: 0 0 auto;
     }
 
+    .matrix-actions {
+      display: flex;
+      justify-content: flex-end;
+      padding-top: var(--spacing-xs);
+    }
+
     .settings-section-title {
       color: var(--sidebar-fg-dim);
       font-size: 11px;
@@ -1002,9 +1008,6 @@
               <div class="settings-section-title">Matrix</div>
               <p class="settings-hint">Profiles are rows; coding agents are columns. Each column color comes from the current coding-agent configuration. Click a configured cell to edit its model, effort, and arguments.</p>
             </div>
-            <div class="panel-actions">
-              <button id="addProfileBtn" class="modal-btn save" type="button">+ Profile</button>
-            </div>
           </div>
 
           <div class="fallback-rule"><strong>Fallback:</strong> each missing profile uses the immediately higher row; D uses C, C uses B, B uses A, and A is the final fallback.</div>
@@ -1016,6 +1019,9 @@
               </thead>
               <tbody id="matrixBody"></tbody>
             </table>
+          </div>
+          <div class="matrix-actions">
+            <button id="addProfileBtn" class="modal-btn save" type="button">+ Profile</button>
           </div>
         </section>
 
