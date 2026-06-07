@@ -1251,6 +1251,12 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     }
 
     const sidebarMenuActions = {
+      "sidebar": [
+        { label: "New Project" },
+        { label: "Open Project" },
+        { label: "Refresh Projects" },
+        { label: "Settings" }
+      ],
       "root-agent": [
         { label: "Restart Session", danger: true },
         { label: "Coding Agent" },
@@ -1395,10 +1401,11 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     function installComponentCapture(pageName) {
       document.addEventListener("contextmenu", (event) => {
         event.preventDefault();
-        const sidebarTarget = event.target instanceof Element
-          ? event.target.closest(".sidebar [data-sidebar-kind]")
+        const sidebar = event.target instanceof Element
+          ? event.target.closest(".sidebar")
           : null;
-        if (sidebarTarget) {
+        if (sidebar) {
+          const sidebarTarget = event.target.closest("[data-sidebar-kind]") || sidebar;
           event.stopPropagation();
           openSidebarContextMenu(pageName, event, sidebarTarget);
           return;

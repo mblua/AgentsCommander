@@ -135,6 +135,56 @@ dom.window.clearTimeout = (id) => {
 };
 const getTimersByDelay = (delay) => Array.from(activeTimers.entries()).filter(([, timer]) => timer.delay === delay);
 
+dom.window.__componentCaptureLastResult = undefined;
+const sideScrollContextMenu = new dom.window.MouseEvent('contextmenu', {
+  bubbles: true,
+  cancelable: true,
+  clientX: 1200,
+  clientY: 560,
+});
+const sideScrollContextMenuAllowed = sideScroll.dispatchEvent(sideScrollContextMenu);
+assert.equal(sideScrollContextMenuAllowed, false, 'sidebar container right click should prevent native menu');
+assert.equal(sideScrollContextMenu.defaultPrevented, true, 'sidebar container contextmenu should be marked defaultPrevented');
+assert.equal(
+  dom.window.__componentCaptureLastResult,
+  undefined,
+  'sidebar container right-click should not immediately capture'
+);
+
+const sideScrollMenu = dom.window.document.querySelector('.sidebar-context-menu');
+assert.ok(sideScrollMenu, 'sidebar container right-click should open a custom context menu');
+assert.equal(dom.window.document.querySelectorAll('.sidebar-context-menu').length, 1);
+assert.match(sideScrollMenu?.textContent ?? '', /New Project/);
+assert.match(sideScrollMenu?.textContent ?? '', /Open Project/);
+assert.match(sideScrollMenu?.textContent ?? '', /Refresh Projects/);
+assert.match(sideScrollMenu?.textContent ?? '', /Settings/);
+assert.doesNotMatch(sideScrollMenu?.textContent ?? '', /Remove Project|Delete Workgroup|Delete Team|Delete Agent/);
+assert.match(sideScrollMenu?.textContent ?? '', /Copy component description/);
+assert.equal(dom.window.__sidebarContextLastMenu.kind, 'sidebar');
+
+const sideScrollCopyAction = Array.from(dom.window.document.querySelectorAll('.sidebar-context-option'))
+  .find((button) => button.textContent === 'Copy component description');
+assert.ok(sideScrollCopyAction, 'sidebar container menu should include the copy component description action');
+sideScrollCopyAction.click();
+assert.equal(
+  dom.window.document.querySelector('.sidebar-context-menu'),
+  null,
+  'sidebar container menu should close after invoking copy component description'
+);
+const sideScrollCaptureResult = await dom.window.__componentCaptureLastResult;
+assert.equal(
+  sideScrollCaptureResult.quotedIdentifier,
+  '"AgentsCommander Current App / aside / right AgentsCommander navigation control sidebar"'
+);
+assert.equal(copiedText, sideScrollCaptureResult.quotedIdentifier, 'sidebar container copy should use capture helper');
+dom.window.document.querySelector('.component-capture-highlight')
+  ?.dispatchEvent(new dom.window.Event('animationend', { bubbles: true }));
+getTimersByDelay(15000).forEach(([, timer]) => timer.callback(...timer.args));
+activeTimers.clear();
+clearedTimers.length = 0;
+copiedText = '';
+dom.window.__componentCaptureLastResult = undefined;
+
 const contextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,
   cancelable: true,
