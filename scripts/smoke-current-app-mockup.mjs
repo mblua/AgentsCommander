@@ -45,12 +45,17 @@ const assertNoRuntimeErrors = () => {
 
 assert.equal(typeof dom.window.installComponentCapture, 'function');
 assert.equal(typeof dom.window.captureComponentAtTarget, 'function');
+assert.equal(typeof dom.window.openSidebarContextMenu, 'function');
+assert.equal(typeof dom.window.closeSidebarContextMenu, 'function');
 assert.match(html, /installComponentCapture\("AgentsCommander Current App"\)/);
 assert.ok(dom.window.document.querySelector('[data-component="top header with brand version workgroup identity and window controls"]'));
 assert.ok(dom.window.document.querySelector('[data-component="terminal transcript area with current task prompt and command blocks"]'));
 assert.ok(dom.window.document.querySelector('[data-component="right AgentsCommander navigation control sidebar"]'));
 assert.ok(dom.window.document.querySelector('[data-component="selected project coding agent model and effort task"]'));
 assert.ok(dom.window.document.querySelector('[data-component="selected workgroup panel"]'));
+assert.ok(dom.window.document.querySelector('[data-component="nested selected team row"]'));
+assert.ok(dom.window.document.querySelector('[data-sidebar-kind="session-agent"]'));
+assert.match(html, /Copy component description/);
 const sideScrollCss = cssBlockFor('.side-scroll');
 assert.match(sideScrollCss, /overflow-y:\s*auto;/, 'sidebar content should allow vertical scrolling');
 assert.match(sideScrollCss, /overflow-x:\s*hidden;/, 'sidebar content should keep horizontal overflow hidden');
@@ -101,9 +106,9 @@ sideScroll.scrollTop = sideScroll.scrollHeight - sideScroll.clientHeight;
 assert.equal(sideScroll.scrollTop > 0, true, 'sidebar should accept a positive scrollTop');
 assert.equal(isWorkgroupsReachable(), true, 'workgroups should be reachable after scrolling the sidebar');
 
-const captureTarget = dom.window.document.querySelector('[data-component="selected project coding agent model and effort task"] .card-title');
-assert.ok(captureTarget, 'selected project capture target should exist');
-const capturedComponent = captureTarget.closest('[data-component]');
+const sidebarCaptureTarget = dom.window.document.querySelector('[data-component="selected project coding agent model and effort task"] .card-title');
+assert.ok(sidebarCaptureTarget, 'selected project capture target should exist');
+const capturedComponent = sidebarCaptureTarget.closest('[data-component]');
 capturedComponent.getBoundingClientRect = () => ({
   left: 380,
   top: 156,
@@ -133,11 +138,38 @@ const getTimersByDelay = (delay) => Array.from(activeTimers.entries()).filter(([
 const contextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,
   cancelable: true,
+  clientX: 1210,
+  clientY: 210,
 });
-const contextMenuAllowed = captureTarget.dispatchEvent(contextMenu);
+const contextMenuAllowed = sidebarCaptureTarget.dispatchEvent(contextMenu);
 assert.equal(contextMenuAllowed, false, 'right click should prevent the native context menu path');
 assert.equal(contextMenu.defaultPrevented, true, 'contextmenu event should be marked defaultPrevented');
+assert.equal(dom.window.__componentCaptureLastResult, undefined, 'sidebar right-click should not immediately capture');
 
+const sidebarMenu = dom.window.document.querySelector('.sidebar-context-menu');
+assert.ok(sidebarMenu, 'sidebar right-click should open a custom context menu');
+assert.equal(dom.window.document.querySelectorAll('.sidebar-context-menu').length, 1);
+assert.match(sidebarMenu?.textContent ?? '', /New Agent/);
+assert.match(sidebarMenu?.textContent ?? '', /New Team/);
+assert.match(sidebarMenu?.textContent ?? '', /New Workgroup/);
+assert.match(sidebarMenu?.textContent ?? '', /Remove Project/);
+assert.match(sidebarMenu?.textContent ?? '', /Copy component description/);
+assert.equal(dom.window.__sidebarContextLastMenu.kind, 'project-card');
+assert.equal(
+  dom.window.document.querySelector('.component-capture-toast'),
+  null,
+  'sidebar menu open should not show the capture toast before copy is chosen'
+);
+
+const copyAction = Array.from(dom.window.document.querySelectorAll('.sidebar-context-option'))
+  .find((button) => button.textContent === 'Copy component description');
+assert.ok(copyAction, 'sidebar menu should include the copy component description action');
+copyAction.click();
+assert.equal(
+  dom.window.document.querySelector('.sidebar-context-menu'),
+  null,
+  'sidebar menu should close after invoking copy component description'
+);
 const captureResult = await dom.window.__componentCaptureLastResult;
 assert.equal(
   captureResult.quotedIdentifier,
@@ -172,17 +204,48 @@ assert.equal(
   'component capture highlight should remove after its two-blink animation completes'
 );
 
-const secondCaptureResult = await dom.window.captureComponentAtTarget('AgentsCommander Current App', captureTarget);
-assert.equal(secondCaptureResult.quotedIdentifier, captureResult.quotedIdentifier);
+const outsideCaptureTarget = dom.window.document.querySelector('[data-component="last prompt panel with copied message request"]');
+assert.ok(outsideCaptureTarget, 'outside-sidebar capture target should exist');
+outsideCaptureTarget.getBoundingClientRect = () => ({
+  left: 18,
+  top: 88,
+  width: 650,
+  height: 76,
+  right: 668,
+  bottom: 164,
+  x: 18,
+  y: 88,
+  toJSON: () => {},
+});
+const outsideContextMenu = new dom.window.MouseEvent('contextmenu', {
+  bubbles: true,
+  cancelable: true,
+  clientX: 120,
+  clientY: 112,
+});
+const outsideContextMenuAllowed = outsideCaptureTarget.dispatchEvent(outsideContextMenu);
+assert.equal(outsideContextMenuAllowed, false, 'outside right click should also prevent native menu');
+assert.equal(outsideContextMenu.defaultPrevented, true);
+assert.equal(
+  dom.window.document.querySelector('.sidebar-context-menu'),
+  null,
+  'outside right-click should not open the sidebar context menu'
+);
+const secondCaptureResult = await dom.window.__componentCaptureLastResult;
+assert.equal(
+  secondCaptureResult.quotedIdentifier,
+  '"AgentsCommander Current App / div / last prompt panel with copied message request"'
+);
+assert.equal(copiedText, secondCaptureResult.quotedIdentifier, 'outside direct capture should copy quoted identifier');
 assert.equal(
   clearedTimers.includes(toastTimers[0][0]),
   true,
-  'a new component capture should reset the previous toast timer'
+  'outside component capture should reset the previous toast timer'
 );
 assert.equal(
   getTimersByDelay(15000).length,
   1,
-  'a new component capture should leave one active 15-second toast timer'
+  'outside component capture should leave one active 15-second toast timer'
 );
 const latestToast = dom.window.document.querySelector('.component-capture-toast');
 assert.ok(latestToast, 'replacement component capture toast should appear');

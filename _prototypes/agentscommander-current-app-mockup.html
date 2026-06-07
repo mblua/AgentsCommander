@@ -355,123 +355,201 @@
       min-width: 0;
       min-height: 0;
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      background: linear-gradient(180deg, #0c1018, #070a10);
+      grid-template-rows: 38px minmax(0, 1fr);
+      background: linear-gradient(180deg, #0c1018 0%, #080b12 46%, #070a10 100%);
       color: #c8d5e6;
+      box-shadow: 1px 0 0 rgba(255, 255, 255, 0.025) inset;
     }
 
     .side-toolbar {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
-      gap: 10px;
-      padding: 10px;
-      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      gap: 7px;
+      padding: 6px 7px;
+      background: rgba(9, 13, 21, 0.94);
+      border-bottom: 1px solid rgba(148, 163, 184, 0.08);
     }
 
     .new-open {
-      height: 28px;
-      border: 1px solid rgba(0, 212, 255, 0.24);
+      height: 26px;
+      border: 1px solid rgba(0, 212, 255, 0.22);
       border-radius: var(--radius-sm);
-      background: rgba(0, 212, 255, 0.09);
+      background: linear-gradient(180deg, rgba(0, 212, 255, 0.11), rgba(0, 212, 255, 0.055));
       color: #dff7ff;
       font-family: var(--font-mono);
-      font-size: 11px;
+      font-size: 10px;
+      font-weight: 700;
       text-align: left;
-      padding: 0 10px;
+      padding: 0 9px;
     }
 
     .toolbar-icons {
       display: flex;
-      gap: 2px;
+      gap: 1px;
     }
 
     .side-scroll {
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: 10px;
+      padding: 7px 7px 10px;
+    }
+
+    .side-scroll::-webkit-scrollbar {
+      width: 9px;
+    }
+
+    .side-scroll::-webkit-scrollbar-thumb {
+      border: 3px solid transparent;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.24);
+      background-clip: content-box;
     }
 
     .root-card,
     .project-card,
-    .workgroup-panel {
-      border-radius: var(--radius-md);
-      background: rgba(255, 255, 255, 0.035);
-      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    .workgroup-panel,
+    .wg-row {
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.027);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
     }
 
     .root-card {
+      position: relative;
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: 20px minmax(0, 1fr) auto;
       align-items: center;
-      gap: 10px;
-      padding: 10px;
-      margin-bottom: 11px;
+      gap: 8px;
+      min-height: 44px;
+      padding: 7px 8px;
+      margin-bottom: 7px;
+      background: rgba(255, 255, 255, 0.032);
     }
 
     .root-icon {
-      width: 30px;
-      height: 30px;
+      width: 20px;
+      height: 20px;
       display: grid;
       place-items: center;
-      border-radius: var(--radius-sm);
-      background: var(--cyan-soft);
+      border-radius: 4px;
+      background: rgba(0, 212, 255, 0.1);
       color: var(--cyan);
-      border: 1px solid rgba(0, 212, 255, 0.26);
+      border: 1px solid rgba(0, 212, 255, 0.25);
       font-family: var(--font-mono);
-      font-size: 12px;
+      font-size: 9px;
       font-weight: 800;
     }
 
     .card-title {
-      color: #eef6ff;
-      font-size: 12px;
+      color: #e8f1fb;
+      font-size: 11px;
       font-weight: 700;
-      line-height: 1.25;
+      line-height: 1.2;
+    }
+
+    .card-subtitle,
+    .card-owner,
+    .section-kicker {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
     }
 
     .card-subtitle,
     .section-kicker {
-      color: var(--muted);
-      font-family: var(--font-mono);
-      font-size: 10px;
       text-transform: uppercase;
     }
 
+    .card-owner {
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .project-header-row,
+    .section-header-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      min-height: 25px;
+      margin: 6px 0 3px;
+      padding: 0 4px;
+      color: #b7c4d6;
+    }
+
     .section-kicker {
-      margin: 13px 4px 7px;
-      letter-spacing: 0.08em;
+      margin: 0;
+      letter-spacing: 0;
+      color: #9aa8ba;
+      font-weight: 700;
+    }
+
+    .chev {
+      width: 12px;
+      color: #7b8798;
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .section-count {
+      min-width: 18px;
+      height: 16px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.045);
+      color: #9ba9ba;
+      font-family: var(--font-mono);
+      font-size: 9px;
     }
 
     .project-list {
       display: grid;
-      gap: 6px;
+      gap: 4px;
     }
 
     .project-card {
+      position: relative;
       display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 8px;
-      padding: 8px;
+      grid-template-columns: 13px minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: start;
+      min-height: 54px;
+      padding: 6px 6px 6px 7px;
       border-left: 2px solid transparent;
-      background: rgba(255, 255, 255, 0.028);
+      background: rgba(255, 255, 255, 0.022);
     }
 
     .project-card.selected {
       border-left-color: var(--cyan);
-      background: linear-gradient(90deg, rgba(0, 212, 255, 0.13), rgba(157, 124, 255, 0.12));
-      box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.12) inset;
+      background:
+        linear-gradient(90deg, rgba(0, 212, 255, 0.13), rgba(157, 124, 255, 0.14) 70%, rgba(157, 124, 255, 0.08)),
+        rgba(255, 255, 255, 0.03);
+      box-shadow:
+        0 0 0 1px rgba(0, 212, 255, 0.11) inset,
+        0 8px 24px rgba(0, 0, 0, 0.16);
+    }
+
+    .card-menu {
+      color: #657287;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: 1px;
+      line-height: 1;
     }
 
     .dot {
-      width: 8px;
-      height: 8px;
-      margin-top: 4px;
+      width: 7px;
+      height: 7px;
+      margin-top: 3px;
       border-radius: 999px;
-      background: var(--muted);
-      box-shadow: 0 0 12px currentColor;
-      color: var(--muted);
+      background: #64748b;
+      box-shadow: 0 0 10px currentColor;
+      color: #64748b;
     }
 
     .dot.green {
@@ -503,26 +581,28 @@
     .agent-meta {
       display: flex;
       flex-wrap: wrap;
-      gap: 4px;
-      margin-top: 5px;
+      gap: 3px;
+      margin-top: 4px;
     }
 
     .chip {
       display: inline-flex;
       align-items: center;
-      min-height: 17px;
+      min-height: 15px;
       padding: 1px 5px;
       border-radius: 3px;
-      background: rgba(255, 255, 255, 0.045);
+      background: rgba(255, 255, 255, 0.043);
       color: #9daabe;
       font-family: var(--font-mono);
-      font-size: 9px;
+      font-size: 8.5px;
+      line-height: 1;
       text-transform: uppercase;
+      white-space: nowrap;
     }
 
     .chip.codex {
       color: #96e8ff;
-      background: rgba(0, 212, 255, 0.1);
+      background: rgba(0, 212, 255, 0.095);
     }
 
     .chip.coord {
@@ -532,87 +612,167 @@
 
     .chip.branch {
       color: #b5f7d4;
-      background: rgba(53, 242, 166, 0.09);
+      background: rgba(53, 242, 166, 0.085);
       text-transform: none;
+      max-width: 214px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .workgroup-panel {
-      padding: 9px;
-      margin-top: 6px;
-      background: rgba(13, 17, 28, 0.76);
+      padding: 5px;
+      margin-top: 4px;
+      background: rgba(13, 17, 28, 0.72);
     }
 
     .workgroup-header {
       display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 6px;
       align-items: start;
-      padding-bottom: 8px;
-      border-bottom: 1px solid rgba(148, 163, 184, 0.09);
+      min-height: 34px;
+      padding: 3px 4px 5px;
+    }
+
+    .team-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 5px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.024);
+      color: #bdc8d8;
+      font-size: 10px;
     }
 
     .workgroup-title {
       font-family: var(--font-mono);
-      color: var(--cyan);
-      font-size: 12px;
+      color: #d8e5f4;
+      font-size: 10.5px;
       font-weight: 800;
     }
 
     .workgroup-subtitle {
-      margin-top: 3px;
-      color: #97a5b8;
-      font-size: 11px;
-      line-height: 1.25;
+      margin-top: 2px;
+      color: #8795a8;
+      font-size: 9.5px;
+      line-height: 1.2;
     }
 
     .agent-list {
       display: grid;
       gap: 2px;
-      padding-top: 7px;
+      padding-top: 4px;
     }
 
     .agent-row {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: 13px minmax(0, 1fr) auto;
       align-items: center;
-      gap: 8px;
-      min-height: 30px;
-      padding: 4px 5px;
-      border-radius: var(--radius-sm);
-      background: rgba(255, 255, 255, 0.018);
+      gap: 6px;
+      min-height: 28px;
+      padding: 3px 5px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.016);
     }
 
     .agent-row.active {
-      background: rgba(0, 212, 255, 0.065);
+      background: rgba(0, 212, 255, 0.058);
+    }
+
+    .agent-row.selected {
+      background: rgba(157, 124, 255, 0.12);
+      box-shadow: 2px 0 0 var(--cyan) inset;
     }
 
     .agent-name {
-      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10.5px;
       color: #d7e3f1;
     }
 
     .agent-state {
       color: var(--muted);
       font-family: var(--font-mono);
-      font-size: 9px;
+      font-size: 8.5px;
     }
 
     .future-workgroups {
       display: grid;
-      gap: 5px;
-      margin-top: 6px;
+      gap: 4px;
+      margin-top: 4px;
+      padding-bottom: 18px;
     }
 
     .wg-row {
       display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 7px;
+      grid-template-columns: 13px minmax(0, 1fr) auto;
+      gap: 6px;
       align-items: center;
-      padding: 6px 7px;
-      border-radius: var(--radius-sm);
-      background: rgba(255, 255, 255, 0.025);
+      min-height: 28px;
+      padding: 4px 6px;
       color: #b9c6d8;
+      font-size: 10.5px;
+    }
+
+    .sidebar-context-menu {
+      position: fixed;
+      z-index: 3100;
+      min-width: 190px;
+      padding: 4px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 5px;
+      background: rgba(7, 10, 16, 0.98);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+      color: #d9e6f5;
+      font-family: var(--font-ui);
+    }
+
+    .sidebar-context-title {
+      padding: 5px 7px 4px;
+      color: #8190a5;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+    }
+
+    .sidebar-context-option {
+      width: 100%;
+      min-height: 25px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: #d7e4f3;
       font-size: 11px;
+      text-align: left;
+      padding: 4px 7px;
+    }
+
+    .sidebar-context-option:hover {
+      background: rgba(0, 212, 255, 0.09);
+      color: #eff9ff;
+    }
+
+    .sidebar-context-option.danger {
+      color: #ff9aaa;
+    }
+
+    .sidebar-context-option:disabled {
+      color: #596477;
+      pointer-events: none;
+    }
+
+    .sidebar-context-separator {
+      height: 1px;
+      margin: 4px 2px;
+      background: rgba(148, 163, 184, 0.12);
     }
 
     .component-capture-toast {
@@ -800,41 +960,48 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
 
       <aside class="sidebar" data-component="right AgentsCommander navigation control sidebar">
         <div class="side-toolbar" data-component="sidebar toolbar with new open and icons">
-          <button class="new-open" type="button">New / Open</button>
+          <button class="new-open" type="button" data-component="sidebar new open project button" data-sidebar-kind="toolbar">New / Open</button>
           <div class="toolbar-icons">
-            <button class="icon-btn" type="button" title="Refresh">r</button>
-            <button class="icon-btn" type="button" title="Layout">[]</button>
-            <button class="icon-btn" type="button" title="Settings">*</button>
+            <button class="icon-btn" type="button" title="Refresh" data-sidebar-kind="toolbar">r</button>
+            <button class="icon-btn" type="button" title="Layout" data-sidebar-kind="toolbar">[]</button>
+            <button class="icon-btn" type="button" title="Settings" data-sidebar-kind="toolbar">*</button>
           </div>
         </div>
 
         <div class="side-scroll">
-          <section class="root-card" data-component="root agent card">
+          <section class="root-card" data-component="root agent card" data-sidebar-kind="root-agent">
             <span class="root-icon">AC</span>
             <div>
               <div class="card-title">Agent's Commander</div>
-              <div class="card-subtitle">ROOT AGENT</div>
+              <div class="card-subtitle">Root Agent - live</div>
             </div>
             <span class="dot cyan"></span>
           </section>
 
-          <div class="section-kicker" data-component="project section label">Project: AgentsCommander_ac</div>
+          <div class="project-header-row" data-component="project title row AgentsCommander_ac" data-sidebar-kind="project-header">
+            <span class="chev">v</span>
+            <div class="section-kicker">Project: AgentsCommander_ac</div>
+            <span class="section-count">3</span>
+          </div>
           <section class="project-list" data-component="project task list">
-            <article class="project-card" data-component="project card release workflow">
+            <article class="project-card" data-component="project card release workflow" data-sidebar-kind="project-card">
               <span class="dot green"></span>
               <div>
                 <div class="card-title">Release validation and smoke pass</div>
+                <div class="card-owner">shipper@AgentsCommander_ac</div>
                 <div class="project-meta">
                   <span class="chip branch">feature/381-smoke</span>
                   <span class="chip codex">Codex</span>
                   <span class="chip">WG-2</span>
                 </div>
               </div>
+              <span class="card-menu">...</span>
             </article>
-            <article class="project-card selected" data-component="selected project coding agent model and effort task">
+            <article class="project-card selected" data-component="selected project coding agent model and effort task" data-sidebar-kind="project-card">
               <span class="dot cyan"></span>
               <div>
                 <div class="card-title">CODING AGENT, MODEL AND EFFORT POR AGENTE.</div>
+                <div class="card-owner">tech-lead@AgentsCommander_ac</div>
                 <div class="project-meta">
                   <span class="chip branch">feature/384-coding-agent-profile-modal-html</span>
                   <span class="chip codex">Codex</span>
@@ -842,71 +1009,95 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
                   <span class="chip">WG-7</span>
                 </div>
               </div>
+              <span class="card-menu">...</span>
             </article>
-            <article class="project-card" data-component="project card ui polish queue">
+            <article class="project-card" data-component="project card ui polish queue" data-sidebar-kind="project-card">
               <span class="dot yellow"></span>
               <div>
                 <div class="card-title">Sidebar density and terminal chrome polish</div>
+                <div class="card-owner">architect@AgentsCommander_ac</div>
                 <div class="project-meta">
                   <span class="chip branch">feature/ui-density</span>
                   <span class="chip codex">Codex</span>
                   <span class="chip">WG-3</span>
                 </div>
               </div>
+              <span class="card-menu">...</span>
             </article>
           </section>
 
-          <div class="section-kicker" data-component="selected workgroup section label">Selected Workgroup</div>
+          <div class="section-header-row" data-component="selected workgroup section label" data-sidebar-kind="workgroups-header">
+            <span class="chev">v</span>
+            <div class="section-kicker">Selected Workgroup</div>
+            <span class="section-count">1</span>
+          </div>
           <section class="workgroup-panel" data-component="selected workgroup panel">
-            <div class="workgroup-header" data-component="selected workgroup header">
+            <div class="workgroup-header" data-component="selected workgroup header" data-sidebar-kind="workgroup">
+              <span class="chev">v</span>
               <div>
                 <div class="workgroup-title">WG-7-DEV-TEAM</div>
                 <div class="workgroup-subtitle">CODING AGENT, MODEL AND EFFORT POR AGENTE.</div>
               </div>
-              <span class="chip codex">active</span>
+              <span class="section-count">9</span>
+            </div>
+
+            <div class="team-row" data-component="nested selected team row" data-sidebar-kind="team">
+              <span class="chev">v</span>
+              <span>dev-team</span>
+              <span class="chip codex">Codex</span>
             </div>
 
             <div class="agent-list" data-component="selected workgroup agent list">
-              <div class="agent-row" data-component="agent row ac-cli-tester">
+              <div class="agent-row" data-component="agent row ac-cli-tester" data-sidebar-kind="session-agent">
                 <span class="dot"></span><div><div class="agent-name">ac-cli-tester</div><div class="agent-state">exited</div></div><span class="chip codex">Codex</span>
               </div>
-              <div class="agent-row" data-component="agent row architect">
+              <div class="agent-row" data-component="agent row architect" data-sidebar-kind="session-agent">
                 <span class="dot yellow"></span><div><div class="agent-name">architect</div><div class="agent-state">waiting for input</div></div><span class="chip codex">Codex</span>
               </div>
-              <div class="agent-row" data-component="agent row ccusage-expert">
+              <div class="agent-row" data-component="agent row ccusage-expert" data-sidebar-kind="entity-agent">
                 <span class="dot"></span><div><div class="agent-name">ccusage-expert</div><div class="agent-state">not started</div></div><span class="chip">tool</span>
               </div>
-              <div class="agent-row" data-component="agent row claude-code-expert">
+              <div class="agent-row" data-component="agent row claude-code-expert" data-sidebar-kind="entity-agent">
                 <span class="dot"></span><div><div class="agent-name">claude-code-expert</div><div class="agent-state">not started</div></div><span class="chip">docs</span>
               </div>
-              <div class="agent-row" data-component="agent row dev-rust">
+              <div class="agent-row" data-component="agent row dev-rust" data-sidebar-kind="session-agent">
                 <span class="dot green"></span><div><div class="agent-name">dev-rust</div><div class="agent-state">waiting</div></div><span class="chip codex">Codex</span>
               </div>
-              <div class="agent-row" data-component="agent row dev-rust-grinch">
+              <div class="agent-row" data-component="agent row dev-rust-grinch" data-sidebar-kind="session-agent">
                 <span class="dot purple"></span><div><div class="agent-name">dev-rust-grinch</div><div class="agent-state">review-ready</div></div><span class="chip codex">Codex</span>
               </div>
-              <div class="agent-row active" data-component="agent row dev-webpage-ui active">
+              <div class="agent-row active" data-component="agent row dev-webpage-ui active" data-sidebar-kind="session-agent">
                 <span class="dot cyan"></span><div><div class="agent-name">dev-webpage-ui</div><div class="agent-state">working on mockup</div></div><span class="chip codex">Codex</span>
               </div>
-              <div class="agent-row" data-component="agent row shipper">
+              <div class="agent-row" data-component="agent row shipper" data-sidebar-kind="session-agent">
                 <span class="dot"></span><div><div class="agent-name">shipper</div><div class="agent-state">exited</div></div><span class="chip">ship</span>
               </div>
-              <div class="agent-row active" data-component="agent row tech-lead active coordinator">
+              <div class="agent-row selected" data-component="agent row tech-lead active coordinator" data-sidebar-kind="session-agent">
                 <span class="dot green"></span><div><div class="agent-name">tech-lead</div><div class="agent-state">coordinating</div></div><span class="chip coord">Lead</span>
               </div>
             </div>
           </section>
 
-          <div class="section-kicker" data-component="workgroups section label">Workgroups</div>
+          <div class="section-header-row" data-component="workgroups section label" data-sidebar-kind="workgroups-header">
+            <span class="chev">v</span>
+            <div class="section-kicker">Workgroups</div>
+            <span class="section-count">5</span>
+          </div>
           <section class="future-workgroups" data-component="workgroups list starting below selected workgroup">
-            <div class="wg-row" data-component="workgroup row wg-1-dev-team">
+            <div class="wg-row" data-component="workgroup row wg-1-dev-team" data-sidebar-kind="workgroup">
               <span class="dot green"></span><span>WG-1-DEV-TEAM</span><span class="chip">3 agents</span>
             </div>
-            <div class="wg-row" data-component="workgroup row wg-2-dev-team">
+            <div class="wg-row" data-component="workgroup row wg-2-dev-team" data-sidebar-kind="workgroup">
               <span class="dot yellow"></span><span>WG-2-DEV-TEAM</span><span class="chip">smoke</span>
             </div>
-            <div class="wg-row" data-component="workgroup row wg-3-dev-team">
+            <div class="wg-row" data-component="workgroup row wg-3-dev-team" data-sidebar-kind="workgroup">
               <span class="dot purple"></span><span>WG-3-DEV-TEAM</span><span class="chip">ui</span>
+            </div>
+            <div class="wg-row" data-component="workgroup row wg-6-rust-team" data-sidebar-kind="workgroup">
+              <span class="dot red"></span><span>WG-6-RUST-TEAM</span><span class="chip">blocked</span>
+            </div>
+            <div class="wg-row" data-component="workgroup row wg-8-review-team" data-sidebar-kind="workgroup">
+              <span class="dot cyan"></span><span>WG-8-REVIEW-TEAM</span><span class="chip">review</span>
             </div>
           </section>
         </div>
@@ -1059,15 +1250,167 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       return copyResult;
     }
 
+    const sidebarMenuActions = {
+      "root-agent": [
+        { label: "Restart Session", danger: true },
+        { label: "Coding Agent" },
+        "separator",
+        { label: "Open in new window" },
+        { label: "Exclude global CLAUDE.md" }
+      ],
+      "project-header": [
+        { label: "New Agent" },
+        { label: "New Team" },
+        { label: "New Workgroup" },
+        "separator",
+        { label: "Remove Project", danger: true }
+      ],
+      "project-card": [
+        { label: "New Agent" },
+        { label: "New Team" },
+        { label: "New Workgroup" },
+        "separator",
+        { label: "Remove Project", danger: true }
+      ],
+      "workgroups-header": [
+        { label: "New Workgroup" }
+      ],
+      "workgroup": [
+        { label: "Delete Workgroup", danger: true }
+      ],
+      "team": [
+        { label: "Edit Team" },
+        { label: "Delete Team", danger: true }
+      ],
+      "session-agent": [
+        { label: "Restart Session", danger: true },
+        { label: "Coding Agent" },
+        "separator",
+        { label: "Open in new window" },
+        { label: "Context Files" }
+      ],
+      "entity-agent": [
+        { label: "Open in Explorer" },
+        { label: "Delete Agent", danger: true }
+      ],
+      "toolbar": [
+        { label: "New Project" },
+        { label: "Open Project" },
+        { label: "Refresh Projects" },
+        { label: "Settings" }
+      ]
+    };
+
+    function sidebarContextTitle(element) {
+      const kind = element.getAttribute("data-sidebar-kind") || "sidebar";
+      return `${kind.replace(/-/g, " ")} actions`;
+    }
+
+    function closeSidebarContextMenu() {
+      document.querySelector(".sidebar-context-menu")?.remove();
+      if (window.__sidebarContextDismiss) {
+        window.removeEventListener("click", window.__sidebarContextDismiss);
+        window.removeEventListener("contextmenu", window.__sidebarContextDismiss);
+        window.removeEventListener("keydown", window.__sidebarContextDismiss);
+        window.__sidebarContextDismiss = null;
+      }
+    }
+
+    function positionSidebarContextMenu(menu, x, y) {
+      const margin = 8;
+      const rect = menu.getBoundingClientRect();
+      const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
+      const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
+      menu.style.left = `${Math.min(Math.max(margin, x), maxX)}px`;
+      menu.style.top = `${Math.min(Math.max(margin, y), maxY)}px`;
+    }
+
+    function addSidebarAction(menu, action, target, pageName) {
+      if (action === "separator") {
+        const separator = document.createElement("div");
+        separator.className = "sidebar-context-separator";
+        menu.appendChild(separator);
+        return;
+      }
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sidebar-context-option${action.danger ? " danger" : ""}`;
+      button.textContent = action.label;
+      if (action.disabled) {
+        button.disabled = true;
+      }
+      button.addEventListener("click", () => {
+        closeSidebarContextMenu();
+        if (action.copyDescription) {
+          window.__componentCaptureLastResult = captureComponentAtTarget(pageName, target);
+          return;
+        }
+
+        showCaptureToast(`"${action.label}"`, classDetail(target));
+      });
+      menu.appendChild(button);
+    }
+
+    function openSidebarContextMenu(pageName, event, target) {
+      closeSidebarContextMenu();
+      const kind = target.getAttribute("data-sidebar-kind") || "sidebar";
+      const actions = sidebarMenuActions[kind] || [];
+      const menu = document.createElement("div");
+      menu.className = "sidebar-context-menu";
+      menu.setAttribute("role", "menu");
+      menu.innerHTML = `<div class="sidebar-context-title"></div>`;
+      menu.querySelector(".sidebar-context-title").textContent = sidebarContextTitle(target);
+
+      actions.forEach((action) => addSidebarAction(menu, action, target, pageName));
+      if (actions.length) {
+        addSidebarAction(menu, "separator", target, pageName);
+      }
+      addSidebarAction(menu, { label: "Copy component description", copyDescription: true }, target, pageName);
+
+      document.body.appendChild(menu);
+      positionSidebarContextMenu(menu, event.clientX, event.clientY);
+
+      const dismiss = (dismissEvent) => {
+        if (dismissEvent instanceof KeyboardEvent && dismissEvent.key !== "Escape") {
+          return;
+        }
+        closeSidebarContextMenu();
+      };
+      window.__sidebarContextDismiss = dismiss;
+      window.setTimeout(() => {
+        window.addEventListener("click", dismiss);
+        window.addEventListener("contextmenu", dismiss);
+        window.addEventListener("keydown", dismiss);
+      });
+
+      window.__sidebarContextLastMenu = {
+        kind,
+        actions: [...actions, "separator", { label: "Copy component description", copyDescription: true }],
+        target
+      };
+      return menu;
+    }
+
     function installComponentCapture(pageName) {
       document.addEventListener("contextmenu", (event) => {
         event.preventDefault();
+        const sidebarTarget = event.target instanceof Element
+          ? event.target.closest(".sidebar [data-sidebar-kind]")
+          : null;
+        if (sidebarTarget) {
+          event.stopPropagation();
+          openSidebarContextMenu(pageName, event, sidebarTarget);
+          return;
+        }
         window.__componentCaptureLastResult = captureComponentAtTarget(pageName, event.target);
       });
     }
 
     window.installComponentCapture = installComponentCapture;
     window.captureComponentAtTarget = captureComponentAtTarget;
+    window.openSidebarContextMenu = openSidebarContextMenu;
+    window.closeSidebarContextMenu = closeSidebarContextMenu;
 
     installComponentCapture("AgentsCommander Current App");
   </script>
