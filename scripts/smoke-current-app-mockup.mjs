@@ -47,6 +47,8 @@ assert.equal(typeof dom.window.installComponentCapture, 'function');
 assert.equal(typeof dom.window.captureComponentAtTarget, 'function');
 assert.equal(typeof dom.window.openSidebarContextMenu, 'function');
 assert.equal(typeof dom.window.closeSidebarContextMenu, 'function');
+assert.equal(typeof dom.window.openProfileModalContextMenu, 'function');
+assert.equal(typeof dom.window.closeProfileModalContextMenu, 'function');
 assert.equal(typeof dom.window.openCodingAgentProfileModal, 'function');
 assert.equal(typeof dom.window.closeCodingAgentProfileModal, 'function');
 assert.match(html, /installComponentCapture\("AgentsCommander Current App"\)/);
@@ -58,13 +60,16 @@ assert.ok(dom.window.document.querySelector('[data-component="selected workgroup
 assert.ok(dom.window.document.querySelector('[data-component="nested selected team row"]'));
 assert.ok(dom.window.document.querySelector('[data-sidebar-kind="session-agent"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile assignment modal"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Coding agent tool selector"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Assigned profile selector"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Per-provider profile resolution"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Free entry model field"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Free entry effort field"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Free entry default args field"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Free entry profile args field"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal body"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding agent tool selector panel"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding agent provider selector"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Assigned coding agent profile selector"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent per-provider resolution panel"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent model argument field"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent effort argument field"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent default args field"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile args field"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal footer actions"]'));
 assert.match(html, /Copy component description/);
 assert.match(html, /A remains the immutable final fallback/);
 assert.doesNotMatch(html, /Gemini/);
@@ -254,6 +259,103 @@ assert.equal(dom.window.document.querySelector('#profileModelInput')?.value, 'pr
 assert.match(dom.window.document.querySelector('#profileDefaultArgsInput')?.value ?? '', /opencode\.json/);
 assert.match(dom.window.document.querySelector('#profileArgsInput')?.value ?? '', /--profile a/);
 
+const modalField = dom.window.document.querySelector('[data-component="Coding Agent model argument field"]');
+const modalFieldInput = dom.window.document.querySelector('#profileModelInput');
+assert.ok(modalField, 'modal field capture target should exist');
+assert.ok(modalFieldInput, 'modal field input should exist');
+modalField.getBoundingClientRect = () => ({
+  left: 420,
+  top: 492,
+  width: 520,
+  height: 54,
+  right: 940,
+  bottom: 546,
+  x: 420,
+  y: 492,
+  toJSON: () => {},
+});
+dom.window.__componentCaptureLastResult = undefined;
+copiedText = '';
+const modalContextMenuEvent = new dom.window.MouseEvent('contextmenu', {
+  bubbles: true,
+  cancelable: true,
+  clientX: 732,
+  clientY: 516,
+});
+const modalContextMenuAllowed = modalFieldInput.dispatchEvent(modalContextMenuEvent);
+assert.equal(modalContextMenuAllowed, false, 'modal right-click should prevent the native context menu');
+assert.equal(modalContextMenuEvent.defaultPrevented, true, 'modal contextmenu should be marked defaultPrevented');
+assert.equal(dom.window.__componentCaptureLastResult, undefined, 'modal menu open should not immediately capture');
+assert.equal(
+  dom.window.document.querySelector('.sidebar-context-menu'),
+  null,
+  'modal right-click should not open the sidebar context menu'
+);
+
+const modalMenu = dom.window.document.querySelector('.profile-modal-context-menu');
+assert.ok(modalMenu, 'modal right-click should open a modal context menu');
+assert.match(modalMenu?.textContent ?? '', /Copy component description/);
+assert.match(modalMenu?.textContent ?? '', /Reset to inherited default/);
+assert.match(modalMenu?.textContent ?? '', /Manage matrix\/defaults/);
+assert.match(modalMenu?.textContent ?? '', /Inspect resolution details/);
+assert.match(modalMenu?.textContent ?? '', /Close modal/);
+assert.equal(dom.window.__profileModalContextLastMenu.target, modalField);
+
+const modalCopyAction = Array.from(dom.window.document.querySelectorAll('.profile-modal-context-option'))
+  .find((button) => button.textContent === 'Copy component description');
+assert.ok(modalCopyAction, 'modal menu should include the copy component description action');
+modalCopyAction.click();
+assert.equal(
+  dom.window.document.querySelector('.profile-modal-context-menu'),
+  null,
+  'modal menu should close after invoking copy component description'
+);
+const modalCaptureResult = await dom.window.__componentCaptureLastResult;
+assert.equal(
+  modalCaptureResult.quotedIdentifier,
+  '"AgentsCommander Current App / label / Coding Agent model argument field"'
+);
+assert.equal(copiedText, modalCaptureResult.quotedIdentifier, 'modal copy should use the shared capture helper');
+const modalToast = dom.window.document.querySelector('.component-capture-toast');
+assert.ok(modalToast, 'modal copy should show the component capture toast');
+assert.match(modalToast?.textContent ?? '', /"AgentsCommander Current App \/ label \/ Coding Agent model argument field"/);
+const modalToastTimers = getTimersByDelay(15000);
+assert.equal(modalToastTimers.length, 1, 'modal copy should schedule a 15-second toast removal timer');
+const modalHighlight = dom.window.document.querySelector('.component-capture-highlight');
+assert.ok(modalHighlight, 'modal copy should show the component capture highlight');
+assert.equal(modalHighlight?.style.left, '420px');
+assert.equal(modalHighlight?.style.top, '492px');
+assert.match(dom.window.getComputedStyle(modalHighlight).animation, /component-capture-blink/);
+assert.match(dom.window.getComputedStyle(modalHighlight).animation, /2/);
+modalHighlight?.dispatchEvent(new dom.window.Event('animationend', { bubbles: true }));
+assert.equal(
+  dom.window.document.querySelector('.component-capture-highlight'),
+  null,
+  'modal capture highlight should remove after its two-blink animation completes'
+);
+modalToastTimers.forEach(([, timer]) => timer.callback(...timer.args));
+activeTimers.clear();
+copiedText = '';
+
+const modalHeader = dom.window.document.querySelector('[data-component="Coding Agent profile modal header"]');
+assert.ok(modalHeader, 'modal header target should exist');
+const modalCloseContextMenu = new dom.window.MouseEvent('contextmenu', {
+  bubbles: true,
+  cancelable: true,
+  clientX: 452,
+  clientY: 190,
+});
+const modalCloseContextMenuAllowed = modalHeader.dispatchEvent(modalCloseContextMenu);
+assert.equal(modalCloseContextMenuAllowed, false, 'modal close-menu right-click should prevent native context menu');
+assert.equal(modalCloseContextMenu.defaultPrevented, true);
+const modalCloseAction = Array.from(dom.window.document.querySelectorAll('.profile-modal-context-option'))
+  .find((button) => button.textContent === 'Close modal');
+assert.ok(modalCloseAction, 'modal menu should include a Close modal action');
+modalCloseAction.click();
+assert.equal(profileModal?.classList.contains('open'), false, 'Close modal menu action should close the profile modal');
+
+dom.window.openCodingAgentProfileModal(codingAgentTarget.closest('[data-component]'));
+assert.equal(profileModal?.classList.contains('open'), true, 'modal should reopen for Save coverage');
 dom.window.document.querySelector('#profileSaveButton')?.click();
 assert.equal(profileModal?.classList.contains('open'), false, 'Save should close the profile modal');
 dom.window.openCodingAgentProfileModal(codingAgentTarget.closest('[data-component]'));
@@ -261,6 +363,8 @@ assert.equal(profileModal?.classList.contains('open'), true, 'modal should reope
 dom.window.document.querySelector('#profileCancelButton')?.click();
 assert.equal(profileModal?.classList.contains('open'), false, 'Cancel should close the profile modal');
 assertNoRuntimeErrors();
+dom.window.__componentCaptureLastResult = undefined;
+copiedText = '';
 
 const contextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,

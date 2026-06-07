@@ -720,7 +720,8 @@
       font-size: 10.5px;
     }
 
-    .sidebar-context-menu {
+    .sidebar-context-menu,
+    .profile-modal-context-menu {
       position: fixed;
       z-index: 3100;
       min-width: 190px;
@@ -733,7 +734,13 @@
       font-family: var(--font-ui);
     }
 
-    .sidebar-context-title {
+    .profile-modal-context-menu {
+      z-index: 3300;
+      min-width: 210px;
+    }
+
+    .sidebar-context-title,
+    .profile-modal-context-title {
       padding: 5px 7px 4px;
       color: #8190a5;
       font-family: var(--font-mono);
@@ -741,7 +748,8 @@
       text-transform: uppercase;
     }
 
-    .sidebar-context-option {
+    .sidebar-context-option,
+    .profile-modal-context-option {
       width: 100%;
       min-height: 25px;
       display: flex;
@@ -756,21 +764,25 @@
       padding: 4px 7px;
     }
 
-    .sidebar-context-option:hover {
+    .sidebar-context-option:hover,
+    .profile-modal-context-option:hover {
       background: rgba(0, 212, 255, 0.09);
       color: #eff9ff;
     }
 
-    .sidebar-context-option.danger {
+    .sidebar-context-option.danger,
+    .profile-modal-context-option.danger {
       color: #ff9aaa;
     }
 
-    .sidebar-context-option:disabled {
+    .sidebar-context-option:disabled,
+    .profile-modal-context-option:disabled {
       color: #596477;
       pointer-events: none;
     }
 
-    .sidebar-context-separator {
+    .sidebar-context-separator,
+    .profile-modal-context-separator {
       height: 1px;
       margin: 4px 2px;
       background: rgba(148, 163, 184, 0.12);
@@ -1436,10 +1448,10 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         </div>
       </header>
 
-      <div class="profile-modal-body">
-        <aside class="profile-panel" data-component="Coding agent tool selector">
-          <div class="profile-panel-title">Tool</div>
-          <div class="provider-list" id="providerList" aria-label="Coding agent tool choices">
+      <div class="profile-modal-body" data-component="Coding Agent profile modal body">
+        <aside class="profile-panel" data-component="Coding agent tool selector panel">
+          <div class="profile-panel-title" data-component="Coding agent provider selector title">Tool</div>
+          <div class="provider-list" id="providerList" aria-label="Coding agent tool choices" data-component="Coding agent provider selector">
             <button class="provider-card active" type="button" data-provider-id="codex" data-component="Codex coding agent option">
               <span>
                 <span class="provider-name">Codex</span>
@@ -1463,7 +1475,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
             </button>
           </div>
 
-          <label class="settings-field" data-component="Assigned profile selector">
+          <label class="settings-field" data-component="Assigned coding agent profile selector">
             <span class="settings-label">Assigned profile</span>
             <select class="settings-select" id="assignedProfileSelect">
               <option value="inherit">Use inherited default</option>
@@ -1474,16 +1486,16 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
             </select>
           </label>
 
-          <div class="profile-panel" data-component="Profile inheritance source">
+          <div class="profile-panel" data-component="Coding Agent profile inheritance source panel">
             <span class="source-pill" id="profileSourcePill">from template default</span>
             <div class="resolution-line"><span>Stored</span><span id="profileStoredSource">Inherited from dev-team template</span></div>
             <div class="resolution-line"><span>Fallback</span><span>A is immutable final fallback</span></div>
           </div>
         </aside>
 
-        <section class="profile-panel" data-component="Effective coding agent profile editor">
-          <div class="profile-panel-title">Effective launch profile</div>
-          <div class="resolution-grid" data-component="Per-provider profile resolution">
+        <section class="profile-panel" data-component="Effective coding agent profile editor panel">
+          <div class="profile-panel-title" data-component="Effective coding agent launch profile title">Effective launch profile</div>
+          <div class="resolution-grid" data-component="Coding Agent per-provider resolution panel">
             <div class="resolution-card" data-resolution-provider="codex" data-component="Codex requested and resolved profile">
               <strong>Codex</strong>
               <div class="resolution-line"><span>Requested</span><span data-resolution-field="requested">B - BALANCED</span></div>
@@ -1504,30 +1516,30 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
             </div>
           </div>
 
-          <div class="warning-strip" id="profileFallbackNotice" data-component="Profile fallback explanation">
+          <div class="warning-strip" id="profileFallbackNotice" data-component="Coding Agent profile fallback explanation">
             OpenCode has no B cell, so the stored request remains B while launch resolves through A final fallback.
           </div>
 
-          <label class="settings-field" data-component="Free entry model field">
+          <label class="settings-field" data-component="Coding Agent model argument field">
             <span class="settings-label">Model</span>
             <input class="settings-input" id="profileModelInput" type="text" value="provider/default-large">
           </label>
-          <label class="settings-field" data-component="Free entry effort field">
+          <label class="settings-field" data-component="Coding Agent effort argument field">
             <span class="settings-label">Effort</span>
             <input class="settings-input" id="profileEffortInput" type="text" value="high">
           </label>
-          <label class="settings-field" data-component="Free entry default args field">
+          <label class="settings-field" data-component="Coding Agent default args field">
             <span class="settings-label">Default args</span>
             <input class="settings-input" id="profileDefaultArgsInput" type="text" value="--sandbox workspace-write">
           </label>
-          <label class="settings-field" data-component="Free entry profile args field">
+          <label class="settings-field" data-component="Coding Agent profile args field">
             <span class="settings-label">Profile args</span>
             <input class="settings-input" id="profileArgsInput" type="text" value="--profile b --reasoning-effort high">
           </label>
         </section>
       </div>
 
-      <footer class="profile-modal-footer" data-component="Coding Agent profile modal actions">
+      <footer class="profile-modal-footer" data-component="Coding Agent profile modal footer actions">
         <button class="matrix-link" id="manageMatrixButton" type="button" data-component="Manage profile matrix defaults affordance">Manage matrix/defaults...</button>
         <div class="modal-actions">
           <button class="modal-btn" id="profileCancelButton" type="button" data-component="Cancel Coding Agent profile modal">Cancel</button>
@@ -1856,12 +1868,125 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
 
     function closeCodingAgentProfileModal() {
       const modal = document.getElementById("codingAgentProfileModal");
+      closeProfileModalContextMenu();
       modal.classList.remove("open");
       modal.setAttribute("aria-hidden", "true");
       window.__codingAgentProfileModalState = {
         ...(window.__codingAgentProfileModalState || {}),
         open: false
       };
+    }
+
+    function closeProfileModalContextMenu() {
+      document.querySelector(".profile-modal-context-menu")?.remove();
+      if (window.__profileModalContextDismiss) {
+        window.removeEventListener("click", window.__profileModalContextDismiss);
+        window.removeEventListener("contextmenu", window.__profileModalContextDismiss);
+        window.removeEventListener("keydown", window.__profileModalContextDismiss);
+        window.__profileModalContextDismiss = null;
+      }
+    }
+
+    function profileModalContextTitle(target) {
+      return `${representativeText(target).toLowerCase()} actions`;
+    }
+
+    function profileModalContextActions(target) {
+      const resolutionTarget = target.closest?.("[data-resolution-provider], .resolution-grid");
+      const fieldTarget = target.closest?.("label.settings-field, input, select");
+      return [
+        { label: "Copy component description", copyDescription: true },
+        "separator",
+        { label: "Reset to inherited default", resetInherited: true },
+        { label: "Manage matrix/defaults", manageDefaults: true },
+        { label: "Inspect resolution details", inspectResolution: true, disabled: !resolutionTarget && !fieldTarget },
+        "separator",
+        { label: "Close modal", closeModal: true }
+      ];
+    }
+
+    function addProfileModalContextAction(menu, action, target, pageName) {
+      if (action === "separator") {
+        const separator = document.createElement("div");
+        separator.className = "profile-modal-context-separator";
+        menu.appendChild(separator);
+        return;
+      }
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "profile-modal-context-option";
+      button.textContent = action.label;
+      if (action.disabled) {
+        button.disabled = true;
+      }
+      button.addEventListener("click", () => {
+        closeProfileModalContextMenu();
+        if (action.copyDescription) {
+          window.__componentCaptureLastResult = captureComponentAtTarget(pageName, target);
+          return;
+        }
+
+        if (action.resetInherited) {
+          const select = document.getElementById("assignedProfileSelect");
+          select.value = "inherit";
+          updateCodingProfileModalFields();
+          showCaptureToast('"Reset to inherited default"', "prototype action; no persisted profile change");
+          return;
+        }
+
+        if (action.manageDefaults) {
+          showCaptureToast('"Manage matrix/defaults"', "opens Settings / Coding Agents in the real app");
+          return;
+        }
+
+        if (action.inspectResolution) {
+          const providerId = selectedCodingProviderId();
+          const resolution = resolvedProfileForProvider(providerId, selectedRequestedProfile());
+          showCaptureToast('"Inspect resolution details"', `${codingAgentProviders[providerId].label}: ${resolution.reason}`);
+          return;
+        }
+
+        if (action.closeModal) {
+          closeCodingAgentProfileModal();
+        }
+      });
+      menu.appendChild(button);
+    }
+
+    function openProfileModalContextMenu(pageName, event, target) {
+      closeSidebarContextMenu();
+      closeProfileModalContextMenu();
+      const menu = document.createElement("div");
+      menu.className = "profile-modal-context-menu";
+      menu.setAttribute("role", "menu");
+      menu.innerHTML = `<div class="profile-modal-context-title"></div>`;
+      menu.querySelector(".profile-modal-context-title").textContent = profileModalContextTitle(target);
+
+      const actions = profileModalContextActions(target);
+      actions.forEach((action) => addProfileModalContextAction(menu, action, target, pageName));
+
+      document.body.appendChild(menu);
+      positionSidebarContextMenu(menu, event.clientX, event.clientY);
+
+      const dismiss = (dismissEvent) => {
+        if (dismissEvent instanceof KeyboardEvent && dismissEvent.key !== "Escape") {
+          return;
+        }
+        closeProfileModalContextMenu();
+      };
+      window.__profileModalContextDismiss = dismiss;
+      window.setTimeout(() => {
+        window.addEventListener("click", dismiss);
+        window.addEventListener("contextmenu", dismiss);
+        window.addEventListener("keydown", dismiss);
+      });
+
+      window.__profileModalContextLastMenu = {
+        actions,
+        target
+      };
+      return menu;
     }
 
     function installCodingAgentProfileModal() {
@@ -2006,6 +2131,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     }
 
     function openSidebarContextMenu(pageName, event, target) {
+      closeProfileModalContextMenu();
       closeSidebarContextMenu();
       const kind = target.getAttribute("data-sidebar-kind") || "sidebar";
       const actions = sidebarMenuActions[kind] || [];
@@ -2048,6 +2174,16 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     function installComponentCapture(pageName) {
       document.addEventListener("contextmenu", (event) => {
         event.preventDefault();
+        const profileModal = event.target instanceof Element
+          ? event.target.closest(".profile-modal")
+          : null;
+        if (profileModal && profileModal.closest(".profile-modal-overlay.open")) {
+          const modalTarget = event.target.closest("[data-component]") || profileModal;
+          event.stopPropagation();
+          openProfileModalContextMenu(pageName, event, modalTarget);
+          return;
+        }
+
         const sidebar = event.target instanceof Element
           ? event.target.closest(".sidebar")
           : null;
@@ -2065,6 +2201,8 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     window.captureComponentAtTarget = captureComponentAtTarget;
     window.openSidebarContextMenu = openSidebarContextMenu;
     window.closeSidebarContextMenu = closeSidebarContextMenu;
+    window.openProfileModalContextMenu = openProfileModalContextMenu;
+    window.closeProfileModalContextMenu = closeProfileModalContextMenu;
     window.openCodingAgentProfileModal = openCodingAgentProfileModal;
     window.closeCodingAgentProfileModal = closeCodingAgentProfileModal;
 
