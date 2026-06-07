@@ -47,6 +47,8 @@ assert.equal(typeof dom.window.installComponentCapture, 'function');
 assert.equal(typeof dom.window.captureComponentAtTarget, 'function');
 assert.equal(typeof dom.window.openSidebarContextMenu, 'function');
 assert.equal(typeof dom.window.closeSidebarContextMenu, 'function');
+assert.equal(typeof dom.window.openCodingAgentProfileModal, 'function');
+assert.equal(typeof dom.window.closeCodingAgentProfileModal, 'function');
 assert.match(html, /installComponentCapture\("AgentsCommander Current App"\)/);
 assert.ok(dom.window.document.querySelector('[data-component="top header with brand version workgroup identity and window controls"]'));
 assert.ok(dom.window.document.querySelector('[data-component="terminal transcript area with current task prompt and command blocks"]'));
@@ -55,7 +57,19 @@ assert.ok(dom.window.document.querySelector('[data-component="selected project c
 assert.ok(dom.window.document.querySelector('[data-component="selected workgroup panel"]'));
 assert.ok(dom.window.document.querySelector('[data-component="nested selected team row"]'));
 assert.ok(dom.window.document.querySelector('[data-sidebar-kind="session-agent"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile assignment modal"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding agent tool selector"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Assigned profile selector"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Per-provider profile resolution"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Free entry model field"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Free entry effort field"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Free entry default args field"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Free entry profile args field"]'));
 assert.match(html, /Copy component description/);
+assert.match(html, /A remains the immutable final fallback/);
+assert.doesNotMatch(html, /Gemini/);
+assert.doesNotMatch(html, /Priority/);
+assert.doesNotMatch(html, /configurable fallback selector/i);
 const sideScrollCss = cssBlockFor('.side-scroll');
 assert.match(sideScrollCss, /overflow-y:\s*auto;/, 'sidebar content should allow vertical scrolling');
 assert.match(sideScrollCss, /overflow-x:\s*hidden;/, 'sidebar content should keep horizontal overflow hidden');
@@ -184,6 +198,69 @@ activeTimers.clear();
 clearedTimers.length = 0;
 copiedText = '';
 dom.window.__componentCaptureLastResult = undefined;
+
+const codingAgentTarget = dom.window.document.querySelector('[data-component="agent row dev-webpage-ui active"] .agent-name');
+assert.ok(codingAgentTarget, 'session-agent target with Coding Agent action should exist');
+const codingAgentContextMenu = new dom.window.MouseEvent('contextmenu', {
+  bubbles: true,
+  cancelable: true,
+  clientX: 1214,
+  clientY: 470,
+});
+const codingAgentContextMenuAllowed = codingAgentTarget.dispatchEvent(codingAgentContextMenu);
+assert.equal(codingAgentContextMenuAllowed, false, 'session-agent right click should prevent the native context menu');
+assert.equal(codingAgentContextMenu.defaultPrevented, true);
+const codingAgentMenu = dom.window.document.querySelector('.sidebar-context-menu');
+assert.ok(codingAgentMenu, 'session-agent right-click should open a custom context menu');
+assert.match(codingAgentMenu?.textContent ?? '', /Restart Session/);
+assert.match(codingAgentMenu?.textContent ?? '', /Coding Agent/);
+assert.match(codingAgentMenu?.textContent ?? '', /Copy component description/);
+assert.equal(dom.window.__sidebarContextLastMenu.kind, 'session-agent');
+
+const codingAgentAction = Array.from(dom.window.document.querySelectorAll('.sidebar-context-option'))
+  .find((button) => button.textContent === 'Coding Agent');
+assert.ok(codingAgentAction, 'session-agent menu should include the Coding Agent action');
+codingAgentAction.click();
+const profileModal = dom.window.document.querySelector('#codingAgentProfileModal');
+assert.ok(profileModal?.classList.contains('open'), 'Coding Agent action should open the profile modal');
+assert.equal(profileModal?.getAttribute('aria-hidden'), 'false');
+assert.equal(
+  dom.window.document.querySelector('.sidebar-context-menu'),
+  null,
+  'Coding Agent action should close the sidebar context menu'
+);
+assert.match(dom.window.document.querySelector('#profileContextName')?.textContent ?? '', /dev-webpage-ui/);
+assert.match(dom.window.document.querySelector('#profileContextProject')?.textContent ?? '', /AgentsCommander_ac/);
+assert.match(dom.window.document.querySelector('#profileContextWorkgroup')?.textContent ?? '', /WG-7-DEV-TEAM/);
+assert.equal(dom.window.document.querySelectorAll('.provider-card').length, 3);
+assert.match(profileModal?.textContent ?? '', /Codex/);
+assert.match(profileModal?.textContent ?? '', /Claude Code/);
+assert.match(profileModal?.textContent ?? '', /OpenCode/);
+assert.equal(dom.window.document.querySelector('#assignedProfileSelect')?.value, 'B');
+assert.match(dom.window.document.querySelector('#assignedProfileSelect')?.textContent ?? '', /B - BALANCED/);
+assert.equal(dom.window.document.querySelector('#profileModelInput')?.value, 'gpt-5.5');
+assert.equal(dom.window.document.querySelector('#profileEffortInput')?.value, 'high');
+assert.match(dom.window.document.querySelector('#profileDefaultArgsInput')?.value ?? '', /workspace-write/);
+assert.match(dom.window.document.querySelector('#profileArgsInput')?.value ?? '', /--profile b/);
+
+dom.window.document.querySelector('[data-provider-id="opencode"]')?.click();
+assert.equal(dom.window.__codingAgentProfileModalState.provider, 'opencode');
+assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
+assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'A');
+assert.match(dom.window.document.querySelector('#profileFallbackNotice')?.textContent ?? '', /A remains the immutable final fallback/);
+assert.match(dom.window.document.querySelector('[data-resolution-provider="opencode"]')?.textContent ?? '', /B - BALANCED/);
+assert.match(dom.window.document.querySelector('[data-resolution-provider="opencode"]')?.textContent ?? '', /A - FULL POWER/);
+assert.equal(dom.window.document.querySelector('#profileModelInput')?.value, 'provider/default-large');
+assert.match(dom.window.document.querySelector('#profileDefaultArgsInput')?.value ?? '', /opencode\.json/);
+assert.match(dom.window.document.querySelector('#profileArgsInput')?.value ?? '', /--profile a/);
+
+dom.window.document.querySelector('#profileSaveButton')?.click();
+assert.equal(profileModal?.classList.contains('open'), false, 'Save should close the profile modal');
+dom.window.openCodingAgentProfileModal(codingAgentTarget.closest('[data-component]'));
+assert.equal(profileModal?.classList.contains('open'), true, 'modal should reopen for Cancel coverage');
+dom.window.document.querySelector('#profileCancelButton')?.click();
+assert.equal(profileModal?.classList.contains('open'), false, 'Cancel should close the profile modal');
+assertNoRuntimeErrors();
 
 const contextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,

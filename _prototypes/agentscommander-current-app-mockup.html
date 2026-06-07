@@ -50,7 +50,8 @@
     }
 
     button,
-    input {
+    input,
+    select {
       font: inherit;
     }
 
@@ -775,6 +776,322 @@
       background: rgba(148, 163, 184, 0.12);
     }
 
+    .profile-modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 3200;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+      background: rgba(2, 4, 8, 0.72);
+      backdrop-filter: blur(10px);
+    }
+
+    .profile-modal-overlay.open {
+      display: flex;
+    }
+
+    .profile-modal {
+      width: min(980px, calc(100vw - 48px));
+      max-height: min(720px, calc(100vh - 48px));
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: var(--radius-md);
+      background: linear-gradient(180deg, rgba(14, 18, 29, 0.98), rgba(8, 11, 18, 0.98));
+      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.68);
+      overflow: hidden;
+    }
+
+    .profile-modal-header,
+    .profile-modal-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      background: rgba(255, 255, 255, 0.022);
+    }
+
+    .profile-modal-header {
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    }
+
+    .profile-modal-footer {
+      border-top: 1px solid rgba(148, 163, 184, 0.12);
+    }
+
+    .profile-modal-eyebrow {
+      color: var(--cyan);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .profile-modal-title {
+      margin-top: 3px;
+      color: #eef7ff;
+      font-size: 16px;
+      font-weight: 750;
+    }
+
+    .profile-context {
+      max-width: 420px;
+      display: grid;
+      gap: 3px;
+      text-align: right;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .profile-context strong {
+      color: #dcecff;
+      font-size: 11px;
+    }
+
+    .profile-modal-body {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
+      gap: 12px;
+      padding: 14px;
+    }
+
+    .profile-panel {
+      min-width: 0;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      padding: 12px;
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.026);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
+    }
+
+    .profile-panel-title {
+      color: #e8f1fb;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .provider-list {
+      display: grid;
+      gap: 7px;
+    }
+
+    .provider-card {
+      width: 100%;
+      min-height: 54px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.11);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.024);
+      color: #dce8f6;
+      text-align: left;
+      padding: 8px;
+    }
+
+    .provider-card.active {
+      border-color: var(--provider-color, rgba(0, 212, 255, 0.34));
+      background: color-mix(in srgb, var(--provider-color, #00d4ff) 10%, rgba(255, 255, 255, 0.026));
+      box-shadow: 2px 0 0 var(--provider-color, var(--cyan)) inset;
+    }
+
+    .provider-name {
+      display: block;
+      color: #f0f8ff;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .provider-command {
+      margin-top: 3px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+    }
+
+    .provider-chip,
+    .profile-token,
+    .source-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 2px 7px;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .provider-chip {
+      color: var(--provider-color, var(--cyan));
+      border: 1px solid color-mix(in srgb, var(--provider-color, #00d4ff) 35%, transparent);
+      background: color-mix(in srgb, var(--provider-color, #00d4ff) 12%, transparent);
+    }
+
+    .profile-token {
+      color: #e8f6ff;
+      border: 1px solid rgba(0, 212, 255, 0.28);
+      background: rgba(0, 212, 255, 0.065);
+    }
+
+    .profile-token.safe {
+      color: var(--green);
+      border-color: rgba(53, 242, 166, 0.3);
+      background: rgba(53, 242, 166, 0.075);
+    }
+
+    .profile-token.warn {
+      color: var(--yellow);
+      border-color: rgba(248, 198, 87, 0.3);
+      background: rgba(248, 198, 87, 0.075);
+    }
+
+    .source-pill {
+      color: #aab6c7;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .settings-field {
+      display: grid;
+      gap: 5px;
+    }
+
+    .settings-label {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+    }
+
+    .settings-input,
+    .settings-select {
+      width: 100%;
+      min-height: 28px;
+      border: 1px solid rgba(148, 163, 184, 0.13);
+      border-radius: var(--radius-sm);
+      background: rgba(2, 4, 8, 0.46);
+      color: #dce8f6;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      padding: 5px 7px;
+    }
+
+    .settings-select {
+      color-scheme: dark;
+    }
+
+    .settings-input:focus,
+    .settings-select:focus {
+      outline: none;
+      border-color: rgba(0, 212, 255, 0.42);
+      box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.08);
+    }
+
+    .resolution-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .resolution-card {
+      display: grid;
+      gap: 5px;
+      min-height: 126px;
+      padding: 9px;
+      border: 1px solid rgba(148, 163, 184, 0.11);
+      border-radius: var(--radius-sm);
+      background: rgba(2, 4, 8, 0.36);
+    }
+
+    .resolution-card strong {
+      color: #e8f1fb;
+      font-size: 11px;
+    }
+
+    .resolution-line {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr);
+      gap: 6px;
+      color: #aab6c7;
+      font-family: var(--font-mono);
+      font-size: 9px;
+    }
+
+    .resolution-line span:last-child {
+      color: #d4e0ee;
+      overflow-wrap: anywhere;
+    }
+
+    .warning-strip {
+      padding: 8px 10px;
+      border: 1px solid rgba(248, 198, 87, 0.28);
+      border-radius: var(--radius-sm);
+      background: rgba(248, 198, 87, 0.075);
+      color: #f6d365;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .matrix-link {
+      justify-self: start;
+      min-height: 28px;
+      border: 1px solid rgba(0, 212, 255, 0.22);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.07);
+      color: #c9f3ff;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 5px 8px;
+    }
+
+    .modal-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .modal-btn {
+      min-height: 28px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.035);
+      color: #d7e4f3;
+      font-size: 11px;
+      padding: 5px 10px;
+    }
+
+    .modal-btn.save {
+      border-color: rgba(0, 212, 255, 0.35);
+      background: rgba(0, 212, 255, 0.13);
+      color: #effbff;
+    }
+
+    @media (max-width: 860px) {
+      .profile-modal-body,
+      .resolution-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .profile-context {
+        text-align: left;
+      }
+
+      .profile-modal-header,
+      .profile-modal-footer {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+
     .component-capture-toast {
       position: fixed;
       right: 16px;
@@ -1105,6 +1422,121 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     </main>
   </div>
 
+  <div class="profile-modal-overlay" id="codingAgentProfileModal" aria-hidden="true" data-component="Coding Agent profile assignment modal overlay">
+    <section class="profile-modal" role="dialog" aria-modal="true" aria-labelledby="codingAgentProfileTitle" data-component="Coding Agent profile assignment modal">
+      <header class="profile-modal-header" data-component="Coding Agent profile modal header">
+        <div>
+          <div class="profile-modal-eyebrow">Coding Agent</div>
+          <div class="profile-modal-title" id="codingAgentProfileTitle">Assign profile for selected sidebar item</div>
+        </div>
+        <div class="profile-context" data-component="Selected sidebar item context">
+          <strong id="profileContextName">dev-webpage-ui</strong>
+          <span id="profileContextProject">Project: AgentsCommander_ac</span>
+          <span id="profileContextWorkgroup">Workgroup: WG-7-DEV-TEAM</span>
+        </div>
+      </header>
+
+      <div class="profile-modal-body">
+        <aside class="profile-panel" data-component="Coding agent tool selector">
+          <div class="profile-panel-title">Tool</div>
+          <div class="provider-list" id="providerList" aria-label="Coding agent tool choices">
+            <button class="provider-card active" type="button" data-provider-id="codex" data-component="Codex coding agent option">
+              <span>
+                <span class="provider-name">Codex</span>
+                <span class="provider-command">codex</span>
+              </span>
+              <span class="provider-chip">Codex</span>
+            </button>
+            <button class="provider-card" type="button" data-provider-id="claude-code" data-component="Claude Code coding agent option">
+              <span>
+                <span class="provider-name">Claude Code</span>
+                <span class="provider-command">claude</span>
+              </span>
+              <span class="provider-chip">Claude</span>
+            </button>
+            <button class="provider-card" type="button" data-provider-id="opencode" data-component="OpenCode coding agent option">
+              <span>
+                <span class="provider-name">OpenCode</span>
+                <span class="provider-command">opencode</span>
+              </span>
+              <span class="provider-chip">OpenCode</span>
+            </button>
+          </div>
+
+          <label class="settings-field" data-component="Assigned profile selector">
+            <span class="settings-label">Assigned profile</span>
+            <select class="settings-select" id="assignedProfileSelect">
+              <option value="inherit">Use inherited default</option>
+              <option value="A">A - FULL POWER</option>
+              <option value="B" selected>B - BALANCED</option>
+              <option value="C">C - REVIEW</option>
+              <option value="D">D - LOW COST</option>
+            </select>
+          </label>
+
+          <div class="profile-panel" data-component="Profile inheritance source">
+            <span class="source-pill" id="profileSourcePill">from template default</span>
+            <div class="resolution-line"><span>Stored</span><span id="profileStoredSource">Inherited from dev-team template</span></div>
+            <div class="resolution-line"><span>Fallback</span><span>A is immutable final fallback</span></div>
+          </div>
+        </aside>
+
+        <section class="profile-panel" data-component="Effective coding agent profile editor">
+          <div class="profile-panel-title">Effective launch profile</div>
+          <div class="resolution-grid" data-component="Per-provider profile resolution">
+            <div class="resolution-card" data-resolution-provider="codex" data-component="Codex requested and resolved profile">
+              <strong>Codex</strong>
+              <div class="resolution-line"><span>Requested</span><span data-resolution-field="requested">B - BALANCED</span></div>
+              <div class="resolution-line"><span>Resolved</span><span data-resolution-field="resolved">B - BALANCED</span></div>
+              <div class="resolution-line"><span>Reason</span><span data-resolution-field="reason">configured cell</span></div>
+            </div>
+            <div class="resolution-card" data-resolution-provider="claude-code" data-component="Claude Code requested and resolved profile">
+              <strong>Claude Code</strong>
+              <div class="resolution-line"><span>Requested</span><span data-resolution-field="requested">B - BALANCED</span></div>
+              <div class="resolution-line"><span>Resolved</span><span data-resolution-field="resolved">B - BALANCED</span></div>
+              <div class="resolution-line"><span>Reason</span><span data-resolution-field="reason">configured cell</span></div>
+            </div>
+            <div class="resolution-card" data-resolution-provider="opencode" data-component="OpenCode requested and resolved profile">
+              <strong>OpenCode</strong>
+              <div class="resolution-line"><span>Requested</span><span data-resolution-field="requested">B - BALANCED</span></div>
+              <div class="resolution-line"><span>Resolved</span><span data-resolution-field="resolved">A - FULL POWER</span></div>
+              <div class="resolution-line"><span>Reason</span><span data-resolution-field="reason">B missing; A final fallback</span></div>
+            </div>
+          </div>
+
+          <div class="warning-strip" id="profileFallbackNotice" data-component="Profile fallback explanation">
+            OpenCode has no B cell, so the stored request remains B while launch resolves through A final fallback.
+          </div>
+
+          <label class="settings-field" data-component="Free entry model field">
+            <span class="settings-label">Model</span>
+            <input class="settings-input" id="profileModelInput" type="text" value="provider/default-large">
+          </label>
+          <label class="settings-field" data-component="Free entry effort field">
+            <span class="settings-label">Effort</span>
+            <input class="settings-input" id="profileEffortInput" type="text" value="high">
+          </label>
+          <label class="settings-field" data-component="Free entry default args field">
+            <span class="settings-label">Default args</span>
+            <input class="settings-input" id="profileDefaultArgsInput" type="text" value="--sandbox workspace-write">
+          </label>
+          <label class="settings-field" data-component="Free entry profile args field">
+            <span class="settings-label">Profile args</span>
+            <input class="settings-input" id="profileArgsInput" type="text" value="--profile b --reasoning-effort high">
+          </label>
+        </section>
+      </div>
+
+      <footer class="profile-modal-footer" data-component="Coding Agent profile modal actions">
+        <button class="matrix-link" id="manageMatrixButton" type="button" data-component="Manage profile matrix defaults affordance">Manage matrix/defaults...</button>
+        <div class="modal-actions">
+          <button class="modal-btn" id="profileCancelButton" type="button" data-component="Cancel Coding Agent profile modal">Cancel</button>
+          <button class="modal-btn save" id="profileSaveButton" type="button" data-component="Save Coding Agent profile modal">Save</button>
+        </div>
+      </footer>
+    </section>
+  </div>
+
   <script>
     function truncateComponentText(value, limit = 96) {
       const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -1250,6 +1682,216 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       return copyResult;
     }
 
+    const codingAgentProviders = {
+      "codex": {
+        label: "Codex",
+        color: "#00d4ff",
+        command: "codex",
+        profiles: {
+          A: { model: "gpt-5.5", effort: "xhigh", defaultArgs: "--yolo", profileArgs: "--profile a" },
+          B: { model: "gpt-5.5", effort: "high", defaultArgs: "--sandbox workspace-write", profileArgs: "--profile b --reasoning-effort high" },
+          C: { model: "gpt-5.5", effort: "medium", defaultArgs: "--sandbox workspace-write", profileArgs: "--profile c --review" },
+          D: { model: "gpt-5.5-mini", effort: "low", defaultArgs: "--sandbox read-only", profileArgs: "--profile d --fast" }
+        }
+      },
+      "claude-code": {
+        label: "Claude Code",
+        color: "#9d7cff",
+        command: "claude",
+        profiles: {
+          A: { model: "claude/default-max", effort: "opus-plan", defaultArgs: "--permission-mode acceptEdits", profileArgs: "--profile a" },
+          B: { model: "claude/default", effort: "balanced", defaultArgs: "--permission-mode acceptEdits", profileArgs: "--profile b" },
+          C: { model: "claude/review", effort: "review", defaultArgs: "--permission-mode plan", profileArgs: "--profile c --verify" },
+          D: { model: "claude/fast", effort: "low", defaultArgs: "--permission-mode plan", profileArgs: "--profile d" }
+        }
+      },
+      "opencode": {
+        label: "OpenCode",
+        color: "#ff9f43",
+        command: "opencode",
+        profiles: {
+          A: { model: "provider/default-large", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", profileArgs: "--profile a" },
+          C: { model: "provider/reviewer", effort: "high", defaultArgs: "--config {acRoot}\\opencode.json", profileArgs: "--profile c" }
+        }
+      }
+    };
+
+    const codingProfileNames = {
+      A: "FULL POWER",
+      B: "BALANCED",
+      C: "REVIEW",
+      D: "LOW COST"
+    };
+
+    function codingProfileLabel(letter) {
+      if (letter === "inherit") {
+        return "B - BALANCED";
+      }
+      return `${letter} - ${codingProfileNames[letter]}`;
+    }
+
+    function resolvedProfileForProvider(providerId, requestedLetter) {
+      const provider = codingAgentProviders[providerId];
+      const requested = requestedLetter === "inherit" ? "B" : requestedLetter;
+      const order = ["A", "B", "C", "D"];
+      let index = order.indexOf(requested);
+      while (index >= 0) {
+        const candidate = order[index];
+        if (provider.profiles[candidate]) {
+          return {
+            requested,
+            resolved: candidate,
+            usedFallback: candidate !== requested,
+            reason: candidate === requested
+              ? "configured cell"
+              : `${requested} missing; ${candidate === "A" ? "A final fallback" : `uses ${codingProfileLabel(candidate)}`}`
+          };
+        }
+        index -= 1;
+      }
+      return { requested, resolved: "A", usedFallback: true, reason: "A final fallback" };
+    }
+
+    function updateProviderButtonStyles() {
+      document.querySelectorAll("[data-provider-id]").forEach((button) => {
+        const provider = codingAgentProviders[button.getAttribute("data-provider-id")];
+        if (provider) {
+          button.style.setProperty("--provider-color", provider.color);
+        }
+      });
+      document.querySelectorAll(".provider-chip").forEach((chip) => {
+        const providerId = chip.closest("[data-provider-id]")?.getAttribute("data-provider-id");
+        const provider = codingAgentProviders[providerId];
+        if (provider) {
+          chip.style.setProperty("--provider-color", provider.color);
+        }
+      });
+    }
+
+    function selectedCodingProviderId() {
+      return document.querySelector(".provider-card.active")?.getAttribute("data-provider-id") || "codex";
+    }
+
+    function selectedRequestedProfile() {
+      return document.getElementById("assignedProfileSelect")?.value || "B";
+    }
+
+    function updateCodingProfileModalFields() {
+      const requested = selectedRequestedProfile();
+      const selectedProviderId = selectedCodingProviderId();
+      const selectedResolution = resolvedProfileForProvider(selectedProviderId, requested);
+      const provider = codingAgentProviders[selectedProviderId];
+      const profile = provider.profiles[selectedResolution.resolved];
+
+      document.getElementById("profileModelInput").value = profile.model;
+      document.getElementById("profileEffortInput").value = profile.effort;
+      document.getElementById("profileDefaultArgsInput").value = profile.defaultArgs;
+      document.getElementById("profileArgsInput").value = profile.profileArgs;
+      document.getElementById("profileSourcePill").textContent = requested === "inherit"
+        ? "from template default"
+        : "explicit agent override";
+      document.getElementById("profileStoredSource").textContent = requested === "inherit"
+        ? "Inherited from dev-team template"
+        : `Stored override ${codingProfileLabel(requested)}`;
+
+      const fallbackNotices = [];
+      Object.keys(codingAgentProviders).forEach((providerId) => {
+        const resolution = resolvedProfileForProvider(providerId, requested);
+        const card = document.querySelector(`[data-resolution-provider="${providerId}"]`);
+        card.querySelector('[data-resolution-field="requested"]').textContent = codingProfileLabel(resolution.requested);
+        card.querySelector('[data-resolution-field="resolved"]').textContent = codingProfileLabel(resolution.resolved);
+        card.querySelector('[data-resolution-field="reason"]').textContent = resolution.reason;
+        card.classList.toggle("fallback", resolution.usedFallback);
+        if (resolution.usedFallback) {
+          fallbackNotices.push(`${codingAgentProviders[providerId].label} resolves ${resolution.requested} through ${codingProfileLabel(resolution.resolved)}.`);
+        }
+      });
+
+      const notice = document.getElementById("profileFallbackNotice");
+      notice.hidden = fallbackNotices.length === 0;
+      notice.textContent = fallbackNotices.length > 0
+        ? `${fallbackNotices.join(" ")} A remains the immutable final fallback.`
+        : "All providers have a configured cell for the requested profile.";
+
+      window.__codingAgentProfileModalState = {
+        open: document.getElementById("codingAgentProfileModal")?.classList.contains("open") || false,
+        provider: selectedProviderId,
+        requested,
+        resolved: selectedResolution.resolved
+      };
+    }
+
+    function sidebarItemContext(target) {
+      const component = target.closest("[data-component]") || target;
+      const kind = component.getAttribute("data-sidebar-kind") || "sidebar";
+      const project = "AgentsCommander_ac";
+      const workgroup = component.closest(".workgroup-panel")?.querySelector(".workgroup-title")?.textContent?.trim()
+        || (kind === "root-agent" ? "Root Agent" : "WG-7-DEV-TEAM");
+      const name = component.querySelector(".agent-name, .card-title, .workgroup-title")?.textContent?.trim()
+        || representativeText(component);
+      const detail = component.querySelector(".agent-state, .card-subtitle, .workgroup-subtitle")?.textContent?.trim()
+        || kind.replace(/-/g, " ");
+      return { name, detail, project, workgroup, kind };
+    }
+
+    function openCodingAgentProfileModal(target) {
+      const modal = document.getElementById("codingAgentProfileModal");
+      const context = sidebarItemContext(target);
+      document.getElementById("profileContextName").textContent = context.name;
+      document.getElementById("profileContextProject").textContent = `Project: ${context.project}`;
+      document.getElementById("profileContextWorkgroup").textContent = `Workgroup: ${context.workgroup} / ${context.detail}`;
+      document.getElementById("assignedProfileSelect").value = context.kind === "root-agent" ? "inherit" : "B";
+
+      const providerId = target.querySelector?.(".chip.codex") ? "codex" : "codex";
+      document.querySelectorAll(".provider-card").forEach((button) => {
+        button.classList.toggle("active", button.getAttribute("data-provider-id") === providerId);
+      });
+
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+      updateCodingProfileModalFields();
+      window.__codingAgentProfileLastTarget = target;
+      return modal;
+    }
+
+    function closeCodingAgentProfileModal() {
+      const modal = document.getElementById("codingAgentProfileModal");
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      window.__codingAgentProfileModalState = {
+        ...(window.__codingAgentProfileModalState || {}),
+        open: false
+      };
+    }
+
+    function installCodingAgentProfileModal() {
+      updateProviderButtonStyles();
+      document.querySelectorAll(".provider-card").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll(".provider-card").forEach((candidate) => candidate.classList.remove("active"));
+          button.classList.add("active");
+          updateCodingProfileModalFields();
+        });
+      });
+      document.getElementById("assignedProfileSelect")?.addEventListener("change", updateCodingProfileModalFields);
+      document.getElementById("profileCancelButton")?.addEventListener("click", closeCodingAgentProfileModal);
+      document.getElementById("profileSaveButton")?.addEventListener("click", closeCodingAgentProfileModal);
+      document.getElementById("manageMatrixButton")?.addEventListener("click", () => {
+        showCaptureToast('"Manage matrix/defaults"', "opens Settings / Coding Agents in the real app");
+      });
+      document.getElementById("codingAgentProfileModal")?.addEventListener("click", (event) => {
+        if (event.target === event.currentTarget) {
+          closeCodingAgentProfileModal();
+        }
+      });
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && document.getElementById("codingAgentProfileModal")?.classList.contains("open")) {
+          closeCodingAgentProfileModal();
+        }
+      });
+      updateCodingProfileModalFields();
+    }
+
     const sidebarMenuActions = {
       "sidebar": [
         { label: "New Project" },
@@ -1353,6 +1995,11 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           return;
         }
 
+        if (action.label === "Coding Agent") {
+          openCodingAgentProfileModal(target);
+          return;
+        }
+
         showCaptureToast(`"${action.label}"`, classDetail(target));
       });
       menu.appendChild(button);
@@ -1418,7 +2065,10 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     window.captureComponentAtTarget = captureComponentAtTarget;
     window.openSidebarContextMenu = openSidebarContextMenu;
     window.closeSidebarContextMenu = closeSidebarContextMenu;
+    window.openCodingAgentProfileModal = openCodingAgentProfileModal;
+    window.closeCodingAgentProfileModal = closeCodingAgentProfileModal;
 
+    installCodingAgentProfileModal();
     installComponentCapture("AgentsCommander Current App");
   </script>
 </body>
