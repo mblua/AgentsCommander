@@ -126,20 +126,30 @@ assert.ok(newAgentMold, 'new agent mold selector should exist');
 assert.ok(newAgentOverride, 'new agent override selector should exist');
 assert.equal(newAgentRuleSource?.textContent, 'Local role template: dev-webpage-ui');
 assert.equal(newAgentRequested?.textContent, 'B - BALANCED');
+assert.match(newAgentResolved?.textContent ?? '', /B - BALANCED for Codex/);
+assert.match(newAgentResolved?.textContent ?? '', /B - BALANCED for Claude Code/);
 assert.match(newAgentResolved?.textContent ?? '', /A - FULL POWER for OpenCode/);
+assert.match(newAgentResolved?.textContent ?? '', /B -> A - FULL POWER/);
+assert.match(newAgentFallbackNotice?.textContent ?? '', /OpenCode has no B cell/);
 assert.equal(newAgentFallbackNotice?.hidden, false);
 
 change(newAgentMold, 'review');
 assert.equal(newAgentRuleSource?.textContent, 'Mold rule: review-helper');
 assert.equal(newAgentRequested?.textContent, 'C - REVIEW');
+assert.match(newAgentResolved?.textContent ?? '', /C - REVIEW for Codex/);
+assert.match(newAgentResolved?.textContent ?? '', /C - REVIEW for Claude Code/);
 assert.match(newAgentResolved?.textContent ?? '', /C - REVIEW for OpenCode/);
 assert.equal(newAgentFallbackNotice?.hidden, true);
 
 change(newAgentOverride, 'D');
 assert.equal(newAgentRuleSource?.textContent, 'User override before Create');
 assert.equal(newAgentRequested?.textContent, 'D - LOW COST');
+assert.match(newAgentResolved?.textContent ?? '', /C - REVIEW for Codex/);
+assert.match(newAgentResolved?.textContent ?? '', /D -> C - REVIEW/);
+assert.match(newAgentResolved?.textContent ?? '', /D - LOW COST for Claude Code/);
 assert.match(newAgentResolved?.textContent ?? '', /D - LOW COST for OpenCode/);
-assert.equal(newAgentFallbackNotice?.hidden, true);
+assert.match(newAgentFallbackNotice?.textContent ?? '', /Codex has no D cell/);
+assert.equal(newAgentFallbackNotice?.hidden, false);
 assertNoRuntimeErrors();
 
 assert.equal(

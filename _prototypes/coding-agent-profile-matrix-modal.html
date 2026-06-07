@@ -1737,6 +1737,28 @@
       return index <= 0 ? "final fallback" : profileLabel(letters[index - 1]);
     }
 
+    function resolveProfileForAgent(agentId, requestedLetter) {
+      const requestedIndex = letters.indexOf(requestedLetter);
+      const startIndex = requestedIndex >= 0 ? requestedIndex : 0;
+
+      for (let index = startIndex; index >= 0; index -= 1) {
+        const letter = letters[index];
+        if (matrix[agentId]?.[letter]) {
+          return {
+            requestedLetter,
+            resolvedLetter: letter,
+            usedFallback: letter !== requestedLetter
+          };
+        }
+      }
+
+      return {
+        requestedLetter,
+        resolvedLetter: requestedLetter,
+        usedFallback: false
+      };
+    }
+
     function selectCell(agentId, letter) {
       if (!matrix[agentId]) {
         return;
@@ -2028,16 +2050,29 @@
       const requestedLetter = newAgentOverride.value === "inherit" ? inherited.letter : newAgentOverride.value;
       const requested = profileDisplayLabel(requestedLetter);
       const source = newAgentOverride.value === "inherit" ? inherited.source : "User override before Create";
-      const opencodeProfile = matrix.opencode[requestedLetter];
-      const opencodeResolved = opencodeProfile ? requested : profileDisplayLabel("A");
+      const resolutions = agents.map((agent) => ({
+        agent,
+        resolution: resolveProfileForAgent(agent.id, requestedLetter)
+      }));
+      const fallbackNotices = resolutions
+        .filter(({ resolution }) => resolution.usedFallback)
+        .map(({ agent, resolution }) =>
+          `${agent.label} has no ${resolution.requestedLetter} cell, so the effective launch profile resolves to ${profileDisplayLabel(resolution.resolvedLetter)}.`
+        );
 
       newAgentRuleSource.textContent = source;
       newAgentRequested.textContent = requested;
-      newAgentResolved.textContent = `${requested} for Codex and Claude Code; ${opencodeResolved} for OpenCode`;
-      newAgentFallbackNotice.hidden = Boolean(opencodeProfile);
-      newAgentFallbackNotice.textContent = opencodeProfile
-        ? ""
-        : `OpenCode has no ${requestedLetter} cell, so the effective launch profile resolves to ${profileDisplayLabel("A")}. The stored request remains ${requestedLetter}.`;
+      newAgentResolved.textContent = resolutions
+        .map(({ agent, resolution }) => {
+          const resolved = profileDisplayLabel(resolution.resolvedLetter);
+          const fallback = resolution.usedFallback ? ` (${resolution.requestedLetter} -> ${resolved})` : "";
+          return `${resolved} for ${agent.label}${fallback}`;
+        })
+        .join("; ");
+      newAgentFallbackNotice.hidden = fallbackNotices.length === 0;
+      newAgentFallbackNotice.textContent = fallbackNotices.length > 0
+        ? `${fallbackNotices.join(" ")} The stored request remains ${requestedLetter}.`
+        : "";
     }
 
     renderSelectors();
