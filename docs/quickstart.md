@@ -81,3 +81,11 @@ That's the loop. Every message is a file you can `cat`, `git diff`, and audit.
 - [Inter-agent messaging](agents/inter-agent-messaging.md) — the file protocol and the `send` CLI.
 - [Use cases](use-cases.md) — recipes other people are running.
 - [Troubleshooting](troubleshooting.md) — when something does not work.
+
+
+## Uninstalling on Windows
+
+If you installed AgentsCommander using the setup installer (.exe), you can remove it using the standard Windows settings:
+1. Open Windows **Settings** > **Apps** > **Installed apps**.
+2. Search for **Agents Commander**.
+3. Click the menu (three dots) next to it and select **Uninstall**.
