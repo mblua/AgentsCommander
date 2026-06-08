@@ -864,21 +864,23 @@
       font-size: 11px;
     }
 
+    .profile-modal-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
     .modal-variant-switcher {
-      position: fixed;
-      top: 56px;
-      left: 50%;
-      z-index: 2600;
       display: flex;
       align-items: center;
       gap: 7px;
       padding: 6px;
       border: 1px solid rgba(148, 163, 184, 0.14);
       border-radius: var(--radius-md);
-      background: rgba(8, 11, 18, 0.84);
-      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
-      transform: translateX(-50%);
-      backdrop-filter: blur(12px);
+      background: rgba(8, 11, 18, 0.52);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
     }
 
     .modal-variant-label {
@@ -1224,6 +1226,11 @@
         text-align: left;
       }
 
+      .profile-modal-controls {
+        width: 100%;
+        justify-content: space-between;
+      }
+
       .profile-modal-header,
       .profile-modal-footer {
         align-items: flex-start;
@@ -1561,13 +1568,6 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     </main>
   </div>
 
-  <div class="modal-variant-switcher" data-component="Coding Agent profile modal variant switcher">
-    <span class="modal-variant-label">Modal variant</span>
-    <button class="variant-btn active" type="button" data-modal-variant="A" data-component="Coding Agent profile modal variant A switch">A</button>
-    <button class="variant-btn" type="button" data-modal-variant="B" data-component="Coding Agent profile modal variant B switch">B</button>
-    <button class="variant-btn" type="button" data-modal-variant="C" data-component="Coding Agent profile modal variant C switch">C</button>
-  </div>
-
   <div class="profile-modal-overlay" id="codingAgentProfileModal" aria-hidden="true" data-component="Coding Agent profile assignment modal overlay">
     <section class="profile-modal" role="dialog" aria-modal="true" aria-labelledby="codingAgentProfileTitle" data-component="Coding Agent profile assignment modal">
       <header class="profile-modal-header" data-component="Coding Agent profile modal header">
@@ -1575,10 +1575,18 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           <div class="profile-modal-eyebrow">Coding Agent</div>
           <div class="profile-modal-title" id="codingAgentProfileTitle">Assign profile for selected sidebar item</div>
         </div>
-        <div class="profile-context" data-component="Selected sidebar item context">
-          <strong id="profileContextName">dev-webpage-ui</strong>
-          <span id="profileContextProject">Project: AgentsCommander_ac</span>
-          <span id="profileContextWorkgroup">Workgroup: WG-7-DEV-TEAM</span>
+        <div class="profile-modal-controls">
+          <div class="modal-variant-switcher" data-component="Coding Agent profile modal variant switcher">
+            <span class="modal-variant-label">Modal variant</span>
+            <button class="variant-btn active" type="button" data-modal-variant="A" data-component="Coding Agent profile modal variant A switch">A</button>
+            <button class="variant-btn" type="button" data-modal-variant="B" data-component="Coding Agent profile modal variant B switch">B</button>
+            <button class="variant-btn" type="button" data-modal-variant="C" data-component="Coding Agent profile modal variant C switch">C</button>
+          </div>
+          <div class="profile-context" data-component="Selected sidebar item context">
+            <strong id="profileContextName">dev-webpage-ui</strong>
+            <span id="profileContextProject">Project: AgentsCommander_ac</span>
+            <span id="profileContextWorkgroup">Workgroup: WG-7-DEV-TEAM</span>
+          </div>
         </div>
       </header>
 

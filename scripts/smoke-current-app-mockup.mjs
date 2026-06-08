@@ -42,6 +42,73 @@ const assertNoRuntimeErrors = () => {
     `prototype should not throw runtime errors: ${runtimeErrors.map((error) => error?.stack ?? error).join('\n')}`
   );
 };
+const stubRect = (element, rect) => {
+  element.getBoundingClientRect = () => ({
+    ...rect,
+    right: rect.left + rect.width,
+    bottom: rect.top + rect.height,
+    x: rect.left,
+    y: rect.top,
+    toJSON: () => {},
+  });
+};
+const containsPoint = (rect, x, y) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+const isBrowserVisible = (element) => {
+  for (let node = element; node instanceof dom.window.Element; node = node.parentElement) {
+    const style = dom.window.getComputedStyle(node);
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      style.pointerEvents === 'none' ||
+      node.getAttribute('aria-hidden') === 'true'
+    ) {
+      return false;
+    }
+  }
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+};
+const modalStackRank = (element) => {
+  const overlay = dom.window.document.getElementById('codingAgentProfileModal');
+  const overlayZ = Number(dom.window.getComputedStyle(overlay).zIndex);
+  if (overlay?.classList.contains('open') && overlay.contains(element)) {
+    let depth = 0;
+    for (let node = element; node && node !== overlay; node = node.parentElement) {
+      depth += 1;
+    }
+    return overlayZ + depth;
+  }
+  return Number(dom.window.getComputedStyle(element).zIndex) || 0;
+};
+const topClickableElementAt = (x, y) => {
+  const candidates = [
+    ...dom.window.document.querySelectorAll('.profile-modal-overlay.open, .profile-modal, .profile-modal-controls, .modal-variant-switcher, [data-modal-variant]'),
+  ].filter((element) => isBrowserVisible(element) && containsPoint(element.getBoundingClientRect(), x, y));
+  return candidates.sort((left, right) => modalStackRank(right) - modalStackRank(left))[0] ?? null;
+};
+const clickVisibleModalVariant = (variant) => {
+  const overlay = dom.window.document.getElementById('codingAgentProfileModal');
+  const modal = overlay?.querySelector('.profile-modal');
+  const button = dom.window.document.querySelector(`[data-modal-variant="${variant}"]`);
+  assert.ok(overlay?.classList.contains('open'), 'profile modal should be open before switching variants');
+  assert.ok(button, `variant ${variant} button should exist`);
+  assert.ok(modal?.contains(button), `variant ${variant} button should render inside the profile modal layer`);
+  assert.ok(isBrowserVisible(button), `variant ${variant} button should be browser-visible`);
+
+  const rect = button.getBoundingClientRect();
+  const clientX = rect.left + rect.width / 2;
+  const clientY = rect.top + rect.height / 2;
+  assert.equal(
+    topClickableElementAt(clientX, clientY),
+    button,
+    `variant ${variant} button should be the top clickable target at its center`
+  );
+
+  button.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, clientX, clientY }));
+  button.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, clientX, clientY }));
+  button.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientX, clientY }));
+  button.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, clientX, clientY }));
+};
 
 assert.equal(typeof dom.window.installComponentCapture, 'function');
 assert.equal(typeof dom.window.captureComponentAtTarget, 'function');
@@ -251,11 +318,24 @@ assert.equal(dom.window.__codingAgentProfileModalState.provider, 'codex');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'B');
 
+stubRect(profileModal, { left: 0, top: 0, width: 1365, height: 768 });
+stubRect(profileModal.querySelector('.profile-modal'), { left: 192, top: 48, width: 980, height: 672 });
+stubRect(profileModal.querySelector('.profile-modal-controls'), { left: 686, top: 61, width: 470, height: 46 });
+stubRect(profileModal.querySelector('.modal-variant-switcher'), { left: 686, top: 65, width: 178, height: 38 });
+['A', 'B', 'C'].forEach((variant, index) => {
+  stubRect(dom.window.document.querySelector(`[data-modal-variant="${variant}"]`), {
+    left: 792 + index * 41,
+    top: 70,
+    width: 34,
+    height: 28,
+  });
+});
+
 const modalActionLabels = Array.from(dom.window.document.querySelectorAll('.profile-modal-footer button'), (button) => button.textContent);
 assert.deepEqual(modalActionLabels, ['Cancel', 'Set profile as new default', 'Set just for instance']);
 
 for (const variant of ['A', 'B', 'C']) {
-  dom.window.document.querySelector(`[data-modal-variant="${variant}"]`)?.click();
+  clickVisibleModalVariant(variant);
   assert.equal(dom.window.__codingAgentProfileModalState.variant, variant, `variant ${variant} should be selected`);
   const activeVariant = dom.window.document.querySelector(`[data-profile-variant-panel="${variant}"]`);
   assert.ok(activeVariant?.classList.contains('active'), `variant ${variant} panel should be active`);
@@ -269,7 +349,7 @@ for (const variant of ['A', 'B', 'C']) {
   assert.match(activeVariant.textContent ?? '', /Profile args/);
 }
 
-dom.window.document.querySelector('[data-modal-variant="A"]')?.click();
+clickVisibleModalVariant('A');
 dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-tool-card="opencode"]')?.click();
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'opencode');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'C');
