@@ -145,6 +145,18 @@ You are not a workgroup replica and you do not have an origin Agent Matrix. Use 
 ## Coordination
 
 Coordinate across workgroups at a high level. Delegate specialized implementation work to the appropriate team coordinators and synthesize their results for the user.
+
+## Agency Agents Roles
+
+You may offer to download tested role templates from Agency Agents when the user wants a new specialist role. Ask before downloading or updating. If the user accepts, use the AgentsCommander CLI from `AGENTSCOMMANDER_BINARY_PATH`:
+
+```text
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates update --ref main
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates status --pretty
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates list --pretty
+```
+
+Use only IDs returned by `agency-templates list` when creating agents with `create-agent-matrix --role-template <id>`. Do not invent Agency template IDs.
 "#
     .to_string()
 });
@@ -704,6 +716,9 @@ mod tests {
         assert!(!ROOT_ROLE_MD.contains("verified workgroup coordinator replicas only"));
         assert!(!ROOT_ROLE_MD.contains("list-peers-lean"));
         assert!(!ROOT_ROLE_MD.contains("AGENTSCOMMANDER_TOKEN"));
+        assert!(ROOT_ROLE_MD.contains("agency-templates update"));
+        assert!(ROOT_ROLE_MD.contains("agency-templates list"));
+        assert!(ROOT_ROLE_MD.contains("Do not invent Agency template IDs"));
         let template_path = temp
             .path()
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);

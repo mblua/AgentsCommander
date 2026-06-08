@@ -39,6 +39,22 @@ The `--help` text is the source of truth; this page is a curated index.
 
 ---
 
+## `agency-templates`
+
+Manage the explicit Agency Agents role-template cache.
+
+```bash
+agentscommander agency-templates status --pretty
+agentscommander agency-templates update --ref main
+agentscommander agency-templates list --pretty
+```
+
+`update` resolves the ref to a commit and publishes `<config-dir>/agency-agents_templates` under a single-writer lock. The updater uses `git`, so `git` must be installed and available on `PATH`. `list`, `status`, and `create-agent-matrix --role-template agency:<id>` operate offline on the validated cache.
+
+Status reasons include `missing`, `locked`, `manifestMissing`, `manifestMalformed`, `invalidCommit`, `templateCountMismatch`, and `cacheInvalid`.
+
+---
+
 ## `harness`
 
 Execute a command through the Phase 1 policy harness.

@@ -8,7 +8,7 @@ A directory with a role-prompt file at its root (`CLAUDE.md`, `AGENTS.md`, or `G
 
 ## Agents Agency
 
-A community library of agent role templates at [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). AC vendors a snapshot of the catalog for offline use in the role-template picker.
+A community library of agent role templates at [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). AC can download a validated cache of the catalog for offline use in the role-template picker.
 
 ## Brief
 
@@ -64,7 +64,7 @@ A working copy of an agent inside a workgroup at `wg-<N>-<team>/__agent_<name>/`
 
 ## Role template
 
-A reusable agent definition (prompt + optional skills) that AC clones when you create a new agent. Templates come from the vendored Agents Agency snapshot or from your local `agent-templates/` directory.
+A reusable agent definition (prompt + optional skills) that AC clones when you create a new agent. Templates come from the downloaded Agency cache or from your local `agent-templates/` directory.
 
 ## Root Agent
 

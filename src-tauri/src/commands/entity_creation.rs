@@ -2388,7 +2388,7 @@ mod tests {
         })
         .expect_err("invalid template");
 
-        assert!(err.contains("Unknown built-in role template"));
+        assert!(err.contains("missing"));
         assert!(
             !workspace_dir.join("_agent_architect").exists(),
             "invalid template must not create the target matrix directory"

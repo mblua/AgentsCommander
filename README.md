@@ -159,7 +159,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md): branch naming, local build, log-filter
 
 AgentsCommander stands on the shoulders of:
 
-- **[@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)**: community library of agent role templates. AC ships a vendored snapshot of this catalog (see `src-tauri/src/commands/agency_agents_snapshot.json`) so role browsing works offline. Big thanks to the maintainers for keeping it open.
+- **[@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)**: community library of agent role templates. AC can download an explicit, offline cache with `agency-templates update`; normal startup and role browsing never hit the network. Big thanks to the maintainers for keeping it open.
 - **[RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk)**: CLI proxy that compresses command outputs to cut LLM token consumption by 60–90% on common dev operations. AC auto-detects `rtk` on PATH at startup and wires the `PreToolUse` hook into managed agent directories (see `src-tauri/src/lib.rs:382-473` and `src-tauri/src/config/claude_settings.rs`).
 
 Also: Tauri, SolidJS, xterm.js, portable-pty, axum, tokio; the toolchain layer this app would be impossible without.

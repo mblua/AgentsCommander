@@ -1,3 +1,4 @@
+pub mod agency_templates;
 pub mod close_session;
 pub mod create_agent;
 pub mod create_agent_matrix;
@@ -98,6 +99,8 @@ pub enum Commands {
     ListPeersLean(list_peers::ListPeersLeanArgs),
     /// List all sessions in the running app instance (returns JSON)
     ListSessions(list_sessions::ListSessionsArgs),
+    /// Manage downloaded Agency Agents role templates
+    AgencyTemplates(agency_templates::AgencyTemplatesArgs),
     /// Create a new Agent Matrix in a registered project
     CreateAgent(create_agent::CreateAgentArgs),
     /// Create a full Agent Matrix in an AC project, optionally from a role template
@@ -231,6 +234,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
+        Commands::AgencyTemplates(args) => agency_templates::execute(args),
         Commands::CreateAgent(args) => create_agent::execute(args),
         Commands::CreateAgentMatrix(args) => create_agent_matrix::execute(args),
         Commands::RoleExperiment(args) => role_experiment::execute(args),

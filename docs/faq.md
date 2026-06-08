@@ -44,7 +44,7 @@ The Model Context Protocol adds little practical value over simpler alternatives
 
 ## What does the "Agents Agency" picker do?
 
-It is the role-template browser shown when you create a new agent. AC ships a vendored snapshot of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents) so the catalog works offline. See [Coding agents](integrations/coding-agents.md#role-template-picker).
+It is the role-template browser shown when you create a new agent. AC can download a validated cache of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents) so the catalog works offline after an explicit `agency-templates update`. See [Coding agents](integrations/coding-agents.md#role-template-picker).
 
 ## Does AC work on macOS?
 

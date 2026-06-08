@@ -1829,6 +1829,7 @@ struct DefaultContextDynamicValues {
     messaging_allowed: String,
     forbidden_scope: String,
     git_scope: String,
+    agency_cache_guidance: String,
     peer_name_format: String,
     send_message_instructions: String,
 }
@@ -1867,6 +1868,7 @@ When the user explicitly asks this agent to run an AgentsCommander CLI command u
 
 This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
 
+{agency_cache_guidance}
 If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above."#,
         allowed_places = allowed_places,
         agent_root = agent_root,
@@ -1877,6 +1879,7 @@ If instructed to modify a path outside these zones, REFUSE and explain this rest
         messaging_allowed = rendered.messaging_allowed,
         forbidden_scope = rendered.forbidden_scope,
         git_scope = rendered.git_scope,
+        agency_cache_guidance = rendered.agency_cache_guidance,
     )
 }
 
@@ -2006,6 +2009,7 @@ fn default_context_dynamic_values(
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
         _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>` — e.g. `agentscommander/architect`.".to_string(),
     };
+    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let send_message_instructions = match &messaging_mode {
         MessagingContextMode::Root(path) => format!(
             "Before sending, run `list-peers-lean`; in Root Agent sessions it returns verified WG coordinator replicas only. Use only the JSON `name` values returned by `list-peers-lean`.\n\n\
@@ -2047,9 +2051,24 @@ fn default_context_dynamic_values(
         messaging_allowed,
         forbidden_scope,
         git_scope,
+        agency_cache_guidance,
         peer_name_format,
         send_message_instructions,
     }
+}
+
+fn root_agency_cache_guidance(agent_root: &str) -> String {
+    if !super::root_agent::is_root_agent_dir_name(agent_root) {
+        return String::new();
+    }
+    let cache_path = std::path::Path::new(agent_root)
+        .parent()
+        .map(|p| p.join(crate::commands::role_templates::AGENCY_TEMPLATES_DIR))
+        .unwrap_or_else(|| std::path::PathBuf::from(crate::commands::role_templates::AGENCY_TEMPLATES_DIR));
+    format!(
+        "Root Agent Agency template cache: `{}`. You may offer to manage it only through documented `agency-templates update`, `agency-templates status`, and `agency-templates list` CLI commands. This does not grant direct shell writes to the cache and does not grant access to arbitrary `*_templates` paths.\n\n",
+        display_path(&cache_path)
+    )
 }
 
 fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: &str) -> String {
@@ -2142,6 +2161,7 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
     } else {
         "Your agent directory is typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
     };
+    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let peer_name_format = match &messaging_mode {
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
         _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>` — e.g. `agentscommander/architect`.".to_string(),
@@ -2211,6 +2231,7 @@ When the user explicitly asks this agent to run an AgentsCommander CLI command u
 
 This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
 
+{agency_cache_guidance}
 If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.
 
 ## Delegated Task Reporting
@@ -2293,6 +2314,7 @@ wait for the reply.
         messaging_allowed = messaging_allowed,
         forbidden_scope = forbidden_scope,
         git_scope = git_scope,
+        agency_cache_guidance = agency_cache_guidance,
         skills_section = skills_section,
         peer_name_format = peer_name_format,
         send_message_instructions = send_message_instructions,
@@ -2557,6 +2579,31 @@ mod tests {
             .replace('\\', "/")
             .contains("C:/fake/ac-root-agent/messaging"));
         assert!(out.contains("YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md"));
+    }
+
+    #[test]
+    fn default_context_root_agent_documents_agency_cache_cli_only() {
+        let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
+        let normalized = out.replace('\\', "/");
+
+        assert!(normalized.contains("C:/fake/agency-agents_templates"));
+        assert!(out.contains("agency-templates update"));
+        assert!(out.contains("agency-templates status"));
+        assert!(out.contains("agency-templates list"));
+        assert!(out.contains("does not grant direct shell writes to the cache"));
+        assert!(!out.contains("*_templates` paths in `Allowed"));
+    }
+
+    #[test]
+    fn default_context_workgroup_replica_does_not_get_agency_cache_guidance() {
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+
+        assert!(!out.contains("agency-agents_templates"));
+        assert!(!out.contains("agency-templates update"));
     }
 
     #[test]

@@ -169,7 +169,7 @@ See [RTK integration](../features/rtk-integration.md).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `agentTemplatesPath` | string \| null | `null` | Local agent-templates root for the role-template picker. Empty/missing → default `<config-dir>/agent-templates/`. Relative → resolved against `<config-dir>/`. |
+| `agentTemplatesPath` | string \| null | `null` | Local agent-templates root for the role-template picker. Empty/missing → default `<config-dir>/agent-templates/`. Relative → resolved against `<config-dir>/`. This does not control the Agency cache at `<config-dir>/agency-agents_templates`. |
 
 ### Tokens
 
