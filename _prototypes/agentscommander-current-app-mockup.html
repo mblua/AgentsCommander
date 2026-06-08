@@ -864,13 +864,76 @@
       font-size: 11px;
     }
 
+    .modal-variant-switcher {
+      position: fixed;
+      top: 56px;
+      left: 50%;
+      z-index: 2600;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: var(--radius-md);
+      background: rgba(8, 11, 18, 0.84);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+      transform: translateX(-50%);
+      backdrop-filter: blur(12px);
+    }
+
+    .modal-variant-label {
+      padding: 0 6px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .variant-btn {
+      min-width: 34px;
+      min-height: 28px;
+      border: 1px solid rgba(148, 163, 184, 0.13);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.035);
+      color: #d7e4f3;
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .variant-btn.active {
+      border-color: rgba(0, 212, 255, 0.38);
+      background: rgba(0, 212, 255, 0.13);
+      color: #effbff;
+      box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.07);
+    }
+
     .profile-modal-body {
       min-height: 0;
       overflow: auto;
-      display: grid;
-      grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
-      gap: 12px;
       padding: 14px;
+    }
+
+    .profile-variant {
+      display: none;
+      min-height: 0;
+    }
+
+    .profile-variant.active {
+      display: grid;
+      gap: 12px;
+    }
+
+    .profile-variant-a.active {
+      grid-template-columns: minmax(220px, 0.74fr) minmax(0, 1.26fr);
+    }
+
+    .profile-variant-b.active {
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .profile-variant-c.active {
+      grid-template-columns: minmax(190px, 0.58fr) minmax(260px, 0.86fr) minmax(260px, 0.82fr);
     }
 
     .profile-panel {
@@ -890,9 +953,22 @@
       font-weight: 750;
     }
 
+    .profile-panel-kicker {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      line-height: 1.35;
+    }
+
     .provider-list {
       display: grid;
       gap: 7px;
+    }
+
+    .provider-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
     }
 
     .provider-card {
@@ -914,6 +990,10 @@
       border-color: var(--provider-color, rgba(0, 212, 255, 0.34));
       background: color-mix(in srgb, var(--provider-color, #00d4ff) 10%, rgba(255, 255, 255, 0.026));
       box-shadow: 2px 0 0 var(--provider-color, var(--cyan)) inset;
+    }
+
+    .provider-card.compact {
+      min-height: 42px;
     }
 
     .provider-name {
@@ -949,6 +1029,119 @@
       background: color-mix(in srgb, var(--provider-color, #00d4ff) 12%, transparent);
     }
 
+    .profile-picker-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .profile-picker-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .profile-card {
+      width: 100%;
+      display: grid;
+      gap: 8px;
+      min-height: 132px;
+      padding: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.11);
+      border-radius: var(--radius-sm);
+      background: rgba(2, 4, 8, 0.36);
+      color: #dce8f6;
+      text-align: left;
+    }
+
+    .profile-card.active {
+      border-color: rgba(0, 212, 255, 0.38);
+      background: rgba(0, 212, 255, 0.075);
+      box-shadow: 2px 0 0 var(--cyan) inset;
+    }
+
+    .profile-card.default {
+      border-color: rgba(53, 242, 166, 0.32);
+    }
+
+    .profile-card.missing {
+      border-color: rgba(248, 198, 87, 0.28);
+      background: rgba(248, 198, 87, 0.055);
+    }
+
+    .profile-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .profile-card-title {
+      color: #eef7ff;
+      font-size: 12px;
+      font-weight: 780;
+    }
+
+    .profile-card-subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+    }
+
+    .profile-default-marker {
+      display: none;
+      flex: 0 0 auto;
+      align-items: center;
+      min-height: 20px;
+      padding: 2px 7px;
+      border: 1px solid rgba(53, 242, 166, 0.32);
+      border-radius: var(--radius-sm);
+      background: rgba(53, 242, 166, 0.075);
+      color: var(--green);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .profile-card.default .profile-default-marker {
+      display: inline-flex;
+    }
+
+    .profile-param-list {
+      display: grid;
+      gap: 5px;
+    }
+
+    .profile-param {
+      display: grid;
+      grid-template-columns: 74px minmax(0, 1fr);
+      gap: 7px;
+      color: #aab6c7;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      line-height: 1.25;
+    }
+
+    .profile-param span:last-child {
+      color: #d4e0ee;
+      overflow-wrap: anywhere;
+    }
+
+    .active-profile-summary {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid rgba(0, 212, 255, 0.16);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.055);
+    }
+
+    .active-profile-summary-title {
+      color: #eef7ff;
+      font-size: 12px;
+      font-weight: 780;
+    }
+
     .profile-token {
       color: #e8f6ff;
       border: 1px solid rgba(0, 212, 255, 0.28);
@@ -970,63 +1163,6 @@
     .source-pill {
       color: #aab6c7;
       background: rgba(255, 255, 255, 0.045);
-    }
-
-    .settings-field {
-      display: grid;
-      gap: 5px;
-    }
-
-    .settings-label {
-      color: var(--muted);
-      font-family: var(--font-mono);
-      font-size: 9px;
-      text-transform: uppercase;
-    }
-
-    .settings-input,
-    .settings-select {
-      width: 100%;
-      min-height: 28px;
-      border: 1px solid rgba(148, 163, 184, 0.13);
-      border-radius: var(--radius-sm);
-      background: rgba(2, 4, 8, 0.46);
-      color: #dce8f6;
-      font-family: var(--font-mono);
-      font-size: 10.5px;
-      padding: 5px 7px;
-    }
-
-    .settings-select {
-      color-scheme: dark;
-    }
-
-    .settings-input:focus,
-    .settings-select:focus {
-      outline: none;
-      border-color: rgba(0, 212, 255, 0.42);
-      box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.08);
-    }
-
-    .resolution-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-    }
-
-    .resolution-card {
-      display: grid;
-      gap: 5px;
-      min-height: 126px;
-      padding: 9px;
-      border: 1px solid rgba(148, 163, 184, 0.11);
-      border-radius: var(--radius-sm);
-      background: rgba(2, 4, 8, 0.36);
-    }
-
-    .resolution-card strong {
-      color: #e8f1fb;
-      font-size: 11px;
     }
 
     .resolution-line {
@@ -1053,18 +1189,6 @@
       line-height: 1.35;
     }
 
-    .matrix-link {
-      justify-self: start;
-      min-height: 28px;
-      border: 1px solid rgba(0, 212, 255, 0.22);
-      border-radius: var(--radius-sm);
-      background: rgba(0, 212, 255, 0.07);
-      color: #c9f3ff;
-      font-family: var(--font-mono);
-      font-size: 10px;
-      padding: 5px 8px;
-    }
-
     .modal-actions {
       display: flex;
       align-items: center;
@@ -1081,15 +1205,18 @@
       padding: 5px 10px;
     }
 
-    .modal-btn.save {
+    .modal-btn.save,
+    .modal-btn.primary {
       border-color: rgba(0, 212, 255, 0.35);
       background: rgba(0, 212, 255, 0.13);
       color: #effbff;
     }
 
     @media (max-width: 860px) {
-      .profile-modal-body,
-      .resolution-grid {
+      .profile-variant-a.active,
+      .profile-variant-c.active,
+      .provider-strip,
+      .profile-picker-grid {
         grid-template-columns: 1fr;
       }
 
@@ -1434,6 +1561,13 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     </main>
   </div>
 
+  <div class="modal-variant-switcher" data-component="Coding Agent profile modal variant switcher">
+    <span class="modal-variant-label">Modal variant</span>
+    <button class="variant-btn active" type="button" data-modal-variant="A" data-component="Coding Agent profile modal variant A switch">A</button>
+    <button class="variant-btn" type="button" data-modal-variant="B" data-component="Coding Agent profile modal variant B switch">B</button>
+    <button class="variant-btn" type="button" data-modal-variant="C" data-component="Coding Agent profile modal variant C switch">C</button>
+  </div>
+
   <div class="profile-modal-overlay" id="codingAgentProfileModal" aria-hidden="true" data-component="Coding Agent profile assignment modal overlay">
     <section class="profile-modal" role="dialog" aria-modal="true" aria-labelledby="codingAgentProfileTitle" data-component="Coding Agent profile assignment modal">
       <header class="profile-modal-header" data-component="Coding Agent profile modal header">
@@ -1449,101 +1583,95 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       </header>
 
       <div class="profile-modal-body" data-component="Coding Agent profile modal body">
-        <aside class="profile-panel" data-component="Coding agent tool selector panel">
-          <div class="profile-panel-title" data-component="Coding agent provider selector title">Tool</div>
-          <div class="provider-list" id="providerList" aria-label="Coding agent tool choices" data-component="Coding agent provider selector">
-            <button class="provider-card active" type="button" data-provider-id="codex" data-component="Codex coding agent option">
-              <span>
-                <span class="provider-name">Codex</span>
-                <span class="provider-command">codex</span>
-              </span>
-              <span class="provider-chip">Codex</span>
-            </button>
-            <button class="provider-card" type="button" data-provider-id="claude-code" data-component="Claude Code coding agent option">
-              <span>
-                <span class="provider-name">Claude Code</span>
-                <span class="provider-command">claude</span>
-              </span>
-              <span class="provider-chip">Claude</span>
-            </button>
-            <button class="provider-card" type="button" data-provider-id="opencode" data-component="OpenCode coding agent option">
-              <span>
-                <span class="provider-name">OpenCode</span>
-                <span class="provider-command">opencode</span>
-              </span>
-              <span class="provider-chip">OpenCode</span>
-            </button>
-          </div>
-
-          <label class="settings-field" data-component="Assigned coding agent profile selector">
-            <span class="settings-label">Assigned profile</span>
-            <select class="settings-select" id="assignedProfileSelect">
-              <option value="inherit">Use inherited default</option>
-              <option value="A">A - FULL POWER</option>
-              <option value="B" selected>B - BALANCED</option>
-              <option value="C">C - REVIEW</option>
-              <option value="D">D - LOW COST</option>
-            </select>
-          </label>
-
-          <div class="profile-panel" data-component="Coding Agent profile inheritance source panel">
-            <span class="source-pill" id="profileSourcePill">from template default</span>
-            <div class="resolution-line"><span>Stored</span><span id="profileStoredSource">Inherited from dev-team template</span></div>
-            <div class="resolution-line"><span>Fallback</span><span>A is immutable final fallback</span></div>
-          </div>
-        </aside>
-
-        <section class="profile-panel" data-component="Effective coding agent profile editor panel">
-          <div class="profile-panel-title" data-component="Effective coding agent launch profile title">Effective launch profile</div>
-          <div class="resolution-grid" data-component="Coding Agent per-provider resolution panel">
-            <div class="resolution-card" data-resolution-provider="codex" data-component="Codex requested and resolved profile">
-              <strong>Codex</strong>
-              <div class="resolution-line"><span>Requested</span><span data-resolution-field="requested">B - BALANCED</span></div>
-              <div class="resolution-line"><span>Resolved</span><span data-resolution-field="resolved">B - BALANCED</span></div>
-              <div class="resolution-line"><span>Reason</span><span data-resolution-field="reason">configured cell</span></div>
+        <div class="profile-variant profile-variant-a active" data-profile-variant-panel="A" data-component="Coding Agent profile modal variant A layout">
+          <aside class="profile-panel" data-component="Coding agent tool selector panel">
+            <div class="profile-panel-title" data-component="Coding agent provider selector title">Tool</div>
+            <div class="provider-list" aria-label="Coding agent tool choices" data-component="Coding agent provider selector">
+              <button class="provider-card active" type="button" data-tool-card="codex" data-component="Codex coding agent option"></button>
+              <button class="provider-card" type="button" data-tool-card="claude-code" data-component="Claude Code coding agent option"></button>
+              <button class="provider-card" type="button" data-tool-card="opencode" data-component="OpenCode coding agent option"></button>
             </div>
-            <div class="resolution-card" data-resolution-provider="claude-code" data-component="Claude Code requested and resolved profile">
-              <strong>Claude Code</strong>
-              <div class="resolution-line"><span>Requested</span><span data-resolution-field="requested">B - BALANCED</span></div>
-              <div class="resolution-line"><span>Resolved</span><span data-resolution-field="resolved">B - BALANCED</span></div>
-              <div class="resolution-line"><span>Reason</span><span data-resolution-field="reason">configured cell</span></div>
+            <div class="profile-panel" data-component="Coding Agent profile inheritance source panel">
+              <span class="source-pill" data-profile-source-pill>from tool default</span>
+              <div class="resolution-line"><span>Stored</span><span data-profile-stored-source>Default for Codex</span></div>
+              <div class="resolution-line"><span>Fallback</span><span>A is immutable final fallback</span></div>
             </div>
-            <div class="resolution-card" data-resolution-provider="opencode" data-component="OpenCode requested and resolved profile">
-              <strong>OpenCode</strong>
-              <div class="resolution-line"><span>Requested</span><span data-resolution-field="requested">B - BALANCED</span></div>
-              <div class="resolution-line"><span>Resolved</span><span data-resolution-field="resolved">A - FULL POWER</span></div>
-              <div class="resolution-line"><span>Reason</span><span data-resolution-field="reason">B missing; A final fallback</span></div>
+          </aside>
+
+          <section class="profile-panel" data-component="Coding Agent profile selector panel">
+            <div>
+              <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
+              <div class="profile-panel-kicker">Cards below are profile choices for the selected tool only.</div>
             </div>
-          </div>
+            <div class="profile-picker-grid" data-profile-card-list data-component="Selected tool available profile cards">
+              <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="C" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="D" data-component="Coding Agent profile selector card"></button>
+            </div>
+            <div class="warning-strip" data-profile-fallback-notice data-component="Coding Agent profile fallback explanation"></div>
+          </section>
+        </div>
 
-          <div class="warning-strip" id="profileFallbackNotice" data-component="Coding Agent profile fallback explanation">
-            OpenCode has no B cell, so the stored request remains B while launch resolves through A final fallback.
-          </div>
+        <div class="profile-variant profile-variant-b" data-profile-variant-panel="B" data-component="Coding Agent profile modal variant B layout">
+          <section class="profile-panel" data-component="Coding agent tool selector panel">
+            <div class="profile-panel-title" data-component="Coding agent provider selector title">Tool</div>
+            <div class="provider-strip" aria-label="Coding agent tool choices" data-component="Coding agent provider selector">
+              <button class="provider-card compact active" type="button" data-tool-card="codex" data-component="Codex coding agent option"></button>
+              <button class="provider-card compact" type="button" data-tool-card="claude-code" data-component="Claude Code coding agent option"></button>
+              <button class="provider-card compact" type="button" data-tool-card="opencode" data-component="OpenCode coding agent option"></button>
+            </div>
+          </section>
+          <section class="profile-panel" data-component="Coding Agent profile selector panel">
+            <div>
+              <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
+              <div class="profile-panel-kicker">Horizontal tool choice above; profile cards below expose the implied launch values.</div>
+            </div>
+            <div class="profile-picker-grid" data-profile-card-list data-component="Selected tool available profile cards">
+              <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="C" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="D" data-component="Coding Agent profile selector card"></button>
+            </div>
+            <div class="active-profile-summary" data-active-profile-summary data-component="Selected profile launch parameter summary"></div>
+            <div class="warning-strip" data-profile-fallback-notice data-component="Coding Agent profile fallback explanation"></div>
+          </section>
+        </div>
 
-          <label class="settings-field" data-component="Coding Agent model argument field">
-            <span class="settings-label">Model</span>
-            <input class="settings-input" id="profileModelInput" type="text" value="provider/default-large">
-          </label>
-          <label class="settings-field" data-component="Coding Agent effort argument field">
-            <span class="settings-label">Effort</span>
-            <input class="settings-input" id="profileEffortInput" type="text" value="high">
-          </label>
-          <label class="settings-field" data-component="Coding Agent default args field">
-            <span class="settings-label">Default args</span>
-            <input class="settings-input" id="profileDefaultArgsInput" type="text" value="--sandbox workspace-write">
-          </label>
-          <label class="settings-field" data-component="Coding Agent profile args field">
-            <span class="settings-label">Profile args</span>
-            <input class="settings-input" id="profileArgsInput" type="text" value="--profile b --reasoning-effort high">
-          </label>
-        </section>
+        <div class="profile-variant profile-variant-c" data-profile-variant-panel="C" data-component="Coding Agent profile modal variant C layout">
+          <aside class="profile-panel" data-component="Coding agent tool selector panel">
+            <div class="profile-panel-title" data-component="Coding agent provider selector title">Tool</div>
+            <div class="provider-list" aria-label="Coding agent tool choices" data-component="Coding agent provider selector">
+              <button class="provider-card compact active" type="button" data-tool-card="codex" data-component="Codex coding agent option"></button>
+              <button class="provider-card compact" type="button" data-tool-card="claude-code" data-component="Claude Code coding agent option"></button>
+              <button class="provider-card compact" type="button" data-tool-card="opencode" data-component="OpenCode coding agent option"></button>
+            </div>
+          </aside>
+          <section class="profile-panel" data-component="Coding Agent profile selector panel">
+            <div>
+              <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
+              <div class="profile-panel-kicker">Compact profile ladder for the selected tool.</div>
+            </div>
+            <div class="profile-picker-list" data-profile-card-list data-component="Selected tool available profile cards">
+              <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="C" data-component="Coding Agent profile selector card"></button>
+              <button class="profile-card" type="button" data-profile-card="D" data-component="Coding Agent profile selector card"></button>
+            </div>
+          </section>
+          <section class="profile-panel" data-component="Selected profile projected parameters panel">
+            <div class="profile-panel-title" data-component="Selected profile projected parameters title">Projected parameters</div>
+            <div class="active-profile-summary" data-active-profile-summary data-component="Selected profile launch parameter summary"></div>
+            <div class="warning-strip" data-profile-fallback-notice data-component="Coding Agent profile fallback explanation"></div>
+          </section>
+        </div>
       </div>
 
       <footer class="profile-modal-footer" data-component="Coding Agent profile modal footer actions">
-        <button class="matrix-link" id="manageMatrixButton" type="button" data-component="Manage profile matrix defaults affordance">Manage matrix/defaults...</button>
         <div class="modal-actions">
           <button class="modal-btn" id="profileCancelButton" type="button" data-component="Cancel Coding Agent profile modal">Cancel</button>
-          <button class="modal-btn save" id="profileSaveButton" type="button" data-component="Save Coding Agent profile modal">Save</button>
+          <button class="modal-btn save" id="profileDefaultButton" type="button" data-component="Set selected Coding Agent profile as new default">Set profile as new default</button>
+          <button class="modal-btn primary" id="profileInstanceButton" type="button" data-component="Set selected Coding Agent profile just for instance">Set just for instance</button>
         </div>
       </footer>
     </section>
@@ -1728,11 +1856,23 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       }
     };
 
+    const codingAgentDefaultProfiles = {
+      "codex": "B",
+      "claude-code": "B",
+      "opencode": "C"
+    };
+
     const codingProfileNames = {
       A: "FULL POWER",
       B: "BALANCED",
       C: "REVIEW",
       D: "LOW COST"
+    };
+
+    const codingProfileModalState = {
+      variant: "A",
+      provider: "codex",
+      requested: "B"
     };
 
     function codingProfileLabel(letter) {
@@ -1764,70 +1904,130 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       return { requested, resolved: "A", usedFallback: true, reason: "A final fallback" };
     }
 
-    function updateProviderButtonStyles() {
-      document.querySelectorAll("[data-provider-id]").forEach((button) => {
-        const provider = codingAgentProviders[button.getAttribute("data-provider-id")];
-        if (provider) {
-          button.style.setProperty("--provider-color", provider.color);
-        }
+    function activeCodingProvider() {
+      return codingAgentProviders[codingProfileModalState.provider] || codingAgentProviders.codex;
+    }
+
+    function profileParamRows(profile, resolution) {
+      return [
+        ["Model", profile.model],
+        ["Effort", profile.effort],
+        ["Default args", profile.defaultArgs],
+        ["Profile args", profile.profileArgs],
+        ["Resolution", resolution.reason]
+      ];
+    }
+
+    function renderProviderCard(button) {
+      const providerId = button.getAttribute("data-tool-card");
+      const provider = codingAgentProviders[providerId];
+      if (!provider) {
+        return;
+      }
+      const defaultLetter = codingAgentDefaultProfiles[providerId];
+      button.style.setProperty("--provider-color", provider.color);
+      button.classList.toggle("active", providerId === codingProfileModalState.provider);
+      button.innerHTML = `
+        <span>
+          <span class="provider-name">${provider.label}</span>
+          <span class="provider-command">${provider.command}</span>
+        </span>
+        <span class="provider-chip" style="--provider-color: ${provider.color}">${codingProfileLabel(defaultLetter)}</span>
+      `;
+    }
+
+    function renderProfileCard(card) {
+      const letter = card.getAttribute("data-profile-card");
+      const providerId = codingProfileModalState.provider;
+      const provider = activeCodingProvider();
+      const defaultLetter = codingAgentDefaultProfiles[providerId];
+      const resolution = resolvedProfileForProvider(providerId, letter);
+      const profile = provider.profiles[resolution.resolved];
+      const configured = Boolean(provider.profiles[letter]);
+      const selected = letter === codingProfileModalState.requested;
+      const isDefault = letter === defaultLetter;
+      const params = profileParamRows(profile, resolution)
+        .map(([key, value]) => `<div class="profile-param" data-profile-param="${key.toLowerCase().replace(/\s+/g, "-")}"><span>${key}</span><span>${value}</span></div>`)
+        .join("");
+
+      card.classList.toggle("active", selected);
+      card.classList.toggle("default", isDefault);
+      card.classList.toggle("missing", !configured);
+      card.setAttribute("data-component", `${provider.label} ${codingProfileLabel(letter)} profile selector card`);
+      card.innerHTML = `
+        <span class="profile-card-head">
+          <span>
+            <span class="profile-card-title">${codingProfileLabel(letter)}</span>
+            <span class="profile-card-subtitle">${configured ? "configured for selected tool" : `missing; launches ${codingProfileLabel(resolution.resolved)}`}</span>
+          </span>
+          <span class="profile-default-marker">Default</span>
+        </span>
+        <span class="profile-param-list">${params}</span>
+      `;
+    }
+
+    function renderActiveProfileSummary(summary) {
+      const providerId = codingProfileModalState.provider;
+      const provider = activeCodingProvider();
+      const requested = codingProfileModalState.requested;
+      const resolution = resolvedProfileForProvider(providerId, requested);
+      const profile = provider.profiles[resolution.resolved];
+      const rows = profileParamRows(profile, resolution)
+        .map(([key, value]) => `<div class="profile-param" data-profile-param="${key.toLowerCase().replace(/\s+/g, "-")}"><span>${key}</span><span>${value}</span></div>`)
+        .join("");
+      summary.innerHTML = `
+        <div class="active-profile-summary-title">${provider.label} / ${codingProfileLabel(requested)}</div>
+        <div class="profile-param-list">${rows}</div>
+      `;
+    }
+
+    function updateVariantSwitcher() {
+      document.querySelectorAll("[data-modal-variant]").forEach((button) => {
+        button.classList.toggle("active", button.getAttribute("data-modal-variant") === codingProfileModalState.variant);
       });
-      document.querySelectorAll(".provider-chip").forEach((chip) => {
-        const providerId = chip.closest("[data-provider-id]")?.getAttribute("data-provider-id");
-        const provider = codingAgentProviders[providerId];
-        if (provider) {
-          chip.style.setProperty("--provider-color", provider.color);
-        }
+      document.querySelectorAll("[data-profile-variant-panel]").forEach((panel) => {
+        panel.classList.toggle("active", panel.getAttribute("data-profile-variant-panel") === codingProfileModalState.variant);
       });
     }
 
     function selectedCodingProviderId() {
-      return document.querySelector(".provider-card.active")?.getAttribute("data-provider-id") || "codex";
+      return codingProfileModalState.provider;
     }
 
     function selectedRequestedProfile() {
-      return document.getElementById("assignedProfileSelect")?.value || "B";
+      return codingProfileModalState.requested;
     }
 
     function updateCodingProfileModalFields() {
+      const providerId = selectedCodingProviderId();
       const requested = selectedRequestedProfile();
-      const selectedProviderId = selectedCodingProviderId();
-      const selectedResolution = resolvedProfileForProvider(selectedProviderId, requested);
-      const provider = codingAgentProviders[selectedProviderId];
-      const profile = provider.profiles[selectedResolution.resolved];
+      const provider = activeCodingProvider();
+      const selectedResolution = resolvedProfileForProvider(providerId, requested);
+      const defaultLetter = codingAgentDefaultProfiles[providerId];
 
-      document.getElementById("profileModelInput").value = profile.model;
-      document.getElementById("profileEffortInput").value = profile.effort;
-      document.getElementById("profileDefaultArgsInput").value = profile.defaultArgs;
-      document.getElementById("profileArgsInput").value = profile.profileArgs;
-      document.getElementById("profileSourcePill").textContent = requested === "inherit"
-        ? "from template default"
-        : "explicit agent override";
-      document.getElementById("profileStoredSource").textContent = requested === "inherit"
-        ? "Inherited from dev-team template"
-        : `Stored override ${codingProfileLabel(requested)}`;
-
-      const fallbackNotices = [];
-      Object.keys(codingAgentProviders).forEach((providerId) => {
-        const resolution = resolvedProfileForProvider(providerId, requested);
-        const card = document.querySelector(`[data-resolution-provider="${providerId}"]`);
-        card.querySelector('[data-resolution-field="requested"]').textContent = codingProfileLabel(resolution.requested);
-        card.querySelector('[data-resolution-field="resolved"]').textContent = codingProfileLabel(resolution.resolved);
-        card.querySelector('[data-resolution-field="reason"]').textContent = resolution.reason;
-        card.classList.toggle("fallback", resolution.usedFallback);
-        if (resolution.usedFallback) {
-          fallbackNotices.push(`${codingAgentProviders[providerId].label} resolves ${resolution.requested} through ${codingProfileLabel(resolution.resolved)}.`);
-        }
+      updateVariantSwitcher();
+      document.querySelectorAll("[data-tool-card]").forEach(renderProviderCard);
+      document.querySelectorAll("[data-profile-card]").forEach(renderProfileCard);
+      document.querySelectorAll("[data-active-profile-summary]").forEach(renderActiveProfileSummary);
+      document.querySelectorAll("[data-profile-source-pill]").forEach((pill) => {
+        pill.textContent = requested === defaultLetter ? "current tool default" : "instance override preview";
       });
-
-      const notice = document.getElementById("profileFallbackNotice");
-      notice.hidden = fallbackNotices.length === 0;
-      notice.textContent = fallbackNotices.length > 0
-        ? `${fallbackNotices.join(" ")} A remains the immutable final fallback.`
-        : "All providers have a configured cell for the requested profile.";
+      document.querySelectorAll("[data-profile-stored-source]").forEach((source) => {
+        source.textContent = requested === defaultLetter
+          ? `Default for ${provider.label}: ${codingProfileLabel(defaultLetter)}`
+          : `Would store ${codingProfileLabel(requested)} for this instance`;
+      });
+      document.querySelectorAll("[data-profile-fallback-notice]").forEach((notice) => {
+        notice.hidden = !selectedResolution.usedFallback;
+        notice.textContent = selectedResolution.usedFallback
+          ? `${provider.label} has no ${codingProfileLabel(selectedResolution.requested)} profile, so launch resolves through ${codingProfileLabel(selectedResolution.resolved)}. A remains the immutable final fallback.`
+          : `${provider.label} launches with configured ${codingProfileLabel(requested)} parameters.`;
+      });
 
       window.__codingAgentProfileModalState = {
         open: document.getElementById("codingAgentProfileModal")?.classList.contains("open") || false,
-        provider: selectedProviderId,
+        variant: codingProfileModalState.variant,
+        provider: providerId,
         requested,
         resolved: selectedResolution.resolved
       };
@@ -1852,12 +2052,8 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       document.getElementById("profileContextName").textContent = context.name;
       document.getElementById("profileContextProject").textContent = `Project: ${context.project}`;
       document.getElementById("profileContextWorkgroup").textContent = `Workgroup: ${context.workgroup} / ${context.detail}`;
-      document.getElementById("assignedProfileSelect").value = context.kind === "root-agent" ? "inherit" : "B";
-
-      const providerId = target.querySelector?.(".chip.codex") ? "codex" : "codex";
-      document.querySelectorAll(".provider-card").forEach((button) => {
-        button.classList.toggle("active", button.getAttribute("data-provider-id") === providerId);
-      });
+      codingProfileModalState.provider = "codex";
+      codingProfileModalState.requested = codingAgentDefaultProfiles.codex;
 
       modal.classList.add("open");
       modal.setAttribute("aria-hidden", "false");
@@ -1905,8 +2101,8 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     }
 
     function profileModalContextActions(target) {
-      const resolutionTarget = target.closest?.("[data-resolution-provider], .resolution-grid");
-      const fieldTarget = target.closest?.("label.settings-field, input, select");
+      const resolutionTarget = target.closest?.("[data-profile-card], [data-active-profile-summary], [data-profile-param]");
+      const fieldTarget = target.closest?.("[data-tool-card], [data-profile-card], [data-profile-variant-panel]");
       return [
         { label: "Copy component description", copyDescription: true },
         "separator",
@@ -1941,8 +2137,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         }
 
         if (action.resetInherited) {
-          const select = document.getElementById("assignedProfileSelect");
-          select.value = "inherit";
+          codingProfileModalState.requested = codingAgentDefaultProfiles[codingProfileModalState.provider];
           updateCodingProfileModalFields();
           showCaptureToast('"Reset to inherited default"', "prototype action; no persisted profile change");
           return;
@@ -2004,20 +2199,29 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     }
 
     function installCodingAgentProfileModal() {
-      updateProviderButtonStyles();
-      document.querySelectorAll(".provider-card").forEach((button) => {
+      document.querySelectorAll("[data-modal-variant]").forEach((button) => {
         button.addEventListener("click", () => {
-          document.querySelectorAll(".provider-card").forEach((candidate) => candidate.classList.remove("active"));
-          button.classList.add("active");
+          codingProfileModalState.variant = button.getAttribute("data-modal-variant") || "A";
           updateCodingProfileModalFields();
         });
       });
-      document.getElementById("assignedProfileSelect")?.addEventListener("change", updateCodingProfileModalFields);
-      document.getElementById("profileCancelButton")?.addEventListener("click", closeCodingAgentProfileModal);
-      document.getElementById("profileSaveButton")?.addEventListener("click", closeCodingAgentProfileModal);
-      document.getElementById("manageMatrixButton")?.addEventListener("click", () => {
-        showCaptureToast('"Manage matrix/defaults"', "opens Settings / Coding Agents in the real app");
+      document.querySelectorAll("[data-tool-card]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const providerId = button.getAttribute("data-tool-card") || "codex";
+          codingProfileModalState.provider = providerId;
+          codingProfileModalState.requested = codingAgentDefaultProfiles[providerId];
+          updateCodingProfileModalFields();
+        });
       });
+      document.querySelectorAll("[data-profile-card]").forEach((button) => {
+        button.addEventListener("click", () => {
+          codingProfileModalState.requested = button.getAttribute("data-profile-card") || codingAgentDefaultProfiles[codingProfileModalState.provider];
+          updateCodingProfileModalFields();
+        });
+      });
+      document.getElementById("profileCancelButton")?.addEventListener("click", closeCodingAgentProfileModal);
+      document.getElementById("profileDefaultButton")?.addEventListener("click", closeCodingAgentProfileModal);
+      document.getElementById("profileInstanceButton")?.addEventListener("click", closeCodingAgentProfileModal);
       document.getElementById("codingAgentProfileModal")?.addEventListener("click", (event) => {
         if (event.target === event.currentTarget) {
           closeCodingAgentProfileModal();
