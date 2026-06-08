@@ -203,6 +203,9 @@ pub struct PersistedSession {
     #[serde(default)]
     pub was_detached: bool,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prompt: Option<String>,
+
     /// Last-known geometry of this session's detached window. `None` for sessions
     /// that were never detached, or detached without any drag/resize yet. Auto-GC'd
     /// when the session is destroyed (field travels with the PersistedSession row).
@@ -766,6 +769,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             // `DetachedSessionsState` set is NOT consulted at persist time — the Destroyed
             // handler clears the set before `RunEvent::Exit` runs the final persist.
             was_detached: s.was_detached,
+            last_prompt: s.last_prompt.clone(),
             detached_geometry: s.detached_geometry.clone(),
             // Legacy fields are always None on new saves; skip_serializing_if elides them.
             git_branch_source: None,
@@ -1165,6 +1169,7 @@ mod tests {
     fn sanitize_failed_recoverable_drops_runtime_fields() {
         use crate::session::session::SessionStatus;
         let ps = PersistedSession {
+            last_prompt: None,
             name: "alice".into(),
             shell: "claude".into(),
             shell_args: vec!["--continue".into()],
@@ -1215,6 +1220,7 @@ mod tests {
     #[test]
     fn sanitize_failed_recoverable_is_idempotent() {
         let ps = PersistedSession {
+            last_prompt: None,
             name: "bob".into(),
             shell: "cmd".into(),
             shell_args: vec![],
@@ -1260,6 +1266,7 @@ mod tests {
     #[test]
     fn telegram_bot_id_round_trips_when_present() {
         let ps = PersistedSession {
+            last_prompt: None,
             name: "telegram-on".into(),
             shell: "codex".into(),
             shell_args: vec![],
@@ -1379,6 +1386,7 @@ mod tests {
         let project_paths = vec!["C:/projects/current".to_string()];
         let sessions = vec![
             PersistedSession {
+            last_prompt: None,
                 name: "kept-coordinator".into(),
                 working_directory: "C:/projects/current/.ac/wg-1/__agent_tech-lead".into(),
                 is_coordinator: true,
@@ -1386,6 +1394,7 @@ mod tests {
                 ..Default::default()
             },
             PersistedSession {
+            last_prompt: None,
                 name: "orphan-coordinator".into(),
                 working_directory: "C:/projects/removed/.ac/wg-1/__agent_tech-lead".into(),
                 is_coordinator: true,
@@ -1393,6 +1402,7 @@ mod tests {
                 ..Default::default()
             },
             PersistedSession {
+            last_prompt: None,
                 name: "orphan-member".into(),
                 working_directory: "C:/projects/removed/.ac/wg-1/__agent_dev-rust".into(),
                 is_coordinator: false,
@@ -1419,11 +1429,13 @@ mod tests {
 
         let sessions = vec![
             PersistedSession {
+            last_prompt: None,
                 name: "keep".into(),
                 working_directory: current_agent.to_string_lossy().to_string(),
                 ..Default::default()
             },
             PersistedSession {
+            last_prompt: None,
                 name: "drop".into(),
                 working_directory: removed_agent.to_string_lossy().to_string(),
                 ..Default::default()
@@ -1701,6 +1713,7 @@ mod tests {
     #[test]
     fn legacy_migration_single_repo_shape() {
         let mut ps = PersistedSession {
+            last_prompt: None,
             name: "sess-a".into(),
             shell: "cmd".into(),
             shell_args: vec![],
@@ -1752,6 +1765,7 @@ mod tests {
         let cases = [SessionStatus::Exited(0), SessionStatus::Running];
         for status in cases {
             let ps = PersistedSession {
+            last_prompt: None,
                 name: "coord-x".into(),
                 shell: "claude".into(),
                 shell_args: vec![],
@@ -1795,6 +1809,7 @@ mod tests {
     #[test]
     fn is_root_agent_round_trips_true() {
         let ps = PersistedSession {
+            last_prompt: None,
             name: "Root Agent".into(),
             shell: "codex".into(),
             shell_args: vec![],
@@ -1813,6 +1828,7 @@ mod tests {
     #[test]
     fn legacy_migration_multi_repo_shape() {
         let mut ps = PersistedSession {
+            last_prompt: None,
             name: "sess-multi".into(),
             shell: "cmd".into(),
             shell_args: vec![],
@@ -1920,6 +1936,7 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             handles.push(thread::spawn(move || {
                 let sessions = vec![PersistedSession {
+            last_prompt: None,
                     name: format!("sess-{}", i),
                     shell: "cmd".into(),
                     shell_args: vec![],
@@ -1983,6 +2000,7 @@ mod tests {
     fn save_sessions_to_dir_round_trips_and_cleans_up_temp() {
         let tmp = tempfile::tempdir().expect("tmp");
         let sessions = vec![PersistedSession {
+            last_prompt: None,
             name: "solo".into(),
             shell: "claude".into(),
             shell_args: vec!["--print".into()],

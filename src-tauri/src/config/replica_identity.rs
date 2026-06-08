@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::config::workspace::{ensure_authoritative_workspace_dir, find_workspace_ancestor};
 
 pub const ROLE_MD_FILENAME: &str = "Role.md";
-pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] =
-    &["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"];
+pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT"];
+const DEPRECATED_REPOS_WORKSPACE_CONTEXT: &str = "$REPOS_WORKSPACE_INFO";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgReplicaIdentity {
@@ -128,7 +128,7 @@ fn relative_path(from: &Path, to: &Path) -> Result<String, String> {
 
     if common == 0 {
         return Err(format!(
-            "cannot compute same-workspace identity between '{}' and '{}'",
+            "cannot compute same-Project AC Root identity between '{}' and '{}'",
             display_path(from),
             display_path(to)
         ));
@@ -185,7 +185,7 @@ fn validate_local_matrix(
         .map(strip_unc)
         .map_err(|e| {
             format!(
-                "Failed to canonicalize AC workspace '{}': {}",
+                "Failed to canonicalize Project AC Root '{}': {}",
                 display_path(workspace_dir),
                 e
             )
@@ -201,7 +201,7 @@ fn validate_local_matrix(
         })?;
     if !matrix_abs.starts_with(&workspace_abs) {
         return Err(format!(
-            "WG replica identity target '{}' escapes authoritative workspace '{}'",
+            "WG replica identity target '{}' escapes authoritative Project AC Root '{}'",
             display_path(&matrix_abs),
             display_path(&workspace_abs)
         ));
@@ -211,7 +211,7 @@ fn validate_local_matrix(
 }
 
 /// Derive the only valid identity for a WG replica:
-/// `<project>/<workspace>/wg-N-team/__agent_NAME` -> `<project>/<workspace>/_agent_NAME`.
+/// `<project>/<Project AC Root>/wg-N-team/__agent_NAME` -> `<project>/<Project AC Root>/_agent_NAME`.
 pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdentity, String> {
     let replica_dir_name = replica_dir
         .file_name()
@@ -249,7 +249,7 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
 
     let workspace_dir = find_workspace_ancestor(replica_dir).ok_or_else(|| {
         format!(
-            "WG replica directory '{}' is not inside an AC workspace",
+            "WG replica directory '{}' is not inside a Project AC Root",
             display_path(replica_dir)
         )
     })?;
@@ -317,7 +317,10 @@ pub fn normalize_wg_replica_context_entries(
     }
 
     for entry in existing_context {
-        if required_prefix.contains(&entry.as_str()) || is_identity_role_context_entry(entry) {
+        if entry == DEPRECATED_REPOS_WORKSPACE_CONTEXT
+            || required_prefix.contains(&entry.as_str())
+            || is_identity_role_context_entry(entry)
+        {
             continue;
         }
         if seen.insert(entry.clone()) {
@@ -346,19 +349,23 @@ pub fn repair_wg_replica_config_value(
     )?;
     config["identity"] = Value::String(identity.identity.clone());
 
-    if let Some(context_array) = config.get("context").and_then(|value| value.as_array()) {
-        let existing_context: Vec<String> = context_array
-            .iter()
-            .filter_map(|value| value.as_str().map(String::from))
-            .collect();
-        let role_exists = identity.matrix_dir.join(ROLE_MD_FILENAME).exists();
-        config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
-            &existing_context,
-            required_context_prefix,
-            &identity.identity,
-            role_exists,
-        ));
-    }
+    let existing_context: Vec<String> = config
+        .get("context")
+        .and_then(|value| value.as_array())
+        .map(|context_array| {
+            context_array
+                .iter()
+                .filter_map(|value| value.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let role_exists = identity.matrix_dir.join(ROLE_MD_FILENAME).exists();
+    config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
+        &existing_context,
+        required_context_prefix,
+        &identity.identity,
+        role_exists,
+    ));
 
     Ok(identity)
 }
@@ -470,7 +477,6 @@ mod tests {
             config["context"],
             serde_json::json!([
                 "$AGENTSCOMMANDER_CONTEXT",
-                "$REPOS_WORKSPACE_INFO",
                 "notes.md",
                 "../../_agent_tech-lead/Role.md"
             ])

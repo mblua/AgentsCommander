@@ -5,9 +5,12 @@ import type { RepoMatch, Session, SessionRepo, SessionsState, Team, TeamSessionG
 import { projectStore } from "./project";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
-import { isRuntimeStringStatus, upsertSessionList } from "./sessions-helpers";
+import { isRuntimeStringStatus, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
 
 const [toggleInFlight, setToggleInFlight] = createSignal(false);
+const [sidebarPointerInside, setSidebarPointerInside] = createSignal(false);
+const [lastCoordinatorVisibleOrderByProject, setLastCoordinatorVisibleOrderByProject] = createSignal<Record<string, string[]>>({});
+const [frozenCoordinatorVisibleOrderByProject, setFrozenCoordinatorVisibleOrderByProject] = createSignal<Record<string, string[]>>({});
 
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
@@ -16,6 +19,7 @@ const [state, setState] = createStore<SessionsState>({
   teamFilter: null,
   showInactive: false,
   showCategories: true,
+  alwaysShowSelectedWorkgroup: true,
   repos: [],
   coordSortByActivity: false,
   lastActivityBySessionId: {},
@@ -24,6 +28,11 @@ const [state, setState] = createStore<SessionsState>({
 
 function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+}
+
+function stringArraysEqual(a: string[] | undefined, b: string[]): boolean {
+  if (!a || a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
 }
 
 const allTeamPathsMemo = createMemo(() => {
@@ -266,6 +275,9 @@ export const sessionsStore = {
   get showCategories() {
     return state.showCategories;
   },
+  get alwaysShowSelectedWorkgroup() {
+    return state.alwaysShowSelectedWorkgroup;
+  },
   get repos() {
     return state.repos;
   },
@@ -369,6 +381,23 @@ export const sessionsStore = {
     setState("showCategories", !state.showCategories);
   },
 
+  async toggleAlwaysShowSelectedWorkgroup() {
+    if (toggleInFlight()) return;
+    setToggleInFlight(true);
+    const next = !state.alwaysShowSelectedWorkgroup;
+    setState("alwaysShowSelectedWorkgroup", next);
+    try {
+      const current = await SettingsAPI.get();
+      await SettingsAPI.update({ ...current, alwaysShowSelectedWorkgroup: next });
+      void settingsStore.refresh();
+    } catch (e) {
+      console.error("[always-show-wg] Failed to persist alwaysShowSelectedWorkgroup:", e);
+      setState("alwaysShowSelectedWorkgroup", !next);
+    } finally {
+      setToggleInFlight(false);
+    }
+  },
+
   get coordSortByActivity() {
     return state.coordSortByActivity;
   },
@@ -380,6 +409,40 @@ export const sessionsStore = {
   },
   get toggleInFlight() {
     return toggleInFlight();
+  },
+  get sidebarPointerInside() {
+    return sidebarPointerInside();
+  },
+
+  setAlwaysShowSelectedWorkgroup(value: boolean) {
+    setState("alwaysShowSelectedWorkgroup", value);
+  },
+
+  setSidebarPointerInside(value: boolean) {
+    if (value === sidebarPointerInside()) return;
+    if (value) {
+      setFrozenCoordinatorVisibleOrderByProject(lastCoordinatorVisibleOrderByProject());
+    } else {
+      setFrozenCoordinatorVisibleOrderByProject({});
+    }
+    setSidebarPointerInside(value);
+  },
+
+  coordinatorVisibleOrder(projectPath: string, nextKeys: string[]): string[] {
+    if (!sidebarPointerInside()) return nextKeys;
+
+    const frozenByProject = frozenCoordinatorVisibleOrderByProject();
+    const frozenKeys = frozenByProject[projectPath] ?? lastCoordinatorVisibleOrderByProject()[projectPath] ?? nextKeys;
+    const visibleKeys = reconcileVisibleOrderKeys(nextKeys, frozenKeys);
+    if (!stringArraysEqual(frozenByProject[projectPath], visibleKeys)) {
+      setFrozenCoordinatorVisibleOrderByProject((prev) => ({ ...prev, [projectPath]: visibleKeys }));
+    }
+    return visibleKeys;
+  },
+
+  recordCoordinatorVisibleOrder(projectPath: string, visibleKeys: string[]) {
+    if (stringArraysEqual(lastCoordinatorVisibleOrderByProject()[projectPath], visibleKeys)) return;
+    setLastCoordinatorVisibleOrderByProject((prev) => ({ ...prev, [projectPath]: visibleKeys }));
   },
 
   setCoordSortByActivity(value: boolean) {

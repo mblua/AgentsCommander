@@ -178,11 +178,14 @@ export interface AppSettings {
   sidebarStyle: string;
   onboardingDismissed: boolean;
   coordSortByActivity: boolean;
+  alwaysShowSelectedWorkgroup?: boolean;
   injectRtkHook: boolean;
   rtkPromptDismissed: boolean;
+  informWhenRtkInstalled: boolean;
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
+  specBoardEnabled: boolean;
 }
 
 // Team grouping for sidebar
@@ -216,6 +219,7 @@ export interface SessionsState {
   teamFilter: string | null;
   showInactive: boolean;
   showCategories: boolean;
+  alwaysShowSelectedWorkgroup: boolean;
   repos: RepoMatch[];
   coordSortByActivity: boolean;
   lastActivityBySessionId: Record<string, number>;
@@ -290,12 +294,21 @@ export interface AcDiscoveryResult {
   workgroups: AcWorkgroup[];
 }
 
+export type AcProjectRefreshReason =
+  | "projectRegistered"
+  | "createAgentMatrix"
+  | "workgroupCreated"
+  | "workgroupRemoved"
+  | "teamMembershipChanged"
+  | "teamMembershipRemoved"
+  | string;
+
 export interface AcProjectRefreshRequestedPayload {
   id: string;
   projectPath: string;
-  agentPath?: string;
-  agentName?: string;
-  reason: "createAgentMatrix";
+  changedPath?: string | null;
+  changedName?: string | null;
+  reason: AcProjectRefreshReason;
 }
 
 // Team wizard shared types (used by NewTeamModal and EditTeamModal)
@@ -439,3 +452,50 @@ export interface RoleTemplateMeta {
   emoji?: string | null;
   hasSkills: boolean;
 }
+
+export interface SpecBoardDocument {
+  docId: string;
+  repoRoot: string;
+  path: string | null;
+  fileKind: SpecBoardFileKind;
+  content: string;
+  diagramSource: string;
+  dirty: boolean;
+  conflict: SpecBoardConflict | null;
+  versionIndex: number;
+  versionCount: number;
+  updatedAtMs: number;
+}
+
+export type SpecBoardFileKind = "mermaid" | "markdown";
+
+export interface SpecBoardConflict {
+  path: string;
+  pendingExternalContent: string;
+  pendingExternalDiagramSource: string;
+  detectedAtMs: number;
+}
+
+export interface SpecBoardSnapshot {
+  id: string;
+  label: string;
+  createdAtMs: number;
+  source: SpecBoardSnapshotSource;
+  content: string;
+  diagramSource: string;
+  hash: string;
+}
+
+export type SpecBoardSnapshotSource = "initial" | "open" | "edit" | "save" | "external" | "checkout";
+
+export interface SpecBoardChangedEvent {
+  docId: string;
+  path: string | null;
+  content: string;
+  diagramSource: string;
+  versionIndex: number;
+  versionCount: number;
+  external: boolean;
+}
+
+

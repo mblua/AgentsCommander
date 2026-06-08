@@ -237,6 +237,8 @@ pub struct AppSettings {
     /// Per-session timestamps live in the frontend store and are NOT persisted.
     #[serde(default)]
     pub coord_sort_by_activity: bool,
+    #[serde(default = "default_true")]
+    pub always_show_selected_workgroup: bool,
     /// Optional logger filter expression. Applied at startup if `RUST_LOG` is unset.
     /// Uses standard `env_logger` filter syntax (e.g. `info,agentscommander_lib::config::teams=trace`).
     /// Phase 1 of #93 — settings-level control with `RUST_LOG` env override (backwards-compat).
@@ -253,6 +255,13 @@ pub struct AppSettings {
     /// ask again]` button on the banner. See issue #120.
     #[serde(default)]
     pub rtk_prompt_dismissed: bool,
+    /// When true, AC may surface the startup banner offering to enable
+    /// `inject_rtk_hook`, subject to the other gates: `rtk` on PATH,
+    /// `inject_rtk_hook == false`, and `rtk_prompt_dismissed == false`.
+    /// Defaults to `false` so the banner is opt-in and never appears unless the
+    /// user enables it in Settings → General → RTK. See issue #426.
+    #[serde(default)]
+    pub inform_when_rtk_installed: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
     /// agent to add a YAML frontmatter `title:` line to its workgroup
     /// `TASK.md` (only if the brief is non-empty and has no `title:` yet).
@@ -270,6 +279,10 @@ pub struct AppSettings {
     /// the legacy light-mode behavior. Issue #289.
     #[serde(default = "default_true")]
     pub theme_light: bool,
+    /// When true, show the Spec Board toolbar button. Defaults off because the
+    /// board is an opt-in feature enabled manually from settings.json.
+    #[serde(default)]
+    pub spec_board_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -373,13 +386,53 @@ impl Default for AppSettings {
             root_token: None,
             onboarding_dismissed: false,
             coord_sort_by_activity: false,
+            always_show_selected_workgroup: true,
             log_level: None,
             inject_rtk_hook: false,
             rtk_prompt_dismissed: false,
+            inform_when_rtk_installed: false,
             auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: true,
+            spec_board_enabled: false,
         }
+    }
+}
+
+/// Pure decision for the boot-time RTK banner/sweep mode (issue #120 §18,
+/// extended by issue #426). Maps the three persisted settings flags plus the
+/// runtime `rtk`-on-PATH probe to one of the four `RtkStartupMode` strings the
+/// frontend understands. Side-effect-free so the full truth table is unit
+/// testable without booting Tauri, spawning the setup task, probing PATH, or
+/// touching disk.
+///
+/// `inform_when_rtk_installed` is the issue #426 opt-in gate: the
+/// `prompt-enable` banner only appears when the user has explicitly turned it
+/// on. `rtk_prompt_dismissed` is retained as a secondary suppression gate (the
+/// banner's `[Don't ask again]` button) and still wins when set.
+pub fn compute_rtk_startup_mode(
+    rtk_present: bool,
+    inject_enabled: bool,
+    prompt_dismissed: bool,
+    inform_when_rtk_installed: bool,
+) -> &'static str {
+    match (
+        rtk_present,
+        inject_enabled,
+        prompt_dismissed,
+        inform_when_rtk_installed,
+    ) {
+        // Opt-in banner: rtk present, not yet injected, not dismissed, and the
+        // user asked to be informed. All four must hold (issue #426).
+        (true, false, false, true) => "prompt-enable",
+        // Already enabled: recover/refresh the hook. `inform` and `dismissed`
+        // are irrelevant once injection is on.
+        (true, true, _, _) => "active",
+        // Enabled but the binary vanished from PATH: auto-disable and clean up.
+        (false, true, _, _) => "auto-disabled",
+        // Everything else (inform=false, or dismissed=true, or rtk absent and
+        // not injected) is a no-op.
+        _ => "silent",
     }
 }
 
@@ -1085,6 +1138,22 @@ mod tests {
     }
 
     #[test]
+    fn spec_board_enabled_round_trips_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(!s.spec_board_enabled);
+        let default_json = serde_json::to_string(&s).expect("serialize default");
+        assert!(default_json.contains("\"specBoardEnabled\":false"));
+
+        s.spec_board_enabled = true;
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"specBoardEnabled\":true"));
+
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.spec_board_enabled);
+    }
+
+    #[test]
     fn coord_sort_by_activity_round_trips_through_serde() {
         let mut s = AppSettings::default();
         assert!(!s.coord_sort_by_activity);
@@ -1283,6 +1352,88 @@ mod tests {
         assert!(back.rtk_prompt_dismissed);
     }
 
+    #[test]
+    fn inform_when_rtk_installed_round_trips_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(!s.inform_when_rtk_installed);
+        s.inform_when_rtk_installed = true;
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"informWhenRtkInstalled\":true"));
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.inform_when_rtk_installed);
+    }
+
+    #[test]
+    fn inform_when_rtk_installed_defaults_false_when_missing_from_json() {
+        // Old settings.json without the #426 field must deserialize to false so
+        // the startup banner stays opt-in (never appears after an upgrade).
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": []
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(!s.inform_when_rtk_installed);
+    }
+
+    #[test]
+    fn compute_rtk_startup_mode_prompt_enable_requires_all_gates() {
+        // Opt-in banner: only when rtk present, injection off, not dismissed,
+        // AND the user opted in (#426).
+        assert_eq!(
+            super::compute_rtk_startup_mode(true, false, false, true),
+            "prompt-enable"
+        );
+    }
+
+    #[test]
+    fn compute_rtk_startup_mode_silent_when_inform_off() {
+        // Core #426 regression guard: rtk present, not injected, not dismissed,
+        // but inform=false => no banner (silent). This is the new default.
+        assert_eq!(
+            super::compute_rtk_startup_mode(true, false, false, false),
+            "silent"
+        );
+    }
+
+    #[test]
+    fn compute_rtk_startup_mode_dismissed_suppresses_even_when_inform_on() {
+        // rtk_prompt_dismissed remains a secondary gate (#426): a dismissed
+        // prompt stays suppressed even if inform was later enabled.
+        assert_eq!(
+            super::compute_rtk_startup_mode(true, false, true, true),
+            "silent"
+        );
+    }
+
+    #[test]
+    fn compute_rtk_startup_mode_active_when_injected_regardless_of_inform() {
+        assert_eq!(
+            super::compute_rtk_startup_mode(true, true, false, false),
+            "active"
+        );
+        assert_eq!(
+            super::compute_rtk_startup_mode(true, true, true, true),
+            "active"
+        );
+    }
+
+    #[test]
+    fn compute_rtk_startup_mode_auto_disabled_when_missing_but_injected() {
+        assert_eq!(
+            super::compute_rtk_startup_mode(false, true, false, false),
+            "auto-disabled"
+        );
+    }
+
+    #[test]
+    fn compute_rtk_startup_mode_silent_when_missing_and_not_injected() {
+        assert_eq!(
+            super::compute_rtk_startup_mode(false, false, false, true),
+            "silent"
+        );
+    }
+
     // ── Issue #248 — legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
     //
     // The minimal JSON below carries the three fields without serde defaults
@@ -1399,5 +1550,18 @@ mod tests {
         }"#;
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(!s.coord_sort_by_activity);
+    }
+
+    #[test]
+    fn spec_board_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(!s.spec_board_enabled);
     }
 }

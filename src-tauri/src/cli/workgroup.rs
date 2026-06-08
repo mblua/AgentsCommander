@@ -101,15 +101,35 @@ pub(crate) fn resolve_cli_project(project: &str) -> Result<PathBuf, String> {
 
 pub(crate) fn resolve_cli_workspace(project_path: &Path) -> Result<PathBuf, String> {
     existing_workspace_dir(project_path)
-        .ok_or_else(|| format!("AC workspace not found in {} (.ac)", project_path.display()))
+        .ok_or_else(|| format!("Project AC Root not found in {} (.ac)", project_path.display()))
 }
 
 pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str, reason: &str) {
+    let canonical_project_path =
+        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+    let canonical_changed_path =
+        std::fs::canonicalize(changed_path).unwrap_or_else(|_| changed_path.to_path_buf());
     let request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
-        project_path: project_path.to_string_lossy().to_string(),
-        agent_path: changed_path.to_string_lossy().to_string(),
-        agent_name: name.to_string(),
+        project_path: canonical_project_path.to_string_lossy().to_string(),
+        changed_path: Some(canonical_changed_path.to_string_lossy().to_string()),
+        changed_name: Some(name.to_string()),
+        reason: reason.to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(e) = write_project_refresh_request(&request) {
+        eprintln!("Warning: failed to request project refresh: {}", e);
+    }
+}
+
+pub(crate) fn write_project_registration_refresh(project_path: &Path, reason: &str) {
+    let canonical_project_path =
+        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+    let request = ProjectRefreshRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        project_path: canonical_project_path.to_string_lossy().to_string(),
+        changed_path: None,
+        changed_name: None,
         reason: reason.to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
     };

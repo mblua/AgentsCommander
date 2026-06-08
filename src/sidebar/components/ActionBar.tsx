@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { UnlistenFn } from "../../shared/transport";
-import { ProjectAPI, GuideAPI, SettingsAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
+import { ProjectAPI, GuideAPI, SettingsAPI, SpecBoardAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import { setSoundsEnabled } from "../../shared/sound";
 import { homeStore } from "../../main/stores/home";
@@ -53,6 +53,20 @@ const ActionBar: Component = () => {
   });
 
   onCleanup(() => document.removeEventListener("mousedown", onClickAway));
+
+  const onConfirmKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") setConfirmPath(null);
+  };
+
+  createEffect(() => {
+    if (confirmPath()) {
+      window.addEventListener("keydown", onConfirmKeyDown);
+    } else {
+      window.removeEventListener("keydown", onConfirmKeyDown);
+    }
+  });
+
+  onCleanup(() => window.removeEventListener("keydown", onConfirmKeyDown));
 
   // Cross-window / same-window trigger to open the Settings modal (e.g. from a
   // disabled mic button prompting the user to configure voice). The optional
@@ -195,6 +209,12 @@ const ActionBar: Component = () => {
           </Show>
         </div>
         <div class="action-bar-icons">
+          <Show when={settingsStore.current?.specBoardEnabled === true}>
+            <button class="toolbar-gear-btn" onClick={() => SpecBoardAPI.open()} title="Spec board">
+              &#x25A7;
+            </button>
+          </Show>
+
           <button
             class={`toolbar-gear-btn home-toggle-btn ${homeStore.visible ? "active" : ""}`}
             onClick={() => homeStore.toggle()}
@@ -228,6 +248,13 @@ const ActionBar: Component = () => {
           >
             &#x1F441;
           </button>
+          <button
+            class={`toolbar-gear-btn show-categories-btn ${sessionsStore.alwaysShowSelectedWorkgroup ? "active" : ""}`}
+            onClick={() => sessionsStore.toggleAlwaysShowSelectedWorkgroup()}
+            title={sessionsStore.alwaysShowSelectedWorkgroup ? "Don't force 'Selected Workgroup' visible" : "Always show 'Selected Workgroup'"}
+          >
+            &#x1F4CC;
+          </button>
           <button class="toolbar-gear-btn" onClick={() => GuideAPI.open()} title="Hints">
             &#x1F4A1;
           </button>
@@ -256,7 +283,7 @@ const ActionBar: Component = () => {
         />
       )}
       <Show when={confirmPath()}>
-        <div class="confirm-overlay" onClick={() => setConfirmPath(null)}>
+        <div class="confirm-overlay">
           <div class="confirm-dialog" onClick={(e) => e.stopPropagation()}>
             <p class="confirm-text">
               This folder does not have an AC project. Do you want to create a new project here?

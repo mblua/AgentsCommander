@@ -18,7 +18,7 @@ See [Portable instances](../features/portable-instances.md) for the rule.
 
 - The file is **JSON** (not JSONC, not YAML). Comments are not allowed.
 - AC reads at startup and on `update_settings` IPC calls.
-- If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. Edit while AC is closed, or use the **Settings** UI.
+- If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
 - AC tolerates unknown fields (`serde` skips them) so adding a field will not break an older binary, but the older binary will not honor it.
 
 ## Example
@@ -59,7 +59,8 @@ A minimal `settings.json`:
   "geminiModel": "gemini-2.5-flash",
   "voiceAutoExecute": true,
   "voiceAutoExecuteDelay": 15,
-  "themeLight": false
+  "themeLight": false,
+  "specBoardEnabled": false
 }
 ```
 
@@ -108,6 +109,7 @@ A minimal `settings.json`:
 | `mainZoom` / `terminalZoom` / `sidebarZoom` / `guideZoom` | number | `1.0` | Per-window zoom (1.0 = 100%). |
 | `mainGeometry` / `sidebarGeometry` / `terminalGeometry` | object \| null | `null` | Persisted window geometry. AC writes these on close. |
 | `themeLight` | bool | `true` | Light theme on; dark theme when false. |
+| `specBoardEnabled` | bool | `false` | Shows the Spec Board toolbar button when true. This only controls the sidebar toolbar entrypoint; backend Spec Board commands remain callable and this is not an access-control or security boundary. |
 | `sidebarStyle` | string | `"noir-minimal"` | Sidebar visual variant. Options: `noir-minimal`, `card-sections`, `command-center`, `deep-space`, `arctic-ops`, `obsidian-mesh`, `neon-circuit`. |
 | `soundsEnabled` | bool | `true` | Master switch for all app-emitted sounds. |
 | `teamIdleBeepEnabled` | bool | `true` | Beep when a team transitions from busy → all-idle. Gated by `soundsEnabled`. |
@@ -152,7 +154,8 @@ See [Telegram bridge setup](../integrations/telegram.md).
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `injectRtkHook` | bool | `false` | Inject the RTK `PreToolUse` hook into every managed agent's `.claude/settings.local.json` at startup. |
-| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected — enable hook injection?" banner for the lifetime of this settings file. |
+| `informWhenRtkInstalled` | bool | `false` | Opt-in gate for the startup "RTK detected, enable hook injection?" banner. Off by default, so the banner never appears unless you enable it. The banner also requires `injectRtkHook=false` and `rtkPromptDismissed=false`. Evaluated at startup; a change applies on the next launch. |
+| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected, enable hook injection?" banner for the lifetime of this settings file. |
 
 See [RTK integration](../features/rtk-integration.md).
 
@@ -166,7 +169,7 @@ See [RTK integration](../features/rtk-integration.md).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `agentTemplatesPath` | string \| null | `null` | Local agent-templates root for the role-template picker. Empty/missing → default `<config-dir>/agent-templates/`. Relative → resolved against `<config-dir>/`. |
+| `agentTemplatesPath` | string \| null | `null` | Local agent-templates root for the role-template picker. Empty/missing → default `<config-dir>/agent-templates/`. Relative → resolved against `<config-dir>/`. This does not control the Agency cache at `<config-dir>/agency-agents_templates`. |
 
 ### Tokens
 

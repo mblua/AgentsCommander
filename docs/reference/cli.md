@@ -26,6 +26,8 @@ All subcommands return:
 - `1` — error (auth, IO, routing, validation)
 - `2` — special: outcome unknown (used by `close-session` when delivery succeeded but no response landed in the poll window)
 
+Exception: `harness` returns `0` for successful `--explain` and `--dry-run`, returns `1` for deny, validation, spawn, or audit-log failures, and propagates the child process exit code when it actually executes a command.
+
 ## Discoverability
 
 ```bash
@@ -34,6 +36,48 @@ agentscommander <subcommand> --help     # full args + after-help block for one s
 ```
 
 The `--help` text is the source of truth; this page is a curated index.
+
+---
+
+## `agency-templates`
+
+Manage the explicit Agency Agents role-template cache.
+
+```bash
+agentscommander agency-templates status --pretty
+agentscommander agency-templates update --ref main
+agentscommander agency-templates list --pretty
+```
+
+`update` resolves the ref to a commit and publishes `<config-dir>/agency-agents_templates` under a single-writer lock. The updater uses `git`, so `git` must be installed and available on `PATH`. `list`, `status`, and `create-agent-matrix --role-template agency:<id>` operate offline on the validated cache.
+
+Status reasons include `missing`, `locked`, `manifestMissing`, `manifestMalformed`, `invalidCommit`, `templateCountMismatch`, and `cacheInvalid`.
+
+---
+
+## `harness`
+
+Execute a command through the Phase 1 policy harness.
+
+```bash
+agentscommander harness -- git status --short
+agentscommander harness --dry-run -- git branch risky-name
+agentscommander harness --raw-command "echo first && echo second"
+agentscommander harness --explain --raw-command "rm -rf /"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--dry-run` | No | Evaluate policy and write the audit log without spawning the command. Exits 0 unless policy denies or logging fails. |
+| `--explain` | No | Print the policy decision without spawning the command. Exits 0 unless policy denies or logging fails. |
+| `--raw-command` | * | Literal command string executed through the platform shell (`cmd.exe /C` on Windows, `sh -c` on Unix). Policy matching is best-effort. |
+| `COMMAND...` | * | Command after `--`. Arguments are passed natively to the child process, preserving boundaries and quotes. |
+
+\* Use either `--raw-command` or a command after `--`.
+
+Audit log entries are JSON Lines at `<config_dir>/logs/harness.log`. The harness redacts token-like values before logging, caps logged command text, and treats `AGENTSCOMMANDER_ROOT` and `AGENTSCOMMANDER_TOKEN` only as unverified audit hints. Phase 1 is an obedient harness and does not prevent direct shell execution by agents.
+
+See [AgentsCommander Harness Roadmap](../harness-roadmap.md) for the phase 1 through 4 roadmap.
 
 ---
 
@@ -375,7 +419,7 @@ If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
 ## `new-project`
 
-Create an AC project at PATH (mkdir `.ac/` if no workspace exists) and register it.
+Create an AC project at PATH (mkdir `.ac/` if no Project AC Root exists) and register it.
 
 ```bash
 agentscommander new-project /path/to/project
@@ -385,7 +429,7 @@ agentscommander new-project /path/to/project
 |---|---|
 | `PATH` | Absolute or relative. Folder created if it does not yet exist. |
 
-Idempotent: re-running on a folder that already has `.ac/` only sweeps the workspace gitignore and deduplicates the registration.
+Idempotent: re-running on a folder that already has `.ac/` only sweeps the Project AC Root gitignore and deduplicates the registration.
 
 **No token required** — same reasoning as `open-project`.
 

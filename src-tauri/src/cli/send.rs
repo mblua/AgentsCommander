@@ -148,7 +148,7 @@ fn wait_for_delivery_confirmation(
     }
 }
 
-/// If `root` lives inside `<project_dir>/<workspace>/wg-<N>-*/__agent_*/`,
+/// If `root` lives inside `<project_dir>/<Project AC Root>/wg-<N>-*/__agent_*/`,
 /// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
 /// inside a WG-replica shape OR if the resulting `project_dir` is not valid
 /// UTF-8 (parity with `list_peers::detect_wg_replica`, which also uses
@@ -200,7 +200,7 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
 fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
     let workspace_dir = wg_root.parent().ok_or_else(|| {
         format!(
-            "workgroup root '{}' has no parent workspace directory",
+            "workgroup root '{}' has no parent Project AC Root directory",
             wg_root.display()
         )
     })?;

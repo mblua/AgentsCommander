@@ -58,10 +58,6 @@ const TaskCleanConfirmModal: Component<TaskCleanConfirmModalProps> = (props) => 
     });
   });
 
-  const onBackdropClick = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) props.onCancel();
-  };
-
   return (
     <div
       class="quit-confirm-backdrop"
@@ -69,7 +65,6 @@ const TaskCleanConfirmModal: Component<TaskCleanConfirmModalProps> = (props) => 
       aria-modal="true"
       aria-labelledby="task-clean-title"
       aria-describedby="task-clean-body"
-      onClick={onBackdropClick}
     >
       <div class="quit-confirm-modal">
         <h2 id="task-clean-title" class="quit-confirm-title">Clean TASK?</h2>

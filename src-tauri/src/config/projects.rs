@@ -53,8 +53,10 @@ pub enum ProjectError {
     CwdFailure(String, std::io::Error),
     #[error("failed to create .ac directory at {0}: {1}")]
     WorkspaceCreateFailed(PathBuf, std::io::Error),
-    #[error("failed to write workspace .gitignore at {0}: {1}")]
+    #[error("failed to write Project AC Root .gitignore at {0}: {1}")]
     WorkspaceGitignoreFailed(PathBuf, String),
+    #[error("failed to create context templates in .ac directory at {0}: {1}")]
+    ContextTemplatesCreateFailed(PathBuf, String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,7 +75,7 @@ pub enum ProjectResolveError {
 }
 
 /// Validate an existing AC project and register it in `settings.project_paths`.
-/// Errors when the path is missing, not a directory, or has no AC workspace.
+/// Errors when the path is missing, not a directory, or has no Project AC Root.
 ///
 /// On success, mutates `settings.project_paths` (appends if new) and
 /// `settings.project_path` (legacy single-project field — kept in sync with
@@ -115,6 +117,19 @@ pub fn register_new_project(
     settings: &mut AppSettings,
     raw_path: &str,
 ) -> Result<ProjectRegistration, ProjectError> {
+    register_new_project_impl(settings, raw_path, |workspace_dir| {
+        crate::config::session_context::create_default_context_templates(workspace_dir)
+    })
+}
+
+fn register_new_project_impl<F>(
+    settings: &mut AppSettings,
+    raw_path: &str,
+    create_context_templates: F,
+) -> Result<ProjectRegistration, ProjectError>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
     let abs = absolutise(raw_path)?;
     // Allow PATH to not yet exist as a directory. Reject if PATH exists and
     // is a regular file (caller almost certainly fat-fingered).
@@ -149,23 +164,31 @@ pub fn register_new_project(
             (workspace_dir, created)
         }
     };
-    // Gitignore sweep (Round-1 G15): mandatory when we just created `.ac`
-    // (a fresh AC project must ship with the protective patterns), best-effort
-    // when `.ac` pre-existed (a transient FS error on someone else's
-    // gitignore should not fail registration of a perfectly valid project).
-    match crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
-        Ok(()) => {}
-        Err(e) if !created => {
-            log::warn!(
-                "[projects] gitignore sweep failed on pre-existing AC workspace at {:?}: {} (best-effort, continuing)",
-                workspace_dir, e
-            );
-        }
-        Err(e) => {
+    if created {
+        if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
+            cleanup_new_workspace_after_setup_failure(&workspace_dir);
             return Err(ProjectError::WorkspaceGitignoreFailed(
                 workspace_dir.clone(),
                 e,
-            ))
+            ));
+        }
+
+        if let Err(e) = create_context_templates(&workspace_dir) {
+            cleanup_new_workspace_after_setup_failure(&workspace_dir);
+            return Err(ProjectError::ContextTemplatesCreateFailed(
+                workspace_dir.clone(),
+                e,
+            ));
+        }
+    } else {
+        // Gitignore sweep (Round-1 G15): best-effort when `.ac` pre-existed
+        // because a transient FS error on someone else's gitignore should not
+        // fail registration of a valid project.
+        if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
+            log::warn!(
+                "[projects] gitignore sweep failed on pre-existing Project AC Root at {:?}: {} (best-effort, continuing)",
+                workspace_dir, e
+            );
         }
     }
 
@@ -176,6 +199,16 @@ pub fn register_new_project(
         registered,
         created,
     })
+}
+
+fn cleanup_new_workspace_after_setup_failure(workspace_dir: &Path) {
+    if let Err(cleanup_err) = std::fs::remove_dir_all(workspace_dir) {
+        log::warn!(
+            "Failed to clean up newly created AC workspace at {:?} after setup failure: {}",
+            workspace_dir,
+            cleanup_err
+        );
+    }
 }
 
 pub fn resolve_project_reference(
@@ -502,6 +535,17 @@ mod tests {
         assert!(r.registered);
         assert!(fix.path().join(".ac").is_dir());
         assert!(fix.path().join(".ac").join(".gitignore").is_file());
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(!fix.path().join(".ac").join("templates").exists());
     }
 
     #[test]
@@ -532,6 +576,95 @@ mod tests {
         assert!(r.registered);
         // gitignore swept opportunistically even though .ac pre-existed
         assert!(fix.path().join(".ac").join(".gitignore").is_file());
+    }
+
+    #[test]
+    fn new_does_not_overwrite_existing_context_templates() {
+        let fix = FixtureRoot::new("proj-new-template-existing");
+        let workspace_dir = fix.path().join(".ac");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        let agent_template = workspace_dir.join("Context.AgentsCommander.md");
+        let coordinator_template = workspace_dir.join("Context.coordinator.md");
+        std::fs::write(&agent_template, "CUSTOM_AGENT").unwrap();
+        std::fs::write(&coordinator_template, "CUSTOM_COORDINATOR").unwrap();
+
+        let mut s = AppSettings::default();
+        let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
+
+        assert!(!r.created);
+        assert_eq!(
+            std::fs::read_to_string(agent_template).unwrap(),
+            "CUSTOM_AGENT"
+        );
+        assert_eq!(
+            std::fs::read_to_string(coordinator_template).unwrap(),
+            "CUSTOM_COORDINATOR"
+        );
+    }
+
+    #[test]
+    fn new_retries_after_failed_fresh_context_seed() {
+        let fix = FixtureRoot::new("proj-new-template-retry");
+        let mut s = AppSettings::default();
+
+        let first_result =
+            register_new_project_impl(&mut s, fix.path().to_str().unwrap(), |workspace_dir| {
+                std::fs::write(
+                    workspace_dir
+                        .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+                    crate::config::session_context::get_default_agent_template(),
+                )
+                .expect("write partial agent context");
+                Err("injected seed failure".to_string())
+            });
+
+        assert!(matches!(
+            first_result,
+            Err(ProjectError::ContextTemplatesCreateFailed(_, _))
+        ));
+        assert!(
+            !fix.path().join(".ac").exists(),
+            "fresh .ac directory should be cleaned up after seed failure"
+        );
+        assert!(s.project_paths.is_empty());
+
+        let retry = register_new_project(&mut s, fix.path().to_str().unwrap())
+            .expect("retry register new project");
+
+        assert!(retry.created);
+        assert!(retry.registered);
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+        assert!(fix
+            .path()
+            .join(".ac")
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .is_file());
+    }
+
+    #[test]
+    fn new_does_not_backfill_templates_when_ac_already_exists() {
+        let fix = FixtureRoot::new("proj-new-template-no-backfill");
+        std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
+        let mut s = AppSettings::default();
+
+        let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
+
+        assert!(!r.created);
+        assert!(!fix
+            .path()
+            .join(".ac")
+            .join("Context.AgentsCommander.md")
+            .exists());
+        assert!(!fix
+            .path()
+            .join(".ac")
+            .join("Context.coordinator.md")
+            .exists());
+        assert!(!fix.path().join(".ac").join("templates").exists());
     }
 
     #[test]

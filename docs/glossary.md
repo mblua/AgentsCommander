@@ -8,7 +8,7 @@ A directory with a role-prompt file at its root (`CLAUDE.md`, `AGENTS.md`, or `G
 
 ## Agents Agency
 
-A community library of agent role templates at [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). AC vendors a snapshot of the catalog for offline use in the role-template picker.
+A community library of agent role templates at [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). AC can download a validated cache of the catalog for offline use in the role-template picker.
 
 ## Brief
 
@@ -48,7 +48,11 @@ A renamed copy of `agentscommander.exe` (with an `_<suffix>` like `agentscommand
 
 ## Project (AC project)
 
-A folder containing an `.ac/` workspace. AC manages all agents, teams, and workgroups under that workspace.
+A folder containing a Project AC Root (`.ac/`). AC manages all agents, teams, and workgroups under that root.
+
+## Project AC Root
+
+The `.ac/` container folder at the project root holding origin agent state, configuration, and team structures. *(Note: Previously called "Workspace" or "AC Workspace". CLI flags and internal files may still contain "workspace" during the transition).*
 
 ## PTY
 
@@ -60,11 +64,11 @@ A working copy of an agent inside a workgroup at `wg-<N>-<team>/__agent_<name>/`
 
 ## Role template
 
-A reusable agent definition (prompt + optional skills) that AC clones when you create a new agent. Templates come from the vendored Agents Agency snapshot or from your local `agent-templates/` directory.
+A reusable agent definition (prompt + optional skills) that AC clones when you create a new agent. Templates come from the downloaded Agency cache or from your local `agent-templates/` directory.
 
 ## Root Agent
 
-A workspace-level coordinator that can route messages between coordinators of different teams. Identity-verified WG coordinators see it as a synthetic `agentscommander://root-agent` peer.
+A Project AC Root-level coordinator that can route messages between coordinators of different teams. Identity-verified WG coordinators see it as a synthetic `agentscommander://root-agent` peer.
 
 ## RTK (Rust Token Killer)
 
@@ -93,6 +97,10 @@ A UUID issued per session. The CLI shape-validates it; the daemon mailbox identi
 ## Voice-to-text
 
 Push-to-talk transcription via the Google Gemini API. Dictate a prompt; AC writes the transcription into the session's PTY. See [Voice-to-text](features/voice-to-text.md).
+
+## Workspace (Deprecated)
+
+*Deprecated alias.* See **Project AC Root**.
 
 ## Workgroup
 

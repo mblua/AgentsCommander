@@ -33,6 +33,7 @@ fn main() {
                             agentscommander_lib::cli::Commands::ListPeers(_)
                                 | agentscommander_lib::cli::Commands::ListPeersLean(_)
                                 | agentscommander_lib::cli::Commands::ListSessions(_)
+                                | agentscommander_lib::cli::Commands::AgencyTemplates(_)
                         ) {
                             std::env::set_var("AC_MACHINE_OUTPUT", "1");
                         }

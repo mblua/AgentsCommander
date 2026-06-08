@@ -1,6 +1,8 @@
+pub mod agency_templates;
 pub mod close_session;
 pub mod create_agent;
 pub mod create_agent_matrix;
+pub mod harness;
 pub mod list_peers;
 pub mod list_sessions;
 pub mod new_project;
@@ -97,6 +99,8 @@ pub enum Commands {
     ListPeersLean(list_peers::ListPeersLeanArgs),
     /// List all sessions in the running app instance (returns JSON)
     ListSessions(list_sessions::ListSessionsArgs),
+    /// Manage downloaded Agency Agents role templates
+    AgencyTemplates(agency_templates::AgencyTemplatesArgs),
     /// Create a new Agent Matrix in a registered project
     CreateAgent(create_agent::CreateAgentArgs),
     /// Create a full Agent Matrix in an AC project, optionally from a role template
@@ -111,7 +115,7 @@ pub enum Commands {
     TaskAppendBody(task_append_body::TaskAppendBodyArgs),
     /// Register an existing AC project (.ac must already exist) in settings
     OpenProject(open_project::OpenProjectArgs),
-    /// Create an AC project (mkdir .ac if no workspace exists) and register it in settings
+    /// Create an AC project (create `.ac/` Project AC Root if missing) and register it in settings
     NewProject(new_project::NewProjectArgs),
     /// Send a local image/file to a configured Telegram bot (no GUI required)
     TelegramSendImage(telegram_send_image::TelegramSendImageArgs),
@@ -119,6 +123,8 @@ pub enum Commands {
     Workgroup(workgroup::WorkgroupArgs),
     /// Manage team membership in an AC workgroup
     Team(team::TeamArgs),
+    /// Execute commands through the policy harness
+    Harness(harness::HarnessArgs),
 }
 
 /// Attach to parent console (or allocate a new one) ONLY if both stdout and stderr
@@ -228,6 +234,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
+        Commands::AgencyTemplates(args) => agency_templates::execute(args),
         Commands::CreateAgent(args) => create_agent::execute(args),
         Commands::CreateAgentMatrix(args) => create_agent_matrix::execute(args),
         Commands::RoleExperiment(args) => role_experiment::execute(args),
@@ -239,6 +246,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::TelegramSendImage(args) => telegram_send_image::execute(args),
         Commands::Workgroup(args) => workgroup::execute(args),
         Commands::Team(args) => team::execute(args),
+        Commands::Harness(args) => harness::execute(args),
     };
 
     flush_outputs();

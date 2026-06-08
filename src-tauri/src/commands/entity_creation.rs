@@ -545,7 +545,7 @@ pub(crate) fn create_agent_matrix_from_role(
     let project_path = args
         .workspace_dir
         .parent()
-        .ok_or_else(|| "Workspace has no project parent".to_string())?;
+        .ok_or_else(|| "Project AC Root has no project parent".to_string())?;
     Ok(CreatedAgentMatrixOnDisk {
         agent_dir,
         display_name: agent_matrix_display_name(project_path, args.safe_name),
@@ -770,7 +770,7 @@ pub(crate) async fn create_workgroup_on_disk(
 
     if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
         log::warn!(
-            "[create_workgroup] Failed to ensure workspace .gitignore: {}",
+            "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
             e
         );
     }
@@ -1018,7 +1018,7 @@ pub async fn delete_agent_matrix(project_path: String, agent_name: String) -> Re
     let agent_dir_name = format!("_agent_{}", agent_name);
     let mut referencing_teams: Vec<String> = Vec::new();
     let entries = std::fs::read_dir(&base)
-        .map_err(|e| format!("Cannot read workspace directory for integrity check: {}", e))?;
+        .map_err(|e| format!("Cannot read Project AC Root directory for integrity check: {}", e))?;
     for entry in entries {
         let entry = entry
             .map_err(|e| format!("Cannot read directory entry during integrity check: {}", e))?;
@@ -1204,7 +1204,7 @@ pub async fn create_workgroup(
     // Ensure gitignore protects workgroup clones from parent repo operations
     if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
         log::warn!(
-            "[create_workgroup] Failed to ensure workspace .gitignore: {}",
+            "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
             e
         );
     }
@@ -1743,7 +1743,7 @@ async fn sync_workgroup_repos_inner(
 
             config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
                 &existing_context,
-                &["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"],
+                &["$AGENTSCOMMANDER_CONTEXT"],
                 &identity.identity,
                 identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
             ));
@@ -2129,7 +2129,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
     }
 }
 
-/// Scan the selected workspace for existing `wg-<N>-{team_name}/` dirs and return the
+/// Scan the selected Project AC Root for existing `wg-<N>-{team_name}/` dirs and return the
 /// **lowest free positive integer** starting at 1.
 ///
 /// Issue #177: previously this returned `max(existing) + 1`, which left
@@ -2388,7 +2388,7 @@ mod tests {
         })
         .expect_err("invalid template");
 
-        assert!(err.contains("Unknown built-in role template"));
+        assert!(err.contains("missing"));
         assert!(
             !workspace_dir.join("_agent_architect").exists(),
             "invalid template must not create the target matrix directory"

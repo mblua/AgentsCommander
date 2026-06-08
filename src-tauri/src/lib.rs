@@ -53,6 +53,9 @@ pub type RtkSweepLockState = Arc<tokio::sync::Mutex<()>>;
 /// (which would mismatch the listener for the `auto-disabled` mode).
 pub type RtkStartupModeState = Arc<std::sync::OnceLock<String>>;
 
+/// Floating spec/Mermaid board document state.
+pub type SpecBoardState = Arc<tokio::sync::RwLock<commands::spec_board::SpecBoardManager>>;
+
 /// Master token generated at app startup. Allows bypassing team validation (can_reach).
 /// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See #34.
 /// Field is private — use `matches()` for constant-time comparison.
@@ -276,6 +279,9 @@ pub fn run() {
     let settings_for_web = Arc::clone(&settings);
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
+    let spec_board_state: SpecBoardState = Arc::new(tokio::sync::RwLock::new(
+        commands::spec_board::SpecBoardManager::new(),
+    ));
 
     // Issue #120 — RTK sweep mutex. Acquired by every in-process writer of
     // `.claude/settings.local.json`. See plan §7.5 for the design.
@@ -302,6 +308,7 @@ pub fn run() {
         .manage(voice_tracking)
         .manage(settings)
         .manage(detached_sessions.clone())
+        .manage(spec_board_state.clone())
         .manage(web_access_token.clone())
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
@@ -376,16 +383,21 @@ pub fn run() {
                 }
             }
 
-            // Issue #120 — RTK startup detection. Probes PATH for `rtk`, then:
-            //   - rtk found AND inject_rtk_hook=false AND rtk_prompt_dismissed=false
-            //       → emit "rtk_startup_status" with mode="prompt-enable"
-            //   - rtk found AND inject_rtk_hook=true
-            //       → emit mode="active" + active-recovery ON-sweep (idempotent)
-            //   - rtk missing AND inject_rtk_hook=true
-            //       → persist inject_rtk_hook=false (write lock held through save —
-            //         grinch H4 + N1); sweep with enabled=false (RtkSweepLock held —
-            //         grinch M8); emit mode="auto-disabled".
-            //   - otherwise: emit mode="silent" (frontend treats as no-op).
+            // Issue #120 / #426 — RTK startup detection. Probes PATH for `rtk`,
+            // then maps (rtk_present, inject_rtk_hook, rtk_prompt_dismissed,
+            // inform_when_rtk_installed) to a mode via
+            // `crate::config::settings::compute_rtk_startup_mode`:
+            //   - prompt-enable: rtk found AND inject_rtk_hook=false AND
+            //       rtk_prompt_dismissed=false AND inform_when_rtk_installed=true.
+            //       The banner is opt-in (issue #426): default-false inform means
+            //       no banner unless the user enabled it in Settings.
+            //   - active: rtk found AND inject_rtk_hook=true. Emits mode="active"
+            //       plus an active-recovery ON-sweep (idempotent).
+            //   - auto-disabled: rtk missing AND inject_rtk_hook=true. Persists
+            //       inject_rtk_hook=false (write lock held through save: grinch
+            //       H4 + N1); sweeps with enabled=false (RtkSweepLock held: grinch
+            //       M8); emits mode="auto-disabled".
+            //   - silent: everything else (frontend treats as no-op).
             // Detached so the rest of setup is not blocked by disk I/O.
             {
                 let app_handle_for_rtk = app.handle().clone();
@@ -401,17 +413,21 @@ pub fn run() {
                     let settings_state = app_handle_for_rtk
                         .state::<crate::config::settings::SettingsState>();
 
-                    let (inject_enabled, prompt_dismissed) = {
+                    let (inject_enabled, prompt_dismissed, inform_when_installed) = {
                         let s = settings_state.read().await;
-                        (s.inject_rtk_hook, s.rtk_prompt_dismissed)
+                        (
+                            s.inject_rtk_hook,
+                            s.rtk_prompt_dismissed,
+                            s.inform_when_rtk_installed,
+                        )
                     };
 
-                    let mode: &'static str = match (rtk_present, inject_enabled, prompt_dismissed) {
-                        (true, false, false) => "prompt-enable",
-                        (true, true, _) => "active",
-                        (false, true, _) => "auto-disabled",
-                        _ => "silent",
-                    };
+                    let mode: &'static str = crate::config::settings::compute_rtk_startup_mode(
+                        rtk_present,
+                        inject_enabled,
+                        prompt_dismissed,
+                        inform_when_installed,
+                    );
 
                     // §18 — cache the boot decision BEFORE running side effects
                     // so a late-mounting banner sees the SAME mode the listener
@@ -471,11 +487,12 @@ pub fn run() {
                     );
 
                     log::info!(
-                        "[rtk-startup] mode={} rtkPresent={} injectEnabled={} promptDismissed={}",
+                        "[rtk-startup] mode={} rtkPresent={} injectEnabled={} promptDismissed={} informWhenInstalled={}",
                         mode,
                         rtk_present,
                         inject_enabled,
-                        prompt_dismissed
+                        prompt_dismissed,
+                        inform_when_installed
                     );
                 });
             }
@@ -832,6 +849,10 @@ pub fn run() {
                                                 ps.telegram_bot_id.as_deref(),
                                             )
                                             .await;
+                                            if let Some(ref prompt) = ps.last_prompt {
+                                                let mgr = session_mgr_clone.read().await;
+                                                mgr.set_last_prompt(uuid, prompt.clone()).await;
+                                            }
                                         }
                                         should_create = false;
                                     }
@@ -865,6 +886,13 @@ pub fn run() {
                                                     ps.telegram_bot_id.as_deref(),
                                                 )
                                                 .await;
+                                            }
+
+                                            if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                                if let Some(ref prompt) = ps.last_prompt {
+                                                    let mgr = session_mgr_clone.read().await;
+                                                    mgr.set_last_prompt(uuid, prompt.clone()).await;
+                                                }
                                             }
 
                                             if ps.was_detached {
@@ -941,6 +969,9 @@ pub fn run() {
                                             ps.telegram_bot_id.as_deref(),
                                         )
                                         .await;
+                                        if let Some(ref prompt) = ps.last_prompt {
+                                            mgr.set_last_prompt(uuid, prompt.clone()).await;
+                                        }
                                     }
                                     if ps.was_active {
                                         active_id = Some(existing.id.clone());
@@ -971,6 +1002,9 @@ pub fn run() {
                                             if let Some(ref geo) = ps.detached_geometry {
                                                 mgr.set_detached_geometry(session.id, geo.clone())
                                                     .await;
+                                            }
+                                            if let Some(ref prompt) = ps.last_prompt {
+                                                mgr.set_last_prompt(session.id, prompt.clone()).await;
                                             }
                                             commands::session::preserve_deferred_telegram_intent_if_valid(
                                                 &mgr,
@@ -1066,6 +1100,9 @@ pub fn run() {
                                     if let Some(ref geo) = ps.detached_geometry {
                                         mgr.set_detached_geometry(session.id, geo.clone()).await;
                                     }
+                                    if let Some(ref prompt) = ps.last_prompt {
+                                        mgr.set_last_prompt(session.id, prompt.clone()).await;
+                                    }
                                     commands::session::preserve_deferred_telegram_intent_if_valid(
                                         &mgr,
                                         &settings_state_clone,
@@ -1136,6 +1173,13 @@ pub fn run() {
                                         ps.telegram_bot_id.as_deref(),
                                     )
                                     .await;
+                                }
+
+                                if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                    if let Some(ref prompt) = ps.last_prompt {
+                                        let mgr = session_mgr_clone.read().await;
+                                        mgr.set_last_prompt(uuid, prompt.clone()).await;
+                                    }
                                 }
 
                                 // Phase 3 restore: reconstruct detach state for the live session.
@@ -1333,8 +1377,20 @@ pub fn run() {
             commands::window::set_detached_geometry,
             commands::window::open_in_explorer,
             commands::window::open_guide_window,
+            commands::window::open_spec_board_window,
             commands::window::open_external_url,
             commands::window::focus_main_window,
+            commands::spec_board::spec_board_new,
+            commands::spec_board::spec_board_pick_open,
+            commands::spec_board::spec_board_open,
+            commands::spec_board::spec_board_save,
+            commands::spec_board::spec_board_pick_save,
+            commands::spec_board::spec_board_update_content,
+            commands::spec_board::spec_board_list_snapshots,
+            commands::spec_board::spec_board_checkout_snapshot,
+            commands::spec_board::spec_board_apply_external,
+            commands::spec_board::spec_board_keep_mine,
+            commands::spec_board::spec_board_close,
             commands::phone::phone_send_message,
             commands::phone::phone_get_inbox,
             commands::phone::phone_list_agents,
@@ -1377,12 +1433,19 @@ pub fn run() {
         .expect("error while building application")
         .run({
             let detached_set = detached_sessions.clone();
+            let spec_board_state = spec_board_state.clone();
             move |app_handle, event| match event {
                 tauri::RunEvent::WindowEvent {
                     label,
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
+                    if label == "spec-board" {
+                        let state = spec_board_state.clone();
+                        tauri::async_runtime::spawn(async move {
+                            commands::spec_board::spec_board_close_all(state).await;
+                        });
+                    }
                     // Detached-window destroyed (by any mechanism — X, Alt+F4, programmatic).
                     // Two jobs:
                     //   1) Clear from `DetachedSessionsState` — switch_session needs an
