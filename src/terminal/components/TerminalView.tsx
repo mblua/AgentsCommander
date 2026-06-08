@@ -12,6 +12,7 @@ import {
 import { isBrowser } from "../../shared/platform";
 import { terminalStore } from "../stores/terminal";
 import type { UnlistenFn } from "../../shared/transport";
+import { updatePromptCapture } from "./prompt-input-capture";
 import "@xterm/xterm/css/xterm.css";
 
 interface SessionTerminal {
@@ -225,18 +226,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       const encoder = new TextEncoder();
       void PtyAPI.write(sessionId, encoder.encode(data));
 
-      if (data === "\r") {
-        const trimmed = entry.inputBuffer.trim();
-        if (trimmed) {
-          void SessionAPI.setLastPrompt(sessionId, trimmed);
-        }
-        entry.inputBuffer = "";
-      } else if (data === "\x7f") {
-        entry.inputBuffer = entry.inputBuffer.slice(0, -1);
-      } else if (data.length === 1 && data >= " ") {
-        entry.inputBuffer += data;
-      } else if (data.length > 1 && !data.startsWith("\x1b")) {
-        entry.inputBuffer += data;
+      const capture = updatePromptCapture(entry.inputBuffer, data);
+      entry.inputBuffer = capture.buffer;
+      if (capture.submittedPrompt) {
+        void SessionAPI.setLastPrompt(sessionId, capture.submittedPrompt);
       }
     });
 
