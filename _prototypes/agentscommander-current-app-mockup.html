@@ -1983,9 +1983,11 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       const configured = Boolean(provider.profiles[letter]);
       const selected = letter === codingProfileModalState.requested;
       const isDefault = letter === configuredCodingAgentDefault.profile;
-      const params = profileParamRows(profile, resolution)
-        .map(([key, value]) => `<div class="profile-param" data-profile-param="${key.toLowerCase().replace(/\s+/g, "-")}"><span>${key}</span><span>${value}</span></div>`)
-        .join("");
+      const params = configured
+        ? profileParamRows(profile, resolution)
+          .map(([key, value]) => `<div class="profile-param" data-profile-param="${key.toLowerCase().replace(/\s+/g, "-")}"><span>${key}</span><span>${value}</span></div>`)
+          .join("")
+        : `<span class="profile-token warn">Unavailable for ${provider.label}</span><span class="profile-token">Fallback ${letter} -> ${resolution.resolved}</span>`;
 
       card.classList.toggle("active", selected);
       card.classList.toggle("default", isDefault);

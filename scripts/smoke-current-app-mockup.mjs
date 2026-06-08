@@ -365,16 +365,49 @@ dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-tool-c
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'opencode');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'A');
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.textContent ?? '', /Default/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.textContent ?? '', /missing; launches A - FULL POWER/);
+const opencodeMissingDefaultCards = dom.window.document.querySelectorAll('[data-profile-variant-panel] [data-profile-card="B"]');
+assert.equal(opencodeMissingDefaultCards.length, 3, 'each variant should render the missing OpenCode default B card');
+for (const card of opencodeMissingDefaultCards) {
+  const text = card.textContent ?? '';
+  assert.match(text, /Default/);
+  assert.match(text, /missing; launches A - FULL POWER/);
+  assert.match(text, /Unavailable for OpenCode/);
+  assert.match(text, /Fallback B -> A/);
+  assert.equal(card.querySelectorAll('[data-profile-param]').length, 0, 'missing OpenCode B card should not render concrete parameter rows');
+  assert.doesNotMatch(text, /Model/);
+  assert.doesNotMatch(text, /Effort/);
+  assert.doesNotMatch(text, /Default args/);
+  assert.doesNotMatch(text, /Profile args/);
+  assert.doesNotMatch(text, /provider\/default-large/);
+  assert.doesNotMatch(text, /opencode\.json/);
+  assert.doesNotMatch(text, /--profile a/);
+}
+const opencodeResolvedCards = dom.window.document.querySelectorAll('[data-profile-variant-panel] [data-profile-card="A"]');
+assert.equal(opencodeResolvedCards.length, 3, 'each variant should render the resolved OpenCode A card');
+for (const card of opencodeResolvedCards) {
+  const text = card.textContent ?? '';
+  assert.match(text, /Model/);
+  assert.match(text, /Effort/);
+  assert.match(text, /Default args/);
+  assert.match(text, /Profile args/);
+  assert.match(text, /provider\/default-large/);
+  assert.match(text, /opencode\.json/);
+  assert.match(text, /--profile a/);
+}
+for (const summary of dom.window.document.querySelectorAll('[data-active-profile-summary]')) {
+  const text = summary.textContent ?? '';
+  assert.match(text, /OpenCode \/ B - BALANCED/);
+  assert.match(text, /provider\/default-large/);
+  assert.match(text, /opencode\.json/);
+  assert.match(text, /--profile a/);
+  assert.match(text, /B missing; A final fallback/);
+}
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected tool: OpenCode/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Available profiles: A - FULL POWER, C - REVIEW/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Requested\/default B - BALANCED -> resolved A - FULL POWER via fallback/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /architect requests B - BALANCED by default/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /OpenCode has no B - BALANCED profile/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /A remains the immutable final fallback/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.textContent ?? '', /opencode\.json/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.textContent ?? '', /--profile a/);
 
 const modalProfileCard = dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]');
 assert.ok(modalProfileCard, 'modal profile card capture target should exist');
