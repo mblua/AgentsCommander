@@ -95,7 +95,6 @@ const ExternalLinkConfirm: Component = () => {
         }
         return;
       }
-      e.stopImmediatePropagation();
     };
 
     document.addEventListener("click", onClick, true);
