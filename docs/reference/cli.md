@@ -184,18 +184,59 @@ Output is JSON. Each item includes `name`, `team`, `path`, `hasMessaging`, `hasT
 
 ---
 
+## `team create`
+
+Create a team configuration in a registered project.
+
+```bash
+agentscommander team create \
+  --project MyProject \
+  --team "Dev Team" \
+  --coordinator architect \
+  --agent dev-rust \
+  --agent dev-ts
+
+agentscommander workgroup add \
+  --project MyProject \
+  --team "Dev Team" \
+  --title "Add OAuth2 login flow"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered project name. |
+| `--team` | Yes | Team name. Sanitized for `_team_<name>`. |
+| `--coordinator` | Yes | Existing agent matrix name or `_agent_<name>` reference. Automatically included in the roster. |
+| `--agent` | No | Worker/member agent. Repeat for multiple agents. |
+| `--repo` | No | Repo URL assigned to the full final roster. Repeat for multiple repos. |
+| `--repo-agents` | No | `URL=agent-a,agent-b`; assigns only listed agents to that repo. |
+| `--repo-exclude-agents` | No | `URL=agent-a,agent-b`; assigns the full final roster except listed agents. |
+
+Output is JSON:
+
+```json
+{
+  "team": "dev-team",
+  "path": "C:\\...\\.ac\\_team_dev-team",
+  "agents": ["_agent_architect", "_agent_dev-rust", "_agent_dev-ts"],
+  "coordinator": "_agent_architect",
+  "repos": []
+}
+```
+
+Repo include and exclude forms are mutually exclusive for the same URL. `team create` refuses to overwrite an existing `_team_<name>` directory, even when it has no `config.json`.
+
+---
+
 ## `workgroup add`
 
-Create an auto-numbered workgroup for a team.
+Create an auto-numbered workgroup for an existing team.
 
 ```bash
 agentscommander workgroup add \
   --project MyProject \
   --team "Dev Team" \
-  --title "Add OAuth2 login flow" \
-  --coordinator architect \
-  --agent dev-rust \
-  --agent dev-ts
+  --title "Add OAuth2 login flow"
 ```
 
 | Flag | Required | Description |
@@ -203,15 +244,14 @@ agentscommander workgroup add \
 | `--project` | Yes | Registered project name. |
 | `--team` | Yes | Team name. Sanitized for `_team_<name>` and `wg-<N>-<name>`. |
 | `--title` | Yes | Initial `TASK.md` title. |
-| `--coordinator` | Yes | Existing agent to make coordinator. |
-| `--agent` | No | Team member to add before provisioning. Repeat for multiple agents. |
-| `--repo` | No | Repo URL assigned to the full final roster. Repeat for multiple repos. |
-| `--repo-agents` | No | `URL=agent-a,agent-b`; assigns only listed agents to that repo. |
-| `--repo-exclude-agents` | No | `URL=agent-a,agent-b`; assigns the full final roster except listed agents. |
 
 Workgroup numbers are allocated globally per project as the lowest free positive integer, across all teams. Deleted numbers are reused. There is no `--name` override.
 
-Repo include and exclude forms are mutually exclusive for the same URL. Output is JSON `{ path, cloneErrors }`. Clone failures are reported in `cloneErrors` and do not roll back workgroup creation.
+`workgroup add` activates an existing team and refuses to update existing team configuration. Create or change the team with `team create` and `team add-member` first.
+
+Deprecated compatibility flags are still accepted only when the target team is missing: `--coordinator`, `--agent`, `--repo`, `--repo-agents`, and `--repo-exclude-agents`. New scripts should not use them. When the team already exists, passing any of those flags fails before disk writes.
+
+Output is JSON `{ path, cloneErrors }`. Clone failures are reported in `cloneErrors` and do not roll back workgroup creation.
 
 ---
 

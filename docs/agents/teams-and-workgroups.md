@@ -30,7 +30,7 @@ my-project/
 }
 ```
 
-You create teams from the **Teams** UI in the sidebar, or from the CLI when creating a workgroup. Pick a coordinator (must already exist as an agent), pick one or more members, save.
+You create teams from the **Teams** UI in the sidebar, or from the CLI with `team create`. Pick a coordinator (must already exist as an agent), pick one or more members, save.
 
 ### Coordinator authority
 
@@ -116,27 +116,36 @@ From the UI, click **Activate** on the team. From the CLI, use `workgroup add`. 
 When activated from the UI, AC also launches the coordinator's session. The CLI creates the workgroup and requests a sidebar refresh; launch sessions separately as needed.
 
 ```bash
-agentscommander workgroup add \
+agentscommander team create \
   --project MyProject \
   --team "Feature X" \
-  --title "Add OAuth2 login flow" \
   --coordinator tech-lead \
   --agent dev-rust \
   --agent dev-ts
-```
 
-Repository access can be assigned at creation:
-
-```bash
 agentscommander workgroup add \
   --project MyProject \
   --team "Feature X" \
-  --title "Add OAuth2 login flow" \
+  --title "Add OAuth2 login flow"
+```
+
+Repository access can be assigned when the team is created:
+
+```bash
+agentscommander team create \
+  --project MyProject \
+  --team "Feature X" \
   --coordinator tech-lead \
   --agent dev-rust \
+  --agent dev-ts \
   --repo https://github.com/org/app.git \
   --repo-agents https://github.com/org/admin.git=tech-lead,dev-rust \
   --repo-exclude-agents https://github.com/org/docs.git=dev-ts
+
+agentscommander workgroup add \
+  --project MyProject \
+  --team "Feature X" \
+  --title "Add OAuth2 login flow"
 ```
 
 Plain `--repo` assigns the repo to the final team roster. `--repo-agents` includes only the named agents for that repo. `--repo-exclude-agents` assigns the repo to the final team roster minus the named agents. The include and exclude forms are mutually exclusive per repo URL.

@@ -146,6 +146,16 @@ You are not a workgroup replica and you do not have an origin Agent Matrix. Use 
 
 Coordinate across workgroups at a high level. Delegate specialized implementation work to the appropriate team coordinators and synthesize their results for the user.
 
+## Team and workgroup setup
+
+When asked to set up a new team for automation, use this order:
+
+1. Create any missing agents with `create-agent-matrix`.
+2. Create the team with `team create`, choosing one coordinator and the worker agents.
+3. Activate a task workspace with `workgroup add` using only `--project`, `--team`, and `--title`.
+
+Do not use `workgroup add --coordinator` to create or update a team. That legacy path exists only for compatibility.
+
 ## Agency Agents Roles
 
 You may offer to download tested role templates from Agency Agents when the user wants a new specialist role. Ask before downloading or updating. If the user accepts, use the AgentsCommander CLI from `AGENTSCOMMANDER_BINARY_PATH`:
@@ -719,6 +729,9 @@ mod tests {
         assert!(ROOT_ROLE_MD.contains("agency-templates update"));
         assert!(ROOT_ROLE_MD.contains("agency-templates list"));
         assert!(ROOT_ROLE_MD.contains("Do not invent Agency template IDs"));
+        assert!(ROOT_ROLE_MD.contains("team create"));
+        assert!(ROOT_ROLE_MD.contains("workgroup add"));
+        assert!(ROOT_ROLE_MD.contains("Do not use `workgroup add --coordinator`"));
         let template_path = temp
             .path()
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);

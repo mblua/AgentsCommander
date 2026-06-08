@@ -155,6 +155,17 @@ fn run_json_machine(bin: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).expect("stdout json")
 }
 
+fn run_fail(bin: &Path, args: &[&str]) -> String {
+    let out = Command::new(bin).args(args).output().expect("spawn");
+    assert!(
+        !out.status.success(),
+        "expected failure\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stderr).to_string()
+}
+
 #[test]
 fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     let tmp = Tmp::new("cli-workgroup-add");
@@ -162,6 +173,33 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+
+    let created_team = run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    assert_eq!(created_team["team"], "dev-team");
+    assert_eq!(
+        created_team["agents"],
+        serde_json::json!(["_agent_architect", "_agent_dev-rust"])
+    );
+
+    let team_config_path = project
+        .join(".ac")
+        .join("_team_dev-team")
+        .join("config.json");
+    let team_config_before = std::fs::read(&team_config_path).expect("team config before");
 
     let json = run_json(
         &bin,
@@ -174,10 +212,6 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
             "Dev Team",
             "--title",
             "Build the thing",
-            "--coordinator",
-            "architect",
-            "--agent",
-            "dev-rust",
         ],
     );
 
@@ -193,16 +227,16 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
         .join("__agent_dev-rust")
         .join("config.json")
         .is_file());
-    let team_config_path = project
-        .join(".ac")
-        .join("_team_dev-team")
-        .join("config.json");
+    assert_eq!(
+        std::fs::read(&team_config_path).expect("team config after"),
+        team_config_before
+    );
     let team_config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(team_config_path).expect("config"))
             .expect("team config json");
     assert_eq!(
         team_config["agents"],
-        serde_json::json!(["_agent_dev-rust", "_agent_architect"])
+        serde_json::json!(["_agent_architect", "_agent_dev-rust"])
     );
     assert_eq!(team_config["coordinator"], "_agent_architect");
 
@@ -214,9 +248,16 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     assert_eq!(list[0]["hasMessaging"], true);
 
     let requests = read_project_refresh_requests(&config_dir);
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_refresh_request(
-        &requests[0],
+        find_refresh_request(&requests, "teamCreated"),
+        &project,
+        ".ac/_team_dev-team",
+        "dev-team",
+        "teamCreated",
+    );
+    assert_refresh_request(
+        find_refresh_request(&requests, "workgroupCreated"),
         &project,
         ".ac/wg-1-dev-team",
         "wg-1-dev-team",
@@ -233,6 +274,19 @@ fn workgroup_add_uses_global_lowest_free_number() {
     let project = project_with_agents(tmp.path(), &["architect"]);
     std::fs::create_dir_all(project.join(".ac").join("wg-1-dev-team")).expect("wg1");
 
+    let _team = run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "QA Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
     let json = run_json(
         &bin,
         &[
@@ -244,8 +298,6 @@ fn workgroup_add_uses_global_lowest_free_number() {
             "QA Team",
             "--title",
             "Test it",
-            "--coordinator",
-            "architect",
         ],
     );
 
@@ -334,17 +386,15 @@ fn workgroup_add_normalizes_include_and_exclude_repo_assignments() {
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect", "dev-rust", "qa"]);
 
-    let _json = run_json(
+    let _team = run_json(
         &bin,
         &[
-            "workgroup",
-            "add",
+            "team",
+            "create",
             "--project",
             "ProjectAlpha",
             "--team",
             "Dev Team",
-            "--title",
-            "Build",
             "--coordinator",
             "architect",
             "--agent",
@@ -357,6 +407,19 @@ fn workgroup_add_normalizes_include_and_exclude_repo_assignments() {
             "https://example.test/include.git=architect,dev-rust",
             "--repo-exclude-agents",
             "https://example.test/exclude.git=qa",
+        ],
+    );
+    let _json = run_json(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
         ],
     );
 
@@ -392,6 +455,19 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
 
+    let _team = run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
     let _wg = run_json(
         &bin,
         &[
@@ -403,8 +479,6 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
             "Dev Team",
             "--title",
             "Build",
-            "--coordinator",
-            "architect",
         ],
     );
 
@@ -454,7 +528,7 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     });
     assert!(found, "added peer should be reachable: {}", peers);
     let requests = read_project_refresh_requests(&config_dir);
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert_refresh_request(
         find_refresh_request(&requests, "teamMembershipChanged"),
         &project,
@@ -479,7 +553,7 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     assert_eq!(removed["removed"], true);
     assert!(!replica.exists());
     let requests = read_project_refresh_requests(&config_dir);
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert_refresh_request(
         find_refresh_request(&requests, "teamMembershipRemoved"),
         &project,
@@ -487,4 +561,255 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
         "wg-1-dev-team/dev-rust",
         "teamMembershipRemoved",
     );
+}
+
+#[test]
+fn team_create_refuses_existing_team() {
+    let tmp = Tmp::new("cli-team-create-existing");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let _project = project_with_agents(tmp.path(), &["architect"]);
+
+    let _team = run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    let stderr = run_fail(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    assert!(stderr.contains("Team 'dev-team' already exists"));
+}
+
+#[test]
+fn team_create_refuses_preexisting_empty_team_dir() {
+    let tmp = Tmp::new("cli-team-create-empty-dir");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect"]);
+    std::fs::create_dir_all(project.join(".ac").join("_team_dev-team")).expect("team dir");
+
+    let stderr = run_fail(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    assert!(stderr.contains("Team 'dev-team' already exists"));
+}
+
+#[test]
+fn team_create_outputs_coordinator_first_roster() {
+    let tmp = Tmp::new("cli-team-create-roster");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust", "qa"]);
+
+    let json = run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+            "--agent",
+            "dev-rust",
+            "--agent",
+            "architect",
+            "--agent",
+            "qa",
+        ],
+    );
+    let expected = serde_json::json!(["_agent_architect", "_agent_dev-rust", "_agent_qa"]);
+    assert_eq!(json["agents"], expected);
+
+    let config_path = project
+        .join(".ac")
+        .join("_team_dev-team")
+        .join("config.json");
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(config_path).expect("config"))
+            .expect("config json");
+    assert_eq!(config["agents"], expected);
+}
+
+#[test]
+fn workgroup_add_existing_team_refuses_legacy_flags_without_rewrite() {
+    let tmp = Tmp::new("cli-wg-existing-refuses-legacy");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+
+    let _team = run_json(
+        &bin,
+        &[
+            "team",
+            "create",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--coordinator",
+            "architect",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    let config_path = project
+        .join(".ac")
+        .join("_team_dev-team")
+        .join("config.json");
+    let before = std::fs::read(&config_path).expect("before");
+    let stderr = run_fail(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Second",
+            "--coordinator",
+            "dev-rust",
+        ],
+    );
+    assert!(stderr.contains("workgroup add` no longer updates team configuration"));
+    assert_eq!(std::fs::read(&config_path).expect("after"), before);
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(config_path).expect("config"))
+            .expect("config json");
+    assert_eq!(config["coordinator"], "_agent_architect");
+}
+
+#[test]
+fn workgroup_add_existing_invalid_team_config_errors_without_rewrite() {
+    let tmp = Tmp::new("cli-wg-invalid-team");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+    let team_dir = project.join(".ac").join("_team_dev-team");
+    std::fs::create_dir_all(&team_dir).expect("team dir");
+    let config_path = team_dir.join("config.json");
+    let original = b"{ not json".to_vec();
+    std::fs::write(&config_path, &original).expect("write invalid config");
+
+    let stderr = run_fail(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Second",
+            "--coordinator",
+            "architect",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    assert!(stderr.contains("Failed to parse config.json"));
+    assert_eq!(std::fs::read(&config_path).expect("after"), original);
+}
+
+#[test]
+fn workgroup_add_legacy_missing_team_still_bootstraps_with_warning() {
+    let tmp = Tmp::new("cli-wg-legacy-bootstrap");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
+
+    let out = Command::new(&bin)
+        .args([
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+            "--coordinator",
+            "architect",
+            "--agent",
+            "dev-rust",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("deprecated"));
+    assert!(project
+        .join(".ac")
+        .join("_team_dev-team")
+        .join("config.json")
+        .is_file());
+}
+
+#[test]
+fn workgroup_add_missing_team_without_legacy_flags_errors() {
+    let tmp = Tmp::new("cli-wg-missing-team");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let _project = project_with_agents(tmp.path(), &["architect"]);
+
+    let stderr = run_fail(
+        &bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Missing Team",
+            "--title",
+            "Build",
+        ],
+    );
+    assert!(stderr.contains("Team 'missing-team' config not found"));
+    assert!(stderr.contains("Create it first with `team create`"));
 }

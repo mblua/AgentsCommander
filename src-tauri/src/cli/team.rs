@@ -2,14 +2,14 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::cli::workgroup::{
-    clone_missing_for_config, push_unique, resolve_cli_project, resolve_cli_workspace,
-    write_refresh,
+    build_new_team_config, clone_missing_for_config, push_unique, resolve_cli_project,
+    resolve_cli_workspace, write_refresh,
 };
 use crate::commands::entity_creation::{
-    agent_ref_bare_name, create_or_update_replica_on_disk, normalize_team_config_for_project,
-    parse_team_from_workgroup_name, read_team_config, remove_replica_dir, resolve_agent_ref,
-    validate_existing_name, write_team_config, AgentMatrixSettingsFlags, ReplicaDiskCreateArgs,
-    RepoAssignment,
+    agent_ref_bare_name, create_new_team_config_on_disk, create_or_update_replica_on_disk,
+    normalize_team_config_for_project, parse_team_from_workgroup_name, read_team_config,
+    remove_replica_dir, resolve_agent_ref, sanitize_name, validate_existing_name,
+    write_team_config, AgentMatrixSettingsFlags, ReplicaDiskCreateArgs, RepoAssignment,
 };
 
 #[derive(Args)]
@@ -20,6 +20,8 @@ pub struct TeamArgs {
 
 #[derive(Subcommand)]
 enum TeamCommand {
+    /// Create a team configuration
+    Create(TeamCreateArgs),
     /// List team configuration
     List(TeamListArgs),
     /// Add an agent to one workgroup and team config
@@ -34,6 +36,24 @@ struct TeamListArgs {
     project: String,
     #[arg(long)]
     workgroup: Option<String>,
+}
+
+#[derive(Args)]
+struct TeamCreateArgs {
+    #[arg(long)]
+    project: String,
+    #[arg(long)]
+    team: String,
+    #[arg(long)]
+    coordinator: String,
+    #[arg(long = "agent")]
+    agents: Vec<String>,
+    #[arg(long = "repo")]
+    repos: Vec<String>,
+    #[arg(long = "repo-agents")]
+    repo_agents: Vec<String>,
+    #[arg(long = "repo-exclude-agents")]
+    repo_exclude_agents: Vec<String>,
 }
 
 #[derive(Args)]
@@ -70,6 +90,16 @@ struct TeamListItem {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct TeamCreateResult {
+    team: String,
+    path: String,
+    agents: Vec<String>,
+    coordinator: String,
+    repos: Vec<RepoAssignment>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AddMemberResult {
     team: String,
     workgroup: String,
@@ -92,6 +122,7 @@ struct RemoveMemberResult {
 
 pub fn execute(args: TeamArgs) -> i32 {
     let result = match args.command {
+        TeamCommand::Create(args) => create(args),
         TeamCommand::List(args) => list(args),
         TeamCommand::AddMember(args) => add_member(args),
         TeamCommand::RemoveMember(args) => remove_member(args),
@@ -103,6 +134,29 @@ pub fn execute(args: TeamArgs) -> i32 {
             1
         }
     }
+}
+
+fn create(args: TeamCreateArgs) -> Result<(), String> {
+    let project_path = resolve_cli_project(&args.project)?;
+    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let safe_team = sanitize_name(&args.team)?;
+    let config = build_new_team_config(
+        &workspace_dir,
+        &args.coordinator,
+        &args.agents,
+        &args.repos,
+        &args.repo_agents,
+        &args.repo_exclude_agents,
+    )?;
+    let team_dir = create_new_team_config_on_disk(&workspace_dir, &safe_team, &config)?;
+    write_refresh(&project_path, &team_dir, &safe_team, "teamCreated");
+    print_json(&TeamCreateResult {
+        team: safe_team,
+        path: team_dir.to_string_lossy().to_string(),
+        agents: config.agents,
+        coordinator: config.coordinator,
+        repos: config.repos,
+    })
 }
 
 fn list(args: TeamListArgs) -> Result<(), String> {
