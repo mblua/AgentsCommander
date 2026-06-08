@@ -44,15 +44,15 @@ struct WorkgroupAddArgs {
     team: String,
     #[arg(long)]
     title: String,
-    #[arg(long)]
-    coordinator: String,
-    #[arg(long = "agent")]
+    #[arg(long, hide = true)]
+    coordinator: Option<String>,
+    #[arg(long = "agent", hide = true)]
     agents: Vec<String>,
-    #[arg(long = "repo")]
+    #[arg(long = "repo", hide = true)]
     repos: Vec<String>,
-    #[arg(long = "repo-agents")]
+    #[arg(long = "repo-agents", hide = true)]
     repo_agents: Vec<String>,
-    #[arg(long = "repo-exclude-agents")]
+    #[arg(long = "repo-exclude-agents", hide = true)]
     repo_exclude_agents: Vec<String>,
 }
 
@@ -100,16 +100,40 @@ pub(crate) fn resolve_cli_project(project: &str) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn resolve_cli_workspace(project_path: &Path) -> Result<PathBuf, String> {
-    existing_workspace_dir(project_path)
-        .ok_or_else(|| format!("Project AC Root not found in {} (.ac)", project_path.display()))
+    existing_workspace_dir(project_path).ok_or_else(|| {
+        format!(
+            "Project AC Root not found in {} (.ac)",
+            project_path.display()
+        )
+    })
 }
 
 pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str, reason: &str) {
+    let canonical_project_path =
+        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+    let canonical_changed_path =
+        std::fs::canonicalize(changed_path).unwrap_or_else(|_| changed_path.to_path_buf());
     let request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
-        project_path: project_path.to_string_lossy().to_string(),
-        agent_path: changed_path.to_string_lossy().to_string(),
-        agent_name: name.to_string(),
+        project_path: canonical_project_path.to_string_lossy().to_string(),
+        changed_path: Some(canonical_changed_path.to_string_lossy().to_string()),
+        changed_name: Some(name.to_string()),
+        reason: reason.to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(e) = write_project_refresh_request(&request) {
+        eprintln!("Warning: failed to request project refresh: {}", e);
+    }
+}
+
+pub(crate) fn write_project_registration_refresh(project_path: &Path, reason: &str) {
+    let canonical_project_path =
+        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+    let request = ProjectRefreshRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        project_path: canonical_project_path.to_string_lossy().to_string(),
+        changed_path: None,
+        changed_name: None,
         reason: reason.to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
@@ -147,25 +171,63 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
     let workspace_dir = resolve_cli_workspace(&project_path)?;
     let safe_team = sanitize_name(&args.team)?;
-    let final_config = build_final_team_config(
-        &workspace_dir,
-        &safe_team,
-        &args.coordinator,
-        &args.agents,
-        &args.repos,
-        &args.repo_agents,
-        &args.repo_exclude_agents,
-    )?;
+    let has_legacy_team_flags = args.coordinator.is_some()
+        || !args.agents.is_empty()
+        || !args.repos.is_empty()
+        || !args.repo_agents.is_empty()
+        || !args.repo_exclude_agents.is_empty();
+    let team_dir = workspace_dir.join(format!("_team_{}", safe_team));
+    let config_path = team_dir.join("config.json");
+    let team_config_exists = team_dir.exists() || config_path.exists();
+    let provisioning_config = if team_config_exists {
+        read_team_config(&workspace_dir, &safe_team)?;
+        if has_legacy_team_flags {
+            return Err(format!(
+                "Team '{}' already exists. `workgroup add` no longer updates team configuration. Use `team create` before `workgroup add`, or `team add-member` for membership changes.",
+                safe_team
+            ));
+        }
+        None
+    } else if has_legacy_team_flags {
+        let coordinator = args.coordinator.as_deref().ok_or_else(|| {
+            "--coordinator is required when supplying team details on workgroup add".to_string()
+        })?;
+        eprintln!(
+            "Warning: created missing team configuration from supplied workgroup details. Prefer creating the team before activating a workgroup."
+        );
+        Some(build_new_team_config(
+            &workspace_dir,
+            coordinator,
+            &args.agents,
+            &args.repos,
+            &args.repo_agents,
+            &args.repo_exclude_agents,
+        )?)
+    } else {
+        return Err(format!(
+            "Team '{}' config not found. Create it first with `team create`.",
+            safe_team
+        ));
+    };
     let settings = crate::config::settings::load_settings_for_cli();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to create async runtime: {}", e))?;
+    let (coordinator, agents, repos) = if let Some(config) = provisioning_config {
+        (
+            Some(config.coordinator.clone()),
+            config.agents.clone(),
+            config.repos.clone(),
+        )
+    } else {
+        (None, Vec::new(), Vec::new())
+    };
     let result = runtime.block_on(create_workgroup_on_disk(WorkgroupDiskCreateArgs {
         project_path: project_path.clone(),
         team_name: safe_team,
         task_title: args.title,
-        coordinator: Some(final_config.coordinator.clone()),
-        agents: final_config.agents.clone(),
-        repos: final_config.repos.clone(),
+        coordinator,
+        agents,
+        repos,
         settings_flags: AgentMatrixSettingsFlags::from_settings(&settings),
     }))?;
     let changed_path = PathBuf::from(&result.path);
@@ -226,42 +288,26 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
     }
 }
 
-pub(crate) fn build_final_team_config(
+pub(crate) fn build_new_team_config(
     workspace_dir: &Path,
-    team_name: &str,
     coordinator: &str,
     agents: &[String],
     repos: &[String],
     repo_agents: &[String],
     repo_exclude_agents: &[String],
 ) -> Result<TeamConfigResult, String> {
-    let existing = read_team_config(workspace_dir, team_name).ok();
-    let mut roster = Vec::new();
-    if let Some(config) = existing.as_ref() {
-        for agent in &config.agents {
-            push_unique(&mut roster, resolve_agent_ref(workspace_dir, agent)?);
-        }
-    }
+    let coordinator = resolve_agent_ref(workspace_dir, coordinator)?;
+    let mut roster = vec![coordinator.clone()];
     for agent in agents {
         push_unique(&mut roster, resolve_agent_ref(workspace_dir, agent)?);
     }
-    let coordinator = resolve_agent_ref(workspace_dir, coordinator)?;
-    push_unique(&mut roster, coordinator.clone());
-    if roster.is_empty() {
-        return Err("At least one team agent is required".to_string());
-    }
-    let repo_config =
-        if repos.is_empty() && repo_agents.is_empty() && repo_exclude_agents.is_empty() {
-            existing.map(|config| config.repos).unwrap_or_default()
-        } else {
-            build_repo_assignments(
-                workspace_dir,
-                &roster,
-                repos,
-                repo_agents,
-                repo_exclude_agents,
-            )?
-        };
+    let repo_config = build_repo_assignments(
+        workspace_dir,
+        &roster,
+        repos,
+        repo_agents,
+        repo_exclude_agents,
+    )?;
     Ok(TeamConfigResult {
         agents: roster,
         coordinator,

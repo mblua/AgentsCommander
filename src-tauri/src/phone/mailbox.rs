@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -36,8 +36,8 @@ fn sender_name_for_session_cwd(working_directory: &str) -> String {
 struct ProjectRefreshEventPayload {
     id: String,
     project_path: String,
-    agent_path: String,
-    agent_name: String,
+    changed_path: Option<String>,
+    changed_name: Option<String>,
     reason: String,
 }
 
@@ -52,6 +52,14 @@ fn canonical_project_refresh_path(path: &str) -> String {
         .unwrap_or_else(|_| PathBuf::from(path))
         .to_string_lossy()
         .to_string()
+}
+
+fn project_refresh_priority(reason: &str) -> u8 {
+    if reason == "projectRegistered" {
+        0
+    } else {
+        1
+    }
 }
 
 fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBatch {
@@ -75,7 +83,8 @@ fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBa
     entries.sort();
 
     let mut batch = ProjectRefreshPollBatch::default();
-    let mut seen_projects = BTreeSet::new();
+    let mut selected_by_project: HashMap<String, (u8, ProjectRefreshEventPayload)> = HashMap::new();
+    let mut project_order: Vec<String> = Vec::new();
 
     for path in entries {
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
@@ -112,17 +121,31 @@ fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBa
         request.project_path = canonical_project_path.clone();
         batch.processed_paths.push(path);
 
-        if !seen_projects.insert(canonical_project_path) {
-            continue;
-        }
-
-        batch.payloads.push(ProjectRefreshEventPayload {
+        let priority = project_refresh_priority(&request.reason);
+        let payload = ProjectRefreshEventPayload {
             id: request.id,
             project_path: request.project_path,
-            agent_path: request.agent_path,
-            agent_name: request.agent_name,
+            changed_path: request.changed_path,
+            changed_name: request.changed_name,
             reason: request.reason,
-        });
+        };
+
+        match selected_by_project.get(&canonical_project_path) {
+            Some((existing_priority, _)) if *existing_priority <= priority => {}
+            Some(_) => {
+                selected_by_project.insert(canonical_project_path, (priority, payload));
+            }
+            None => {
+                project_order.push(canonical_project_path.clone());
+                selected_by_project.insert(canonical_project_path, (priority, payload));
+            }
+        }
+    }
+
+    for project_path in project_order {
+        if let Some((_, payload)) = selected_by_project.remove(&project_path) {
+            batch.payloads.push(payload);
+        }
     }
 
     batch
@@ -2770,9 +2793,10 @@ impl MailboxPoller {
 
         for payload in &batch.payloads {
             log::info!(
-                "[project-refresh-requests] Emitting refresh: project='{}' agent='{}'",
+                "[project-refresh-requests] Emitting refresh: dir='{}' project='{}' reason='{}'",
+                requests_dir.display(),
                 payload.project_path,
-                payload.agent_name
+                payload.reason
             );
             let _ = tauri::Emitter::emit(app, "ac_project_refresh_requested", payload);
         }
@@ -4000,18 +4024,21 @@ mod tests {
         path: &Path,
         id: &str,
         project_path: &Path,
-        agent_name: &str,
+        changed_name: Option<&str>,
+        reason: &str,
     ) {
         let request = crate::cli::create_agent_matrix::ProjectRefreshRequest {
             id: id.to_string(),
             project_path: project_path.to_string_lossy().to_string(),
-            agent_path: project_path
-                .join(".ac")
-                .join("_agent_architect")
-                .to_string_lossy()
-                .to_string(),
-            agent_name: agent_name.to_string(),
-            reason: "createAgentMatrix".to_string(),
+            changed_path: changed_name.map(|_| {
+                project_path
+                    .join(".ac")
+                    .join("_agent_architect")
+                    .to_string_lossy()
+                    .to_string()
+            }),
+            changed_name: changed_name.map(str::to_string),
+            reason: reason.to_string(),
             timestamp: "2026-05-28T20:00:00Z".to_string(),
         };
         std::fs::write(path, serde_json::to_string_pretty(&request).unwrap()).unwrap();
@@ -4029,7 +4056,8 @@ mod tests {
             &tmp_file,
             "request-tmp",
             &project,
-            "ProjectAlpha/architect",
+            Some("ProjectAlpha/architect"),
+            "createAgentMatrix",
         );
 
         let batch = collect_project_refresh_requests(&requests_dir);
@@ -4068,13 +4096,15 @@ mod tests {
             &requests_dir.join("a.json"),
             "request-a",
             &project,
-            "ProjectAlpha/architect",
+            Some("ProjectAlpha/architect"),
+            "createAgentMatrix",
         );
         write_project_refresh_request_fixture(
             &requests_dir.join("b.json"),
             "request-b",
             &project,
-            "ProjectAlpha/planner",
+            Some("ProjectAlpha/planner"),
+            "workgroupCreated",
         );
 
         let batch = collect_project_refresh_requests(&requests_dir);
@@ -4087,6 +4117,99 @@ mod tests {
             .to_string();
         assert_eq!(batch.payloads[0].project_path, expected_project);
         assert_eq!(batch.payloads[0].id, "request-a");
+    }
+
+    #[test]
+    fn project_refresh_request_reader_preserves_registration_payload() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let requests_dir = temp.path().join("project-refresh-requests");
+        std::fs::create_dir_all(&requests_dir).unwrap();
+        let project = temp.path().join("ProjectAlpha");
+        std::fs::create_dir_all(project.join(".ac")).unwrap();
+        write_project_refresh_request_fixture(
+            &requests_dir.join("registration.json"),
+            "request-registration",
+            &project,
+            None,
+            "projectRegistered",
+        );
+
+        let batch = collect_project_refresh_requests(&requests_dir);
+
+        assert_eq!(batch.payloads.len(), 1);
+        let payload = &batch.payloads[0];
+        assert_eq!(payload.id, "request-registration");
+        assert_eq!(payload.reason, "projectRegistered");
+        assert_eq!(payload.changed_path, None);
+        assert_eq!(payload.changed_name, None);
+    }
+
+    #[test]
+    fn project_refresh_request_reader_accepts_legacy_agent_fields() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let requests_dir = temp.path().join("project-refresh-requests");
+        std::fs::create_dir_all(&requests_dir).unwrap();
+        let project = temp.path().join("ProjectAlpha");
+        let agent_path = project.join(".ac").join("_agent_architect");
+        std::fs::create_dir_all(&agent_path).unwrap();
+        let request = serde_json::json!({
+            "id": "legacy-request",
+            "projectPath": project.to_string_lossy(),
+            "agentPath": agent_path.to_string_lossy(),
+            "agentName": "ProjectAlpha/architect",
+            "reason": "createAgentMatrix",
+            "timestamp": "2026-05-28T20:00:00Z"
+        });
+        std::fs::write(
+            requests_dir.join("legacy.json"),
+            serde_json::to_string_pretty(&request).unwrap(),
+        )
+        .unwrap();
+
+        let batch = collect_project_refresh_requests(&requests_dir);
+
+        assert_eq!(batch.payloads.len(), 1);
+        let expected_agent_path = agent_path.to_string_lossy().to_string();
+        assert_eq!(
+            batch.payloads[0].changed_path.as_deref(),
+            Some(expected_agent_path.as_str())
+        );
+        assert_eq!(
+            batch.payloads[0].changed_name.as_deref(),
+            Some("ProjectAlpha/architect")
+        );
+    }
+
+    #[test]
+    fn project_refresh_request_reader_prioritizes_registration_for_same_project() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let requests_dir = temp.path().join("project-refresh-requests");
+        std::fs::create_dir_all(&requests_dir).unwrap();
+        let project = temp.path().join("ProjectAlpha");
+        std::fs::create_dir_all(project.join(".ac").join("_agent_architect")).unwrap();
+        write_project_refresh_request_fixture(
+            &requests_dir.join("a-mutation.json"),
+            "request-mutation",
+            &project,
+            Some("ProjectAlpha/architect"),
+            "createAgentMatrix",
+        );
+        write_project_refresh_request_fixture(
+            &requests_dir.join("z-registration.json"),
+            "request-registration",
+            &project,
+            None,
+            "projectRegistered",
+        );
+
+        let batch = collect_project_refresh_requests(&requests_dir);
+
+        assert_eq!(batch.payloads.len(), 1);
+        assert_eq!(batch.processed_paths.len(), 2);
+        assert_eq!(batch.payloads[0].id, "request-registration");
+        assert_eq!(batch.payloads[0].reason, "projectRegistered");
+        assert_eq!(batch.payloads[0].changed_path, None);
+        assert_eq!(batch.payloads[0].changed_name, None);
     }
 
     // ── Issue #223 deliver_wake integration placeholders ──

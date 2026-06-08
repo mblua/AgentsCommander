@@ -4,7 +4,7 @@ For developers ready to compose multiple agents around a shared goal. Teams defi
 
 ## Team
 
-A **team** is one coordinator plus one or more worker agents. The team's config lives at `.ac/_team_<name>/config.json` and lists members by their canonical names.
+A **team** is one coordinator plus one or more worker agents. The coordinator and every member must already exist as agent matrices before you create the team. The team's config lives at `.ac/_team_<name>/config.json` and lists members by their canonical names.
 
 ```
 my-project/
@@ -30,7 +30,7 @@ my-project/
 }
 ```
 
-You create teams from the **Teams** UI in the sidebar, or from the CLI when creating a workgroup. Pick a coordinator (must already exist as an agent), pick one or more members, save.
+You create teams from the **Teams** UI in the sidebar, or from the CLI with `team create`. Pick an existing coordinator agent, pick one or more existing member agents, optionally define repo access, then save. Workgroups are created later when you activate the team for a task.
 
 ### Coordinator authority
 
@@ -116,27 +116,36 @@ From the UI, click **Activate** on the team. From the CLI, use `workgroup add`. 
 When activated from the UI, AC also launches the coordinator's session. The CLI creates the workgroup and requests a sidebar refresh; launch sessions separately as needed.
 
 ```bash
-agentscommander workgroup add \
+agentscommander team create \
   --project MyProject \
   --team "Feature X" \
-  --title "Add OAuth2 login flow" \
   --coordinator tech-lead \
   --agent dev-rust \
   --agent dev-ts
-```
 
-Repository access can be assigned at creation:
-
-```bash
 agentscommander workgroup add \
   --project MyProject \
   --team "Feature X" \
-  --title "Add OAuth2 login flow" \
+  --title "Add OAuth2 login flow"
+```
+
+Repository access is a team-level definition. Set it during team creation or editing; `workgroup add` only activates an existing team and uses the repo access already defined on that team.
+
+```bash
+agentscommander team create \
+  --project MyProject \
+  --team "Feature X" \
   --coordinator tech-lead \
   --agent dev-rust \
+  --agent dev-ts \
   --repo https://github.com/org/app.git \
   --repo-agents https://github.com/org/admin.git=tech-lead,dev-rust \
   --repo-exclude-agents https://github.com/org/docs.git=dev-ts
+
+agentscommander workgroup add \
+  --project MyProject \
+  --team "Feature X" \
+  --title "Add OAuth2 login flow"
 ```
 
 Plain `--repo` assigns the repo to the final team roster. `--repo-agents` includes only the named agents for that repo. `--repo-exclude-agents` assigns the repo to the final team roster minus the named agents. The include and exclude forms are mutually exclusive per repo URL.
@@ -164,7 +173,7 @@ agentscommander team add-member \
   --agent qa
 ```
 
-This updates the team config and creates `wg-1-feature-x/__agent_qa/` immediately. Use `--coordinator` to make the added agent the coordinator.
+This updates the team config used by `wg-1-feature-x` and creates `wg-1-feature-x/__agent_qa/` immediately. Use `--coordinator` to make the added agent the coordinator.
 
 Remove a non-coordinator member with:
 
@@ -176,6 +185,8 @@ agentscommander team remove-member \
 ```
 
 Removal refuses live sessions under that member's replica.
+
+Membership edits are scoped to the selected workgroup. Other existing workgroups for the same team are not updated globally, so update or recreate those workgroups separately when they need the same roster change.
 
 ## Recovery
 

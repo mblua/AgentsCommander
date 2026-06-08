@@ -538,7 +538,7 @@ mod tests {
         assert!(fix
             .path()
             .join(".ac")
-            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(fix
             .path()
@@ -583,7 +583,7 @@ mod tests {
         let fix = FixtureRoot::new("proj-new-template-existing");
         let workspace_dir = fix.path().join(".ac");
         std::fs::create_dir_all(&workspace_dir).unwrap();
-        let agent_template = workspace_dir.join("Context.agent.md");
+        let agent_template = workspace_dir.join("Context.AgentsCommander.md");
         let coordinator_template = workspace_dir.join("Context.coordinator.md");
         std::fs::write(&agent_template, "CUSTOM_AGENT").unwrap();
         std::fs::write(&coordinator_template, "CUSTOM_COORDINATOR").unwrap();
@@ -611,7 +611,7 @@ mod tests {
             register_new_project_impl(&mut s, fix.path().to_str().unwrap(), |workspace_dir| {
                 std::fs::write(
                     workspace_dir
-                        .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME),
+                        .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
                     crate::config::session_context::get_default_agent_template(),
                 )
                 .expect("write partial agent context");
@@ -636,7 +636,7 @@ mod tests {
         assert!(fix
             .path()
             .join(".ac")
-            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(fix
             .path()
@@ -654,7 +654,11 @@ mod tests {
         let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
 
         assert!(!r.created);
-        assert!(!fix.path().join(".ac").join("Context.agent.md").exists());
+        assert!(!fix
+            .path()
+            .join(".ac")
+            .join("Context.AgentsCommander.md")
+            .exists());
         assert!(!fix
             .path()
             .join(".ac")

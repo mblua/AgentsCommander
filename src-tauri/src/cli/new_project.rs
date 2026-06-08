@@ -7,7 +7,9 @@
 //! Same GUI concurrency caveat as `open-project` — see that file.
 
 use clap::Args;
+use std::path::PathBuf;
 
+use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::register_new_project;
 use crate::config::settings::{load_settings_for_cli, save_settings};
 
@@ -44,6 +46,7 @@ pub fn execute(args: NewProjectArgs) -> i32 {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;
         }
+        write_project_registration_refresh(&PathBuf::from(&result.path), "projectRegistered");
     }
     if result.created {
         crate::cli_println!("Created AC project at {}", result.path);

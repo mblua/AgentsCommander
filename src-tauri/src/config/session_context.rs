@@ -4,7 +4,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
+pub const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str = "Context.AgentsCommander.md";
+const LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
 pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -15,6 +16,13 @@ static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// deterministic filename based on the agent_root to prevent races between
 /// concurrent session launches.
 pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
+    ensure_session_context_with_config(agent_root, None)
+}
+
+fn ensure_session_context_with_config(
+    agent_root: &str,
+    config: Option<&serde_json::Value>,
+) -> Result<String, String> {
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let context_dir = config_dir.join("context-cache");
@@ -42,7 +50,13 @@ pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
     let hash = simple_hash(agent_root);
     let file_path = context_dir.join(format!("ac-context-{}.md", hash));
 
-    let content = resolve_agent_context(&canonical_root, matrix_root.as_deref(), &skills_section)?;
+    let content = resolve_agent_context(
+        &canonical_root,
+        matrix_root.as_deref(),
+        &skills_section,
+        Path::new(agent_root),
+        config,
+    )?;
     std::fs::write(&file_path, content)
         .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
     log::info!(
@@ -793,7 +807,7 @@ pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), Stri
         )
     })?;
     write_template_if_missing(
-        &workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+        &workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
         get_default_agent_template(),
     )?;
     write_template_if_missing(
@@ -925,7 +939,11 @@ fn cleanup_failed_context_template(path: &Path) {
 }
 
 fn resolve_workspace_context_dir(agent_root: &Path) -> Option<PathBuf> {
-    find_workspace_root(agent_root)
+    find_workspace_root(agent_root).or_else(|| {
+        super::root_agent::is_root_agent_dir_name(&agent_root.to_string_lossy())
+            .then(|| agent_root.parent().map(canonical_or_original))
+            .flatten()
+    })
 }
 
 fn read_context_template(agent_root: &str, filename: &str) -> Result<Option<String>, String> {
@@ -969,11 +987,87 @@ fn read_or_create_context_template(
     let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
         return Ok(None);
     };
+    if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
+        migrate_legacy_agent_context_template(&context_dir)?;
+    }
     if let Some(content) = read_context_template(agent_root, filename)? {
         return Ok(Some(content));
     }
     write_template_if_missing(&context_dir.join(filename), default_content)?;
     read_context_template(agent_root, filename)
+}
+
+fn migrate_legacy_agent_context_template(context_dir: &Path) -> Result<(), String> {
+    migrate_legacy_agent_context_template_with(context_dir, |legacy_path, new_path| {
+        std::fs::hard_link(legacy_path, new_path)
+    })
+}
+
+fn migrate_legacy_agent_context_template_with<F>(
+    context_dir: &Path,
+    publish_no_overwrite: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    let new_path = context_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+    match std::fs::symlink_metadata(&new_path) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect context template {}: {}",
+                new_path.display(),
+                e
+            ))
+        }
+    }
+
+    let legacy_path = context_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
+    match std::fs::symlink_metadata(&legacy_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "Legacy context template {} exists but is not a regular file",
+                    legacy_path.display()
+                ));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect legacy context template {}: {}",
+                legacy_path.display(),
+                e
+            ))
+        }
+    }
+
+    match publish_no_overwrite(&legacy_path, &new_path) {
+        Ok(()) => {
+            if let Err(e) = std::fs::remove_file(&legacy_path) {
+                log::warn!(
+                    "Migrated legacy context template {} to {}, but failed to remove legacy file: {}",
+                    legacy_path.display(),
+                    new_path.display(),
+                    e
+                );
+            }
+            log::info!(
+                "Migrated legacy context template {} to {}",
+                legacy_path.display(),
+                new_path.display()
+            );
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(format!(
+            "Failed to migrate legacy context template {} to {}: {}",
+            legacy_path.display(),
+            new_path.display(),
+            e
+        )),
+    }
 }
 
 fn write_combined_context_file(
@@ -1125,35 +1219,18 @@ pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
         })
 }
 
-/// Generate a markdown file with workspace repo information from the replica's config.
-/// Reads "repos" from `config`, resolves paths relative to `cwd_path`, detects git branches.
-/// Returns the path to the generated temp file.
-fn generate_repos_workspace_info(
+fn render_workspace_repos_string(
     cwd_path: &std::path::Path,
-    config: &serde_json::Value,
-) -> Result<std::path::PathBuf, String> {
-    let config_dir =
-        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let context_dir = config_dir.join("context-cache");
-    std::fs::create_dir_all(&context_dir)
-        .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
-
-    let hash = simple_hash(&cwd_path.to_string_lossy());
-    let file_path = context_dir.join(format!("repos-workspace-{}.md", hash));
-
+    config: Option<&serde_json::Value>,
+) -> String {
     let repos = config
-        .get("repos")
+        .and_then(|config| config.get("repos"))
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
     if repos.is_empty() {
-        std::fs::write(
-            &file_path,
-            "# Workspace Repos\n\nNo repos configured for this replica.\n",
-        )
-        .map_err(|e| format!("Failed to write repos workspace info: {}", e))?;
-        return Ok(file_path);
+        return "# Workspace Repos\n\nNo repos configured for this replica.\n".to_string();
     }
 
     let mut md = String::from(
@@ -1193,10 +1270,7 @@ fn generate_repos_workspace_info(
         ));
     }
 
-    std::fs::write(&file_path, &md)
-        .map_err(|e| format!("Failed to write repos workspace info: {}", e))?;
-
-    Ok(file_path)
+    md
 }
 
 /// Detect git branch for a given directory path.
@@ -1231,7 +1305,7 @@ fn detect_git_branch(dir: &str) -> Option<String> {
 /// Reads config.json from `cwd`, looks for `context[]` array.
 /// Entries are resolved in order:
 /// - `$AGENTSCOMMANDER_CONTEXT` → resolves to the global AgentsCommanderContext.md
-/// - `$REPOS_WORKSPACE_INFO` → generates workspace repo info from the "repos" field
+/// - `$REPOS_WORKSPACE_INFO` → deprecated; skipped because repos render inside the global context
 /// - Any other string → resolved as a path relative to `cwd`
 ///
 /// After resolving context[], if `identity` is set in config.json and `<identity>/Role.md`
@@ -1294,14 +1368,17 @@ fn build_replica_context_from_config(
         };
 
         if raw == CONTEXT_TOKEN_GLOBAL {
-            let global_path = ensure_session_context(cwd)?;
+            let global_path = ensure_session_context_with_config(cwd, Some(&config))?;
             resolved_paths.push((
                 "AgentsCommanderContext.md".to_string(),
                 std::path::PathBuf::from(&global_path),
             ));
         } else if raw == CONTEXT_TOKEN_REPOS {
-            let repos_path = generate_repos_workspace_info(cwd_path, &config)?;
-            resolved_paths.push(("Workspace Repos".to_string(), repos_path));
+            log::debug!(
+                "Skipping deprecated {} context token for {}",
+                CONTEXT_TOKEN_REPOS,
+                cwd
+            );
         } else {
             let abs = cwd_path.join(raw);
             if abs.exists() {
@@ -1364,22 +1441,26 @@ fn build_replica_context_from_config(
 
 fn build_direct_matrix_context(cwd: &str) -> Result<String, String> {
     let cwd_path = Path::new(cwd);
-    let global_context = ensure_session_context(cwd)?;
     let role_path = Path::new(cwd).join(ROLE_MD_FILENAME);
     let config_path = cwd_path.join("config.json");
+    let config = if config_path.exists() {
+        let config_content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+        Some(
+            serde_json::from_str::<serde_json::Value>(&config_content)
+                .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?,
+        )
+    } else {
+        None
+    };
+    let global_context = ensure_session_context_with_config(cwd, config.as_ref())?;
     let mut resolved_paths = vec![(
         "AgentsCommanderContext.md".to_string(),
         std::path::PathBuf::from(&global_context),
     )];
     let mut missing: Vec<String> = Vec::new();
 
-    if config_path.exists() {
-        let config_content = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-
-        let config: serde_json::Value = serde_json::from_str(&config_content)
-            .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
-
+    if let Some(config) = &config {
         if let Some(context_array) = config.get("context").and_then(|v| v.as_array()) {
             for entry in context_array {
                 let raw = match entry.as_str() {
@@ -1390,10 +1471,11 @@ fn build_direct_matrix_context(cwd: &str) -> Result<String, String> {
                 if raw == CONTEXT_TOKEN_GLOBAL {
                     continue;
                 } else if raw == CONTEXT_TOKEN_REPOS {
-                    let repos_path = generate_repos_workspace_info(cwd_path, &config)?;
-                    if !resolved_paths_include_path(&resolved_paths, &repos_path) {
-                        resolved_paths.push(("Workspace Repos".to_string(), repos_path));
-                    }
+                    log::debug!(
+                        "Skipping deprecated {} context token for {}",
+                        CONTEXT_TOKEN_REPOS,
+                        cwd
+                    );
                 } else {
                     let abs = cwd_path.join(raw);
                     if abs.exists() {
@@ -1557,112 +1639,24 @@ fn simple_hash(s: &str) -> u64 {
     hash
 }
 
-/// Generate the default agent context with a per-agent GOLDEN RULE that embeds
-/// the agent's own replica root path and, for WG replicas, the allowed Agent
-/// Matrix scope.
 pub fn get_default_agent_template() -> &'static str {
     r#"# AgentsCommander Context
 
-You are running inside an AgentsCommander session — a terminal session manager that coordinates multiple AI agents.
+You are running inside an AgentsCommander session - a terminal session manager that coordinates multiple AI agents.
 
-## GOLDEN RULE — Repository Write Restrictions
+{{WRITE_RESTRICTIONS}}
 
-**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in the entries listed below:
-
-1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
-2. **Your own agent replica directory and its subdirectories** — your assigned root:
-   ```
-   {{AGENT_ROOT}}
-   ```
-   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT write into other agents' replica directories.
-
-{{MATRIX_SECTION}}{{MESSAGING_EXCEPTION}}Any repository or directory outside the allowed entries above is READ-ONLY, except for the AgentsCommander CLI operations exception documented below.
-
-- **Allowed**: Read-only operations on ANY path (reading files, searching, git log, git status, git diff)
-- **Allowed**: Full read/write inside `repo-*` folders
-- **Allowed**: Full read/write inside your own replica root ({{AGENT_ROOT}}) and its subdirectories
-{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}- **FORBIDDEN**: Any write operation outside {{FORBIDDEN_SCOPE}}, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
-
-**Clarification on git operations:** {{GIT_SCOPE}}
-
-**Exception - AgentsCommander CLI operations:**
-
-When the user explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`, the command is authorized as an AgentsCommander operation. The agent may execute documented AgentsCommander CLI subcommands even if their filesystem effects create, modify, or delete files outside the normal repository/replica write zones. Those filesystem effects are governed by AgentsCommander itself, not by the agent's repository write restrictions.
-
-This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
-
-If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.
-
-## Delegated Task Reporting
-
-When finishing a delegated task or getting blocked, you must explicitly reply to the coordinator or peer with a concrete artifact or message. Do not just remain idle, waiting, or set working to false.
+{{DELEGATED_TASK_REPORTING}}
 
 {{SKILLS_SECTION}}
 
-## CLI executable
+{{WORKSPACE_REPOS}}
 
-Your AgentsCommander session credentials are available as environment variables:
+{{CLI_CONTEXT}}
 
-- `AGENTSCOMMANDER_TOKEN`: your session authentication token
-- `AGENTSCOMMANDER_ROOT`: your working directory (agent root)
-- `AGENTSCOMMANDER_BINARY`: the CLI binary name
-- `AGENTSCOMMANDER_BINARY_PATH`: the full path to the CLI executable you must use
-- `AGENTSCOMMANDER_LOCAL_DIR`: the config directory name for this instance
+{{SESSION_CREDENTIALS}}
 
-Use `AGENTSCOMMANDER_BINARY_PATH` when invoking the CLI. This ensures you use the correct binary for your instance, whether it is the installed version or a dev/WG build.
-
-```
-"<AGENTSCOMMANDER_BINARY_PATH>" <subcommand> [args]
-```
-
-**RULE:** Never hardcode or guess the binary path. Use the environment variables above. If they are unavailable in an agent session, restart or respawn the session.
-
-## Self-discovery via --help
-
-The CLI `--help` output documents every subcommand, flag, and accepted value. Use it as a FALLBACK reference for commands or flags NOT covered inline in this context.
-
-**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly — you do NOT need to consult `--help` to confirm their syntax.
-
-```
-"<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
-"<AGENTSCOMMANDER_BINARY_PATH>" send --help             # Full docs for sending messages
-"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help  # Full docs for discovering peers
-```
-
-**RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly.
-
-## Session credentials
-
-Your session credentials are delivered only through the `AGENTSCOMMANDER_*` environment variables listed above.
-
-Live token refresh without respawn is not supported, because a parent process cannot portably mutate an already-running child process environment. If credential validation fails, restart or respawn the session so AgentsCommander can create a new child process with fresh env values.
-
-Your agent root is your current working directory.
-
-## Inter-Agent Messaging
-
-### Send a message to another agent
-
-**MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers-lean`. Never guess agent names.
-
-**Peer name format** (canonical FQN, exactly what `list-peers-lean` emits in the `name` field):
-
-{{PEER_NAME_FORMAT}}
-
-**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk paths only — they are not peer names. The `list-peers-lean` JSON `name` field is the only authoritative source. If `list-peers-lean` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk — that produces invalid `--to` values. Stop and report the empty result instead.
-
-{{SEND_MESSAGE_INSTRUCTIONS}}
-
-The recipient receives a short notification pointing to your file's absolute
-path and reads the content via filesystem. Do NOT use `--get-output` — it
-blocks and is only for non-interactive sessions. After sending, stay idle and
-wait for the reply.
-
-### List available peers
-
-```
-"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>"
-```
+{{INTER_AGENT_MESSAGING}}
 "#
 }
 
@@ -1697,8 +1691,22 @@ fn render_agent_context_template(
     agent_root: &str,
     matrix_root: Option<&str>,
     skills_section: &str,
+    cwd_path: &Path,
+    config: Option<&serde_json::Value>,
 ) -> String {
     let rendered = default_context_dynamic_values(agent_root, matrix_root, skills_section);
+    let mut template = template.to_string();
+    for placeholder in MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS {
+        if !template.contains(placeholder) {
+            log::warn!(
+                "Global context template is missing mandatory placeholder {}; appending fallback block",
+                placeholder
+            );
+            template.push_str("\n\n");
+            template.push_str(placeholder);
+        }
+    }
+
     template
         .replace("{{AGENT_ROOT}}", agent_root)
         .replace("{{MATRIX_SECTION}}", &rendered.matrix_section)
@@ -1713,16 +1721,36 @@ fn render_agent_context_template(
             &rendered.send_message_instructions,
         )
         .replace("{{SKILLS_SECTION}}", skills_section)
+        .replace(
+            "{{WRITE_RESTRICTIONS}}",
+            &render_write_restrictions_block(agent_root, &rendered),
+        )
+        .replace("{{CLI_CONTEXT}}", DEFAULT_CLI_CONTEXT)
+        .replace("{{SESSION_CREDENTIALS}}", DEFAULT_SESSION_CREDENTIALS)
+        .replace(
+            "{{INTER_AGENT_MESSAGING}}",
+            &render_inter_agent_messaging_block(&rendered),
+        )
+        .replace(
+            "{{WORKSPACE_REPOS}}",
+            &render_workspace_repos_string(cwd_path, config),
+        )
+        .replace(
+            "{{DELEGATED_TASK_REPORTING}}",
+            DEFAULT_DELEGATED_TASK_REPORTING,
+        )
 }
 
 fn resolve_agent_context(
     agent_root: &str,
     matrix_root: Option<&str>,
     skills_section: &str,
+    cwd_path: &Path,
+    config: Option<&serde_json::Value>,
 ) -> Result<String, String> {
     let template = read_or_create_context_template(
         agent_root,
-        AGENT_CONTEXT_TEMPLATE_FILENAME,
+        GLOBAL_CONTEXT_TEMPLATE_FILENAME,
         get_default_agent_template(),
     )?
     .unwrap_or_else(|| default_context(agent_root, matrix_root, skills_section));
@@ -1734,9 +1762,65 @@ fn resolve_agent_context(
             agent_root,
             matrix_root,
             skills_section,
+            cwd_path,
+            config,
         ))
     }
 }
+
+const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
+    "{{WRITE_RESTRICTIONS}}",
+    "{{INTER_AGENT_MESSAGING}}",
+    "{{SESSION_CREDENTIALS}}",
+    "{{CLI_CONTEXT}}",
+    "{{SKILLS_SECTION}}",
+    "{{WORKSPACE_REPOS}}",
+    "{{DELEGATED_TASK_REPORTING}}",
+];
+
+const DEFAULT_CLI_CONTEXT: &str = r#"## CLI executable
+
+Your AgentsCommander session credentials are available as environment variables:
+
+- `AGENTSCOMMANDER_TOKEN`: your session authentication token
+- `AGENTSCOMMANDER_ROOT`: your working directory (agent root)
+- `AGENTSCOMMANDER_BINARY`: the CLI binary name
+- `AGENTSCOMMANDER_BINARY_PATH`: the full path to the CLI executable you must use
+- `AGENTSCOMMANDER_LOCAL_DIR`: the config directory name for this instance
+
+Use `AGENTSCOMMANDER_BINARY_PATH` when invoking the CLI. This ensures you use the correct binary for your instance, whether it is the installed version or a dev/WG build.
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" <subcommand> [args]
+```
+
+**RULE:** Never hardcode or guess the binary path. Use the environment variables above. If they are unavailable in an agent session, restart or respawn the session.
+
+## Self-discovery via --help
+
+The CLI `--help` output documents every subcommand, flag, and accepted value. Use it as a FALLBACK reference for commands or flags NOT covered inline in this context.
+
+**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly. You do NOT need to consult `--help` to confirm their syntax.
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
+"<AGENTSCOMMANDER_BINARY_PATH>" send --help             # Full docs for sending messages
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help  # Full docs for discovering peers
+```
+
+**RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly."#;
+
+const DEFAULT_SESSION_CREDENTIALS: &str = r#"## Session credentials
+
+Your session credentials are delivered only through the `AGENTSCOMMANDER_*` environment variables listed above.
+
+Live token refresh without respawn is not supported, because a parent process cannot portably mutate an already-running child process environment. If credential validation fails, restart or respawn the session so AgentsCommander can create a new child process with fresh env values.
+
+Your agent root is your current working directory."#;
+
+const DEFAULT_DELEGATED_TASK_REPORTING: &str = r#"## Delegated Task Reporting
+
+When finishing a delegated task or getting blocked, you must explicitly reply to the coordinator or peer with a concrete artifact or message. Do not just remain idle, waiting, or set working to false."#;
 
 struct DefaultContextDynamicValues {
     matrix_section: String,
@@ -1745,8 +1829,89 @@ struct DefaultContextDynamicValues {
     messaging_allowed: String,
     forbidden_scope: String,
     git_scope: String,
+    agency_cache_guidance: String,
     peer_name_format: String,
     send_message_instructions: String,
+}
+
+fn render_write_restrictions_block(
+    agent_root: &str,
+    rendered: &DefaultContextDynamicValues,
+) -> String {
+    let replica_usage =
+        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT write into other agents' replica directories.";
+    let allowed_places = "the entries listed below";
+    format!(
+        r#"## GOLDEN RULE — Repository Write Restrictions
+
+**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in {allowed_places}:
+
+1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
+2. **Your own agent replica directory and its subdirectories** — your assigned root:
+   ```
+   {agent_root}
+   ```
+{replica_usage}
+
+{matrix_section}{messaging_exception}Any repository or directory outside the allowed entries above is READ-ONLY, except for the AgentsCommander CLI operations exception documented below.
+
+- **Allowed**: Read-only operations on ANY path (reading files, searching, git log, git status, git diff)
+- **Allowed**: Full read/write inside `repo-*` folders
+- **Allowed**: Full read/write inside your own replica root ({agent_root}) and its subdirectories
+{matrix_allowed}{messaging_allowed}- **FORBIDDEN**: Any write operation outside {forbidden_scope}, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
+
+**Clarification on git operations:** {git_scope}
+
+**Exception - AgentsCommander CLI operations:**
+
+When the user explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`, the command is authorized as an AgentsCommander operation. The agent may execute documented AgentsCommander CLI subcommands even if their filesystem effects create, modify, or delete files outside the normal repository/replica write zones. Those filesystem effects are governed by AgentsCommander itself, not by the agent's repository write restrictions.
+
+This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
+
+{agency_cache_guidance}
+If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above."#,
+        allowed_places = allowed_places,
+        agent_root = agent_root,
+        replica_usage = replica_usage,
+        matrix_section = rendered.matrix_section,
+        messaging_exception = rendered.messaging_exception,
+        matrix_allowed = rendered.matrix_allowed,
+        messaging_allowed = rendered.messaging_allowed,
+        forbidden_scope = rendered.forbidden_scope,
+        git_scope = rendered.git_scope,
+        agency_cache_guidance = rendered.agency_cache_guidance,
+    )
+}
+
+fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) -> String {
+    format!(
+        r#"## Inter-Agent Messaging
+
+### Send a message to another agent
+
+**MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers-lean`. Never guess agent names.
+
+**Peer name format** (canonical FQN, exactly what `list-peers-lean` emits in the `name` field):
+
+{peer_name_format}
+
+**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk paths only. They are not peer names. The `list-peers-lean` JSON `name` field is the only authoritative source. If `list-peers-lean` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk. Stop and report the empty result instead.
+
+{send_message_instructions}
+
+The recipient receives a short notification pointing to your file's absolute
+path and reads the content via filesystem. Do NOT use `--get-output`, it
+blocks and is only for non-interactive sessions. After sending, stay idle and
+wait for the reply.
+
+### List available peers
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>"
+```"#,
+        peer_name_format = rendered.peer_name_format,
+        send_message_instructions = rendered.send_message_instructions,
+    )
 }
 
 fn default_context_dynamic_values(
@@ -1844,6 +2009,7 @@ fn default_context_dynamic_values(
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
         _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>` — e.g. `agentscommander/architect`.".to_string(),
     };
+    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let send_message_instructions = match &messaging_mode {
         MessagingContextMode::Root(path) => format!(
             "Before sending, run `list-peers-lean`; in Root Agent sessions it returns verified WG coordinator replicas only. Use only the JSON `name` values returned by `list-peers-lean`.\n\n\
@@ -1885,9 +2051,24 @@ fn default_context_dynamic_values(
         messaging_allowed,
         forbidden_scope,
         git_scope,
+        agency_cache_guidance,
         peer_name_format,
         send_message_instructions,
     }
+}
+
+fn root_agency_cache_guidance(agent_root: &str) -> String {
+    if !super::root_agent::is_root_agent_dir_name(agent_root) {
+        return String::new();
+    }
+    let cache_path = std::path::Path::new(agent_root)
+        .parent()
+        .map(|p| p.join(crate::commands::role_templates::AGENCY_TEMPLATES_DIR))
+        .unwrap_or_else(|| std::path::PathBuf::from(crate::commands::role_templates::AGENCY_TEMPLATES_DIR));
+    format!(
+        "Root Agent Agency template cache: `{}`. You may offer to manage it only through documented `agency-templates update`, `agency-templates status`, and `agency-templates list` CLI commands. This does not grant direct shell writes to the cache and does not grant access to arbitrary `*_templates` paths.\n\n",
+        display_path(&cache_path)
+    )
 }
 
 fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: &str) -> String {
@@ -1980,6 +2161,7 @@ fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: 
     } else {
         "Your agent directory is typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do NOT run `git` commands that alter state (commit, branch, reset, etc.) from inside that directory, because that would affect the parent repo unintentionally. AgentsCommander blocks Git repository discovery above these Project AC Root directories for agent sessions, but you must still switch into the appropriate `repo-*` directory before running Git operations that change repository state. `git status`, `git log`, and `git diff` are fine inside the allowed roots."
     };
+    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let peer_name_format = match &messaging_mode {
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
         _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>` — e.g. `agentscommander/architect`.".to_string(),
@@ -2049,6 +2231,7 @@ When the user explicitly asks this agent to run an AgentsCommander CLI command u
 
 This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
 
+{agency_cache_guidance}
 If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.
 
 ## Delegated Task Reporting
@@ -2131,6 +2314,7 @@ wait for the reply.
         messaging_allowed = messaging_allowed,
         forbidden_scope = forbidden_scope,
         git_scope = git_scope,
+        agency_cache_guidance = agency_cache_guidance,
         skills_section = skills_section,
         peer_name_format = peer_name_format,
         send_message_instructions = send_message_instructions,
@@ -2398,6 +2582,31 @@ mod tests {
     }
 
     #[test]
+    fn default_context_root_agent_documents_agency_cache_cli_only() {
+        let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
+        let normalized = out.replace('\\', "/");
+
+        assert!(normalized.contains("C:/fake/agency-agents_templates"));
+        assert!(out.contains("agency-templates update"));
+        assert!(out.contains("agency-templates status"));
+        assert!(out.contains("agency-templates list"));
+        assert!(out.contains("does not grant direct shell writes to the cache"));
+        assert!(!out.contains("*_templates` paths in `Allowed"));
+    }
+
+    #[test]
+    fn default_context_workgroup_replica_does_not_get_agency_cache_guidance() {
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+
+        assert!(!out.contains("agency-agents_templates"));
+        assert!(!out.contains("agency-templates update"));
+    }
+
+    #[test]
     fn default_context_root_agent_documents_verified_wg_coordinators_only() {
         let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
 
@@ -2513,7 +2722,7 @@ mod tests {
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
         std::fs::write(
-            workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             "root={{AGENT_ROOT}}\n{{MATRIX_SECTION}}\n{{MESSAGING_EXCEPTION}}\n{{SKILLS_SECTION}}",
         )
         .expect("write custom agent template");
@@ -2544,11 +2753,242 @@ mod tests {
     }
 
     #[test]
+    fn legacy_agent_template_is_migrated_to_global_template() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        let legacy_path = workspace_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let new_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&legacy_path, "LEGACY_BODY {{AGENT_ROOT}}").expect("write legacy template");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("LEGACY_BODY"));
+        assert!(content.contains(&display_path(&matrix_root)));
+        assert!(new_path.is_file());
+        assert!(!legacy_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(new_path).expect("read migrated template"),
+            "LEGACY_BODY {{AGENT_ROOT}}"
+        );
+    }
+
+    #[test]
+    fn missing_global_template_placeholders_are_force_appended() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            "CUSTOM_ONLY {{WRITE_RESTRICTIONS}}",
+        )
+        .expect("write partial template");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&matrix_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("CUSTOM_ONLY"));
+        assert!(content.contains("## GOLDEN RULE"));
+        assert!(content.contains("## Delegated Task Reporting"));
+        assert!(content.contains("## Skills"));
+        assert!(content.contains("# Workspace Repos"));
+        assert!(content.contains("## CLI executable"));
+        assert!(content.contains("## Session credentials"));
+        assert!(content.contains("## Inter-Agent Messaging"));
+        for placeholder in MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS {
+            assert!(
+                !content.contains(placeholder),
+                "placeholder {placeholder} should be rendered"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_repos_placeholder_uses_repaired_replica_config() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let repo_dir = workspace_dir.join("wg-19-dev-team").join("repo-Example");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::create_dir_all(&repo_dir).expect("create repo dir");
+        std::fs::write(
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            "{{WORKSPACE_REPOS}}",
+        )
+        .expect("write repos-only template");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"],"repos":["../repo-Example"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("## Repos"));
+        assert!(content.contains("repo-Example"));
+        assert!(content.contains(&display_path(&repo_dir)));
+        assert!(!content.contains("No repos configured"));
+    }
+
+    #[test]
+    fn workspace_repos_placeholder_uses_missing_context_repaired_to_global() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let repo_dir = workspace_dir.join("wg-19-dev-team").join("repo-Example");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::create_dir_all(&repo_dir).expect("create repo dir");
+        std::fs::write(
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            "{{WORKSPACE_REPOS}}",
+        )
+        .expect("write repos-only template");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","repos":["../repo-Example"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let repaired: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(replica_root.join("config.json")).expect("read config"),
+        )
+        .expect("parse repaired config");
+
+        assert!(content.contains("repo-Example"));
+        assert!(content.contains(&display_path(&repo_dir)));
+        assert!(!content.contains("No repos configured"));
+        assert_eq!(
+            repaired["context"],
+            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT"])
+        );
+    }
+
+    #[test]
+    fn workspace_repos_placeholder_uses_empty_context_repaired_to_global() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let repo_dir = workspace_dir.join("wg-19-dev-team").join("repo-Example");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::create_dir_all(&repo_dir).expect("create repo dir");
+        std::fs::write(
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            "{{WORKSPACE_REPOS}}",
+        )
+        .expect("write repos-only template");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":[],"repos":["../repo-Example"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let repaired: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(replica_root.join("config.json")).expect("read config"),
+        )
+        .expect("parse repaired config");
+
+        assert!(content.contains("repo-Example"));
+        assert!(content.contains(&display_path(&repo_dir)));
+        assert!(!content.contains("No repos configured"));
+        assert_eq!(
+            repaired["context"],
+            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT"])
+        );
+    }
+
+    #[test]
+    fn deprecated_repos_context_token_is_skipped_without_generated_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT","$REPOS_WORKSPACE_INFO"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let repaired: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(replica_root.join("config.json")).expect("read config"),
+        )
+        .expect("parse repaired config");
+
+        assert!(content.contains("# Workspace Repos"));
+        assert_eq!(
+            repaired["context"],
+            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT"])
+        );
+        assert_eq!(content.matches("# Workspace Repos").count(), 1);
+    }
+
+    #[test]
     fn edited_agent_template_is_used_for_all_provider_files() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
         let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let template_path = workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(&template_path, "CUSTOM_AGENT_BODY").expect("write custom agent template");
 
@@ -2635,7 +3075,7 @@ mod tests {
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
         assert_eq!(
-            std::fs::read_to_string(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read created agent template"),
             get_default_agent_template()
         );
@@ -2655,7 +3095,7 @@ mod tests {
 
         for (filename, default_content) in [
             (
-                AGENT_CONTEXT_TEMPLATE_FILENAME,
+                GLOBAL_CONTEXT_TEMPLATE_FILENAME,
                 get_default_agent_template(),
             ),
             (
@@ -2713,7 +3153,7 @@ mod tests {
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
         assert_eq!(
-            std::fs::read_to_string(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read retried agent template"),
             get_default_agent_template()
         );
@@ -2731,7 +3171,7 @@ mod tests {
         let matrix_root = workspace_dir.join("_agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
 
-        let path = workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         let (partial_written_tx, partial_written_rx) = mpsc::channel();
         let release_barrier = Arc::new(Barrier::new(2));
         let writer_release_barrier = Arc::clone(&release_barrier);
@@ -2764,7 +3204,7 @@ mod tests {
             "final template must not exist while temp content is partial"
         );
         assert_eq!(
-            read_context_template(&path_string(&matrix_root), AGENT_CONTEXT_TEMPLATE_FILENAME)
+            read_context_template(&path_string(&matrix_root), GLOBAL_CONTEXT_TEMPLATE_FILENAME)
                 .expect("read context template"),
             None
         );
@@ -2797,29 +3237,61 @@ mod tests {
     }
 
     #[test]
-    fn empty_agent_and_coordinator_templates_are_valid_empty_intent() {
+    fn legacy_template_migration_does_not_overwrite_concurrent_new_template() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
+        let legacy_path = workspace_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let new_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&legacy_path, "LEGACY_TEMPLATE").expect("write legacy template");
+
+        migrate_legacy_agent_context_template_with(&workspace_dir, |legacy_path, new_path| {
+            std::fs::write(new_path, "USER_NEW_TEMPLATE")?;
+            std::fs::hard_link(legacy_path, new_path)
+        })
+        .expect("race-lost migration should succeed without overwrite");
+
+        assert_eq!(
+            std::fs::read_to_string(&new_path).expect("read new template"),
+            "USER_NEW_TEMPLATE"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&legacy_path).expect("read preserved legacy template"),
+            "LEGACY_TEMPLATE"
+        );
+    }
+
+    #[test]
+    fn empty_agent_template_falls_back_to_mandatory_blocks() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
         let matrix_root = workspace_dir.join("_agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::write(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME), "")
+        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), "")
             .expect("write empty agent template");
         std::fs::write(
             workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            "   \n\t",
+            "COORDINATOR_ONLY",
         )
-        .expect("write empty coordinator template");
+        .expect("write coordinator template");
 
         let materialized = materialize_agent_context_file(
             &path_string(&matrix_root),
             ManagedContextTarget::Codex,
-            true,
+            false,
         )
         .expect("materialize context")
         .expect("context path");
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
 
-        assert_eq!(content, "");
+        assert!(content.contains("## GOLDEN RULE"));
+        assert!(content.contains("## Delegated Task Reporting"));
+        assert!(content.contains("## Skills"));
+        assert!(content.contains("# Workspace Repos"));
+        assert!(content.contains("## CLI executable"));
+        assert!(content.contains("## Session credentials"));
+        assert!(content.contains("## Inter-Agent Messaging"));
+        assert!(!content.contains("COORDINATOR_ONLY"));
     }
 
     #[test]
@@ -2828,7 +3300,7 @@ mod tests {
         let workspace_dir = temp.path().join(".ac");
         let matrix_root = workspace_dir.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::create_dir_all(workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME))
+        std::fs::create_dir_all(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
             .expect("create template directory");
 
         let err = materialize_agent_context_file(
@@ -2849,7 +3321,7 @@ mod tests {
         let matrix_root = workspace_dir.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
-            workspace_dir.join(AGENT_CONTEXT_TEMPLATE_FILENAME),
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             [0xff, 0xfe],
         )
         .expect("write invalid utf8 template");
@@ -2862,7 +3334,7 @@ mod tests {
         .expect_err("invalid utf8 template must error");
 
         assert!(err.contains("not valid UTF-8"));
-        assert!(err.contains(AGENT_CONTEXT_TEMPLATE_FILENAME));
+        assert!(err.contains(GLOBAL_CONTEXT_TEMPLATE_FILENAME));
     }
 
     #[test]
@@ -3297,11 +3769,7 @@ mod tests {
         assert_eq!(repaired["identity"], "../../_agent_tech-lead");
         assert_eq!(
             repaired["context"],
-            serde_json::json!([
-                "$AGENTSCOMMANDER_CONTEXT",
-                "$REPOS_WORKSPACE_INFO",
-                "../../_agent_tech-lead/Role.md"
-            ])
+            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT", "../../_agent_tech-lead/Role.md"])
         );
     }
 
@@ -3489,7 +3957,12 @@ mod tests {
 
         assert!(content.contains("# AgentsCommander Context"));
         assert!(content.contains("You are the AgentsCommander Root Agent"));
-        assert!(content.contains("verified workgroup coordinator replicas only"));
+        assert!(content.contains("verified WG coordinator replicas only"));
+        assert_eq!(
+            content.matches("Root messaging is **file-based**").count(),
+            1,
+            "root operational messaging instructions should come only from the global context"
+        );
         assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
         assert!(!content.contains("Direct file-based workgroup messaging is not available"));
 
@@ -3507,7 +3980,55 @@ mod tests {
 
         assert!(content.contains("LIVE_ROOT_CONTEXT_BODY"));
         assert!(!content.contains("You are the AgentsCommander Root Agent"));
+        assert_eq!(
+            content.matches("Root messaging is **file-based**").count(),
+            1,
+            "custom root context must not receive global operational fallback"
+        );
         assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
+    }
+
+    #[test]
+    fn materialize_root_context_uses_standalone_sibling_global_template() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let global_template_path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(
+            root.join("config.json"),
+            r#"{"tooling":{},"context":["$AGENTSCOMMANDER_CONTEXT","../Context.root-agent.md","Role.md"]}"#,
+        )
+        .expect("write config");
+        std::fs::write(root.join("Role.md"), "# Root Role\n\nROOT_ROLE_BODY\n")
+            .expect("write role");
+        std::fs::write(
+            temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+            "# Root Context\n\nROOT_TEMPLATE_BODY\n",
+        )
+        .expect("write root context");
+        std::fs::write(
+            &global_template_path,
+            "CUSTOM_STANDALONE_GLOBAL {{AGENT_ROOT}}",
+        )
+        .expect("write global template");
+
+        let materialized =
+            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
+                .expect("materialize context")
+                .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("CUSTOM_STANDALONE_GLOBAL"));
+        assert!(content.contains(&display_path(&root)));
+        assert!(content.contains("ROOT_TEMPLATE_BODY"));
+        assert!(content.contains("ROOT_ROLE_BODY"));
+        assert!(!content.contains("# AgentsCommander Context"));
+        assert_eq!(
+            std::fs::read_to_string(global_template_path).expect("read global template"),
+            "CUSTOM_STANDALONE_GLOBAL {{AGENT_ROOT}}"
+        );
     }
 
     #[test]

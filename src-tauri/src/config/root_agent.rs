@@ -80,7 +80,7 @@ Use the AgentsCommander CLI only for commands that are valid from this root-agen
 Direct file-based workgroup messaging is not available from the root-agent directory yet: `send --send` currently requires a workgroup replica root. Do not claim that you can autonomously message workgroup peers until a future root messaging feature adds explicit root-aware send instructions.
 "#;
 
-static ROOT_ROLE_MD: LazyLock<String> = LazyLock::new(|| {
+static OLD_ROOT_CONTEXT_WITH_COORDINATION_MD: LazyLock<String> = LazyLock::new(|| {
     format!(
         r#"---
 name: 'agents-commander'
@@ -114,6 +114,61 @@ Use the AgentsCommander CLI only for commands that are valid from this root-agen
 {ROOT_COORDINATION_MESSAGING_PARAGRAPH}
 "#
     )
+});
+
+static ROOT_ROLE_MD: LazyLock<String> = LazyLock::new(|| {
+    r#"---
+name: 'agents-commander'
+description: 'Static supplemental root context for AgentsCommander.'
+type: agent
+---
+
+# Agents Commander
+
+You are the AgentsCommander Root Agent. You are the top-level coordinator for this AgentsCommander binary.
+
+## Responsibility
+
+Act as the top-level planning and oversight agent for sessions, workgroups, and agents available to this AgentsCommander instance. Help the user inspect available work, plan delegation, track status, and synthesize results.
+
+## State
+
+Your own durable state lives in the canonical `ac-root-agent` directory:
+
+- `memory/`
+- `plans/`
+- `skills/`
+- `Role.md`
+
+You are not a workgroup replica and you do not have an origin Agent Matrix. Use the canonical root directory for your own durable state.
+
+## Coordination
+
+Coordinate across workgroups at a high level. Delegate specialized implementation work to the appropriate team coordinators and synthesize their results for the user.
+
+## Team and workgroup setup
+
+When asked to set up a new team for automation, use this order:
+
+1. Create any missing agents with `create-agent-matrix`.
+2. Create the team with `team create`, choosing one coordinator and the worker agents.
+3. Activate a task workspace with `workgroup add` using only `--project`, `--team`, and `--title`.
+
+Agents must exist before team creation. Team creation defines membership and repo access; workgroup activation uses the existing team definition.
+
+## Agency Agents Roles
+
+You may offer to download tested role templates from Agency Agents when the user wants a new specialist role. Ask before downloading or updating. If the user accepts, use the AgentsCommander CLI from `AGENTSCOMMANDER_BINARY_PATH`:
+
+```text
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates update --ref main
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates status --pretty
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates list --pretty
+```
+
+Use only IDs returned by `agency-templates list` when creating agents with `create-agent-matrix --role-template <id>`. Do not invent Agency template IDs.
+"#
+    .to_string()
 });
 
 const MINIMAL_ROOT_ROLE_MD: &str = r#"# Role
@@ -195,21 +250,11 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
             role_path.display()
         )
     })?;
+    crate::config::session_context::create_default_context_templates(config_dir)?;
     let context_template_path =
         config_dir.join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
 
-    if read_validated_template(&context_template_path)?.is_none() {
-        crate::config::session_context::write_template_if_missing(
-            &context_template_path,
-            ROOT_ROLE_MD.as_str(),
-        )?;
-        read_validated_template(&context_template_path)?.ok_or_else(|| {
-            format!(
-                "Template missing immediately after write_template_if_missing: {}",
-                context_template_path.display()
-            )
-        })?;
-    }
+    migrate_root_context_template(&context_template_path)?;
     match create_missing_role(role_path, MINIMAL_ROOT_ROLE_MD)? {
         CreateMissingRole::Created => return Ok(()),
         CreateMissingRole::AlreadyExists => {}
@@ -237,6 +282,50 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
 
     if let Some(content) = migrated {
         atomic_write_role(role_path, &content)?;
+    }
+
+    Ok(())
+}
+
+fn migrate_root_context_template(context_template_path: &Path) -> Result<(), String> {
+    let existing = match read_validated_template(context_template_path)? {
+        Some(existing) => existing,
+        None => {
+            crate::config::session_context::write_template_if_missing(
+                context_template_path,
+                ROOT_ROLE_MD.as_str(),
+            )?;
+            return read_validated_template(context_template_path)?
+                .map(|_| ())
+                .ok_or_else(|| {
+                    format!(
+                        "Template missing immediately after write_template_if_missing: {}",
+                        context_template_path.display()
+                    )
+                });
+        }
+    };
+
+    let existing_normalized = normalize_role_text(&existing);
+    let old_generated = [
+        normalize_role_text(OLD_ROOT_ROLE_MD),
+        normalize_role_text(&OLD_ROOT_CONTEXT_WITH_COORDINATION_MD),
+    ];
+    if old_generated.contains(&existing_normalized) {
+        std::fs::write(context_template_path, ROOT_ROLE_MD.as_str()).map_err(|e| {
+            format!(
+                "Failed to migrate root agent context template {}: {}",
+                context_template_path.display(),
+                e
+            )
+        })?;
+    } else if existing.contains(ROOT_COORDINATION_MESSAGING_PARAGRAPH)
+        || existing.contains(OLD_DEFERRED_MESSAGING_PARAGRAPH)
+    {
+        log::warn!(
+            "Custom root agent context template {} appears to contain stale operational messaging prose; preserving custom content",
+            context_template_path.display()
+        );
     }
 
     Ok(())
@@ -633,11 +722,29 @@ mod tests {
             assert!(root.join(sub).is_dir(), "missing {}", sub);
         }
         assert!(root.join("Role.md").is_file());
-        assert!(ROOT_ROLE_MD.contains("verified workgroup coordinator replicas only"));
+        assert!(ROOT_ROLE_MD.contains("You are the AgentsCommander Root Agent"));
+        assert!(!ROOT_ROLE_MD.contains("verified workgroup coordinator replicas only"));
+        assert!(!ROOT_ROLE_MD.contains("list-peers-lean"));
+        assert!(!ROOT_ROLE_MD.contains("AGENTSCOMMANDER_TOKEN"));
+        assert!(ROOT_ROLE_MD.contains("agency-templates update"));
+        assert!(ROOT_ROLE_MD.contains("agency-templates list"));
+        assert!(ROOT_ROLE_MD.contains("Do not invent Agency template IDs"));
+        assert!(ROOT_ROLE_MD.contains("team create"));
+        assert!(ROOT_ROLE_MD.contains("workgroup add"));
+        assert!(ROOT_ROLE_MD.contains("Agents must exist before team creation"));
+        assert!(!ROOT_ROLE_MD.contains("workgroup add --coordinator"));
         let template_path = temp
             .path()
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let global_template_path = temp
+            .path()
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let coordinator_template_path = temp
+            .path()
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
         assert!(template_path.is_file());
+        assert!(global_template_path.is_file());
+        assert!(coordinator_template_path.is_file());
         assert_eq!(
             std::fs::read_to_string(root.join("Role.md")).expect("read role"),
             MINIMAL_ROOT_ROLE_MD
@@ -664,8 +771,19 @@ mod tests {
         let template_path = temp
             .path()
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let global_template_path = temp
+            .path()
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let coordinator_template_path = temp
+            .path()
+            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
         let custom_template = "# Custom Root Template\n\nUse this exact seed.\n";
+        let custom_global = "# Custom Global Template\n\nKeep global.\n";
+        let custom_coordinator = "# Custom Coordinator Template\n\nKeep coordinator.\n";
         std::fs::write(&template_path, custom_template).expect("write template");
+        std::fs::write(&global_template_path, custom_global).expect("write global template");
+        std::fs::write(&coordinator_template_path, custom_coordinator)
+            .expect("write coordinator template");
 
         ensure_root_agent_dir_at(&root).expect("ensure root");
 
@@ -677,6 +795,36 @@ mod tests {
             std::fs::read_to_string(template_path).expect("read template"),
             custom_template
         );
+        assert_eq!(
+            std::fs::read_to_string(global_template_path).expect("read global template"),
+            custom_global
+        );
+        assert_eq!(
+            std::fs::read_to_string(coordinator_template_path).expect("read coordinator template"),
+            custom_coordinator
+        );
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_migrates_old_root_template_defaults() {
+        for old_default in [
+            OLD_ROOT_ROLE_MD.to_string(),
+            OLD_ROOT_CONTEXT_WITH_COORDINATION_MD.to_string(),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+            let template_path = temp
+                .path()
+                .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+            std::fs::write(&template_path, old_default).expect("write old template");
+
+            ensure_root_agent_dir_at(&root).expect("ensure root");
+
+            assert_eq!(
+                std::fs::read_to_string(template_path).expect("read template"),
+                ROOT_ROLE_MD.as_str()
+            );
+        }
     }
 
     #[test]
@@ -853,7 +1001,7 @@ mod tests {
             .expect("create default templates");
 
         assert!(workspace_dir
-            .join(crate::config::session_context::AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(workspace_dir
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)

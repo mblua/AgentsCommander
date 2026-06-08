@@ -49,18 +49,18 @@ In the sidebar, click **New Project** and point at any folder, empty or an exist
 
 ## 3. Create your first Team
 
-Open the Teams pane. A **Team** is one coordinator plus one or more worker agents working toward a shared goal.
+Open the Teams pane. A **Team** is one coordinator plus one or more worker agents working toward a shared goal. The agents are created first, then the team definition links those existing agents together.
 
 1. Click **+ Team** and give it a name (for example `feature-x`).
 2. Add the **coordinator** — give the agent a directory name (for example `tech-lead`), pick a role template from the [Agents Agency picker](integrations/coding-agents.md#role-template-picker), and finish.
 3. Add one **worker** the same way (for example `dev-rust` with the *Rust developer* template).
 4. Mark the first agent as **coordinator**.
 
-Behind the scenes AC creates `.ac/wg-1-<team-name>/__agent_tech-lead/` and `__agent_dev-rust/` with `Role.md` files inside.
+Behind the scenes AC creates agent matrices under `.ac/_agent_tech-lead/` and `.ac/_agent_dev-rust/`, then saves the team definition under `.ac/_team_<team-name>/`.
 
 ## 4. Write a brief and launch the coordinator
 
-Open the team's `TASK.md` and write what you want the team to do. One paragraph is enough; the coordinator will expand it.
+Activate the team for a task and give the workgroup a title. AC creates `.ac/wg-1-<team-name>/`, including `TASK.md`, `messaging/`, and each `__agent_<name>/` replica. Open the new `TASK.md` and write what you want the team to do. One paragraph is enough; the coordinator will expand it.
 
 Click the coordinator's session in the sidebar. AC opens a real terminal and prompts you to pick a coding agent (Claude Code, Codex, or Gemini). Pick one. AC launches the agent in the coordinator's directory with the role and brief already loaded.
 
@@ -81,3 +81,11 @@ That's the loop. Every message is a file you can `cat`, `git diff`, and audit.
 - [Inter-agent messaging](agents/inter-agent-messaging.md) — the file protocol and the `send` CLI.
 - [Use cases](use-cases.md) — recipes other people are running.
 - [Troubleshooting](troubleshooting.md) — when something does not work.
+
+
+## Uninstalling on Windows
+
+If you installed AgentsCommander using the setup installer (.exe), you can remove it using the standard Windows settings:
+1. Open Windows **Settings** > **Apps** > **Installed apps**.
+2. Search for **Agents Commander**.
+3. Click the menu (three dots) next to it and select **Uninstall**.
