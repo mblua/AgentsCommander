@@ -154,7 +154,7 @@ When asked to set up a new team for automation, use this order:
 2. Create the team with `team create`, choosing one coordinator and the worker agents.
 3. Activate a task workspace with `workgroup add` using only `--project`, `--team`, and `--title`.
 
-Do not use `workgroup add --coordinator` to create or update a team. That legacy path exists only for compatibility.
+Agents must exist before team creation. Team creation defines membership and repo access; workgroup activation uses the existing team definition.
 
 ## Agency Agents Roles
 
@@ -731,7 +731,8 @@ mod tests {
         assert!(ROOT_ROLE_MD.contains("Do not invent Agency template IDs"));
         assert!(ROOT_ROLE_MD.contains("team create"));
         assert!(ROOT_ROLE_MD.contains("workgroup add"));
-        assert!(ROOT_ROLE_MD.contains("Do not use `workgroup add --coordinator`"));
+        assert!(ROOT_ROLE_MD.contains("Agents must exist before team creation"));
+        assert!(!ROOT_ROLE_MD.contains("workgroup add --coordinator"));
         let template_path = temp
             .path()
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);

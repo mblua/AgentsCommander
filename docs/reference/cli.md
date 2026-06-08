@@ -186,7 +186,7 @@ Output is JSON. Each item includes `name`, `team`, `path`, `hasMessaging`, `hasT
 
 ## `team create`
 
-Create a team configuration in a registered project.
+Create a team configuration in a registered project from existing agent matrices. Create the coordinator and member agents first, then create the team, then activate it with `workgroup add`.
 
 ```bash
 agentscommander team create \
@@ -207,10 +207,10 @@ agentscommander workgroup add \
 | `--project` | Yes | Registered project name. |
 | `--team` | Yes | Team name. Sanitized for `_team_<name>`. |
 | `--coordinator` | Yes | Existing agent matrix name or `_agent_<name>` reference. Automatically included in the roster. |
-| `--agent` | No | Worker/member agent. Repeat for multiple agents. |
-| `--repo` | No | Repo URL assigned to the full final roster. Repeat for multiple repos. |
-| `--repo-agents` | No | `URL=agent-a,agent-b`; assigns only listed agents to that repo. |
-| `--repo-exclude-agents` | No | `URL=agent-a,agent-b`; assigns the full final roster except listed agents. |
+| `--agent` | No | Existing agent matrix name or `_agent_<name>` reference. Repeat for multiple members. |
+| `--repo` | No | Repo URL assigned to the full final roster when workgroups are created. Repeat for multiple repos. |
+| `--repo-agents` | No | `URL=agent-a,agent-b`; defines repo access for only the listed team agents when workgroups are created. |
+| `--repo-exclude-agents` | No | `URL=agent-a,agent-b`; defines repo access for the final team roster except listed agents when workgroups are created. |
 
 Output is JSON:
 
@@ -247,9 +247,7 @@ agentscommander workgroup add \
 
 Workgroup numbers are allocated globally per project as the lowest free positive integer, across all teams. Deleted numbers are reused. There is no `--name` override.
 
-`workgroup add` activates an existing team and refuses to update existing team configuration. Create or change the team with `team create` and `team add-member` first.
-
-Deprecated compatibility flags are still accepted only when the target team is missing: `--coordinator`, `--agent`, `--repo`, `--repo-agents`, and `--repo-exclude-agents`. New scripts should not use them. When the team already exists, passing any of those flags fails before disk writes.
+`workgroup add` activates an existing team and refuses to update existing team configuration. Create the agents first, define the team with `team create`, then activate the workgroup with project, team, and title.
 
 Output is JSON `{ path, cloneErrors }`. Clone failures are reported in `cloneErrors` and do not roll back workgroup creation.
 
@@ -309,7 +307,7 @@ agentscommander team add-member \
 | `--agent` | Yes | Existing agent matrix name or `_agent_<name>` reference. |
 | `--coordinator` | No | Make the added agent the coordinator. |
 
-The command writes the team config, creates `wg-.../__agent_<name>/`, applies replica settings, and clones missing assigned repos into the workgroup. Output is JSON.
+The command writes the team config used by the selected workgroup, creates `wg-.../__agent_<name>/`, applies replica settings, and clones missing assigned repos into that workgroup. Other existing workgroups for the same team are not updated globally; update or recreate them separately when they need the same roster change. Output is JSON.
 
 ---
 
@@ -330,7 +328,7 @@ agentscommander team remove-member \
 | `--workgroup` | Yes | Existing workgroup name. |
 | `--agent` | Yes | Existing agent matrix name or `_agent_<name>` reference. |
 
-The command refuses to remove the current coordinator and refuses live sessions under the target replica. It also removes the agent from repo assignments in the team config.
+The command refuses to remove the current coordinator and refuses live sessions under the target replica. It also removes the agent from repo assignments in the team config used by the selected workgroup. Other existing workgroups for the same team are not updated globally; update or recreate them separately when they need the same roster change.
 
 ---
 

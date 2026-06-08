@@ -166,6 +166,47 @@ fn run_fail(bin: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+fn run_stdout(bin: &Path, args: &[&str]) -> String {
+    let out = Command::new(bin).args(args).output().expect("spawn");
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+#[test]
+fn team_help_describes_existing_agents_and_workgroup_scoped_membership() {
+    let tmp = Tmp::new("cli-team-help");
+    let bin = copy_binary_into(tmp.path());
+
+    let team_help = run_stdout(&bin, &["team", "--help"]);
+    assert!(team_help.contains("Manage teams and scoped workgroup membership"));
+
+    let create_help = run_stdout(&bin, &["team", "create", "--help"]);
+    assert!(create_help.contains("Create a team configuration from existing agents"));
+    assert!(create_help.contains("Existing agent matrix name or _agent_<name> reference"));
+    assert!(create_help.contains("Define a repo available to the team when workgroups are created"));
+}
+
+#[test]
+fn workgroup_add_help_hides_team_definition_flags() {
+    let tmp = Tmp::new("cli-workgroup-help");
+    let bin = copy_binary_into(tmp.path());
+
+    let help = run_stdout(&bin, &["workgroup", "add", "--help"]);
+    assert!(help.contains("--project"));
+    assert!(help.contains("--team"));
+    assert!(help.contains("--title"));
+    assert!(!help.contains("--coordinator"));
+    assert!(!help.contains("--agent"));
+    assert!(!help.contains("--repo"));
+    assert!(!help.to_ascii_lowercase().contains("deprecated"));
+}
+
 #[test]
 fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     let tmp = Tmp::new("cli-workgroup-add");
@@ -781,7 +822,9 @@ fn workgroup_add_legacy_missing_team_still_bootstraps_with_warning() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("deprecated"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("created missing team configuration"));
+    assert!(!stderr.to_ascii_lowercase().contains("deprecated"));
     assert!(project
         .join(".ac")
         .join("_team_dev-team")

@@ -44,27 +44,15 @@ struct WorkgroupAddArgs {
     team: String,
     #[arg(long)]
     title: String,
-    #[arg(long, help = "Deprecated on workgroup add; use team create first")]
+    #[arg(long, hide = true)]
     coordinator: Option<String>,
-    #[arg(
-        long = "agent",
-        help = "Deprecated on workgroup add; use team create first"
-    )]
+    #[arg(long = "agent", hide = true)]
     agents: Vec<String>,
-    #[arg(
-        long = "repo",
-        help = "Deprecated on workgroup add; use team create first"
-    )]
+    #[arg(long = "repo", hide = true)]
     repos: Vec<String>,
-    #[arg(
-        long = "repo-agents",
-        help = "Deprecated on workgroup add; use team create first"
-    )]
+    #[arg(long = "repo-agents", hide = true)]
     repo_agents: Vec<String>,
-    #[arg(
-        long = "repo-exclude-agents",
-        help = "Deprecated on workgroup add; use team create first"
-    )]
+    #[arg(long = "repo-exclude-agents", hide = true)]
     repo_exclude_agents: Vec<String>,
 }
 
@@ -202,11 +190,10 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
         None
     } else if has_legacy_team_flags {
         let coordinator = args.coordinator.as_deref().ok_or_else(|| {
-            "--coordinator is required when using deprecated team-definition flags on workgroup add"
-                .to_string()
+            "--coordinator is required when supplying team details on workgroup add".to_string()
         })?;
         eprintln!(
-            "Warning: using deprecated `workgroup add` team-definition flags. Use `team create` first, then `workgroup add` without --coordinator/--agent/--repo flags."
+            "Warning: created missing team configuration from supplied workgroup details. Prefer creating the team before activating a workgroup."
         );
         Some(build_new_team_config(
             &workspace_dir,

@@ -20,7 +20,7 @@ pub struct TeamArgs {
 
 #[derive(Subcommand)]
 enum TeamCommand {
-    /// Create a team configuration
+    /// Create a team configuration from existing agents
     Create(TeamCreateArgs),
     /// List team configuration
     List(TeamListArgs),
@@ -44,15 +44,30 @@ struct TeamCreateArgs {
     project: String,
     #[arg(long)]
     team: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Existing agent matrix name or _agent_<name> reference. Automatically included in the roster"
+    )]
     coordinator: String,
-    #[arg(long = "agent")]
+    #[arg(
+        long = "agent",
+        help = "Existing agent matrix name or _agent_<name> reference. Repeat for multiple members"
+    )]
     agents: Vec<String>,
-    #[arg(long = "repo")]
+    #[arg(
+        long = "repo",
+        help = "Define a repo available to the team when workgroups are created. Repeat for multiple repos"
+    )]
     repos: Vec<String>,
-    #[arg(long = "repo-agents")]
+    #[arg(
+        long = "repo-agents",
+        help = "Define team repo access for workgroup creation as URL=agent-a,agent-b"
+    )]
     repo_agents: Vec<String>,
-    #[arg(long = "repo-exclude-agents")]
+    #[arg(
+        long = "repo-exclude-agents",
+        help = "Define team repo access for workgroup creation as URL=excluded-agent-a,excluded-agent-b"
+    )]
     repo_exclude_agents: Vec<String>,
 }
 
