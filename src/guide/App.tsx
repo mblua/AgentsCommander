@@ -1,10 +1,12 @@
 import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
 import { initZoom } from "../shared/zoom";
 import { isTauri } from "../shared/platform";
+import ExternalLinkConfirm from "../shared/components/ExternalLinkConfirm";
 import HintsTab from "./components/HintsTab";
 import TutorialTab from "./components/TutorialTab";
 import iconUrl from "../assets/icon-16.png";
 import "./styles/guide.css";
+import "../shared/styles/external-link-confirm.css";
 
 type Tab = "hints" | "tutorial";
 
@@ -70,6 +72,7 @@ const GuideApp: Component = () => {
         {activeTab() === "hints" && <HintsTab />}
         {activeTab() === "tutorial" && <TutorialTab />}
       </div>
+      <ExternalLinkConfirm />
     </div>
   );
 };

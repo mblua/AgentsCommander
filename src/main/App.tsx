@@ -11,8 +11,10 @@ import Titlebar from "../sidebar/components/Titlebar";
 import QuitConfirmModal from "./components/QuitConfirmModal";
 import RtkBanner from "./components/RtkBanner";
 import ErrorModal from "./components/ErrorModal";
+import ExternalLinkConfirm from "../shared/components/ExternalLinkConfirm";
 import { wireHomeListeners } from "./listeners-home";
 import "./styles/main.css";
+import "../shared/styles/external-link-confirm.css";
 
 const SIDEBAR_MIN_WIDTH = 200;
 const SIDEBAR_MAX_WIDTH = 600;
@@ -253,6 +255,7 @@ const MainApp: Component = () => {
         />
       </Show>
       <ErrorModal />
+      <ExternalLinkConfirm />
     </div>
   );
 };

@@ -2,7 +2,6 @@ import { Component, Show, createMemo, onMount } from "solid-js";
 import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
 import { homeStore } from "../stores/home";
-import { WindowAPI } from "../../shared/ipc";
 
 const md = MarkdownIt({
   html: false,
@@ -25,16 +24,6 @@ const HomeView: Component = () => {
       USE_PROFILES: { html: true },
     });
   });
-
-  const onContainerClick = (e: MouseEvent) => {
-    const target = e.target as HTMLElement;
-    const anchor = target.closest("a") as HTMLAnchorElement | null;
-    if (!anchor) return;
-    const href = anchor.getAttribute("href") ?? "";
-    if (!href) return;
-    e.preventDefault();
-    WindowAPI.openExternal(href).catch((err) => console.error("openExternal failed:", err));
-  };
 
   return (
     <div class="home-view">
@@ -62,7 +51,6 @@ const HomeView: Component = () => {
       <Show when={homeStore.content !== null}>
         <div
           class="home-markdown"
-          onClick={onContainerClick}
           // eslint-disable-next-line solid/no-innerhtml
           innerHTML={html()}
         />
