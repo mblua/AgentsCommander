@@ -121,7 +121,7 @@ pub enum Commands {
     TelegramSendImage(telegram_send_image::TelegramSendImageArgs),
     /// Manage workgroups in an AC project
     Workgroup(workgroup::WorkgroupArgs),
-    /// Manage team membership in an AC workgroup
+    /// Manage teams and scoped workgroup membership
     Team(team::TeamArgs),
     /// Execute commands through the policy harness
     Harness(harness::HarnessArgs),

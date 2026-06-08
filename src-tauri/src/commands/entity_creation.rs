@@ -91,6 +91,8 @@ pub(crate) struct WorkgroupDiskCreateArgs {
     pub project_path: PathBuf,
     pub team_name: String,
     pub task_title: String,
+    // Legacy provisioning path. Ordinary callers should pass None and empty
+    // vectors so workgroup creation activates an existing team config.
     pub coordinator: Option<String>,
     pub agents: Vec<String>,
     pub repos: Vec<RepoAssignment>,
@@ -640,6 +642,29 @@ pub(crate) fn write_team_config(
     Ok(team_dir)
 }
 
+pub(crate) fn create_new_team_config_on_disk(
+    workspace_dir: &Path,
+    team_name: &str,
+    config: &TeamConfigResult,
+) -> Result<PathBuf, String> {
+    validate_existing_name(team_name, "Team")?;
+    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
+    std::fs::create_dir(&team_dir).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("Team '{}' already exists", team_name),
+        _ => format!("Failed to create team directory: {}", e),
+    })?;
+    std::fs::create_dir(team_dir.join("memory"))
+        .map_err(|e| format!("Failed to create memory directory: {}", e))?;
+    std::fs::write(team_dir.join("conventions.md"), "")
+        .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
+    let config = normalize_team_config_for_project(workspace_dir, config)?;
+    let config_str = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
+    std::fs::write(team_dir.join("config.json"), config_str)
+        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    Ok(team_dir)
+}
+
 pub(crate) fn normalize_team_config_for_project(
     workspace_dir: &Path,
     config: &TeamConfigResult,
@@ -1017,8 +1042,12 @@ pub async fn delete_agent_matrix(project_path: String, agent_name: String) -> Re
     // the final path component after replacing backslashes.
     let agent_dir_name = format!("_agent_{}", agent_name);
     let mut referencing_teams: Vec<String> = Vec::new();
-    let entries = std::fs::read_dir(&base)
-        .map_err(|e| format!("Cannot read Project AC Root directory for integrity check: {}", e))?;
+    let entries = std::fs::read_dir(&base).map_err(|e| {
+        format!(
+            "Cannot read Project AC Root directory for integrity check: {}",
+            e
+        )
+    })?;
     for entry in entries {
         let entry = entry
             .map_err(|e| format!("Cannot read directory entry during integrity check: {}", e))?;
@@ -1151,11 +1180,6 @@ pub async fn create_team(
     let safe_name = sanitize_name(&name)?;
     let base = selected_workspace_dir(Path::new(&project_path))?;
 
-    let team_dir = base.join(format!("_team_{}", safe_name));
-    if team_dir.exists() {
-        return Err(format!("Team '{}' already exists", safe_name));
-    }
-
     let config = normalize_team_config_for_project(
         &base,
         &TeamConfigResult {
@@ -1164,7 +1188,7 @@ pub async fn create_team(
             repos,
         },
     )?;
-    write_team_config(&base, &safe_name, &config)?;
+    let team_dir = create_new_team_config_on_disk(&base, &safe_name, &config)?;
 
     let result_path = team_dir.to_string_lossy().to_string();
     log::info!("[entity_creation] Created team: {}", result_path);
