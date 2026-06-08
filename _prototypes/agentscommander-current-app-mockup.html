@@ -960,6 +960,27 @@
       padding-right: 2px;
     }
 
+    .profile-variant-c [data-component="Coding Agent profile selector panel"] {
+      overflow-x: auto;
+      overflow-y: visible;
+    }
+
+    .profile-variant-c [data-component="Coding Agent profile selector panel"] .profile-picker-list {
+      min-width: 360px;
+    }
+
+    .profile-variant-c [data-component="Selected profile projected parameters panel"] {
+      overflow-x: hidden;
+      overflow-wrap: anywhere;
+    }
+
+    .profile-variant-c [data-component="Selected profile projected parameters panel"] .active-profile-summary,
+    .profile-variant-c [data-component="Selected profile projected parameters panel"] .profile-resolution-status,
+    .profile-variant-c [data-component="Selected profile projected parameters panel"] .warning-strip {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
     .profile-panel {
       min-width: 0;
       display: grid;
