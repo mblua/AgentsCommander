@@ -5,14 +5,19 @@ import { isTauri } from "../../shared/platform";
 import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
 import { terminalStore } from "../../terminal/stores/terminal";
 import type { MainSidebarSide } from "../../shared/types";
+import {
+  DEFAULT_MAIN_SIDEBAR_WIDTH,
+  MAIN_SIDEBAR_MAX_WIDTH,
+  MAIN_SIDEBAR_MIN_WIDTH,
+} from "../../shared/sidebar-layout";
 
 declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
 const SIDEBAR_WIDTH_PRESETS: Array<{ label: string; width: number }> = [
-  { label: "Narrow", width: 200 },
-  { label: "Default", width: 280 },
-  { label: "Wide", width: 360 },
+  { label: "Narrow", width: MAIN_SIDEBAR_MIN_WIDTH },
+  { label: "Default", width: DEFAULT_MAIN_SIDEBAR_WIDTH },
+  { label: "Wide", width: MAIN_SIDEBAR_MAX_WIDTH },
 ];
 
 const SIDEBAR_SIDE_PRESETS: Array<{ label: string; side: MainSidebarSide }> = [
