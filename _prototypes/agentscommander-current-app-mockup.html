@@ -1891,6 +1891,19 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       return `${representativeText(target).toLowerCase()} actions`;
     }
 
+    function profileModalComponentTarget(originalTarget, profileModal) {
+      if (!(originalTarget instanceof Element)) {
+        return profileModal;
+      }
+
+      const component = originalTarget.closest("[data-component]");
+      if (component && profileModal.contains(component)) {
+        return component;
+      }
+
+      return profileModal;
+    }
+
     function profileModalContextActions(target) {
       const resolutionTarget = target.closest?.("[data-resolution-provider], .resolution-grid");
       const fieldTarget = target.closest?.("label.settings-field, input, select");
@@ -1957,14 +1970,15 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     function openProfileModalContextMenu(pageName, event, target) {
       closeSidebarContextMenu();
       closeProfileModalContextMenu();
+      const sourceTarget = target;
       const menu = document.createElement("div");
       menu.className = "profile-modal-context-menu";
       menu.setAttribute("role", "menu");
       menu.innerHTML = `<div class="profile-modal-context-title"></div>`;
-      menu.querySelector(".profile-modal-context-title").textContent = profileModalContextTitle(target);
+      menu.querySelector(".profile-modal-context-title").textContent = profileModalContextTitle(sourceTarget);
 
-      const actions = profileModalContextActions(target);
-      actions.forEach((action) => addProfileModalContextAction(menu, action, target, pageName));
+      const actions = profileModalContextActions(sourceTarget);
+      actions.forEach((action) => addProfileModalContextAction(menu, action, sourceTarget, pageName));
 
       document.body.appendChild(menu);
       positionSidebarContextMenu(menu, event.clientX, event.clientY);
@@ -1984,7 +1998,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
 
       window.__profileModalContextLastMenu = {
         actions,
-        target
+        target: sourceTarget
       };
       return menu;
     }
@@ -2174,11 +2188,16 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     function installComponentCapture(pageName) {
       document.addEventListener("contextmenu", (event) => {
         event.preventDefault();
+        if (event.target instanceof Element && event.target.closest(".profile-modal-context-menu, .sidebar-context-menu")) {
+          event.stopPropagation();
+          return;
+        }
+
         const profileModal = event.target instanceof Element
           ? event.target.closest(".profile-modal")
           : null;
         if (profileModal && profileModal.closest(".profile-modal-overlay.open")) {
-          const modalTarget = event.target.closest("[data-component]") || profileModal;
+          const modalTarget = profileModalComponentTarget(event.target, profileModal);
           event.stopPropagation();
           openProfileModalContextMenu(pageName, event, modalTarget);
           return;

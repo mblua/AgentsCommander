@@ -304,6 +304,35 @@ assert.equal(dom.window.__profileModalContextLastMenu.target, modalField);
 const modalCopyAction = Array.from(dom.window.document.querySelectorAll('.profile-modal-context-option'))
   .find((button) => button.textContent === 'Copy component description');
 assert.ok(modalCopyAction, 'modal menu should include the copy component description action');
+modalCopyAction.getBoundingClientRect = () => ({
+  left: 704,
+  top: 530,
+  width: 214,
+  height: 32,
+  right: 918,
+  bottom: 562,
+  x: 704,
+  y: 530,
+  toJSON: () => {},
+});
+const modalMenuContextEvent = new dom.window.MouseEvent('contextmenu', {
+  bubbles: true,
+  cancelable: true,
+  clientX: 752,
+  clientY: 544,
+});
+const modalMenuContextAllowed = modalCopyAction.dispatchEvent(modalMenuContextEvent);
+assert.equal(modalMenuContextAllowed, false, 'right-clicking the modal menu itself should still suppress the native menu');
+assert.equal(modalMenuContextEvent.defaultPrevented, true);
+assert.equal(
+  dom.window.__componentCaptureLastResult,
+  undefined,
+  'right-clicking the modal menu option should not capture the menu button'
+);
+assert.ok(
+  dom.window.document.querySelector('.profile-modal-context-menu'),
+  'right-clicking a modal menu option should leave the modal menu available for the click action'
+);
 modalCopyAction.click();
 assert.equal(
   dom.window.document.querySelector('.profile-modal-context-menu'),
@@ -315,6 +344,8 @@ assert.equal(
   modalCaptureResult.quotedIdentifier,
   '"AgentsCommander Current App / label / Coding Agent model argument field"'
 );
+assert.equal(modalCaptureResult.component, modalField, 'modal capture should resolve to the original modal component');
+assert.notEqual(modalCaptureResult.component, modalCopyAction, 'modal capture must not highlight the context-menu action button');
 assert.equal(copiedText, modalCaptureResult.quotedIdentifier, 'modal copy should use the shared capture helper');
 const modalToast = dom.window.document.querySelector('.component-capture-toast');
 assert.ok(modalToast, 'modal copy should show the component capture toast');
