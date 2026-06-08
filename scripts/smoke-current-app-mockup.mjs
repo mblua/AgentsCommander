@@ -276,7 +276,7 @@ clearedTimers.length = 0;
 copiedText = '';
 dom.window.__componentCaptureLastResult = undefined;
 
-const codingAgentTarget = dom.window.document.querySelector('[data-component="agent row dev-webpage-ui active"] .agent-name');
+const codingAgentTarget = dom.window.document.querySelector('[data-component="agent row architect"] .agent-name');
 assert.ok(codingAgentTarget, 'session-agent target with Coding Agent action should exist');
 const codingAgentContextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,
@@ -306,7 +306,7 @@ assert.equal(
   null,
   'Coding Agent action should close the sidebar context menu'
 );
-assert.match(dom.window.document.querySelector('#profileContextName')?.textContent ?? '', /dev-webpage-ui/);
+assert.match(dom.window.document.querySelector('#profileContextName')?.textContent ?? '', /architect/);
 assert.match(dom.window.document.querySelector('#profileContextProject')?.textContent ?? '', /AgentsCommander_ac/);
 assert.match(dom.window.document.querySelector('#profileContextWorkgroup')?.textContent ?? '', /WG-7-DEV-TEAM/);
 assert.equal(dom.window.document.querySelectorAll('[data-tool-card]').length, 9);
