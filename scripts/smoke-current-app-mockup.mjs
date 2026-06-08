@@ -35,6 +35,12 @@ const cssBlockFor = (selector) => {
   const blockPattern = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{(?<body>[^}]*)\\}`);
   return html.match(blockPattern)?.groups?.body ?? '';
 };
+const cssBlockForInMedia = (mediaQuery, selector) => {
+  const escapedMediaQuery = mediaQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const blockPattern = new RegExp(`@media\\s*${escapedMediaQuery}\\s*\\{[\\s\\S]*?${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`);
+  return html.match(blockPattern)?.groups?.body ?? '';
+};
 const assertNoRuntimeErrors = () => {
   assert.equal(
     runtimeErrors.length,
@@ -161,6 +167,14 @@ const variantCScrollCss = cssBlockFor('.profile-variant-c-scroll');
 assert.match(variantCScrollCss, /grid-column:\s*2\s*\/\s*-1;/, 'Variant C scroll area should span both remaining outer grid columns');
 assert.match(variantCScrollCss, /overflow-y:\s*auto;/, 'Variant C profile area should own vertical scrolling');
 assert.match(variantCScrollCss, /overflow-x:\s*hidden;/, 'Variant C profile area should not introduce horizontal scrolling');
+const variantCMobileScrollCss = cssBlockForInMedia('(max-width: 860px)', '.profile-variant-c-scroll');
+assert.match(variantCMobileScrollCss, /grid-column:\s*1\s*\/\s*-1;/, 'Variant C mobile scroll area should reset to the single-column grid span');
+assert.match(variantCMobileScrollCss, /grid-template-columns:\s*1fr;/, 'Variant C mobile scroll area should stack profile/details panels in one column');
+assert.doesNotMatch(
+  variantCMobileScrollCss,
+  /grid-column:\s*2\s*\/\s*-1;/,
+  'Variant C mobile scroll area should not keep the desktop two-column span'
+);
 assert.match(documentText(), /Agents Commander/);
 assert.match(documentText(), /v0\.8\.50/);
 assert.match(documentText(), /WG-7-DEV-TEAM/);
