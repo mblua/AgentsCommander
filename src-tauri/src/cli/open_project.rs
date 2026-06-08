@@ -14,7 +14,9 @@
 //! in the plan §6 — a watcher/reload story is a follow-up issue.
 
 use clap::Args;
+use std::path::PathBuf;
 
+use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::{register_existing_project, ProjectError};
 use crate::config::settings::{load_settings_for_cli, save_settings};
 
@@ -56,6 +58,7 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;
         }
+        write_project_registration_refresh(&PathBuf::from(&result.path), "projectRegistered");
         crate::cli_println!("Registered project: {}", result.path);
     } else {
         crate::cli_println!("Project already registered: {}", result.path);

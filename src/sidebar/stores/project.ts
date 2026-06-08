@@ -16,6 +16,8 @@ export interface ProjectState {
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
 const [loading, setLoading] = createSignal(false);
+const inFlightLoads = new Map<string, Promise<void>>();
+const inFlightReloads = new Map<string, Promise<void>>();
 let loadingCount = 0;
 
 function normalizePath(p: string): string {
@@ -41,47 +43,54 @@ export const projectStore = {
   async loadProject(path: string) {
     const normalized = normalizePath(path);
     if (projects().some((p) => normalizePath(p.path) === normalized)) return;
+    const existing = inFlightLoads.get(normalized);
+    if (existing) return existing;
 
-    loadingCount++;
-    setLoading(true);
-    try {
-      // #191 — backend owns the validation + dedup + persist atomically.
-      // Throws if `.ac/` is missing; caller (createAndLoad / pickAndCheck)
-      // is responsible for creating it first via projectStore.createAndLoad
-      // when that case is expected.
-      const reg = await ProjectAPI.open(path);
-      const result = await ProjectAPI.discover(reg.path);
-      const folderName =
-        reg.path.replace(/\\/g, "/").split("/").pop() ?? "unknown";
-      // Round-1 G2: re-check against the BACKEND-absolutised reg.path
-      // (which may differ from the input `path` in case/slashes/`..`),
-      // mirroring the inner dedup pattern in createAndLoad. Closes the
-      // double-render race when two concurrent calls pass differently-
-      // shaped strings that resolve to the same registered entry.
-      const normalizedReg = normalizePath(reg.path);
-      setProjects((prev) => {
-        if (prev.some((p) => normalizePath(p.path) === normalizedReg)) return prev;
-        return [
-          ...prev,
-          {
-            path: reg.path,
-            folderName,
-            workgroups: result.workgroups,
-            agents: result.agents,
-            teams: result.teams,
-          },
-        ];
-      });
-    } catch (e) {
-      // Round-1 G11 deferred: surface this to the user via toast/sidebar
-      // chip in a follow-up. For now, preserve the existing swallow-and-log
-      // so behaviour is no worse than today (initFromSettings silently drops
-      // a project whose Project AC Root was deleted between sessions.
-      console.error("Failed to load project:", e);
-    } finally {
-      loadingCount--;
-      if (loadingCount === 0) setLoading(false);
-    }
+    const promise = (async () => {
+      loadingCount++;
+      setLoading(true);
+      try {
+        // #191 — backend owns the validation + dedup + persist atomically.
+        // Throws if `.ac/` is missing; caller (createAndLoad / pickAndCheck)
+        // is responsible for creating it first via projectStore.createAndLoad
+        // when that case is expected.
+        const reg = await ProjectAPI.open(path);
+        const result = await ProjectAPI.discover(reg.path);
+        const folderName =
+          reg.path.replace(/\\/g, "/").split("/").pop() ?? "unknown";
+        // Round-1 G2: re-check against the BACKEND-absolutised reg.path
+        // (which may differ from the input `path` in case/slashes/`..`),
+        // mirroring the inner dedup pattern in createAndLoad. Closes the
+        // double-render race when two concurrent calls pass differently-
+        // shaped strings that resolve to the same registered entry.
+        const normalizedReg = normalizePath(reg.path);
+        setProjects((prev) => {
+          if (prev.some((p) => normalizePath(p.path) === normalizedReg)) return prev;
+          return [
+            ...prev,
+            {
+              path: reg.path,
+              folderName,
+              workgroups: result.workgroups,
+              agents: result.agents,
+              teams: result.teams,
+            },
+          ];
+        });
+      } catch (e) {
+        // Round-1 G11 deferred: surface this to the user via toast/sidebar
+        // chip in a follow-up. For now, preserve the existing swallow-and-log
+        // so behaviour is no worse than today (initFromSettings silently drops
+        // a project whose Project AC Root was deleted between sessions.
+        console.error("Failed to load project:", e);
+      } finally {
+        loadingCount--;
+        if (loadingCount === 0) setLoading(false);
+        inFlightLoads.delete(normalized);
+      }
+    })();
+    inFlightLoads.set(normalized, promise);
+    return promise;
   },
 
   /** Initialize from saved settings (call on mount) */
@@ -172,18 +181,27 @@ export const projectStore = {
   /** Re-discover a single project and update its data in place */
   async reloadProject(path: string) {
     const normalized = normalizePath(path);
-    try {
-      const result = await ProjectAPI.discover(path);
-      setProjects((prev) =>
-        prev.map((p) =>
-          normalizePath(p.path) === normalized
-            ? { ...p, workgroups: result.workgroups, agents: result.agents, teams: result.teams }
-            : p
-        )
-      );
-    } catch (e) {
-      console.error("Failed to reload project:", e);
-    }
+    const existing = inFlightReloads.get(normalized);
+    if (existing) return existing;
+
+    const promise = (async () => {
+      try {
+        const result = await ProjectAPI.discover(path);
+        setProjects((prev) =>
+          prev.map((p) =>
+            normalizePath(p.path) === normalized
+              ? { ...p, workgroups: result.workgroups, agents: result.agents, teams: result.teams }
+              : p
+          )
+        );
+      } catch (e) {
+        console.error("Failed to reload project:", e);
+      } finally {
+        inFlightReloads.delete(normalized);
+      }
+    })();
+    inFlightReloads.set(normalized, promise);
+    return promise;
   },
 
   /** Re-discover a project only when it is already loaded in the sidebar. */
@@ -203,6 +221,10 @@ export const projectStore = {
 
   clear() {
     setProjects([]);
+    loadingCount = 0;
+    setLoading(false);
+    inFlightLoads.clear();
+    inFlightReloads.clear();
   },
 };
 
