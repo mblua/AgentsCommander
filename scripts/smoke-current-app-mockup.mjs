@@ -163,21 +163,46 @@ assert.match(sideScrollCss, /overflow-y:\s*auto;/, 'sidebar content should allow
 assert.match(sideScrollCss, /overflow-x:\s*hidden;/, 'sidebar content should keep horizontal overflow hidden');
 const profileModalBodyCss = cssBlockFor('.profile-modal-body');
 assert.match(profileModalBodyCss, /overflow:\s*hidden;/, 'profile modal body should not drag all Variant C columns while scrolling profiles');
+assert.match(profileModalBodyCss, /padding:\s*16px;/, 'profile modal body should provide the larger usable area for Variant C');
+const profileModalCss = cssBlockFor('.profile-modal');
+assert.match(profileModalCss, /width:\s*min\(1180px,\s*calc\(100vw - 40px\)\);/, 'profile modal should be wider for the three-column desktop layout');
+assert.match(profileModalCss, /max-height:\s*min\(820px,\s*calc\(100vh - 40px\)\);/, 'profile modal should provide more vertical room while respecting the viewport');
 const variantCScrollCss = cssBlockFor('.profile-variant-c-scroll');
 assert.match(variantCScrollCss, /grid-column:\s*2\s*\/\s*-1;/, 'Variant C scroll area should span both remaining outer grid columns');
 assert.match(variantCScrollCss, /overflow-y:\s*auto;/, 'Variant C profile area should own vertical scrolling');
 assert.match(variantCScrollCss, /overflow-x:\s*hidden;/, 'Variant C profile area should not introduce horizontal scrolling');
+assert.match(
+  variantCScrollCss,
+  /grid-template-columns:\s*minmax\(340px,\s*0\.92fr\)\s*minmax\(340px,\s*0\.9fr\);/,
+  'Variant C profile/details columns should have enough desktop width to avoid horizontal panel scroll'
+);
+const variantCCss = cssBlockFor('.profile-variant-c.active');
+assert.match(
+  variantCCss,
+  /grid-template-columns:\s*minmax\(220px,\s*0\.58fr\)\s*minmax\(340px,\s*0\.92fr\)\s*minmax\(340px,\s*0\.9fr\);/,
+  'Variant C outer grid should allocate enough desktop width for coding agents, profiles, and projected parameters'
+);
 const variantCProfileSelectorCss = cssBlockFor('.profile-variant-c [data-component="Coding Agent profile selector panel"]');
 assert.match(
   variantCProfileSelectorCss,
-  /overflow-x:\s*auto;/,
-  'Variant C should scope horizontal scrolling to the Coding Agent profile selector panel'
+  /overflow-x:\s*hidden;/,
+  'Variant C profile selector panel should not expose horizontal scroll behavior'
+);
+assert.doesNotMatch(
+  variantCProfileSelectorCss,
+  /overflow-x:\s*(auto|scroll);/,
+  'Variant C profile selector panel should not request a horizontal scrollbar'
 );
 const variantCProfileSelectorListCss = cssBlockFor('.profile-variant-c [data-component="Coding Agent profile selector panel"] .profile-picker-list');
 assert.match(
   variantCProfileSelectorListCss,
-  /min-width:\s*360px;/,
-  'Variant C profile selector list should be wide enough to create local horizontal overflow when constrained'
+  /min-width:\s*0;/,
+  'Variant C profile selector list should shrink inside the widened desktop panel instead of forcing overflow'
+);
+assert.match(
+  variantCProfileSelectorListCss,
+  /width:\s*100%;/,
+  'Variant C profile selector list should use the available panel width'
 );
 const variantCProjectedPanelCss = cssBlockFor('.profile-variant-c [data-component="Selected profile projected parameters panel"]');
 assert.match(
@@ -372,13 +397,13 @@ assert.match(profileModal?.textContent ?? '', /architect configured default B - 
 assert.match(profileModal?.textContent ?? '', /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
 
 stubRect(profileModal, { left: 0, top: 0, width: 1365, height: 768 });
-stubRect(profileModal.querySelector('.profile-modal'), { left: 192, top: 48, width: 980, height: 672 });
-stubRect(profileModal.querySelector('.profile-modal-controls'), { left: 686, top: 61, width: 470, height: 46 });
-stubRect(profileModal.querySelector('.modal-variant-switcher'), { left: 686, top: 65, width: 178, height: 38 });
+stubRect(profileModal.querySelector('.profile-modal'), { left: 96, top: 28, width: 1180, height: 720 });
+stubRect(profileModal.querySelector('.profile-modal-controls'), { left: 782, top: 41, width: 470, height: 46 });
+stubRect(profileModal.querySelector('.modal-variant-switcher'), { left: 782, top: 45, width: 178, height: 38 });
 ['A', 'B', 'C'].forEach((variant, index) => {
   stubRect(dom.window.document.querySelector(`[data-modal-variant="${variant}"]`), {
-    left: 792 + index * 41,
-    top: 70,
+    left: 888 + index * 41,
+    top: 50,
     width: 34,
     height: 28,
   });
@@ -424,15 +449,17 @@ assert.ok(variantCProjectedPanel, 'Variant C should expose projected parameters 
 assert.equal(variantCProfileScroll.contains(variantCProfilePanel), true, 'Variant C profile selector should be inside the independent scroll area');
 assert.equal(variantCProfileScroll.contains(variantCProjectedPanel), true, 'Variant C projected parameters should be inside the independent scroll area');
 assert.equal(variantCProfileScroll.contains(variantCCodingAgentsPanel), false, 'Variant C Coding Agents selector should sit outside the profile scroll area');
-stubRect(variantCProfileScroll, { left: 394, top: 114, width: 764, height: 526 });
-stubRect(variantCProfilePanel, { left: 394, top: 114, width: 370, height: 526 });
-stubRect(variantCProjectedPanel, { left: 788, top: 114, width: 370, height: 526 });
+stubRect(variantCProfileScroll, { left: 352, top: 118, width: 884, height: 564 });
+stubRect(variantCProfilePanel, { left: 352, top: 118, width: 430, height: 564 });
+stubRect(variantCProjectedPanel, { left: 794, top: 118, width: 430, height: 564 });
 assert.equal(
   variantCProfileScroll.getBoundingClientRect().right >= variantCProjectedPanel.getBoundingClientRect().right,
   true,
   'Variant C scroll area should cover the projected parameters column without horizontal clipping'
 );
 Object.defineProperties(variantCProfileScroll, {
+  clientWidth: { configurable: true, value: 884 },
+  scrollWidth: { configurable: true, value: 884 },
   clientHeight: { configurable: true, value: 360 },
   scrollHeight: { configurable: true, value: 720 },
 });
@@ -441,24 +468,36 @@ Object.defineProperties(variantCCodingAgentsPanel, {
   scrollHeight: { configurable: true, value: 190 },
 });
 Object.defineProperties(variantCProfilePanel, {
-  clientWidth: { configurable: true, value: 300 },
-  scrollWidth: { configurable: true, value: 360 },
+  clientWidth: { configurable: true, value: 430 },
+  scrollWidth: { configurable: true, value: 430 },
 });
 Object.defineProperties(variantCProjectedPanel, {
-  clientWidth: { configurable: true, value: 370 },
-  scrollWidth: { configurable: true, value: 370 },
+  clientWidth: { configurable: true, value: 430 },
+  scrollWidth: { configurable: true, value: 430 },
 });
 variantCCodingAgentsPanel.scrollTop = 0;
 variantCProfileScroll.scrollTop = variantCProfileScroll.scrollHeight - variantCProfileScroll.clientHeight;
 assert.equal(variantCProfileScroll.scrollTop > 0, true, 'Variant C profile scroll area should accept a positive scrollTop');
 assert.equal(variantCCodingAgentsPanel.scrollTop, 0, 'Variant C Coding Agents selector should remain stable when profiles scroll');
-variantCProfilePanel.scrollLeft = variantCProfilePanel.scrollWidth - variantCProfilePanel.clientWidth;
-assert.equal(variantCProfilePanel.scrollWidth > variantCProfilePanel.clientWidth, true, 'Variant C profile selector should allow local horizontal overflow');
-assert.equal(variantCProfilePanel.scrollLeft > 0, true, 'Variant C profile selector panel should accept a positive scrollLeft');
 assert.equal(
   ['auto', 'scroll'].includes(dom.window.getComputedStyle(variantCProfilePanel).overflowX),
+  false,
+  'Variant C profile selector panel should not expose horizontal scroll behavior'
+);
+assert.equal(
+  variantCProfilePanel.scrollWidth <= variantCProfilePanel.clientWidth,
   true,
-  'Variant C profile selector panel should expose horizontal scroll behavior'
+  'Variant C profile selector panel should fit the tested desktop layout without horizontal overflow'
+);
+assert.equal(
+  ['auto', 'scroll'].includes(dom.window.getComputedStyle(variantCProfileScroll).overflowX),
+  false,
+  'Variant C shared profile scroll wrapper should not expose horizontal scroll behavior'
+);
+assert.equal(
+  variantCProfileScroll.scrollWidth <= variantCProfileScroll.clientWidth,
+  true,
+  'Variant C shared profile scroll wrapper should fit the tested desktop layout without horizontal overflow'
 );
 assert.equal(
   variantCProjectedPanel.scrollWidth <= variantCProjectedPanel.clientWidth,
