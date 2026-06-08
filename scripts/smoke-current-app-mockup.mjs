@@ -158,6 +158,7 @@ assert.match(sideScrollCss, /overflow-x:\s*hidden;/, 'sidebar content should kee
 const profileModalBodyCss = cssBlockFor('.profile-modal-body');
 assert.match(profileModalBodyCss, /overflow:\s*hidden;/, 'profile modal body should not drag all Variant C columns while scrolling profiles');
 const variantCScrollCss = cssBlockFor('.profile-variant-c-scroll');
+assert.match(variantCScrollCss, /grid-column:\s*2\s*\/\s*-1;/, 'Variant C scroll area should span both remaining outer grid columns');
 assert.match(variantCScrollCss, /overflow-y:\s*auto;/, 'Variant C profile area should own vertical scrolling');
 assert.match(variantCScrollCss, /overflow-x:\s*hidden;/, 'Variant C profile area should not introduce horizontal scrolling');
 assert.match(documentText(), /Agents Commander/);
@@ -368,11 +369,21 @@ const variantCPanel = dom.window.document.querySelector('[data-profile-variant-p
 const variantCCodingAgentsPanel = variantCPanel?.querySelector('[data-component="Coding Agents selector panel"]');
 const variantCProfileScroll = variantCPanel?.querySelector('[data-component="Coding Agent profile selector independent scroll area"]');
 const variantCProfilePanel = variantCPanel?.querySelector('[data-component="Coding Agent profile selector panel"]');
+const variantCProjectedPanel = variantCPanel?.querySelector('[data-component="Selected profile projected parameters panel"]');
 assert.ok(variantCCodingAgentsPanel, 'Variant C should expose a stable left Coding Agents selector panel');
 assert.ok(variantCProfileScroll, 'Variant C should expose an independent profiles scroll area');
 assert.ok(variantCProfilePanel, 'Variant C should keep the profile selector panel inside the scroll area');
+assert.ok(variantCProjectedPanel, 'Variant C should expose projected parameters inside the independent scroll area');
 assert.equal(variantCProfileScroll.contains(variantCProfilePanel), true, 'Variant C profile selector should be inside the independent scroll area');
+assert.equal(variantCProfileScroll.contains(variantCProjectedPanel), true, 'Variant C projected parameters should be inside the independent scroll area');
 assert.equal(variantCProfileScroll.contains(variantCCodingAgentsPanel), false, 'Variant C Coding Agents selector should sit outside the profile scroll area');
+stubRect(variantCProfileScroll, { left: 394, top: 114, width: 764, height: 526 });
+stubRect(variantCProjectedPanel, { left: 788, top: 114, width: 370, height: 526 });
+assert.equal(
+  variantCProfileScroll.getBoundingClientRect().right >= variantCProjectedPanel.getBoundingClientRect().right,
+  true,
+  'Variant C scroll area should cover the projected parameters column without horizontal clipping'
+);
 Object.defineProperties(variantCProfileScroll, {
   clientHeight: { configurable: true, value: 360 },
   scrollHeight: { configurable: true, value: 720 },
