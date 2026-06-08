@@ -70,8 +70,10 @@ struct CreateAgentMatrixResult {
 pub struct ProjectRefreshRequest {
     pub id: String,
     pub project_path: String,
-    pub agent_path: String,
-    pub agent_name: String,
+    #[serde(alias = "agentPath")]
+    pub changed_path: Option<String>,
+    #[serde(alias = "agentName")]
+    pub changed_name: Option<String>,
     pub reason: String,
     pub timestamp: String,
 }
@@ -138,8 +140,8 @@ pub(crate) fn execute_matrix_project_create(
     let refresh_request = ProjectRefreshRequest {
         id: uuid::Uuid::new_v4().to_string(),
         project_path: project_path_for_refresh,
-        agent_path: agent_path_for_refresh,
-        agent_name: created.display_name.clone(),
+        changed_path: Some(agent_path_for_refresh),
+        changed_name: Some(created.display_name.clone()),
         reason: "createAgentMatrix".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
@@ -229,6 +231,12 @@ pub(crate) fn write_project_refresh_request(request: &ProjectRefreshRequest) -> 
         let _ = std::fs::remove_file(&tmp_path);
         format!("Failed to finalize project refresh request: {}", e)
     })?;
+    log::info!(
+        "[project-refresh-requests] Wrote request: dir='{}' project='{}' reason='{}'",
+        requests_dir.display(),
+        request.project_path,
+        request.reason
+    );
 
     Ok(())
 }

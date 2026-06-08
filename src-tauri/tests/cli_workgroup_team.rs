@@ -53,6 +53,68 @@ fn write_settings(config_dir: &Path, project_parent: &Path) {
     .expect("write settings");
 }
 
+fn project_refresh_request_paths(config_dir: &Path) -> Vec<PathBuf> {
+    let requests_dir = config_dir.join("project-refresh-requests");
+    if !requests_dir.exists() {
+        return Vec::new();
+    }
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+        .expect("read project-refresh-requests")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn read_project_refresh_requests(config_dir: &Path) -> Vec<serde_json::Value> {
+    project_refresh_request_paths(config_dir)
+        .iter()
+        .map(|path| {
+            serde_json::from_str(&std::fs::read_to_string(path).expect("read request"))
+                .expect("request json")
+        })
+        .collect()
+}
+
+fn assert_refresh_request(
+    request: &serde_json::Value,
+    project: &Path,
+    changed_path_suffix: &str,
+    changed_name: &str,
+    reason: &str,
+) {
+    assert_eq!(
+        request["projectPath"].as_str().expect("projectPath"),
+        std::fs::canonicalize(project)
+            .expect("canonical project")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert!(
+        request["changedPath"]
+            .as_str()
+            .expect("changedPath")
+            .replace('\\', "/")
+            .ends_with(changed_path_suffix),
+        "changedPath {:?} should end with {}",
+        request["changedPath"],
+        changed_path_suffix
+    );
+    assert_eq!(request["changedName"], changed_name);
+    assert_eq!(request["reason"], reason);
+}
+
+fn find_refresh_request<'a>(
+    requests: &'a [serde_json::Value],
+    reason: &str,
+) -> &'a serde_json::Value {
+    requests
+        .iter()
+        .find(|request| request["reason"] == reason)
+        .unwrap_or_else(|| panic!("missing refresh request reason {}", reason))
+}
+
 fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     let project = tmp.join("ProjectAlpha");
     let workspace_dir = project.join(".ac");
@@ -150,6 +212,16 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     assert_eq!(list[0]["team"], "dev-team");
     assert_eq!(list[0]["hasTask"], true);
     assert_eq!(list[0]["hasMessaging"], true);
+
+    let requests = read_project_refresh_requests(&config_dir);
+    assert_eq!(requests.len(), 1);
+    assert_refresh_request(
+        &requests[0],
+        &project,
+        ".ac/wg-1-dev-team",
+        "wg-1-dev-team",
+        "workgroupCreated",
+    );
 }
 
 #[test]
@@ -223,6 +295,15 @@ fn workgroup_remove_deletes_and_reuses_number() {
     );
     assert_eq!(removed["removed"], true);
     assert!(!wg_dir.exists());
+    let requests = read_project_refresh_requests(&config_dir);
+    assert_eq!(requests.len(), 2);
+    assert_refresh_request(
+        find_refresh_request(&requests, "workgroupRemoved"),
+        &project,
+        ".ac/wg-1-dev-team",
+        "wg-1-dev-team",
+        "workgroupRemoved",
+    );
 
     let recreated = run_json(
         &bin,
@@ -372,6 +453,15 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
         peer["name"] == "ProjectAlpha:wg-1-dev-team/dev-rust" && peer["reachable"] == true
     });
     assert!(found, "added peer should be reachable: {}", peers);
+    let requests = read_project_refresh_requests(&config_dir);
+    assert_eq!(requests.len(), 2);
+    assert_refresh_request(
+        find_refresh_request(&requests, "teamMembershipChanged"),
+        &project,
+        ".ac/wg-1-dev-team/__agent_dev-rust",
+        "wg-1-dev-team/dev-rust",
+        "teamMembershipChanged",
+    );
 
     let removed = run_json(
         &bin,
@@ -388,4 +478,13 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     );
     assert_eq!(removed["removed"], true);
     assert!(!replica.exists());
+    let requests = read_project_refresh_requests(&config_dir);
+    assert_eq!(requests.len(), 3);
+    assert_refresh_request(
+        find_refresh_request(&requests, "teamMembershipRemoved"),
+        &project,
+        ".ac/wg-1-dev-team/__agent_dev-rust",
+        "wg-1-dev-team/dev-rust",
+        "teamMembershipRemoved",
+    );
 }

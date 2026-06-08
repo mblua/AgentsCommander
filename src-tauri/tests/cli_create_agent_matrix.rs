@@ -154,13 +154,13 @@ fn assert_single_project_refresh_request(config_dir: &Path, project: &Path) -> s
             .as_ref()
     );
     assert_eq!(
-        request["agentPath"].as_str().expect("agentPath"),
+        request["changedPath"].as_str().expect("changedPath"),
         std::fs::canonicalize(agent_dir)
             .expect("canonical agent dir")
             .to_string_lossy()
             .as_ref()
     );
-    assert_eq!(request["agentName"], "ProjectAlpha/architect");
+    assert_eq!(request["changedName"], "ProjectAlpha/architect");
     assert_eq!(request["reason"], "createAgentMatrix");
     request
 }
