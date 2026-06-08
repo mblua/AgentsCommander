@@ -1181,6 +1181,29 @@
       overflow-wrap: anywhere;
     }
 
+    .profile-resolution-status {
+      display: grid;
+      gap: 6px;
+      padding: 9px 10px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.035);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
+      color: #d4e0ee;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      line-height: 1.35;
+    }
+
+    .profile-resolution-status strong {
+      color: #eef7ff;
+      font-family: var(--font-ui);
+      font-size: 11px;
+    }
+
+    .profile-resolution-status span {
+      color: #aab6c7;
+    }
+
     .warning-strip {
       padding: 8px 10px;
       border: 1px solid rgba(248, 198, 87, 0.28);
@@ -1600,8 +1623,10 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
               <button class="provider-card" type="button" data-tool-card="opencode" data-component="OpenCode coding agent option"></button>
             </div>
             <div class="profile-panel" data-component="Coding Agent profile inheritance source panel">
-              <span class="source-pill" data-profile-source-pill>from tool default</span>
-              <div class="resolution-line"><span>Stored</span><span data-profile-stored-source>Default for Codex</span></div>
+              <span class="source-pill" data-profile-source-pill>configured agent default</span>
+              <div class="resolution-line"><span>Stored</span><span data-profile-stored-source>architect default: B</span></div>
+              <div class="resolution-line"><span>Tool</span><span data-profile-selected-tool>Codex</span></div>
+              <div class="resolution-line"><span>Resolved</span><span data-profile-resolved-source>B - BALANCED</span></div>
               <div class="resolution-line"><span>Fallback</span><span>A is immutable final fallback</span></div>
             </div>
           </aside>
@@ -1611,6 +1636,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
               <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
               <div class="profile-panel-kicker">Cards below are profile choices for the selected tool only.</div>
             </div>
+            <div class="profile-resolution-status" data-profile-resolution-status data-component="Coding Agent profile requested and resolved status"></div>
             <div class="profile-picker-grid" data-profile-card-list data-component="Selected tool available profile cards">
               <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
               <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
@@ -1633,8 +1659,9 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           <section class="profile-panel" data-component="Coding Agent profile selector panel">
             <div>
               <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
-              <div class="profile-panel-kicker">Horizontal tool choice above; profile cards below expose the implied launch values.</div>
+              <div class="profile-panel-kicker">Horizontal tool choice above; profile cards resolve from the selected agent's configured default.</div>
             </div>
+            <div class="profile-resolution-status" data-profile-resolution-status data-component="Coding Agent profile requested and resolved status"></div>
             <div class="profile-picker-grid" data-profile-card-list data-component="Selected tool available profile cards">
               <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
               <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
@@ -1658,7 +1685,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           <section class="profile-panel" data-component="Coding Agent profile selector panel">
             <div>
               <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
-              <div class="profile-panel-kicker">Compact profile ladder for the selected tool.</div>
+              <div class="profile-panel-kicker">Compact profile ladder for the selected tool; unavailable letters resolve upward toward A.</div>
             </div>
             <div class="profile-picker-list" data-profile-card-list data-component="Selected tool available profile cards">
               <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
@@ -1669,6 +1696,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           </section>
           <section class="profile-panel" data-component="Selected profile projected parameters panel">
             <div class="profile-panel-title" data-component="Selected profile projected parameters title">Projected parameters</div>
+            <div class="profile-resolution-status" data-profile-resolution-status data-component="Coding Agent profile requested and resolved status"></div>
             <div class="active-profile-summary" data-active-profile-summary data-component="Selected profile launch parameter summary"></div>
             <div class="warning-strip" data-profile-fallback-notice data-component="Coding Agent profile fallback explanation"></div>
           </section>
@@ -1864,10 +1892,9 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       }
     };
 
-    const codingAgentDefaultProfiles = {
-      "codex": "B",
-      "claude-code": "B",
-      "opencode": "C"
+    const configuredCodingAgentDefault = {
+      agent: "architect",
+      profile: "B"
     };
 
     const codingProfileNames = {
@@ -1880,7 +1907,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     const codingProfileModalState = {
       variant: "A",
       provider: "codex",
-      requested: "B"
+      requested: configuredCodingAgentDefault.profile
     };
 
     function codingProfileLabel(letter) {
@@ -1932,7 +1959,10 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       if (!provider) {
         return;
       }
-      const defaultLetter = codingAgentDefaultProfiles[providerId];
+      const defaultResolution = resolvedProfileForProvider(providerId, configuredCodingAgentDefault.profile);
+      const chipLabel = defaultResolution.usedFallback
+        ? `${defaultResolution.requested} -> ${defaultResolution.resolved}`
+        : codingProfileLabel(defaultResolution.resolved);
       button.style.setProperty("--provider-color", provider.color);
       button.classList.toggle("active", providerId === codingProfileModalState.provider);
       button.innerHTML = `
@@ -1940,7 +1970,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           <span class="provider-name">${provider.label}</span>
           <span class="provider-command">${provider.command}</span>
         </span>
-        <span class="provider-chip" style="--provider-color: ${provider.color}">${codingProfileLabel(defaultLetter)}</span>
+        <span class="provider-chip" style="--provider-color: ${provider.color}">${chipLabel}</span>
       `;
     }
 
@@ -1948,12 +1978,11 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       const letter = card.getAttribute("data-profile-card");
       const providerId = codingProfileModalState.provider;
       const provider = activeCodingProvider();
-      const defaultLetter = codingAgentDefaultProfiles[providerId];
       const resolution = resolvedProfileForProvider(providerId, letter);
       const profile = provider.profiles[resolution.resolved];
       const configured = Boolean(provider.profiles[letter]);
       const selected = letter === codingProfileModalState.requested;
-      const isDefault = letter === defaultLetter;
+      const isDefault = letter === configuredCodingAgentDefault.profile;
       const params = profileParamRows(profile, resolution)
         .map(([key, value]) => `<div class="profile-param" data-profile-param="${key.toLowerCase().replace(/\s+/g, "-")}"><span>${key}</span><span>${value}</span></div>`)
         .join("");
@@ -2011,24 +2040,39 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       const requested = selectedRequestedProfile();
       const provider = activeCodingProvider();
       const selectedResolution = resolvedProfileForProvider(providerId, requested);
-      const defaultLetter = codingAgentDefaultProfiles[providerId];
+      const availableProfiles = Object.keys(provider.profiles)
+        .map(codingProfileLabel)
+        .join(", ");
 
       updateVariantSwitcher();
       document.querySelectorAll("[data-tool-card]").forEach(renderProviderCard);
       document.querySelectorAll("[data-profile-card]").forEach(renderProfileCard);
       document.querySelectorAll("[data-active-profile-summary]").forEach(renderActiveProfileSummary);
       document.querySelectorAll("[data-profile-source-pill]").forEach((pill) => {
-        pill.textContent = requested === defaultLetter ? "current tool default" : "instance override preview";
+        pill.textContent = requested === configuredCodingAgentDefault.profile ? "configured agent default" : "instance override preview";
       });
       document.querySelectorAll("[data-profile-stored-source]").forEach((source) => {
-        source.textContent = requested === defaultLetter
-          ? `Default for ${provider.label}: ${codingProfileLabel(defaultLetter)}`
+        source.textContent = requested === configuredCodingAgentDefault.profile
+          ? `${configuredCodingAgentDefault.agent} configured default: ${codingProfileLabel(configuredCodingAgentDefault.profile)}`
           : `Would store ${codingProfileLabel(requested)} for this instance`;
+      });
+      document.querySelectorAll("[data-profile-selected-tool]").forEach((tool) => {
+        tool.textContent = provider.label;
+      });
+      document.querySelectorAll("[data-profile-resolved-source]").forEach((source) => {
+        source.textContent = codingProfileLabel(selectedResolution.resolved);
+      });
+      document.querySelectorAll("[data-profile-resolution-status]").forEach((status) => {
+        status.innerHTML = `
+          <strong>${configuredCodingAgentDefault.agent} configured default ${codingProfileLabel(configuredCodingAgentDefault.profile)}</strong>
+          <span>Selected tool: ${provider.label}. Available profiles: ${availableProfiles}.</span>
+          <span>Requested/default ${codingProfileLabel(selectedResolution.requested)} -> resolved ${codingProfileLabel(selectedResolution.resolved)}${selectedResolution.usedFallback ? " via fallback" : " as configured"}.</span>
+        `;
       });
       document.querySelectorAll("[data-profile-fallback-notice]").forEach((notice) => {
         notice.hidden = !selectedResolution.usedFallback;
         notice.textContent = selectedResolution.usedFallback
-          ? `${provider.label} has no ${codingProfileLabel(selectedResolution.requested)} profile, so launch resolves through ${codingProfileLabel(selectedResolution.resolved)}. A remains the immutable final fallback.`
+          ? `${configuredCodingAgentDefault.agent} requests ${codingProfileLabel(selectedResolution.requested)} by default. ${provider.label} has no ${codingProfileLabel(selectedResolution.requested)} profile, so launch resolves through ${codingProfileLabel(selectedResolution.resolved)}. A remains the immutable final fallback.`
           : `${provider.label} launches with configured ${codingProfileLabel(requested)} parameters.`;
       });
 
@@ -2037,7 +2081,9 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         variant: codingProfileModalState.variant,
         provider: providerId,
         requested,
-        resolved: selectedResolution.resolved
+        resolved: selectedResolution.resolved,
+        configuredDefaultAgent: configuredCodingAgentDefault.agent,
+        configuredDefaultProfile: configuredCodingAgentDefault.profile
       };
     }
 
@@ -2061,7 +2107,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       document.getElementById("profileContextProject").textContent = `Project: ${context.project}`;
       document.getElementById("profileContextWorkgroup").textContent = `Workgroup: ${context.workgroup} / ${context.detail}`;
       codingProfileModalState.provider = "codex";
-      codingProfileModalState.requested = codingAgentDefaultProfiles.codex;
+      codingProfileModalState.requested = configuredCodingAgentDefault.profile;
 
       modal.classList.add("open");
       modal.setAttribute("aria-hidden", "false");
@@ -2145,7 +2191,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         }
 
         if (action.resetInherited) {
-          codingProfileModalState.requested = codingAgentDefaultProfiles[codingProfileModalState.provider];
+          codingProfileModalState.requested = configuredCodingAgentDefault.profile;
           updateCodingProfileModalFields();
           showCaptureToast('"Reset to inherited default"', "prototype action; no persisted profile change");
           return;
@@ -2217,13 +2263,12 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         button.addEventListener("click", () => {
           const providerId = button.getAttribute("data-tool-card") || "codex";
           codingProfileModalState.provider = providerId;
-          codingProfileModalState.requested = codingAgentDefaultProfiles[providerId];
           updateCodingProfileModalFields();
         });
       });
       document.querySelectorAll("[data-profile-card]").forEach((button) => {
         button.addEventListener("click", () => {
-          codingProfileModalState.requested = button.getAttribute("data-profile-card") || codingAgentDefaultProfiles[codingProfileModalState.provider];
+          codingProfileModalState.requested = button.getAttribute("data-profile-card") || configuredCodingAgentDefault.profile;
           updateCodingProfileModalFields();
         });
       });

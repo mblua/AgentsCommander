@@ -317,6 +317,10 @@ assert.equal(dom.window.__codingAgentProfileModalState.variant, 'A');
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'codex');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'B');
+assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultAgent, 'architect');
+assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultProfile, 'B');
+assert.match(profileModal?.textContent ?? '', /architect configured default B - BALANCED/);
+assert.match(profileModal?.textContent ?? '', /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
 
 stubRect(profileModal, { left: 0, top: 0, width: 1365, height: 768 });
 stubRect(profileModal.querySelector('.profile-modal'), { left: 192, top: 48, width: 980, height: 672 });
@@ -350,17 +354,24 @@ for (const variant of ['A', 'B', 'C']) {
 }
 
 clickVisibleModalVariant('A');
+dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-tool-card="claude-code"]')?.click();
+assert.equal(dom.window.__codingAgentProfileModalState.provider, 'claude-code');
+assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
+assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'B');
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected tool: Claude Code/);
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
+
 dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-tool-card="opencode"]')?.click();
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'opencode');
-assert.equal(dom.window.__codingAgentProfileModalState.requested, 'C');
-assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'C');
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="C"]')?.textContent ?? '', /Default/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="C"]')?.textContent ?? '', /provider\/reviewer/);
-
-dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.click();
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'A');
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.textContent ?? '', /Default/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.textContent ?? '', /missing; launches A - FULL POWER/);
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected tool: OpenCode/);
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Available profiles: A - FULL POWER, C - REVIEW/);
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Requested\/default B - BALANCED -> resolved A - FULL POWER via fallback/);
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /architect requests B - BALANCED by default/);
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /OpenCode has no B - BALANCED profile/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /A remains the immutable final fallback/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.textContent ?? '', /opencode\.json/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]')?.textContent ?? '', /--profile a/);
