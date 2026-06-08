@@ -14,7 +14,7 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: '--config src-tauri/tauri.prod.conf.json'
+            args: '--config src-tauri/tauri.prod.conf.json --bundles nsis' 
           - platform: ubuntu-22.04
             args: '--config src-tauri/tauri.prod.conf.json'
           - platform: macos-latest
@@ -87,3 +87,11 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: SignPath integration (Placeholder)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          echo "SignPath integration requires maintainer setup."
+          echo "Future steps will use the SignPath GitHub Action to submit artifacts for signing."
+          echo "Prerequisites: SignPath org/project/policy/artifact config ids, and an API token."
+          echo "See docs/CODE_SIGNING_POLICY.md for details on the approval gate."

@@ -17,6 +17,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "AgentsCommander Contributors",
     "resources": {
       "../dist": "dist/"
     },
