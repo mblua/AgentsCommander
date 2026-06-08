@@ -41,6 +41,12 @@ const cssBlockForInMedia = (mediaQuery, selector) => {
   const blockPattern = new RegExp(`@media\\s*${escapedMediaQuery}\\s*\\{[\\s\\S]*?${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`);
   return html.match(blockPattern)?.groups?.body ?? '';
 };
+const cssSelectorListBlockForInMedia = (mediaQuery, selector) => {
+  const escapedMediaQuery = mediaQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const blockPattern = new RegExp(`@media\\s*${escapedMediaQuery}\\s*\\{[\\s\\S]*?[^{}]*${escapedSelector}[^{}]*\\{(?<body>[^}]*)\\}`);
+  return html.match(blockPattern)?.groups?.body ?? '';
+};
 const assertNoRuntimeErrors = () => {
   assert.equal(
     runtimeErrors.length,
@@ -167,6 +173,13 @@ assert.match(profileModalBodyCss, /padding:\s*16px;/, 'profile modal body should
 const profileModalCss = cssBlockFor('.profile-modal');
 assert.match(profileModalCss, /width:\s*min\(1180px,\s*calc\(100vw - 40px\)\);/, 'profile modal should be wider for the three-column desktop layout');
 assert.match(profileModalCss, /max-height:\s*min\(820px,\s*calc\(100vh - 40px\)\);/, 'profile modal should provide more vertical room while respecting the viewport');
+const variantCDesktopMinWidth = 220 + 340 + 340 + 12 * 2;
+const profileModalViewportInset = 40;
+const profileModalBodyPaddingX = 16 * 2;
+const variantCStackBreakpoint = profileModalViewportInset + profileModalBodyPaddingX + variantCDesktopMinWidth;
+const intermediateViewportWidth = 900;
+assert.equal(variantCDesktopMinWidth, 924, 'Variant C desktop min column math should include all three columns and two gaps');
+assert.equal(variantCStackBreakpoint, 996, 'Variant C should stack before the modal body becomes narrower than the desktop columns');
 const variantCScrollCss = cssBlockFor('.profile-variant-c-scroll');
 assert.match(variantCScrollCss, /grid-column:\s*2\s*\/\s*-1;/, 'Variant C scroll area should span both remaining outer grid columns');
 assert.match(variantCScrollCss, /overflow-y:\s*auto;/, 'Variant C profile area should own vertical scrolling');
@@ -215,13 +228,28 @@ assert.match(
   /overflow-wrap:\s*anywhere;/,
   'Variant C projected parameters panel should wrap long launch parameter text instead of scrolling sideways'
 );
-const variantCMobileScrollCss = cssBlockForInMedia('(max-width: 860px)', '.profile-variant-c-scroll');
-assert.match(variantCMobileScrollCss, /grid-column:\s*1\s*\/\s*-1;/, 'Variant C mobile scroll area should reset to the single-column grid span');
-assert.match(variantCMobileScrollCss, /grid-template-columns:\s*1fr;/, 'Variant C mobile scroll area should stack profile/details panels in one column');
+const variantCIntermediateCss = cssSelectorListBlockForInMedia('(max-width: 996px)', '.profile-variant-c.active');
+assert.match(variantCIntermediateCss, /grid-template-columns:\s*1fr;/, 'Variant C intermediate layout should stack before min desktop columns would clip');
+const variantCIntermediateScrollCss = cssBlockForInMedia('(max-width: 996px)', '.profile-variant-c-scroll');
+assert.match(
+  variantCIntermediateScrollCss,
+  /grid-column:\s*1\s*\/\s*-1;/,
+  'Variant C intermediate scroll area should reset to the single-column grid span'
+);
+assert.match(
+  variantCIntermediateScrollCss,
+  /grid-template-columns:\s*1fr;/,
+  'Variant C intermediate scroll area should stack profile/details panels in one column'
+);
+assert.equal(
+  intermediateViewportWidth <= variantCStackBreakpoint,
+  true,
+  'Variant C should stack at 900px so hidden horizontal overflow cannot clip min-width desktop columns'
+);
 assert.doesNotMatch(
-  variantCMobileScrollCss,
+  variantCIntermediateScrollCss,
   /grid-column:\s*2\s*\/\s*-1;/,
-  'Variant C mobile scroll area should not keep the desktop two-column span'
+  'Variant C intermediate scroll area should not keep the desktop two-column span'
 );
 assert.match(documentText(), /Agents Commander/);
 assert.match(documentText(), /v0\.8\.50/);
