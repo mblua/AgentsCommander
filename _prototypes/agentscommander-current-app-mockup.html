@@ -1259,18 +1259,24 @@
 
     .modal-actions {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
+      justify-content: flex-end;
       gap: 8px;
+      width: 100%;
     }
 
     .modal-btn {
       min-height: 28px;
+      max-width: 100%;
       border: 1px solid rgba(148, 163, 184, 0.14);
       border-radius: var(--radius-sm);
       background: rgba(255, 255, 255, 0.035);
       color: #d7e4f3;
       font-size: 11px;
+      line-height: 1.25;
       padding: 5px 10px;
+      overflow-wrap: anywhere;
     }
 
     .modal-btn.save,
@@ -1306,6 +1312,10 @@
       .profile-modal-footer {
         align-items: flex-start;
         flex-direction: column;
+      }
+
+      .modal-actions {
+        justify-content: flex-start;
       }
     }
 
@@ -1756,7 +1766,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       <footer class="profile-modal-footer" data-component="Coding Agent profile modal footer actions">
         <div class="modal-actions">
           <button class="modal-btn" id="profileCancelButton" type="button" data-component="Cancel Coding Agent profile modal">Cancel</button>
-          <button class="modal-btn save" id="profileDefaultButton" type="button" data-component="Set selected Coding Agent profile as new default">Set profile as new default</button>
+          <button class="modal-btn save" id="profileDefaultButton" type="button" data-component="Set selected Coding Agent profile as default for AgentsCommander_ac:architect">Set selected profile as default for AgentsCommander_ac:architect</button>
           <button class="modal-btn primary" id="profileInstanceButton" type="button" data-component="Set selected Coding Agent profile just for instance">Set just for instance</button>
         </div>
       </footer>
@@ -1943,6 +1953,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
     };
 
     const configuredCodingAgentDefault = {
+      project: "AgentsCommander_ac",
       agent: "architect",
       profile: "B"
     };
@@ -1965,6 +1976,10 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         return "B - BALANCED";
       }
       return `${letter} - ${codingProfileNames[letter]}`;
+    }
+
+    function selectedCodingAgentContextLabel() {
+      return `${configuredCodingAgentDefault.project}:${configuredCodingAgentDefault.agent}`;
     }
 
     function resolvedProfileForProvider(providerId, requestedLetter) {
@@ -2127,6 +2142,12 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           ? `${configuredCodingAgentDefault.agent} requests ${codingProfileLabel(selectedResolution.requested)} by default. ${provider.label} has no ${codingProfileLabel(selectedResolution.requested)} profile, so launch resolves through ${codingProfileLabel(selectedResolution.resolved)}. A remains the immutable final fallback.`
           : `${provider.label} launches with configured ${codingProfileLabel(requested)} parameters.`;
       });
+      const defaultButton = document.getElementById("profileDefaultButton");
+      if (defaultButton) {
+        const contextLabel = selectedCodingAgentContextLabel();
+        defaultButton.textContent = `Set selected profile as default for ${contextLabel}`;
+        defaultButton.setAttribute("data-component", `Set selected Coding Agent profile as default for ${contextLabel}`);
+      }
 
       window.__codingAgentProfileModalState = {
         open: document.getElementById("codingAgentProfileModal")?.classList.contains("open") || false,
@@ -2134,6 +2155,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         provider: providerId,
         requested,
         resolved: selectedResolution.resolved,
+        configuredDefaultProject: configuredCodingAgentDefault.project,
         configuredDefaultAgent: configuredCodingAgentDefault.agent,
         configuredDefaultProfile: configuredCodingAgentDefault.profile
       };

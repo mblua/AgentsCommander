@@ -152,7 +152,7 @@ assert.doesNotMatch(html, /data-component="Coding agent provider selector title"
 assert.doesNotMatch(html, /data-component="Coding agent provider selector"/);
 assert.doesNotMatch(html, /data-component="Coding agent tool selector panel"/);
 assert.match(html, /A remains the immutable final fallback/);
-assert.match(html, /Set profile as new default/);
+assert.match(html, /Set selected profile as default for AgentsCommander_ac:architect/);
 assert.match(html, /Set just for instance/);
 assert.doesNotMatch(html, /Gemini/);
 assert.doesNotMatch(html, /Priority/);
@@ -365,6 +365,7 @@ assert.equal(dom.window.__codingAgentProfileModalState.variant, 'A');
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'codex');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'B');
+assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultProject, 'AgentsCommander_ac');
 assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultAgent, 'architect');
 assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultProfile, 'B');
 assert.match(profileModal?.textContent ?? '', /architect configured default B - BALANCED/);
@@ -384,7 +385,16 @@ stubRect(profileModal.querySelector('.modal-variant-switcher'), { left: 686, top
 });
 
 const modalActionLabels = Array.from(dom.window.document.querySelectorAll('.profile-modal-footer button'), (button) => button.textContent);
-assert.deepEqual(modalActionLabels, ['Cancel', 'Set profile as new default', 'Set just for instance']);
+assert.deepEqual(modalActionLabels, [
+  'Cancel',
+  'Set selected profile as default for AgentsCommander_ac:architect',
+  'Set just for instance'
+]);
+assert.match(dom.window.document.querySelector('#profileDefaultButton')?.textContent ?? '', /AgentsCommander_ac:architect/);
+assert.equal(
+  dom.window.document.querySelector('#profileDefaultButton')?.getAttribute('data-component'),
+  'Set selected Coding Agent profile as default for AgentsCommander_ac:architect'
+);
 
 for (const variant of ['A', 'B', 'C']) {
   clickVisibleModalVariant(variant);
@@ -662,7 +672,7 @@ assert.equal(profileModal?.classList.contains('open'), false, 'Close modal menu 
 dom.window.openCodingAgentProfileModal(codingAgentTarget.closest('[data-component]'));
 assert.equal(profileModal?.classList.contains('open'), true, 'modal should reopen for set-default coverage');
 dom.window.document.querySelector('#profileDefaultButton')?.click();
-assert.equal(profileModal?.classList.contains('open'), false, 'Set profile as new default should close the profile modal');
+assert.equal(profileModal?.classList.contains('open'), false, 'Set selected profile as default should close the profile modal');
 dom.window.openCodingAgentProfileModal(codingAgentTarget.closest('[data-component]'));
 assert.equal(profileModal?.classList.contains('open'), true, 'modal should reopen for instance coverage');
 dom.window.document.querySelector('#profileInstanceButton')?.click();
