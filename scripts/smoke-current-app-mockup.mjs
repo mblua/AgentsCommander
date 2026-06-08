@@ -294,6 +294,8 @@ assert.equal(
 
 const modalMenu = dom.window.document.querySelector('.profile-modal-context-menu');
 assert.ok(modalMenu, 'modal right-click should open a modal context menu');
+const profileModalOverlayZIndex = Number(dom.window.getComputedStyle(profileModal).zIndex);
+const profileModalMenuZIndex = Number(dom.window.getComputedStyle(modalMenu).zIndex);
 assert.match(modalMenu?.textContent ?? '', /Copy component description/);
 assert.match(modalMenu?.textContent ?? '', /Reset to inherited default/);
 assert.match(modalMenu?.textContent ?? '', /Manage matrix\/defaults/);
@@ -350,12 +352,28 @@ assert.equal(copiedText, modalCaptureResult.quotedIdentifier, 'modal copy should
 const modalToast = dom.window.document.querySelector('.component-capture-toast');
 assert.ok(modalToast, 'modal copy should show the component capture toast');
 assert.match(modalToast?.textContent ?? '', /"AgentsCommander Current App \/ label \/ Coding Agent model argument field"/);
+assert.ok(
+  Number(dom.window.getComputedStyle(modalToast).zIndex) > profileModalOverlayZIndex,
+  'modal capture toast should render above the open profile modal overlay'
+);
+assert.ok(
+  Number(dom.window.getComputedStyle(modalToast).zIndex) > profileModalMenuZIndex,
+  'modal capture toast should render above the profile modal context menu layer'
+);
 const modalToastTimers = getTimersByDelay(15000);
 assert.equal(modalToastTimers.length, 1, 'modal copy should schedule a 15-second toast removal timer');
 const modalHighlight = dom.window.document.querySelector('.component-capture-highlight');
 assert.ok(modalHighlight, 'modal copy should show the component capture highlight');
 assert.equal(modalHighlight?.style.left, '420px');
 assert.equal(modalHighlight?.style.top, '492px');
+assert.ok(
+  Number(dom.window.getComputedStyle(modalHighlight).zIndex) > profileModalOverlayZIndex,
+  'modal capture highlight should render above the open profile modal overlay'
+);
+assert.ok(
+  Number(dom.window.getComputedStyle(modalHighlight).zIndex) > profileModalMenuZIndex,
+  'modal capture highlight should render above the profile modal context menu layer'
+);
 assert.match(dom.window.getComputedStyle(modalHighlight).animation, /component-capture-blink/);
 assert.match(dom.window.getComputedStyle(modalHighlight).animation, /2/);
 modalHighlight?.dispatchEvent(new dom.window.Event('animationend', { bubbles: true }));
