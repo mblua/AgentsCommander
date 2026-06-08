@@ -12,21 +12,19 @@ import QuitConfirmModal from "./components/QuitConfirmModal";
 import RtkBanner from "./components/RtkBanner";
 import ErrorModal from "./components/ErrorModal";
 import { wireHomeListeners } from "./listeners-home";
+import {
+  DEFAULT_MAIN_SIDEBAR_WIDTH,
+  MAIN_SIDEBAR_MAX_WIDTH,
+  MAIN_SIDEBAR_MIN_WIDTH,
+  MAIN_TERMINAL_MIN_WIDTH,
+  clampMainSidebarWidth,
+} from "../shared/sidebar-layout";
 import "./styles/main.css";
 
-const SIDEBAR_MIN_WIDTH = 200;
-const SIDEBAR_MAX_WIDTH = 600;
-const TERMINAL_MIN_WIDTH = 300;
-const DEFAULT_SIDEBAR_WIDTH = 280;
 const DEFAULT_SIDEBAR_SIDE: MainSidebarSide = "right";
 
-function clampSidebarWidth(raw: number, windowWidth: number): number {
-  const upper = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, windowWidth - TERMINAL_MIN_WIDTH));
-  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(upper, raw));
-}
-
 const MainApp: Component = () => {
-  const [sidebarWidth, setSidebarWidth] = createSignal(DEFAULT_SIDEBAR_WIDTH);
+  const [sidebarWidth, setSidebarWidth] = createSignal(DEFAULT_MAIN_SIDEBAR_WIDTH);
   const [sidebarSide, setSidebarSide] = createSignal<MainSidebarSide>(DEFAULT_SIDEBAR_SIDE);
   const [dragging, setDragging] = createSignal(false);
   const [quitModalCount, setQuitModalCount] = createSignal<number | null>(null);
@@ -61,7 +59,7 @@ const MainApp: Component = () => {
       const rawWidth = sideAtDragStart === "left"
         ? m.clientX
         : window.innerWidth - m.clientX;
-      setSidebarWidth(clampSidebarWidth(rawWidth, window.innerWidth));
+      setSidebarWidth(clampMainSidebarWidth(rawWidth, window.innerWidth));
     };
     const onUp = (u: PointerEvent) => {
       try { divider.releasePointerCapture(u.pointerId); } catch { /* already released */ }
@@ -84,11 +82,11 @@ const MainApp: Component = () => {
     let next: number | null = null;
     if (e.key === "ArrowLeft") next = sidebarWidth() + (sidebarSide() === "right" ? step : -step);
     else if (e.key === "ArrowRight") next = sidebarWidth() + (sidebarSide() === "right" ? -step : step);
-    else if (e.key === "Home") next = SIDEBAR_MIN_WIDTH;
-    else if (e.key === "End") next = Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth - TERMINAL_MIN_WIDTH);
+    else if (e.key === "Home") next = MAIN_SIDEBAR_MIN_WIDTH;
+    else if (e.key === "End") next = Math.min(MAIN_SIDEBAR_MAX_WIDTH, window.innerWidth - MAIN_TERMINAL_MIN_WIDTH);
     if (next === null) return;
     e.preventDefault();
-    const clamped = clampSidebarWidth(next, window.innerWidth);
+    const clamped = clampMainSidebarWidth(next, window.innerWidth);
     setSidebarWidth(clamped);
     persistWidth(clamped);
   };
@@ -127,13 +125,13 @@ const MainApp: Component = () => {
   // disconnect, Win+Arrow snap). Without this the saved width can exceed
   // windowWidth - 300 and the terminal pane collapses (R2.5).
   const onWindowResize = () => {
-    setSidebarWidth((w) => clampSidebarWidth(w, window.innerWidth));
+    setSidebarWidth((w) => clampMainSidebarWidth(w, window.innerWidth));
   };
 
   const onSidebarWidthChange = (event: Event) => {
     const width = (event as CustomEvent<{ width?: number }>).detail?.width;
     if (typeof width === "number") {
-      setSidebarWidth(clampSidebarWidth(width, window.innerWidth));
+      setSidebarWidth(clampMainSidebarWidth(width, window.innerWidth));
     }
   };
 
@@ -162,8 +160,8 @@ const MainApp: Component = () => {
       if (!settings.themeLight) {
         document.documentElement.classList.remove("light-theme");
       }
-      const saved = settings.mainSidebarWidth ?? DEFAULT_SIDEBAR_WIDTH;
-      setSidebarWidth(clampSidebarWidth(saved, window.innerWidth));
+      const saved = settings.mainSidebarWidth ?? DEFAULT_MAIN_SIDEBAR_WIDTH;
+      setSidebarWidth(clampMainSidebarWidth(saved, window.innerWidth));
       setSidebarSide(settings.mainSidebarSide === "left" ? "left" : DEFAULT_SIDEBAR_SIDE);
       if (isTauri && settings.mainAlwaysOnTop) {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -237,8 +235,8 @@ const MainApp: Component = () => {
           aria-label={`Resize ${sidebarSide()} sidebar`}
           aria-valuenow={Math.round(sidebarWidth())}
           aria-valuetext={`${Math.round(sidebarWidth())} pixels, sidebar on ${sidebarSide()}`}
-          aria-valuemin={SIDEBAR_MIN_WIDTH}
-          aria-valuemax={SIDEBAR_MAX_WIDTH}
+          aria-valuemin={MAIN_SIDEBAR_MIN_WIDTH}
+          aria-valuemax={MAIN_SIDEBAR_MAX_WIDTH}
           tabindex="0"
         />
         <div class="main-terminal-pane">
