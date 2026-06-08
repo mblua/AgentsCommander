@@ -219,7 +219,7 @@ trim the recording to 10s.
 
 The `AgentPickerModal` component (`src/sidebar/components/AgentPickerModal.tsx`)
 fully open, with a populated list. This is the surface that loads the
-vendored `agency-agents` snapshot.
+downloaded `agency-agents` cache plus local templates.
 
 ### Frame
 

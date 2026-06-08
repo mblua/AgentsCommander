@@ -1849,7 +1849,7 @@ fn resolve_workspace(project_path: &Path) -> Result<PathBuf, Vec<CliError>> {
     std::fs::canonicalize(&workspace).map_err(|e| {
         vec![err(
             "workspace_not_found",
-            format!("Failed to canonicalize workspace: {}", e),
+            format!("Failed to canonicalize Project AC Root: {}", e),
             None,
         )]
     })
@@ -2313,7 +2313,7 @@ fn next_workgroup_number(workspace_dir: &Path) -> Result<u32, Vec<CliError>> {
         let entry = entry.map_err(|e| {
             vec![err(
                 "workspace_not_found",
-                format!("Failed to read workspace entry: {}", e),
+                format!("Failed to read Project AC Root entry: {}", e),
                 None,
             )]
         })?;
@@ -2335,7 +2335,7 @@ fn validate_workgroup_under_workspace(
     let workspace = fs::canonicalize(workspace_dir).map_err(|e| {
         vec![err_at_path(
             "workspace_not_found",
-            format!("Failed to canonicalize workspace: {}", e),
+            format!("Failed to canonicalize Project AC Root: {}", e),
             workspace_dir,
         )]
     })?;
@@ -2353,7 +2353,7 @@ fn validate_workgroup_under_workspace(
     } else {
         Err(vec![err(
             "run_artifact_mismatch",
-            "Run workgroup is not under the current project workspace",
+            "Run workgroup is not under the current Project AC Root",
             None,
         )])
     }

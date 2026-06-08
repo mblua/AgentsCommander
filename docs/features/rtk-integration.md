@@ -28,16 +28,18 @@ Claude Code's Bash tool emits the full command output back into the model's cont
 
 ## What AC does automatically
 
-On every AC startup AC probes `PATH` for the `rtk` binary and runs one of these branches (`src-tauri/src/lib.rs:382-473`):
+On every AC startup AC probes `PATH` for the `rtk` binary and maps the result, with three persisted settings flags, to a mode via `compute_rtk_startup_mode` (`src-tauri/src/config/settings.rs`); the setup task in `src-tauri/src/lib.rs` then runs one of these branches:
 
-| `rtk` on PATH? | `injectRtkHook` setting | `rtkPromptDismissed` | Behavior |
-|---|---|---|---|
-| Yes | `false` | `false` | Emits `rtk_startup_status mode=prompt-enable` — the sidebar banner offers to enable injection. |
-| Yes | `true` | any | Mode `active`. Sweeps every managed agent dir and (re)writes the `.claude/settings.local.json` inside each managed agent directory with the RTK `PreToolUse` hook. |
-| No | `true` | any | Mode `auto-disabled`. Persists `injectRtkHook=false`, then sweeps to remove any stale hooks. |
-| No | `false` | any | Mode `silent`. No-op. |
+| `rtk` on PATH? | `injectRtkHook` | `rtkPromptDismissed` | `informWhenRtkInstalled` | Behavior |
+|---|---|---|---|---|
+| Yes | `false` | `false` | `true` | Emits `rtk_startup_status mode=prompt-enable`. The sidebar banner offers to enable injection. |
+| Yes | `false` | `false` | `false` | Mode `silent`. The banner is suppressed because the opt-in is off (the default). |
+| Yes | `false` | `true` | any | Mode `silent`. A dismissed banner stays suppressed regardless of the opt-in. |
+| Yes | `true` | any | any | Mode `active`. Sweeps every managed agent dir and (re)writes the `.claude/settings.local.json` inside each managed agent directory with the RTK `PreToolUse` hook. |
+| No | `true` | any | any | Mode `auto-disabled`. Persists `injectRtkHook=false`, then sweeps to remove any stale hooks. |
+| No | `false` | any | any | Mode `silent`. No-op. |
 
-The sweep loop is idempotent and serialized under an internal lock so concurrent settings updates cannot race against it.
+`informWhenRtkInstalled` defaults to `false`, so the banner is opt-in: enable it under **Settings → General → RTK**. The sweep loop is idempotent and serialized under an internal lock so concurrent settings updates cannot race against it.
 
 ## What gets written
 
@@ -70,7 +72,9 @@ AC does not bundle RTK; you install it yourself once:
 
 1. Follow the RTK installation instructions at [https://github.com/rtk-ai/rtk](https://github.com/rtk-ai/rtk).
 2. Verify it is on PATH: `rtk --version`.
-3. Restart AC. The sidebar banner appears offering to enable the hook injection. Click **Enable**.
+3. Enable the integration one of two ways:
+   - Turn on **Settings → General → RTK → Inject RTK hook into agent replicas** directly, or
+   - Turn on **Settings → General → RTK → Show the startup banner when RTK is installed but not enabled**, restart AC, and click **Enable** on the banner that appears.
 
 From that point on, AC injects the hook into every managed agent directory at startup. New agents you create through the UI inherit the hook automatically.
 

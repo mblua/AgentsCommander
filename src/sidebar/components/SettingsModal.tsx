@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Show, onMount } from "solid-js";
+import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import { isTauri } from "../../shared/platform";
 import type {
@@ -11,6 +11,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { setSoundsEnabled } from "../../shared/sound";
 import { sessionsStore } from "../stores/sessions";
 import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
+import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 
 const GEMINI_MODELS = [
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (recommended)" },
@@ -232,22 +233,27 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }
     setSaveError("");
     setSaving(true);
-    await SettingsAPI.update(settings.data);
+    const nextSettings = mergeSettingsForSavePreservingProjects(
+      settings.data,
+      await SettingsAPI.get()
+    );
+    await SettingsAPI.update(nextSettings);
+    setSettings("data", nextSettings);
     // #158 — push soundsEnabled into sound.ts synchronously so the gate
     // updates before the settingsStore.refresh() roundtrip below resolves.
     // Without this, a beep emitted between this point and the next load()
     // would see the stale gate value.
-    setSoundsEnabled(settings.data.soundsEnabled ?? true);
+    setSoundsEnabled(nextSettings.soundsEnabled ?? true);
     if (isTauri) {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().setAlwaysOnTop(settings.data.sidebarAlwaysOnTop);
+      await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
     }
     // RTK sweep — only when the toggle value changed during this modal session.
     // Fired AFTER update_settings persists, so a sweep failure cannot leave
     // the persisted setting in disagreement with the on-disk replica state
     // worse than the pre-save baseline.
     const initial = initialInjectRtk();
-    const next = settings.data.injectRtkHook;
+    const next = nextSettings.injectRtkHook;
     if (initial !== null && initial !== next) {
       setRtkSweepInFlight(true);
       try {
@@ -276,11 +282,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     props.onClose();
   };
 
-  const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
-      props.onClose();
-    }
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") props.onClose();
   };
+
+  document.addEventListener("keydown", handleKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
 
   // ── Tab renderers ──
 
@@ -379,6 +386,23 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Inject RTK hook into agent replicas</span>
         </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.informWhenRtkInstalled}
+            disabled={saving()}
+            onChange={(e) =>
+              updateField("informWhenRtkInstalled", e.currentTarget.checked)
+            }
+          />
+          <span>Show the startup banner when RTK is installed but not enabled</span>
+        </label>
+        <div class="settings-hint">
+          Off by default. When on, AC offers to enable RTK injection via a sidebar
+          banner at startup. This banner setting is read once at launch, so changes
+          to it take effect the next time AC starts.
+        </div>
       </div>
 
       <div class="settings-section">
@@ -772,13 +796,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   );
 
   return (
-    <div class="modal-overlay" onClick={handleOverlayClick}>
+    <div class="modal-overlay">
       <div class="modal-container modal-container-lg">
         <div class="modal-header">
           <span class="modal-title">Settings</span>
-          <button class="modal-close" onClick={props.onClose}>
-            &#x2715;
-          </button>
         </div>
 
         {/* Tab bar */}

@@ -4,7 +4,7 @@ import { Portal } from "solid-js/web";
 export interface QuitConfirmModalProps {
   /** Number of detached sessions that will be closed if the user confirms. */
   detachedCount: number;
-  /** User cancelled — clicked Cancel, pressed Enter on Cancel, pressed ESC, or clicked the backdrop. */
+  /** User cancelled — clicked Cancel, pressed Enter on Cancel, or pressed ESC. */
   onCancel: () => void;
   /** User explicitly confirmed — clicked Quit or Tab-focused Quit then pressed Enter. */
   onQuit: () => void;
@@ -80,13 +80,6 @@ const QuitConfirmModal: Component<QuitConfirmModalProps> = (props) => {
     });
   });
 
-  const onBackdropClick = (e: MouseEvent) => {
-    // Click on backdrop (NOT on the modal body) = Cancel.
-    if (e.target === e.currentTarget) {
-      props.onCancel();
-    }
-  };
-
   return (
     <Portal>
       <div
@@ -95,7 +88,6 @@ const QuitConfirmModal: Component<QuitConfirmModalProps> = (props) => {
         aria-modal="true"
         aria-labelledby="quit-confirm-title"
         aria-describedby="quit-confirm-body"
-        onClick={onBackdropClick}
       >
         <div class="quit-confirm-modal">
           <h2 id="quit-confirm-title" class="quit-confirm-title">Quit AgentsCommander?</h2>

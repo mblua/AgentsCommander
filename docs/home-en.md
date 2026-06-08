@@ -7,7 +7,7 @@ Use the Agent Commander / Root Agent when work spans more than one team or workg
 ## Start fast
 
 1. Open or create an AgentsCommander project.
-   Use an existing repo or create a new project folder. AgentsCommander stores the project workspace, agents, teams, and message files inside that project.
+   Use an existing repo or create a new project folder. AgentsCommander stores the Project AC Root, agents, teams, and message files inside that project.
 2. Create the agents you need.
    Give each agent one clear role, such as coordinator, backend developer, reviewer, tester, or technical writer. Clear roles make delegation easier to review.
 3. Create teams or workgroups.

@@ -7,18 +7,20 @@
 //! Same GUI concurrency caveat as `open-project` — see that file.
 
 use clap::Args;
+use std::path::PathBuf;
 
+use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::register_new_project;
 use crate::config::settings::{load_settings_for_cli, save_settings};
 
 #[derive(Args)]
 #[command(after_help = "\
 PURPOSE: Create an AC project at PATH (mkdir-p `.ac/` and write its \
-`.gitignore` if no workspace exists) and register it in the GUI sidebar's project list.\n\n\
+`.gitignore` if no Project AC Root exists) and register it in the GUI sidebar's project list.\n\n\
 PATH: Absolute or relative — relative paths are resolved against the current \
 working directory. The folder is created if it does not yet exist.\n\n\
 IDEMPOTENCY: Re-running on a folder that already has `.ac/` is safe; \
-the selected workspace gitignore is swept (missing patterns appended), and the registration step \
+the selected Project AC Root gitignore is swept (missing patterns appended), and the registration step \
 deduplicates against any prior entry.")]
 pub struct NewProjectArgs {
     /// Path to make into an AC project (folder created if missing)
@@ -44,6 +46,7 @@ pub fn execute(args: NewProjectArgs) -> i32 {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;
         }
+        write_project_registration_refresh(&PathBuf::from(&result.path), "projectRegistered");
     }
     if result.created {
         crate::cli_println!("Created AC project at {}", result.path);

@@ -40,6 +40,7 @@ import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
 import OnboardingModal from "./components/OnboardingModal";
+import { handleProjectRefreshRequested } from "./project-refresh-handler";
 import "./styles/sidebar.css";
 
 interface SidebarAppProps {
@@ -96,6 +97,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (!props.embedded) {
       document.documentElement.classList.add("light-theme");
     }
+    unlisteners.push(
+      await onAcProjectRefreshRequested((data) => {
+        handleProjectRefreshRequested(data);
+      })
+    );
+
     shortcutHandler = registerShortcuts();
     if (!props.embedded) {
       cleanupZoom = await initZoom("sidebar");
@@ -150,12 +157,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     ) {
       setShowOnboarding(true);
     }
-
-    unlisteners.push(
-      await onAcProjectRefreshRequested((data) => {
-        void projectStore.reloadProjectIfLoaded(data.projectPath);
-      })
-    );
 
     // Load saved project if any
     await projectStore.initFromSettings(
@@ -299,13 +300,18 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (cleanupZoom) cleanupZoom();
     if (cleanupGeometry) cleanupGeometry();
     if (stopTeamIdleWatcher) stopTeamIdleWatcher();
+    sessionsStore.setSidebarPointerInside(false);
     document.removeEventListener("mousedown", handleRaiseTerminal);
     document.removeEventListener("contextmenu", blockContextMenu);
   });
 
   return (
     <>
-      <div class="sidebar-layout">
+      <div
+        class="sidebar-layout"
+        onPointerEnter={() => sessionsStore.setSidebarPointerInside(true)}
+        onPointerLeave={() => sessionsStore.setSidebarPointerInside(false)}
+      >
         <Show when={!props.embedded}>
           <Titlebar />
         </Show>
@@ -323,3 +329,4 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 };
 
 export default SidebarApp;
+export { handleProjectRefreshRequested };

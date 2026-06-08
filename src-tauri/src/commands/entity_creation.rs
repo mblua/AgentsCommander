@@ -91,6 +91,8 @@ pub(crate) struct WorkgroupDiskCreateArgs {
     pub project_path: PathBuf,
     pub team_name: String,
     pub task_title: String,
+    // Legacy provisioning path. Ordinary callers should pass None and empty
+    // vectors so workgroup creation activates an existing team config.
     pub coordinator: Option<String>,
     pub agents: Vec<String>,
     pub repos: Vec<RepoAssignment>,
@@ -545,7 +547,7 @@ pub(crate) fn create_agent_matrix_from_role(
     let project_path = args
         .workspace_dir
         .parent()
-        .ok_or_else(|| "Workspace has no project parent".to_string())?;
+        .ok_or_else(|| "Project AC Root has no project parent".to_string())?;
     Ok(CreatedAgentMatrixOnDisk {
         agent_dir,
         display_name: agent_matrix_display_name(project_path, args.safe_name),
@@ -632,6 +634,29 @@ pub(crate) fn write_team_config(
         std::fs::write(&conventions, "")
             .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
     }
+    let config = normalize_team_config_for_project(workspace_dir, config)?;
+    let config_str = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
+    std::fs::write(team_dir.join("config.json"), config_str)
+        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    Ok(team_dir)
+}
+
+pub(crate) fn create_new_team_config_on_disk(
+    workspace_dir: &Path,
+    team_name: &str,
+    config: &TeamConfigResult,
+) -> Result<PathBuf, String> {
+    validate_existing_name(team_name, "Team")?;
+    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
+    std::fs::create_dir(&team_dir).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("Team '{}' already exists", team_name),
+        _ => format!("Failed to create team directory: {}", e),
+    })?;
+    std::fs::create_dir(team_dir.join("memory"))
+        .map_err(|e| format!("Failed to create memory directory: {}", e))?;
+    std::fs::write(team_dir.join("conventions.md"), "")
+        .map_err(|e| format!("Failed to write conventions.md: {}", e))?;
     let config = normalize_team_config_for_project(workspace_dir, config)?;
     let config_str = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
@@ -770,7 +795,7 @@ pub(crate) async fn create_workgroup_on_disk(
 
     if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
         log::warn!(
-            "[create_workgroup] Failed to ensure workspace .gitignore: {}",
+            "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
             e
         );
     }
@@ -1017,8 +1042,12 @@ pub async fn delete_agent_matrix(project_path: String, agent_name: String) -> Re
     // the final path component after replacing backslashes.
     let agent_dir_name = format!("_agent_{}", agent_name);
     let mut referencing_teams: Vec<String> = Vec::new();
-    let entries = std::fs::read_dir(&base)
-        .map_err(|e| format!("Cannot read workspace directory for integrity check: {}", e))?;
+    let entries = std::fs::read_dir(&base).map_err(|e| {
+        format!(
+            "Cannot read Project AC Root directory for integrity check: {}",
+            e
+        )
+    })?;
     for entry in entries {
         let entry = entry
             .map_err(|e| format!("Cannot read directory entry during integrity check: {}", e))?;
@@ -1151,11 +1180,6 @@ pub async fn create_team(
     let safe_name = sanitize_name(&name)?;
     let base = selected_workspace_dir(Path::new(&project_path))?;
 
-    let team_dir = base.join(format!("_team_{}", safe_name));
-    if team_dir.exists() {
-        return Err(format!("Team '{}' already exists", safe_name));
-    }
-
     let config = normalize_team_config_for_project(
         &base,
         &TeamConfigResult {
@@ -1164,7 +1188,7 @@ pub async fn create_team(
             repos,
         },
     )?;
-    write_team_config(&base, &safe_name, &config)?;
+    let team_dir = create_new_team_config_on_disk(&base, &safe_name, &config)?;
 
     let result_path = team_dir.to_string_lossy().to_string();
     log::info!("[entity_creation] Created team: {}", result_path);
@@ -1204,7 +1228,7 @@ pub async fn create_workgroup(
     // Ensure gitignore protects workgroup clones from parent repo operations
     if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
         log::warn!(
-            "[create_workgroup] Failed to ensure workspace .gitignore: {}",
+            "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
             e
         );
     }
@@ -1743,7 +1767,7 @@ async fn sync_workgroup_repos_inner(
 
             config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
                 &existing_context,
-                &["$AGENTSCOMMANDER_CONTEXT", "$REPOS_WORKSPACE_INFO"],
+                &["$AGENTSCOMMANDER_CONTEXT"],
                 &identity.identity,
                 identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
             ));
@@ -2129,7 +2153,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
     }
 }
 
-/// Scan the selected workspace for existing `wg-<N>-{team_name}/` dirs and return the
+/// Scan the selected Project AC Root for existing `wg-<N>-{team_name}/` dirs and return the
 /// **lowest free positive integer** starting at 1.
 ///
 /// Issue #177: previously this returned `max(existing) + 1`, which left
@@ -2388,7 +2412,7 @@ mod tests {
         })
         .expect_err("invalid template");
 
-        assert!(err.contains("Unknown built-in role template"));
+        assert!(err.contains("missing"));
         assert!(
             !workspace_dir.join("_agent_architect").exists(),
             "invalid template must not create the target matrix directory"

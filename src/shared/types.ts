@@ -181,6 +181,7 @@ export interface AppSettings {
   alwaysShowSelectedWorkgroup?: boolean;
   injectRtkHook: boolean;
   rtkPromptDismissed: boolean;
+  informWhenRtkInstalled: boolean;
   autoGenerateTaskTitle: boolean;
   agentTemplatesPath: string | null;
   themeLight: boolean;
@@ -293,12 +294,21 @@ export interface AcDiscoveryResult {
   workgroups: AcWorkgroup[];
 }
 
+export type AcProjectRefreshReason =
+  | "projectRegistered"
+  | "createAgentMatrix"
+  | "workgroupCreated"
+  | "workgroupRemoved"
+  | "teamMembershipChanged"
+  | "teamMembershipRemoved"
+  | string;
+
 export interface AcProjectRefreshRequestedPayload {
   id: string;
   projectPath: string;
-  agentPath?: string;
-  agentName?: string;
-  reason: "createAgentMatrix";
+  changedPath?: string | null;
+  changedName?: string | null;
+  reason: AcProjectRefreshReason;
 }
 
 // Team wizard shared types (used by NewTeamModal and EditTeamModal)

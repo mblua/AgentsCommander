@@ -154,7 +154,8 @@ See [Telegram bridge setup](../integrations/telegram.md).
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `injectRtkHook` | bool | `false` | Inject the RTK `PreToolUse` hook into every managed agent's `.claude/settings.local.json` at startup. |
-| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected — enable hook injection?" banner for the lifetime of this settings file. |
+| `informWhenRtkInstalled` | bool | `false` | Opt-in gate for the startup "RTK detected, enable hook injection?" banner. Off by default, so the banner never appears unless you enable it. The banner also requires `injectRtkHook=false` and `rtkPromptDismissed=false`. Evaluated at startup; a change applies on the next launch. |
+| `rtkPromptDismissed` | bool | `false` | Suppress the "RTK detected, enable hook injection?" banner for the lifetime of this settings file. |
 
 See [RTK integration](../features/rtk-integration.md).
 
@@ -168,7 +169,7 @@ See [RTK integration](../features/rtk-integration.md).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `agentTemplatesPath` | string \| null | `null` | Local agent-templates root for the role-template picker. Empty/missing → default `<config-dir>/agent-templates/`. Relative → resolved against `<config-dir>/`. |
+| `agentTemplatesPath` | string \| null | `null` | Local agent-templates root for the role-template picker. Empty/missing → default `<config-dir>/agent-templates/`. Relative → resolved against `<config-dir>/`. This does not control the Agency cache at `<config-dir>/agency-agents_templates`. |
 
 ### Tokens
 

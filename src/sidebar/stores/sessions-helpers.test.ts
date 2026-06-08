@@ -1,6 +1,9 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from "vitest";
 import type { Session, SessionStatus } from "../../shared/types";
-import { isRuntimeStringStatus, upsertSessionList } from "./sessions-helpers";
+import { isRuntimeStringStatus, preserveVisibleOrder, reconcileVisibleOrderKeys, upsertSessionList } from "./sessions-helpers";
+import { sessionsStore } from "./sessions";
 import { rootAgentCodingAgentAction } from "../components/root-agent-action";
 
 function mkSession(id: string, status: SessionStatus, overrides: Partial<Session> = {}): Session {
@@ -155,5 +158,90 @@ describe("upsertSessionList (#274 banner-reuse hydration)", () => {
     const next = upsertSessionList(sessions, returned);
     expect(next.find((s) => s.isRootAgent)).toBeDefined();
     expect(next[0].agentLabel).toBe("claude");
+  });
+});
+
+describe("preserveVisibleOrder", () => {
+  it("keeps previous visible positions when next order changes", () => {
+    const previous = ["coord-a", "coord-b", "coord-c"];
+    const next = ["coord-c", "coord-b", "coord-a"];
+
+    expect(preserveVisibleOrder(next, previous, (item) => item)).toEqual([
+      "coord-a",
+      "coord-b",
+      "coord-c",
+    ]);
+  });
+
+  it("removes missing items and appends newly visible items", () => {
+    const previous = ["coord-a", "coord-b", "coord-c"];
+    const next = ["coord-d", "coord-c", "coord-a"];
+
+    expect(preserveVisibleOrder(next, previous, (item) => item)).toEqual([
+      "coord-a",
+      "coord-c",
+      "coord-d",
+    ]);
+  });
+
+  it("uses the next order when there is no previous visible order", () => {
+    const next = ["coord-c", "coord-b", "coord-a"];
+    expect(preserveVisibleOrder(next, undefined, (item) => item)).toEqual(next);
+  });
+});
+
+describe("reconcileVisibleOrderKeys", () => {
+  it("keeps existing frozen keys in place while removing disappeared keys and appending new keys", () => {
+    expect(reconcileVisibleOrderKeys(["coord-d", "coord-c", "coord-a"], ["coord-a", "coord-b", "coord-c"])).toEqual([
+      "coord-a",
+      "coord-c",
+      "coord-d",
+    ]);
+  });
+});
+
+describe("sidebar coordinator hover freeze", () => {
+  it("survives recent-first recompute and releases after hover ends", () => {
+    const projectPath = "test-project-hover-recompute";
+
+    sessionsStore.setSidebarPointerInside(false);
+    sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"]);
+
+    sessionsStore.setSidebarPointerInside(true);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-a",
+      "coord-b",
+      "coord-c",
+    ]);
+
+    // Simulates project/workgroup object replacement recreating ProjectPanel memos.
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-a",
+      "coord-b",
+      "coord-c",
+    ]);
+
+    sessionsStore.setSidebarPointerInside(false);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-c",
+      "coord-a",
+      "coord-b",
+    ]);
+  });
+
+  it("removes disappeared coordinators and appends newly visible coordinators while hovered", () => {
+    const projectPath = "test-project-hover-structural-change";
+
+    sessionsStore.setSidebarPointerInside(false);
+    sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"]);
+
+    sessionsStore.setSidebarPointerInside(true);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-d", "coord-c", "coord-a"])).toEqual([
+      "coord-a",
+      "coord-c",
+      "coord-d",
+    ]);
+
+    sessionsStore.setSidebarPointerInside(false);
   });
 });

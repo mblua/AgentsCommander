@@ -7,14 +7,29 @@ By the end of this guide you will have AgentsCommander installed, an AC project 
 ## Prerequisites
 
 - One of [Claude Code](https://docs.claude.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and authenticated on your machine. You can install more than one — AC will let you pick per agent.
+- Node.js 18+ and npm if you install AgentsCommander from npm.
 - Git installed.
 - A repo you want the agents to work on (it can be empty).
 
-You do **not** need Node.js or Rust to run AgentsCommander. Those are only needed if you want to build from source — see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+You do **not** need Rust to run AgentsCommander. Rust is only needed if you want to build from source — see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
-## 1. Download and install
+## 1. Install AgentsCommander
 
-Download the latest installer for your platform from [the releases page](https://github.com/mblua/AgentsCommander/releases/latest):
+The fastest install path is npm:
+
+```bash
+npm install -g @mblua/agentscommander
+```
+
+Start AgentsCommander:
+
+```bash
+agentscommander
+```
+
+The npm package is `@mblua/agentscommander`. The installed command is still `agentscommander`.
+
+If you prefer a desktop installer or manual download, get the latest asset for your platform from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest):
 
 | Platform | Asset |
 |---|---|
@@ -26,7 +41,7 @@ Run the installer, or drop the portable `.exe` into any folder and double-click.
 
 ## 2. Open or create an AC project
 
-An **AC project** is a folder with an `.ac/` workspace inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable.
+An **AC project** is a folder with a Project AC Root (`.ac/`) inside. AC stores agents, teams, and messaging here so the whole project is portable and version-controllable.
 
 In the sidebar, click **New Project** and point at any folder, empty or an existing repo. AC creates `.ac/` with a sensible `.gitignore` and registers the project in your sidebar.
 
@@ -34,18 +49,18 @@ In the sidebar, click **New Project** and point at any folder, empty or an exist
 
 ## 3. Create your first Team
 
-Open the Teams pane. A **Team** is one coordinator plus one or more worker agents working toward a shared goal.
+Open the Teams pane. A **Team** is one coordinator plus one or more worker agents working toward a shared goal. The agents are created first, then the team definition links those existing agents together.
 
 1. Click **+ Team** and give it a name (for example `feature-x`).
 2. Add the **coordinator** — give the agent a directory name (for example `tech-lead`), pick a role template from the [Agents Agency picker](integrations/coding-agents.md#role-template-picker), and finish.
 3. Add one **worker** the same way (for example `dev-rust` with the *Rust developer* template).
 4. Mark the first agent as **coordinator**.
 
-Behind the scenes AC creates `.ac/wg-1-<team-name>/__agent_tech-lead/` and `__agent_dev-rust/` with `Role.md` files inside.
+Behind the scenes AC creates agent matrices under `.ac/_agent_tech-lead/` and `.ac/_agent_dev-rust/`, then saves the team definition under `.ac/_team_<team-name>/`.
 
 ## 4. Write a brief and launch the coordinator
 
-Open the team's `TASK.md` and write what you want the team to do. One paragraph is enough; the coordinator will expand it.
+Activate the team for a task and give the workgroup a title. AC creates `.ac/wg-1-<team-name>/`, including `TASK.md`, `messaging/`, and each `__agent_<name>/` replica. Open the new `TASK.md` and write what you want the team to do. One paragraph is enough; the coordinator will expand it.
 
 Click the coordinator's session in the sidebar. AC opens a real terminal and prompts you to pick a coding agent (Claude Code, Codex, or Gemini). Pick one. AC launches the agent in the coordinator's directory with the role and brief already loaded.
 

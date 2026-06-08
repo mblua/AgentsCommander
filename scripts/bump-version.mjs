@@ -58,9 +58,19 @@ Re-running with the same X.Y.Z target re-synchronizes drifted locations.
 // compatibility. Production bundle identity comes from Tauri config.
 const PATCHES = [
   {
+    file: 'npm/install.js',
+    label: 'install.js constant',
+    re: /(\r?\nconst VERSION\s*=\s*)['"][^'"]+['"]/,
+  },
+  {
     file: 'package.json',
     label: 'root version',
     re: /(\r?\n\s*"name":\s*"agentscommander",\s*\r?\n\s*"version":\s*)"[^"]+"/,
+  },
+  {
+    file: 'npm/package.json',
+    label: 'npm wrapper version',
+    re: /(\r?\n\s*"name":\s*"@mblua\/agentscommander",\s*\r?\n\s*"version":\s*)"[^"]+"/,
   },
   {
     file: 'package-lock.json',
