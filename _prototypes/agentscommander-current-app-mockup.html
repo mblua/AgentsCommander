@@ -912,7 +912,7 @@
 
     .profile-modal-body {
       min-height: 0;
-      overflow: auto;
+      overflow: hidden;
       padding: 14px;
     }
 
@@ -936,6 +936,27 @@
 
     .profile-variant-c.active {
       grid-template-columns: minmax(190px, 0.58fr) minmax(260px, 0.86fr) minmax(260px, 0.82fr);
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .profile-variant-c.active > [data-component="Coding Agents selector panel"] {
+      position: sticky;
+      top: 0;
+      max-height: 100%;
+      overflow: hidden;
+    }
+
+    .profile-variant-c-scroll {
+      min-width: 0;
+      min-height: 0;
+      max-height: 100%;
+      display: grid;
+      grid-template-columns: minmax(260px, 0.86fr) minmax(260px, 0.82fr);
+      gap: 12px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 2px;
     }
 
     .profile-panel {
@@ -1615,9 +1636,9 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
 
       <div class="profile-modal-body" data-component="Coding Agent profile modal body">
         <div class="profile-variant profile-variant-a active" data-profile-variant-panel="A" data-component="Coding Agent profile modal variant A layout">
-          <aside class="profile-panel" data-component="Coding agent tool selector panel">
-            <div class="profile-panel-title" data-component="Coding agent provider selector title">Tool</div>
-            <div class="provider-list" aria-label="Coding agent tool choices" data-component="Coding agent provider selector">
+          <aside class="profile-panel" data-component="Coding Agents selector panel">
+            <div class="profile-panel-title" data-component="Coding Agents selector title">Coding Agents</div>
+            <div class="provider-list" aria-label="Coding agent choices" data-component="Coding agent selector">
               <button class="provider-card active" type="button" data-tool-card="codex" data-component="Codex coding agent option"></button>
               <button class="provider-card" type="button" data-tool-card="claude-code" data-component="Claude Code coding agent option"></button>
               <button class="provider-card" type="button" data-tool-card="opencode" data-component="OpenCode coding agent option"></button>
@@ -1625,7 +1646,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
             <div class="profile-panel" data-component="Coding Agent profile inheritance source panel">
               <span class="source-pill" data-profile-source-pill>configured agent default</span>
               <div class="resolution-line"><span>Stored</span><span data-profile-stored-source>architect default: B</span></div>
-              <div class="resolution-line"><span>Tool</span><span data-profile-selected-tool>Codex</span></div>
+              <div class="resolution-line"><span>Coding Agent</span><span data-profile-selected-tool>Codex</span></div>
               <div class="resolution-line"><span>Resolved</span><span data-profile-resolved-source>B - BALANCED</span></div>
               <div class="resolution-line"><span>Fallback</span><span>A is immutable final fallback</span></div>
             </div>
@@ -1634,10 +1655,10 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           <section class="profile-panel" data-component="Coding Agent profile selector panel">
             <div>
               <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
-              <div class="profile-panel-kicker">Cards below are profile choices for the selected tool only.</div>
+              <div class="profile-panel-kicker">Cards below are profile choices for the selected coding agent only.</div>
             </div>
             <div class="profile-resolution-status" data-profile-resolution-status data-component="Coding Agent profile requested and resolved status"></div>
-            <div class="profile-picker-grid" data-profile-card-list data-component="Selected tool available profile cards">
+            <div class="profile-picker-grid" data-profile-card-list data-component="Selected Coding Agent available profile cards">
               <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
               <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
               <button class="profile-card" type="button" data-profile-card="C" data-component="Coding Agent profile selector card"></button>
@@ -1648,9 +1669,9 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         </div>
 
         <div class="profile-variant profile-variant-b" data-profile-variant-panel="B" data-component="Coding Agent profile modal variant B layout">
-          <section class="profile-panel" data-component="Coding agent tool selector panel">
-            <div class="profile-panel-title" data-component="Coding agent provider selector title">Tool</div>
-            <div class="provider-strip" aria-label="Coding agent tool choices" data-component="Coding agent provider selector">
+          <section class="profile-panel" data-component="Coding Agents selector panel">
+            <div class="profile-panel-title" data-component="Coding Agents selector title">Coding Agents</div>
+            <div class="provider-strip" aria-label="Coding agent choices" data-component="Coding agent selector">
               <button class="provider-card compact active" type="button" data-tool-card="codex" data-component="Codex coding agent option"></button>
               <button class="provider-card compact" type="button" data-tool-card="claude-code" data-component="Claude Code coding agent option"></button>
               <button class="provider-card compact" type="button" data-tool-card="opencode" data-component="OpenCode coding agent option"></button>
@@ -1659,10 +1680,10 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
           <section class="profile-panel" data-component="Coding Agent profile selector panel">
             <div>
               <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
-              <div class="profile-panel-kicker">Horizontal tool choice above; profile cards resolve from the selected agent's configured default.</div>
+              <div class="profile-panel-kicker">Horizontal coding-agent choice above; profile cards resolve from the selected agent's configured default.</div>
             </div>
             <div class="profile-resolution-status" data-profile-resolution-status data-component="Coding Agent profile requested and resolved status"></div>
-            <div class="profile-picker-grid" data-profile-card-list data-component="Selected tool available profile cards">
+            <div class="profile-picker-grid" data-profile-card-list data-component="Selected Coding Agent available profile cards">
               <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
               <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
               <button class="profile-card" type="button" data-profile-card="C" data-component="Coding Agent profile selector card"></button>
@@ -1674,32 +1695,34 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         </div>
 
         <div class="profile-variant profile-variant-c" data-profile-variant-panel="C" data-component="Coding Agent profile modal variant C layout">
-          <aside class="profile-panel" data-component="Coding agent tool selector panel">
-            <div class="profile-panel-title" data-component="Coding agent provider selector title">Tool</div>
-            <div class="provider-list" aria-label="Coding agent tool choices" data-component="Coding agent provider selector">
+          <aside class="profile-panel" data-component="Coding Agents selector panel">
+            <div class="profile-panel-title" data-component="Coding Agents selector title">Coding Agents</div>
+            <div class="provider-list" aria-label="Coding agent choices" data-component="Coding agent selector">
               <button class="provider-card compact active" type="button" data-tool-card="codex" data-component="Codex coding agent option"></button>
               <button class="provider-card compact" type="button" data-tool-card="claude-code" data-component="Claude Code coding agent option"></button>
               <button class="provider-card compact" type="button" data-tool-card="opencode" data-component="OpenCode coding agent option"></button>
             </div>
           </aside>
-          <section class="profile-panel" data-component="Coding Agent profile selector panel">
-            <div>
-              <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
-              <div class="profile-panel-kicker">Compact profile ladder for the selected tool; unavailable letters resolve upward toward A.</div>
-            </div>
-            <div class="profile-picker-list" data-profile-card-list data-component="Selected tool available profile cards">
-              <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
-              <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
-              <button class="profile-card" type="button" data-profile-card="C" data-component="Coding Agent profile selector card"></button>
-              <button class="profile-card" type="button" data-profile-card="D" data-component="Coding Agent profile selector card"></button>
-            </div>
-          </section>
-          <section class="profile-panel" data-component="Selected profile projected parameters panel">
-            <div class="profile-panel-title" data-component="Selected profile projected parameters title">Projected parameters</div>
-            <div class="profile-resolution-status" data-profile-resolution-status data-component="Coding Agent profile requested and resolved status"></div>
-            <div class="active-profile-summary" data-active-profile-summary data-component="Selected profile launch parameter summary"></div>
-            <div class="warning-strip" data-profile-fallback-notice data-component="Coding Agent profile fallback explanation"></div>
-          </section>
+          <div class="profile-variant-c-scroll" data-component="Coding Agent profile selector independent scroll area">
+            <section class="profile-panel" data-component="Coding Agent profile selector panel">
+              <div>
+                <div class="profile-panel-title" data-component="Available profiles selector title">Profiles</div>
+                <div class="profile-panel-kicker">Compact profile ladder for the selected coding agent; unavailable letters resolve upward toward A.</div>
+              </div>
+              <div class="profile-picker-list" data-profile-card-list data-component="Selected Coding Agent available profile cards">
+                <button class="profile-card" type="button" data-profile-card="A" data-component="Coding Agent profile selector card"></button>
+                <button class="profile-card" type="button" data-profile-card="B" data-component="Coding Agent profile selector card"></button>
+                <button class="profile-card" type="button" data-profile-card="C" data-component="Coding Agent profile selector card"></button>
+                <button class="profile-card" type="button" data-profile-card="D" data-component="Coding Agent profile selector card"></button>
+              </div>
+            </section>
+            <section class="profile-panel" data-component="Selected profile projected parameters panel">
+              <div class="profile-panel-title" data-component="Selected profile projected parameters title">Projected parameters</div>
+              <div class="profile-resolution-status" data-profile-resolution-status data-component="Coding Agent profile requested and resolved status"></div>
+              <div class="active-profile-summary" data-active-profile-summary data-component="Selected profile launch parameter summary"></div>
+              <div class="warning-strip" data-profile-fallback-notice data-component="Coding Agent profile fallback explanation"></div>
+            </section>
+          </div>
         </div>
       </div>
 
@@ -1997,7 +2020,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
         <span class="profile-card-head">
           <span>
             <span class="profile-card-title">${codingProfileLabel(letter)}</span>
-            <span class="profile-card-subtitle">${configured ? "configured for selected tool" : `missing; launches ${codingProfileLabel(resolution.resolved)}`}</span>
+            <span class="profile-card-subtitle">${configured ? "configured for selected coding agent" : `missing; launches ${codingProfileLabel(resolution.resolved)}`}</span>
           </span>
           <span class="profile-default-marker">Default</span>
         </span>
@@ -2067,7 +2090,7 @@ Inspecting capture helper semantics, package scripts, and jsdom smoke coverage.<
       document.querySelectorAll("[data-profile-resolution-status]").forEach((status) => {
         status.innerHTML = `
           <strong>${configuredCodingAgentDefault.agent} configured default ${codingProfileLabel(configuredCodingAgentDefault.profile)}</strong>
-          <span>Selected tool: ${provider.label}. Available profiles: ${availableProfiles}.</span>
+          <span>Selected coding agent: ${provider.label}. Available profiles: ${availableProfiles}.</span>
           <span>Requested/default ${codingProfileLabel(selectedResolution.requested)} -> resolved ${codingProfileLabel(selectedResolution.resolved)}${selectedResolution.usedFallback ? " via fallback" : " as configured"}.</span>
         `;
       });

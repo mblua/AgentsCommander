@@ -128,18 +128,23 @@ assert.ok(dom.window.document.querySelector('[data-component="nested selected te
 assert.ok(dom.window.document.querySelector('[data-sidebar-kind="session-agent"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile assignment modal"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal body"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Coding agent tool selector panel"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Coding agent provider selector"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agents selector panel"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agents selector title"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding agent selector"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal variant switcher"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal variant A layout"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal variant B layout"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal variant C layout"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile selector panel"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Selected tool available profile cards"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Selected Coding Agent available profile cards"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Selected profile launch parameter summary"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Selected profile projected parameters panel"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal footer actions"]'));
 assert.match(html, /Copy component description/);
+assert.match(html, /Coding Agents/);
+assert.doesNotMatch(html, /data-component="Coding agent provider selector title"/);
+assert.doesNotMatch(html, /data-component="Coding agent provider selector"/);
+assert.doesNotMatch(html, /data-component="Coding agent tool selector panel"/);
 assert.match(html, /A remains the immutable final fallback/);
 assert.match(html, /Set profile as new default/);
 assert.match(html, /Set just for instance/);
@@ -150,6 +155,11 @@ assert.doesNotMatch(html, /<select[\s>]/i, 'current app modal should not use dro
 const sideScrollCss = cssBlockFor('.side-scroll');
 assert.match(sideScrollCss, /overflow-y:\s*auto;/, 'sidebar content should allow vertical scrolling');
 assert.match(sideScrollCss, /overflow-x:\s*hidden;/, 'sidebar content should keep horizontal overflow hidden');
+const profileModalBodyCss = cssBlockFor('.profile-modal-body');
+assert.match(profileModalBodyCss, /overflow:\s*hidden;/, 'profile modal body should not drag all Variant C columns while scrolling profiles');
+const variantCScrollCss = cssBlockFor('.profile-variant-c-scroll');
+assert.match(variantCScrollCss, /overflow-y:\s*auto;/, 'Variant C profile area should own vertical scrolling');
+assert.match(variantCScrollCss, /overflow-x:\s*hidden;/, 'Variant C profile area should not introduce horizontal scrolling');
 assert.match(documentText(), /Agents Commander/);
 assert.match(documentText(), /v0\.8\.50/);
 assert.match(documentText(), /WG-7-DEV-TEAM/);
@@ -343,8 +353,8 @@ for (const variant of ['A', 'B', 'C']) {
   assert.equal(dom.window.__codingAgentProfileModalState.variant, variant, `variant ${variant} should be selected`);
   const activeVariant = dom.window.document.querySelector(`[data-profile-variant-panel="${variant}"]`);
   assert.ok(activeVariant?.classList.contains('active'), `variant ${variant} panel should be active`);
-  assert.ok(activeVariant.querySelector('[data-component="Coding agent provider selector title"]'), `variant ${variant} should expose Tool title`);
-  assert.ok(activeVariant.querySelector('[data-component="Coding agent provider selector"]'), `variant ${variant} should expose a Tool selector`);
+  assert.ok(activeVariant.querySelector('[data-component="Coding Agents selector title"]'), `variant ${variant} should expose Coding Agents title`);
+  assert.ok(activeVariant.querySelector('[data-component="Coding agent selector"]'), `variant ${variant} should expose a Coding Agent selector`);
   assert.ok(activeVariant.querySelector('[data-component="Coding Agent profile selector panel"]'), `variant ${variant} should expose Profiles area`);
   assert.ok(activeVariant.querySelector('[data-profile-card].default'), `variant ${variant} should show the current default profile marker`);
   assert.match(activeVariant.textContent ?? '', /Model/);
@@ -353,12 +363,35 @@ for (const variant of ['A', 'B', 'C']) {
   assert.match(activeVariant.textContent ?? '', /Profile args/);
 }
 
+clickVisibleModalVariant('C');
+const variantCPanel = dom.window.document.querySelector('[data-profile-variant-panel="C"]');
+const variantCCodingAgentsPanel = variantCPanel?.querySelector('[data-component="Coding Agents selector panel"]');
+const variantCProfileScroll = variantCPanel?.querySelector('[data-component="Coding Agent profile selector independent scroll area"]');
+const variantCProfilePanel = variantCPanel?.querySelector('[data-component="Coding Agent profile selector panel"]');
+assert.ok(variantCCodingAgentsPanel, 'Variant C should expose a stable left Coding Agents selector panel');
+assert.ok(variantCProfileScroll, 'Variant C should expose an independent profiles scroll area');
+assert.ok(variantCProfilePanel, 'Variant C should keep the profile selector panel inside the scroll area');
+assert.equal(variantCProfileScroll.contains(variantCProfilePanel), true, 'Variant C profile selector should be inside the independent scroll area');
+assert.equal(variantCProfileScroll.contains(variantCCodingAgentsPanel), false, 'Variant C Coding Agents selector should sit outside the profile scroll area');
+Object.defineProperties(variantCProfileScroll, {
+  clientHeight: { configurable: true, value: 360 },
+  scrollHeight: { configurable: true, value: 720 },
+});
+Object.defineProperties(variantCCodingAgentsPanel, {
+  clientHeight: { configurable: true, value: 190 },
+  scrollHeight: { configurable: true, value: 190 },
+});
+variantCCodingAgentsPanel.scrollTop = 0;
+variantCProfileScroll.scrollTop = variantCProfileScroll.scrollHeight - variantCProfileScroll.clientHeight;
+assert.equal(variantCProfileScroll.scrollTop > 0, true, 'Variant C profile scroll area should accept a positive scrollTop');
+assert.equal(variantCCodingAgentsPanel.scrollTop, 0, 'Variant C Coding Agents selector should remain stable when profiles scroll');
+
 clickVisibleModalVariant('A');
 dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-tool-card="claude-code"]')?.click();
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'claude-code');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'B');
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected tool: Claude Code/);
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected coding agent: Claude Code/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
 
 dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-tool-card="opencode"]')?.click();
@@ -402,7 +435,7 @@ for (const summary of dom.window.document.querySelectorAll('[data-active-profile
   assert.match(text, /--profile a/);
   assert.match(text, /B missing; A final fallback/);
 }
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected tool: OpenCode/);
+assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected coding agent: OpenCode/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Available profiles: A - FULL POWER, C - REVIEW/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Requested\/default B - BALANCED -> resolved A - FULL POWER via fallback/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /architect requests B - BALANCED by default/);
