@@ -64,6 +64,10 @@ my-project/
 
 The integer `<N>` is the lowest free positive number across the project, not per team. Deleted numbers are reused, so multiple teams still share one workgroup number sequence.
 
+### Why replicas?
+
+Workgroup replicas give each team a separate operating space instead of sharing a plain disposable git worktree. A replica includes its own repository copy, agent directories, messaging area, filesystem write boundaries, and workgroup-specific executable. This costs more disk space and setup time than a basic worktree, but it gives AgentsCommander stronger isolation for parallel teams, safer delegation boundaries, and cleaner test or build state per workgroup.
+
 ### Replicas vs the matrix
 
 | | Canonical matrix (`_agent_<name>`) | Workgroup replica (`__agent_<name>`) |
