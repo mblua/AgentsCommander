@@ -9,11 +9,11 @@ import {
   onSessionDestroyed,
   onTerminalDetached,
 } from "../../shared/ipc";
-import { isBrowser } from "../../shared/platform";
+import { isBrowser, isTauri } from "../../shared/platform";
 import { terminalStore } from "../stores/terminal";
 import type { UnlistenFn } from "../../shared/transport";
-import { requestExternalLinkConfirmation } from "../../shared/external-links";
 import { updatePromptCapture } from "./prompt-input-capture";
+import { createTerminalOptions } from "./terminal-options";
 import "@xterm/xterm/css/xterm.css";
 
 interface SessionTerminal {
@@ -99,46 +99,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     container.hidden = true;
     hostRef.appendChild(container);
 
-    const terminal = new Terminal({
-      fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace",
-      fontSize: 14,
-      lineHeight: 1.2,
-      cursorBlink: true,
-      cursorStyle: "block",
-      scrollback: 10000,
-      theme: {
-        background: "#0a0a0f",
-        foreground: "#e8e8e8",
-        cursor: "#00d4ff",
-        selectionBackground: "rgba(0, 212, 255, 0.25)",
-        black: "#1a1a2e",
-        red: "#ff3b5c",
-        green: "#33ff99",
-        yellow: "#ffcc33",
-        blue: "#3399ff",
-        magenta: "#ff33cc",
-        cyan: "#33ccff",
-        white: "#e8e8e8",
-        brightBlack: "#4a4a5e",
-        brightRed: "#ff6699",
-        brightGreen: "#66ffbb",
-        brightYellow: "#ffdd66",
-        brightBlue: "#66bbff",
-        brightMagenta: "#ff66dd",
-        brightCyan: "#66ddff",
-        brightWhite: "#ffffff",
-      },
-      allowTransparency: false,
-      linkHandler: {
-        allowNonHttpProtocols: false,
-        activate(event, text) {
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation();
-          requestExternalLinkConfirmation(text);
-        },
-      },
-    });
+    const terminal = new Terminal(createTerminalOptions(isTauri));
 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
