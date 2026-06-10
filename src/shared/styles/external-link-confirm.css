@@ -1,0 +1,147 @@
+.external-link-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10002;
+}
+
+.external-link-modal {
+  width: min(520px, calc(100vw - 32px));
+  background: var(--bg-modal, #14141a);
+  color: var(--fg-primary, #e8e8e8);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  padding: 20px 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  font-family: "Geist", "Outfit", "General Sans", sans-serif;
+}
+
+.external-link-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.external-link-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.external-link-copy-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-secondary, rgba(255, 255, 255, 0.7));
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  transition: background 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+}
+
+.external-link-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-primary, #e8e8e8);
+}
+
+.external-link-body {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-secondary, rgba(255, 255, 255, 0.75));
+}
+
+.external-link-url {
+  max-height: 96px;
+  overflow: auto;
+  margin-bottom: 20px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  color: var(--fg-primary, #e8e8e8);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.external-link-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.external-link-btn {
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+}
+
+.external-link-btn-cancel {
+  background: transparent;
+  color: var(--fg-secondary, rgba(255, 255, 255, 0.7));
+  border-color: var(--border-subtle, rgba(255, 255, 255, 0.15));
+}
+
+.external-link-btn-cancel:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-primary, #e8e8e8);
+}
+
+.external-link-btn-open {
+  background: var(--btn-primary-bg, rgba(0, 212, 255, 0.2));
+  color: var(--btn-primary-fg, #00d4ff);
+  border-color: var(--btn-primary-border, rgba(0, 212, 255, 0.4));
+}
+
+.external-link-btn-open:hover {
+  background: rgba(0, 212, 255, 0.3);
+}
+
+.external-link-copy-btn:focus-visible,
+.external-link-btn:focus-visible {
+  outline: 2px solid var(--focus-ring, #00d4ff);
+  outline-offset: 2px;
+}
+
+html.light-theme .external-link-modal {
+  background: #f7f7f9;
+  color: #1a1a1e;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+html.light-theme .external-link-body {
+  color: rgba(0, 0, 0, 0.7);
+}
+
+html.light-theme .external-link-url {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #1a1a1e;
+}
+
+html.light-theme .external-link-copy-btn,
+html.light-theme .external-link-btn-cancel {
+  color: rgba(0, 0, 0, 0.65);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+html.light-theme .external-link-copy-btn:hover,
+html.light-theme .external-link-btn-cancel:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #1a1a1e;
+}

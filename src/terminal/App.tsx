@@ -23,6 +23,8 @@ import LastPrompt from "./components/LastPrompt";
 import TerminalView from "./components/TerminalView";
 import StatusBar from "./components/StatusBar";
 import HomeView from "../main/components/HomeView";
+import ExternalLinkConfirm from "../shared/components/ExternalLinkConfirm";
+import "../shared/styles/external-link-confirm.css";
 import "./styles/terminal.css";
 
 interface TerminalAppProps {
@@ -293,6 +295,9 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
           while Home is visible. Detached/locked windows never render Home. */}
       <Show when={isHomeShown()}>
         <HomeView />
+      </Show>
+      <Show when={isTauri && !props.embedded}>
+        <ExternalLinkConfirm />
       </Show>
     </div>
   );

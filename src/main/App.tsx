@@ -11,6 +11,7 @@ import Titlebar from "../sidebar/components/Titlebar";
 import QuitConfirmModal from "./components/QuitConfirmModal";
 import RtkBanner from "./components/RtkBanner";
 import ErrorModal from "./components/ErrorModal";
+import ExternalLinkConfirm from "../shared/components/ExternalLinkConfirm";
 import { wireHomeListeners } from "./listeners-home";
 import {
   DEFAULT_MAIN_SIDEBAR_WIDTH,
@@ -20,6 +21,7 @@ import {
   clampMainSidebarWidth,
 } from "../shared/sidebar-layout";
 import "./styles/main.css";
+import "../shared/styles/external-link-confirm.css";
 
 const DEFAULT_SIDEBAR_SIDE: MainSidebarSide = "right";
 
@@ -251,6 +253,7 @@ const MainApp: Component = () => {
         />
       </Show>
       <ErrorModal />
+      <ExternalLinkConfirm />
     </div>
   );
 };
