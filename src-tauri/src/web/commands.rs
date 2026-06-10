@@ -271,6 +271,45 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             Ok(json!(null))
         }
 
+        // --- Role templates ---
+        "list_role_templates" => {
+            let snapshot = state.settings.read().await.clone();
+            match crate::config::config_dir() {
+                Some(config_dir) => serde_json::to_value(
+                    crate::commands::role_templates::collect_role_templates(
+                        &snapshot,
+                        &config_dir,
+                    ),
+                )
+                .map_err(|e| e.to_string()),
+                None => {
+                    log::warn!(
+                        "[role-templates] could not resolve config dir; returning no role templates"
+                    );
+                    Ok(json!([]))
+                }
+            }
+        }
+
+        "get_agency_templates_status" => {
+            let status =
+                tauri::async_runtime::spawn_blocking(crate::cli::agency_templates::status_cache)
+                    .await
+                    .map_err(|e| format!("Agency template status task failed: {}", e))??;
+            serde_json::to_value(status).map_err(|e| e.to_string())
+        }
+
+        "update_agency_templates" => {
+            let result = tauri::async_runtime::spawn_blocking(|| {
+                crate::cli::agency_templates::update_cache(
+                    crate::cli::agency_templates::AgencyTemplatesUpdateArgs::default_ui_update(),
+                )
+            })
+            .await
+            .map_err(|e| format!("Agency template update task failed: {}", e))??;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
         // --- Screen replay for late-joining clients ---
         "subscribe_session" => {
             let session_id = require_str(args, "sessionId")?;
