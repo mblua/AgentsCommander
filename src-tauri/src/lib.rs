@@ -1428,6 +1428,8 @@ pub fn run() {
             commands::entity_creation::delete_workgroup,
             commands::entity_creation::sync_workgroup_repos,
             commands::role_templates::list_role_templates,
+            commands::role_templates::get_agency_templates_status,
+            commands::role_templates::update_agency_templates,
         ])
         .build(tauri::generate_context!())
         .expect("error while building application")

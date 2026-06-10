@@ -19,6 +19,8 @@ import type {
   WorkgroupTaskUpdatedEvent,
   ProjectRegistration,
   ErrorLogEntry,
+  AgencyTemplatesStatus,
+  AgencyTemplatesUpdateResult,
   RoleTemplateMeta,
   SpecBoardDocument,
   SpecBoardSnapshot,
@@ -462,6 +464,9 @@ export const ProjectAPI = {
 // Role template picker (#271)
 export const RoleTemplateAPI = {
   list: () => transport.invoke<RoleTemplateMeta[]>("list_role_templates"),
+  status: () => transport.invoke<AgencyTemplatesStatus>("get_agency_templates_status"),
+  updateAgencyTemplates: () =>
+    transport.invoke<AgencyTemplatesUpdateResult>("update_agency_templates"),
 };
 
 // Entity Creation API (agents, teams, workgroups)

@@ -1,6 +1,6 @@
 import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
 import { EntityAPI, RoleTemplateAPI } from "../../shared/ipc";
-import type { RoleTemplateMeta } from "../../shared/types";
+import type { AgencyTemplatesStatus, RoleTemplateMeta } from "../../shared/types";
 import {
   applyTemplatePrefill,
   filterRoleTemplates,
@@ -27,22 +27,43 @@ const NewEntityAgentModal: Component<{
   const [templates, setTemplates] = createSignal<RoleTemplateMeta[]>([]);
   const [templateQuery, setTemplateQuery] = createSignal("");
   const [selectedTemplateId, setSelectedTemplateId] = createSignal<string | null>(null);
+  const [agencyStatus, setAgencyStatus] = createSignal<AgencyTemplatesStatus | null>(null);
+  const [agencyInstalling, setAgencyInstalling] = createSignal(false);
+  const [agencyInstallError, setAgencyInstallError] = createSignal("");
   let nameRef!: HTMLInputElement;
   let listRef: HTMLDivElement | undefined;
 
-  onMount(async () => {
-    try {
-      setTemplates(await RoleTemplateAPI.list());
-    } catch (e) {
-      // Non-fatal: the picker just shows "No template". The backend logs any
-      // custom-path failure to the ErrorModal independently.
-      console.error("list_role_templates failed:", e);
+  let mounted = true;
+  onCleanup(() => {
+    mounted = false;
+  });
+
+  const reloadTemplatesAndAgencyStatus = async () => {
+    const [templatesResult, statusResult] = await Promise.allSettled([
+      RoleTemplateAPI.list(),
+      RoleTemplateAPI.status(),
+    ]);
+    if (!mounted) return;
+    if (templatesResult.status === "fulfilled") {
+      setTemplates(templatesResult.value);
+    } else {
+      console.error("list_role_templates failed:", templatesResult.reason);
     }
+    if (statusResult.status === "fulfilled") {
+      setAgencyStatus(statusResult.value);
+    } else {
+      console.error("get_agency_templates_status failed:", statusResult.reason);
+    }
+  };
+
+  onMount(async () => {
+    await reloadTemplatesAndAgencyStatus();
   });
 
   const filteredTemplates = createMemo(() =>
     filterRoleTemplates(templates(), templateQuery()),
   );
+  const shouldShowAgencyInstall = createMemo(() => agencyStatus()?.available === false);
 
   const selectTemplate = (t: RoleTemplateMeta | null) => {
     setSelectedTemplateId(t ? t.id : null);
@@ -56,6 +77,32 @@ const NewEntityAgentModal: Component<{
       setName(next.name);
       setDescription(next.description);
       setError("");
+    }
+  };
+
+  const errorMessage = (err: unknown, fallback: string) =>
+    typeof err === "string"
+      ? err
+      : err instanceof Error
+        ? err.message
+        : fallback;
+
+  const handleInstallAgencyTemplates = async (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (agencyInstalling()) return;
+    setAgencyInstalling(true);
+    setAgencyInstallError("");
+    try {
+      await RoleTemplateAPI.updateAgencyTemplates();
+      await reloadTemplatesAndAgencyStatus();
+    } catch (err: unknown) {
+      console.error("update_agency_templates failed:", err);
+      if (mounted) {
+        setAgencyInstallError(errorMessage(err, "Failed to install Agents Agency templates"));
+      }
+    } finally {
+      if (mounted) setAgencyInstalling(false);
     }
   };
 
@@ -189,6 +236,34 @@ const NewEntityAgentModal: Component<{
                 aria-label="Search role templates"
               />
             </div>
+            <Show when={shouldShowAgencyInstall()}>
+              <div class="tpl-agency-install">
+                <div class="tpl-agency-install-copy">
+                  <div class="tpl-agency-install-title">Agents Agency templates are not installed</div>
+                  <div class="tpl-agency-install-desc">
+                    Install tested specialist role templates for new agents. You can still create a blank agent.
+                  </div>
+                  <Show when={agencyInstallError()}>
+                    <div class="tpl-agency-install-error" role="status" aria-live="polite">
+                      {agencyInstallError()}
+                    </div>
+                  </Show>
+                </div>
+                <button
+                  type="button"
+                  class="tpl-agency-install-btn"
+                  disabled={agencyInstalling()}
+                  onClick={handleInstallAgencyTemplates}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.stopPropagation();
+                  }}
+                >
+                  <span aria-live="polite">
+                    {agencyInstalling() ? "Installing..." : "Install templates"}
+                  </span>
+                </button>
+              </div>
+            </Show>
             <div
               class="tpl-picker-list"
               ref={listRef}
