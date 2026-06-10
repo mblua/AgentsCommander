@@ -1,3 +1,9 @@
+export const EXTERNAL_LINK_REQUEST_EVENT = "agentscommander:external-link-request";
+
+export interface ExternalLinkRequestDetail {
+  url: string;
+}
+
 export function getConfirmableExternalUrl(
   href: string,
   currentHref: string = window.location.href
@@ -20,4 +26,18 @@ export function getConfirmableExternalUrl(
   }
 
   return url.href;
+}
+
+export function requestExternalLinkConfirmation(href: string): boolean {
+  const url = getConfirmableExternalUrl(href);
+  if (!url) {
+    return false;
+  }
+
+  document.dispatchEvent(
+    new CustomEvent<ExternalLinkRequestDetail>(EXTERNAL_LINK_REQUEST_EVENT, {
+      detail: { url },
+    })
+  );
+  return true;
 }

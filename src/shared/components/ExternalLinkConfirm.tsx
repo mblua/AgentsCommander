@@ -1,7 +1,11 @@
 import { Component, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { WindowAPI } from "../ipc";
-import { getConfirmableExternalUrl } from "../external-links";
+import {
+  EXTERNAL_LINK_REQUEST_EVENT,
+  getConfirmableExternalUrl,
+  type ExternalLinkRequestDetail,
+} from "../external-links";
 
 const ExternalLinkConfirm: Component = () => {
   const [pendingUrl, setPendingUrl] = createSignal<string | null>(null);
@@ -11,6 +15,13 @@ const ExternalLinkConfirm: Component = () => {
   let openBtnRef: HTMLButtonElement | undefined;
   let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
   let previouslyFocused: HTMLElement | null = null;
+
+  const showConfirm = (url: string) => {
+    previouslyFocused = document.activeElement as HTMLElement | null;
+    setCopied(false);
+    setPendingUrl(url);
+    queueMicrotask(() => cancelBtnRef?.focus());
+  };
 
   const close = () => {
     setPendingUrl(null);
@@ -62,10 +73,21 @@ const ExternalLinkConfirm: Component = () => {
 
       e.preventDefault();
       e.stopImmediatePropagation();
-      previouslyFocused = document.activeElement as HTMLElement | null;
-      setCopied(false);
-      setPendingUrl(url);
-      queueMicrotask(() => cancelBtnRef?.focus());
+      showConfirm(url);
+    };
+
+    const onExternalLinkRequest = (e: Event) => {
+      const detail = (e as CustomEvent<ExternalLinkRequestDetail>).detail;
+      if (!detail || typeof detail.url !== "string") {
+        return;
+      }
+
+      const url = getConfirmableExternalUrl(detail.url);
+      if (!url) {
+        return;
+      }
+
+      showConfirm(url);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -98,9 +120,11 @@ const ExternalLinkConfirm: Component = () => {
     };
 
     document.addEventListener("click", onClick, true);
+    document.addEventListener(EXTERNAL_LINK_REQUEST_EVENT, onExternalLinkRequest);
     document.addEventListener("keydown", onKeyDown, true);
     onCleanup(() => {
       document.removeEventListener("click", onClick, true);
+      document.removeEventListener(EXTERNAL_LINK_REQUEST_EVENT, onExternalLinkRequest);
       document.removeEventListener("keydown", onKeyDown, true);
     });
   });

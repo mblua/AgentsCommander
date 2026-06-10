@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { getConfirmableExternalUrl } from "./external-links";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  EXTERNAL_LINK_REQUEST_EVENT,
+  getConfirmableExternalUrl,
+  requestExternalLinkConfirmation,
+} from "./external-links";
 
 const appUrl = "http://tauri.localhost/index.html?window=main";
 
@@ -24,5 +29,36 @@ describe("getConfirmableExternalUrl", () => {
     expect(getConfirmableExternalUrl("mailto:support@example.com", appUrl)).toBeNull();
     expect(getConfirmableExternalUrl("javascript:alert(1)", appUrl)).toBeNull();
     expect(getConfirmableExternalUrl("https://[", appUrl)).toBeNull();
+  });
+
+  describe("requestExternalLinkConfirmation", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("dispatches a normalized custom event for external URLs", () => {
+      const listener = vi.fn();
+      document.addEventListener(EXTERNAL_LINK_REQUEST_EVENT, listener);
+
+      expect(requestExternalLinkConfirmation("http://example.com")).toBe(true);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0]).toMatchObject({
+        detail: { url: "http://example.com/" },
+      });
+
+      document.removeEventListener(EXTERNAL_LINK_REQUEST_EVENT, listener);
+    });
+
+    it("does not dispatch for same-origin or unsupported URLs", () => {
+      const listener = vi.fn();
+      document.addEventListener(EXTERNAL_LINK_REQUEST_EVENT, listener);
+
+      expect(requestExternalLinkConfirmation("/settings")).toBe(false);
+      expect(requestExternalLinkConfirmation("mailto:support@example.com")).toBe(false);
+
+      expect(listener).not.toHaveBeenCalled();
+      document.removeEventListener(EXTERNAL_LINK_REQUEST_EVENT, listener);
+    });
   });
 });

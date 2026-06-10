@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import ExternalLinkConfirm from "./ExternalLinkConfirm";
 import { WindowAPI } from "../ipc";
+import { EXTERNAL_LINK_REQUEST_EVENT } from "../external-links";
 
 vi.mock("../ipc", () => ({
   WindowAPI: {
@@ -138,6 +139,44 @@ describe("ExternalLinkConfirm", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(externalUrl);
     expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
 
+    dispose();
+  });
+
+  it("opens the modal from the external link request event", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => ExternalLinkConfirm({}), root);
+
+    document.dispatchEvent(
+      new CustomEvent(EXTERNAL_LINK_REQUEST_EVENT, {
+        detail: { url: externalUrl },
+      })
+    );
+    await flushPromises();
+
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+
+    buttonByText("Open anyway").click();
+    await flushPromises();
+
+    expect(WindowAPI.openExternal).toHaveBeenCalledWith(externalUrl);
+    dispose();
+  });
+
+  it("ignores unsupported URLs from the external link request event", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => ExternalLinkConfirm({}), root);
+
+    document.dispatchEvent(
+      new CustomEvent(EXTERNAL_LINK_REQUEST_EVENT, {
+        detail: { url: "mailto:support@example.com" },
+      })
+    );
+    await flushPromises();
+
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(WindowAPI.openExternal).not.toHaveBeenCalled();
     dispose();
   });
 });

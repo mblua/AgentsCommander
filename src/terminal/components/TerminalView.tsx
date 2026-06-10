@@ -12,6 +12,7 @@ import {
 import { isBrowser } from "../../shared/platform";
 import { terminalStore } from "../stores/terminal";
 import type { UnlistenFn } from "../../shared/transport";
+import { requestExternalLinkConfirmation } from "../../shared/external-links";
 import { updatePromptCapture } from "./prompt-input-capture";
 import "@xterm/xterm/css/xterm.css";
 
@@ -128,6 +129,15 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         brightWhite: "#ffffff",
       },
       allowTransparency: false,
+      linkHandler: {
+        allowNonHttpProtocols: false,
+        activate(event, text) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          requestExternalLinkConfirmation(text);
+        },
+      },
     });
 
     const fitAddon = new FitAddon();
