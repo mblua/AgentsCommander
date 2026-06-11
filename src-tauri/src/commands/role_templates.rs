@@ -966,6 +966,24 @@ pub async fn list_role_templates(
     }
 }
 
+#[tauri::command]
+pub async fn get_agency_templates_status() -> Result<AgencyTemplatesStatus, String> {
+    tauri::async_runtime::spawn_blocking(crate::cli::agency_templates::status_cache)
+        .await
+        .map_err(|e| format!("Agency template status task failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn update_agency_templates() -> Result<crate::cli::agency_templates::UpdateResult, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        crate::cli::agency_templates::update_cache(
+            crate::cli::agency_templates::AgencyTemplatesUpdateArgs::default_ui_update(),
+        )
+    })
+    .await
+    .map_err(|e| format!("Agency template update task failed: {}", e))?
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================

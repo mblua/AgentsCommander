@@ -15,7 +15,8 @@ use crate::commands::role_templates::{
     AGENCY_TEMPLATES_DIR,
 };
 
-const DEFAULT_REPO: &str = "https://github.com/msitarzewski/agency-agents";
+pub const DEFAULT_REPO: &str = "https://github.com/msitarzewski/agency-agents";
+pub const DEFAULT_REFERENCE: &str = "main";
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -42,11 +43,21 @@ pub enum AgencyTemplatesCommand {
 pub struct AgencyTemplatesUpdateArgs {
     #[arg(long, default_value = DEFAULT_REPO)]
     pub repo: String,
-    #[arg(long = "ref", default_value = "main")]
+    #[arg(long = "ref", default_value = DEFAULT_REFERENCE)]
     pub reference: String,
     /// Compatibility no-op. agency-templates commands always print JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+impl AgencyTemplatesUpdateArgs {
+    pub fn default_ui_update() -> Self {
+        Self {
+            repo: DEFAULT_REPO.into(),
+            reference: DEFAULT_REFERENCE.into(),
+            json: true,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -69,16 +80,16 @@ pub struct AgencyTemplatesStatusArgs {
     pub pretty: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct UpdateResult {
-    repo: String,
+pub struct UpdateResult {
+    pub repo: String,
     #[serde(rename = "ref")]
-    reference: String,
-    commit: String,
-    template_count: usize,
-    path: String,
-    updated: bool,
+    pub reference: String,
+    pub commit: String,
+    pub template_count: usize,
+    pub path: String,
+    pub updated: bool,
 }
 
 struct CacheLock {
@@ -295,34 +306,54 @@ fn print_json<T: Serialize>(value: &T, pretty: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn status(args: AgencyTemplatesStatusArgs) -> Result<(), String> {
-    let _ = args.json;
-    let config_dir = config_dir_or_err()?;
-    match CacheLock::acquire(&config_dir) {
+pub fn status_cache_at(
+    config_dir: &Path,
+) -> Result<crate::commands::role_templates::AgencyTemplatesStatus, String> {
+    match CacheLock::acquire(config_dir) {
         Ok(_lock) => {
-            if let Err(e) = recover_interrupted_publish(&config_dir) {
+            if let Err(e) = recover_interrupted_publish(config_dir) {
                 if e.starts_with("cacheInvalid") {
-                    let value = serde_json::json!({
-                        "available": false,
-                        "path": agency_templates_dir(&config_dir).to_string_lossy(),
-                        "reason": "cacheInvalid",
+                    return Ok(crate::commands::role_templates::AgencyTemplatesStatus {
+                        available: false,
+                        path: agency_templates_dir(config_dir)
+                            .to_string_lossy()
+                            .to_string(),
+                        repo: None,
+                        reference: None,
+                        commit: None,
+                        template_count: None,
+                        reason: Some("cacheInvalid".into()),
                     });
-                    return print_json(&value, args.pretty);
                 }
                 return Err(e);
             }
         }
         Err(e) if e.contains("already running") => {
-            let value = serde_json::json!({
-                "available": false,
-                "path": agency_templates_dir(&config_dir).to_string_lossy(),
-                "reason": "locked",
+            return Ok(crate::commands::role_templates::AgencyTemplatesStatus {
+                available: false,
+                path: agency_templates_dir(config_dir)
+                    .to_string_lossy()
+                    .to_string(),
+                repo: None,
+                reference: None,
+                commit: None,
+                template_count: None,
+                reason: Some("locked".into()),
             });
-            return print_json(&value, args.pretty);
         }
         Err(e) => return Err(e),
     }
-    print_json(&agency_templates_status(&config_dir), args.pretty)
+    Ok(agency_templates_status(config_dir))
+}
+
+pub fn status_cache() -> Result<crate::commands::role_templates::AgencyTemplatesStatus, String> {
+    let config_dir = config_dir_or_err()?;
+    status_cache_at(&config_dir)
+}
+
+fn status(args: AgencyTemplatesStatusArgs) -> Result<(), String> {
+    let _ = args.json;
+    print_json(&status_cache()?, args.pretty)
 }
 
 fn list(args: AgencyTemplatesListArgs) -> Result<(), String> {
@@ -343,35 +374,34 @@ fn list(args: AgencyTemplatesListArgs) -> Result<(), String> {
     print_json(&agency_template_metas_from_cache(&config_dir), args.pretty)
 }
 
-fn update(args: AgencyTemplatesUpdateArgs) -> Result<(), String> {
-    let config_dir = config_dir_or_err()?;
-    let _lock = CacheLock::acquire(&config_dir)?;
-    let _ = recover_interrupted_publish(&config_dir)?;
-    cleanup_publish_residue(&config_dir);
+pub fn update_cache_at(
+    config_dir: &Path,
+    args: AgencyTemplatesUpdateArgs,
+) -> Result<UpdateResult, String> {
+    let _lock = CacheLock::acquire(config_dir)?;
+    let _ = recover_interrupted_publish(config_dir)?;
+    cleanup_publish_residue(config_dir);
     let _ = args.json;
 
     parse_github_repo(&args.repo)?;
     let commit = resolve_commit_with_git(&args.repo, &args.reference)?;
-    let destination = agency_templates_dir(&config_dir);
-    if let Ok(current) = current_manifest_if_valid(&config_dir) {
+    let destination = agency_templates_dir(config_dir);
+    if let Ok(current) = current_manifest_if_valid(config_dir) {
         if current.repo == args.repo
             && current.reference == args.reference
             && current.commit == commit
         {
-            return print_json(
-                &UpdateResult {
-                    repo: current.repo,
-                    reference: current.reference,
-                    commit: current.commit,
-                    template_count: current.template_count,
-                    path: destination.to_string_lossy().to_string(),
-                    updated: false,
-                },
-                false,
-            );
+            return Ok(UpdateResult {
+                repo: current.repo,
+                reference: current.reference,
+                commit: current.commit,
+                template_count: current.template_count,
+                path: destination.to_string_lossy().to_string(),
+                updated: false,
+            });
         }
     }
-    let extracted = fetch_repo_with_git(&args.repo, &commit, &config_dir)?;
+    let extracted = fetch_repo_with_git(&args.repo, &commit, config_dir)?;
     let extracted = TempCacheDir::new(extracted);
     let staging = config_dir.join(format!(
         "{}.next-{}",
@@ -412,19 +442,26 @@ fn update(args: AgencyTemplatesUpdateArgs) -> Result<(), String> {
     collect_agency_templates_from_dir(staging.path())
         .map_err(|e| format!("Staged Agency cache failed validation: {}", e))?;
 
-    publish_staging(&config_dir, staging.path())?;
-    cleanup_publish_residue(&config_dir);
-    print_json(
-        &UpdateResult {
-            repo: manifest.repo,
-            reference: manifest.reference,
-            commit: manifest.commit,
-            template_count: manifest.template_count,
-            path: destination.to_string_lossy().to_string(),
-            updated: true,
-        },
-        false,
-    )
+    publish_staging(config_dir, staging.path())?;
+    cleanup_publish_residue(config_dir);
+    Ok(UpdateResult {
+        repo: manifest.repo,
+        reference: manifest.reference,
+        commit: manifest.commit,
+        template_count: manifest.template_count,
+        path: destination.to_string_lossy().to_string(),
+        updated: true,
+    })
+}
+
+pub fn update_cache(args: AgencyTemplatesUpdateArgs) -> Result<UpdateResult, String> {
+    let config_dir = config_dir_or_err()?;
+    update_cache_at(&config_dir, args)
+}
+
+fn update(args: AgencyTemplatesUpdateArgs) -> Result<(), String> {
+    let result = update_cache(args)?;
+    print_json(&result, false)
 }
 
 fn current_manifest_if_valid(config_dir: &Path) -> Result<AgencyTemplatesManifest, String> {
@@ -455,6 +492,12 @@ fn parse_github_repo(input: &str) -> Result<(), String> {
 }
 
 fn resolve_commit_with_git(repo: &str, reference: &str) -> Result<String, String> {
+    #[cfg(test)]
+    if let Ok(commit) = std::env::var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT") {
+        let _ = (repo, reference);
+        return Ok(commit);
+    }
+
     let output = Command::new("git")
         .args(["ls-remote", repo, reference])
         .output()
@@ -1050,6 +1093,67 @@ mod tests {
         drop(lock);
 
         assert!(!lock_path.exists(), "lock should be removed on drop");
+    }
+
+    #[test]
+    fn status_cache_at_recovers_valid_previous_cache() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path();
+        let prev = config_dir.join(format!("{}.prev-one", AGENCY_TEMPLATES_DIR));
+        write_valid_cache(&prev);
+
+        let status = status_cache_at(config_dir).expect("status recovers previous cache");
+
+        assert!(status.available);
+        assert!(agency_templates_dir(config_dir).is_dir());
+        assert!(!prev.exists(), "previous cache should be promoted");
+        assert_eq!(status.template_count, Some(1));
+    }
+
+    #[test]
+    fn status_cache_at_reports_live_lock_as_locked() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path();
+        let lock_path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
+        fs::write(
+            &lock_path,
+            format!(r#"{{"pid":{},"createdUnixSecs":1}}"#, process::id()),
+        )
+        .expect("write live lock");
+
+        let status = status_cache_at(config_dir).expect("locked status should be non-fatal");
+
+        assert!(!status.available);
+        assert_eq!(status.reason.as_deref(), Some("locked"));
+        fs::remove_file(lock_path).expect("cleanup live lock");
+    }
+
+    #[test]
+    fn update_cache_at_reports_already_current_without_printed_json() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path();
+        let live = agency_templates_dir(config_dir);
+        write_valid_cache(&live);
+        let current = current_manifest_if_valid(config_dir).expect("valid manifest");
+        std::env::set_var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT", &current.commit);
+
+        let result = update_cache_at(
+            config_dir,
+            AgencyTemplatesUpdateArgs {
+                repo: current.repo.clone(),
+                reference: current.reference.clone(),
+                json: true,
+            },
+        )
+        .expect("already-current update should succeed");
+
+        std::env::remove_var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT");
+        assert!(!result.updated);
+        assert_eq!(result.repo, current.repo);
+        assert_eq!(result.reference, current.reference);
+        assert_eq!(result.commit, current.commit);
+        assert_eq!(result.template_count, current.template_count);
+        assert_eq!(result.path, live.to_string_lossy().to_string());
     }
 
     #[cfg(unix)]

@@ -453,6 +453,25 @@ export interface RoleTemplateMeta {
   hasSkills: boolean;
 }
 
+export interface AgencyTemplatesStatus {
+  available: boolean;
+  path: string;
+  repo?: string | null;
+  ref?: string | null;
+  commit?: string | null;
+  templateCount?: number | null;
+  reason?: string | null;
+}
+
+export interface AgencyTemplatesUpdateResult {
+  repo: string;
+  ref: string;
+  commit: string;
+  templateCount: number;
+  path: string;
+  updated: boolean;
+}
+
 export interface SpecBoardDocument {
   docId: string;
   repoRoot: string;

@@ -4612,6 +4612,62 @@ html.light-theme .onboarding-card.selected {
   color: var(--sidebar-fg-dim);
 }
 
+.tpl-agency-install {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+  padding: 8px var(--spacing-sm);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: var(--radius-md);
+  background: rgba(0, 212, 255, 0.06);
+}
+
+.tpl-agency-install-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.tpl-agency-install-title {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg);
+}
+
+.tpl-agency-install-desc,
+.tpl-agency-install-error {
+  margin-top: 2px;
+  font-size: var(--font-size-xs, 11px);
+  color: var(--sidebar-fg-dim);
+  line-height: 1.35;
+}
+
+.tpl-agency-install-error {
+  color: var(--status-error, #ff5f56);
+}
+
+.tpl-agency-install-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+  border: 1px solid var(--sidebar-accent);
+  border-radius: 4px;
+  background: rgba(0, 212, 255, 0.14);
+  color: var(--sidebar-fg);
+  font: inherit;
+  font-size: var(--font-size-xs, 11px);
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.tpl-agency-install-btn:hover:not(:disabled) {
+  background: rgba(0, 212, 255, 0.22);
+}
+
+.tpl-agency-install-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
 .tpl-picker-list {
   margin-top: var(--spacing-xs);
   max-height: 168px;
