@@ -8,6 +8,7 @@ pub mod pty;
 pub mod session;
 pub mod shutdown;
 pub mod telegram;
+pub mod testability;
 pub mod voice;
 pub mod web;
 
@@ -157,7 +158,9 @@ pub(crate) fn should_auto_create_root_agent_on_first_restore(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(
+    test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
+) {
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
@@ -640,29 +643,221 @@ pub fn run() {
                 height: default_h,
             };
 
-            // Resolve main geometry: saved (physical) → validate → convert to logical → fallback.
+            fn log_main_window_info(win: &tauri::WebviewWindow) {
+                let pid = std::process::id();
+                let pos = win.outer_position().ok();
+                let size = win.outer_size().ok();
+                let maximized = win.is_maximized().ok();
+                log::info!(
+                    "[test-window] actual pid={} position={:?} size={:?} maximized={:?}",
+                    pid,
+                    pos,
+                    size,
+                    maximized
+                );
+                println!(
+                    "{{\"event\":\"testWindowInfo\",\"pid\":{},\"position\":{},\"size\":{},\"maximized\":{}}}",
+                    pid,
+                    serde_json::to_string(&pos.map(|p| serde_json::json!({ "x": p.x, "y": p.y })))
+                        .unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(
+                        &size.map(|s| serde_json::json!({ "width": s.width, "height": s.height }))
+                    )
+                    .unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(&maximized).unwrap_or_else(|_| "null".to_string())
+                );
+            }
+
+            fn apply_test_window_placement(
+                win: &tauri::WebviewWindow,
+                geo: &crate::testability::window_placement::TestWindowPlacement,
+            ) -> bool {
+                let x = geo.x.round() as i32;
+                let y = geo.y.round() as i32;
+                let width = geo.width.round().max(1.0) as u32;
+                let height = geo.height.round().max(1.0) as u32;
+
+                #[cfg(target_os = "windows")]
+                {
+                    use windows_sys::Win32::Graphics::Gdi::{
+                        GetMonitorInfoW, MonitorFromRect, MONITORINFO,
+                        MONITOR_DEFAULTTONEAREST,
+                    };
+                    use windows_sys::Win32::Foundation::{POINT, RECT};
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        GetWindowPlacement, IsZoomed, SetWindowPlacement, SetWindowPos,
+                        ShowWindow, WINDOWPLACEMENT, SWP_NOACTIVATE, SWP_NOZORDER,
+                        SWP_SHOWWINDOW, SW_RESTORE, SW_SHOWMAXIMIZED,
+                    };
+
+                    match win.hwnd() {
+                        Ok(hwnd) => unsafe {
+                            let requested = RECT {
+                                left: x,
+                                top: y,
+                                right: x.saturating_add(width as i32),
+                                bottom: y.saturating_add(height as i32),
+                            };
+                            let monitor = MonitorFromRect(&requested, MONITOR_DEFAULTTONEAREST);
+                            if monitor.is_null() {
+                                log::warn!(
+                                    "[test-window] MonitorFromRect returned null for requested rect ({}, {}) {}x{}",
+                                    x,
+                                    y,
+                                    width,
+                                    height
+                                );
+                            } else {
+                                let mut monitor_info = MONITORINFO {
+                                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                                    rcMonitor: RECT {
+                                        left: 0,
+                                        top: 0,
+                                        right: 0,
+                                        bottom: 0,
+                                    },
+                                    rcWork: RECT {
+                                        left: 0,
+                                        top: 0,
+                                        right: 0,
+                                        bottom: 0,
+                                    },
+                                    dwFlags: 0,
+                                };
+                                if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
+                                    log::warn!(
+                                        "[test-window] GetMonitorInfoW failed for requested rect ({}, {}) {}x{}",
+                                        x,
+                                        y,
+                                        width,
+                                        height
+                                    );
+                                } else {
+                                    log::info!(
+                                        "[test-window] selected monitor rect=({}, {}) {}x{} work=({}, {}) {}x{} for requested rect ({}, {}) {}x{} maximized={}",
+                                        monitor_info.rcMonitor.left,
+                                        monitor_info.rcMonitor.top,
+                                        monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                                        monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                                        monitor_info.rcWork.left,
+                                        monitor_info.rcWork.top,
+                                        monitor_info.rcWork.right - monitor_info.rcWork.left,
+                                        monitor_info.rcWork.bottom - monitor_info.rcWork.top,
+                                        x,
+                                        y,
+                                        width,
+                                        height,
+                                        geo.maximized
+                                    );
+                                }
+                            }
+
+                            if IsZoomed(hwnd.0 as _) != 0 || geo.maximized {
+                                ShowWindow(hwnd.0 as _, SW_RESTORE);
+                            }
+                            let ok = SetWindowPos(
+                                hwnd.0 as _,
+                                std::ptr::null_mut(),
+                                x,
+                                y,
+                                width as i32,
+                                height as i32,
+                                SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            );
+                            if ok == 0 {
+                                log::warn!("[test-window] native SetWindowPos failed");
+                            }
+                            if geo.maximized {
+                                let mut placement = WINDOWPLACEMENT {
+                                    length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                                    flags: 0,
+                                    showCmd: SW_SHOWMAXIMIZED as u32,
+                                    ptMinPosition: POINT { x: -1, y: -1 },
+                                    ptMaxPosition: POINT { x: -1, y: -1 },
+                                    rcNormalPosition: requested,
+                                };
+                                if GetWindowPlacement(hwnd.0 as _, &mut placement) == 0 {
+                                    log::warn!(
+                                        "[test-window] GetWindowPlacement failed before maximize"
+                                    );
+                                }
+                                placement.length =
+                                    std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+                                placement.showCmd = SW_SHOWMAXIMIZED as u32;
+                                placement.rcNormalPosition = requested;
+                                if SetWindowPlacement(hwnd.0 as _, &placement) == 0 {
+                                    log::warn!("[test-window] SetWindowPlacement maximize failed");
+                                    ShowWindow(hwnd.0 as _, SW_SHOWMAXIMIZED);
+                                }
+                            }
+                            return true;
+                        },
+                        Err(e) => {
+                            log::warn!("[test-window] failed to get HWND: {}", e);
+                        }
+                    }
+                }
+
+                if let Err(e) = win.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                    width,
+                    height,
+                })) {
+                    log::warn!("[test-window] failed to set physical size: {}", e);
+                }
+                if let Err(e) = win.set_position(tauri::Position::Physical(
+                    tauri::PhysicalPosition { x, y },
+                )) {
+                    log::warn!("[test-window] failed to set physical position: {}", e);
+                }
+                false
+            }
+
+            // Resolve main geometry: saved (physical) -> validate -> convert to logical -> fallback.
             // First-boot-after-upgrade users will have `main_geometry` seeded from legacy
             // `terminal_geometry` via the migration in `config::settings::load_settings`.
-            let main_geo = match &saved_settings.main_geometry {
-                Some(geo) if is_visible_on_monitors(geo, &monitors) => {
-                    let logical = physical_to_logical(geo, &monitors);
-                    log::info!(
-                        "[window-setup] main: saved physical ({}, {}) {}x{} → logical ({}, {}) {}x{}",
-                        geo.x, geo.y, geo.width, geo.height,
-                        logical.x, logical.y, logical.width, logical.height
-                    );
-                    logical
-                }
-                Some(geo) => {
-                    log::warn!(
-                        "[window-setup] main: saved geometry ({}, {}) {}x{} is OFF-SCREEN, falling back to centered default",
-                        geo.x, geo.y, geo.width, geo.height
-                    );
-                    default_main.clone()
-                }
-                None => {
-                    log::info!("[window-setup] main: no saved geometry, using centered default");
-                    default_main.clone()
+            let main_geo = if let Some(test_geo) = &test_window_placement {
+                let requested = config::settings::WindowGeometry {
+                    x: test_geo.x,
+                    y: test_geo.y,
+                    width: test_geo.width,
+                    height: test_geo.height,
+                };
+                let logical = physical_to_logical(&requested, &monitors);
+                log::info!(
+                    "[test-window] requested physical ({}, {}) {}x{} maximized={} -> logical ({}, {}) {}x{}",
+                    requested.x,
+                    requested.y,
+                    requested.width,
+                    requested.height,
+                    test_geo.maximized,
+                    logical.x,
+                    logical.y,
+                    logical.width,
+                    logical.height
+                );
+                logical
+            } else {
+                match &saved_settings.main_geometry {
+                    Some(geo) if is_visible_on_monitors(geo, &monitors) => {
+                        let logical = physical_to_logical(geo, &monitors);
+                        log::info!(
+                            "[window-setup] main: saved physical ({}, {}) {}x{} -> logical ({}, {}) {}x{}",
+                            geo.x, geo.y, geo.width, geo.height,
+                            logical.x, logical.y, logical.width, logical.height
+                        );
+                        logical
+                    }
+                    Some(geo) => {
+                        log::warn!(
+                            "[window-setup] main: saved geometry ({}, {}) {}x{} is off-screen, falling back to centered default",
+                            geo.x, geo.y, geo.width, geo.height
+                        );
+                        default_main.clone()
+                    }
+                    None => {
+                        log::info!("[window-setup] main: no saved geometry, using centered default");
+                        default_main.clone()
+                    }
                 }
             };
 
@@ -681,6 +876,16 @@ pub fn run() {
             .inner_size(main_geo.width, main_geo.height)
             .position(main_geo.x, main_geo.y)
             .build()?;
+
+            if let Some(test_geo) = &test_window_placement {
+                let native_handled = apply_test_window_placement(&main_win, test_geo);
+                if test_geo.maximized && !native_handled {
+                    if let Err(e) = main_win.maximize() {
+                        log::warn!("[test-window] failed to maximize main window: {}", e);
+                    }
+                }
+                log_main_window_info(&main_win);
+            }
 
             if saved_settings.main_always_on_top {
                 let _ = main_win.set_always_on_top(true);
