@@ -564,6 +564,8 @@ const ProjectPanel: Component = () => {
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const repoBadgeTestId = (label: string, index: number) =>
             `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
+          const isError = () => session()?.trustStatus === "untrusted";
+          const isWarning = () => !isError() && session()?.waitingForInput === true && session()?.startupWaitDetected === true;
           const liveAgentLabel = () => {
             const s = session();
             if (!s) return null;
@@ -643,7 +645,11 @@ const ProjectPanel: Component = () => {
           return (
             <div
               class="replica-item"
-              classList={{ active: session()?.id === sessionsStore.activeId }}
+              classList={{
+                active: session()?.id === sessionsStore.activeId,
+                "startup-wait-error": isError(),
+                "startup-wait-warning": isWarning()
+              }}
               data-ac-testid={rowTestId()}
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
@@ -657,7 +663,15 @@ const ProjectPanel: Component = () => {
                 <Show when={taskTitle}>
                   <span class="coord-task-title" title={taskTitle ?? undefined}>{taskTitle}</span>
                 </Show>
-                <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
+                <span class="replica-item-name">
+                  <Show when={isError()}>
+                    <span aria-label="Untrusted Error" class="session-item-trust-icon">🔴</span>
+                  </Show>
+                  <Show when={isWarning()}>
+                    <span aria-label="Startup Wait Warning" class="session-item-trust-icon">⚠️</span>
+                  </Show>
+                  {replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}
+                </span>
                 <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
                   <Show when={runningPeers && runningPeers()!.length > 0}>
                     <For each={runningPeers!()}>

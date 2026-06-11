@@ -4787,20 +4787,39 @@ html.light-theme .onboarding-card.selected {
   color: var(--sidebar-fg-dim);
 }
 
-/* Startup Wait UI (Trust Preflight) */
-html .session-item.startup-wait-warning {
+/* Startup Wait UI (Trust Preflight) - High Specificity to override all themes without !important */
+html[data-sidebar-style] body #root .session-item.startup-wait-warning,
+html[data-sidebar-style] body #root .session-item.startup-wait-warning.active,
+html[data-sidebar-style] body #root .replica-item.startup-wait-warning,
+html[data-sidebar-style] body #root .replica-item.startup-wait-warning.active,
+html[data-sidebar-style] body #root .coord-quick-access .replica-item.startup-wait-warning,
+html[data-sidebar-style] body #root .coord-quick-access .replica-item.startup-wait-warning.active:has(.ac-discovery-badge.coord) {
   background-color: rgba(255, 196, 0, 0.15);
 }
-html .session-item.startup-wait-warning:hover {
+
+html[data-sidebar-style] body #root .session-item.startup-wait-warning:hover,
+html[data-sidebar-style] body #root .replica-item.startup-wait-warning:hover,
+html[data-sidebar-style] body #root .coord-quick-access .replica-item.startup-wait-warning:hover,
+html[data-sidebar-style] body #root .coord-quick-access .replica-item.startup-wait-warning.active:hover:has(.ac-discovery-badge.coord) {
   background-color: rgba(255, 196, 0, 0.25);
 }
-html .session-item.startup-wait-error {
+
+html[data-sidebar-style] body #root .session-item.startup-wait-error,
+html[data-sidebar-style] body #root .session-item.startup-wait-error.active,
+html[data-sidebar-style] body #root .replica-item.startup-wait-error,
+html[data-sidebar-style] body #root .replica-item.startup-wait-error.active,
+html[data-sidebar-style] body #root .coord-quick-access .replica-item.startup-wait-error,
+html[data-sidebar-style] body #root .coord-quick-access .replica-item.startup-wait-error.active:has(.ac-discovery-badge.coord) {
   background-color: rgba(239, 68, 68, 0.15);
 }
-html .session-item.startup-wait-error:hover {
+
+html[data-sidebar-style] body #root .session-item.startup-wait-error:hover,
+html[data-sidebar-style] body #root .replica-item.startup-wait-error:hover,
+html[data-sidebar-style] body #root .coord-quick-access .replica-item.startup-wait-error:hover,
+html[data-sidebar-style] body #root .coord-quick-access .replica-item.startup-wait-error.active:hover:has(.ac-discovery-badge.coord) {
   background-color: rgba(239, 68, 68, 0.25);
 }
-.session-item-trust-icon {
+  .session-item-trust-icon {
   margin-right: 4px;
   font-size: 10px;
   vertical-align: middle;
