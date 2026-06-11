@@ -3238,6 +3238,8 @@ mod tests {
             working_directory: cwd.into(),
             status,
             waiting_for_input,
+            trust_status: None,
+            startup_wait_detected: false,
             pending_review: false,
             last_prompt: None,
             agent_id: None,

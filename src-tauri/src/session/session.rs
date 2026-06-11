@@ -47,6 +47,12 @@ pub struct SessionRepo {
 pub struct Session {
     pub id: Uuid,
     pub name: String,
+    #[serde(skip)]
+    pub trust_status: Option<crate::config::workspace_trust::TrustStatus>,
+    #[serde(skip)]
+    pub startup_wait_detected: bool,
+    #[serde(skip)]
+    pub last_started_at: chrono::DateTime<chrono::Utc>,
     pub shell: String,
     pub shell_args: Vec<String>,
     /// Effective arg vector actually handed to portable-pty at spawn time,
@@ -167,6 +173,9 @@ pub(crate) fn read_workgroup_task_for_cwd(cwd: &str) -> Option<String> {
 pub struct SessionInfo {
     pub id: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_status: Option<crate::config::workspace_trust::TrustStatus>,
+    pub startup_wait_detected: bool,
     pub shell: String,
     pub shell_args: Vec<String>,
     /// See `Session::effective_shell_args`. `None` means "not yet registered"
@@ -213,6 +222,8 @@ impl From<&Session> for SessionInfo {
         SessionInfo {
             id: s.id.to_string(),
             name: s.name.clone(),
+            trust_status: s.trust_status.clone(),
+            startup_wait_detected: s.startup_wait_detected,
             shell: s.shell.clone(),
             shell_args: s.shell_args.clone(),
             effective_shell_args: s.effective_shell_args.clone(),
@@ -245,6 +256,9 @@ mod tests {
         Session {
             id: Uuid::nil(),
             name: "Session 1".to_string(),
+            trust_status: None,
+            startup_wait_detected: false,
+            last_started_at: chrono::Utc::now(),
             shell: "claude-mb".to_string(),
             shell_args: vec!["--dangerously-skip-permissions".to_string()],
             effective_shell_args: effective,

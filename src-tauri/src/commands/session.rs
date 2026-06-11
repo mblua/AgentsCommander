@@ -877,6 +877,9 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // Preflight for Workspace Trust
     if let Some(agent) = agent_kind {
         let trust = crate::config::workspace_trust::is_workspace_trusted(std::path::Path::new(&cwd), &shell, &shell_args, agent).await;
+        
+        mgr.set_trust_status(id, trust.clone()).await;
+
         match trust {
             crate::config::workspace_trust::TrustStatus::Trusted => {
                 log::debug!("{:?} workspace trust verified for {}", agent, cwd);

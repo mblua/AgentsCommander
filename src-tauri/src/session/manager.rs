@@ -58,6 +58,7 @@ impl SessionManager {
             shell_args,
             effective_shell_args: None,
             created_at: chrono::Utc::now(),
+            last_started_at: chrono::Utc::now(),
             working_directory,
             status: SessionStatus::Running,
             waiting_for_input: false,
@@ -70,6 +71,8 @@ impl SessionManager {
             is_root_agent: false,
             git_repos_gen: 0,
             token: Uuid::new_v4(),
+            trust_status: None,
+            startup_wait_detected: false,
             agent_kind: None,
             telegram_bot_id: None,
             was_detached: false,
@@ -306,6 +309,10 @@ impl SessionManager {
             if matches!(s.status, SessionStatus::Running) {
                 s.status = SessionStatus::Idle;
             }
+            let age_secs = chrono::Utc::now().signed_duration_since(s.last_started_at).num_seconds();
+            if age_secs <= 5 {
+                s.startup_wait_detected = true;
+            }
         }
     }
 
@@ -319,9 +326,17 @@ impl SessionManager {
                 s.waiting_for_input
             );
             s.waiting_for_input = false;
+            s.startup_wait_detected = false;
             if matches!(s.status, SessionStatus::Idle) {
                 s.status = SessionStatus::Running;
             }
+        }
+    }
+
+    pub async fn set_trust_status(&self, id: Uuid, status: crate::config::workspace_trust::TrustStatus) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.trust_status = Some(status);
         }
     }
 
@@ -820,6 +835,35 @@ mod tests {
     /// auto-activates the first session (status `Active`), and `mark_idle`
     /// only transitions `Running → Idle` — so demote via `clear_active` first.
     /// Without that step the status assertion below would be vacuous.
+    #[tokio::test]
+    async fn mark_idle_sets_startup_wait_detected_if_within_threshold() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                "C:\\proj".into(),
+                None,
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+        
+        // At creation, last_started_at is now.
+        mgr.mark_idle(session.id).await;
+        
+        let after = mgr.get_session(session.id).await.unwrap();
+        assert!(after.waiting_for_input);
+        assert!(after.startup_wait_detected, "startup_wait_detected should be true when marked idle within 5 seconds");
+        
+        mgr.mark_busy(session.id).await;
+        let after_busy = mgr.get_session(session.id).await.unwrap();
+        assert!(!after_busy.waiting_for_input);
+        assert!(!after_busy.startup_wait_detected, "startup_wait_detected should be reset by mark_busy");
+    }
+
     #[tokio::test]
     async fn mark_idle_sets_waiting_for_input_and_running_to_idle() {
         let mgr = SessionManager::new();

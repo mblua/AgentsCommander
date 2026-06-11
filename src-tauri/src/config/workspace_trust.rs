@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 use crate::session::profile::CodingAgentKind;
 
-#[derive(Debug, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TrustStatus {
     Trusted,
     Untrusted,

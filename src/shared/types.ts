@@ -24,6 +24,8 @@ export interface Session {
   isRootAgent: boolean;
   token: string;
   agentKind: CodingAgentKind | null;
+  trustStatus?: "trusted" | "untrusted" | "unknown" | null;
+  startupWaitDetected: boolean;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
