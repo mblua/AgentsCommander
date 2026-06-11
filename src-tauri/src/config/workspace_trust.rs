@@ -181,13 +181,19 @@ async fn check_codex_trust(cwd: &Path) -> TrustStatus {
         None => return TrustStatus::Unknown,
     };
 
+    evaluate_codex_trust_from_projects(cwd, projects)
+}
+
+fn evaluate_codex_trust_from_projects(cwd: &Path, projects: &toml::map::Map<String, toml::Value>) -> TrustStatus {
     // Find the longest matching project_path for correct path specificity
     let mut best_match: Option<(&str, &toml::Value)> = None;
     let mut longest_len = 0;
 
     for (project_path_str, project_config) in projects {
         let project_path = Path::new(project_path_str);
-        if path_starts_with_case_insensitive_windows(cwd, project_path) {
+        if path_starts_with_case_insensitive_windows(cwd, project_path)
+            && project_config.get("trust_level").is_some()
+        {
             let len = normalize_path(project_path).components().count();
             if len > longest_len {
                 longest_len = len;
@@ -310,6 +316,75 @@ mod tests {
         });
         assert_eq!(
             evaluate_claude_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects_json_child_no_key3.as_object().unwrap()),
+            TrustStatus::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn test_codex_trust_specificity() {
+        use toml::toml;
+
+        let config_toml = toml! {
+            [projects]
+            "C:\\Users\\Test\\repo" = { trust_level = "untrusted" }
+            "C:\\Users\\Test\\repo\\child" = { trust_level = "trusted" }
+        };
+        let projects = config_toml.get("projects").unwrap().as_table().unwrap();
+
+        // parent untrusted + child trusted => Trusted for child
+        assert_eq!(
+            evaluate_codex_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects),
+            TrustStatus::Trusted
+        );
+
+        // And for the parent in the first case, it should be Untrusted
+        assert_eq!(
+            evaluate_codex_trust_from_projects(Path::new("C:\\Users\\Test\\repo"), projects),
+            TrustStatus::Untrusted
+        );
+
+        // child untrusted + parent trusted => Untrusted for child
+        let config_toml_inv = toml! {
+            [projects]
+            "C:\\Users\\Test\\repo" = { trust_level = "trusted" }
+            "C:\\Users\\Test\\repo\\child" = { trust_level = "untrusted" }
+        };
+        let projects_inv = config_toml_inv.get("projects").unwrap().as_table().unwrap();
+
+        assert_eq!(
+            evaluate_codex_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects_inv),
+            TrustStatus::Untrusted
+        );
+
+        // parent trusted + child matching without trust_level => Trusted by parent inheritance
+        let config_toml_child_no_key1 = toml! {
+            [projects]
+            "C:\\Users\\Test\\repo" = { trust_level = "trusted" }
+            "C:\\Users\\Test\\repo\\child" = { theme = "dark" }
+        };
+        assert_eq!(
+            evaluate_codex_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), config_toml_child_no_key1.get("projects").unwrap().as_table().unwrap()),
+            TrustStatus::Trusted
+        );
+
+        // parent untrusted + child matching without key => Untrusted by parent
+        let config_toml_child_no_key2 = toml! {
+            [projects]
+            "C:\\Users\\Test\\repo" = { trust_level = "untrusted" }
+            "C:\\Users\\Test\\repo\\child" = { theme = "dark" }
+        };
+        assert_eq!(
+            evaluate_codex_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), config_toml_child_no_key2.get("projects").unwrap().as_table().unwrap()),
+            TrustStatus::Untrusted
+        );
+
+        // only child matching without key and no parent with key => Unknown
+        let config_toml_child_no_key3 = toml! {
+            [projects]
+            "C:\\Users\\Test\\repo\\child" = { theme = "dark" }
+        };
+        assert_eq!(
+            evaluate_codex_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), config_toml_child_no_key3.get("projects").unwrap().as_table().unwrap()),
             TrustStatus::Unknown
         );
     }
