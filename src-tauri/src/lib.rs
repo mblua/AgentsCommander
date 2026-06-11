@@ -671,7 +671,7 @@ pub fn run(
             fn apply_test_window_placement(
                 win: &tauri::WebviewWindow,
                 geo: &crate::testability::window_placement::TestWindowPlacement,
-            ) {
+            ) -> bool {
                 let x = geo.x.round() as i32;
                 let y = geo.y.round() as i32;
                 let width = geo.width.round().max(1.0) as u32;
@@ -679,12 +679,82 @@ pub fn run(
 
                 #[cfg(target_os = "windows")]
                 {
+                    use windows_sys::Win32::Graphics::Gdi::{
+                        GetMonitorInfoW, MonitorFromRect, MONITORINFO,
+                        MONITOR_DEFAULTTONEAREST,
+                    };
+                    use windows_sys::Win32::Foundation::{POINT, RECT};
                     use windows_sys::Win32::UI::WindowsAndMessaging::{
-                        SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+                        GetWindowPlacement, IsZoomed, SetWindowPlacement, SetWindowPos,
+                        ShowWindow, WINDOWPLACEMENT, SWP_NOACTIVATE, SWP_NOZORDER,
+                        SWP_SHOWWINDOW, SW_RESTORE, SW_SHOWMAXIMIZED,
                     };
 
                     match win.hwnd() {
                         Ok(hwnd) => unsafe {
+                            let requested = RECT {
+                                left: x,
+                                top: y,
+                                right: x.saturating_add(width as i32),
+                                bottom: y.saturating_add(height as i32),
+                            };
+                            let monitor = MonitorFromRect(&requested, MONITOR_DEFAULTTONEAREST);
+                            if monitor.is_null() {
+                                log::warn!(
+                                    "[test-window] MonitorFromRect returned null for requested rect ({}, {}) {}x{}",
+                                    x,
+                                    y,
+                                    width,
+                                    height
+                                );
+                            } else {
+                                let mut monitor_info = MONITORINFO {
+                                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                                    rcMonitor: RECT {
+                                        left: 0,
+                                        top: 0,
+                                        right: 0,
+                                        bottom: 0,
+                                    },
+                                    rcWork: RECT {
+                                        left: 0,
+                                        top: 0,
+                                        right: 0,
+                                        bottom: 0,
+                                    },
+                                    dwFlags: 0,
+                                };
+                                if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
+                                    log::warn!(
+                                        "[test-window] GetMonitorInfoW failed for requested rect ({}, {}) {}x{}",
+                                        x,
+                                        y,
+                                        width,
+                                        height
+                                    );
+                                } else {
+                                    log::info!(
+                                        "[test-window] selected monitor rect=({}, {}) {}x{} work=({}, {}) {}x{} for requested rect ({}, {}) {}x{} maximized={}",
+                                        monitor_info.rcMonitor.left,
+                                        monitor_info.rcMonitor.top,
+                                        monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                                        monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                                        monitor_info.rcWork.left,
+                                        monitor_info.rcWork.top,
+                                        monitor_info.rcWork.right - monitor_info.rcWork.left,
+                                        monitor_info.rcWork.bottom - monitor_info.rcWork.top,
+                                        x,
+                                        y,
+                                        width,
+                                        height,
+                                        geo.maximized
+                                    );
+                                }
+                            }
+
+                            if IsZoomed(hwnd.0 as _) != 0 || geo.maximized {
+                                ShowWindow(hwnd.0 as _, SW_RESTORE);
+                            }
                             let ok = SetWindowPos(
                                 hwnd.0 as _,
                                 std::ptr::null_mut(),
@@ -697,7 +767,30 @@ pub fn run(
                             if ok == 0 {
                                 log::warn!("[test-window] native SetWindowPos failed");
                             }
-                            return;
+                            if geo.maximized {
+                                let mut placement = WINDOWPLACEMENT {
+                                    length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                                    flags: 0,
+                                    showCmd: SW_SHOWMAXIMIZED as u32,
+                                    ptMinPosition: POINT { x: -1, y: -1 },
+                                    ptMaxPosition: POINT { x: -1, y: -1 },
+                                    rcNormalPosition: requested,
+                                };
+                                if GetWindowPlacement(hwnd.0 as _, &mut placement) == 0 {
+                                    log::warn!(
+                                        "[test-window] GetWindowPlacement failed before maximize"
+                                    );
+                                }
+                                placement.length =
+                                    std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+                                placement.showCmd = SW_SHOWMAXIMIZED as u32;
+                                placement.rcNormalPosition = requested;
+                                if SetWindowPlacement(hwnd.0 as _, &placement) == 0 {
+                                    log::warn!("[test-window] SetWindowPlacement maximize failed");
+                                    ShowWindow(hwnd.0 as _, SW_SHOWMAXIMIZED);
+                                }
+                            }
+                            return true;
                         },
                         Err(e) => {
                             log::warn!("[test-window] failed to get HWND: {}", e);
@@ -716,6 +809,7 @@ pub fn run(
                 )) {
                     log::warn!("[test-window] failed to set physical position: {}", e);
                 }
+                false
             }
 
             // Resolve main geometry: saved (physical) -> validate -> convert to logical -> fallback.
@@ -784,8 +878,8 @@ pub fn run(
             .build()?;
 
             if let Some(test_geo) = &test_window_placement {
-                apply_test_window_placement(&main_win, test_geo);
-                if test_geo.maximized {
+                let native_handled = apply_test_window_placement(&main_win, test_geo);
+                if test_geo.maximized && !native_handled {
                     if let Err(e) = main_win.maximize() {
                         log::warn!("[test-window] failed to maximize main window: {}", e);
                     }
