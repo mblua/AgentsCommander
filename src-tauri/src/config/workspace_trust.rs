@@ -125,7 +125,9 @@ fn evaluate_claude_trust_from_projects(cwd: &Path, projects: &serde_json::Map<St
 
     for (project_path_str, project_data) in projects {
         let project_path = Path::new(project_path_str);
-        if path_starts_with_case_insensitive_windows(cwd, project_path) {
+        if path_starts_with_case_insensitive_windows(cwd, project_path)
+            && project_data.get("hasTrustDialogAccepted").is_some()
+        {
             let len = normalize_path(project_path).components().count();
             if len > longest_len {
                 longest_len = len;
@@ -280,6 +282,35 @@ mod tests {
         assert_eq!(
             evaluate_claude_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects_inv),
             TrustStatus::Untrusted
+        );
+
+        // parent trusted + child matching without hasTrustDialogAccepted => Trusted by parent inheritance
+        let projects_json_child_no_key1 = json!({
+            "C:\\Users\\Test\\repo": { "hasTrustDialogAccepted": true },
+            "C:\\Users\\Test\\repo\\child": { "theme": "dark" }
+        });
+        assert_eq!(
+            evaluate_claude_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects_json_child_no_key1.as_object().unwrap()),
+            TrustStatus::Trusted
+        );
+
+        // parent untrusted + child matching without key => Untrusted by parent
+        let projects_json_child_no_key2 = json!({
+            "C:\\Users\\Test\\repo": { "hasTrustDialogAccepted": false },
+            "C:\\Users\\Test\\repo\\child": { "theme": "dark" }
+        });
+        assert_eq!(
+            evaluate_claude_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects_json_child_no_key2.as_object().unwrap()),
+            TrustStatus::Untrusted
+        );
+
+        // only child matching without key and no parent with key => Unknown
+        let projects_json_child_no_key3 = json!({
+            "C:\\Users\\Test\\repo\\child": { "theme": "dark" }
+        });
+        assert_eq!(
+            evaluate_claude_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects_json_child_no_key3.as_object().unwrap()),
+            TrustStatus::Unknown
         );
     }
 }
