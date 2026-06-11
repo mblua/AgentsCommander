@@ -243,6 +243,9 @@ const SessionItem: Component<{
 
   const isInactive = () => props.session.id.startsWith("inactive-");
 
+  const isError = () => props.session.trustStatus === "untrusted";
+  const isWarning = () => !isError() && props.session.waitingForInput === true && props.session.startupWaitDetected === true;
+
   /** Derive short display name from workingDirectory.
    *  Project AC Root paths: "agent-name@origin-project" (e.g. "code-reviewer@phi_phibridge")
    *  Other paths: "parentFolder/name" (last 2 segments)
@@ -272,7 +275,15 @@ const SessionItem: Component<{
 
   return (
     <div
-      class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
+      class="session-item session-item-enter"
+      classList={{
+        "active": props.isActive,
+        "inactive-member": isInactive(),
+        "startup-wait-error": isError(),
+        "startup-wait-warning": isWarning()
+      }}
+      title={isError() ? "Error: Trust check failed" : isWarning() ? "Warning: Waiting for input" : undefined}
+      aria-label={isError() ? "Session Error" : isWarning() ? "Session Warning" : undefined}
       onClick={isInactive() ? undefined : handleClick}
       onContextMenu={isInactive() ? undefined : handleContextMenu}
     >
@@ -281,6 +292,12 @@ const SessionItem: Component<{
       />
       <div class="session-item-info">
         <div class="session-item-name" onDblClick={handleDoubleClick} title={props.session.workingDirectory}>
+          <Show when={isError()}>
+            <span aria-label="Untrusted Error" class="session-item-trust-icon">🔴</span>
+          </Show>
+          <Show when={isWarning()}>
+            <span aria-label="Startup Wait Warning" class="session-item-trust-icon">⚠️</span>
+          </Show>
           {displayName().includes("/") ? (
             <>
               <span class="name-prefix">{displayName().slice(0, displayName().lastIndexOf("/") + 1)}</span>

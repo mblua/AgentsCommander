@@ -23,6 +23,7 @@ function mkRoot(status: SessionStatus): Session {
     isRootAgent: true,
     token: "",
     agentKind: null,
+    startupWaitDetected: false,
   };
 }
 

@@ -57,6 +57,7 @@ function mkSession(id: string, status: SessionStatus, overrides: Partial<Session
     isRootAgent: false,
     token: "",
     agentKind: null,
+    startupWaitDetected: false,
     ...overrides,
   };
 }

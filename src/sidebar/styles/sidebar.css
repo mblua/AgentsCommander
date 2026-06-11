@@ -4786,3 +4786,22 @@ html.light-theme .onboarding-card.selected {
   font-size: var(--font-size-xs, 11px);
   color: var(--sidebar-fg-dim);
 }
+
+/* Startup Wait UI (Trust Preflight) */
+html .session-item.startup-wait-warning {
+  background-color: rgba(255, 196, 0, 0.15);
+}
+html .session-item.startup-wait-warning:hover {
+  background-color: rgba(255, 196, 0, 0.25);
+}
+html .session-item.startup-wait-error {
+  background-color: rgba(239, 68, 68, 0.15);
+}
+html .session-item.startup-wait-error:hover {
+  background-color: rgba(239, 68, 68, 0.25);
+}
+.session-item-trust-icon {
+  margin-right: 4px;
+  font-size: 10px;
+  vertical-align: middle;
+}

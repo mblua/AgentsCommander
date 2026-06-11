@@ -66,6 +66,7 @@ function makeInactiveEntry(name: string, path: string): Session {
     isRootAgent: false,
     token: "",
     agentKind: null,
+    startupWaitDetected: false,
   };
 }
 
