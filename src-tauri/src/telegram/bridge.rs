@@ -631,13 +631,13 @@ pub struct BridgeHandle {
     pub output_sender: mpsc::Sender<Vec<u8>>,
 }
 
-pub fn spawn_bridge(
+pub fn spawn_bridge<R: tauri::Runtime>(
     bot_token: String,
     chat_id: i64,
     session_id: Uuid,
     info: BridgeInfo,
     pty_mgr: Arc<Mutex<PtyManager>>,
-    app_handle: tauri::AppHandle,
+    app_handle: tauri::AppHandle<R>,
     reader: Option<SessionReaderKind>,
 ) -> BridgeHandle {
     let cancel = CancellationToken::new();
@@ -738,13 +738,13 @@ const STABILIZATION_MS: u64 = 800;
 const TICK_MS: u64 = 200;
 const FLUSH_DELAY_MS: u64 = 500;
 
-async fn output_task(
+async fn output_task<R: tauri::Runtime>(
     mut rx: mpsc::Receiver<Vec<u8>>,
     token: String,
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -864,13 +864,13 @@ async fn output_task(
 // Threads through the full bridge state on each flush; collapsing into a
 // struct would only move the fields, not reduce them.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn flush_buffer(
+pub(super) async fn flush_buffer<R: tauri::Runtime>(
     buffer: &mut String,
     client: &reqwest::Client,
     token: &str,
     chat_id: i64,
     session_id: &str,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     logger: &mut BridgeLogger,
     diag: &mut DiagLogger,
     skip_dedup: bool,
@@ -971,14 +971,14 @@ pub(super) fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
 
 // ── Poll task (Telegram -> PTY) ──────────────────────────────
 
-async fn poll_task(
+async fn poll_task<R: tauri::Runtime>(
     token: String,
     chat_id: i64,
     session_id: Uuid,
     session_id_str: String,
     _pty_mgr: Arc<Mutex<PtyManager>>,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))

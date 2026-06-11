@@ -77,8 +77,8 @@ pub(crate) fn derive_reader(
     }
 }
 
-pub(crate) async fn attach_telegram_bot_by_id(
-    app: &AppHandle,
+pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session_id: Uuid,
     bot_id: &str,
 ) -> Result<BridgeInfo, String> {

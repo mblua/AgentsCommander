@@ -279,7 +279,7 @@ impl PtyManager {
     // PTY spawn requires the full set of session knobs at once; splitting into a
     // builder would just add ceremony for no reuse.
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn(
+    pub fn spawn<R: tauri::Runtime>(
         &self,
         id: Uuid,
         cmd: &str,
@@ -289,7 +289,7 @@ impl PtyManager {
         rows: u16,
         extra_env: &[(String, String)],
         idle_tuning: IdleTuning,
-        app_handle: AppHandle,
+        app_handle: AppHandle<R>,
     ) -> Result<(), AppError> {
         let pty_system = native_pty_system();
 

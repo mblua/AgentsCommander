@@ -33,8 +33,8 @@ pub(crate) fn needs_explicit_enter(shell: &str) -> bool {
 /// This is the ONLY function that should be used for text-block injection.
 /// Direct keystrokes from xterm.js (single chars, Ctrl sequences) bypass this
 /// and call PtyManager::write() directly via the pty_write Tauri command.
-pub async fn inject_text_into_session(
-    app: &tauri::AppHandle,
+pub async fn inject_text_into_session<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     session_id: Uuid,
     text: &str,
 ) -> Result<(), String> {

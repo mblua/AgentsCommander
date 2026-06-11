@@ -30,12 +30,12 @@ impl TelegramBridgeManager {
         }
     }
 
-    pub fn attach(
+    pub fn attach<R: tauri::Runtime>(
         &mut self,
         session_id: Uuid,
         bot: &TelegramBotConfig,
         pty_mgr: Arc<Mutex<PtyManager>>,
-        app_handle: tauri::AppHandle,
+        app_handle: tauri::AppHandle<R>,
         reader: Option<SessionReaderKind>,
     ) -> Result<BridgeInfo, AppError> {
         // Exclusivity: one bot can only be attached to one session

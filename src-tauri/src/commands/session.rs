@@ -37,8 +37,8 @@ fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRoot
     }
 }
 
-async fn rollback_pre_created_session(
-    app: &AppHandle,
+async fn rollback_pre_created_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
     id: Uuid,
@@ -688,8 +688,8 @@ fn build_title_prompt_appendage(_cwd: &str) -> Result<Option<String>, String> {
 ///   `Some(false)`).
 // Shared by Tauri command + restore path; collapsing args would force a context struct.
 #[allow(clippy::too_many_arguments)]
-pub async fn create_session_inner(
-    app: &AppHandle,
+pub async fn create_session_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
     shell: String,
@@ -831,7 +831,11 @@ pub async fn create_session_inner(
     }
 
     let materialized_context_path = if let Some(target) = context_target {
-        match crate::config::session_context::materialize_agent_context_file(&cwd, target, is_coordinator) {
+        match crate::config::session_context::materialize_agent_context_file(
+            &cwd,
+            target,
+            is_coordinator,
+        ) {
             Ok(context) => context,
             Err(e) => {
                 log::error!("Replica context validation failed: {}", e);
@@ -920,10 +924,10 @@ pub async fn create_session_inner(
     }
     if agent_id.is_some() && is_coordinator {
         let auto_title_enabled = false; /*
-            let settings_state = app.state::<SettingsState>();
-            let cfg = settings_state.read().await;
-            cfg.auto_generate_task_title
-        };*/
+                                            let settings_state = app.state::<SettingsState>();
+                                            let cfg = settings_state.read().await;
+                                            cfg.auto_generate_task_title
+                                        };*/
 
         if auto_title_enabled {
             let app_clone = app.clone();
@@ -1129,8 +1133,8 @@ pub async fn create_session(
     Ok(info)
 }
 
-pub(crate) async fn attach_persisted_telegram_if_configured(
-    app: &AppHandle,
+pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session_id: Uuid,
     bot_id: Option<&str>,
 ) {
@@ -1278,16 +1282,22 @@ pub(crate) async fn attach_local_config_telegram_if_any(
 
 /// Core session destruction logic shared by the Tauri command and the MailboxPoller.
 /// Kills PTY, detaches Telegram bridge, removes from SessionManager, persists, and emits events.
-pub async fn destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), String> {
+pub async fn destroy_session_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    uuid: Uuid,
+) -> Result<(), String> {
     destroy_session_inner_with_options(app, uuid, false).await
 }
 
-pub(crate) async fn force_destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), String> {
+pub(crate) async fn force_destroy_session_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    uuid: Uuid,
+) -> Result<(), String> {
     destroy_session_inner_with_options(app, uuid, true).await
 }
 
-async fn destroy_session_inner_with_options(
-    app: &AppHandle,
+async fn destroy_session_inner_with_options<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     uuid: Uuid,
     force_destroy_root: bool,
 ) -> Result<(), String> {

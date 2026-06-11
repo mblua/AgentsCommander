@@ -35,7 +35,7 @@ const FILE_MTIME_GRACE_SECS: i64 = 5 * 60;
 const DAY_WALK_DEPTH: i64 = 7;
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_watch_task(
+pub fn spawn_watch_task<R: tauri::Runtime>(
     search_root: PathBuf,
     expected_cwd: String,
     attach_time: DateTime<Utc>,
@@ -43,7 +43,7 @@ pub fn spawn_watch_task(
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         watch_loop(
@@ -69,7 +69,9 @@ fn codex_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>
     let body = extract_agent_message(line)?;
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts_str = v.get("timestamp")?.as_str()?;
-    let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
+    let ts = DateTime::parse_from_rfc3339(ts_str)
+        .ok()?
+        .with_timezone(&Utc);
     Some((ts, None, body))
 }
 
@@ -108,7 +110,10 @@ fn read_first_line(path: &Path) -> Option<String> {
     let mut buf = vec![0u8; 64 * 1024];
     let n = f.read(&mut buf).ok()?;
     let bytes = &buf[..n];
-    let end = bytes.iter().position(|&b| b == b'\n').unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(bytes.len());
     let line = String::from_utf8_lossy(&bytes[..end]).into_owned();
     Some(line)
 }
@@ -200,7 +205,7 @@ fn find_session_file(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn watch_loop(
+async fn watch_loop<R: tauri::Runtime>(
     search_root: PathBuf,
     expected_cwd: String,
     attach_time: DateTime<Utc>,
@@ -208,7 +213,7 @@ async fn watch_loop(
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -365,9 +370,17 @@ async fn watch_loop(
     }
     if !buffer.is_empty() {
         flush_buffer(
-            &mut buffer, &client, &token, chat_id,
-            &session_id, &app, &mut logger, &mut diag, true,
-        ).await;
+            &mut buffer,
+            &client,
+            &token,
+            chat_id,
+            &session_id,
+            &app,
+            &mut logger,
+            &mut diag,
+            true,
+        )
+        .await;
     }
 }
 
@@ -377,8 +390,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
 
-    const SESSION_META_TEMPLATE: &str =
-        r#"{"timestamp":"{ts}","type":"session_meta","payload":{"id":"{id}","cwd":"{cwd}","timestamp":"{ts}"}}"#;
+    const SESSION_META_TEMPLATE: &str = r#"{"timestamp":"{ts}","type":"session_meta","payload":{"id":"{id}","cwd":"{cwd}","timestamp":"{ts}"}}"#;
 
     fn write_rollout(dir: &Path, name: &str, cwd: &str, ts: &str) -> PathBuf {
         fs::create_dir_all(dir).unwrap();
@@ -397,12 +409,21 @@ mod tests {
     #[test]
     fn extract_agent_message_from_real_event() {
         let line = r#"{"timestamp":"2026-05-19T05:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"  Hello from Codex.  ","phase":"commentary"}}"#;
-        assert_eq!(extract_agent_message(line), Some("Hello from Codex.".into()));
+        assert_eq!(
+            extract_agent_message(line),
+            Some("Hello from Codex.".into())
+        );
     }
 
     #[test]
     fn extract_agent_message_skips_non_event_msg_types() {
-        for kind in ["session_meta", "turn_context", "task_started", "response_item", "token_count"] {
+        for kind in [
+            "session_meta",
+            "turn_context",
+            "task_started",
+            "response_item",
+            "token_count",
+        ] {
             let line = format!(r#"{{"type":"{}","payload":{{}}}}"#, kind);
             assert_eq!(extract_agent_message(&line), None, "kind={}", kind);
         }
@@ -522,19 +543,10 @@ mod tests {
         // used for tie-breaking. Sleep 150 ms between writes so the two
         // candidates have definitely-distinct mtimes on Windows NTFS.
         let ts = now.to_rfc3339();
-        let _old = write_rollout(
-            &today,
-            "rollout-old.jsonl",
-            &cwd.replace('\\', "\\\\"),
-            &ts,
-        );
+        let _old = write_rollout(&today, "rollout-old.jsonl", &cwd.replace('\\', "\\\\"), &ts);
         std::thread::sleep(std::time::Duration::from_millis(150));
-        let expected_new = write_rollout(
-            &today,
-            "rollout-new.jsonl",
-            &cwd.replace('\\', "\\\\"),
-            &ts,
-        );
+        let expected_new =
+            write_rollout(&today, "rollout-new.jsonl", &cwd.replace('\\', "\\\\"), &ts);
 
         let found = find_session_file(root, "c:\\users\\foo\\bar", now);
         assert_eq!(found, Some(expected_new));

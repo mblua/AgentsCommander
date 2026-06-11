@@ -27,13 +27,13 @@ const FLUSH_DELAY_MS: u64 = 500;
 /// `project_dir` must be the already-resolved Claude `projects/<mangled-cwd>`
 /// directory (callers resolve via `commands::session::resolve_claude_projects_dir`
 /// so wrapper-driven `CLAUDE_CONFIG_DIR` overrides like `claude-mb` are honored).
-pub fn spawn_watch_task(
+pub fn spawn_watch_task<R: tauri::Runtime>(
     project_dir: PathBuf,
     bot_token: String,
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         watch_loop(
@@ -57,7 +57,9 @@ fn claude_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String
     let body = extract_assistant_text(line)?;
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts_str = v.get("timestamp")?.as_str()?;
-    let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
+    let ts = DateTime::parse_from_rfc3339(ts_str)
+        .ok()?
+        .with_timezone(&Utc);
     Some((ts, None, body))
 }
 
@@ -108,13 +110,13 @@ fn extract_assistant_text(line: &str) -> Option<String> {
     }
 }
 
-async fn watch_loop(
+async fn watch_loop<R: tauri::Runtime>(
     project_dir: PathBuf,
     token: String,
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))

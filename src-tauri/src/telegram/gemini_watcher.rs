@@ -27,7 +27,7 @@ const FLUSH_DELAY_MS: u64 = 250;
 const FLUSH_BYTES: usize = 1000;
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_watch_task(
+pub fn spawn_watch_task<R: tauri::Runtime>(
     gemini_home: PathBuf,
     cwd: String,
     attach_time: DateTime<Utc>,
@@ -35,7 +35,7 @@ pub fn spawn_watch_task(
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         watch_loop(
@@ -66,7 +66,9 @@ fn gemini_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String
     let (id, body) = extract_gemini_message(line)?;
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts_str = v.get("timestamp")?.as_str()?;
-    let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
+    let ts = DateTime::parse_from_rfc3339(ts_str)
+        .ok()?
+        .with_timezone(&Utc);
     Some((ts, Some(id), body))
 }
 
@@ -145,7 +147,7 @@ fn dir_has_extension(chats_dir: &Path, ext_without_dot: &str) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn watch_loop(
+async fn watch_loop<R: tauri::Runtime>(
     gemini_home: PathBuf,
     cwd: String,
     attach_time: DateTime<Utc>,
@@ -153,7 +155,7 @@ async fn watch_loop(
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -382,9 +384,17 @@ async fn watch_loop(
     }
     if !buffer.is_empty() {
         flush_buffer(
-            &mut buffer, &client, &token, chat_id,
-            &session_id, &app, &mut logger, &mut diag, true,
-        ).await;
+            &mut buffer,
+            &client,
+            &token,
+            chat_id,
+            &session_id,
+            &app,
+            &mut logger,
+            &mut diag,
+            true,
+        )
+        .await;
     }
 }
 
@@ -583,7 +593,11 @@ mod tests {
         // gemini re-appended (same id) — must be deduped.
         writeln!(f, r#"{{"id":"g1","timestamp":"2026-05-19T00:00:05Z","type":"gemini","content":"Hello world"}}"#).unwrap();
         // $rewindTo record.
-        writeln!(f, r#"{{"$rewindTo":"g1","timestamp":"2026-05-19T00:00:06Z"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"$rewindTo":"g1","timestamp":"2026-05-19T00:00:06Z"}}"#
+        )
+        .unwrap();
         drop(f);
 
         let mut offset: u64 = 0;
