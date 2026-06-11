@@ -116,15 +116,30 @@ async fn check_claude_trust(cwd: &Path, shell: &str, shell_args: &[String]) -> T
         None => return TrustStatus::Unknown,
     };
 
+    evaluate_claude_trust_from_projects(cwd, projects)
+}
+
+fn evaluate_claude_trust_from_projects(cwd: &Path, projects: &serde_json::Map<String, serde_json::Value>) -> TrustStatus {
+    let mut best_match: Option<(&str, &serde_json::Value)> = None;
+    let mut longest_len = 0;
+
     for (project_path_str, project_data) in projects {
         let project_path = Path::new(project_path_str);
         if path_starts_with_case_insensitive_windows(cwd, project_path) {
-            if let Some(trusted) = project_data.get("hasTrustDialogAccepted") {
-                if trusted.as_bool() == Some(true) {
-                    return TrustStatus::Trusted;
-                } else {
-                    return TrustStatus::Untrusted;
-                }
+            let len = normalize_path(project_path).components().count();
+            if len > longest_len {
+                longest_len = len;
+                best_match = Some((project_path_str.as_str(), project_data));
+            }
+        }
+    }
+
+    if let Some((_, project_data)) = best_match {
+        if let Some(trusted) = project_data.get("hasTrustDialogAccepted") {
+            if trusted.as_bool() == Some(true) {
+                return TrustStatus::Trusted;
+            } else {
+                return TrustStatus::Untrusted;
             }
         }
     }
@@ -231,5 +246,40 @@ mod tests {
         // Trailing slash matching
         let base_with_slash = Path::new("C:\\Users\\Test\\repo\\");
         assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo"), base_with_slash));
+    }
+
+    #[test]
+    fn test_claude_trust_specificity() {
+        use serde_json::json;
+        
+        let projects_json = json!({
+            "C:\\Users\\Test\\repo": { "hasTrustDialogAccepted": false },
+            "C:\\Users\\Test\\repo\\child": { "hasTrustDialogAccepted": true }
+        });
+        let projects = projects_json.as_object().unwrap();
+
+        // parent untrusted + child trusted => Trusted for child
+        assert_eq!(
+            evaluate_claude_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects),
+            TrustStatus::Trusted
+        );
+
+        // And for the parent in the first case, it should be Untrusted
+        assert_eq!(
+            evaluate_claude_trust_from_projects(Path::new("C:\\Users\\Test\\repo"), projects),
+            TrustStatus::Untrusted
+        );
+
+        // child untrusted + parent trusted => Untrusted for child
+        let projects_json_inv = json!({
+            "C:\\Users\\Test\\repo": { "hasTrustDialogAccepted": true },
+            "C:\\Users\\Test\\repo\\child": { "hasTrustDialogAccepted": false }
+        });
+        let projects_inv = projects_json_inv.as_object().unwrap();
+
+        assert_eq!(
+            evaluate_claude_trust_from_projects(Path::new("C:\\Users\\Test\\repo\\child"), projects_inv),
+            TrustStatus::Untrusted
+        );
     }
 }
