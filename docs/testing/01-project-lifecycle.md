@@ -6,9 +6,7 @@ Use a clearly disposable project folder for create-flow cases, for example `ac-r
 
 Visual preconditions from `README.md#visual-test-environment` apply to every case in this file. PRJ-001 captures them explicitly; later cases inherit them.
 
-Current mode: use the available wg-specific app and manual or external automation placement.
-
-Future mode after #475: use `agentscommander_testeable.exe` deterministic placement and the planned safe reset before PRJ cases that require clean state. Do not assume that binary or reset command exists until #475 is implemented.
+Current deterministic mode: use `agentscommander_testeable.exe` with explicit placement and `window-info` verification. Run `agentscommander_testeable.exe test-reset --confirm-testeable` before PRJ cases that require clean disposable state, and only when the testable GUI is not active.
 
 ## Execution Log
 

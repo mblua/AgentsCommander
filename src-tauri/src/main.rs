@@ -50,11 +50,27 @@ fn main() {
                     }
                     None => {
                         // GUI mode (with or without --app)
+                        let placement = match agentscommander_lib::testability::window_placement::resolve_from_cli_or_env(
+                            cli.window_x,
+                            cli.window_y,
+                            cli.window_width,
+                            cli.window_height,
+                            cli.window_maximized,
+                        ) {
+                            Ok(placement) => placement,
+                            Err(e) => {
+                                agentscommander_lib::cli::attach_parent_console();
+                                eprintln!("Error: {}", e);
+                                agentscommander_lib::cli::flush_outputs();
+                                std::process::exit(1);
+                            }
+                        };
+
                         if !try_acquire_single_instance() {
-                            // Another GUI instance is already running — exit silently
+                            // Another GUI instance is already running; exit silently
                             std::process::exit(0);
                         }
-                        agentscommander_lib::run();
+                        agentscommander_lib::run(placement);
                     }
                 },
                 Err(e) => {

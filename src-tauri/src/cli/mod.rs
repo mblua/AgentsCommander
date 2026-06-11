@@ -85,6 +85,26 @@ pub struct Cli {
     #[arg(long)]
     pub app: bool,
 
+    /// Test-only GUI placement: virtual-desktop X coordinate in physical pixels
+    #[arg(long, allow_hyphen_values = true)]
+    pub window_x: Option<f64>,
+
+    /// Test-only GUI placement: virtual-desktop Y coordinate in physical pixels
+    #[arg(long, allow_hyphen_values = true)]
+    pub window_y: Option<f64>,
+
+    /// Test-only GUI placement: window width in physical pixels
+    #[arg(long, allow_hyphen_values = true)]
+    pub window_width: Option<f64>,
+
+    /// Test-only GUI placement: window height in physical pixels
+    #[arg(long, allow_hyphen_values = true)]
+    pub window_height: Option<f64>,
+
+    /// Test-only GUI placement: maximize after applying the requested rectangle
+    #[arg(long)]
+    pub window_maximized: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -125,6 +145,10 @@ pub enum Commands {
     Team(team::TeamArgs),
     /// Execute commands through the policy harness
     Harness(harness::HarnessArgs),
+    /// Delete only the disposable testable app state
+    TestReset(crate::testability::reset::TestResetArgs),
+    /// Inspect running AgentsCommander GUI windows for this binary identity
+    WindowInfo(crate::testability::window_info::WindowInfoArgs),
 }
 
 /// Attach to parent console (or allocate a new one) ONLY if both stdout and stderr
@@ -247,6 +271,8 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::Workgroup(args) => workgroup::execute(args),
         Commands::Team(args) => team::execute(args),
         Commands::Harness(args) => harness::execute(args),
+        Commands::TestReset(args) => crate::testability::reset::execute(args),
+        Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
     };
 
     flush_outputs();

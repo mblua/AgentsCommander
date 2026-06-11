@@ -8,6 +8,7 @@ pub mod pty;
 pub mod session;
 pub mod shutdown;
 pub mod telegram;
+pub mod testability;
 pub mod voice;
 pub mod web;
 
@@ -157,7 +158,9 @@ pub(crate) fn should_auto_create_root_agent_on_first_restore(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(
+    test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
+) {
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
@@ -640,29 +643,77 @@ pub fn run() {
                 height: default_h,
             };
 
-            // Resolve main geometry: saved (physical) → validate → convert to logical → fallback.
+            fn log_main_window_info(win: &tauri::WebviewWindow) {
+                let pid = std::process::id();
+                let pos = win.outer_position().ok();
+                let size = win.outer_size().ok();
+                let maximized = win.is_maximized().ok();
+                log::info!(
+                    "[test-window] actual pid={} position={:?} size={:?} maximized={:?}",
+                    pid,
+                    pos,
+                    size,
+                    maximized
+                );
+                println!(
+                    "{{\"event\":\"testWindowInfo\",\"pid\":{},\"position\":{},\"size\":{},\"maximized\":{}}}",
+                    pid,
+                    serde_json::to_string(&pos.map(|p| serde_json::json!({ "x": p.x, "y": p.y })))
+                        .unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(
+                        &size.map(|s| serde_json::json!({ "width": s.width, "height": s.height }))
+                    )
+                    .unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(&maximized).unwrap_or_else(|_| "null".to_string())
+                );
+            }
+
+            // Resolve main geometry: saved (physical) -> validate -> convert to logical -> fallback.
             // First-boot-after-upgrade users will have `main_geometry` seeded from legacy
             // `terminal_geometry` via the migration in `config::settings::load_settings`.
-            let main_geo = match &saved_settings.main_geometry {
-                Some(geo) if is_visible_on_monitors(geo, &monitors) => {
-                    let logical = physical_to_logical(geo, &monitors);
-                    log::info!(
-                        "[window-setup] main: saved physical ({}, {}) {}x{} → logical ({}, {}) {}x{}",
-                        geo.x, geo.y, geo.width, geo.height,
-                        logical.x, logical.y, logical.width, logical.height
-                    );
-                    logical
-                }
-                Some(geo) => {
-                    log::warn!(
-                        "[window-setup] main: saved geometry ({}, {}) {}x{} is OFF-SCREEN, falling back to centered default",
-                        geo.x, geo.y, geo.width, geo.height
-                    );
-                    default_main.clone()
-                }
-                None => {
-                    log::info!("[window-setup] main: no saved geometry, using centered default");
-                    default_main.clone()
+            let main_geo = if let Some(test_geo) = &test_window_placement {
+                let requested = config::settings::WindowGeometry {
+                    x: test_geo.x,
+                    y: test_geo.y,
+                    width: test_geo.width,
+                    height: test_geo.height,
+                };
+                let logical = physical_to_logical(&requested, &monitors);
+                log::info!(
+                    "[test-window] requested physical ({}, {}) {}x{} maximized={} -> logical ({}, {}) {}x{}",
+                    requested.x,
+                    requested.y,
+                    requested.width,
+                    requested.height,
+                    test_geo.maximized,
+                    logical.x,
+                    logical.y,
+                    logical.width,
+                    logical.height
+                );
+                logical
+            } else {
+                match &saved_settings.main_geometry {
+                    Some(geo) if is_visible_on_monitors(geo, &monitors) => {
+                        let logical = physical_to_logical(geo, &monitors);
+                        log::info!(
+                            "[window-setup] main: saved physical ({}, {}) {}x{} -> logical ({}, {}) {}x{}",
+                            geo.x, geo.y, geo.width, geo.height,
+                            logical.x, logical.y, logical.width, logical.height
+                        );
+                        logical
+                    }
+                    Some(geo) => {
+                        log::warn!(
+                            "[window-setup] main: saved geometry ({}, {}) {}x{} is off-screen, falling back to centered default",
+                            geo.x, geo.y, geo.width, geo.height
+                        );
+                        default_main.clone()
+                    }
+                    None => {
+                        log::info!("[window-setup] main: no saved geometry, using centered default");
+                        default_main.clone()
+                    }
                 }
             };
 
@@ -681,6 +732,15 @@ pub fn run() {
             .inner_size(main_geo.width, main_geo.height)
             .position(main_geo.x, main_geo.y)
             .build()?;
+
+            if let Some(test_geo) = &test_window_placement {
+                if test_geo.maximized {
+                    if let Err(e) = main_win.maximize() {
+                        log::warn!("[test-window] failed to maximize main window: {}", e);
+                    }
+                }
+                log_main_window_info(&main_win);
+            }
 
             if saved_settings.main_always_on_top {
                 let _ = main_win.set_always_on_top(true);

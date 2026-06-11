@@ -6,24 +6,28 @@ The goal is to make future rounds reproducible without turning every run into on
 
 ## Visual Test Environment
 
-- The app under test must be the workgroup-specific build for the run. Example:
-  `C:\Users\maria\0_mmb\0_AC\agentscommander_standalone_wg-1.exe --app`
-- The target window must be identified by title. Example:
-  `Agents Commander [STANDALONE_WG-1]`
+- The app under test should be `agentscommander_testeable.exe` for deterministic GUI regression runs.
+- The testable app uses a disposable config directory next to the binary: `.agentscommander_testeable`.
+- The target window title for the testable app is `Agents Commander [TESTEABLE]`.
 - If multiple AgentsCommander windows are open, never assume the active window is the target. Select the window whose title matches the workgroup under test.
-- For GUI and human-style checks, the app should be maximized on the monitor designated by the user for visual validation.
-- Before each execution, record the target HWND/PID, window rectangle, whether the window is maximized, and the capture method used.
+- For GUI and human-style checks, launch the app at the monitor rectangle designated by the user for visual validation.
+- Before each execution, record the target HWND/PID, process path, window rectangle, whether the window is maximized, and the capture method used.
 - In multi-monitor setups, modals and menus can appear outside the crop for the target monitor. Use virtual desktop capture, HWND capture, adjacent crop, or relative-window coordinate capture as fallback evidence.
 - Prefer coordinates relative to the detected target window. Do not hardcode absolute screen coordinates except when documenting a concrete execution.
 
-## Future Testability Support Tracked In #475
+## Deterministic Testable App
 
-Issue #475 tracks deterministic GUI test support. It is not implemented yet, so current visual tests still require manual placement or external automation to locate and maximize `Agents Commander [STANDALONE_WG-1]`.
+Production Windows builds create a raw testable executable alongside the normal production executable:
 
-The expected future support is a dedicated testable binary, `agentscommander_testeable.exe`, that can launch with deterministic placement. When available, this suite should use an invocation equivalent to:
+```text
+src-tauri/target/release/agentscommander.exe
+src-tauri/target/release/agentscommander_testeable.exe
+```
+
+Launch with explicit virtual-desktop placement in physical pixels:
 
 ```powershell
-agentscommander_testeable.exe --app `
+.\agentscommander_testeable.exe --app `
   --window-x <x> `
   --window-y <y> `
   --window-width <w> `
@@ -31,16 +35,48 @@ agentscommander_testeable.exe --app `
   --window-maximized
 ```
 
-Even in that future mode, each case must record the real HWND, PID, and window rectangle before clicking. The suite should fail early if the actual target window does not land on the expected monitor or rectangle.
+Example for a negative-coordinate monitor:
 
-Issue #475 also proposes a safe reset command. This command is planned only; do not use or document it as available until implemented. The intended contract is:
+```powershell
+.\agentscommander_testeable.exe --app `
+  --window-x -2891 `
+  --window-y -11 `
+  --window-width 1942 `
+  --window-height 1102 `
+  --window-maximized
+```
 
-- It is valid only for a binary/app identity named exactly `agentscommander_testeable.exe`.
-- It completely deletes only `.agentscommander_testeable`.
-- It completely deletes only the disposable project folder named `agentscommander_testeable`.
-- It refuses to run from `agentscommander_standalone.exe`, `agentscommander_standalone_wg-1.exe`, or other normal app binaries.
+The same placement can be provided through `AC_TEST_WINDOW_PLACEMENT`:
 
-Until #475 lands, tests that need clean state must create clearly disposable folders and document residual state instead of assuming a reset command exists.
+```powershell
+$env:AC_TEST_WINDOW_PLACEMENT='{"x":-2891,"y":-11,"width":1942,"height":1102,"maximized":true}'
+.\agentscommander_testeable.exe --app
+```
+
+Placement flags and `AC_TEST_WINDOW_PLACEMENT` are accepted only by `agentscommander_testeable.exe`. Normal, stage, and workgroup binaries fail closed when they receive test placement input.
+
+After launch, query the target window from a separate process:
+
+```powershell
+.\agentscommander_testeable.exe window-info
+```
+
+`window-info` returns JSON containing `processPath`, PID, HWND, rectangle, and maximized state. Tests must assert that `processPath` equals the launched `agentscommander_testeable.exe` path before clicking or capturing.
+
+## Test Reset
+
+Use the explicit reset command only from `agentscommander_testeable.exe` and only when the testable GUI is not running:
+
+```powershell
+.\agentscommander_testeable.exe test-reset --confirm-testeable
+```
+
+The command deletes only these sibling paths under the executable directory:
+
+- `.agentscommander_testeable`
+- `agentscommander_testeable`
+
+It refuses files, symlinks, junctions, mount points, Windows reparse-point directories, normal binaries, and active testable GUI instances. Refusal cases return structured JSON on stderr. Successful runs print newline-delimited JSON on stdout, with a planned-delete record followed by the final result.
 
 ## Case IDs
 
@@ -66,7 +102,7 @@ Evidence should be enough for another tester to verify the observed state withou
 - For GUI checks, capture the target window before and after the main action.
 - For persistence checks, capture both the pre-restart and post-restart state.
 - Record any fallback used, such as HWND capture, virtual desktop capture, keyboard navigation, or relative coordinates.
-- Do not delete user data to clean up after tests. If a test creates a project and the app has no safe cleanup path, document the residual test project.
+- Do not delete user data to clean up after tests. Use `test-reset --confirm-testeable` only for the disposable testable app identity. If a test creates data outside that identity, document the residual test project.
 
 ## Execution Order
 
