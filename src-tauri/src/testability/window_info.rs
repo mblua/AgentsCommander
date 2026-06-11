@@ -45,6 +45,7 @@ pub fn execute(_args: WindowInfoArgs) -> i32 {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowInfoOutput {
+    ok: bool,
     supported: bool,
     expected_title: String,
     current_exe: String,
@@ -78,6 +79,7 @@ mod windows_impl {
     use super::{WindowInfoOutput, WindowRect, WindowSnapshot};
     use std::path::{Path, PathBuf};
     use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
+    use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -107,6 +109,7 @@ mod windows_impl {
         }
 
         Ok(WindowInfoOutput {
+            ok: true,
             supported: true,
             expected_title,
             current_exe: current_exe.to_string_lossy().into_owned(),
@@ -148,15 +151,9 @@ mod windows_impl {
             return 1;
         }
 
-        let mut raw_rect = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        if GetWindowRect(hwnd, &mut raw_rect) == 0 {
+        let Some(raw_rect) = physical_window_rect(hwnd) else {
             return 1;
-        }
+        };
 
         state.windows.push(WindowSnapshot {
             title,
@@ -175,6 +172,29 @@ mod windows_impl {
         });
 
         1
+    }
+
+    unsafe fn physical_window_rect(hwnd: HWND) -> Option<RECT> {
+        let mut raw_rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let dwm_ok = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            &mut raw_rect as *mut RECT as *mut _,
+            std::mem::size_of::<RECT>() as u32,
+        ) == 0;
+        if dwm_ok {
+            return Some(raw_rect);
+        }
+
+        if GetWindowRect(hwnd, &mut raw_rect) == 0 {
+            return None;
+        }
+        Some(raw_rect)
     }
 
     unsafe fn window_title(hwnd: HWND) -> Option<String> {

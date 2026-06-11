@@ -668,6 +668,56 @@ pub fn run(
                 );
             }
 
+            fn apply_test_window_placement(
+                win: &tauri::WebviewWindow,
+                geo: &crate::testability::window_placement::TestWindowPlacement,
+            ) {
+                let x = geo.x.round() as i32;
+                let y = geo.y.round() as i32;
+                let width = geo.width.round().max(1.0) as u32;
+                let height = geo.height.round().max(1.0) as u32;
+
+                #[cfg(target_os = "windows")]
+                {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                        SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+                    };
+
+                    match win.hwnd() {
+                        Ok(hwnd) => unsafe {
+                            let ok = SetWindowPos(
+                                hwnd.0 as _,
+                                std::ptr::null_mut(),
+                                x,
+                                y,
+                                width as i32,
+                                height as i32,
+                                SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            );
+                            if ok == 0 {
+                                log::warn!("[test-window] native SetWindowPos failed");
+                            }
+                            return;
+                        },
+                        Err(e) => {
+                            log::warn!("[test-window] failed to get HWND: {}", e);
+                        }
+                    }
+                }
+
+                if let Err(e) = win.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                    width,
+                    height,
+                })) {
+                    log::warn!("[test-window] failed to set physical size: {}", e);
+                }
+                if let Err(e) = win.set_position(tauri::Position::Physical(
+                    tauri::PhysicalPosition { x, y },
+                )) {
+                    log::warn!("[test-window] failed to set physical position: {}", e);
+                }
+            }
+
             // Resolve main geometry: saved (physical) -> validate -> convert to logical -> fallback.
             // First-boot-after-upgrade users will have `main_geometry` seeded from legacy
             // `terminal_geometry` via the migration in `config::settings::load_settings`.
@@ -734,6 +784,7 @@ pub fn run(
             .build()?;
 
             if let Some(test_geo) = &test_window_placement {
+                apply_test_window_placement(&main_win, test_geo);
                 if test_geo.maximized {
                     if let Err(e) = main_win.maximize() {
                         log::warn!("[test-window] failed to maximize main window: {}", e);

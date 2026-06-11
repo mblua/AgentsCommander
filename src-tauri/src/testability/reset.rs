@@ -37,6 +37,7 @@ pub fn execute(args: TestResetArgs) -> i32 {
             0
         }
         Err(err) => {
+            crate::cli_println!("{err}");
             eprintln!("{err}");
             1
         }
@@ -72,25 +73,32 @@ fn execute_inner(args: TestResetArgs) -> Result<TestResetOutput, String> {
         )
     })?;
 
-    let (active, _mutex_guard) =
-        crate::testability::acquire_profile_mutex_probe().map_err(|e| {
-            error_json(
-                "profile_mutex_probe_failed",
-                serde_json::json!({"message": e}),
-            )
-        })?;
-    if active {
-        return Err(error_json("testable_gui_active", serde_json::json!({})));
-    }
-
     let candidates = candidate_paths(exe_parent);
     for candidate in &candidates {
         validate_candidate(exe_parent, candidate).map_err(|e| {
             error_json(
                 e.as_str(),
-                serde_json::json!({"path": candidate, "exeParent": exe_parent}),
+                serde_json::json!({
+                    "path": candidate,
+                    "exeParent": exe_parent,
+                    "plannedDelete": &candidates,
+                }),
             )
         })?;
+    }
+
+    let (active, _mutex_guard) =
+        crate::testability::acquire_profile_mutex_probe().map_err(|e| {
+            error_json(
+                "profile_mutex_probe_failed",
+                serde_json::json!({"message": e, "plannedDelete": &candidates}),
+            )
+        })?;
+    if active {
+        return Err(error_json(
+            "testable_gui_active",
+            serde_json::json!({"exePath": &exe_path, "plannedDelete": &candidates}),
+        ));
     }
 
     print_stdout_json(&TestResetPlan {
