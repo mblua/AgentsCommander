@@ -12,6 +12,7 @@ pub mod sessions_persistence;
 pub mod settings;
 pub mod teams;
 pub mod workspace;
+pub mod workspace_trust;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

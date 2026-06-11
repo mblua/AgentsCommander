@@ -94,6 +94,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 false,      // skip_tooling_save
                 Vec::new(), // git_repos
                 true,       // skip_auto_resume = true → fresh create, no `--continue` injection
+                false,      // is_delegated
             )
             .await?;
 

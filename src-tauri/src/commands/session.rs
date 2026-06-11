@@ -701,6 +701,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     skip_tooling_save: bool,
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
+    is_delegated: bool,
 ) -> Result<SessionInfo, String> {
     let (agent_id, agent_label) = {
         let settings_state = app.state::<SettingsState>();
@@ -869,6 +870,35 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                 shell_args.push("--append-system-prompt-file".to_string());
                 shell_args.push(context_path.to_string());
                 log::info!("Injected --append-system-prompt-file for Claude session");
+            }
+        }
+    }
+
+    // Preflight for Workspace Trust
+    if let Some(agent) = agent_kind {
+        let trust = crate::config::workspace_trust::is_workspace_trusted(std::path::Path::new(&cwd), &shell, &shell_args, agent).await;
+        match trust {
+            crate::config::workspace_trust::TrustStatus::Trusted => {
+                log::debug!("{:?} workspace trust verified for {}", agent, cwd);
+            }
+            crate::config::workspace_trust::TrustStatus::Untrusted | crate::config::workspace_trust::TrustStatus::Unknown => {
+                if is_delegated {
+                    let agent_name = match agent {
+                        CodingAgentKind::Claude => "Claude Code",
+                        CodingAgentKind::Codex => "Codex",
+                        CodingAgentKind::Gemini => "Gemini",
+                    };
+                    let err_msg = format!("{} requires manual trust for this workspace. Please run the agent manually in this folder from a standard terminal once and accept the trust prompt.", agent_name);
+                    drop(mgr);
+                    rollback_pre_created_session(app, session_mgr, pty_mgr, id, &err_msg).await;
+                    return Err(err_msg);
+                } else {
+                    use tauri_plugin_dialog::DialogExt;
+                    app.dialog()
+                        .message("You are spawning an agent in an untrusted or unknown workspace. It may prompt you for trust in the terminal. If this is unexpected, you may need to accept the prompt manually.")
+                        .title("Untrusted Workspace Warning")
+                        .show(|_| {});
+                }
             }
         }
     }
@@ -1117,6 +1147,7 @@ pub async fn create_session(
         false, // persist tooling
         git_repos.unwrap_or_default(),
         true, // skip_auto_resume = true → fresh create, no `--continue` injection
+        false, // is_delegated
     )
     .await?;
 
@@ -1595,6 +1626,7 @@ pub async fn restart_session(
         false, // skip_tooling_save
         git_repos,
         effective_restart_skip_auto_resume(skip_auto_resume),
+        false, // is_delegated
     )
     .await?;
 
@@ -2071,6 +2103,7 @@ pub(crate) async fn create_root_agent_inner(
         } else {
             skip_auto_resume_for_new_session
         },
+        false, // is_delegated
     )
     .await?;
 

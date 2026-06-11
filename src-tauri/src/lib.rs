@@ -1088,6 +1088,7 @@ pub fn run(
                                         false,
                                         ps.git_repos.clone(),
                                         false,
+                                        false, // is_delegated
                                     )
                                     .await
                                     {
@@ -1377,6 +1378,7 @@ pub fn run(
                             false, // Persist tooling on restore
                             ps.git_repos.clone(),
                             false, // skip_auto_resume = false → restore path; allow `--continue`
+                            false, // is_delegated
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {

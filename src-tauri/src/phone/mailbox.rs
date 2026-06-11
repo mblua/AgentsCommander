@@ -1692,6 +1692,7 @@ impl MailboxPoller {
             false,            // skip_tooling_save = false → persist lastCodingAgent
             Vec::new(),       // git_repos
             skip_auto_resume, // see deliver_wake top
+            true, // is_delegated
         )
         .await
     }
@@ -3144,6 +3145,7 @@ impl MailboxPoller {
                 false,      // Persist tooling
                 Vec::new(), // git_repos
                 true,       // skip_auto_resume = true → CLI session-request is a fresh create
+                true,       // is_delegated
             )
             .await
             {
