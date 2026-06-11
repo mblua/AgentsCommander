@@ -400,6 +400,7 @@ mod tests {
     use super::*;
     use crate::config::settings::AppSettings;
     use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
 
     /// Auto-cleaned temp dir; mirrors `cli::task_ops::tests::FixtureRoot`.
     struct FixtureRoot(PathBuf);
@@ -728,8 +729,18 @@ mod tests {
         }
     }
 
+    static CWD_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn cwd_lock() -> std::sync::MutexGuard<'static, ()> {
+        CWD_MUTEX
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn absolutise_resolves_relative_path_against_cwd() {
+        let _cwd_lock = cwd_lock();
         let fix = FixtureRoot::new("proj-rel");
         std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let prev = std::env::current_dir().unwrap();
@@ -755,6 +766,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn absolutise_collapses_dotdot_segments_on_windows() {
+        let _cwd_lock = cwd_lock();
         let fix = FixtureRoot::new("proj-dotdot");
         let project = fix.path().join("project");
         std::fs::create_dir_all(project.join(".ac")).unwrap();
