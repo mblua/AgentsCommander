@@ -11,6 +11,11 @@ The goal is to make future rounds reproducible without turning every run into on
 - The target window title for the testable app is `Agents Commander [TESTEABLE]`.
 - If multiple AgentsCommander windows are open, never assume the active window is the target. Select the window whose title matches the workgroup under test.
 - For GUI and human-style checks, launch the app at the monitor rectangle designated by the user for visual validation.
+- Current visual-test baseline:
+  - Logical display: `\\.\DISPLAY9`
+  - Physical rect for `window-info` / DWM: `Left=-1920 Top=0 Width=1920 Height=1080`
+  - Logical rect observed via Windows Forms: `Left=-1920 Top=0 Width=1280 Height=720`
+  - Physical and logical rectangles can differ because DPI scaling changes the coordinate space reported by different Windows APIs.
 - Before each execution, record the target HWND/PID, process path, window rectangle, whether the window is maximized, and the capture method used.
 - In multi-monitor setups, modals and menus can appear outside the crop for the target monitor. Use virtual desktop capture, HWND capture, adjacent crop, or relative-window coordinate capture as fallback evidence.
 - Prefer coordinates relative to the detected target window. Do not hardcode absolute screen coordinates except when documenting a concrete execution.
@@ -35,21 +40,21 @@ Launch with explicit virtual-desktop placement in physical pixels:
   --window-maximized
 ```
 
-Example for a negative-coordinate monitor:
+Current default visual-test example:
 
 ```powershell
 .\agentscommander_testeable.exe --app `
-  --window-x -2891 `
-  --window-y -11 `
-  --window-width 1942 `
-  --window-height 1102 `
+  --window-x -1920 `
+  --window-y 0 `
+  --window-width 1920 `
+  --window-height 1080 `
   --window-maximized
 ```
 
 The same placement can be provided through `AC_TEST_WINDOW_PLACEMENT`:
 
 ```powershell
-$env:AC_TEST_WINDOW_PLACEMENT='{"x":-2891,"y":-11,"width":1942,"height":1102,"maximized":true}'
+$env:AC_TEST_WINDOW_PLACEMENT='{"x":-1920,"y":0,"width":1920,"height":1080,"maximized":true}'
 .\agentscommander_testeable.exe --app
 ```
 
@@ -61,7 +66,9 @@ After launch, query the target window from a separate process:
 .\agentscommander_testeable.exe window-info
 ```
 
-`window-info` returns JSON containing `processPath`, PID, HWND, rectangle, and maximized state. Tests must assert that `processPath` equals the launched `agentscommander_testeable.exe` path before clicking or capturing.
+`window-info` returns JSON containing `processPath`, PID, HWND, rectangle, and maximized state. Tests must assert that `processPath` exactly equals the launched `agentscommander_testeable.exe` path before clicking or capturing. A passing visual gate should also assert that `window-info` reports approximately `left=-1920`, `top=0`, `width=1920`, `height=1080`, and `maximized:true`. If the user moves the app to a different monitor, update this baseline after measuring the new target with `window-info`.
+
+Historical reference: the old placement `--window-x -2891 --window-y -11 --window-width 1942 --window-height 1102` is obsolete and should not be used as a live visual-test baseline.
 
 ## Test Reset
 
