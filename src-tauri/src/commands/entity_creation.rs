@@ -1162,7 +1162,7 @@ pub async fn list_all_agents(project_paths: Vec<String>) -> Result<Vec<AgentInfo
         }
     }
 
-    agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    agents.sort_by_key(|a| a.name.to_lowercase());
     Ok(agents)
 }
 
