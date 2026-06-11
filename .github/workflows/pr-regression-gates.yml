@@ -98,13 +98,15 @@ jobs:
             exit 0
           fi
 
+          perl -pe 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g' npm-test.log > npm-test.normalized.log
+
           # Temporary #480 guard: remove this block when the unhandled WebSocket rejection is fixed.
-          if grep -q "Unhandled Rejection" npm-test.log \
-            && grep -q "ws does not work in the browser" npm-test.log \
-            && grep -Eq "Test Files +[0-9]+ passed" npm-test.log \
-            && grep -Eq "Tests +[0-9]+ passed" npm-test.log \
-            && ! grep -Eq "(FAIL|failed)" npm-test.log \
-            && ! grep -E "^(Error|TypeError|ReferenceError|SyntaxError|RangeError|URIError|EvalError): " npm-test.log | grep -Fv "Error: ws does not work in the browser. Browser clients must use the native WebSocket object"; then
+          if grep -q "Unhandled Rejection" npm-test.normalized.log \
+            && grep -q "ws does not work in the browser" npm-test.normalized.log \
+            && grep -Eq "Test Files +[0-9]+ passed" npm-test.normalized.log \
+            && grep -Eq "Tests +[0-9]+ passed" npm-test.normalized.log \
+            && ! grep -Eq "(FAIL|failed)" npm-test.normalized.log \
+            && ! grep -E "^(Error|TypeError|ReferenceError|SyntaxError|RangeError|URIError|EvalError): " npm-test.normalized.log | grep -Fv "Error: ws does not work in the browser. Browser clients must use the native WebSocket object"; then
             echo "::warning::npm test is temporarily tolerated only for the known #480 unhandled WebSocket rejection signature. Remove this guard when #480 is fixed."
             exit 0
           fi
