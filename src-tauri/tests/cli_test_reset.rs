@@ -1,6 +1,9 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
+
+static TESTABLE_RESET_IDENTITY_LOCK: Mutex<()> = Mutex::new(());
 
 struct Tmp(PathBuf);
 
@@ -37,6 +40,12 @@ fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     dst
 }
 
+fn testable_reset_identity_lock() -> MutexGuard<'static, ()> {
+    TESTABLE_RESET_IDENTITY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
     let out = Command::new(bin).args(args).output().expect("spawn binary");
     (
@@ -66,6 +75,7 @@ fn stderr_json(stderr: &str) -> Value {
 
 #[test]
 fn missing_confirm_refuses() {
+    let _guard = testable_reset_identity_lock();
     let tmp = Tmp::new("reset-confirm");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let (code, stdout, stderr) = run(&bin, &["test-reset"]);
@@ -87,6 +97,7 @@ fn non_testable_binary_refuses() {
 
 #[test]
 fn deletes_only_allowed_testable_directories() {
+    let _guard = testable_reset_identity_lock();
     let tmp = Tmp::new("reset-delete");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let config_dir = tmp.path().join(".agentscommander_testeable");
@@ -107,6 +118,7 @@ fn deletes_only_allowed_testable_directories() {
 
 #[test]
 fn file_target_refuses_and_deletes_nothing() {
+    let _guard = testable_reset_identity_lock();
     let tmp = Tmp::new("reset-file");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let config_path = tmp.path().join(".agentscommander_testeable");
@@ -132,6 +144,7 @@ fn file_target_refuses_and_deletes_nothing() {
 fn symlink_target_refuses_and_deletes_nothing() {
     use std::os::unix::fs::symlink;
 
+    let _guard = testable_reset_identity_lock();
     let tmp = Tmp::new("reset-symlink");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let real = tmp.path().join("real-dir");
@@ -158,6 +171,7 @@ fn held_testable_mutex_refuses_and_deletes_nothing() {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::CreateMutexW;
 
+    let _guard = testable_reset_identity_lock();
     let tmp = Tmp::new("reset-active-mutex");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let config_dir = tmp.path().join(".agentscommander_testeable");
@@ -182,6 +196,7 @@ fn held_testable_mutex_refuses_and_deletes_nothing() {
 #[test]
 #[ignore = "Manual smoke: requires Windows junction creation support in the test runner"]
 fn junction_target_refuses_and_deletes_nothing() {
+    let _guard = testable_reset_identity_lock();
     let tmp = Tmp::new("reset-junction");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let real = tmp.path().join("real-dir");
