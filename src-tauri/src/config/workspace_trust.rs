@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use crate::session::profile::CodingAgentKind;
 
 #[derive(Debug, PartialEq)]
@@ -14,6 +14,62 @@ pub async fn is_workspace_trusted(cwd: &Path, shell: &str, shell_args: &[String]
         CodingAgentKind::Claude => check_claude_trust(cwd, shell, shell_args).await,
         CodingAgentKind::Codex => check_codex_trust(cwd).await,
         CodingAgentKind::Gemini => TrustStatus::Unknown, // Not applicable or not requested yet
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => {
+                #[cfg(windows)]
+                {
+                    match prefix.kind() {
+                        std::path::Prefix::VerbatimDisk(disk) | std::path::Prefix::Disk(disk) => {
+                            normalized.push(format!("{}:", (disk as char).to_ascii_uppercase()));
+                        }
+                        std::path::Prefix::VerbatimUNC(server, share) | std::path::Prefix::UNC(server, share) => {
+                            normalized.push(format!(r"\\{}\{}", server.to_string_lossy(), share.to_string_lossy()));
+                        }
+                        _ => normalized.push(component),
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    normalized.push(component);
+                }
+            }
+            _ => normalized.push(component),
+        }
+    }
+    normalized
+}
+
+fn path_starts_with_case_insensitive_windows(path: &Path, base: &Path) -> bool {
+    let path_norm = normalize_path(path);
+    let base_norm = normalize_path(base);
+    let mut path_components = path_norm.components();
+    let mut base_components = base_norm.components();
+
+    loop {
+        match (path_components.next(), base_components.next()) {
+            (Some(p), Some(b)) => {
+                #[cfg(windows)]
+                {
+                    if !p.as_os_str().to_string_lossy().eq_ignore_ascii_case(&b.as_os_str().to_string_lossy()) {
+                        return false;
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    if p != b {
+                        return false;
+                    }
+                }
+            }
+            (None, Some(_)) => return false, // path is shorter than base
+            (_, None) => return true,        // base is exhausted, path matches or is longer
+        }
     }
 }
 
@@ -60,52 +116,20 @@ async fn check_claude_trust(cwd: &Path, shell: &str, shell_args: &[String]) -> T
         None => return TrustStatus::Unknown,
     };
 
-    for ancestor in cwd.ancestors() {
-        let ancestor_str = ancestor.to_string_lossy().to_string();
-
-        // Case-insensitive comparison for Windows path casing mismatches, slash normalization
-        for (project_path_str, project_data) in projects {
-            let normalized_project = project_path_str.replace("\\", "/");
-            let normalized_ancestor = ancestor_str.replace("\\", "/");
-            if normalized_project.eq_ignore_ascii_case(&normalized_ancestor) {
-                if let Some(trusted) = project_data.get("hasTrustDialogAccepted") {
-                    if trusted.as_bool() == Some(true) {
-                        return TrustStatus::Trusted;
-                    } else {
-                        return TrustStatus::Untrusted;
-                    }
+    for (project_path_str, project_data) in projects {
+        let project_path = Path::new(project_path_str);
+        if path_starts_with_case_insensitive_windows(cwd, project_path) {
+            if let Some(trusted) = project_data.get("hasTrustDialogAccepted") {
+                if trusted.as_bool() == Some(true) {
+                    return TrustStatus::Trusted;
+                } else {
+                    return TrustStatus::Untrusted;
                 }
             }
         }
     }
 
     TrustStatus::Unknown
-}
-
-fn path_starts_with_case_insensitive_windows(path: &Path, base: &Path) -> bool {
-    let mut path_components = path.components();
-    let mut base_components = base.components();
-
-    loop {
-        match (path_components.next(), base_components.next()) {
-            (Some(p), Some(b)) => {
-                #[cfg(windows)]
-                {
-                    if !p.as_os_str().to_string_lossy().eq_ignore_ascii_case(&b.as_os_str().to_string_lossy()) {
-                        return false;
-                    }
-                }
-                #[cfg(not(windows))]
-                {
-                    if p != b {
-                        return false;
-                    }
-                }
-            }
-            (None, Some(_)) => return false, // path is shorter than base
-            (_, None) => return true,        // base is exhausted, path matches or is longer
-        }
-    }
 }
 
 async fn check_codex_trust(cwd: &Path) -> TrustStatus {
@@ -147,7 +171,7 @@ async fn check_codex_trust(cwd: &Path) -> TrustStatus {
     for (project_path_str, project_config) in projects {
         let project_path = Path::new(project_path_str);
         if path_starts_with_case_insensitive_windows(cwd, project_path) {
-            let len = project_path.components().count();
+            let len = normalize_path(project_path).components().count();
             if len > longest_len {
                 longest_len = len;
                 best_match = Some((project_path_str.as_str(), project_config));
@@ -171,7 +195,7 @@ async fn check_codex_trust(cwd: &Path) -> TrustStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_unknown_trust() {
         let status = check_claude_trust(Path::new("C:\\nonexistent\\path"), "claude", &[]).await;
@@ -182,22 +206,30 @@ mod tests {
     #[test]
     fn test_path_starts_with_case_insensitive_windows() {
         let base = Path::new("C:\\Users\\Test\\repo");
-        
+
         // Exact match
         assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo"), base));
-        
+
         // Subdirectory
-        assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo\\sub"), base));
-        
+        assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo\\sub"), base));      
+
         // Case-insensitive match on Windows
         #[cfg(windows)]
-        assert!(path_starts_with_case_insensitive_windows(Path::new("c:\\users\\test\\REPO\\sub"), base));
-        
+        assert!(path_starts_with_case_insensitive_windows(Path::new("c:\\users\\test\\REPO\\sub"), base));      
+
         // False prefix matching (repo vs repo-other) should fail
-        assert!(!path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo-other"), base));
-        
+        assert!(!path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo-other"), base));    
+
         // False prefix on Windows
         #[cfg(windows)]
-        assert!(!path_starts_with_case_insensitive_windows(Path::new("c:\\users\\test\\REPO-other"), base));
+        assert!(!path_starts_with_case_insensitive_windows(Path::new("c:\\users\\test\\REPO-other"), base));    
+        
+        // Verbatim prefix handling
+        #[cfg(windows)]
+        assert!(path_starts_with_case_insensitive_windows(Path::new("\\\\?\\C:\\Users\\Test\\repo"), base));
+        
+        // Trailing slash matching
+        let base_with_slash = Path::new("C:\\Users\\Test\\repo\\");
+        assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo"), base_with_slash));
     }
 }
