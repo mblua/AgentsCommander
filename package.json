@@ -15,6 +15,7 @@
     "version:check": "node scripts/check-version-sync.mjs",
     "prepare": "husky",
     "tauri": "tauri",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke:profile-matrix": "node scripts/smoke-profile-matrix-preview.mjs",

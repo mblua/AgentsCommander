@@ -762,6 +762,7 @@ mod tests {
         std::fs::create_dir_all(&sibling).unwrap();
         let prev = std::env::current_dir().unwrap();
         let _guard = CwdGuard(prev);
+        let sibling = std::fs::canonicalize(&sibling).unwrap();
         std::env::set_current_dir(&sibling).unwrap();
         let mut s = AppSettings::default();
         let r = register_existing_project(&mut s, "..\\project").unwrap();

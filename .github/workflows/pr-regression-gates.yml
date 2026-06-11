@@ -1,0 +1,115 @@
+name: PR regression gates
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+      - 'release/**'
+      - 'hotfix/**'
+      - 'dependabot/**'
+      - 'revert/**'
+      - 'gh-readonly-queue/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-regression-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-regression:
+    name: rust-regression
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets for Tauri config validation
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --lib --bins --tests
+
+  frontend-regression:
+    name: frontend-regression
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npm run typecheck
+
+      - name: npm test with #480 known-debt guard
+        run: |
+          set +e
+          npm test 2>&1 | tee npm-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          perl -pe 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g' npm-test.log > npm-test.normalized.log
+
+          # Temporary #480 guard: remove this block when the unhandled WebSocket rejection is fixed.
+          if grep -q "Unhandled Rejection" npm-test.normalized.log \
+            && grep -q "ws does not work in the browser" npm-test.normalized.log \
+            && grep -Eq "Test Files +[0-9]+ passed" npm-test.normalized.log \
+            && grep -Eq "Tests +[0-9]+ passed" npm-test.normalized.log \
+            && ! grep -Eq "(FAIL|failed)" npm-test.normalized.log \
+            && ! grep -E "^(Error|TypeError|ReferenceError|SyntaxError|RangeError|URIError|EvalError): " npm-test.normalized.log | grep -Fv "Error: ws does not work in the browser. Browser clients must use the native WebSocket object"; then
+            echo "::warning::npm test is temporarily tolerated only for the known #480 unhandled WebSocket rejection signature. Remove this guard when #480 is fixed."
+            exit 0
+          fi
+
+          echo "::error::npm test failed for a reason outside the known #480 signature."
+          exit "$status"
