@@ -11,7 +11,37 @@
 // file-scope `createSignal` and pulls in the sibling stores, which
 // transitively touch `window.location` in `transport-ws.ts`.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+vi.hoisted(() => {
+  class MockWebSocket {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSING = 2;
+    static readonly CLOSED = 3;
+
+    readonly url: string;
+    binaryType: BinaryType = "blob";
+    readyState = MockWebSocket.CLOSED;
+
+    constructor(url: string) {
+      this.url = url;
+    }
+
+    send(): void {}
+
+    close(): void {
+      this.readyState = MockWebSocket.CLOSED;
+    }
+  }
+
+  Object.defineProperty(globalThis, "WebSocket", {
+    configurable: true,
+    writable: true,
+    value: MockWebSocket,
+  });
+});
+
 import {
   GRACE_MS,
   shouldSuppressBeep,
