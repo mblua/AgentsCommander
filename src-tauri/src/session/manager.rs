@@ -296,6 +296,14 @@ impl SessionManager {
         }
     }
 
+
+    pub async fn mark_spawn_started(&self, id: Uuid) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.last_started_at = chrono::Utc::now();
+        }
+    }
+
     pub async fn mark_idle(&self, id: Uuid) {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
@@ -896,5 +904,31 @@ mod tests {
             SessionStatus::Idle,
             "mark_idle must transition Running → Idle"
         );
+    }
+
+    #[tokio::test]
+    async fn mark_spawn_started_updates_timestamp() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                "C:\\proj".into(),
+                None,
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        // Simulate time passing
+        let old_time = session.last_started_at;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        
+        mgr.mark_spawn_started(session.id).await;
+        
+        let updated = mgr.get_session(session.id).await.unwrap();
+        assert!(updated.last_started_at > old_time);
     }
 }

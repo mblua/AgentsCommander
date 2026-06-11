@@ -879,6 +879,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         let trust = crate::config::workspace_trust::is_workspace_trusted(std::path::Path::new(&cwd), &shell, &shell_args, agent).await;
         
         mgr.set_trust_status(id, trust.clone()).await;
+        session.trust_status = Some(trust.clone());
 
         match trust {
             crate::config::workspace_trust::TrustStatus::Trusted => {
@@ -924,6 +925,8 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         Vec::new()
     };
 
+    mgr.mark_spawn_started(id).await;
+    session.last_started_at = chrono::Utc::now();
     let spawn_result = {
         pty_mgr.lock().unwrap().spawn(
             id,
