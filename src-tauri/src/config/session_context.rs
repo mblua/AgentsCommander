@@ -2342,6 +2342,20 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
+    fn canonical_display_path(path: &Path) -> String {
+        std::fs::canonicalize(path)
+            .map(|canonical| display_path(&canonical))
+            .unwrap_or_else(|_| display_path(path))
+    }
+
+    fn assert_contains_canonical_path(content: &str, path: &Path) {
+        let expected = canonical_display_path(path);
+        assert!(
+            content.contains(&expected),
+            "content should contain canonical path {expected}"
+        );
+    }
+
     struct PartialFailWriter {
         file: std::fs::File,
         bytes_written: usize,
@@ -2746,7 +2760,7 @@ mod tests {
         .expect("context path");
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
 
-        assert!(content.contains(&format!("root={}", display_path(&replica_root))));
+        assert!(content.contains(&format!("root={}", canonical_display_path(&replica_root))));
         assert!(content.contains("3. **Your origin Agent Matrix"));
         assert!(content.contains("Narrow exception"));
         assert!(content.contains("Template skill."));
@@ -2772,7 +2786,7 @@ mod tests {
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
 
         assert!(content.contains("LEGACY_BODY"));
-        assert!(content.contains(&display_path(&matrix_root)));
+        assert_contains_canonical_path(&content, &matrix_root);
         assert!(new_path.is_file());
         assert!(!legacy_path.exists());
         assert_eq!(
@@ -2852,7 +2866,7 @@ mod tests {
 
         assert!(content.contains("## Repos"));
         assert!(content.contains("repo-Example"));
-        assert!(content.contains(&display_path(&repo_dir)));
+        assert_contains_canonical_path(&content, &repo_dir);
         assert!(!content.contains("No repos configured"));
     }
 
@@ -2893,7 +2907,7 @@ mod tests {
         .expect("parse repaired config");
 
         assert!(content.contains("repo-Example"));
-        assert!(content.contains(&display_path(&repo_dir)));
+        assert_contains_canonical_path(&content, &repo_dir);
         assert!(!content.contains("No repos configured"));
         assert_eq!(
             repaired["context"],
@@ -2938,7 +2952,7 @@ mod tests {
         .expect("parse repaired config");
 
         assert!(content.contains("repo-Example"));
-        assert!(content.contains(&display_path(&repo_dir)));
+        assert_contains_canonical_path(&content, &repo_dir);
         assert!(!content.contains("No repos configured"));
         assert_eq!(
             repaired["context"],
@@ -3724,9 +3738,10 @@ mod tests {
         assert!(content.contains("## Skills"));
         assert!(content.contains("runtime"));
         assert!(content.contains("Runtime skill metadata."));
-        assert!(content.contains(&display_path(
-            &matrix_root.join("skills").join("runtime").join("SKILL.md")
-        )));
+        assert_contains_canonical_path(
+            &content,
+            &matrix_root.join("skills").join("runtime").join("SKILL.md"),
+        );
         assert!(!content.contains("BODY_SHOULD_NOT_RENDER"));
     }
 
@@ -3825,9 +3840,10 @@ mod tests {
         assert!(content.contains("`runtime`"));
         assert!(content.contains("Direct runtime skill metadata."));
         assert!(content.contains("When to use: Use directly from the canonical matrix."));
-        assert!(content.contains(&display_path(
-            &matrix_root.join("skills").join("runtime").join("SKILL.md")
-        )));
+        assert_contains_canonical_path(
+            &content,
+            &matrix_root.join("skills").join("runtime").join("SKILL.md"),
+        );
         assert!(!content.contains("DIRECT_BODY_SHOULD_NOT_RENDER"));
     }
 
@@ -4021,7 +4037,7 @@ mod tests {
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
 
         assert!(content.contains("CUSTOM_STANDALONE_GLOBAL"));
-        assert!(content.contains(&display_path(&root)));
+        assert_contains_canonical_path(&content, &root);
         assert!(content.contains("ROOT_TEMPLATE_BODY"));
         assert!(content.contains("ROOT_ROLE_BODY"));
         assert!(!content.contains("# AgentsCommander Context"));

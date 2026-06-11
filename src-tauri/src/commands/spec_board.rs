@@ -1564,11 +1564,12 @@ mod tests {
     #[tokio::test]
     async fn path_validation_accepts_repo_specs_mermaid() {
         let tmp = TempDir::new().unwrap();
-        let repo = tmp.path().join("repo-Example");
+        let tmp_root = std::fs::canonicalize(tmp.path()).unwrap();
+        let repo = tmp_root.join("repo-Example");
         tokio::fs::create_dir_all(repo.join("specs").join("mermaids"))
             .await
             .unwrap();
-        let settings = test_settings(vec![tmp.path().to_path_buf()]);
+        let settings = test_settings(vec![tmp_root]);
         let target = repo.join("specs").join("mermaids").join("diagram.mmd");
         let validated = validate_new_or_existing_user_path(&target, &settings)
             .await
@@ -1582,9 +1583,10 @@ mod tests {
     #[tokio::test]
     async fn path_validation_preserves_missing_intermediate_dirs() {
         let tmp = TempDir::new().unwrap();
-        let repo = tmp.path().join("repo-Example");
+        let tmp_root = std::fs::canonicalize(tmp.path()).unwrap();
+        let repo = tmp_root.join("repo-Example");
         tokio::fs::create_dir_all(repo.join("specs")).await.unwrap();
-        let settings = test_settings(vec![tmp.path().to_path_buf()]);
+        let settings = test_settings(vec![tmp_root]);
         let target = repo
             .join("specs")
             .join("new-folder")
