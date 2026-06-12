@@ -167,12 +167,22 @@ while ((Get-Date) -lt $deadline) {
       Write-Error "contract violation: to was '$($message.to)', expected '$ExpectedTo'"
       exit 13
     }
-    if ($message.force -ne $true) {
-      Write-Error "contract violation: force was '$($message.force)'"
+    $forceType = if ($null -eq $message.force) { '<null>' } else { $message.force.GetType().FullName }
+    if (-not ($message.force -is [bool]) -or $message.force -ne $true) {
+      Write-Error "contract violation: force was '$($message.force)' with type '$forceType'"
       exit 13
     }
-    if ([int]$message.timeoutSecs -ne $ExpectedTimeoutSec) {
-      Write-Error "contract violation: timeoutSecs was '$($message.timeoutSecs)', expected '$ExpectedTimeoutSec'"
+    $timeoutType = if ($null -eq $message.timeoutSecs) { '<null>' } else { $message.timeoutSecs.GetType().FullName }
+    $timeoutIsInteger = $message.timeoutSecs -is [byte] -or
+      $message.timeoutSecs -is [sbyte] -or
+      $message.timeoutSecs -is [int16] -or
+      $message.timeoutSecs -is [uint16] -or
+      $message.timeoutSecs -is [int] -or
+      $message.timeoutSecs -is [uint32] -or
+      $message.timeoutSecs -is [long] -or
+      $message.timeoutSecs -is [uint64]
+    if (-not $timeoutIsInteger -or [long]$message.timeoutSecs -ne [long]$ExpectedTimeoutSec) {
+      Write-Error "contract violation: timeoutSecs was '$($message.timeoutSecs)' with type '$timeoutType', expected integer '$ExpectedTimeoutSec'"
       exit 13
     }
 
