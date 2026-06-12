@@ -1644,6 +1644,11 @@ pub fn get_default_agent_template() -> &'static str {
 
 You are running inside an AgentsCommander session - a terminal session manager that coordinates multiple AI agents.
 
+## Core Concepts
+
+- **Team**: the logical capability and organization. It defines who can work together, who coordinates, and which repos are available.
+- **Workgroup**: an operational runtime replica instance of a team for a specific task. It contains replica agents and `repo-*` working repositories.
+
 {{WRITE_RESTRICTIONS}}
 
 {{DELEGATED_TASK_REPORTING}}
@@ -3085,6 +3090,11 @@ mod tests {
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
 
         assert!(content.contains("# AgentsCommander Context"));
+        assert!(content.contains("## Core Concepts"));
+        assert!(content.contains("**Team**: the logical capability and organization"));
+        assert!(content.contains(
+            "**Workgroup**: an operational runtime replica instance of a team for a specific task"
+        ));
         assert!(content.contains("When finishing a delegated task or getting blocked"));
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
