@@ -15,5 +15,19 @@ fn main() {
     println!("cargo:rustc-env=BUILD_PROFILE={}", profile);
     println!("cargo:rerun-if-env-changed=BUILD_PROFILE");
 
+    embed_windows_test_manifest();
+
     tauri_build::build()
+}
+
+fn embed_windows_test_manifest() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
+        || std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc")
+    {
+        return;
+    }
+
+    println!(
+        "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+    );
 }
