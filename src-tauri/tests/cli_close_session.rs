@@ -1,66 +1,18 @@
-//! Integration tests for issue #224 — close-session CLI exit-code contract.
+//! Integration tests for the close-session CLI exit-code contract.
 //!
-//! Strategy: spawn the binary in a subprocess (per the `cli_task_logger.rs`
-//! pattern — copied into a per-test tmp dir so `config_dir()` is isolated)
-//! with master-token bypass, and simulate the daemon's mailbox response by
-//! writing the expected `delivered/` and `responses/` files from a sibling
-//! thread. This proves the CLI's outbox-polling + response-interpretation
-//! contract end-to-end without a live Tauri runtime. A real-daemon E2E test
-//! (real session lifecycle) is out of scope for #224 and tracked separately.
-//!
-//! Covers:
-//! - D.4  — no_match exits 0 with prose line
-//! - D.5b — restore_in_progress exits 0 with retry prose
-//! - D.6  — response written ONLY to outbox-relative path is still consumed
-//! - D.8  — prose assertions for already_closed and closed paths
-//!
-//! ## Why these are `#[ignore]`'d on Windows
-//!
-//! These tests rely on the test runner process polling a directory that the
-//! CLI subprocess writes into. On Windows we observed a reproducible
-//! cross-process directory-enumeration anomaly: PowerShell `Get-ChildItem`
-//! sees the file the CLI writes within milliseconds, but Rust's
-//! `std::fs::read_dir` from the test-runner process consistently misses it
-//! during the subprocess's lifetime (it shows only entries that were
-//! present in the dir BEFORE the subprocess started writing). The same
-//! `read_dir` from a fresh process (e.g. after the test runner exits) DOES
-//! see the file. This appears to be Windows directory-enumeration cache
-//! semantics + possibly antivirus interference; it is NOT a CLI bug —
-//! `cli_close_session.rs` has the same behavior pattern as the live
-//! daemon-mediated flow. The unit tests in `src/cli/close_session.rs`,
-//! `src/phone/mailbox.rs`, and `src/config/sessions_persistence.rs` cover
-//! the same logic at unit granularity and DO pass. Run with
-//! `cargo test --test cli_close_session -- --ignored` to attempt these
-//! anyway (they may pass on non-Windows hosts or with AV disabled).
-//!
-//! ### §224 G-IMPL retest (2026-05-16)
-//!
-//! Re-ran `cargo test --test cli_close_session -- --ignored` after the
-//! G-IMPL-1/2/3 fixes. Result: **all 5 tests still fail with the same
-//! symptom** — simulator's `read_dir` panics with "timeout waiting for CLI
-//! outbox write" while the CLI subprocess's own stderr shows it reached
-//! the delivery-poll loop (i.e. it had already written to the outbox).
-//!
-//! AV-exclusion attempt skipped: `Add-MpPreference -ExclusionPath` returned
-//! "not enough permissions" (no admin in agent session) and
-//! `Get-MpPreference` returned 0x800106ba (Defender service unavailable),
-//! suggesting Defender is already in a constrained state on this host.
-//!
-//! What the retest **does** rule out:
-//! - CLI early-exit before the write (CLI stderr confirms it reaches the
-//!   delivery-poll loop with a fresh request_id, which only happens after
-//!   the outbox write succeeds).
-//! - Path-normalization mismatch (CLI's stderr-logged outbox path matches
-//!   the simulator's polled path byte-for-byte).
-//!
-//! What it does **not** independently confirm:
-//! - Whether an admin-elevated `Add-MpPreference` on `%TEMP%\ac-*` would
-//!   unblock the tests. Retest under an elevated context recommended for
-//!   any future CI run.
+//! Strategy: spawn the real CLI binary in a subprocess with master-token
+//! bypass, then simulate the daemon side by writing the expected delivery
+//! marker and response file. On Windows the simulator is a fresh
+//! `powershell.exe` process because the long-lived Rust test runner can miss
+//! outbox files written by the CLI subprocess. On non-Windows the simulator
+//! remains an in-process Rust helper.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+#[cfg(not(target_os = "windows"))]
 use std::sync::mpsc;
+#[cfg(not(target_os = "windows"))]
 use std::time::{Duration, Instant};
 
 struct Tmp(PathBuf);
@@ -118,9 +70,6 @@ fn build_fixture(tmp: &Path, agent: &str) -> Fixture {
     let master = "test-master-token-224".to_string();
     std::fs::write(cfg_dir.join("master-token.txt"), &master).expect("write master token");
 
-    // settings.json with projectPaths pointing at <tmp> so enumerate_project_dirs
-    // discovers `<tmp>/proj` (an immediate child containing `.ac`).
-    // Required fields (no serde default): defaultShell, defaultShellArgs, agents.
     let settings = serde_json::json!({
         "defaultShell": "powershell.exe",
         "defaultShellArgs": [],
@@ -147,54 +96,329 @@ fn build_fixture(tmp: &Path, agent: &str) -> Fixture {
     }
 }
 
-/// Simulator: wait for the CLI's outbox file, then write `delivered/<id>.json`
-/// plus `responses/<rid>.json` matching the response body. Returns the
-/// message id it processed, or an error string on timeout/IO failure.
+fn close_response(
+    status: &str,
+    sessions_closed: u64,
+    session_ids: &[&str],
+    target: &str,
+) -> String {
+    serde_json::json!({
+        "action": "close-session",
+        "target": target,
+        "status": status,
+        "sessions_closed": sessions_closed,
+        "session_ids": session_ids,
+        "requested_by": "tester",
+    })
+    .to_string()
+}
+
+const WINDOWS_SIMULATOR_PS1: &str = r#"
+param(
+  [Parameter(Mandatory=$true)][string]$OutboxDir,
+  [Parameter(Mandatory=$true)][string]$ResponsesDir,
+  [Parameter(Mandatory=$true)][string]$ResponseBodyPath,
+  [Parameter(Mandatory=$true)][string]$ExpectedTarget,
+  [Parameter(Mandatory=$true)][string]$ExpectedTo,
+  [Parameter(Mandatory=$true)][int]$ExpectedTimeoutSec,
+  [Parameter(Mandatory=$true)][int]$TimeoutSec
+)
+
+$deadline = (Get-Date).AddSeconds($TimeoutSec)
+$lastReadinessError = $null
+
+while ((Get-Date) -lt $deadline) {
+  $messageFile = Get-ChildItem -LiteralPath $OutboxDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTimeUtc, Name |
+    Select-Object -First 1
+
+  if ($null -ne $messageFile) {
+    $messagePath = $messageFile.FullName
+
+    try {
+      $messageBody = Get-Content -LiteralPath $messagePath -Raw -ErrorAction Stop
+      $message = $messageBody | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+      $lastReadinessError = "message visible but not parseable yet at ${messagePath}: $($_.Exception.Message)"
+      Start-Sleep -Milliseconds 50
+      continue
+    }
+
+    if (-not $message.id) {
+      $lastReadinessError = "message visible but missing id at ${messagePath}"
+      Start-Sleep -Milliseconds 50
+      continue
+    }
+    if (-not $message.requestId) {
+      $lastReadinessError = "message visible but missing requestId at ${messagePath}"
+      Start-Sleep -Milliseconds 50
+      continue
+    }
+
+    if ($message.action -ne 'close-session') {
+      Write-Error "contract violation: action was '$($message.action)'"
+      exit 13
+    }
+    if ($message.target -ne $ExpectedTarget) {
+      Write-Error "contract violation: target was '$($message.target)', expected '$ExpectedTarget'"
+      exit 13
+    }
+    if ($message.to -ne $ExpectedTo) {
+      Write-Error "contract violation: to was '$($message.to)', expected '$ExpectedTo'"
+      exit 13
+    }
+    if ($message.force -ne $true) {
+      Write-Error "contract violation: force was '$($message.force)'"
+      exit 13
+    }
+    if ([int]$message.timeoutSecs -ne $ExpectedTimeoutSec) {
+      Write-Error "contract violation: timeoutSecs was '$($message.timeoutSecs)', expected '$ExpectedTimeoutSec'"
+      exit 13
+    }
+
+    $deliveredDir = Join-Path $OutboxDir 'delivered'
+    New-Item -ItemType Directory -Force -Path $deliveredDir | Out-Null
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText((Join-Path $deliveredDir "$($message.id).json"), $messageBody, $utf8NoBom)
+    Remove-Item -LiteralPath $messagePath -Force -ErrorAction SilentlyContinue
+
+    New-Item -ItemType Directory -Force -Path $ResponsesDir | Out-Null
+    $responseBody = Get-Content -LiteralPath $ResponseBodyPath -Raw -ErrorAction Stop
+    [System.IO.File]::WriteAllText((Join-Path $ResponsesDir "$($message.requestId).json"), $responseBody, $utf8NoBom)
+
+    Write-Output $message.id
+    exit 0
+  }
+
+  Start-Sleep -Milliseconds 50
+}
+
+if ($lastReadinessError) {
+  Write-Error "timeout waiting for ready CLI outbox message at $OutboxDir; last readiness error: $lastReadinessError"
+} else {
+  Write-Error "timeout waiting for CLI outbox write at $OutboxDir"
+}
+exit 12
+"#;
+
+#[cfg(target_os = "windows")]
+fn write_windows_simulator_script(tmp: &Path) -> PathBuf {
+    let script = tmp.join("close-session-simulator.ps1");
+    std::fs::write(&script, WINDOWS_SIMULATOR_PS1).expect("write simulator script");
+    script
+}
+
+struct SimulatorOutput {
+    stdout: String,
+    stderr: String,
+}
+
+#[cfg(target_os = "windows")]
+enum SimulatorHandle {
+    Process(std::process::Child),
+}
+
+#[cfg(not(target_os = "windows"))]
+enum SimulatorHandle {
+    Thread(mpsc::Receiver<Result<String, String>>),
+}
+
+impl SimulatorHandle {
+    fn wait(self) -> Result<SimulatorOutput, String> {
+        match self {
+            #[cfg(target_os = "windows")]
+            SimulatorHandle::Process(child) => {
+                let out = child
+                    .wait_with_output()
+                    .map_err(|e| format!("wait for simulator process: {}", e))?;
+                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                if !out.status.success() {
+                    return Err(format!(
+                        "simulator exited {:?}\nstdout: {}\nstderr: {}",
+                        out.status.code(),
+                        stdout,
+                        stderr
+                    ));
+                }
+                Ok(SimulatorOutput { stdout, stderr })
+            }
+            #[cfg(not(target_os = "windows"))]
+            SimulatorHandle::Thread(rx) => {
+                let msg_id = rx
+                    .recv_timeout(Duration::from_secs(25))
+                    .map_err(|e| format!("simulator thread did not finish: {}", e))?
+                    .map_err(|e| format!("simulator failed: {}", e))?;
+                Ok(SimulatorOutput {
+                    stdout: msg_id,
+                    stderr: String::new(),
+                })
+            }
+        }
+    }
+}
+
+fn spawn_daemon_simulator(
+    tmp: &Path,
+    outbox_dir: &Path,
+    responses_dir: &Path,
+    response_body: &str,
+    expected_target: &str,
+    expected_timeout_secs: &str,
+) -> SimulatorHandle {
+    #[cfg(target_os = "windows")]
+    {
+        let response_body_path = tmp.join("response-body.json");
+        std::fs::write(&response_body_path, response_body).expect("write response body");
+        let script = write_windows_simulator_script(tmp);
+
+        let child = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                script.to_string_lossy().as_ref(),
+                "-OutboxDir",
+                outbox_dir.to_string_lossy().as_ref(),
+                "-ResponsesDir",
+                responses_dir.to_string_lossy().as_ref(),
+                "-ResponseBodyPath",
+                response_body_path.to_string_lossy().as_ref(),
+                "-ExpectedTarget",
+                expected_target,
+                "-ExpectedTo",
+                expected_target,
+                "-ExpectedTimeoutSec",
+                expected_timeout_secs,
+                "-TimeoutSec",
+                "20",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn PowerShell simulator");
+        SimulatorHandle::Process(child)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let outbox_for_thread = outbox_dir.to_path_buf();
+        let responses_for_thread = responses_dir.to_path_buf();
+        let response_owned = response_body.to_string();
+        let target_owned = expected_target.to_string();
+        let timeout_secs = expected_timeout_secs
+            .parse::<u32>()
+            .expect("test timeout secs must parse");
+        let (tx, rx) = mpsc::channel::<Result<String, String>>();
+        std::thread::spawn(move || {
+            let result = simulate_daemon_response(
+                &outbox_for_thread,
+                &responses_for_thread,
+                &response_owned,
+                &target_owned,
+                timeout_secs,
+                Duration::from_secs(20),
+            );
+            let _ = tx.send(result);
+        });
+        SimulatorHandle::Thread(rx)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn simulate_daemon_response(
     outbox_dir: &Path,
     responses_dir: &Path,
     response_body: &str,
+    expected_target: &str,
+    expected_timeout_secs: u32,
     overall_timeout: Duration,
 ) -> Result<String, String> {
     let start = Instant::now();
     let poll = Duration::from_millis(50);
+    let mut last_readiness_error = None::<String>;
 
-    let msg_path = loop {
+    let (msg_path, body, msg, msg_id, request_id) = loop {
         if start.elapsed() >= overall_timeout {
-            return Err(format!(
-                "timeout waiting for CLI outbox write at {:?}",
-                outbox_dir
-            ));
-        }
-        if let Ok(rd) = std::fs::read_dir(outbox_dir) {
-            let found = rd.flatten().find_map(|entry| {
-                let p = entry.path();
-                (p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json")).then_some(p)
+            return Err(match last_readiness_error {
+                Some(e) => format!(
+                    "timeout waiting for ready CLI outbox message at {:?}; last readiness error: {}",
+                    outbox_dir, e
+                ),
+                None => format!("timeout waiting for CLI outbox write at {:?}", outbox_dir),
             });
-            if let Some(p) = found {
-                break p;
-            }
         }
-        std::thread::sleep(poll);
+
+        let Some(path) = std::fs::read_dir(outbox_dir).ok().and_then(|rd| {
+            let mut files: Vec<_> = rd
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json"))
+                .collect();
+            files.sort();
+            files.into_iter().next()
+        }) else {
+            std::thread::sleep(poll);
+            continue;
+        };
+
+        let body = match std::fs::read_to_string(&path) {
+            Ok(body) => body,
+            Err(e) => {
+                last_readiness_error = Some(format!(
+                    "message visible but not readable at {:?}: {}",
+                    path, e
+                ));
+                std::thread::sleep(poll);
+                continue;
+            }
+        };
+        let msg: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(msg) => msg,
+            Err(e) => {
+                last_readiness_error = Some(format!(
+                    "message visible but not parseable at {:?}: {}",
+                    path, e
+                ));
+                std::thread::sleep(poll);
+                continue;
+            }
+        };
+        let Some(msg_id) = msg
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
+            last_readiness_error = Some(format!("message visible but missing id at {:?}", path));
+            std::thread::sleep(poll);
+            continue;
+        };
+        let Some(request_id) = msg
+            .get("requestId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
+            last_readiness_error = Some(format!(
+                "message visible but missing requestId at {:?}",
+                path
+            ));
+            std::thread::sleep(poll);
+            continue;
+        };
+
+        break (path, body, msg, msg_id.to_string(), request_id.to_string());
     };
 
-    let body = std::fs::read_to_string(&msg_path).map_err(|e| e.to_string())?;
-    let msg: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-    let msg_id = msg
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or("missing msg id")?
-        .to_string();
-    let request_id = msg
-        .get("requestId")
-        .and_then(|v| v.as_str())
-        .ok_or("missing request id")?
-        .to_string();
+    validate_close_session_message(&msg, expected_target, expected_timeout_secs)
+        .map_err(|e| format!("contract violation in {:?}: {}", msg_path, e))?;
 
     let delivered_dir = outbox_dir.join("delivered");
     std::fs::create_dir_all(&delivered_dir).map_err(|e| e.to_string())?;
     std::fs::write(delivered_dir.join(format!("{}.json", msg_id)), &body)
         .map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&msg_path);
 
     std::fs::create_dir_all(responses_dir).map_err(|e| e.to_string())?;
     std::fs::write(
@@ -206,43 +430,52 @@ fn simulate_daemon_response(
     Ok(msg_id)
 }
 
+#[cfg(not(target_os = "windows"))]
+fn validate_close_session_message(
+    msg: &serde_json::Value,
+    expected_target: &str,
+    expected_timeout_secs: u32,
+) -> Result<(), String> {
+    let field = |name: &str| msg.get(name).ok_or_else(|| format!("missing {}", name));
+    if field("action")?.as_str() != Some("close-session") {
+        return Err(format!("action was {:?}", field("action")?));
+    }
+    if field("target")?.as_str() != Some(expected_target) {
+        return Err(format!("target was {:?}", field("target")?));
+    }
+    if field("to")?.as_str() != Some(expected_target) {
+        return Err(format!("to was {:?}", field("to")?));
+    }
+    if field("force")?.as_bool() != Some(true) {
+        return Err(format!("force was {:?}", field("force")?));
+    }
+    if field("timeoutSecs")?.as_u64() != Some(u64::from(expected_timeout_secs)) {
+        return Err(format!("timeoutSecs was {:?}", field("timeoutSecs")?));
+    }
+    Ok(())
+}
+
 fn run_close_session_with_simulator(
+    tmp: &Path,
     fix: &Fixture,
-    status: &str,
-    sessions_closed: u64,
-    session_ids: &[&str],
+    response_body: String,
     target: &str,
-) -> (Option<i32>, String, String) {
+    timeout_secs: &str,
+) -> (Option<i32>, String, String, String, String) {
     let stem = fix.bin.file_stem().unwrap().to_string_lossy().to_string();
     let ac_dir = fix.agent_root.join(format!(".{}", stem));
     let outbox_dir = ac_dir.join("outbox");
     let responses_dir = ac_dir.join("responses");
     std::fs::create_dir_all(&outbox_dir).unwrap();
 
-    let outbox_for_thread = outbox_dir.clone();
-    let responses_for_thread = responses_dir.clone();
-    let status_owned = status.to_string();
-    let target_owned = target.to_string();
-    let ids_owned: Vec<String> = session_ids.iter().map(|s| s.to_string()).collect();
-    let (tx, rx) = mpsc::channel::<Result<String, String>>();
-    let _sim = std::thread::spawn(move || {
-        let resp = serde_json::json!({
-            "action": "close-session",
-            "target": target_owned,
-            "status": status_owned,
-            "sessions_closed": sessions_closed,
-            "session_ids": ids_owned,
-            "requested_by": "tester",
-        })
-        .to_string();
-        let result = simulate_daemon_response(
-            &outbox_for_thread,
-            &responses_for_thread,
-            &resp,
-            Duration::from_secs(20),
-        );
-        let _ = tx.send(result);
-    });
+    let simulator = spawn_daemon_simulator(
+        tmp,
+        &outbox_dir,
+        &responses_dir,
+        &response_body,
+        target,
+        timeout_secs,
+    );
 
     let out = Command::new(&fix.bin)
         .args([
@@ -255,7 +488,7 @@ fn run_close_session_with_simulator(
             target,
             "--force",
             "--timeout",
-            "5",
+            timeout_secs,
         ])
         .env("RUST_LOG", "agentscommander=info")
         .stdout(Stdio::piped())
@@ -263,42 +496,49 @@ fn run_close_session_with_simulator(
         .output()
         .expect("spawn binary");
 
-    let sim_result = rx
-        .recv_timeout(Duration::from_secs(25))
-        .expect("simulator thread did not finish");
-
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-
-    if let Err(e) = sim_result {
+    let sim_output = simulator.wait().unwrap_or_else(|e| {
         panic!(
             "simulator failed: {}\nCLI exit code: {:?}\nCLI stdout: {}\nCLI stderr: {}",
             e,
             out.status.code(),
             stdout,
             stderr,
-        );
-    }
+        )
+    });
 
-    (out.status.code(), stdout, stderr)
+    (
+        out.status.code(),
+        stdout,
+        stderr,
+        sim_output.stdout,
+        sim_output.stderr,
+    )
 }
 
-/// §224 D.4 — `status=no_match` produces exit 0 and the AC #2 prose line.
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
 fn close_session_no_match_exits_zero_with_prose() {
     let tmp = Tmp::new("close-no-match");
     let fix = build_fixture(tmp.path(), "bob-not-running");
     let target = "proj:wg-1-test/bob-not-running";
 
-    let (code, stdout, stderr) = run_close_session_with_simulator(&fix, "no_match", 0, &[], target);
+    let (code, stdout, stderr, sim_stdout, sim_stderr) = run_close_session_with_simulator(
+        tmp.path(),
+        &fix,
+        close_response("no_match", 0, &[], target),
+        target,
+        "5",
+    );
 
     assert_eq!(
         code,
         Some(0),
-        "no_match must exit 0.\nstdout: {}\nstderr: {}",
+        "no_match must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
         stdout,
-        stderr
+        stderr,
+        sim_stdout,
+        sim_stderr
     );
     assert!(
         stdout.contains("\"status\": \"no_match\"") || stdout.contains("\"status\":\"no_match\""),
@@ -307,28 +547,33 @@ fn close_session_no_match_exits_zero_with_prose() {
     );
     assert!(
         stdout.contains("No sessions matched") && stdout.contains("nothing to close"),
-        "stdout must contain AC #2 prose for no_match; got: {}",
+        "stdout must contain no_match prose; got: {}",
         stdout
     );
 }
 
-/// §224 D.5b — `status=restore_in_progress` produces exit 0 and retry prose.
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
 fn close_session_restore_in_progress_exits_zero_with_retry_prose() {
     let tmp = Tmp::new("close-restore");
     let fix = build_fixture(tmp.path(), "carol-mid-restore");
     let target = "proj:wg-1-test/carol-mid-restore";
 
-    let (code, stdout, stderr) =
-        run_close_session_with_simulator(&fix, "restore_in_progress", 0, &[], target);
+    let (code, stdout, stderr, sim_stdout, sim_stderr) = run_close_session_with_simulator(
+        tmp.path(),
+        &fix,
+        close_response("restore_in_progress", 0, &[], target),
+        target,
+        "5",
+    );
 
     assert_eq!(
         code,
         Some(0),
-        "restore_in_progress must exit 0.\nstdout: {}\nstderr: {}",
+        "restore_in_progress must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
         stdout,
-        stderr
+        stderr,
+        sim_stdout,
+        sim_stderr
     );
     assert!(
         stdout.contains("Daemon is still restoring sessions"),
@@ -342,23 +587,28 @@ fn close_session_restore_in_progress_exits_zero_with_retry_prose() {
     );
 }
 
-/// §224 D.8 — `status=already_closed` produces exit 0 and the race-prose line.
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
 fn close_session_already_closed_exits_zero_with_prose() {
     let tmp = Tmp::new("close-already");
     let fix = build_fixture(tmp.path(), "dan-raced");
     let target = "proj:wg-1-test/dan-raced";
 
-    let (code, stdout, stderr) =
-        run_close_session_with_simulator(&fix, "already_closed", 0, &[], target);
+    let (code, stdout, stderr, sim_stdout, sim_stderr) = run_close_session_with_simulator(
+        tmp.path(),
+        &fix,
+        close_response("already_closed", 0, &[], target),
+        target,
+        "5",
+    );
 
     assert_eq!(
         code,
         Some(0),
-        "already_closed must exit 0.\nstdout: {}\nstderr: {}",
+        "already_closed must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
         stdout,
-        stderr
+        stderr,
+        sim_stdout,
+        sim_stderr
     );
     assert!(
         stdout.contains("already closed"),
@@ -367,28 +617,33 @@ fn close_session_already_closed_exits_zero_with_prose() {
     );
 }
 
-/// §224 D.8 — `status=closed` exits 0 and is silent on prose (JSON suffices).
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
 fn close_session_closed_exits_zero_silent_prose() {
     let tmp = Tmp::new("close-closed");
     let fix = build_fixture(tmp.path(), "eve-actually-running");
     let target = "proj:wg-1-test/eve-actually-running";
 
-    let (code, stdout, stderr) = run_close_session_with_simulator(
+    let (code, stdout, stderr, sim_stdout, sim_stderr) = run_close_session_with_simulator(
+        tmp.path(),
         &fix,
-        "closed",
-        1,
-        &["00000000-0000-0000-0000-000000000001"],
+        close_response(
+            "closed",
+            1,
+            &["00000000-0000-0000-0000-000000000001"],
+            target,
+        ),
         target,
+        "5",
     );
 
     assert_eq!(
         code,
         Some(0),
-        "closed must exit 0.\nstdout: {}\nstderr: {}",
+        "closed must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
         stdout,
-        stderr
+        stderr,
+        sim_stdout,
+        sim_stderr
     );
     assert!(
         stdout.contains("\"status\": \"closed\"") || stdout.contains("\"status\":\"closed\""),
@@ -402,12 +657,7 @@ fn close_session_closed_exits_zero_silent_prose() {
     );
 }
 
-/// §224 D.6 — the outbox-relative response-write path is the one the CLI
-/// consumes. The simulator only ever writes to `<ac_dir>/responses/<rid>.json`
-/// (the outbox-relative location derived from the message file's path), so a
-/// successful close cycle through this test proves A.6 is correct.
 #[test]
-#[ignore = "Windows cross-process FS enumeration anomaly — see module docs"]
 fn close_session_response_via_outbox_relative_path_only() {
     let tmp = Tmp::new("close-outbox-rel");
     let fix = build_fixture(tmp.path(), "frank-rel-only");
@@ -416,10 +666,23 @@ fn close_session_response_via_outbox_relative_path_only() {
     let stem = fix.bin.file_stem().unwrap().to_string_lossy().to_string();
     let responses_dir = fix.agent_root.join(format!(".{}", stem)).join("responses");
 
-    let (code, stdout, _stderr) =
-        run_close_session_with_simulator(&fix, "no_match", 0, &[], target);
+    let (code, stdout, stderr, sim_stdout, sim_stderr) = run_close_session_with_simulator(
+        tmp.path(),
+        &fix,
+        close_response("no_match", 0, &[], target),
+        target,
+        "5",
+    );
 
-    assert_eq!(code, Some(0), "outbox-relative response must exit 0");
+    assert_eq!(
+        code,
+        Some(0),
+        "outbox-relative response must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
+        stdout,
+        stderr,
+        sim_stdout,
+        sim_stderr
+    );
     assert!(
         stdout.contains("No sessions matched"),
         "prose must appear; got: {}",
@@ -432,5 +695,36 @@ fn close_session_response_via_outbox_relative_path_only() {
         !response_files.is_empty(),
         "responses dir at {:?} must contain at least one response file",
         responses_dir
+    );
+}
+
+#[test]
+fn close_session_incoherent_response_exits_two() {
+    let tmp = Tmp::new("close-bad-response");
+    let fix = build_fixture(tmp.path(), "gina-bad-response");
+    let target = "proj:wg-1-test/gina-bad-response";
+
+    let (code, stdout, stderr, sim_stdout, sim_stderr) = run_close_session_with_simulator(
+        tmp.path(),
+        &fix,
+        r#"{"status":"new_unrecognized_status","target":"proj:wg-1-test/gina-bad-response"}"#
+            .to_string(),
+        target,
+        "5",
+    );
+
+    assert_eq!(
+        code,
+        Some(2),
+        "unknown response status must exit 2.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
+        stdout,
+        stderr,
+        sim_stdout,
+        sim_stderr
+    );
+    assert!(
+        stdout.contains("new_unrecognized_status"),
+        "stdout must include daemon JSON; got: {}",
+        stdout
     );
 }
