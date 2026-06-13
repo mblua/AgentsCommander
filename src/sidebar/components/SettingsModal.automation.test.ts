@@ -24,6 +24,9 @@ vi.mock("../../shared/ipc", () => ({
 
 vi.mock("../../shared/stores/settings", () => ({
   settingsStore: {
+    get current() {
+      return settings();
+    },
     refresh: vi.fn(),
   },
 }));
@@ -131,6 +134,30 @@ describe("SettingsModal automation hooks", () => {
     expect(codexPreset).toBeTruthy();
     expect(codexPreset?.disabled).toBe(true);
     expect(codexPreset?.getAttribute("data-ac-state")).toBe("disabled");
+
+    dispose();
+  });
+
+  it("renders agents selectors after clicking the Coding Agents tab", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const agentsTab = document.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="settings.tab.agents"]',
+    );
+    agentsTab?.click();
+    await settle();
+
+    expect(agentsTab?.getAttribute("data-ac-state")).toBe("active");
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.0"]')).toBeTruthy();
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.0.label"]')).toBeTruthy();
+    expect(document.querySelector('[data-ac-testid="settings.agentPreset.codex"]')).toBeTruthy();
+    expect(document.querySelector('[data-ac-testid="settings.agent.addCustom"]')).toBeTruthy();
 
     dispose();
   });

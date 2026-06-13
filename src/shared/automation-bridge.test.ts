@@ -191,6 +191,21 @@ describe("automation bridge", () => {
     });
   });
 
+  it("briefly retries queries for asynchronously rendered targets", async () => {
+    window.setTimeout(() => {
+      addTarget("button", "settings.agent.addCustom", "+ Custom Agent");
+    }, 10);
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("query", "settings.agent.addCustom"),
+    );
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) throw new Error(response.message);
+    expect(response.target.testId).toBe("settings.agent.addCustom");
+  });
+
   it("sets input values and dispatches input plus change", async () => {
     const input = addTarget("input", "onboarding.custom.command");
     topmostElement = input;

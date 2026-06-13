@@ -34,7 +34,9 @@ const isValidSettingsTab = (s: string): s is SettingsTab =>
   TABS.some((t) => t.key === s);
 
 const SettingsModal: Component<{ onClose: () => void; section?: string }> = (props) => {
-  const [settings, setSettings] = createStore<{ data: AppSettings | null }>({ data: null });
+  const [settings, setSettings] = createStore<{ data: AppSettings | null }>({
+    data: settingsStore.current,
+  });
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
   const [testResult, setTestResult] = createSignal<{

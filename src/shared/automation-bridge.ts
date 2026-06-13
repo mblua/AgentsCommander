@@ -11,6 +11,8 @@ import type {
 
 const MAX_AVAILABLE_TARGETS = 50;
 const MAX_SNAPSHOT_TEXT = 120;
+const MISSING_SELECTOR_RETRY_MS = 250;
+const MISSING_SELECTOR_RETRY_INTERVAL_MS = 25;
 const REDACTED_TEXT = "[redacted]";
 
 type UiAutomationErrorCode = Extract<UiAutomationResponse, { ok: false }>["error"];
@@ -70,7 +72,7 @@ async function executeAutomationRequestInner(
   windowLabel: string,
   request: UiAutomationRequest,
 ): Promise<UiAutomationResponse> {
-  const matches = queryAutomationTargets(request.selector);
+  const matches = await queryAutomationTargetsWithBriefRetry(request);
   const diagnostics = baseDiagnostics();
 
   if (matches.length === 0) {
@@ -261,6 +263,32 @@ function errorResponse(
 function queryAutomationTargets(testId: string): HTMLElement[] {
   const selector = `[data-ac-testid="${cssEscape(testId)}"]`;
   return queryAcrossOpenRoots(selector);
+}
+
+async function queryAutomationTargetsWithBriefRetry(
+  request: UiAutomationRequest,
+): Promise<HTMLElement[]> {
+  let matches = queryAutomationTargets(request.selector);
+  if (matches.length > 0) return matches;
+
+  const retryMs = missingSelectorRetryBudgetMs(request);
+  if (retryMs <= 0) return matches;
+
+  const deadline = Date.now() + retryMs;
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) =>
+      window.setTimeout(resolve, MISSING_SELECTOR_RETRY_INTERVAL_MS),
+    );
+    matches = queryAutomationTargets(request.selector);
+    if (matches.length > 0) return matches;
+  }
+
+  return matches;
+}
+
+function missingSelectorRetryBudgetMs(request: UiAutomationRequest): number {
+  if (typeof request.expiresAtUnixMs !== "number") return MISSING_SELECTOR_RETRY_MS;
+  return Math.max(0, Math.min(MISSING_SELECTOR_RETRY_MS, request.expiresAtUnixMs - Date.now() - 1));
 }
 
 function availableTargets(): UiAutomationTarget[] {
