@@ -494,12 +494,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
       <For each={settings.data!.agents}>
         {(agent, i) => (
-          <div
-            class="settings-button-card"
-            data-ac-testid={`settings.agentRow.${i()}`}
-            data-ac-role="group"
-          >
-            <div class="settings-button-card-header">
+          <div class="settings-button-card">
+            <div
+              class="settings-button-card-header"
+              data-ac-testid={`settings.agentRow.${i()}`}
+              data-ac-role="group"
+            >
               <div
                 class="settings-color-dot"
                 style={{ background: agent.color }}
@@ -592,48 +592,48 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       </For>
 
       <div class="settings-agent-actions">
-        <Show when={!hasAgentByCommand("claude")}>
-          <button
-            class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
-            data-ac-testid="settings.agentPreset.claude"
-            data-ac-role="button"
-          >
-            <span
-              class="settings-color-dot"
-              style={{ background: AGENT_PRESET_MAP.claude.color }}
-            />
-            + Claude Code
-          </button>
-        </Show>
-        <Show when={!hasAgentByCommand("codex")}>
-          <button
-            class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
-            data-ac-testid="settings.agentPreset.codex"
-            data-ac-role="button"
-          >
-            <span
-              class="settings-color-dot"
-              style={{ background: AGENT_PRESET_MAP.codex.color }}
-            />
-            + Codex
-          </button>
-        </Show>
-        <Show when={!hasAgentByCommand("gemini")}>
-          <button
-            class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
-            data-ac-testid="settings.agentPreset.gemini"
-            data-ac-role="button"
-          >
-            <span
-              class="settings-color-dot"
-              style={{ background: AGENT_PRESET_MAP.gemini.color }}
-            />
-            + Gemini CLI
-          </button>
-        </Show>
+        <button
+          class="settings-preset-btn"
+          onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
+          disabled={hasAgentByCommand("claude")}
+          data-ac-testid="settings.agentPreset.claude"
+          data-ac-role="button"
+          data-ac-state={hasAgentByCommand("claude") ? "disabled" : "available"}
+        >
+          <span
+            class="settings-color-dot"
+            style={{ background: AGENT_PRESET_MAP.claude.color }}
+          />
+          + Claude Code
+        </button>
+        <button
+          class="settings-preset-btn"
+          onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
+          disabled={hasAgentByCommand("codex")}
+          data-ac-testid="settings.agentPreset.codex"
+          data-ac-role="button"
+          data-ac-state={hasAgentByCommand("codex") ? "disabled" : "available"}
+        >
+          <span
+            class="settings-color-dot"
+            style={{ background: AGENT_PRESET_MAP.codex.color }}
+          />
+          + Codex
+        </button>
+        <button
+          class="settings-preset-btn"
+          onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
+          disabled={hasAgentByCommand("gemini")}
+          data-ac-testid="settings.agentPreset.gemini"
+          data-ac-role="button"
+          data-ac-state={hasAgentByCommand("gemini") ? "disabled" : "available"}
+        >
+          <span
+            class="settings-color-dot"
+            style={{ background: AGENT_PRESET_MAP.gemini.color }}
+          />
+          + Gemini CLI
+        </button>
         <button
           class="settings-add-btn"
           onClick={() => addAgent()}

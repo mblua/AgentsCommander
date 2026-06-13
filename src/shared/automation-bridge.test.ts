@@ -164,6 +164,33 @@ describe("automation bridge", () => {
     expect(removeResponse.ok).toBe(true);
   });
 
+  it("queries settings row parents and disabled preset targets", async () => {
+    const row = addTarget("div", "settings.agentRow.0");
+    row.setAttribute("data-ac-role", "group");
+    const preset = addTarget("button", "settings.agentPreset.codex", "+ Codex");
+    preset.setAttribute("data-ac-role", "button");
+    preset.setAttribute("data-ac-state", "disabled");
+    preset.disabled = true;
+
+    const rowResponse = await executeAutomationRequest(
+      "main",
+      request("query", "settings.agentRow.0"),
+    );
+    const presetResponse = await executeAutomationRequest(
+      "main",
+      request("query", "settings.agentPreset.codex"),
+    );
+
+    expect(rowResponse.ok).toBe(true);
+    expect(presetResponse.ok).toBe(true);
+    if (!presetResponse.ok) throw new Error(presetResponse.message);
+    expect(presetResponse.target).toMatchObject({
+      testId: "settings.agentPreset.codex",
+      disabled: true,
+      state: "disabled",
+    });
+  });
+
   it("sets input values and dispatches input plus change", async () => {
     const input = addTarget("input", "onboarding.custom.command");
     topmostElement = input;

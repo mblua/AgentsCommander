@@ -46,7 +46,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 |---|---|---|
 | Detect settings dialog | `settings.modal` | `query`, `wait` |
 | Switch settings tab | `settings.tab.<tabKey>` | `click` |
-| Add preset coding agent | `settings.agentPreset.<presetKey>` | `click` |
+| Detect/add preset coding agent | `settings.agentPreset.<presetKey>` | `query`, `click` when `data-ac-state="available"` |
 | Add custom coding agent row | `settings.agent.addCustom` | `click` |
 | Detect coding agent row | `settings.agentRow.<index>` | `query` |
 | Set coding agent label | `settings.agentRow.<index>.label` | `setValue` |
