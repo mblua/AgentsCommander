@@ -1320,17 +1320,21 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
     }
 
     // Auto-detach Telegram bridge if active
+    let mut bridge_shutdown = None;
     {
         let tg_mgr = app.state::<TelegramBridgeState>();
         let mut tg = tg_mgr.lock().await;
         if tg.has_bridge(uuid) {
-            let _ = tg.detach(uuid);
+            bridge_shutdown = tg.detach(uuid).ok();
             mgr.set_telegram_bot_id(uuid, None).await;
             let _ = app.emit(
                 "telegram_bridge_detached",
                 serde_json::json!({ "sessionId": id }),
             );
         }
+    }
+    if let Some(shutdown) = bridge_shutdown.take() {
+        shutdown.spawn_wait_or_abort();
     }
 
     // Kill the PTY first

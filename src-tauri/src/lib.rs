@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod errors;
 pub mod logging;
+pub mod network;
 pub mod phone;
 pub mod pty;
 pub mod session;
@@ -308,6 +309,7 @@ pub fn run(
         .manage(app_outbox)
         .manage(session_mgr)
         .manage(tg_mgr)
+        .manage(network::OutboundNetwork::new().expect("failed to build shared network clients"))
         .manage(voice_tracking)
         .manage(settings)
         .manage(detached_sessions.clone())
@@ -1695,9 +1697,12 @@ pub fn run(
                 }
                 tauri::RunEvent::Exit => {
                     // Cancel all active Telegram bridges before general shutdown
-                    {
-                        let tg = tauri::async_runtime::block_on(tg_mgr_for_exit.lock());
-                        tg.cancel_all();
+                    let bridge_shutdowns = {
+                        let mut tg = tauri::async_runtime::block_on(tg_mgr_for_exit.lock());
+                        tg.cancel_all()
+                    };
+                    for shutdown in bridge_shutdowns {
+                        shutdown.spawn_wait_or_abort();
                     }
 
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
