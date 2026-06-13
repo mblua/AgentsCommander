@@ -15,7 +15,7 @@ use crate::telegram::manager::OutputSenderMap;
 struct PtyInstance {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    _child: Box<dyn portable_pty::Child + Send + Sync>,
+    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
 }
 
 /// Tracks active response marker watchers per session.
@@ -362,6 +362,11 @@ impl PtyManager {
             .slave
             .spawn_command(command)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
+        log::info!(
+            "[pty] Spawned session {} with child pid {:?}",
+            id,
+            child.process_id()
+        );
 
         // Drop the slave side — we only need the master
         drop(pair.slave);
@@ -379,7 +384,7 @@ impl PtyManager {
         let instance = PtyInstance {
             master: Arc::new(Mutex::new(pair.master)),
             writer: Arc::new(Mutex::new(writer)),
-            _child: child,
+            child: Some(child),
         };
 
         self.ptys.lock().unwrap().insert(id, instance);
@@ -552,9 +557,55 @@ impl PtyManager {
     }
 
     pub fn kill(&self, id: Uuid) -> Result<(), AppError> {
-        let mut ptys = self.ptys.lock().unwrap();
-        // Dropping the PtyInstance will close the master, which signals the child
-        ptys.remove(&id);
+        let instance = {
+            let mut ptys = self.ptys.lock().unwrap();
+            ptys.remove(&id)
+        };
+
+        if let Some(mut instance) = instance {
+            if let Some(mut child) = instance.child.take() {
+                let pid = child.process_id();
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        log::info!(
+                            "[pty] Session {} child pid {:?} already exited: {:?}",
+                            id,
+                            pid,
+                            status
+                        );
+                    }
+                    Ok(None) => {
+                        if let Err(e) = child.kill() {
+                            log::warn!(
+                                "[pty] Failed to kill session {} child pid {:?}: {}",
+                                id,
+                                pid,
+                                e
+                            );
+                        }
+                        reap_child_in_background(id, pid, child);
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[pty] Failed to poll session {} child pid {:?}: {}",
+                            id,
+                            pid,
+                            e
+                        );
+                        if let Err(kill_err) = child.kill() {
+                            log::warn!(
+                                "[pty] Failed to kill session {} child pid {:?} after poll error: {}",
+                                id,
+                                pid,
+                                kill_err
+                            );
+                        }
+                        reap_child_in_background(id, pid, child);
+                    }
+                }
+            }
+        }
+
         self.idle_detector.remove_session(id);
         self.git_watcher.remove_session(id);
 
@@ -604,6 +655,31 @@ impl PtyManager {
             );
         }
     }
+}
+
+fn reap_child_in_background(
+    session_id: Uuid,
+    pid: Option<u32>,
+    mut child: Box<dyn portable_pty::Child + Send + Sync>,
+) {
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) => {
+            log::info!(
+                "[pty] Reaped session {} child pid {:?}: {:?}",
+                session_id,
+                pid,
+                status
+            );
+        }
+        Err(e) => {
+            log::warn!(
+                "[pty] Failed to reap session {} child pid {:?}: {}",
+                session_id,
+                pid,
+                e
+            );
+        }
+    });
 }
 
 /// Scan PTY output text for %%AC_RESPONSE::<rid>::START/END%% markers.

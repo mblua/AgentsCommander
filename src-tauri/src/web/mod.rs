@@ -204,7 +204,7 @@ async fn handle_ws_connection(socket: WebSocket, ws_state: WsState) {
     let mut broadcast_rx = ws_state.broadcaster.subscribe();
 
     // Forward broadcasts to this client
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         while let Some(msg) = broadcast_rx.recv().await {
             let ws_msg = match msg {
                 broadcast::WsOutMsg::Text(text) => Message::Text(text.into()),
@@ -218,7 +218,7 @@ async fn handle_ws_connection(socket: WebSocket, ws_state: WsState) {
 
     // Read commands from client
     let state_clone = ws_state.clone();
-    let recv_task = tokio::spawn(async move {
+    let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = StreamExt::next(&mut ws_receiver).await {
             match msg {
                 Message::Text(text) => {
@@ -233,10 +233,16 @@ async fn handle_ws_connection(socket: WebSocket, ws_state: WsState) {
         }
     });
 
-    // Wait for either task to finish, then abort the other
+    // Wait for either task to finish, then abort and reap the other.
     tokio::select! {
-        _ = send_task => {}
-        _ = recv_task => {}
+        _ = &mut send_task => {
+            recv_task.abort();
+            let _ = recv_task.await;
+        }
+        _ = &mut recv_task => {
+            send_task.abort();
+            let _ = send_task.await;
+        }
     }
 }
 
