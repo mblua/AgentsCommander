@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
 use crate::config::loops::{
-    resolve_loop_target, BusyCoordinatorPolicy, LoopAuditKind, LoopConfigToml,
+    loop_dir, resolve_loop_target, revalidate_loop_current, BusyCoordinatorPolicy, LoopAuditKind,
+    LoopConfigRevalidation, LoopConfigToml,
 };
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
@@ -48,6 +49,7 @@ pub async fn deliver_loop_prompt(
         }
     };
     let target_fqn = target.target_fqn.clone();
+    let loop_storage_dir = loop_dir(&target.workspace_dir, &config.loop_def.id);
     let policy = config.policy.busy_coordinator.clone();
     let prompt = config.prompt.body.clone();
 
@@ -117,6 +119,12 @@ pub async fn deliver_loop_prompt(
         Err(e) => return failed_report(Some(target_fqn), Some(session_id), e),
     }
 
+    if let Some(report) =
+        stale_delivery_report_if_needed(&loop_storage_dir, config, &target_fqn, session_id)
+    {
+        return report;
+    }
+
     match crate::pty::inject::inject_text_into_session(app, session_id, &prompt).await {
         Ok(()) => {
             if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
@@ -137,6 +145,58 @@ pub async fn deliver_loop_prompt(
             }
         }
         Err(e) => failed_report(Some(target_fqn), Some(session_id), e),
+    }
+}
+
+fn stale_delivery_report_if_needed(
+    loop_storage_dir: &Path,
+    config: &LoopConfigToml,
+    target_fqn: &str,
+    session_id: Uuid,
+) -> Option<LoopDeliveryReport> {
+    match revalidate_loop_current(loop_storage_dir, config) {
+        Ok(LoopConfigRevalidation::Current) => None,
+        Ok(LoopConfigRevalidation::Gone) => Some(stale_delivery_report(
+            loop_storage_dir,
+            target_fqn,
+            session_id,
+        )),
+        Ok(LoopConfigRevalidation::Disabled) => Some(stale_delivery_report(
+            loop_storage_dir,
+            target_fqn,
+            session_id,
+        )),
+        Ok(LoopConfigRevalidation::Changed) => Some(stale_delivery_report(
+            loop_storage_dir,
+            target_fqn,
+            session_id,
+        )),
+        Err(e) => Some(failed_report(
+            Some(target_fqn.to_string()),
+            Some(session_id),
+            e,
+        )),
+    }
+}
+
+fn stale_delivery_report(
+    loop_storage_dir: &Path,
+    target_fqn: &str,
+    session_id: Uuid,
+) -> LoopDeliveryReport {
+    let message = format!(
+        "Loop config changed before prompt injection; skipped stale delivery for {}",
+        loop_storage_dir.display()
+    );
+    log::warn!("[loops] {}", message);
+    LoopDeliveryReport {
+        kind: LoopAuditKind::DeliveryFailed,
+        message: message.clone(),
+        target: Some(target_fqn.to_string()),
+        session_id: Some(session_id),
+        error: Some(message),
+        prompt_snapshot: None,
+        completed_at: Some(Utc::now()),
     }
 }
 
@@ -421,6 +481,36 @@ fn path_compare_key(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::loops::{
+        write_loop_config, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
+        LoopTrigger, LoopTriggerKind, LOOP_TIMEZONE_LOCAL,
+    };
+
+    fn sample_config() -> LoopConfigToml {
+        LoopConfigToml {
+            loop_def: LoopDef {
+                id: "daily-sync".to_string(),
+                name: "Daily sync".to_string(),
+                enabled: true,
+            },
+            trigger: LoopTrigger {
+                kind: LoopTriggerKind::Cron,
+                expr: "0 9 * * *".to_string(),
+                timezone: LOOP_TIMEZONE_LOCAL.to_string(),
+            },
+            target: LoopTarget {
+                kind: LoopTargetKind::WorkgroupCoordinator,
+                workgroup: "wg-1-dev-team".to_string(),
+            },
+            prompt: LoopPrompt {
+                body: "Send status".to_string(),
+            },
+            policy: LoopPolicy {
+                busy_coordinator: BusyCoordinatorPolicy::WaitUntilIdle,
+                ..LoopPolicy::default()
+            },
+        }
+    }
 
     #[test]
     fn loop_spawn_allows_provider_resume_for_cold_and_known_state_wakes() {
@@ -438,5 +528,71 @@ mod tests {
         assert!(!loop_candidate_should_respawn(&SessionStatus::Idle, true));
         assert!(loop_candidate_is_live(&SessionStatus::Idle, true));
         assert!(!loop_candidate_is_live(&SessionStatus::Exited(0), false));
+    }
+
+    #[test]
+    fn final_revalidation_blocks_prompt_change_before_inject() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = sample_config();
+        let dir = write_loop_config(tmp.path(), &config).expect("write config");
+        let session_id = Uuid::new_v4();
+
+        assert!(stale_delivery_report_if_needed(
+            &dir,
+            &config,
+            "project:wg-1-dev-team/tech-lead",
+            session_id
+        )
+        .is_none());
+
+        let mut changed = config.clone();
+        changed.prompt.body = "New prompt".to_string();
+        write_loop_config(tmp.path(), &changed).expect("write changed config");
+
+        let report = stale_delivery_report_if_needed(
+            &dir,
+            &config,
+            "project:wg-1-dev-team/tech-lead",
+            session_id,
+        )
+        .expect("stale report");
+
+        assert_eq!(report.kind, LoopAuditKind::DeliveryFailed);
+        assert_eq!(
+            report.target.as_deref(),
+            Some("project:wg-1-dev-team/tech-lead")
+        );
+        assert_eq!(report.session_id, Some(session_id));
+        assert!(report.prompt_snapshot.is_none());
+        assert!(report.message.contains("skipped stale delivery"));
+    }
+
+    #[test]
+    fn final_revalidation_blocks_policy_change_and_deleted_config_before_inject() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = sample_config();
+        let dir = write_loop_config(tmp.path(), &config).expect("write config");
+        let session_id = Uuid::new_v4();
+
+        let mut changed = config.clone();
+        changed.policy.busy_coordinator = BusyCoordinatorPolicy::Skip;
+        write_loop_config(tmp.path(), &changed).expect("write changed config");
+        assert!(stale_delivery_report_if_needed(
+            &dir,
+            &config,
+            "project:wg-1-dev-team/tech-lead",
+            session_id
+        )
+        .is_some());
+
+        std::fs::remove_dir_all(&dir).expect("remove loop dir");
+        assert!(stale_delivery_report_if_needed(
+            &dir,
+            &config,
+            "project:wg-1-dev-team/tech-lead",
+            session_id
+        )
+        .is_some());
+        assert!(!dir.exists());
     }
 }

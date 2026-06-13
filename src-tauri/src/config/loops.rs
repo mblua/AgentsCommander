@@ -251,6 +251,45 @@ pub fn read_loop_config(loop_dir: &Path) -> Result<LoopConfigToml, String> {
         .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopConfigRevalidation {
+    Current,
+    Gone,
+    Disabled,
+    Changed,
+}
+
+pub fn revalidate_loop_current(
+    loop_dir: &Path,
+    expected: &LoopConfigToml,
+) -> Result<LoopConfigRevalidation, String> {
+    if !loop_dir.is_dir() || !loop_dir.join(LOOP_CONFIG_FILE).is_file() {
+        return Ok(LoopConfigRevalidation::Gone);
+    }
+    let current = read_loop_config(loop_dir)?;
+    if !current.loop_def.enabled {
+        return Ok(LoopConfigRevalidation::Disabled);
+    }
+    if loop_delivery_config_matches(&current, expected) {
+        Ok(LoopConfigRevalidation::Current)
+    } else {
+        Ok(LoopConfigRevalidation::Changed)
+    }
+}
+
+pub fn loop_delivery_config_matches(current: &LoopConfigToml, expected: &LoopConfigToml) -> bool {
+    current.loop_def.id == expected.loop_def.id
+        && current.loop_def.enabled == expected.loop_def.enabled
+        && current.trigger.kind == expected.trigger.kind
+        && current.trigger.expr == expected.trigger.expr
+        && current.trigger.timezone == expected.trigger.timezone
+        && current.target.kind == expected.target.kind
+        && current.target.workgroup == expected.target.workgroup
+        && current.prompt.body == expected.prompt.body
+        && current.policy.missed_while_closed == expected.policy.missed_while_closed
+        && current.policy.busy_coordinator == expected.policy.busy_coordinator
+}
+
 pub fn write_loop_config(workspace_dir: &Path, config: &LoopConfigToml) -> Result<PathBuf, String> {
     validate_loop_id(&config.loop_def.id)?;
     let dir = loop_dir(workspace_dir, &config.loop_def.id);
@@ -274,8 +313,7 @@ pub fn read_loop_state(loop_dir: &Path) -> Result<LoopState, String> {
 }
 
 pub fn write_loop_state_atomic(loop_dir: &Path, state: &LoopState) -> Result<(), String> {
-    std::fs::create_dir_all(loop_dir)
-        .map_err(|e| format!("Failed to create Loop directory: {}", e))?;
+    ensure_loop_config_present(loop_dir)?;
     let state_path = loop_dir.join(LOOP_STATE_FILE);
     let tmp_path = loop_dir.join(format!("{}.{}.tmp", LOOP_STATE_FILE, Uuid::new_v4()));
     let content = serde_json::to_string_pretty(state)
@@ -289,8 +327,7 @@ pub fn write_loop_state_atomic(loop_dir: &Path, state: &LoopState) -> Result<(),
 }
 
 pub fn append_loop_audit_once(loop_dir: &Path, entry: &LoopAuditEntry) -> Result<(), String> {
-    std::fs::create_dir_all(loop_dir)
-        .map_err(|e| format!("Failed to create Loop directory: {}", e))?;
+    ensure_loop_config_present(loop_dir)?;
     let audit_path = loop_dir.join(LOOP_AUDIT_FILE);
     if audit_path.exists() {
         let content = std::fs::read_to_string(&audit_path)
@@ -324,6 +361,18 @@ pub fn append_loop_audit_once(loop_dir: &Path, entry: &LoopAuditEntry) -> Result
         .map_err(|e| format!("Failed to open {}: {}", audit_path.display(), e))?;
     writeln!(file, "{}", line)
         .map_err(|e| format!("Failed to append {}: {}", audit_path.display(), e))
+}
+
+fn ensure_loop_config_present(loop_dir: &Path) -> Result<(), String> {
+    let config_path = loop_dir.join(LOOP_CONFIG_FILE);
+    if config_path.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Loop config no longer exists at {}",
+            config_path.display()
+        ))
+    }
 }
 
 pub fn discover_loops_in_project(project_dir: &Path) -> Vec<AcLoopSummary> {
@@ -812,6 +861,44 @@ mod tests {
         append_loop_audit_once(&dir, &entry).expect("audit duplicate");
         let content = std::fs::read_to_string(dir.join(LOOP_AUDIT_FILE)).expect("audit read");
         assert_eq!(content.lines().count(), 1);
+    }
+
+    #[test]
+    fn storage_writes_do_not_recreate_loop_dirs_without_config() {
+        let tmp = fixture_project();
+        let workspace = tmp.path().join(".ac");
+        let config = sample_config();
+        let dir = write_loop_config(&workspace, &config).expect("write config");
+        let state = LoopState {
+            last_checked_at: Some(Utc::now()),
+            ..LoopState::default()
+        };
+        let entry = LoopAuditEntry {
+            run_id: Uuid::new_v4(),
+            loop_id: config.loop_def.id.clone(),
+            project_path: tmp.path().to_string_lossy().to_string(),
+            kind: LoopAuditKind::PendingBusy,
+            due_at: Utc::now(),
+            started_at: Utc::now(),
+            completed_at: None,
+            target: Some("proj:wg-1-dev-team/tech-lead".to_string()),
+            session_id: None,
+            busy_coordinator_policy: BusyCoordinatorPolicy::WaitUntilIdle,
+            error: None,
+            prompt_snapshot: None,
+        };
+
+        std::fs::remove_dir_all(&dir).expect("remove loop dir");
+        assert!(write_loop_state_atomic(&dir, &state).is_err());
+        assert!(!dir.exists());
+        assert!(append_loop_audit_once(&dir, &entry).is_err());
+        assert!(!dir.exists());
+
+        std::fs::create_dir_all(&dir).expect("recreate dir without config");
+        assert!(write_loop_state_atomic(&dir, &state).is_err());
+        assert!(append_loop_audit_once(&dir, &entry).is_err());
+        assert!(!dir.join(LOOP_STATE_FILE).exists());
+        assert!(!dir.join(LOOP_AUDIT_FILE).exists());
     }
 
     #[test]

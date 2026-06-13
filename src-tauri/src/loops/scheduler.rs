@@ -8,9 +8,9 @@ use uuid::Uuid;
 
 use crate::config::loops::{
     append_loop_audit_once, baseline_loop_state, details_from_parts, latest_due_between, loop_dir,
-    next_due_after, read_loop_config, read_loop_state, write_loop_state_atomic, LoopAuditEntry,
-    LoopAuditKind, LoopConfigDetails, LoopConfigToml, LoopLastResult, LoopState, LOOP_CONFIG_FILE,
-    LOOP_DIR_PREFIX,
+    next_due_after, read_loop_config, read_loop_state, revalidate_loop_current,
+    write_loop_state_atomic, LoopAuditEntry, LoopAuditKind, LoopConfigDetails,
+    LoopConfigRevalidation, LoopConfigToml, LoopLastResult, LoopState, LOOP_DIR_PREFIX,
 };
 use crate::config::projects::enumerate_registered_project_candidates;
 use crate::config::settings::SettingsState;
@@ -456,32 +456,24 @@ fn loop_dirs(workspace_dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(dirs)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LoopRevalidation {
-    Current,
-    Gone,
-    Disabled,
-    Changed,
-}
-
 fn loop_is_current_for_delivery(dir: &Path, expected: &LoopConfigToml) -> Result<bool, String> {
     match revalidate_loop_current(dir, expected)? {
-        LoopRevalidation::Current => Ok(true),
-        LoopRevalidation::Gone => {
+        LoopConfigRevalidation::Current => Ok(true),
+        LoopConfigRevalidation::Gone => {
             log::warn!(
                 "[loops] Skipping stale Loop delivery because {} no longer exists",
                 dir.display()
             );
             Ok(false)
         }
-        LoopRevalidation::Disabled => {
+        LoopConfigRevalidation::Disabled => {
             log::warn!(
                 "[loops] Skipping stale Loop delivery because '{}' is disabled",
                 expected.loop_def.id
             );
             Ok(false)
         }
-        LoopRevalidation::Changed => {
+        LoopConfigRevalidation::Changed => {
             log::warn!(
                 "[loops] Skipping stale Loop delivery because '{}' changed",
                 expected.loop_def.id
@@ -489,37 +481,6 @@ fn loop_is_current_for_delivery(dir: &Path, expected: &LoopConfigToml) -> Result
             Ok(false)
         }
     }
-}
-
-fn revalidate_loop_current(
-    dir: &Path,
-    expected: &LoopConfigToml,
-) -> Result<LoopRevalidation, String> {
-    if !dir.is_dir() || !dir.join(LOOP_CONFIG_FILE).is_file() {
-        return Ok(LoopRevalidation::Gone);
-    }
-    let current = read_loop_config(dir)?;
-    if !current.loop_def.enabled {
-        return Ok(LoopRevalidation::Disabled);
-    }
-    if loop_delivery_config_matches(&current, expected) {
-        Ok(LoopRevalidation::Current)
-    } else {
-        Ok(LoopRevalidation::Changed)
-    }
-}
-
-fn loop_delivery_config_matches(current: &LoopConfigToml, expected: &LoopConfigToml) -> bool {
-    current.loop_def.id == expected.loop_def.id
-        && current.loop_def.enabled == expected.loop_def.enabled
-        && current.trigger.kind == expected.trigger.kind
-        && current.trigger.expr == expected.trigger.expr
-        && current.trigger.timezone == expected.trigger.timezone
-        && current.target.kind == expected.target.kind
-        && current.target.workgroup == expected.target.workgroup
-        && current.prompt.body == expected.prompt.body
-        && current.policy.missed_while_closed == expected.policy.missed_while_closed
-        && current.policy.busy_coordinator == expected.policy.busy_coordinator
 }
 
 fn emit_transition(
@@ -607,7 +568,7 @@ mod tests {
 
         assert_eq!(
             revalidate_loop_current(&dir, &config).expect("current"),
-            LoopRevalidation::Current
+            LoopConfigRevalidation::Current
         );
 
         let mut renamed = config.clone();
@@ -615,7 +576,7 @@ mod tests {
         write_loop_config(tmp.path(), &renamed).expect("write renamed config");
         assert_eq!(
             revalidate_loop_current(&dir, &config).expect("renamed"),
-            LoopRevalidation::Current
+            LoopConfigRevalidation::Current
         );
 
         let mut retargeted = config.clone();
@@ -623,7 +584,7 @@ mod tests {
         write_loop_config(tmp.path(), &retargeted).expect("write retargeted config");
         assert_eq!(
             revalidate_loop_current(&dir, &config).expect("retargeted"),
-            LoopRevalidation::Changed
+            LoopConfigRevalidation::Changed
         );
 
         let mut disabled = config.clone();
@@ -631,13 +592,13 @@ mod tests {
         write_loop_config(tmp.path(), &disabled).expect("write disabled config");
         assert_eq!(
             revalidate_loop_current(&dir, &config).expect("disabled"),
-            LoopRevalidation::Disabled
+            LoopConfigRevalidation::Disabled
         );
 
         std::fs::remove_dir_all(&dir).expect("remove loop dir");
         assert_eq!(
             revalidate_loop_current(&dir, &config).expect("gone"),
-            LoopRevalidation::Gone
+            LoopConfigRevalidation::Gone
         );
     }
 }
