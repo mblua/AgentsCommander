@@ -4,6 +4,10 @@ This directory contains repeatable, versioned regression suites for AgentsComman
 
 The goal is to make future rounds reproducible without turning every run into one large ad hoc report. Each functional area has its own file and should be executed in order unless a case explicitly states that it is independent.
 
+## Regression Map Objective
+
+This directory is the product regression map for acceptance testing. Every user-facing feature, button, option, menu item, dialog action, and persistence expectation should have either a documented case or an explicit planned gap. When a code change touches a UI surface or workflow, scope audit must map the changed files and selectors to the relevant documented cases before deciding what to rerun.
+
 ## Visual Test Environment
 
 - The app under test should be `agentscommander_testeable.exe` for deterministic GUI regression runs.
@@ -18,7 +22,8 @@ The goal is to make future rounds reproducible without turning every run into on
   - Physical and logical rectangles can differ because DPI scaling changes the coordinate space reported by different Windows APIs.
 - Before each execution, record the target HWND/PID, process path, window rectangle, whether the window is maximized, and the capture method used.
 - In multi-monitor setups, modals and menus can appear outside the crop for the target monitor. Use virtual desktop capture, HWND capture, adjacent crop, or relative-window coordinate capture as fallback evidence.
-- If screenshot capture is based on a screen rectangle, verify the target window is foreground and unobscured before counting the image as product evidence. Foreground terminals or other windows can contaminate otherwise correct target-rectangle captures.
+- If the user assigns a monitor and confirms they will not touch it during the run, treat that monitor as reserved after the launch/placement/maximized gate passes. Recheck placement after relaunches or visible anomalies, but do not spend the run repeatedly proving foreground/process ownership for every screenshot.
+- If the monitor is not reserved, or the image visibly shows another window, verify the target window is foreground and unobscured before counting the image as product evidence. Foreground terminals or other windows can contaminate otherwise correct target-rectangle captures.
 - Prefer coordinates relative to the detected target window. Do not hardcode absolute screen coordinates except when documenting a concrete execution.
 
 ## Deterministic Testable App
@@ -76,6 +81,12 @@ Historical reference: the old placement `--window-x -2891 --window-y -11 --windo
 When the testable GUI is launched with `--ui-automation`, prefer semantic `ui-*` commands over coordinate clicks for WebView controls. Stable targets use exact `data-ac-testid` selectors; screenshots remain evidence, not the action mechanism.
 
 The selector seed and missing-affordance tracker lives in [semantic-ui-automation-affordance-matrix.md](semantic-ui-automation-affordance-matrix.md). If acceptance can perform a behavior with screen and mouse but cannot inspect or operate it semantically, report the missing selector/action there.
+
+## Control Coverage Discipline
+
+Before a GUI suite can be considered complete for a surface, it must inventory the visible controls a user can reasonably press and map them to cases: primary path, alternate choices, cancel/skip, invalid input, save/cancel, and persistence after restart where applicable. Mutually exclusive first-run choices need separate clean-state slices instead of being collapsed into a single happy path.
+
+If a run is intentionally narrower than the full inventory, the report must say so and list the uncovered controls as follow-up coverage. A PASS for a targeted slice is not a PASS for the whole surface.
 
 ## Test Reset
 

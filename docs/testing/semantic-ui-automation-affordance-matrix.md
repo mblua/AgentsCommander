@@ -67,6 +67,6 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Agent/open/new-agent modals | Dialog roots, list rows, template picker rows, form fields, launch actions |
 | New Team modal | Dialog root, wizard step markers, team name input, agent filter, agent checkboxes, coordinator radio buttons, repo input, create/back/next buttons |
 | New Workgroup modal | Dialog root, team select, task-title input, create/cancel buttons, creation progress/error state |
-| Target-window evidence | HWND-surface screenshot or foreground/unobscured assertion before screen-rectangle capture |
+| Target-window evidence | HWND-surface screenshot support; for non-reserved monitors, foreground/unobscured assertion before screen-rectangle capture |
 | Terminal internals | xterm buffer inspection is out of DOM-selector scope for #497 |
 | Drag/hold gestures | Future pointer actions for splitters and hold-to-record |
