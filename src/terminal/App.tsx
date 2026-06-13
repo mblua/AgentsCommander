@@ -254,7 +254,12 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
   });
 
   return (
-    <div class="terminal-layout">
+    <div
+      class="terminal-layout"
+      data-ac-testid="terminal.root"
+      data-ac-role="surface"
+      data-ac-state={terminalStore.activeSessionId ? "active" : "empty"}
+    >
       <Show when={!props.embedded}>
         <Titlebar detached={props.detached} lockedSessionId={props.lockedSessionId} />
       </Show>
@@ -264,7 +269,11 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
         <Show
           when={terminalStore.activeSessionId}
           fallback={
-            <div class="terminal-empty">
+            <div
+              class="terminal-empty"
+              data-ac-testid="terminal.empty"
+              data-ac-role="status"
+            >
               <span>
                 {props.detached
                   ? "Session closed"
@@ -274,6 +283,8 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
                 <button
                   class="terminal-empty-btn"
                   onClick={() => { homeStore.hide(); SessionAPI.create(); }}
+                  data-ac-testid="terminal.empty.newSession"
+                  data-ac-role="button"
                 >
                   + New Session
                 </button>

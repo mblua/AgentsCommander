@@ -12,6 +12,7 @@ pub mod session;
 pub mod spec_board;
 pub mod task;
 pub mod telegram;
+pub mod testability;
 pub mod voice;
 pub mod wg_delete_diagnostic;
 pub mod window;

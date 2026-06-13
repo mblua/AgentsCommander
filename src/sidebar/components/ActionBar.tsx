@@ -185,12 +185,20 @@ const ActionBar: Component = () => {
 
   return (
     <>
-      <div class="action-bar">
+      <div
+        class="action-bar"
+        data-ac-testid="actionBar"
+        data-ac-role="surface"
+      >
         <div class="action-bar-dropdown" ref={dropdownRef}>
           <button
             class="action-bar-dropdown-btn"
             disabled={isPendingDialog()}
             onClick={() => setShowDropdown(!showDropdown())}
+            aria-expanded={showDropdown()}
+            data-ac-testid="actionBar.newOpen"
+            data-ac-role="button"
+            data-ac-state={isPendingDialog() ? "disabled" : showDropdown() ? "open" : "closed"}
           >
             New / Open
             <svg class="action-bar-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none">
@@ -198,11 +206,29 @@ const ActionBar: Component = () => {
             </svg>
           </button>
           <Show when={showDropdown()}>
-            <div class="action-bar-menu">
-              <button class="action-bar-menu-item" disabled={isPendingDialog()} onClick={handleNewProject}>
+            <div
+              class="action-bar-menu"
+              data-ac-testid="actionBar.menu"
+              data-ac-role="menu"
+            >
+              <button
+                class="action-bar-menu-item"
+                disabled={isPendingDialog()}
+                onClick={handleNewProject}
+                data-ac-testid="actionBar.menu.newProject"
+                data-ac-role="menuitem"
+                data-ac-state={isPendingDialog() ? "disabled" : "ready"}
+              >
                 &#x1F4C1; New Project
               </button>
-              <button class="action-bar-menu-item" disabled={isPendingDialog()} onClick={handleOpenProject}>
+              <button
+                class="action-bar-menu-item"
+                disabled={isPendingDialog()}
+                onClick={handleOpenProject}
+                data-ac-testid="actionBar.menu.openProject"
+                data-ac-role="menuitem"
+                data-ac-state={isPendingDialog() ? "disabled" : "ready"}
+              >
                 &#x1F4C2; Open Project
               </button>
             </div>
@@ -210,7 +236,13 @@ const ActionBar: Component = () => {
         </div>
         <div class="action-bar-icons">
           <Show when={settingsStore.current?.specBoardEnabled === true}>
-            <button class="toolbar-gear-btn" onClick={() => SpecBoardAPI.open()} title="Spec board">
+            <button
+              class="toolbar-gear-btn"
+              onClick={() => SpecBoardAPI.open()}
+              title="Spec board"
+              data-ac-testid="actionBar.specBoard"
+              data-ac-role="button"
+            >
               &#x25A7;
             </button>
           </Show>
@@ -221,6 +253,9 @@ const ActionBar: Component = () => {
             title={homeStore.visible ? "Hide Home" : "Show Home"}
             aria-label={homeStore.visible ? "Hide Home" : "Show Home"}
             aria-pressed={homeStore.visible}
+            data-ac-testid="actionBar.home"
+            data-ac-role="button"
+            data-ac-state={homeStore.visible ? "visible" : "hidden"}
           >
             &#x1F3E0;
           </button>
@@ -229,6 +264,10 @@ const ActionBar: Component = () => {
             disabled={!sessionsStore.hydrated || sessionsStore.toggleInFlight}
             onClick={() => sessionsStore.toggleCoordSortByActivity()}
             title={sessionsStore.coordSortByActivity ? "Show recent coordinators first" : "Show coordinators in default order"}
+            aria-pressed={sessionsStore.coordSortByActivity}
+            data-ac-testid="actionBar.sortCoordinators"
+            data-ac-role="button"
+            data-ac-state={!sessionsStore.hydrated || sessionsStore.toggleInFlight ? "disabled" : sessionsStore.coordSortByActivity ? "recent" : "default"}
           >
             &#x1F525;
           </button>
@@ -238,6 +277,10 @@ const ActionBar: Component = () => {
             onClick={handleToggleMute}
             title={isSoundsEnabled() ? "Mute all app sounds" : "Unmute app sounds"}
             aria-label={isSoundsEnabled() ? "Mute all app sounds" : "Unmute app sounds"}
+            aria-pressed={!isSoundsEnabled()}
+            data-ac-testid="actionBar.sounds"
+            data-ac-role="button"
+            data-ac-state={!settingsStore.current ? "disabled" : isSoundsEnabled() ? "audible" : "muted"}
           >
             {isSoundsEnabled() ? "🔊" : "🔇"}
           </button>
@@ -245,6 +288,10 @@ const ActionBar: Component = () => {
             class={`toolbar-gear-btn show-categories-btn ${sessionsStore.showCategories ? "active" : ""}`}
             onClick={() => sessionsStore.toggleShowCategories()}
             title={sessionsStore.showCategories ? "Hide category sections" : "Show category sections"}
+            aria-pressed={sessionsStore.showCategories}
+            data-ac-testid="actionBar.categories"
+            data-ac-role="button"
+            data-ac-state={sessionsStore.showCategories ? "visible" : "hidden"}
           >
             &#x1F441;
           </button>
@@ -252,10 +299,20 @@ const ActionBar: Component = () => {
             class={`toolbar-gear-btn show-categories-btn ${sessionsStore.alwaysShowSelectedWorkgroup ? "active" : ""}`}
             onClick={() => sessionsStore.toggleAlwaysShowSelectedWorkgroup()}
             title={sessionsStore.alwaysShowSelectedWorkgroup ? "Don't force 'Selected Workgroup' visible" : "Always show 'Selected Workgroup'"}
+            aria-pressed={sessionsStore.alwaysShowSelectedWorkgroup}
+            data-ac-testid="actionBar.pinSelectedWorkgroup"
+            data-ac-role="button"
+            data-ac-state={sessionsStore.alwaysShowSelectedWorkgroup ? "pinned" : "default"}
           >
             &#x1F4CC;
           </button>
-          <button class="toolbar-gear-btn" onClick={() => GuideAPI.open()} title="Hints">
+          <button
+            class="toolbar-gear-btn"
+            onClick={() => GuideAPI.open()}
+            title="Hints"
+            data-ac-testid="actionBar.guide"
+            data-ac-role="button"
+          >
             &#x1F4A1;
           </button>
           <button
@@ -263,6 +320,9 @@ const ActionBar: Component = () => {
             disabled={!settingsStore.current}
             onClick={handleToggleTheme}
             title="Toggle theme"
+            data-ac-testid="actionBar.theme"
+            data-ac-role="button"
+            data-ac-state={!settingsStore.current ? "disabled" : isLight() ? "light" : "dark"}
           >
             {isLight() ? "\u2600\uFE0F" : "\uD83C\uDF19"}
           </button>
@@ -270,6 +330,8 @@ const ActionBar: Component = () => {
             class="toolbar-gear-btn"
             onClick={() => { setPendingSection(undefined); setShowSettings(true); }}
             title="Settings"
+            data-ac-testid="actionBar.settings"
+            data-ac-role="button"
           >
             &#x2699;
           </button>
@@ -283,17 +345,38 @@ const ActionBar: Component = () => {
         />
       )}
       <Show when={confirmPath()}>
-        <div class="confirm-overlay">
-          <div class="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+        <div
+          class="confirm-overlay"
+          data-ac-testid="project.createConfirm.overlay"
+          data-ac-role="overlay"
+        >
+          <div
+            class="confirm-dialog"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            data-ac-testid="project.createConfirm.dialog"
+            data-ac-role="dialog"
+          >
             <p class="confirm-text">
               This folder does not have an AC project. Do you want to create a new project here?
             </p>
             <p class="confirm-path">{confirmPath()}</p>
             <div class="confirm-actions">
-              <button class="confirm-btn confirm-btn-yes" onClick={handleConfirmCreate}>
+              <button
+                class="confirm-btn confirm-btn-yes"
+                onClick={handleConfirmCreate}
+                data-ac-testid="project.createConfirm.confirm"
+                data-ac-role="button"
+              >
                 Yes, create project
               </button>
-              <button class="confirm-btn confirm-btn-no" onClick={() => setConfirmPath(null)}>
+              <button
+                class="confirm-btn confirm-btn-no"
+                onClick={() => setConfirmPath(null)}
+                data-ac-testid="project.createConfirm.cancel"
+                data-ac-role="button"
+              >
                 Cancel
               </button>
             </div>
