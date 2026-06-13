@@ -1,4 +1,5 @@
 use crate::errors::AppError;
+use crate::network::{OutboundNetwork, OutboundPermit};
 use crate::telegram::redact::redact;
 
 #[derive(Debug, serde::Deserialize)]
@@ -49,14 +50,57 @@ pub struct TelegramUpdate {
     pub chat_id: i64,
 }
 
+#[derive(Clone, Copy)]
+enum TelegramApiMethod {
+    SendMessage,
+    GetUpdates,
+    GetFile,
+    DownloadFile,
+    SendPhoto,
+    SendDocument,
+}
+
+impl TelegramApiMethod {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SendMessage => "telegram.send_message",
+            Self::GetUpdates => "telegram.get_updates",
+            Self::GetFile => "telegram.get_file",
+            Self::DownloadFile => "telegram.download_file",
+            Self::SendPhoto => "telegram.send_photo",
+            Self::SendDocument => "telegram.send_document",
+        }
+    }
+}
+
+async fn acquire_api_permit(
+    network: &OutboundNetwork,
+    method: TelegramApiMethod,
+) -> Result<OutboundPermit, AppError> {
+    network
+        .acquire(method.label())
+        .await
+        .map_err(AppError::Telegram)
+}
+
+fn telegram_reqwest_error(e: reqwest::Error) -> AppError {
+    telegram_request_error_message(&e.to_string())
+}
+
+fn telegram_request_error_message(message: &str) -> AppError {
+    AppError::Telegram(redact(message))
+}
+
 pub async fn send_message(
-    client: &reqwest::Client,
+    network: &OutboundNetwork,
     token: &str,
     chat_id: i64,
     text: &str,
 ) -> Result<(), AppError> {
     let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
-    let resp = client
+    let _permit = acquire_api_permit(network, TelegramApiMethod::SendMessage).await?;
+    let resp = network
+        .telegram()
         .post(&url)
         .json(&serde_json::json!({
             "chat_id": chat_id,
@@ -64,12 +108,10 @@ pub async fn send_message(
         }))
         .send()
         .await
-        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
+        .map_err(telegram_reqwest_error)?;
 
-    let body: TelegramResponse<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
+    let body: TelegramResponse<serde_json::Value> =
+        resp.json().await.map_err(telegram_reqwest_error)?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -82,13 +124,15 @@ pub async fn send_message(
 }
 
 pub async fn get_updates(
-    client: &reqwest::Client,
+    network: &OutboundNetwork,
     token: &str,
     offset: i64,
     timeout: u64,
 ) -> Result<Vec<TelegramUpdate>, AppError> {
     let url = format!("https://api.telegram.org/bot{}/getUpdates", token);
-    let resp = client
+    let _permit = acquire_api_permit(network, TelegramApiMethod::GetUpdates).await?;
+    let resp = network
+        .telegram()
         .get(&url)
         .query(&[
             ("offset", offset.to_string()),
@@ -96,12 +140,9 @@ pub async fn get_updates(
         ])
         .send()
         .await
-        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
+        .map_err(telegram_reqwest_error)?;
 
-    let body: TelegramResponse<Vec<Update>> = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
+    let body: TelegramResponse<Vec<Update>> = resp.json().await.map_err(telegram_reqwest_error)?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -149,22 +190,22 @@ pub async fn get_updates(
 }
 
 pub async fn get_file(
-    client: &reqwest::Client,
+    network: &OutboundNetwork,
     token: &str,
     file_id: &str,
 ) -> Result<String, AppError> {
     let url = format!("https://api.telegram.org/bot{}/getFile", token);
-    let resp = client
+    let _permit = acquire_api_permit(network, TelegramApiMethod::GetFile).await?;
+    let resp = network
+        .telegram()
         .get(&url)
         .query(&[("file_id", file_id)])
         .send()
         .await
-        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
+        .map_err(telegram_reqwest_error)?;
 
-    let body: TelegramResponse<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
+    let body: TelegramResponse<serde_json::Value> =
+        resp.json().await.map_err(telegram_reqwest_error)?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -179,16 +220,18 @@ pub async fn get_file(
 }
 
 pub async fn download_file(
-    client: &reqwest::Client,
+    network: &OutboundNetwork,
     token: &str,
     file_path: &str,
 ) -> Result<Vec<u8>, AppError> {
     let url = format!("https://api.telegram.org/file/bot{}/{}", token, file_path);
-    let resp = client
+    let _permit = acquire_api_permit(network, TelegramApiMethod::DownloadFile).await?;
+    let resp = network
+        .telegram()
         .get(&url)
         .send()
         .await
-        .map_err(|e| AppError::Telegram(redact(&e.to_string())))?;
+        .map_err(telegram_reqwest_error)?;
 
     if !resp.status().is_success() {
         return Err(AppError::Telegram(format!(
@@ -200,7 +243,7 @@ pub async fn download_file(
     resp.bytes()
         .await
         .map(|b| b.to_vec())
-        .map_err(|e| AppError::Telegram(redact(&e.to_string())))
+        .map_err(telegram_reqwest_error)
 }
 
 /// Telegram `sendPhoto`. Used for static images <= 10 MB whose extension
@@ -209,7 +252,7 @@ pub async fn download_file(
 /// matching `mime` string; this primitive is dumb on purpose so callers can
 /// swap to `send_document` for the fallback path without redoing validation.
 pub async fn send_photo(
-    client: &reqwest::Client,
+    network: &OutboundNetwork,
     token: &str,
     chat_id: i64,
     bytes: Vec<u8>,
@@ -232,17 +275,17 @@ pub async fn send_photo(
         form = form.text("caption", c.to_string());
     }
 
-    let resp = client
+    let _permit = acquire_api_permit(network, TelegramApiMethod::SendPhoto).await?;
+    let resp = network
+        .telegram_upload()
         .post(&url)
         .multipart(form)
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(telegram_reqwest_error)?;
 
-    let body: TelegramResponse<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+    let body: TelegramResponse<serde_json::Value> =
+        resp.json().await.map_err(telegram_reqwest_error)?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -259,7 +302,7 @@ pub async fn send_photo(
 /// as a photo. Hard upper bound (50 MB) is enforced by the caller; this
 /// primitive will happily forward whatever the caller passes.
 pub async fn send_document(
-    client: &reqwest::Client,
+    network: &OutboundNetwork,
     token: &str,
     chat_id: i64,
     bytes: Vec<u8>,
@@ -282,17 +325,17 @@ pub async fn send_document(
         form = form.text("caption", c.to_string());
     }
 
-    let resp = client
+    let _permit = acquire_api_permit(network, TelegramApiMethod::SendDocument).await?;
+    let resp = network
+        .telegram_upload()
         .post(&url)
         .multipart(form)
         .send()
         .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+        .map_err(telegram_reqwest_error)?;
 
-    let body: TelegramResponse<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Telegram(e.to_string()))?;
+    let body: TelegramResponse<serde_json::Value> =
+        resp.json().await.map_err(telegram_reqwest_error)?;
 
     if !body.ok {
         return Err(AppError::Telegram(
@@ -302,4 +345,65 @@ pub async fn send_document(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn every_telegram_api_method_acquires_a_network_permit() {
+        let network = OutboundNetwork::new_for_tests(1);
+        for method in [
+            TelegramApiMethod::SendMessage,
+            TelegramApiMethod::GetUpdates,
+            TelegramApiMethod::GetFile,
+            TelegramApiMethod::DownloadFile,
+            TelegramApiMethod::SendPhoto,
+            TelegramApiMethod::SendDocument,
+        ] {
+            let permit = acquire_api_permit(&network, method).await.unwrap();
+            assert_eq!(network.available_permits_for_tests(), 0);
+            drop(permit);
+            assert_eq!(network.available_permits_for_tests(), 1);
+        }
+
+        assert_eq!(
+            network.acquired_labels_for_tests(),
+            vec![
+                "telegram.send_message",
+                "telegram.get_updates",
+                "telegram.get_file",
+                "telegram.download_file",
+                "telegram.send_photo",
+                "telegram.send_document",
+            ]
+        );
+    }
+
+    #[test]
+    fn send_photo_error_redacts_fake_token() {
+        let fake_token = "123456:FAKE_SECRET_TOKEN";
+        let error = telegram_request_error_message(&format!(
+            "request failed for https://api.telegram.org/bot{fake_token}/sendPhoto"
+        ));
+        let AppError::Telegram(message) = error else {
+            panic!("expected Telegram error");
+        };
+        assert!(!message.contains(fake_token));
+        assert!(message.contains("/bot***/sendPhoto"));
+    }
+
+    #[test]
+    fn send_document_error_redacts_fake_token() {
+        let fake_token = "123456:FAKE_SECRET_TOKEN";
+        let error = telegram_request_error_message(&format!(
+            "request failed for https://api.telegram.org/bot{fake_token}/sendDocument"
+        ));
+        let AppError::Telegram(message) = error else {
+            panic!("expected Telegram error");
+        };
+        assert!(!message.contains(fake_token));
+        assert!(message.contains("/bot***/sendDocument"));
+    }
 }

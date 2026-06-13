@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use tokio::task::JoinHandle;
+use tokio::time::{timeout_at, Instant};
 use uuid::Uuid;
 
 use crate::errors::AppError;
+use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
 use crate::telegram::bridge::{self, BridgeHandle, SessionReaderKind};
 use crate::telegram::types::{BridgeInfo, BridgeStatus, TelegramBotConfig};
@@ -21,6 +25,55 @@ pub struct TelegramBridgeManager {
 
 pub type TelegramBridgeState = Arc<tokio::sync::Mutex<TelegramBridgeManager>>;
 
+#[must_use = "BridgeShutdown must be consumed with spawn_wait_or_abort() or abort_now() after releasing TelegramBridgeState"]
+pub struct BridgeShutdown {
+    session_id: Uuid,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl BridgeShutdown {
+    pub fn spawn_wait_or_abort(self) {
+        tauri::async_runtime::spawn(async move {
+            self.wait_or_abort().await;
+        });
+    }
+
+    pub fn abort_now(self) {
+        for task in self.tasks {
+            task.abort();
+        }
+    }
+
+    async fn wait_or_abort(self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        for mut task in self.tasks {
+            if Instant::now() >= deadline {
+                task.abort();
+                continue;
+            }
+
+            match timeout_at(deadline, &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if e.is_cancelled() => {}
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "[telegram] Bridge task for session {} ended with error: {}",
+                        self.session_id,
+                        e
+                    );
+                }
+                Err(_) => {
+                    task.abort();
+                    log::warn!(
+                        "[telegram] Bridge task for session {} did not stop within timeout",
+                        self.session_id
+                    );
+                }
+            }
+        }
+    }
+}
+
 impl TelegramBridgeManager {
     pub fn new(output_senders: OutputSenderMap) -> Self {
         Self {
@@ -35,6 +88,7 @@ impl TelegramBridgeManager {
         session_id: Uuid,
         bot: &TelegramBotConfig,
         pty_mgr: Arc<Mutex<PtyManager>>,
+        network: OutboundNetwork,
         app_handle: tauri::AppHandle<R>,
         reader: Option<SessionReaderKind>,
     ) -> Result<BridgeInfo, AppError> {
@@ -70,6 +124,7 @@ impl TelegramBridgeManager {
             session_id,
             info.clone(),
             pty_mgr,
+            network,
             app_handle,
             reader,
         );
@@ -88,7 +143,7 @@ impl TelegramBridgeManager {
         Ok(info)
     }
 
-    pub fn detach(&mut self, session_id: Uuid) -> Result<(), AppError> {
+    pub fn detach(&mut self, session_id: Uuid) -> Result<BridgeShutdown, AppError> {
         let handle = self.bridges.remove(&session_id).ok_or_else(|| {
             AppError::Telegram(format!("No bridge attached to session {}", session_id))
         })?;
@@ -101,7 +156,10 @@ impl TelegramBridgeManager {
 
         self.bot_assignments.retain(|_, sid| *sid != session_id);
 
-        Ok(())
+        Ok(BridgeShutdown {
+            session_id,
+            tasks: handle.tasks,
+        })
     }
 
     pub fn list_bridges(&self) -> Vec<BridgeInfo> {
@@ -117,15 +175,76 @@ impl TelegramBridgeManager {
     }
 
     /// Cancel all active bridges. Called during app shutdown.
-    pub fn cancel_all(&self) {
-        for handle in self.bridges.values() {
+    pub fn cancel_all(&mut self) -> Vec<BridgeShutdown> {
+        let mut shutdowns = Vec::new();
+        for (session_id, handle) in self.bridges.drain() {
             handle.cancel.cancel();
+            shutdowns.push(BridgeShutdown {
+                session_id,
+                tasks: handle.tasks,
+            });
         }
-        if !self.bridges.is_empty() {
+        if let Ok(mut senders) = self.output_senders.lock() {
+            senders.clear();
+        }
+        self.bot_assignments.clear();
+        if !shutdowns.is_empty() {
             log::info!(
                 "[telegram] Cancelled {} active bridges for shutdown",
-                self.bridges.len()
+                shutdowns.len()
             );
+        }
+        shutdowns
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn cancel_all_drains_bridge_state_and_returns_shutdowns() {
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        let mut manager = TelegramBridgeManager::new(Arc::clone(&output_senders));
+        let session_id = Uuid::new_v4();
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        manager.bot_assignments.insert("bot-1".into(), session_id);
+        output_senders
+            .lock()
+            .unwrap()
+            .insert(session_id, tx.clone());
+        manager.bridges.insert(
+            session_id,
+            BridgeHandle {
+                info: BridgeInfo {
+                    bot_id: "bot-1".into(),
+                    bot_label: "Bot 1".into(),
+                    session_id: session_id.to_string(),
+                    status: BridgeStatus::Active,
+                    color: "#229ED9".into(),
+                },
+                cancel: cancel.clone(),
+                output_sender: tx,
+                tasks: vec![task],
+            },
+        );
+
+        let shutdowns = manager.cancel_all();
+
+        assert!(cancel.is_cancelled());
+        assert!(manager.bridges.is_empty());
+        assert!(manager.bot_assignments.is_empty());
+        assert!(output_senders.lock().unwrap().is_empty());
+        assert_eq!(shutdowns.len(), 1);
+        for shutdown in shutdowns {
+            shutdown.abort_now();
         }
     }
 }

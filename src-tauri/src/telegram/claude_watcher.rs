@@ -13,6 +13,7 @@ use tauri::Emitter;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use crate::network::OutboundNetwork;
 use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
 use crate::telegram::jsonl_kernel::{
     find_latest_jsonl, read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS,
@@ -29,6 +30,7 @@ const FLUSH_DELAY_MS: u64 = 500;
 /// so wrapper-driven `CLAUDE_CONFIG_DIR` overrides like `claude-mb` are honored).
 pub fn spawn_watch_task<R: tauri::Runtime>(
     project_dir: PathBuf,
+    network: OutboundNetwork,
     bot_token: String,
     chat_id: i64,
     session_id: String,
@@ -38,6 +40,7 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
     tokio::spawn(async move {
         watch_loop(
             project_dir,
+            network,
             bot_token,
             chat_id,
             session_id.clone(),
@@ -112,17 +115,13 @@ fn extract_assistant_text(line: &str) -> Option<String> {
 
 async fn watch_loop<R: tauri::Runtime>(
     project_dir: PathBuf,
+    network: OutboundNetwork,
     token: String,
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
 ) {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
-
     let mut logger = BridgeLogger::new(&session_id);
     let mut diag = DiagLogger::new();
     let mut buffer = String::new();
@@ -254,7 +253,7 @@ async fn watch_loop<R: tauri::Runtime>(
                     let elapsed = last_buffer_add.elapsed();
                     if elapsed >= flush_delay || buffer.len() > 2000 {
                         flush_buffer(
-                            &mut buffer, &client, &token, chat_id,
+                            &mut buffer, &network, &token, chat_id,
                             &session_id, &app, &mut logger, &mut diag,
                             true, // skip_dedup: JSONL text is clean, repeated lines are legitimate
                         ).await;
@@ -278,7 +277,7 @@ async fn watch_loop<R: tauri::Runtime>(
     if !buffer.is_empty() {
         flush_buffer(
             &mut buffer,
-            &client,
+            &network,
             &token,
             chat_id,
             &session_id,

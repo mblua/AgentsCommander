@@ -1,8 +1,8 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{self, Command, Output, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -17,6 +17,9 @@ use crate::commands::role_templates::{
 
 pub const DEFAULT_REPO: &str = "https://github.com/msitarzewski/agency-agents";
 pub const DEFAULT_REFERENCE: &str = "main";
+const GIT_LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
+const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -491,6 +494,108 @@ fn parse_github_repo(input: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn run_git_with_timeout(
+    current_dir: Option<&Path>,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output, String> {
+    run_process_with_timeout("git", current_dir, args, timeout)
+        .map_err(|e| format!("Failed to run git {:?}: {}", args, e))
+}
+
+fn run_process_with_timeout(
+    program: &str,
+    current_dir: Option<&Path>,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut cmd = Command::new(program);
+    crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
+    if let Some(dir) = current_dir {
+        cmd.current_dir(dir);
+    }
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn failed for {} {:?}: {}", program, args, e))?;
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture stdout".to_string())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture stderr".to_string())?;
+
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout.read_to_end(&mut bytes);
+        (result, bytes)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stderr.read_to_end(&mut bytes);
+        (result, bytes)
+    });
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("wait failed for {} {:?}: {}", program, args, e))?
+        {
+            break status;
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let stdout = join_reader(stdout_reader, "stdout")?;
+            let stderr = join_reader(stderr_reader, "stderr")?;
+            let stderr_text = String::from_utf8_lossy(&stderr);
+            return Err(format!(
+                "{} {:?} timed out after {} seconds; killed and reaped. stderr: {} stdout_bytes={}",
+                program,
+                args,
+                timeout.as_secs(),
+                stderr_text.trim(),
+                stdout.len()
+            ));
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let stdout = join_reader(stdout_reader, "stdout")?;
+    let stderr = join_reader(stderr_reader, "stderr")?;
+
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn join_reader(
+    reader: std::thread::JoinHandle<(std::io::Result<usize>, Vec<u8>)>,
+    stream_name: &str,
+) -> Result<Vec<u8>, String> {
+    let (result, bytes) = reader
+        .join()
+        .map_err(|_| format!("{stream_name} reader thread panicked"))?;
+    result.map_err(|e| format!("{stream_name} read failed: {e}"))?;
+    Ok(bytes)
+}
+
 fn resolve_commit_with_git(repo: &str, reference: &str) -> Result<String, String> {
     #[cfg(test)]
     if let Ok(commit) = std::env::var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT") {
@@ -498,9 +603,7 @@ fn resolve_commit_with_git(repo: &str, reference: &str) -> Result<String, String
         return Ok(commit);
     }
 
-    let output = Command::new("git")
-        .args(["ls-remote", repo, reference])
-        .output()
+    let output = run_git_with_timeout(None, &["ls-remote", repo, reference], GIT_LS_REMOTE_TIMEOUT)
         .map_err(|e| {
             format!(
                 "Failed to run git. Install git or use an environment where git is on PATH: {}",
@@ -538,12 +641,8 @@ fn fetch_repo_with_git(repo: &str, commit: &str, config_dir: &Path) -> Result<Pa
             e
         )
     })?;
-    let run = |args: &[&str]| -> Result<(), String> {
-        let output = Command::new("git")
-            .current_dir(&temp)
-            .args(args)
-            .output()
-            .map_err(|e| format!("Failed to run git {:?}: {}", args, e))?;
+    let run = |args: &[&str], timeout: Duration| -> Result<(), String> {
+        let output = run_git_with_timeout(Some(&temp), args, timeout)?;
         if output.status.success() {
             Ok(())
         } else {
@@ -554,10 +653,16 @@ fn fetch_repo_with_git(repo: &str, commit: &str, config_dir: &Path) -> Result<Pa
             ))
         }
     };
-    run(&["init", "--quiet"])?;
-    run(&["remote", "add", "origin", repo])?;
-    run(&["fetch", "--depth", "1", "origin", commit])?;
-    run(&["checkout", "--quiet", "--detach", commit])?;
+    run(&["init", "--quiet"], GIT_CHECKOUT_TIMEOUT)?;
+    run(&["remote", "add", "origin", repo], GIT_CHECKOUT_TIMEOUT)?;
+    run(
+        &["fetch", "--depth", "1", "origin", commit],
+        GIT_FETCH_TIMEOUT,
+    )?;
+    run(
+        &["checkout", "--quiet", "--detach", commit],
+        GIT_CHECKOUT_TIMEOUT,
+    )?;
     Ok(temp)
 }
 
@@ -921,6 +1026,23 @@ mod tests {
             serde_json::to_string_pretty(&manifest(1)).expect("manifest json"),
         )
         .expect("write manifest");
+    }
+
+    #[test]
+    fn bounded_process_timeout_kills_and_reaps_child() {
+        #[cfg(windows)]
+        let (program, args) = (
+            "powershell.exe",
+            vec!["-NoProfile", "-Command", "Start-Sleep -Seconds 5"],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = ("sh", vec!["-c", "sleep 5"]);
+
+        let err =
+            run_process_with_timeout(program, None, &args, Duration::from_millis(100)).unwrap_err();
+
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(err.contains("killed and reaped"), "unexpected error: {err}");
     }
 
     #[test]
