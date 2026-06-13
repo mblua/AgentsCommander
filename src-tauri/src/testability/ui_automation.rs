@@ -26,6 +26,8 @@ const FS_RETRY_COUNT: usize = 8;
 const FS_RETRY_DELAY_MS: u64 = 25;
 const SESSION_READ_RETRY_COUNT: usize = 8;
 const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
+const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
+const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
 
 #[derive(Debug, Args)]
 pub struct UiQueryArgs {
@@ -818,7 +820,7 @@ fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
             let _ = retry_remove_file(&response_path);
             let _ = retry_remove_file(&request_path);
             let _ = retry_remove_file(&inflight_path);
-            return Ok(response);
+            return Ok(sanitize_response_for_cli(response));
         }
 
         if Instant::now() >= deadline {
@@ -1071,6 +1073,66 @@ fn expired_response_for_request(request: &UiAutomationRequest) -> UiAutomationRe
     );
     response.diagnostics = Some(json!({ "expiresAtUnixMs": request.expires_at_unix_ms }));
     response
+}
+
+fn sanitize_response_for_cli(mut response: UiAutomationResponse) -> UiAutomationResponse {
+    let truncation = response.available.as_mut().and_then(|available| {
+        let total = available.len();
+        for target in available.iter_mut() {
+            sanitize_target_for_cli(target);
+        }
+        if total > CLI_MAX_AVAILABLE_TARGETS {
+            available.truncate(CLI_MAX_AVAILABLE_TARGETS);
+            Some((total, CLI_MAX_AVAILABLE_TARGETS))
+        } else {
+            None
+        }
+    });
+
+    if let Some((total, limit)) = truncation {
+        add_cli_truncation_diagnostics(&mut response, total, limit);
+    }
+
+    response
+}
+
+fn sanitize_target_for_cli(target: &mut Value) {
+    let Some(obj) = target.as_object_mut() else {
+        return;
+    };
+    let Some(Value::String(text)) = obj.get_mut("text") else {
+        return;
+    };
+    if text.chars().count() <= CLI_MAX_TARGET_TEXT_CHARS {
+        return;
+    }
+    let mut truncated = text
+        .chars()
+        .take(CLI_MAX_TARGET_TEXT_CHARS)
+        .collect::<String>();
+    truncated.push_str("...");
+    *text = truncated;
+}
+
+fn add_cli_truncation_diagnostics(
+    response: &mut UiAutomationResponse,
+    available_total: usize,
+    available_limit: usize,
+) {
+    let mut diagnostics = response
+        .diagnostics
+        .take()
+        .filter(|value| value.is_object())
+        .and_then(|value| match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    diagnostics.insert("availableTotal".to_string(), json!(available_total));
+    diagnostics.insert("availableLimit".to_string(), json!(available_limit));
+    diagnostics.insert("availableTruncated".to_string(), json!(true));
+    response.diagnostics = Some(Value::Object(diagnostics));
 }
 
 fn print_stdout_json<T: Serialize>(value: &T) {

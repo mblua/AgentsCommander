@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -71,6 +72,49 @@ fn run_with_env(
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+fn run_without_draining_output_until_exit(
+    bin: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> (Option<i32>, String, String, bool) {
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn binary");
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().expect("poll child") {
+            Some(status) => {
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    pipe.read_to_string(&mut stdout).expect("read stdout");
+                }
+                if let Some(mut pipe) = child.stderr.take() {
+                    pipe.read_to_string(&mut stderr).expect("read stderr");
+                }
+                return (status.code(), stdout, stderr, false);
+            }
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let status = child.wait().expect("wait killed child");
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    let _ = pipe.read_to_string(&mut stdout);
+                }
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr);
+                }
+                return (status.code(), stdout, stderr, true);
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    }
 }
 
 fn first_json(stderr_or_stdout: &str) -> Value {
@@ -371,6 +415,185 @@ fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
     let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "timeout");
     assert_eq!(parsed["phase"], "awaiting_gui_poller");
+}
+
+#[test]
+fn ui_query_timeout_after_frontend_accepts_request_returns_bounded_stdout() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-query-inflight-timeout");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let automation_dir = config_dir_for(&bin).join("ui-automation");
+    let requests_dir = automation_dir.join("requests");
+
+    let mover_dir = requests_dir.clone();
+    let mover = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let entries: Vec<PathBuf> = std::fs::read_dir(&mover_dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| {
+                    path.extension().and_then(|e| e.to_str()) == Some("json")
+                        && !path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|name| name.ends_with(".inflight.json"))
+                })
+                .collect();
+            if let Some(path) = entries.first() {
+                let raw = std::fs::read_to_string(path).unwrap();
+                let request: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(request["action"], "query");
+                let request_id = request["requestId"].as_str().unwrap();
+                std::fs::rename(path, mover_dir.join(format!("{request_id}.inflight.json")))
+                    .unwrap();
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for request");
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
+
+    let start = Instant::now();
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-query",
+            "--window",
+            "main",
+            "--selector",
+            "does.not.exist",
+            "--timeout-ms",
+            "250",
+        ],
+    );
+    mover.join().unwrap();
+
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "ui-query should not hang"
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["error"], "timeout");
+    assert_eq!(parsed["phase"], "awaiting_frontend_response");
+}
+
+#[test]
+fn ui_query_large_missing_selector_response_is_bounded_stdout() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-large-missing-selector");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let automation_dir = config_dir_for(&bin).join("ui-automation");
+    let requests_dir = automation_dir.join("requests");
+    let responses_dir = automation_dir.join("responses");
+
+    let responder = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+                .collect();
+            if let Some(path) = entries.first() {
+                let raw = std::fs::read_to_string(path).unwrap();
+                let request: Value = serde_json::from_str(&raw).unwrap();
+                let request_id = request["requestId"].as_str().unwrap();
+                let available: Vec<Value> = (0..256)
+                    .map(|i| {
+                        json!({
+                            "testId": format!("target.{i}"),
+                            "role": "button",
+                            "state": "ready",
+                            "tag": "button",
+                            "text": "x".repeat(2000),
+                            "visible": true,
+                            "disabled": false,
+                            "checked": null,
+                            "selected": null,
+                            "pressed": null,
+                            "expanded": null,
+                            "rect": {
+                                "x": i,
+                                "y": i,
+                                "width": 100,
+                                "height": 30
+                            }
+                        })
+                    })
+                    .collect();
+                let response = json!({
+                    "ok": false,
+                    "requestId": request_id,
+                    "window": "main",
+                    "action": "query",
+                    "selector": "does.not.exist",
+                    "error": "missing_selector",
+                    "message": "No automation target matched data-ac-testid=\"does.not.exist\" in window \"main\".",
+                    "available": available,
+                    "diagnostics": {
+                        "devicePixelRatio": 1,
+                        "viewport": { "width": 1280, "height": 720 }
+                    }
+                });
+                std::fs::write(
+                    responses_dir.join(format!("{request_id}.json")),
+                    serde_json::to_string(&response).unwrap(),
+                )
+                .unwrap();
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for request");
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
+
+    let start = Instant::now();
+    let (code, stdout, stderr, timed_out) = run_without_draining_output_until_exit(
+        &bin,
+        &[
+            "ui-query",
+            "--window",
+            "main",
+            "--selector",
+            "does.not.exist",
+            "--timeout-ms",
+            "3000",
+        ],
+        Duration::from_secs(5),
+    );
+    responder.join().unwrap();
+
+    assert!(!timed_out, "ui-query should not hang");
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    assert!(
+        stdout.len() < 4096,
+        "stdout should stay below common pipe buffers, got {} bytes",
+        stdout.len()
+    );
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["error"], "missing_selector");
+    assert_eq!(parsed["available"].as_array().unwrap().len(), 8);
+    assert_eq!(parsed["diagnostics"]["availableTotal"], 256);
+    assert_eq!(parsed["diagnostics"]["availableLimit"], 8);
+    assert_eq!(parsed["diagnostics"]["availableTruncated"], true);
+    let text = parsed["available"][0]["text"].as_str().unwrap();
+    assert!(text.ends_with("..."));
+    assert!(text.len() <= 83);
 }
 
 #[test]
