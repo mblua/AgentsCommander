@@ -2,27 +2,60 @@
 param(
     [Parameter(Mandatory=$true)]
     [string]$BinaryPath,
+    [string]$Shell = "powershell.exe",
     [string]$Token = "00000000-0000-0000-0000-000000000000",
-    [string]$Root = (New-Item -ItemType Directory -Force -Path (Join-Path $env:TEMP "ac-smoke-$([guid]::NewGuid().ToString('N'))")).FullName
+    [string]$Root = (New-Item -ItemType Directory -Force -Path (Join-Path $env:TEMP "ac-smoke-$([guid]::NewGuid().ToString('N'))")).FullName,
+    [string]$LogDir = (Join-Path $env:TEMP "ac-cli-smoke-logs")
 )
 
 $ErrorActionPreference = "Continue"
 $failed = 0
 
-# Bug-reproducing harness: spawn a fresh `powershell.exe -NonInteractive -NoProfile`
-# and run the AC exe via `&` direct call (no pipeline operators in the inner command).
-# This is the exact shape from verify-prod-binary.ps1 and R2.6's Rust test, and it is
-# the ONLY shape that reproduces issue #129's failure mode.
-#
-# Note on exit codes: PS-NonInteractive bare `&` does NOT propagate $LASTEXITCODE for
-# GUI-subsystem children (PE Subsystem=2 — empirically verified in Round 3, R3.G.3).
-# The outer process always sees ExitCode=0 regardless of the AC binary's true exit
-# code. This is the same bare-`&`-vs-pipeline asymmetry underlying issue #129 itself,
-# and it cannot be worked around in this harness shape (the harness shape is mandatory
-# to reproduce the bug). Tests 1-3 therefore drop exit-code assertions and rely on
-# stdout/stderr presence — those are the bug-relevant signals (Round 4, Option 1).
+if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
+    Write-Host "FAIL: binary not found: $BinaryPath" -ForegroundColor Red
+    exit 1
+}
+
+$shellCmd = Get-Command $Shell -ErrorAction SilentlyContinue
+if ($null -eq $shellCmd) {
+    Write-Host "SKIP: shell not found: $Shell" -ForegroundColor Yellow
+    exit 0
+}
+$ShellPath = $shellCmd.Source
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+$summary = New-Object System.Collections.Generic.List[object]
+
+function New-CasePaths {
+    param(
+        [Parameter(Mandatory=$true)] [string]$CaseName
+    )
+    $safeCase = $CaseName -replace '[^A-Za-z0-9_.-]', '_'
+    [pscustomobject]@{
+        StdoutPath = Join-Path $LogDir "$safeCase.stdout.txt"
+        StderrPath = Join-Path $LogDir "$safeCase.stderr.txt"
+        CommandPath = Join-Path $LogDir "$safeCase.command.txt"
+    }
+}
+
+function Write-CaseLogs {
+    param(
+        [Parameter(Mandatory=$true)] [pscustomobject]$Paths,
+        [Parameter(Mandatory=$true)] [string]$Command,
+        [AllowNull()] [string]$Stdout,
+        [AllowNull()] [string]$Stderr
+    )
+    Set-Content -LiteralPath $Paths.CommandPath -Value $Command -Encoding UTF8
+    Set-Content -LiteralPath $Paths.StdoutPath -Value $(if ($null -eq $Stdout) { '' } else { $Stdout }) -Encoding UTF8
+    Set-Content -LiteralPath $Paths.StderrPath -Value $(if ($null -eq $Stderr) { '' } else { $Stderr }) -Encoding UTF8
+}
+
+# Bug-reproducing harness: spawn a fresh PowerShell process with -NonInteractive -NoProfile
+# and run the AC exe via a direct call. This is the mandatory issue #129 shape.
 function Invoke-PSNonInteractiveDirect {
     param(
+        [Parameter(Mandatory=$true)] [string]$ShellPath,
+        [Parameter(Mandatory=$true)] [string]$CaseName,
         [Parameter(Mandatory=$true)] [string]$Exe,
         [Parameter(Mandatory=$true)] [string[]]$ExeArgs
     )
@@ -31,10 +64,12 @@ function Invoke-PSNonInteractiveDirect {
         "'" + ($_ -replace "'", "''") + "'"
     }) -join ' '
     $inner = "& '$escapedExe' $quotedArgs"
+    $arguments = "-NonInteractive -NoProfile -Command `"$inner`""
+    $paths = New-CasePaths -CaseName $CaseName
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell.exe'
-    $psi.Arguments = "-NonInteractive -NoProfile -Command `"$inner`""
+    $psi.FileName = $ShellPath
+    $psi.Arguments = $arguments
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -45,124 +80,154 @@ function Invoke-PSNonInteractiveDirect {
     $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.WaitForExit()
 
+    $stdout = if ($null -eq $stdoutTask.Result) { '' } else { $stdoutTask.Result }
+    $stderr = if ($null -eq $stderrTask.Result) { '' } else { $stderrTask.Result }
+    $commandText = "$ShellPath $arguments"
+    Write-CaseLogs -Paths $paths -Command $commandText -Stdout $stdout -Stderr $stderr
+
+    $case = [pscustomobject]@{
+        name = $CaseName
+        shellPath = $ShellPath
+        binaryPath = $Exe
+        commandPath = $paths.CommandPath
+        stdoutPath = $paths.StdoutPath
+        stderrPath = $paths.StderrPath
+        exitCode = $proc.ExitCode
+    }
+    $summary.Add($case) | Out-Null
+
     [pscustomobject]@{
-        Stdout = if ($null -eq $stdoutTask.Result) { '' } else { $stdoutTask.Result }
-        Stderr = if ($null -eq $stderrTask.Result) { '' } else { $stderrTask.Result }
+        CaseName = $CaseName
+        Stdout = $stdout
+        Stderr = $stderr
+        ExitCode = $proc.ExitCode
+        StdoutPath = $paths.StdoutPath
+        StderrPath = $paths.StderrPath
+        CommandPath = $paths.CommandPath
     }
 }
 
-function Assert-True([string]$Name, [bool]$Cond, [string]$Detail) {
+function New-FailureDetail {
+    param(
+        [Parameter(Mandatory=$true)] [string]$CaseName,
+        [Parameter(Mandatory=$true)] [string]$Detail,
+        [Parameter(Mandatory=$true)] [object]$Result
+    )
+    "binary='$BinaryPath'; shell='$ShellPath'; case='$CaseName'; commandLog='$($Result.CommandPath)'; stdoutLog='$($Result.StdoutPath)'; stderrLog='$($Result.StderrPath)'; detail=$Detail"
+}
+
+function Assert-True {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Name,
+        [Parameter(Mandatory=$true)] [bool]$Cond,
+        [Parameter(Mandatory=$true)] [string]$Detail,
+        [Parameter(Mandatory=$true)] [string]$CaseName,
+        [Parameter(Mandatory=$true)] [object]$Result
+    )
     if ($Cond) {
         Write-Host "PASS: $Name" -ForegroundColor Green
     } else {
-        Write-Host "FAIL: $Name -- $Detail" -ForegroundColor Red
+        Write-Host "FAIL: $Name -- $(New-FailureDetail -CaseName $CaseName -Detail $Detail -Result $Result)" -ForegroundColor Red
         $script:failed++
     }
 }
 
-# Test 1: list-peers -- stdout has JSON, stderr is empty (post-fix contract).
-# Failure mode on unfixed binary (per R2.1 / R3.2): AC binary inherits valid PIPE
-# stdout from PS-NonInteractive's `&` direct call; the unfixed `attach_parent_console`
-# unconditionally calls AttachConsole, which rebinds STD_OUTPUT_HANDLE to PS's hidden
-# console buffer (PIPE -> CHAR); PS-NonInteractive does not surface that buffer to
-# its captured stdout pipe; captured stdout is empty. Test 1's "stdout non-empty"
-# assertion fails. Empirically confirmed in verify-prod-binary.ps1 Test 1.
-$r1 = Invoke-PSNonInteractiveDirect -Exe $BinaryPath -ExeArgs @('list-peers', '--token', $Token, '--root', $Root)
-Assert-True "list-peers stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) "stdout was empty (issue #129 not fixed)"
-Assert-True "list-peers stderr empty" ([string]::IsNullOrWhiteSpace($r1.Stderr)) "stderr leaked content: $($r1.Stderr)"
-# NEW-4 fix: layered guard mirroring Test 4's NEW-2 fix. Empty/whitespace stdout is
-# already covered by the prior `stdout non-empty` assertion; only attempt parse when
-# stdout has content, and explicitly fail on `$null -eq $parsed` to avoid the silent
-# false-PASS that `'' | ConvertFrom-Json -ErrorAction Stop` would otherwise produce.
+# Test 1: list-peers stdout must contain JSON, and stderr must be empty.
+$r1 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "01-list-peers-direct" -Exe $BinaryPath -ExeArgs @('list-peers', '--token', $Token, '--root', $Root)
+Assert-True "list-peers stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) "stdout was empty (issue #129 not fixed)" $r1.CaseName $r1
+Assert-True "list-peers stderr empty" ([string]::IsNullOrWhiteSpace($r1.Stderr)) "stderr leaked content; inspect stderr log" $r1.CaseName $r1
 if (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) {
     try {
         $parsed = $r1.Stdout | ConvertFrom-Json -ErrorAction Stop
         if ($null -eq $parsed) {
-            Write-Host "FAIL: list-peers ConvertFrom-Json returned null on non-empty stdout" -ForegroundColor Red
+            Write-Host "FAIL: list-peers ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r1.CaseName -Detail 'non-empty stdout parsed to null' -Result $r1)" -ForegroundColor Red
             $failed++
         } else {
             Write-Host "PASS: list-peers stdout parses as JSON" -ForegroundColor Green
         }
     } catch {
-        Write-Host "FAIL: list-peers stdout not valid JSON: $($r1.Stdout)" -ForegroundColor Red
+        Write-Host "FAIL: list-peers stdout not valid JSON -- $(New-FailureDetail -CaseName $r1.CaseName -Detail $_.Exception.Message -Result $r1)" -ForegroundColor Red
         $failed++
     }
 }
-# else: empty case is already counted as a fail by the prior `stdout non-empty` assertion above
 
-# Test 2: send --help -- stdout has clap-rendered help text.
-# Failure mode on unfixed binary: identical to Test 1 — clap writes the help text
-# to stdout; AttachConsole rebinds the inherited PIPE stdout to PS's hidden console
-# buffer; captured stdout is empty. Test 2's "stdout non-empty" assertion fails.
-# Empirically confirmed in verify-prod-binary.ps1 Test 1 (same `send --help` invocation).
-$r2 = Invoke-PSNonInteractiveDirect -Exe $BinaryPath -ExeArgs @('send', '--help')
-Assert-True "send --help stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r2.Stdout)) "stdout was empty (issue #129 not fixed for --help path)"
-Assert-True "send --help mentions --to flag" ($r2.Stdout -match '--to') "stdout missing expected flag mention"
+# Test 2: send --help stdout must contain clap-rendered help text.
+$r2 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "02-send-help-direct" -Exe $BinaryPath -ExeArgs @('send', '--help')
+Assert-True "send --help stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r2.Stdout)) "stdout was empty (issue #129 not fixed for help path)" $r2.CaseName $r2
+Assert-True "send --help mentions --to flag" ($r2.Stdout -match '--to') "stdout missing expected flag mention" $r2.CaseName $r2
 
-# Test 3: send unknown flag -- stderr has clap usage error.
-# Failure mode on unfixed binary: clap writes the parse-error/usage text to stderr.
-# The AC binary's STD_ERROR_HANDLE is also inherited as a valid PIPE; the unfixed
-# `attach_parent_console` rebinds it to PS's hidden console buffer the same way as
-# stdout; captured stderr is empty. Test 3's "stderr non-empty" assertion fails.
-# Per R3.G.3 / R3.G.5 (Round 3 grinch verification, integrated in Round 4),
-# exit-code propagation is not usable in this harness: PS-NonInteractive bare `&`
-# does NOT update $LASTEXITCODE for GUI-subsystem children, so any `exit non-zero`
-# assertion would fail even on a correctly fixed binary. `stderr non-empty` is the
-# sole — and bug-relevant — signal for this test.
-$r3 = Invoke-PSNonInteractiveDirect -Exe $BinaryPath -ExeArgs @('send', '--bogus-flag-xyz')
-Assert-True "send unknown flag stderr non-empty" (-not [string]::IsNullOrWhiteSpace($r3.Stderr)) "stderr was empty (issue #129 not fixed for clap-error path)"
+# Test 3: send unknown flag stderr must contain clap usage error.
+$r3 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "03-send-unknown-flag-direct" -Exe $BinaryPath -ExeArgs @('send', '--bogus-flag-xyz')
+Assert-True "send unknown flag stderr non-empty" (-not [string]::IsNullOrWhiteSpace($r3.Stderr)) "stderr was empty (issue #129 not fixed for clap-error path)" $r3.CaseName $r3
 
-# Test 4 (G3 regression check): `2>&1 | ConvertFrom-Json` on list-peers must still work.
-# This test deliberately uses a DIFFERENT inner command shape — pipeline mode with
-# `2>&1 | Out-String`. Pipeline mode bypasses issue #129 (R2.1 confirmed: pipeline
-# operators give the child a PIPE stdout via STARTUPINFO redirection, no NULL → no
-# AttachConsole rebind). So Test 4 PASSES on both fixed and unfixed binary as long
-# as stderr is empty (which it is post-Step-A). Test 4 FAILS only if a future change
-# reintroduces dual-write to stderr — the merged stream would then contain non-JSON
-# stderr content, breaking ConvertFrom-Json. That is the regression Test 4 guards.
-#
-# NEW-2 fix: replace the broken `-replace [char]39, [char]39 + [char]39` (which is a
-# PS parser error -- three args to -replace -- that with $ErrorActionPreference="Continue"
-# silently produced an empty inner command) with string-literal `-replace "'", "''"`
-# (Option B from R2.G.5). Also tighten the assertion: fail on empty merged output
-# regardless of ConvertFrom-Json's silent null-on-empty-input behavior.
-# NEW-5 fix (Round 4): escape and single-quote-wrap $Token consistently with
-# $BinaryPath / $Root. Default Token is a UUID and therefore safe, but a custom
-# -Token containing single quotes would otherwise break the inner command.
+# Test 4: pipeline mode must still produce JSON when stderr is merged.
 $escapedBin = $BinaryPath -replace "'", "''"
 $escapedRoot = $Root -replace "'", "''"
 $escapedToken = $Token -replace "'", "''"
 $inner = "& '$escapedBin' list-peers --token '$escapedToken' --root '$escapedRoot' 2>&1 | Out-String"
+$arguments = "-NonInteractive -NoProfile -Command `"$inner`""
+$paths4 = New-CasePaths -CaseName "04-list-peers-merged-pipeline"
 $psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = 'powershell.exe'
-$psi.Arguments = "-NonInteractive -NoProfile -Command `"$inner`""
+$psi.FileName = $ShellPath
+$psi.Arguments = $arguments
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.CreateNoWindow = $true
 $proc = [System.Diagnostics.Process]::Start($psi)
 $mergedTask = $proc.StandardOutput.ReadToEndAsync()
-$null = $proc.StandardError.ReadToEndAsync()
+$stderrTask = $proc.StandardError.ReadToEndAsync()
 $proc.WaitForExit()
 $mergedOut = if ($null -eq $mergedTask.Result) { '' } else { $mergedTask.Result }
+$test4Stderr = if ($null -eq $stderrTask.Result) { '' } else { $stderrTask.Result }
+Write-CaseLogs -Paths $paths4 -Command "$ShellPath $arguments" -Stdout $mergedOut -Stderr $test4Stderr
+$r4 = [pscustomobject]@{
+    CaseName = "04-list-peers-merged-pipeline"
+    Stdout = $mergedOut
+    Stderr = $test4Stderr
+    ExitCode = $proc.ExitCode
+    StdoutPath = $paths4.StdoutPath
+    StderrPath = $paths4.StderrPath
+    CommandPath = $paths4.CommandPath
+}
+$summary.Add([pscustomobject]@{
+    name = $r4.CaseName
+    shellPath = $ShellPath
+    binaryPath = $BinaryPath
+    commandPath = $r4.CommandPath
+    stdoutPath = $r4.StdoutPath
+    stderrPath = $r4.StderrPath
+    exitCode = $r4.ExitCode
+}) | Out-Null
 
 if ([string]::IsNullOrWhiteSpace($mergedOut)) {
-    Write-Host "FAIL: Test 4 merged output is empty (inner command may have failed or produced no output)" -ForegroundColor Red
+    Write-Host "FAIL: Test 4 merged output is empty -- $(New-FailureDetail -CaseName $r4.CaseName -Detail 'inner command may have failed or produced no output' -Result $r4)" -ForegroundColor Red
     $failed++
 } else {
     try {
         $parsed = $mergedOut | ConvertFrom-Json -ErrorAction Stop
         if ($null -eq $parsed) {
-            Write-Host "FAIL: Test 4 ConvertFrom-Json returned null on non-empty merged output" -ForegroundColor Red
+            Write-Host "FAIL: Test 4 ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r4.CaseName -Detail 'non-empty merged output parsed to null' -Result $r4)" -ForegroundColor Red
             $failed++
         } else {
-            Write-Host "PASS: 2>&1 | ConvertFrom-Json continues to work (no dual-write regression)" -ForegroundColor Green
+            Write-Host "PASS: 2>&1 | ConvertFrom-Json continues to work" -ForegroundColor Green
         }
     } catch {
-        Write-Host "FAIL: 2>&1 | ConvertFrom-Json broken -- merged stream is not valid JSON: $mergedOut" -ForegroundColor Red
+        Write-Host "FAIL: 2>&1 | ConvertFrom-Json broken -- $(New-FailureDetail -CaseName $r4.CaseName -Detail $_.Exception.Message -Result $r4)" -ForegroundColor Red
         $failed++
     }
 }
+
+$summaryPath = Join-Path $LogDir "summary.json"
+[pscustomobject]@{
+    binaryPath = $BinaryPath
+    shell = $Shell
+    shellPath = $ShellPath
+    root = $Root
+    failed = $failed
+    cases = @($summary.ToArray())
+} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+Write-Host "Smoke log summary: $summaryPath"
 
 if ($failed -gt 0) {
     Write-Host "`n$failed check(s) failed" -ForegroundColor Red
