@@ -190,6 +190,7 @@ impl UiAutomationState {
 
     pub fn start(&self, app: AppHandle, shutdown: ShutdownSignal) {
         if !self.inner.enabled {
+            self.cleanup_session_file_unchecked();
             return;
         }
 
@@ -214,14 +215,18 @@ impl UiAutomationState {
     }
 
     pub fn cleanup_session_file(&self) {
-        if self.enabled() {
-            if let Err(e) = retry_remove_file(&self.inner.session_path) {
-                log::warn!(
-                    "[ui-automation] failed to remove session file {}: {}",
-                    self.inner.session_path.display(),
-                    e
-                );
-            }
+        if self.inner.enabled {
+            self.cleanup_session_file_unchecked();
+        }
+    }
+
+    fn cleanup_session_file_unchecked(&self) {
+        if let Err(e) = retry_remove_file(&self.inner.session_path) {
+            log::warn!(
+                "[ui-automation] failed to remove session file {}: {}",
+                self.inner.session_path.display(),
+                e
+            );
         }
     }
 
@@ -645,7 +650,7 @@ pub fn execute_wait(args: UiWaitArgs) -> i32 {
                 Some("Automation wait timed out before the selector became available.".to_string());
             timeout.timeout_ms = Some(args.timeout_ms);
             timeout.phase = Some("wait_condition_not_met".to_string());
-            print_stderr_json(&timeout);
+            print_stdout_json(&timeout);
             return 1;
         }
 
@@ -666,7 +671,7 @@ pub fn execute_wait(args: UiWaitArgs) -> i32 {
                 last_response = Some(response);
             }
             Err(error) => {
-                print_stderr_json(&error);
+                print_stdout_json(&error);
                 return 1;
             }
         }
@@ -682,11 +687,11 @@ fn execute_cli(input: CliRequest) -> i32 {
             0
         }
         Ok(response) => {
-            print_stderr_json(&response);
+            print_stdout_json(&response);
             1
         }
         Err(error) => {
-            print_stderr_json(&error);
+            print_stdout_json(&error);
             1
         }
     }
@@ -846,24 +851,25 @@ pub fn existing_enabled_session_for_current_config() -> bool {
 }
 
 pub fn automation_not_enabled_json() -> String {
+    automation_not_enabled_error().to_string()
+}
+
+fn automation_not_enabled_error() -> Value {
     preflight_error(
         "automation_not_enabled",
         "A testable GUI is already running without UI automation enabled. Restart it with --ui-automation or AC_UI_AUTOMATION=1.",
         None,
     )
-    .to_string()
 }
 
 fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomationSession, Value> {
     let raw = match read_session_file_with_retry(path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let state = crate::config::daemon_pid::detect_daemon_state();
-            let (error, message) = match state {
-                crate::config::daemon_pid::DaemonState::Running { .. } => (
-                    "automation_not_enabled",
-                    "The testable GUI is running, but UI automation was not enabled at startup.",
-                ),
+            let (error, message) = match crate::config::daemon_pid::detect_daemon_state() {
+                crate::config::daemon_pid::DaemonState::Running { .. } => {
+                    return Err(automation_not_enabled_error());
+                }
                 _ => (
                     "automation_session_missing",
                     "No UI automation session file exists for this testable binary.",
@@ -892,7 +898,16 @@ fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomat
         )
     })?;
 
-    validate_session_liveness(&session)?;
+    if let Err(e) = validate_session_liveness(&session) {
+        if matches!(
+            crate::config::daemon_pid::detect_daemon_state(),
+            crate::config::daemon_pid::DaemonState::Running { .. }
+        ) {
+            let _ = retry_remove_file(path);
+            return Err(automation_not_enabled_error());
+        }
+        return Err(e);
+    }
     if !session
         .window_labels
         .iter()
@@ -1036,16 +1051,6 @@ fn print_stdout_json<T: Serialize>(value: &T) {
     match serde_json::to_string(value) {
         Ok(json) => crate::cli_println!("{json}"),
         Err(e) => crate::cli_println!(
-            "{{\"ok\":false,\"error\":\"json_serialize_failed\",\"message\":{}}}",
-            serde_json::to_string(&e.to_string()).unwrap_or_else(|_| "\"unknown\"".to_string())
-        ),
-    }
-}
-
-fn print_stderr_json<T: Serialize>(value: &T) {
-    match serde_json::to_string(value) {
-        Ok(json) => eprintln!("{json}"),
-        Err(e) => eprintln!(
             "{{\"ok\":false,\"error\":\"json_serialize_failed\",\"message\":{}}}",
             serde_json::to_string(&e.to_string()).unwrap_or_else(|_| "\"unknown\"".to_string())
         ),

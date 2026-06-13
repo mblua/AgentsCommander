@@ -1,8 +1,15 @@
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
+
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn test_lock() -> MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 struct Tmp(PathBuf);
 
@@ -112,6 +119,12 @@ fn write_session(bin: &Path, pid: u32, ready_windows: &[&str]) {
     .unwrap();
 }
 
+fn write_daemon_pid(bin: &Path, pid: u32) {
+    let config_dir = config_dir_for(bin);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("daemon.pid"), pid.to_string()).unwrap();
+}
+
 #[cfg(target_os = "windows")]
 fn fake_live_pid() -> Option<u32> {
     let pid = 4u32;
@@ -124,7 +137,8 @@ fn fake_live_pid() -> Option<u32> {
 }
 
 #[test]
-fn normal_binary_refuses_ui_click_with_json_only_stderr() {
+fn normal_binary_refuses_ui_click_with_json_only_stdout() {
+    let _guard = test_lock();
     let tmp = Tmp::new("ui-non-testable");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(
@@ -138,13 +152,14 @@ fn normal_binary_refuses_ui_click_with_json_only_stderr() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_empty_output("stdout", &stdout);
-    let parsed = first_json(&stderr);
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "refusing_non_testeable_binary");
 }
 
 #[test]
 fn workgroup_binary_refuses_ui_click() {
+    let _guard = test_lock();
     let tmp = Tmp::new("ui-workgroup-refuse");
     let bin = copy_binary_as(tmp.path(), "agentscommander_wg1-dev-team.exe");
     let (code, stdout, stderr) = run(
@@ -158,15 +173,16 @@ fn workgroup_binary_refuses_ui_click() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_empty_output("stdout", &stdout);
+    assert_empty_output("stderr", &stderr);
     assert_eq!(
-        first_json(&stderr)["error"],
+        first_json(&stdout)["error"],
         "refusing_non_testeable_binary"
     );
 }
 
 #[test]
 fn normal_gui_binary_refuses_ui_automation_flag() {
+    let _guard = test_lock();
     let tmp = Tmp::new("ui-gui-flag-refuse");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(&bin, &["--app", "--ui-automation"]);
@@ -180,6 +196,7 @@ fn normal_gui_binary_refuses_ui_automation_flag() {
 
 #[test]
 fn normal_gui_binary_refuses_ui_automation_env() {
+    let _guard = test_lock();
     let tmp = Tmp::new("ui-gui-env-refuse");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run_with_env(&bin, "AC_UI_AUTOMATION", "1", &[]);
@@ -193,6 +210,7 @@ fn normal_gui_binary_refuses_ui_automation_env() {
 
 #[test]
 fn ui_automation_env_does_not_affect_cli_subcommands() {
+    let _guard = test_lock();
     let tmp = Tmp::new("ui-env-cli-subcommand");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run_with_env(&bin, "AC_UI_AUTOMATION", "1", &["list-sessions"]);
@@ -206,6 +224,7 @@ fn ui_automation_env_does_not_affect_cli_subcommands() {
 
 #[test]
 fn missing_session_file_reports_automation_session_missing() {
+    let _guard = test_lock();
     let tmp = Tmp::new("ui-missing-session");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let (code, stdout, stderr) = run(
@@ -219,12 +238,13 @@ fn missing_session_file_reports_automation_session_missing() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_empty_output("stdout", &stdout);
-    assert_eq!(first_json(&stderr)["error"], "automation_session_missing");
+    assert_empty_output("stderr", &stderr);
+    assert_eq!(first_json(&stdout)["error"], "automation_session_missing");
 }
 
 #[test]
 fn dead_session_pid_reports_stale_session() {
+    let _guard = test_lock();
     let tmp = Tmp::new("ui-stale-session");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, u32::MAX, &["main"]);
@@ -239,12 +259,13 @@ fn dead_session_pid_reports_stale_session() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_empty_output("stdout", &stdout);
-    assert_eq!(first_json(&stderr)["error"], "automation_session_stale");
+    assert_empty_output("stderr", &stderr);
+    assert_eq!(first_json(&stdout)["error"], "automation_session_stale");
 }
 
 #[test]
 fn fake_response_makes_ui_query_succeed() {
+    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -325,6 +346,7 @@ fn fake_response_makes_ui_query_succeed() {
 
 #[test]
 fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
+    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -345,14 +367,15 @@ fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_empty_output("stdout", &stdout);
-    let parsed = first_json(&stderr);
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "timeout");
     assert_eq!(parsed["phase"], "awaiting_gui_poller");
 }
 
 #[test]
-fn ui_click_timeout_removes_inflight_request_with_json_only_stderr() {
+fn ui_click_timeout_removes_inflight_request_with_json_only_stdout() {
+    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -406,8 +429,8 @@ fn ui_click_timeout_removes_inflight_request_with_json_only_stderr() {
     );
     mover.join().unwrap();
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_empty_output("stdout", &stdout);
-    let parsed = first_json(&stderr);
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "timeout");
     assert_eq!(parsed["phase"], "awaiting_frontend_ready");
 
@@ -423,6 +446,7 @@ fn ui_click_timeout_removes_inflight_request_with_json_only_stderr() {
 
 #[test]
 fn ui_query_retries_transient_missing_session_file() {
+    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -450,8 +474,37 @@ fn ui_query_retries_transient_missing_session_file() {
     writer.join().unwrap();
 
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_empty_output("stdout", &stdout);
-    let parsed = first_json(&stderr);
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "timeout");
     assert_ne!(parsed["error"], "automation_session_missing");
+}
+
+#[test]
+fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_stdout() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-disabled-stale-session");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, u32::MAX, &["main"]);
+    write_daemon_pid(&bin, pid);
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-query",
+            "--window",
+            "main",
+            "--selector",
+            "onboarding.modal",
+        ],
+    );
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["error"], "automation_not_enabled");
 }
