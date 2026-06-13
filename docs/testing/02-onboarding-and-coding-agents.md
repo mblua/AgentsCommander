@@ -21,8 +21,9 @@ Result summary:
 - Onboarding completed with Codex after selecting Claude once and then Codex once.
 - Direct Codex selection initially left `onboarding.confirm` disabled; preserve this as a regression/edge case if it reproduces.
 - Final settings showed a Codex coding-agent row, but `onboardingDismissed = false`; the target later returned to first-run onboarding during the longer journey.
-- SET-001 must verify both configured-agent persistence and dismissed-onboarding persistence before it can pass.
-- Rerun evidence from `ui-regression-baseline-rerun-20260613-202450` reproduced the core failure: Codex row persisted and the main UI opened, but `onboardingDismissed` remained `false` after onboarding and after relaunch.
+- SET-001 currently verifies both configured-agent persistence and dismissed-onboarding persistence before it can pass.
+- Rerun evidence from `ui-regression-baseline-rerun-20260613-202450` reproduced the baseline acceptance failure: Codex row persisted and the main UI opened, but `onboardingDismissed` remained `false` after onboarding and after relaunch.
+- Product intent is tracked as GitHub issue #505. If `onboardingDismissed` is confirmed to mean only "user skipped onboarding", adjust SET-001/003/004/005 expectations instead of treating the setup path as a product bug.
 
 Known automation support:
 
@@ -52,6 +53,8 @@ Required clean-state slices:
 - SET-006 and SET-007 cover the Coding Agents settings surface after onboarding.
 
 Each slice must start from a reset testable config unless the case explicitly says it is using an existing settings state. Do not use a passing Codex run as proof that Skip, Claude, Gemini, or Custom Agent works.
+
+Dismissal semantics note: until issue #505 is resolved, setup-path cases expect `onboardingDismissed = true` after `Get started` as a conservative acceptance contract. If product intent says the flag is skip-only, replace that assertion with the intended persistence signal.
 
 ### SET-001: First-run onboarding selects Codex
 
