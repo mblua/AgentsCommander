@@ -48,6 +48,12 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Switch settings tab | `settings.tab.<tabKey>` | `click` |
 | Add preset coding agent | `settings.agentPreset.<presetKey>` | `click` |
 | Add custom coding agent row | `settings.agent.addCustom` | `click` |
+| Detect coding agent row | `settings.agentRow.<index>` | `query` |
+| Set coding agent label | `settings.agentRow.<index>.label` | `setValue` |
+| Set coding agent command | `settings.agentRow.<index>.command` | `setValue` |
+| Set coding agent color text value | `settings.agentRow.<index>.color` | `setValue` |
+| Set coding agent color picker | `settings.agentRow.<index>.colorPicker` | `setValue` |
+| Remove coding agent row | `settings.agentRow.<index>.remove` | `click` |
 | Save settings | `settings.save` | `click` |
 | Cancel settings | `settings.cancel` | `click` |
 

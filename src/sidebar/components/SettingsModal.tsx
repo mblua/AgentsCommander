@@ -494,7 +494,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
       <For each={settings.data!.agents}>
         {(agent, i) => (
-          <div class="settings-button-card">
+          <div
+            class="settings-button-card"
+            data-ac-testid={`settings.agentRow.${i()}`}
+            data-ac-role="group"
+          >
             <div class="settings-button-card-header">
               <div
                 class="settings-color-dot"
@@ -505,6 +509,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 class="settings-agent-remove"
                 onClick={() => removeAgent(i())}
                 title="Remove agent"
+                data-ac-testid={`settings.agentRow.${i()}.remove`}
+                data-ac-role="button"
               >
                 &#x2715;
               </button>
@@ -518,6 +524,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   updateAgent(i(), "label", e.currentTarget.value)
                 }
                 placeholder="My Agent"
+                data-ac-testid={`settings.agentRow.${i()}.label`}
+                data-ac-role="textbox"
               />
             </label>
             <label class="settings-field">
@@ -529,6 +537,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   updateAgent(i(), "command", e.currentTarget.value)
                 }
                 placeholder="agent-cli"
+                data-ac-testid={`settings.agentRow.${i()}.command`}
+                data-ac-role="textbox"
               />
             </label>
             <label class="settings-field">
@@ -541,6 +551,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   onInput={(e) =>
                     updateAgent(i(), "color", e.currentTarget.value)
                   }
+                  data-ac-testid={`settings.agentRow.${i()}.colorPicker`}
+                  data-ac-role="input"
                 />
                 <input
                   class="settings-input settings-input-sm"
@@ -548,6 +560,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   onInput={(e) =>
                     updateAgent(i(), "color", e.currentTarget.value)
                   }
+                  data-ac-testid={`settings.agentRow.${i()}.color`}
+                  data-ac-role="textbox"
                 />
               </div>
             </label>
