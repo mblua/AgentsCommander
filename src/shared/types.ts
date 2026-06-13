@@ -197,6 +197,7 @@ export interface UiAutomationRequest {
   action: UiAutomationAction;
   selector: string;
   value?: string | null;
+  expiresAtUnixMs?: number | null;
 }
 
 export interface UiAutomationTargetRect {
@@ -225,6 +226,8 @@ export interface UiAutomationDiagnostics {
   devicePixelRatio: number;
   viewport: { width: number; height: number };
   topmost?: UiAutomationTarget | null;
+  expiresAtUnixMs?: number | null;
+  nowUnixMs?: number;
 }
 
 export type UiAutomationResponse =
@@ -249,6 +252,7 @@ export type UiAutomationResponse =
         | "target_hidden"
         | "target_obscured"
         | "target_disabled"
+        | "timeout"
         | "unsupported_action"
         | "value_not_supported"
         | "automation_bridge_exception";

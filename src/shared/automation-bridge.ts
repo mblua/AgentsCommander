@@ -135,6 +135,8 @@ function executeAutomationRequestInner(
   }
 
   if (request.action === "click") {
+    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+    if (expired) return expired;
     element.focus();
     element.click();
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
@@ -175,11 +177,40 @@ function setElementValue(
     );
   }
 
+  const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+  if (expired) return expired;
+
   element.focus();
   element.value = request.value ?? "";
   element.dispatchEvent(new Event("input", { bubbles: true }));
   element.dispatchEvent(new Event("change", { bubbles: true }));
   return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
+}
+
+function expiredMutationResponse(
+  windowLabel: string,
+  request: UiAutomationRequest,
+  diagnostics: UiAutomationDiagnostics,
+): UiAutomationResponse | null {
+  const nowUnixMs = Date.now();
+  if (!requestExpired(request, nowUnixMs)) return null;
+
+  return errorResponse(
+    windowLabel,
+    request,
+    "timeout",
+    `Automation request "${request.requestId}" expired before the frontend could perform "${request.action}".`,
+    availableTargets(),
+    {
+      ...diagnostics,
+      expiresAtUnixMs: request.expiresAtUnixMs ?? null,
+      nowUnixMs,
+    },
+  );
+}
+
+function requestExpired(request: UiAutomationRequest, nowUnixMs: number): boolean {
+  return typeof request.expiresAtUnixMs === "number" && request.expiresAtUnixMs <= nowUnixMs;
 }
 
 function successResponse(

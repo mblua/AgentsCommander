@@ -18,6 +18,7 @@ function request(
   action: UiAutomationAction,
   selector: string,
   value?: string,
+  expiresAtUnixMs?: number | null,
 ): UiAutomationRequest {
   return {
     requestId: `request-${action}-${selector}`,
@@ -26,6 +27,7 @@ function request(
     action,
     selector,
     value,
+    expiresAtUnixMs,
   };
 }
 
@@ -145,6 +147,52 @@ describe("automation bridge", () => {
     expect(input.value).toBe("codex");
     expect(onInput).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not click when the request expires before mutation", async () => {
+    const button = addTarget("button", "expired.click", "Expired");
+    topmostElement = button;
+    const onClick = vi.fn();
+    const focus = vi.spyOn(button, "focus");
+    button.addEventListener("click", onClick);
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("click", "expired.click", undefined, Date.now() - 1),
+    );
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected timeout");
+    expect(response.error).toBe("timeout");
+    expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
+    expect(response.available?.map((target) => target.testId)).toContain("expired.click");
+    expect(onClick).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it("does not set values when the request expires before mutation", async () => {
+    const input = addTarget("input", "expired.set");
+    topmostElement = input;
+    const onInput = vi.fn();
+    const onChange = vi.fn();
+    const focus = vi.spyOn(input, "focus");
+    input.value = "before";
+    input.addEventListener("input", onInput);
+    input.addEventListener("change", onChange);
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("setValue", "expired.set", "after", Date.now() - 1),
+    );
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected timeout");
+    expect(response.error).toBe("timeout");
+    expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
+    expect(input.value).toBe("before");
+    expect(onInput).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
   });
 
   it("reports missing selectors with available targets", async () => {
