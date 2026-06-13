@@ -96,6 +96,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     const container = document.createElement("div");
     container.className = "terminal-instance";
     container.dataset.sessionId = sessionId;
+    container.setAttribute("data-ac-testid", `terminal.session.${sessionId}`);
+    container.setAttribute("data-ac-role", "surface");
+    container.setAttribute("data-ac-session-id", sessionId);
     container.hidden = true;
     hostRef.appendChild(container);
 
@@ -312,7 +315,14 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   });
 
-  return <div class="terminal-host" ref={hostRef!} />;
+  return (
+    <div
+      class="terminal-host"
+      ref={hostRef!}
+      data-ac-testid="terminal.host"
+      data-ac-role="surface"
+    />
+  );
 };
 
 export default TerminalView;

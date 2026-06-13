@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount, Show } from "solid-js";
+import { Component, createSignal, For, onMount, Show } from "solid-js";
 import type { AgentConfig, AppSettings } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
@@ -121,15 +121,35 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
   onMount(() => overlayRef.focus());
 
   return (
-    <div class="modal-overlay" ref={overlayRef} onKeyDown={handleKeyDown} tabIndex={0}>
-      <div class="agent-modal onboarding-modal" ref={modalRef}>
+    <div
+      class="modal-overlay"
+      ref={overlayRef}
+      onKeyDown={handleKeyDown}
+      tabIndex={0}
+      data-ac-testid="onboarding.overlay"
+      data-ac-role="overlay"
+    >
+      <div
+        class="agent-modal onboarding-modal"
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Set up your first Coding Agent"
+        data-ac-testid="onboarding.modal"
+        data-ac-role="dialog"
+        data-ac-state={done() ? "done" : "selecting"}
+      >
         <div class="agent-modal-header">
           <span class="agent-modal-title">Welcome</span>
         </div>
 
         <div class="wizard-body onboarding-body">
           <Show when={!done()} fallback={
-            <div class="onboarding-done">
+            <div
+              class="onboarding-done"
+              data-ac-testid="onboarding.done"
+              data-ac-role="status"
+            >
               <div class="onboarding-done-icon">&#x2713;</div>
               <div class="onboarding-done-text">
                 <strong>{addedLabel()}</strong> configured!
@@ -144,24 +164,32 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
             </p>
 
             <div class="onboarding-cards">
-              {ALL_PRESETS.map((preset) => (
-                <button
-                  class={`onboarding-card ${selectedPreset() === preset.key ? "selected" : ""}`}
-                  onClick={() => handleSelect(preset.key)}
-                  style={{ "--card-accent": preset.color }}
-                >
-                  <div
-                    class="onboarding-card-icon"
-                    style={{ background: preset.color }}
+              <For each={ALL_PRESETS}>
+                {(preset) => (
+                  <button
+                    class={`onboarding-card ${selectedPreset() === preset.key ? "selected" : ""}`}
+                    onClick={() => handleSelect(preset.key)}
+                    style={{ "--card-accent": preset.color }}
+                    aria-pressed={selectedPreset() === preset.key}
+                    aria-label={`Select ${preset.label}`}
+                    data-ac-testid={`onboarding.agentPreset.${preset.key}`}
+                    data-ac-role="agent-preset"
+                    data-ac-state={selectedPreset() === preset.key ? "selected" : "idle"}
+                    data-ac-agent-key={preset.key}
                   >
-                    {preset.label[0]}
-                  </div>
-                  <div class="onboarding-card-info">
-                    <div class="onboarding-card-name">{preset.label}</div>
-                    <div class="onboarding-card-desc">{preset.description}</div>
-                  </div>
-                </button>
-              ))}
+                    <div
+                      class="onboarding-card-icon"
+                      style={{ background: preset.color }}
+                    >
+                      {preset.label[0]}
+                    </div>
+                    <div class="onboarding-card-info">
+                      <div class="onboarding-card-name">{preset.label}</div>
+                      <div class="onboarding-card-desc">{preset.description}</div>
+                    </div>
+                  </button>
+                )}
+              </For>
             </div>
 
             <Show when={isCustom()}>
@@ -174,6 +202,8 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
                     placeholder="My Agent"
                     value={customLabel()}
                     onInput={(e) => setCustomLabel(e.currentTarget.value)}
+                    data-ac-testid="onboarding.custom.label"
+                    data-ac-role="textbox"
                   />
                 </label>
                 <label class="onboarding-field-label">
@@ -184,6 +214,8 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
                     placeholder="my-agent --flag"
                     value={customCommand()}
                     onInput={(e) => setCustomCommand(e.currentTarget.value)}
+                    data-ac-testid="onboarding.custom.command"
+                    data-ac-role="textbox"
                   />
                 </label>
               </div>
@@ -194,19 +226,32 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
         <div class="new-agent-footer">
           <Show when={done()} fallback={
             <>
-              <button class="new-agent-cancel-btn" onClick={() => void dismissAndClose()}>
+              <button
+                class="new-agent-cancel-btn"
+                onClick={() => void dismissAndClose()}
+                data-ac-testid="onboarding.skip"
+                data-ac-role="button"
+              >
                 Skip
               </button>
               <button
                 class="new-agent-create-btn"
                 disabled={!canConfirm() || saving()}
                 onClick={handleConfirm}
+                data-ac-testid="onboarding.confirm"
+                data-ac-role="button"
+                data-ac-state={saving() ? "saving" : canConfirm() ? "ready" : "disabled"}
               >
                 {saving() ? "Setting up..." : "Set up Coding Agent"}
               </button>
             </>
           }>
-            <button class="new-agent-create-btn" onClick={props.onClose}>
+            <button
+              class="new-agent-create-btn"
+              onClick={props.onClose}
+              data-ac-testid="onboarding.done.close"
+              data-ac-role="button"
+            >
               Get started
             </button>
           </Show>

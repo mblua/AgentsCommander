@@ -188,6 +188,79 @@ export interface AppSettings {
   specBoardEnabled: boolean;
 }
 
+export type UiAutomationAction = "query" | "click" | "setValue";
+
+export interface UiAutomationRequest {
+  requestId: string;
+  token: string;
+  window: string;
+  action: UiAutomationAction;
+  selector: string;
+  value?: string | null;
+  expiresAtUnixMs?: number | null;
+}
+
+export interface UiAutomationTargetRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface UiAutomationTarget {
+  testId: string;
+  role: string | null;
+  state: string | null;
+  tag: string;
+  text: string;
+  visible: boolean;
+  disabled: boolean;
+  checked: boolean | null;
+  selected: boolean | null;
+  pressed: boolean | null;
+  expanded: boolean | null;
+  rect: UiAutomationTargetRect | null;
+}
+
+export interface UiAutomationDiagnostics {
+  devicePixelRatio: number;
+  viewport: { width: number; height: number };
+  topmost?: UiAutomationTarget | null;
+  expiresAtUnixMs?: number | null;
+  nowUnixMs?: number;
+}
+
+export type UiAutomationResponse =
+  | {
+      ok: true;
+      requestId: string;
+      window: string;
+      action: UiAutomationAction;
+      selector: string;
+      target: UiAutomationTarget;
+      diagnostics?: UiAutomationDiagnostics;
+    }
+  | {
+      ok: false;
+      requestId: string;
+      window: string;
+      action: UiAutomationAction;
+      selector: string;
+      error:
+        | "missing_selector"
+        | "duplicate_selector"
+        | "target_hidden"
+        | "target_obscured"
+        | "target_disabled"
+        | "timeout"
+        | "unsupported_action"
+        | "value_not_supported"
+        | "automation_bridge_exception";
+      message: string;
+      available?: UiAutomationTarget[];
+      diagnostics?: UiAutomationDiagnostics;
+    };
+
 // Team grouping for sidebar
 export interface TeamSessionGroup {
   team: Team;
