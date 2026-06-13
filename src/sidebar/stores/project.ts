@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import type { AcWorkgroup, AcAgentMatrix, AcTeam } from "../../shared/types";
+import type { AcWorkgroup, AcAgentMatrix, AcTeam, AcLoopSummary } from "../../shared/types";
 import { ProjectAPI, SettingsAPI, AgentCreatorAPI } from "../../shared/ipc";
 import {
   findLoadedProjectPathForRefresh,
@@ -12,6 +12,7 @@ export interface ProjectState {
   workgroups: AcWorkgroup[];
   agents: AcAgentMatrix[];
   teams: AcTeam[];
+  loops: AcLoopSummary[];
 }
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
@@ -74,6 +75,7 @@ export const projectStore = {
               workgroups: result.workgroups,
               agents: result.agents,
               teams: result.teams,
+              loops: result.loops,
             },
           ];
         });
@@ -123,6 +125,7 @@ export const projectStore = {
           workgroups: result.workgroups,
           agents: result.agents,
           teams: result.teams,
+          loops: result.loops,
         },
       ];
     });
@@ -190,7 +193,13 @@ export const projectStore = {
         setProjects((prev) =>
           prev.map((p) =>
             normalizePath(p.path) === normalized
-              ? { ...p, workgroups: result.workgroups, agents: result.agents, teams: result.teams }
+              ? {
+                  ...p,
+                  workgroups: result.workgroups,
+                  agents: result.agents,
+                  teams: result.teams,
+                  loops: result.loops,
+                }
               : p
           )
         );
