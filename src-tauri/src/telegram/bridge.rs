@@ -997,7 +997,7 @@ async fn poll_task<R: tauri::Runtime>(
         cfg.telegram_network_poll_error_logging.clone()
     };
     let mut network_error_state = PollNetworkErrorState::new();
-    let mut poll_backoff = NetworkBackoff::new(Duration::from_secs(1), Duration::from_secs(30));
+    let mut poll_backoff = new_poll_backoff(&session_id_str);
 
     // Skip old messages
     match api::get_updates(&network, &token, 0, 0).await {
@@ -1065,7 +1065,9 @@ async fn poll_task<R: tauri::Runtime>(
                     msg
                 );
             }
-            if !sleep_backoff_or_cancel(&cancel, &mut poll_backoff).await {
+            if !sleep_backoff_or_cancel(&cancel, &mut poll_backoff, &mut logger, &session_id_str)
+                .await
+            {
                 return;
             }
         }
@@ -1219,7 +1221,14 @@ async fn poll_task<R: tauri::Runtime>(
                                 token_prefix,
                                 msg
                             );
-                            if !sleep_backoff_or_cancel(&cancel, &mut poll_backoff).await {
+                            if !sleep_backoff_or_cancel(
+                                &cancel,
+                                &mut poll_backoff,
+                                &mut logger,
+                                &session_id_str,
+                            )
+                            .await
+                            {
                                 break;
                             }
                             continue;
@@ -1266,7 +1275,14 @@ async fn poll_task<R: tauri::Runtime>(
                                 unreachable!("record_network_failure only returns Failure or Suppressed")
                             }
                         }
-                        if !sleep_backoff_or_cancel(&cancel, &mut poll_backoff).await {
+                        if !sleep_backoff_or_cancel(
+                            &cancel,
+                            &mut poll_backoff,
+                            &mut logger,
+                            &session_id_str,
+                        )
+                        .await
+                        {
                             break;
                         }
                     }
@@ -1276,17 +1292,52 @@ async fn poll_task<R: tauri::Runtime>(
     }
 }
 
-async fn sleep_backoff_or_cancel(cancel: &CancellationToken, backoff: &mut NetworkBackoff) -> bool {
+async fn sleep_backoff_or_cancel(
+    cancel: &CancellationToken,
+    backoff: &mut NetworkBackoff,
+    logger: &mut BridgeLogger,
+    session_id: &str,
+) -> bool {
     let delay = backoff.next_delay();
+    let sleep_ms = delay.as_millis();
+    logger.log("POLL_BACKOFF", session_id, &format!("sleep_ms={sleep_ms}"));
+    log::debug!(
+        "[bridge] POLL_BACKOFF session_id={} sleep_ms={}",
+        session_id,
+        sleep_ms
+    );
     tokio::select! {
         _ = cancel.cancelled() => false,
         _ = tokio::time::sleep(delay) => true,
     }
 }
 
+fn new_poll_backoff(session_id: &str) -> NetworkBackoff {
+    NetworkBackoff::new(
+        Duration::from_secs(3),
+        Duration::from_secs(60),
+        NetworkBackoff::salt_from_str(session_id),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poll_backoff_uses_plan_bounds_and_session_salt() {
+        let mut first = new_poll_backoff("session-a");
+        let mut second = new_poll_backoff("session-b");
+
+        let first_delay = first.next_delay();
+        let second_delay = second.next_delay();
+
+        assert!(first_delay >= Duration::from_secs(3));
+        assert!(second_delay >= Duration::from_secs(3));
+        assert!(first_delay <= Duration::from_secs(60));
+        assert!(second_delay <= Duration::from_secs(60));
+        assert_ne!(first_delay, second_delay);
+    }
 
     // ── #280 §3.2 — TelegramErrKind::classify ────────────────────
 

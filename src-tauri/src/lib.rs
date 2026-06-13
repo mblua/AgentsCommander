@@ -1702,7 +1702,7 @@ pub fn run(
                         tg.cancel_all()
                     };
                     for shutdown in bridge_shutdowns {
-                        shutdown.spawn_wait_or_abort();
+                        shutdown.abort_now();
                     }
 
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");

@@ -112,15 +112,26 @@ pub struct NetworkBackoff {
     attempt: u32,
     min: Duration,
     max: Duration,
+    salt: u64,
 }
 
 impl NetworkBackoff {
-    pub fn new(min: Duration, max: Duration) -> Self {
+    pub fn new(min: Duration, max: Duration, salt: u64) -> Self {
         Self {
             attempt: 0,
             min,
             max,
+            salt,
         }
+    }
+
+    pub fn salt_from_str(input: &str) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in input.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
     }
 
     pub fn reset(&mut self) {
@@ -133,20 +144,25 @@ impl NetworkBackoff {
         let shift = self.attempt.min(10);
         let exponential = base_ms.saturating_mul(1_u64 << shift);
         let capped = exponential.min(max_ms);
-        let jitter = deterministic_jitter_ms(self.attempt, capped);
+        let jitter = deterministic_jitter_ms(self.attempt, capped, self.salt);
         self.attempt = self.attempt.saturating_add(1);
-        Duration::from_millis((capped + jitter).min(max_ms))
+        if capped >= max_ms {
+            Duration::from_millis(max_ms.saturating_sub(jitter))
+        } else {
+            Duration::from_millis((capped + jitter).min(max_ms))
+        }
     }
 }
 
-fn deterministic_jitter_ms(attempt: u32, cap_ms: u64) -> u64 {
+fn deterministic_jitter_ms(attempt: u32, cap_ms: u64, salt: u64) -> u64 {
     if cap_ms == 0 {
         return 0;
     }
     let jitter_cap = (cap_ms / 4).max(1);
-    let mixed = (attempt as u64)
-        .wrapping_mul(1_103_515_245)
-        .wrapping_add(12_345);
+    let mixed = salt
+        ^ (attempt as u64)
+            .wrapping_mul(1_103_515_245)
+            .wrapping_add(12_345);
     mixed % jitter_cap
 }
 
@@ -165,7 +181,8 @@ mod tests {
 
     #[test]
     fn backoff_grows_and_resets_within_cap() {
-        let mut backoff = NetworkBackoff::new(Duration::from_millis(100), Duration::from_secs(2));
+        let mut backoff =
+            NetworkBackoff::new(Duration::from_millis(100), Duration::from_secs(2), 42);
         let first = backoff.next_delay();
         let second = backoff.next_delay();
         let third = backoff.next_delay();
@@ -177,5 +194,27 @@ mod tests {
         backoff.reset();
         let reset = backoff.next_delay();
         assert_eq!(reset, first);
+    }
+
+    #[test]
+    fn backoff_salt_desynchronizes_same_attempts() {
+        let mut first = NetworkBackoff::new(
+            Duration::from_secs(3),
+            Duration::from_secs(60),
+            NetworkBackoff::salt_from_str("session-a"),
+        );
+        let mut second = NetworkBackoff::new(
+            Duration::from_secs(3),
+            Duration::from_secs(60),
+            NetworkBackoff::salt_from_str("session-b"),
+        );
+        let first_delay = first.next_delay();
+        let second_delay = second.next_delay();
+
+        assert_ne!(first_delay, second_delay);
+        assert!(first_delay >= Duration::from_secs(3));
+        assert!(second_delay >= Duration::from_secs(3));
+        assert!(first_delay <= Duration::from_secs(60));
+        assert!(second_delay <= Duration::from_secs(60));
     }
 }

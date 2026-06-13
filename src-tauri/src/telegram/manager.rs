@@ -33,7 +33,7 @@ pub struct BridgeShutdown {
 
 impl BridgeShutdown {
     pub fn spawn_wait_or_abort(self) {
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             self.wait_or_abort().await;
         });
     }
