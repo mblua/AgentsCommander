@@ -582,6 +582,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <button
             class="settings-preset-btn"
             onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
+            data-ac-testid="settings.agentPreset.claude"
+            data-ac-role="button"
           >
             <span
               class="settings-color-dot"
@@ -594,6 +596,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <button
             class="settings-preset-btn"
             onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
+            data-ac-testid="settings.agentPreset.codex"
+            data-ac-role="button"
           >
             <span
               class="settings-color-dot"
@@ -606,6 +610,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <button
             class="settings-preset-btn"
             onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
+            data-ac-testid="settings.agentPreset.gemini"
+            data-ac-role="button"
           >
             <span
               class="settings-color-dot"
@@ -614,7 +620,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             + Gemini CLI
           </button>
         </Show>
-        <button class="settings-add-btn" onClick={() => addAgent()}>
+        <button
+          class="settings-add-btn"
+          onClick={() => addAgent()}
+          data-ac-testid="settings.agent.addCustom"
+          data-ac-role="button"
+        >
           + Custom Agent
         </button>
       </div>
@@ -796,8 +807,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   );
 
   return (
-    <div class="modal-overlay">
-      <div class="modal-container modal-container-lg">
+    <div
+      class="modal-overlay"
+      data-ac-testid="settings.overlay"
+      data-ac-role="overlay"
+    >
+      <div
+        class="modal-container modal-container-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        data-ac-testid="settings.modal"
+        data-ac-role="dialog"
+      >
         <div class="modal-header">
           <span class="modal-title">Settings</span>
         </div>
@@ -809,6 +831,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               <button
                 class={`settings-tab ${activeTab() === tab.key ? "active" : ""}`}
                 onClick={() => setActiveTab(tab.key)}
+                role="tab"
+                aria-selected={activeTab() === tab.key}
+                data-ac-testid={`settings.tab.${tab.key}`}
+                data-ac-role="tab"
+                data-ac-state={activeTab() === tab.key ? "active" : "idle"}
               >
                 {tab.label}
               </button>
@@ -837,13 +864,21 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <Show when={saveError()}>
             <span class="modal-save-error">{saveError()}</span>
           </Show>
-          <button class="modal-btn modal-btn-cancel" onClick={props.onClose}>
+          <button
+            class="modal-btn modal-btn-cancel"
+            onClick={props.onClose}
+            data-ac-testid="settings.cancel"
+            data-ac-role="button"
+          >
             Cancel
           </button>
           <button
             class="modal-btn modal-btn-save"
             onClick={handleSave}
             disabled={saving() || rtkSweepInFlight()}
+            data-ac-testid="settings.save"
+            data-ac-role="button"
+            data-ac-state={saving() ? "saving" : rtkSweepInFlight() ? "sweeping" : "ready"}
           >
             {saving() ? "Saving..." : rtkSweepInFlight() ? "Sweeping..." : "Save"}
           </button>

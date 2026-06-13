@@ -70,6 +70,12 @@ After launch, query the target window from a separate process:
 
 Historical reference: the old placement `--window-x -2891 --window-y -11 --window-width 1942 --window-height 1102` is obsolete and should not be used as a live visual-test baseline.
 
+## Semantic UI Automation
+
+When the testable GUI is launched with `--ui-automation`, prefer semantic `ui-*` commands over coordinate clicks for WebView controls. Stable targets use exact `data-ac-testid` selectors; screenshots remain evidence, not the action mechanism.
+
+The selector seed and missing-affordance tracker lives in [semantic-ui-automation-affordance-matrix.md](semantic-ui-automation-affordance-matrix.md). If acceptance can perform a behavior with screen and mouse but cannot inspect or operate it semantically, report the missing selector/action there.
+
 ## Test Reset
 
 Use the explicit reset command only from `agentscommander_testeable.exe` and only when the testable GUI is not running:
