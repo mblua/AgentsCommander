@@ -341,6 +341,8 @@ impl UiAutomationState {
     }
 
     fn poll_once_inner(&self, app: &AppHandle) -> io::Result<()> {
+        self.expire_pending_requests();
+
         let requests_dir = self.requests_dir();
         let entries = match fs::read_dir(&requests_dir) {
             Ok(entries) => entries,
@@ -360,6 +362,30 @@ impl UiAutomationState {
         }
 
         Ok(())
+    }
+
+    fn expire_pending_requests(&self) {
+        let now = now_unix_ms();
+        let expired = {
+            let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let expired_ids: Vec<String> = pending_map
+                .iter()
+                .filter(|(_, pending)| request_expired(&pending.request, now))
+                .map(|(request_id, _)| request_id.clone())
+                .collect();
+            expired_ids
+                .into_iter()
+                .filter_map(|request_id| pending_map.remove(&request_id))
+                .collect::<Vec<_>>()
+        };
+
+        for pending in expired {
+            let response = expired_response_for_request(&pending.request);
+            if !pending.response_path.exists() {
+                let _ = write_json_atomic_new(&pending.response_path, &response);
+            }
+            let _ = retry_remove_file(&pending.inflight_path);
+        }
     }
 
     fn process_request_file(&self, app: &AppHandle, request_file: RequestFile) {
@@ -1461,6 +1487,38 @@ mod tests {
         assert!(!written.ok);
         assert_eq!(written.error.as_deref(), Some("completion_mismatch"));
         assert!(!inflight_path.exists());
+    }
+
+    #[test]
+    fn expire_pending_requests_writes_timeout_response() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        fs::create_dir_all(state.requests_dir()).unwrap();
+        fs::create_dir_all(state.responses_dir()).unwrap();
+
+        let request_id = Uuid::new_v4().to_string();
+        let mut request = sample_request(request_id.clone(), "missing.target");
+        request.expires_at_unix_ms = Some(now_unix_ms() - 1);
+        let response_path = state.response_path(&request_id);
+        let inflight_path = state.inflight_path(&request_id);
+        fs::write(&inflight_path, "{}").unwrap();
+        state.inner.pending.lock().unwrap().insert(
+            request_id,
+            PendingRequest {
+                request,
+                response_path: response_path.clone(),
+                inflight_path: inflight_path.clone(),
+            },
+        );
+
+        state.expire_pending_requests();
+
+        let raw = fs::read_to_string(response_path).unwrap();
+        let written: UiAutomationResponse = serde_json::from_str(&raw).unwrap();
+        assert!(!written.ok);
+        assert_eq!(written.error.as_deref(), Some("timeout"));
+        assert!(!inflight_path.exists());
+        assert!(state.inner.pending.lock().unwrap().is_empty());
     }
 
     #[test]
