@@ -15,7 +15,7 @@ use crate::config::settings::{AppSettings, SettingsState};
 use crate::config::workspace::existing_workspace_dir;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
-use crate::session::session::SessionRepo;
+use crate::session::session::{SessionRepo, SessionStatus};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1468,9 +1468,9 @@ pub async fn delete_workgroup(
     let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let wg_dir = base.join(&workgroup_name);
-    if !wg_dir.exists() {
-        return Err(format!("Workgroup '{}' not found", workgroup_name));
-    }
+    validate_delete_root_not_link_or_reparse(&wg_dir)?;
+
+    ensure_no_live_sessions_under_manager(&wg_dir, session_mgr.inner()).await?;
 
     // Safety check: detect dirty repos before deleting (skip if force)
     if !force.unwrap_or(false) {
@@ -1496,7 +1496,22 @@ pub async fn delete_workgroup(
     // memory-mapped TASK.md), the rename fails atomically — no files touched —
     // and we run the diagnostic on the still-intact tree. On success the dir is
     // re-parented to a sentinel name and removed; the user-visible WG is gone.
-    match try_atomic_delete_wg(&wg_dir) {
+    delete_workgroup_dir_backend(&wg_dir, &workgroup_name, session_mgr.inner()).await?;
+    log::info!(
+        "[entity_creation] Deleted workgroup: {} (force={})",
+        workgroup_name,
+        force.unwrap_or(false)
+    );
+    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+    Ok(())
+}
+
+pub(crate) async fn delete_workgroup_dir_backend(
+    wg_dir: &Path,
+    workgroup_name: &str,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> Result<(), String> {
+    match try_atomic_delete_wg(wg_dir) {
         WgDeleteOutcome::Deleted => {
             // fall through to success path
         }
@@ -1507,10 +1522,10 @@ pub async fn delete_workgroup(
                 workgroup_name
             );
             let report = crate::commands::wg_delete_diagnostic::diagnose_blockers(
-                &wg_dir,
-                &workgroup_name,
+                wg_dir,
+                workgroup_name,
                 &raw, // raw OS error verbatim — see plan §C.1
-                session_mgr.inner(),
+                session_mgr,
             )
             .await;
             let json = serde_json::to_string(&report).map_err(|se| {
@@ -1521,16 +1536,18 @@ pub async fn delete_workgroup(
             })?;
             return Err(format!("BLOCKERS:{}", json));
         }
+        WgDeleteOutcome::Partial { orphan_path, error } => {
+            return Err(format!(
+                "Partial workgroup delete: renamed '{}' to orphan '{}', but failed to remove orphan: {}",
+                wg_dir.display(),
+                orphan_path.display(),
+                error
+            ));
+        }
         WgDeleteOutcome::Other(e) => {
             return Err(format!("Failed to delete workgroup directory: {}", e));
         }
     }
-    log::info!(
-        "[entity_creation] Deleted workgroup: {} (force={})",
-        workgroup_name,
-        force.unwrap_or(false)
-    );
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
     Ok(())
 }
 
@@ -2016,10 +2033,15 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
 ///
 /// `pub(crate)` so the unit tests can pattern-match on the variants.
 pub(crate) enum WgDeleteOutcome {
-    /// Rename succeeded and the renamed dir was removed (or, in the rare race
-    /// where remove failed after a successful rename, an orphan remains and a
-    /// `log::warn!` was emitted — from the user's perspective the WG is gone).
+    /// Rename succeeded and the renamed dir was removed.
     Deleted,
+    /// Rename succeeded, but deleting the renamed orphan failed. The
+    /// user-visible workgroup name is gone, but callers must report this as a
+    /// partial failure and skip refresh.
+    Partial {
+        orphan_path: PathBuf,
+        error: std::io::Error,
+    },
     /// Rename failed with a Windows file-in-use error. Tree is intact; caller
     /// should run the blocker diagnostic and return `BLOCKERS:` to the frontend.
     Blocked(std::io::Error),
@@ -2044,6 +2066,13 @@ pub(crate) enum WgDeleteOutcome {
 ///
 /// `pub(crate)` so unit tests can drive it directly.
 pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
+    try_atomic_delete_wg_with_remove(wg_dir, |path| std::fs::remove_dir_all(path))
+}
+
+pub(crate) fn try_atomic_delete_wg_with_remove(
+    wg_dir: &Path,
+    remove_dir_all: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> WgDeleteOutcome {
     let parent = match wg_dir.parent() {
         Some(p) => p,
         None => {
@@ -2067,10 +2096,7 @@ pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
 
     match std::fs::rename(wg_dir, &temp_path) {
         Ok(()) => {
-            if let Err(e) = std::fs::remove_dir_all(&temp_path) {
-                // Rare race: a new handle opened between rename and remove. The
-                // user-visible WG is gone (renamed away); leave the orphan on
-                // disk for future cleanup tooling.
+            if let Err(e) = remove_dir_all(&temp_path) {
                 log::warn!(
                     "[entity_creation] Renamed workgroup '{}' to '{}' but remove_dir_all failed: {}. \
                      User-visible WG is gone; orphan remains on disk.",
@@ -2078,6 +2104,10 @@ pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
                     temp_path.display(),
                     e
                 );
+                return WgDeleteOutcome::Partial {
+                    orphan_path: temp_path,
+                    error: e,
+                };
             }
             WgDeleteOutcome::Deleted
         }
@@ -2089,6 +2119,86 @@ pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
             }
         }
     }
+}
+
+pub(crate) fn validate_delete_root_not_link_or_reparse(path: &Path) -> Result<(), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("delete_root_not_directory".to_string());
+        }
+        Err(e) => return Err(format!("delete_root_metadata_failed: {e}")),
+    };
+
+    if delete_root_has_windows_reparse_point(&metadata) {
+        return Err("delete_root_is_reparse_point".to_string());
+    }
+    if metadata.file_type().is_symlink() {
+        return Err("delete_root_is_symlink".to_string());
+    }
+    if !metadata.is_dir() {
+        return Err("delete_root_not_directory".to_string());
+    }
+    Ok(())
+}
+
+async fn ensure_no_live_sessions_under_manager(
+    root: &Path,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> Result<(), String> {
+    let root_key = path_key_for_delete(root);
+    let sessions = { session_mgr.read().await.list_sessions().await };
+    let blockers: Vec<_> = sessions
+        .into_iter()
+        .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+        .filter(|session| {
+            let working_dir = Path::new(&session.working_directory);
+            let working_key = path_key_for_delete(working_dir);
+            working_key == root_key || working_key.starts_with(&(root_key.clone() + "/"))
+        })
+        .collect();
+
+    if blockers.is_empty() {
+        return Ok(());
+    }
+
+    let details = blockers
+        .iter()
+        .map(|session| {
+            format!(
+                "  - {} at {} ({:?})",
+                session.name, session.working_directory, session.status
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "Cannot delete while live sessions exist under {}:\n{}",
+        root.display(),
+        details
+    ))
+}
+
+fn path_key_for_delete(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = resolved.to_string_lossy();
+    text.strip_prefix(r"\\?\")
+        .unwrap_or(&text)
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+#[cfg(target_os = "windows")]
+fn delete_root_has_windows_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(target_os = "windows"))]
+fn delete_root_has_windows_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// True iff the rename-probe error indicates a blocker holds an open handle.
@@ -2957,6 +3067,110 @@ mod tests {
                 panic!("missing dir must NOT classify as Blocked")
             }
             WgDeleteOutcome::Deleted => panic!("missing dir cannot be Deleted"),
+            WgDeleteOutcome::Partial { .. } => panic!("missing dir cannot be Partial"),
+        }
+    }
+
+    #[test]
+    fn try_atomic_delete_wg_reports_partial_orphan_when_remove_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wg_dir = tmp.path().join("wg-1-test");
+        std::fs::create_dir(&wg_dir).expect("create wg_dir");
+        std::fs::write(wg_dir.join("TASK.md"), "# test\n").expect("write TASK.md");
+
+        let outcome = try_atomic_delete_wg_with_remove(&wg_dir, |_path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "forced remove failure",
+            ))
+        });
+        match outcome {
+            WgDeleteOutcome::Partial { orphan_path, error } => {
+                assert!(!wg_dir.exists(), "original workgroup path should be gone");
+                assert!(orphan_path.is_dir(), "orphan should remain on disk");
+                assert!(orphan_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("orphan filename")
+                    .starts_with(".deleting-wg-1-test-"));
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(error.to_string().contains("forced remove failure"));
+            }
+            WgDeleteOutcome::Deleted => panic!("remove failure cannot be Deleted"),
+            WgDeleteOutcome::Blocked(e) => panic!("remove failure cannot be Blocked: {}", e),
+            WgDeleteOutcome::Other(e) => panic!("remove failure cannot be Other: {}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn gui_live_session_refusal_precedes_delete() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wg_dir = tmp.path().join("wg-1-test");
+        std::fs::create_dir(&wg_dir).expect("create wg_dir");
+        let work_dir = wg_dir.join("__agent_dev-rust");
+        std::fs::create_dir_all(&work_dir).expect("create work_dir");
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        {
+            let guard = manager.read().await;
+            guard
+                .create_session(
+                    "shell".to_string(),
+                    Vec::new(),
+                    work_dir.to_string_lossy().to_string(),
+                    None,
+                    None,
+                    Vec::new(),
+                    false,
+                )
+                .await
+                .expect("create live session");
+        }
+
+        let err = ensure_no_live_sessions_under_manager(&wg_dir, &manager)
+            .await
+            .expect_err("live session should block delete");
+        assert!(err.contains("Cannot delete while live sessions exist"));
+        assert!(err.contains("Session 1"));
+        assert!(err.contains("Active"));
+    }
+
+    #[tokio::test]
+    async fn delete_workgroup_dir_backend_returns_blockers_json() {
+        #[cfg(not(windows))]
+        {
+            return;
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 0x00000001;
+
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let wg_dir = tmp.path().join("wg-1-test");
+            std::fs::create_dir(&wg_dir).expect("create wg_dir");
+            let inside = wg_dir.join("locked.bin");
+            std::fs::write(&inside, b"hold me").expect("write inside file");
+            let _handle = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(&inside)
+                .expect("open with restricted share mode");
+            let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+
+            let err = delete_workgroup_dir_backend(&wg_dir, "wg-1-test", &manager)
+                .await
+                .expect_err("blocked delete should return blockers json");
+            let json = err
+                .strip_prefix("BLOCKERS:")
+                .unwrap_or_else(|| panic!("expected BLOCKERS prefix, got {}", err));
+            let report: serde_json::Value = serde_json::from_str(json).expect("blockers json");
+            assert_eq!(report["workgroup"], "wg-1-test");
+            assert!(!report["rawDeleteError"]
+                .as_str()
+                .expect("rawDeleteError")
+                .is_empty());
+            assert!(wg_dir.is_dir(), "blocked tree should remain intact");
         }
     }
 
@@ -3001,6 +3215,9 @@ mod tests {
             }
             WgDeleteOutcome::Other(e) => {
                 panic!("expected Blocked, got Other({:?}={})", e.kind(), e);
+            }
+            WgDeleteOutcome::Partial { .. } => {
+                panic!("blocked rename cannot report Partial");
             }
         }
     }

@@ -8,8 +8,8 @@ use crate::cli::create_agent_matrix::{write_project_refresh_request, ProjectRefr
 use crate::commands::entity_creation::{
     check_workgroup_repos_dirty, clone_missing_repos_for_workgroup, create_workgroup_on_disk,
     list_workgroup_dirs, read_team_config, resolve_agent_ref, sanitize_name,
-    validate_existing_name, AgentMatrixSettingsFlags, RepoAssignment, TeamConfigResult,
-    WgDeleteOutcome, WorkgroupDiskCreateArgs,
+    validate_delete_root_not_link_or_reparse, validate_existing_name, AgentMatrixSettingsFlags,
+    RepoAssignment, TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
 use crate::config::workspace::existing_workspace_dir;
@@ -248,9 +248,7 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
     let workspace_dir = resolve_cli_workspace(&project_path)?;
     let wg_dir = workspace_dir.join(&args.workgroup);
-    if !wg_dir.is_dir() {
-        return Err(format!("Workgroup '{}' not found", args.workgroup));
-    }
+    validate_delete_root_not_link_or_reparse(&wg_dir)?;
     crate::cli::session_safety::ensure_no_live_sessions_under(&wg_dir)?;
     if !args.force_dirty {
         let dirty = check_workgroup_repos_dirty(std::slice::from_ref(&wg_dir));
@@ -270,6 +268,13 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
         WgDeleteOutcome::Deleted => {}
         WgDeleteOutcome::Blocked(e) => {
             return Err(format!("Failed to delete workgroup, file in use: {}", e));
+        }
+        WgDeleteOutcome::Partial { orphan_path, error } => {
+            return Err(format!(
+                "Failed to fully delete workgroup directory; renamed workgroup to orphan '{}', but failed to remove orphan: {}",
+                orphan_path.display(),
+                error
+            ));
         }
         WgDeleteOutcome::Other(e) => {
             return Err(format!("Failed to delete workgroup directory: {}", e));
