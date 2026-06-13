@@ -182,8 +182,11 @@ fn locked_file_refuses_and_reports_delete_plan() {
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let config_dir = tmp.path().join(".agentscommander_testeable");
     let project_dir = tmp.path().join("agentscommander_testeable");
+    let outside = tmp.path().join("outside-sentinel").join("keep.txt");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::create_dir_all(outside.parent().expect("outside parent")).unwrap();
+    std::fs::write(&outside, "keep").unwrap();
     let locked = config_dir.join("locked.txt");
     std::fs::write(&locked, b"locked").unwrap();
     let _handle = open_without_delete_share(&locked);
@@ -192,6 +195,7 @@ fn locked_file_refuses_and_reports_delete_plan() {
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     let err = stderr_json(&stderr);
     assert_eq!(err["error"], "remove_dir_all_failed");
+    assert!(!err["message"].as_str().expect("message").is_empty());
     assert!(err["path"]
         .as_str()
         .expect("path")
@@ -208,6 +212,10 @@ fn locked_file_refuses_and_reports_delete_plan() {
     assert!(
         project_dir.exists(),
         "project dir should not be deleted after failure"
+    );
+    assert!(
+        outside.is_file(),
+        "outside sentinel should remain after reset failure"
     );
 }
 

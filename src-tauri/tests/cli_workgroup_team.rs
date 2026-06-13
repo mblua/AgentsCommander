@@ -126,6 +126,24 @@ fn has_refresh_reason(config_dir: &Path, reason: &str) -> bool {
         .any(|request| request["reason"] == reason)
 }
 
+fn create_outside_sentinel(project: &Path, name: &str) -> PathBuf {
+    let sentinel = project
+        .join(format!("outside-sentinel-{name}"))
+        .join("keep.txt");
+    std::fs::create_dir_all(sentinel.parent().expect("sentinel parent"))
+        .expect("create outside sentinel parent");
+    std::fs::write(&sentinel, "keep").expect("write outside sentinel");
+    sentinel
+}
+
+fn assert_outside_sentinel_survives(sentinel: &Path) {
+    assert!(
+        sentinel.is_file(),
+        "outside sentinel should survive destructive operation: {}",
+        sentinel.display()
+    );
+}
+
 fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     let project = tmp.join("ProjectAlpha");
     let workspace_dir = project.join(".ac");
@@ -555,8 +573,10 @@ fn workgroup_remove_refuses_dirty_repo_without_force() {
     let tmp = Tmp::new("cli-workgroup-dirty-refuse");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let (_project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
-    create_dirty_repo(&wg_dir.join("repo-dirty"));
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "dirty-refuse");
+    let dirty_file = wg_dir.join("repo-dirty").join("untracked.txt");
+    create_dirty_repo(dirty_file.parent().expect("dirty repo parent"));
 
     let stderr = run_fail(
         &bin,
@@ -575,6 +595,8 @@ fn workgroup_remove_refuses_dirty_repo_without_force() {
         wg_dir.is_dir(),
         "dirty refusal should leave workgroup intact"
     );
+    assert!(dirty_file.is_file(), "dirty repo file should remain");
+    assert_outside_sentinel_survives(&outside);
     assert!(!has_refresh_reason(&config_dir, "workgroupRemoved"));
 }
 
@@ -588,7 +610,8 @@ fn workgroup_remove_force_dirty_deletes_dirty_repo() {
     let tmp = Tmp::new("cli-workgroup-dirty-force");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let (_project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "dirty-force");
     create_dirty_repo(&wg_dir.join("repo-dirty"));
 
     let removed = run_json_machine(
@@ -605,6 +628,7 @@ fn workgroup_remove_force_dirty_deletes_dirty_repo() {
     );
     assert_eq!(removed["removed"], true);
     assert!(!wg_dir.exists(), "force-dirty should delete workgroup");
+    assert_outside_sentinel_survives(&outside);
     assert!(has_refresh_reason(&config_dir, "workgroupRemoved"));
 }
 
@@ -613,7 +637,8 @@ fn workgroup_remove_refuses_live_persisted_session_even_with_force() {
     let tmp = Tmp::new("cli-workgroup-live-refuse");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let (_project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "live-refuse");
     let session_cwd = wg_dir.join("__agent_architect");
     write_live_session(&config_dir, &session_cwd);
 
@@ -640,6 +665,7 @@ fn workgroup_remove_refuses_live_persisted_session_even_with_force() {
         wg_dir.is_dir(),
         "live session refusal should leave workgroup intact"
     );
+    assert_outside_sentinel_survives(&outside);
     assert!(!has_refresh_reason(&config_dir, "workgroupRemoved"));
 }
 
@@ -649,7 +675,8 @@ fn workgroup_remove_locked_file_reports_blockers_without_refresh() {
     let tmp = Tmp::new("cli-workgroup-locked");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let (_project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "locked");
     let locked = wg_dir.join("locked.bin");
     std::fs::write(&locked, b"locked").expect("write locked file");
     let _handle = open_without_delete_share(&locked);
@@ -669,6 +696,7 @@ fn workgroup_remove_locked_file_reports_blockers_without_refresh() {
     assert!(stderr.contains("file in use") || stderr.contains("Failed to delete workgroup"));
     assert!(wg_dir.is_dir(), "blocked workgroup should remain");
     assert!(locked.is_file(), "locked file should remain");
+    assert_outside_sentinel_survives(&outside);
     assert!(!has_refresh_reason(&config_dir, "workgroupRemoved"));
 }
 
@@ -716,7 +744,8 @@ fn workgroup_remove_refuses_reparse_root() {
     let tmp = Tmp::new("cli-workgroup-reparse-root");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
-    let (_project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "reparse-root");
     std::fs::remove_dir_all(&wg_dir).expect("remove real workgroup");
     let real = tmp.path().join("real-wg-target");
     std::fs::create_dir_all(&real).expect("create real target");
@@ -744,6 +773,7 @@ fn workgroup_remove_refuses_reparse_root() {
     assert!(stderr.contains("delete_root_is_reparse_point"));
     assert!(wg_dir.exists(), "junction should remain");
     assert!(real.join("sentinel.txt").is_file(), "target should remain");
+    assert_outside_sentinel_survives(&outside);
     assert!(!has_refresh_reason(&config_dir, "workgroupRemoved"));
 }
 

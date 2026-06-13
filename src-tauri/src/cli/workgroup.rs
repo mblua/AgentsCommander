@@ -264,7 +264,33 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
             ));
         }
     }
-    match crate::commands::entity_creation::try_atomic_delete_wg(&wg_dir) {
+    match cli_remove_refresh_decision(crate::commands::entity_creation::try_atomic_delete_wg(
+        &wg_dir,
+    ))? {
+        RemoveRefreshDecision::EmitWorkgroupRemoved => {}
+    }
+    write_refresh(&project_path, &wg_dir, &args.workgroup, "workgroupRemoved");
+    if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
+        print_json(&serde_json::json!({
+            "workgroup": args.workgroup,
+            "path": wg_dir.to_string_lossy(),
+            "removed": true
+        }))
+    } else {
+        crate::cli_println!("Removed workgroup {}", args.workgroup);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoveRefreshDecision {
+    EmitWorkgroupRemoved,
+}
+
+pub(crate) fn cli_remove_refresh_decision(
+    outcome: WgDeleteOutcome,
+) -> Result<RemoveRefreshDecision, String> {
+    match outcome {
         WgDeleteOutcome::Deleted => {}
         WgDeleteOutcome::Blocked(e) => {
             return Err(format!("Failed to delete workgroup, file in use: {}", e));
@@ -280,17 +306,7 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
             return Err(format!("Failed to delete workgroup directory: {}", e));
         }
     }
-    write_refresh(&project_path, &wg_dir, &args.workgroup, "workgroupRemoved");
-    if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
-        print_json(&serde_json::json!({
-            "workgroup": args.workgroup,
-            "path": wg_dir.to_string_lossy(),
-            "removed": true
-        }))
-    } else {
-        crate::cli_println!("Removed workgroup {}", args.workgroup);
-        Ok(())
-    }
+    Ok(RemoveRefreshDecision::EmitWorkgroupRemoved)
 }
 
 pub(crate) fn build_new_team_config(
@@ -462,4 +478,34 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
         .map_err(|e| format!("Failed to serialize JSON output: {}", e))?;
     crate::cli_println!("{}", json);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_delete_outcome_does_not_authorize_removed_refresh() {
+        let outcome = WgDeleteOutcome::Partial {
+            orphan_path: PathBuf::from(".deleting-wg-1-test-orphan"),
+            error: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "forced remove failure",
+            ),
+        };
+
+        let err = cli_remove_refresh_decision(outcome)
+            .expect_err("partial delete must not authorize workgroupRemoved refresh");
+        assert!(err.contains("Failed to fully delete workgroup directory"));
+        assert!(err.contains(".deleting-wg-1-test-orphan"));
+    }
+
+    #[test]
+    fn clean_delete_outcome_authorizes_removed_refresh() {
+        assert_eq!(
+            cli_remove_refresh_decision(WgDeleteOutcome::Deleted)
+                .expect("deleted outcome should refresh"),
+            RemoveRefreshDecision::EmitWorkgroupRemoved
+        );
+    }
 }

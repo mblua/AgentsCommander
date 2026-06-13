@@ -1511,7 +1511,22 @@ pub(crate) async fn delete_workgroup_dir_backend(
     workgroup_name: &str,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) -> Result<(), String> {
-    match try_atomic_delete_wg(wg_dir) {
+    delete_workgroup_dir_backend_with_outcome(
+        wg_dir,
+        workgroup_name,
+        session_mgr,
+        try_atomic_delete_wg(wg_dir),
+    )
+    .await
+}
+
+pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
+    wg_dir: &Path,
+    workgroup_name: &str,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    outcome: WgDeleteOutcome,
+) -> Result<(), String> {
+    match outcome {
         WgDeleteOutcome::Deleted => {
             // fall through to success path
         }
@@ -3100,6 +3115,94 @@ mod tests {
             WgDeleteOutcome::Blocked(e) => panic!("remove failure cannot be Blocked: {}", e),
             WgDeleteOutcome::Other(e) => panic!("remove failure cannot be Other: {}", e),
         }
+    }
+
+    #[tokio::test]
+    async fn gui_partial_delete_outcome_returns_error_before_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wg_dir = tmp.path().join("wg-1-test");
+        let orphan = tmp.path().join(".deleting-wg-1-test-forced");
+        std::fs::create_dir(&wg_dir).expect("create wg_dir");
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+
+        let err = delete_workgroup_dir_backend_with_outcome(
+            &wg_dir,
+            "wg-1-test",
+            &manager,
+            WgDeleteOutcome::Partial {
+                orphan_path: orphan.clone(),
+                error: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "forced remove failure",
+                ),
+            },
+        )
+        .await
+        .expect_err("partial delete must error before caller can refresh");
+
+        assert!(err.contains("Partial workgroup delete"));
+        assert!(err.contains(&orphan.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn validate_delete_root_rejects_non_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("wg-1-test");
+        std::fs::write(&file, "not a dir").expect("write file");
+
+        assert_eq!(
+            validate_delete_root_not_link_or_reparse(&file).unwrap_err(),
+            "delete_root_not_directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_delete_root_rejects_symlink_root() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real");
+        let link = tmp.path().join("wg-1-test");
+        std::fs::create_dir(&real).expect("create real");
+        symlink(&real, &link).expect("create symlink");
+
+        assert_eq!(
+            validate_delete_root_not_link_or_reparse(&link).unwrap_err(),
+            "delete_root_is_symlink"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_delete_root_rejects_reparse_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real");
+        let junction = tmp.path().join("wg-1-test");
+        std::fs::create_dir(&real).expect("create real");
+        let output = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                junction.to_str().expect("junction path"),
+                real.to_str().expect("real path"),
+            ])
+            .output()
+            .expect("run mklink");
+        if !output.status.success() {
+            println!(
+                "skipping validate_delete_root reparse check; see docs/testing/destructive-filesystem-regression.md#helper-reparse-root-check: stdout: {} stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        assert_eq!(
+            validate_delete_root_not_link_or_reparse(&junction).unwrap_err(),
+            "delete_root_is_reparse_point"
+        );
     }
 
     #[tokio::test]
