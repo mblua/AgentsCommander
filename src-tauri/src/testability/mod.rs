@@ -1,4 +1,5 @@
 pub mod reset;
+pub mod ui_automation;
 pub mod window_info;
 pub mod window_placement;
 
