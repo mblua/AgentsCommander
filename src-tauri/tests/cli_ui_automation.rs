@@ -67,11 +67,23 @@ fn run_with_env(
 }
 
 fn first_json(stderr_or_stdout: &str) -> Value {
-    let line = stderr_or_stdout
+    let lines: Vec<&str> = stderr_or_stdout
         .lines()
-        .find(|line| !line.trim().is_empty())
-        .expect("json output line");
-    serde_json::from_str(line).expect("parse json")
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected exactly one JSON output line, got: {stderr_or_stdout}"
+    );
+    serde_json::from_str(lines[0]).expect("parse json")
+}
+
+fn assert_empty_output(name: &str, output: &str) {
+    assert!(
+        output.trim().is_empty(),
+        "{name} should be empty, got: {output}"
+    );
 }
 
 fn config_dir_for(bin: &Path) -> PathBuf {
@@ -126,11 +138,7 @@ fn normal_binary_refuses_ui_click_with_json_only_stderr() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert!(stdout.trim().is_empty(), "stdout should be empty: {stdout}");
-    assert!(
-        stderr.trim_start().starts_with('{'),
-        "stderr should start with JSON, got: {stderr}"
-    );
+    assert_empty_output("stdout", &stdout);
     let parsed = first_json(&stderr);
     assert_eq!(parsed["error"], "refusing_non_testeable_binary");
 }
@@ -150,6 +158,7 @@ fn workgroup_binary_refuses_ui_click() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
     assert_eq!(
         first_json(&stderr)["error"],
         "refusing_non_testeable_binary"
@@ -162,6 +171,7 @@ fn normal_gui_binary_refuses_ui_automation_flag() {
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(&bin, &["--app", "--ui-automation"]);
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
     assert_eq!(
         first_json(&stderr)["error"],
         "refusing_non_testeable_binary"
@@ -174,6 +184,7 @@ fn normal_gui_binary_refuses_ui_automation_env() {
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run_with_env(&bin, "AC_UI_AUTOMATION", "1", &[]);
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
     assert_eq!(
         first_json(&stderr)["error"],
         "refusing_non_testeable_binary"
@@ -208,6 +219,7 @@ fn missing_session_file_reports_automation_session_missing() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
     assert_eq!(first_json(&stderr)["error"], "automation_session_missing");
 }
 
@@ -227,6 +239,7 @@ fn dead_session_pid_reports_stale_session() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
     assert_eq!(first_json(&stderr)["error"], "automation_session_stale");
 }
 
@@ -304,6 +317,7 @@ fn fake_response_makes_ui_query_succeed() {
     );
     responder.join().unwrap();
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
     assert_eq!(parsed["ok"], true);
     assert_eq!(parsed["target"]["testId"], "onboarding.confirm");
@@ -331,7 +345,113 @@ fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
     let parsed = first_json(&stderr);
     assert_eq!(parsed["error"], "timeout");
     assert_eq!(parsed["phase"], "awaiting_gui_poller");
+}
+
+#[test]
+fn ui_click_timeout_removes_inflight_request_with_json_only_stderr() {
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-timeout-inflight");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &[]);
+    let automation_dir = config_dir_for(&bin).join("ui-automation");
+    let requests_dir = automation_dir.join("requests");
+
+    let mover_dir = requests_dir.clone();
+    let mover = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let entries: Vec<PathBuf> = std::fs::read_dir(&mover_dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| {
+                    path.extension().and_then(|e| e.to_str()) == Some("json")
+                        && !path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|name| name.ends_with(".inflight.json"))
+                })
+                .collect();
+            if let Some(path) = entries.first() {
+                let raw = std::fs::read_to_string(path).unwrap();
+                let request: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(request["action"], "click");
+                let request_id = request["requestId"].as_str().unwrap();
+                std::fs::rename(path, mover_dir.join(format!("{request_id}.inflight.json")))
+                    .unwrap();
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for request");
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-click",
+            "--window",
+            "main",
+            "--selector",
+            "onboarding.confirm",
+            "--timeout-ms",
+            "250",
+        ],
+    );
+    mover.join().unwrap();
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
+    let parsed = first_json(&stderr);
+    assert_eq!(parsed["error"], "timeout");
+    assert_eq!(parsed["phase"], "awaiting_frontend_ready");
+
+    let remaining: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "timed-out request files should be removed: {remaining:?}"
+    );
+}
+
+#[test]
+fn ui_query_retries_transient_missing_session_file() {
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-session-read-race");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    let writer_bin = bin.clone();
+    let writer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        write_session(&writer_bin, pid, &["main"]);
+    });
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-query",
+            "--window",
+            "main",
+            "--selector",
+            "onboarding.confirm",
+            "--timeout-ms",
+            "100",
+        ],
+    );
+    writer.join().unwrap();
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stdout", &stdout);
+    let parsed = first_json(&stderr);
+    assert_eq!(parsed["error"], "timeout");
+    assert_ne!(parsed["error"], "automation_session_missing");
 }

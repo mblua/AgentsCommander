@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
@@ -23,6 +24,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const POLL_MS: u64 = 50;
 const FS_RETRY_COUNT: usize = 8;
 const FS_RETRY_DELAY_MS: u64 = 25;
+const SESSION_READ_RETRY_COUNT: usize = 8;
+const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
 
 #[derive(Debug, Args)]
 pub struct UiQueryArgs {
@@ -88,6 +91,8 @@ pub struct UiAutomationRequest {
     pub selector: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_unix_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -145,6 +150,7 @@ struct UiAutomationInner {
     window_labels: Mutex<HashSet<String>>,
     ready_window_labels: Mutex<HashSet<String>>,
     pending: Mutex<HashMap<String, PendingRequest>>,
+    available: AtomicBool,
     exe_path: String,
     started_at_unix_ms: i64,
 }
@@ -171,6 +177,7 @@ impl UiAutomationState {
                 window_labels: Mutex::new(window_labels),
                 ready_window_labels: Mutex::new(HashSet::new()),
                 pending: Mutex::new(HashMap::new()),
+                available: AtomicBool::new(enabled),
                 exe_path,
                 started_at_unix_ms: now_unix_ms(),
             }),
@@ -178,18 +185,20 @@ impl UiAutomationState {
     }
 
     pub fn enabled(&self) -> bool {
-        self.inner.enabled
+        self.inner.enabled && self.inner.available.load(Ordering::SeqCst)
     }
 
     pub fn start(&self, app: AppHandle, shutdown: ShutdownSignal) {
-        if !self.enabled() {
+        if !self.inner.enabled {
             return;
         }
 
         if let Err(e) = self.initialize_files() {
+            self.mark_unavailable();
             log::error!("[ui-automation] failed to initialize files: {}", e);
             return;
         }
+        self.inner.available.store(true, Ordering::SeqCst);
 
         let state = self.clone();
         let shutdown = shutdown.token().clone();
@@ -289,6 +298,10 @@ impl UiAutomationState {
         self.write_session_snapshot()
     }
 
+    fn mark_unavailable(&self) {
+        self.inner.available.store(false, Ordering::SeqCst);
+    }
+
     fn write_session_snapshot(&self) -> io::Result<()> {
         let window_labels = sorted_labels(
             &self
@@ -382,6 +395,12 @@ impl UiAutomationState {
             return;
         }
 
+        if request_expired(&request, now_unix_ms()) {
+            let response = expired_response_for_request(&request);
+            let _ = self.write_direct_response(&request_file, &response);
+            return;
+        }
+
         if request.token != self.inner.token {
             let response = UiAutomationResponse::error_for_request(
                 &request,
@@ -407,6 +426,10 @@ impl UiAutomationState {
             return;
         }
 
+        if !self.is_window_ready(&request.window) {
+            return;
+        }
+
         let inflight_path = match self.ensure_inflight(&request_file) {
             Ok(path) => path,
             Err(e) => {
@@ -425,7 +448,10 @@ impl UiAutomationState {
             }
         };
 
-        if !self.is_window_ready(&request.window) {
+        if request_expired(&request, now_unix_ms()) {
+            let response = expired_response_for_request(&request);
+            let _ = write_json_atomic_new(&self.response_path(&request.request_id), &response);
+            let _ = retry_remove_file(&inflight_path);
             return;
         }
 
@@ -705,6 +731,7 @@ fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
         action: input.action,
         selector: input.selector.clone(),
         value: input.value.clone(),
+        expires_at_unix_ms: Some(request_expires_at_unix_ms(input.timeout_ms)),
     };
 
     let request_path = automation_dir
@@ -777,6 +804,7 @@ fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
                 &input.window,
             ));
             let _ = retry_remove_file(&request_path);
+            let _ = retry_remove_file(&inflight_path);
             return Ok(timeout);
         }
 
@@ -808,7 +836,7 @@ pub fn existing_enabled_session_for_current_config() -> bool {
         return false;
     };
     let session_path = config_dir.join(UI_AUTOMATION_DIR).join(SESSION_FILE);
-    let Ok(raw) = fs::read_to_string(&session_path) else {
+    let Ok(raw) = read_session_file_with_retry(&session_path) else {
         return false;
     };
     let Ok(session) = serde_json::from_str::<UiAutomationSession>(&raw) else {
@@ -827,7 +855,7 @@ pub fn automation_not_enabled_json() -> String {
 }
 
 fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomationSession, Value> {
-    let raw = match fs::read_to_string(path) {
+    let raw = match read_session_file_with_retry(path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let state = crate::config::daemon_pid::detect_daemon_state();
@@ -983,6 +1011,27 @@ fn response_error_value(
     })
 }
 
+fn request_expires_at_unix_ms(timeout_ms: u64) -> i64 {
+    let timeout_ms = timeout_ms.min(i64::MAX as u64) as i64;
+    now_unix_ms().saturating_add(timeout_ms)
+}
+
+fn request_expired(request: &UiAutomationRequest, now_ms: i64) -> bool {
+    request
+        .expires_at_unix_ms
+        .is_some_and(|expires_at| expires_at <= now_ms)
+}
+
+fn expired_response_for_request(request: &UiAutomationRequest) -> UiAutomationResponse {
+    let mut response = UiAutomationResponse::error_for_request(
+        request,
+        "timeout",
+        "Automation request expired before the GUI emitted it to the frontend.",
+    );
+    response.diagnostics = Some(json!({ "expiresAtUnixMs": request.expires_at_unix_ms }));
+    response
+}
+
 fn print_stdout_json<T: Serialize>(value: &T) {
     match serde_json::to_string(value) {
         Ok(json) => crate::cli_println!("{json}"),
@@ -1024,7 +1073,7 @@ fn timeout_phase(
 }
 
 fn session_ready_for_window(path: &Path, window: &str) -> bool {
-    fs::read_to_string(path)
+    read_session_file_with_retry(path)
         .ok()
         .and_then(|raw| serde_json::from_str::<UiAutomationSession>(&raw).ok())
         .is_some_and(|session| {
@@ -1041,6 +1090,29 @@ fn write_json_atomic_new<T: Serialize>(path: &Path, value: &T) -> io::Result<()>
 
 fn write_json_atomic_replace<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     write_json_atomic(path, value, true)
+}
+
+fn read_session_file_with_retry(path: &Path) -> io::Result<String> {
+    let mut last_not_found = None;
+    for attempt in 0..SESSION_READ_RETRY_COUNT {
+        match fs::read_to_string(path) {
+            Ok(raw) => return Ok(raw),
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    && attempt + 1 < SESSION_READ_RETRY_COUNT =>
+            {
+                last_not_found = Some(e);
+                std::thread::sleep(Duration::from_millis(SESSION_READ_RETRY_DELAY_MS));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_not_found.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("session file not found: {}", path.display()),
+        )
+    }))
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T, replace: bool) -> io::Result<()> {
@@ -1095,6 +1167,13 @@ fn retry_remove_file(path: &Path) -> io::Result<()> {
     retry_fs(|| fs::remove_file(path))
 }
 
+fn retry_remove_dir_all(path: &Path) -> io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    retry_fs(|| fs::remove_dir_all(path))
+}
+
 fn retry_fs(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     let mut last_err = None;
     for attempt in 0..FS_RETRY_COUNT {
@@ -1118,10 +1197,10 @@ fn cleanup_stale_automation_files(automation_dir: &Path) -> io::Result<()> {
     let requests = automation_dir.join(REQUESTS_DIR);
     let responses = automation_dir.join(RESPONSES_DIR);
     if requests.exists() {
-        fs::remove_dir_all(&requests)?;
+        retry_remove_dir_all(&requests)?;
     }
     if responses.exists() {
-        fs::remove_dir_all(&responses)?;
+        retry_remove_dir_all(&responses)?;
     }
     Ok(())
 }
@@ -1262,6 +1341,18 @@ impl RequestFile {
 mod tests {
     use super::*;
 
+    fn sample_request(request_id: String, selector: &str) -> UiAutomationRequest {
+        UiAutomationRequest {
+            request_id,
+            token: "token".to_string(),
+            window: "main".to_string(),
+            action: UiAutomationAction::Query,
+            selector: selector.to_string(),
+            value: None,
+            expires_at_unix_ms: Some(now_unix_ms() + 1_000),
+        }
+    }
+
     #[test]
     fn action_serializes_camel_case() {
         assert_eq!(
@@ -1287,6 +1378,128 @@ mod tests {
 
         assert!(RequestFile::from_path(Path::new("not-a-uuid.json")).is_none());
         assert!(RequestFile::from_path(Path::new(&format!("{id}.tmp"))).is_none());
+    }
+
+    #[test]
+    fn request_expiry_uses_optional_deadline() {
+        let mut request = sample_request(Uuid::new_v4().to_string(), "target");
+        request.expires_at_unix_ms = None;
+        assert!(!request_expired(&request, 100));
+
+        request.expires_at_unix_ms = Some(99);
+        assert!(request_expired(&request, 100));
+
+        request.expires_at_unix_ms = Some(101);
+        assert!(!request_expired(&request, 100));
+    }
+
+    #[test]
+    fn complete_rejects_unknown_request_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let response = UiAutomationResponse::minimal_error(
+            &Uuid::new_v4().to_string(),
+            "main",
+            UiAutomationAction::Query,
+            "target",
+            "frontend_error",
+            "frontend failed",
+        );
+
+        assert_eq!(
+            state.complete("main", response).unwrap_err(),
+            "unknown_request_id"
+        );
+    }
+
+    #[test]
+    fn complete_writes_completion_mismatch_response() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        fs::create_dir_all(state.requests_dir()).unwrap();
+        fs::create_dir_all(state.responses_dir()).unwrap();
+
+        let request_id = Uuid::new_v4().to_string();
+        let request = sample_request(request_id.clone(), "expected");
+        let response_path = state.response_path(&request_id);
+        let inflight_path = state.inflight_path(&request_id);
+        fs::write(&inflight_path, "{}").unwrap();
+        state.inner.pending.lock().unwrap().insert(
+            request_id.clone(),
+            PendingRequest {
+                request,
+                response_path: response_path.clone(),
+                inflight_path: inflight_path.clone(),
+            },
+        );
+
+        let result = UiAutomationResponse {
+            ok: true,
+            request_id,
+            window: "main".to_string(),
+            action: UiAutomationAction::Query,
+            selector: "different".to_string(),
+            target: Some(json!({ "testId": "different" })),
+            error: None,
+            message: None,
+            available: None,
+            diagnostics: None,
+            available_windows: None,
+            timeout_ms: None,
+            phase: None,
+        };
+
+        state.complete("main", result).unwrap();
+
+        let raw = fs::read_to_string(response_path).unwrap();
+        let written: UiAutomationResponse = serde_json::from_str(&raw).unwrap();
+        assert!(!written.ok);
+        assert_eq!(written.error.as_deref(), Some("completion_mismatch"));
+        assert!(!inflight_path.exists());
+    }
+
+    #[test]
+    fn session_read_retries_transient_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SESSION_FILE);
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(SESSION_READ_RETRY_DELAY_MS));
+            fs::write(writer_path, "{\"ok\":true}").unwrap();
+        });
+
+        let raw = read_session_file_with_retry(&path).unwrap();
+        writer.join().unwrap();
+        assert_eq!(raw, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn initialization_failure_can_disable_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        fs::create_dir_all(&state.inner.automation_dir).unwrap();
+        fs::write(state.requests_dir(), "not a directory").unwrap();
+
+        assert!(state.initialize_files().is_err());
+        state.mark_unavailable();
+        assert!(!state.enabled());
+    }
+
+    #[test]
+    fn cleanup_stale_automation_files_removes_request_and_response_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let automation_dir = tmp.path().join(UI_AUTOMATION_DIR);
+        let requests_dir = automation_dir.join(REQUESTS_DIR);
+        let responses_dir = automation_dir.join(RESPONSES_DIR);
+        fs::create_dir_all(&requests_dir).unwrap();
+        fs::create_dir_all(&responses_dir).unwrap();
+        fs::write(requests_dir.join("stale.json"), "{}").unwrap();
+        fs::write(responses_dir.join("stale.json"), "{}").unwrap();
+
+        cleanup_stale_automation_files(&automation_dir).unwrap();
+
+        assert!(!requests_dir.exists());
+        assert!(!responses_dir.exists());
     }
 
     #[test]
