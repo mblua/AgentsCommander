@@ -10,6 +10,21 @@ Current deterministic mode: use `agentscommander_testeable.exe` with explicit pl
 
 ## Execution Log
 
+Date: 2026-06-13
+
+Tester: ac-cli-and-gui-tester
+
+App under test: `src-tauri\target\release\agentscommander_testeable.exe --app --ui-automation`
+
+Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
+
+Result summary:
+
+- Native folder picker cancel path passed without mutating settings.
+- Creating from a selected empty disposable folder in clean/no-workspace state loaded the project directly; no `project.createConfirm.*` modal appeared.
+- Current source behavior supports that observation: the no-workspace `New Project` path creates and loads directly after folder selection.
+- PRJ-008 is therefore a conditional confirmation-modal case, not part of the clean no-workspace happy path unless a future UI change reintroduces that modal.
+
 Date: 2026-06-11
 
 Tester: ac-cli-tester
@@ -98,8 +113,9 @@ Steps:
 1. Click `New / Open` in the target window.
 2. Choose the open-project action.
 3. In the folder picker, select the disposable empty folder.
-4. When prompted that the folder does not have an AC project, confirm creation with `Yes, create project`.
-5. Wait for the sidebar to refresh.
+4. If the app shows a create confirmation for the empty folder, confirm creation.
+5. If no confirmation appears, wait for direct project creation/loading to complete.
+6. Wait for the sidebar to refresh.
 
 Expected Result:
 
@@ -108,7 +124,7 @@ The app creates the Project AC Root in the selected folder, registers the projec
 Evidence Required:
 
 - Screenshot before opening the picker.
-- Screenshot of the create confirmation prompt when possible.
+- Screenshot of the create confirmation prompt when present, or evidence that no prompt appeared and the project loaded directly.
 - Screenshot after creation showing the newly loaded project.
 - Filesystem or CLI state showing that `.ac/` exists in the disposable folder.
 
@@ -275,3 +291,41 @@ Evidence Required:
 Pass/Fail Criteria:
 
 Pass if the visible project list is unchanged. Partial if a native picker prevented screenshot capture but post-cancel state is unchanged. Fail if canceling mutates project registration or visible project list.
+
+### PRJ-008: Cancel empty-folder create confirmation when present
+
+Purpose:
+
+Verify that canceling the create confirmation for an empty folder leaves the folder and project registration unchanged when that confirmation exists in the active UI path.
+
+Preconditions:
+
+- Depends on PRJ-001.
+- A disposable empty folder exists and does not contain `.ac/`.
+- Baseline project registration state has been captured.
+- The active product path shows a create confirmation after selecting an empty folder. If a clean no-workspace run creates directly instead, record that as "not applicable for this path" and rely on PRJ-007 for cancel-before-selection coverage.
+
+Steps:
+
+1. Click `New / Open`.
+2. Choose the new/open project action that opens the folder picker.
+3. Select the disposable empty folder.
+4. When the create confirmation appears, choose cancel.
+5. Wait for the dialog to close.
+6. Capture the project registration state and inspect the disposable folder.
+7. Repeat PRJ-002 afterward if the same run needs the happy path.
+
+Expected Result:
+
+Canceling the create confirmation does not create `.ac/`, does not register the folder, and does not mutate the visible project list unexpectedly.
+
+Evidence Required:
+
+- Baseline project registration snapshot.
+- Screenshot of the create confirmation prompt when possible.
+- Screenshot or state snapshot after cancel.
+- Read-only filesystem snapshot proving `.ac/` was not created.
+
+Pass/Fail Criteria:
+
+Pass if cancel leaves registration and filesystem unchanged. Not applicable if the active UI path does not show a create confirmation for the selected folder. Fail if a visible cancel action creates `.ac/` or registers the project despite canceling.

@@ -18,6 +18,7 @@ The goal is to make future rounds reproducible without turning every run into on
   - Physical and logical rectangles can differ because DPI scaling changes the coordinate space reported by different Windows APIs.
 - Before each execution, record the target HWND/PID, process path, window rectangle, whether the window is maximized, and the capture method used.
 - In multi-monitor setups, modals and menus can appear outside the crop for the target monitor. Use virtual desktop capture, HWND capture, adjacent crop, or relative-window coordinate capture as fallback evidence.
+- If screenshot capture is based on a screen rectangle, verify the target window is foreground and unobscured before counting the image as product evidence. Foreground terminals or other windows can contaminate otherwise correct target-rectangle captures.
 - Prefer coordinates relative to the detected target window. Do not hardcode absolute screen coordinates except when documenting a concrete execution.
 
 ## Deterministic Testable App
@@ -103,6 +104,7 @@ Use a three-letter functional prefix followed by a zero-padded number:
 - `WGP-###`: Workgroups and peers.
 - `SET-###`: Settings and persistence.
 - `WIN-###`: Windowing and multi-monitor behavior.
+- `E2E-###`: Cross-surface user journeys that stitch multiple suites together.
 
 Cases should become progressively more complex inside each file. If a case depends on an earlier case, state the dependency in the preconditions.
 
@@ -117,17 +119,31 @@ Evidence should be enough for another tester to verify the observed state withou
 - Record any fallback used, such as HWND capture, virtual desktop capture, keyboard navigation, or relative coordinates.
 - Do not delete user data to clean up after tests. Use `test-reset --confirm-testeable` only for the disposable testable app identity. If a test creates data outside that identity, document the residual test project.
 
+## Current Baseline Seed
+
+The 2026-06-13 end-to-end seeding run produced a PARTIAL result, not a baseline PASS.
+
+Evidence root:
+
+```text
+C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000
+```
+
+Use that evidence for future targeted reruns of onboarding, project creation, agent creation, team creation, workgroup activation, and restart persistence. Do not treat team/workgroup coverage as passed from that run.
+
 ## Execution Order
 
 Recommended phase order:
 
 1. `01-project-lifecycle.md`
-2. `02-agent-lifecycle.md`
-3. `03-agent-templates-agency.md`
-4. `04-terminal-sessions.md`
-5. `05-inter-agent-messaging.md`
-6. `06-workgroups-and-peers.md`
-7. `07-settings-and-persistence.md`
-8. `08-windowing-and-multimonitor.md`
+2. `02-onboarding-and-coding-agents.md`
+3. `03-agent-lifecycle.md`
+4. `04-team-and-workgroup-lifecycle.md`
+5. `05-end-to-end-user-journey.md`
+6. `06-agent-templates-agency.md`
+7. `07-terminal-sessions.md`
+8. `08-inter-agent-messaging.md`
+9. `09-settings-and-persistence.md`
+10. `10-windowing-and-multimonitor.md`
 
 Within a functional file, run cases in ascending ID order unless the case says it is independent.
