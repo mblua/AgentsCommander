@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import SettingsModal from "./SettingsModal";
 import type { AppSettings } from "../../shared/types";
+import { SettingsAPI } from "../../shared/ipc";
 
 vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
@@ -41,7 +42,7 @@ vi.mock("../stores/sessions", () => ({
   },
 }));
 
-function settings(): AppSettings {
+function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
     defaultShell: "pwsh",
     defaultShellArgs: [],
@@ -100,6 +101,7 @@ function settings(): AppSettings {
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
+    ...overrides,
   };
 }
 
@@ -159,6 +161,77 @@ describe("SettingsModal automation hooks", () => {
     expect(document.querySelector('[data-ac-testid="settings.agentPreset.codex"]')).toBeTruthy();
     expect(document.querySelector('[data-ac-testid="settings.agent.addCustom"]')).toBeTruthy();
 
+    dispose();
+  });
+
+  it("keeps an early custom agent draft when the fresh load resolves late", async () => {
+    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    vi.mocked(SettingsAPI.get).mockReturnValueOnce(
+      new Promise<AppSettings>((resolve) => {
+        resolveLoadedSettings = resolve;
+      }),
+    );
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    const addCustom = document.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="settings.agent.addCustom"]',
+    );
+    addCustom?.click();
+    await settle();
+
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1"]')).toBeTruthy();
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.label"]')).toBeTruthy();
+
+    resolveLoadedSettings(settings());
+    await settle();
+
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1"]')).toBeTruthy();
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.label"]')).toBeTruthy();
+
+    dispose();
+  });
+
+  it("uses the seeded RTK baseline when saving before the fresh load resolves", async () => {
+    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    vi.mocked(SettingsAPI.get).mockReturnValueOnce(
+      new Promise<AppSettings>((resolve) => {
+        resolveLoadedSettings = resolve;
+      }),
+    );
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const rtkField = Array.from(
+      document.querySelectorAll<HTMLLabelElement>(".settings-checkbox-field"),
+    ).find((label) => label.textContent?.includes("Inject RTK hook"));
+    const rtkCheckbox = rtkField?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    if (!rtkCheckbox) throw new Error("missing RTK checkbox");
+    rtkCheckbox.checked = true;
+    rtkCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
+    await settle();
+
+    expect(SettingsAPI.update).toHaveBeenCalledWith(
+      expect.objectContaining({ injectRtkHook: true }),
+    );
+    expect(SettingsAPI.sweepRtkHook).toHaveBeenCalledWith(true);
+
+    resolveLoadedSettings(settings());
     dispose();
   });
 });

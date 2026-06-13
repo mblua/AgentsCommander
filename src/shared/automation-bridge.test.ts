@@ -90,6 +90,7 @@ describe("automation bridge", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -204,6 +205,27 @@ describe("automation bridge", () => {
     expect(response.ok).toBe(true);
     if (!response.ok) throw new Error(response.message);
     expect(response.target.testId).toBe("settings.agent.addCustom");
+  });
+
+  it("does not return a retry query success after the request expires", async () => {
+    vi.useFakeTimers();
+    window.setTimeout(() => {
+      addTarget("button", "settings.agent.late", "Late target");
+    }, 10);
+
+    const responsePromise = executeAutomationRequest(
+      "main",
+      request("query", "settings.agent.late", undefined, Date.now() + 5),
+    );
+
+    await vi.advanceTimersByTimeAsync(5);
+    const response = await responsePromise;
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected timeout");
+    expect(response.error).toBe("timeout");
+
+    await vi.advanceTimersByTimeAsync(5);
   });
 
   it("sets input values and dispatches input plus change", async () => {

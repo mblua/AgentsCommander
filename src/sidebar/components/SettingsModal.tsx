@@ -33,10 +33,18 @@ const TABS: { key: SettingsTab; label: string }[] = [
 const isValidSettingsTab = (s: string): s is SettingsTab =>
   TABS.some((t) => t.key === s);
 
+const cloneSettings = (value: AppSettings | null): AppSettings | null => {
+  if (!value) return null;
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as AppSettings;
+};
+
 const SettingsModal: Component<{ onClose: () => void; section?: string }> = (props) => {
+  const seededSettings = cloneSettings(settingsStore.current);
   const [settings, setSettings] = createStore<{ data: AppSettings | null }>({
-    data: settingsStore.current,
+    data: seededSettings,
   });
+  const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
   const [testResult, setTestResult] = createSignal<{
@@ -62,7 +70,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // against the live form value to decide whether to fire sweepRtkHook.
   // updateField is local-only (mutates the form draft), so the sweep only
   // dispatches when the user actually clicks Save and the value changed.
-  const [initialInjectRtk, setInitialInjectRtk] = createSignal<boolean | null>(null);
+  const [initialInjectRtk, setInitialInjectRtk] = createSignal<boolean | null>(
+    seededSettings?.injectRtkHook ?? null,
+  );
   // Disables the Save button and the rtk checkbox while the per-replica sweep
   // is in flight, preventing a rapid double-Save from queuing two concurrent
   // sweeps with opposite enabled values (silent partial state).
@@ -75,9 +85,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       SettingsAPI.get(),
       SettingsAPI.getWebServerStatus().catch(() => false),
     ]);
-    setSettings("data", loaded);
-    setInitialInjectRtk(loaded.injectRtkHook);
     setWebServerRunning(wsRunning);
+    if (!draftDirty()) {
+      setSettings("data", cloneSettings(loaded));
+      setInitialInjectRtk(loaded.injectRtkHook);
+    }
   });
 
   // ── Generic field updater ──
@@ -86,6 +98,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     value: AppSettings[K]
   ) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", key as any, value as any);
   };
 
@@ -96,11 +109,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     value: string | boolean | string[]
   ) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "agents", index, field as any, value as any);
   };
 
   const addAgent = (preset?: Omit<AgentConfig, "id">) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     const agent: AgentConfig = preset
       ? { id: newAgentId(), ...preset }
       : {
@@ -116,6 +131,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const removeAgent = (index: number) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "agents", (prev) => prev.filter((_, i) => i !== index));
   };
 
@@ -126,11 +142,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     value: string | number
   ) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "telegramBots", index, field as any, value as any);
   };
 
   const addBot = () => {
     if (!settings.data) return;
+    setDraftDirty(true);
     const bot: TelegramBotConfig = {
       id: newAgentId(),
       label: "",
@@ -143,6 +161,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const removeBot = (index: number) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "telegramBots", (prev) => (prev || []).filter((_, i) => i !== index));
   };
 

@@ -72,8 +72,13 @@ async function executeAutomationRequestInner(
   windowLabel: string,
   request: UiAutomationRequest,
 ): Promise<UiAutomationResponse> {
-  const matches = await queryAutomationTargetsWithBriefRetry(request);
   const diagnostics = baseDiagnostics();
+  const expiredBeforeQuery = expiredRequestResponse(windowLabel, request, diagnostics);
+  if (expiredBeforeQuery) return expiredBeforeQuery;
+
+  const matches = await queryAutomationTargetsWithBriefRetry(request);
+  const expiredAfterQuery = expiredRequestResponse(windowLabel, request, diagnostics);
+  if (expiredAfterQuery) return expiredAfterQuery;
 
   if (matches.length === 0) {
     return errorResponse(
@@ -201,6 +206,14 @@ function expiredMutationResponse(
   request: UiAutomationRequest,
   diagnostics: UiAutomationDiagnostics,
 ): UiAutomationResponse | null {
+  return expiredRequestResponse(windowLabel, request, diagnostics);
+}
+
+function expiredRequestResponse(
+  windowLabel: string,
+  request: UiAutomationRequest,
+  diagnostics: UiAutomationDiagnostics,
+): UiAutomationResponse | null {
   const nowUnixMs = Date.now();
   if (!requestExpired(request, nowUnixMs)) return null;
 
@@ -208,7 +221,7 @@ function expiredMutationResponse(
     windowLabel,
     request,
     "timeout",
-    `Automation request "${request.requestId}" expired before the frontend could perform "${request.action}".`,
+    `Automation request "${request.requestId}" expired before the frontend could complete "${request.action}".`,
     availableTargets(),
     {
       ...diagnostics,
@@ -276,9 +289,21 @@ async function queryAutomationTargetsWithBriefRetry(
 
   const deadline = Date.now() + retryMs;
   while (Date.now() < deadline) {
-    await new Promise<void>((resolve) =>
-      window.setTimeout(resolve, MISSING_SELECTOR_RETRY_INTERVAL_MS),
+    const nowUnixMs = Date.now();
+    if (requestExpired(request, nowUnixMs)) return [];
+    const remainingBudgetMs = deadline - nowUnixMs;
+    const remainingExpiryMs = requestExpiryRemainingMs(request, nowUnixMs);
+    const sleepMs = Math.min(
+      MISSING_SELECTOR_RETRY_INTERVAL_MS,
+      remainingBudgetMs,
+      remainingExpiryMs ?? MISSING_SELECTOR_RETRY_INTERVAL_MS,
     );
+
+    await new Promise<void>((resolve) =>
+      window.setTimeout(resolve, sleepMs),
+    );
+    if (requestExpired(request, Date.now())) return [];
+
     matches = queryAutomationTargets(request.selector);
     if (matches.length > 0) return matches;
   }
@@ -288,7 +313,12 @@ async function queryAutomationTargetsWithBriefRetry(
 
 function missingSelectorRetryBudgetMs(request: UiAutomationRequest): number {
   if (typeof request.expiresAtUnixMs !== "number") return MISSING_SELECTOR_RETRY_MS;
-  return Math.max(0, Math.min(MISSING_SELECTOR_RETRY_MS, request.expiresAtUnixMs - Date.now() - 1));
+  return Math.max(0, Math.min(MISSING_SELECTOR_RETRY_MS, request.expiresAtUnixMs - Date.now()));
+}
+
+function requestExpiryRemainingMs(request: UiAutomationRequest, nowUnixMs: number): number | null {
+  if (typeof request.expiresAtUnixMs !== "number") return null;
+  return Math.max(0, request.expiresAtUnixMs - nowUnixMs);
 }
 
 function availableTargets(): UiAutomationTarget[] {
