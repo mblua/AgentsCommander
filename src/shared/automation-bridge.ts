@@ -55,7 +55,7 @@ export async function executeAutomationRequest(
   request: UiAutomationRequest,
 ): Promise<UiAutomationResponse> {
   try {
-    return executeAutomationRequestInner(windowLabel, request);
+    return await executeAutomationRequestInner(windowLabel, request);
   } catch (error) {
     return errorResponse(
       windowLabel,
@@ -66,10 +66,10 @@ export async function executeAutomationRequest(
   }
 }
 
-function executeAutomationRequestInner(
+async function executeAutomationRequestInner(
   windowLabel: string,
   request: UiAutomationRequest,
-): UiAutomationResponse {
+): Promise<UiAutomationResponse> {
   const matches = queryAutomationTargets(request.selector);
   const diagnostics = baseDiagnostics();
 
@@ -139,6 +139,7 @@ function executeAutomationRequestInner(
     if (expired) return expired;
     element.focus();
     element.click();
+    await settleAfterDomMutation();
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
 
@@ -156,12 +157,12 @@ function executeAutomationRequestInner(
   );
 }
 
-function setElementValue(
+async function setElementValue(
   windowLabel: string,
   request: UiAutomationRequest,
   element: HTMLElement,
   diagnostics: UiAutomationDiagnostics,
-): UiAutomationResponse {
+): Promise<UiAutomationResponse> {
   if (
     !(element instanceof HTMLInputElement) &&
     !(element instanceof HTMLTextAreaElement) &&
@@ -184,7 +185,13 @@ function setElementValue(
   element.value = request.value ?? "";
   element.dispatchEvent(new Event("input", { bubbles: true }));
   element.dispatchEvent(new Event("change", { bubbles: true }));
+  await settleAfterDomMutation();
   return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
+}
+
+async function settleAfterDomMutation(): Promise<void> {
+  await Promise.resolve();
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 }
 
 function expiredMutationResponse(

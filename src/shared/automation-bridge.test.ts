@@ -130,6 +130,40 @@ describe("automation bridge", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it("waits for click-driven dynamic targets before completing", async () => {
+    const button = addTarget("button", "settings.agent.addCustom", "+ Custom Agent");
+    topmostElement = button;
+    button.addEventListener("click", () => {
+      void Promise.resolve().then(() => {
+        addTarget("div", "settings.agentRow.1", "New Agent");
+        addTarget("input", "settings.agentRow.1.label");
+        addTarget("button", "settings.agentRow.1.remove", "Remove agent");
+      });
+    });
+
+    const clickResponse = await executeAutomationRequest(
+      "main",
+      request("click", "settings.agent.addCustom"),
+    );
+    const rowResponse = await executeAutomationRequest(
+      "main",
+      request("query", "settings.agentRow.1"),
+    );
+    const labelResponse = await executeAutomationRequest(
+      "main",
+      request("query", "settings.agentRow.1.label"),
+    );
+    const removeResponse = await executeAutomationRequest(
+      "main",
+      request("query", "settings.agentRow.1.remove"),
+    );
+
+    expect(clickResponse.ok).toBe(true);
+    expect(rowResponse.ok).toBe(true);
+    expect(labelResponse.ok).toBe(true);
+    expect(removeResponse.ok).toBe(true);
+  });
+
   it("sets input values and dispatches input plus change", async () => {
     const input = addTarget("input", "onboarding.custom.command");
     topmostElement = input;
