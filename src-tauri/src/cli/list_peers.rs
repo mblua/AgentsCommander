@@ -285,6 +285,10 @@ struct PeerInfo {
     /// Exit code, present iff session_status == "exited".
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    startup_wait_detected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trust_status: Option<crate::config::workspace_trust::TrustStatus>,
     // ────────────────────────────────────────────────────────────────
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     coding_agents: HashMap<String, CodingAgentEntry>,
@@ -352,6 +356,8 @@ struct CandidateSession {
     name: String,
     status: SessionStatus,
     waiting_for_input: bool,
+    startup_wait_detected: bool,
+    trust_status: Option<crate::config::workspace_trust::TrustStatus>,
 }
 
 struct PeerStatus {
@@ -361,6 +367,8 @@ struct PeerStatus {
     session_id: Option<String>,
     waiting_for_input: bool,
     exit_code: Option<i32>,
+    startup_wait_detected: Option<bool>,
+    trust_status: Option<crate::config::workspace_trust::TrustStatus>,
 }
 
 impl PeerStatus {
@@ -372,6 +380,8 @@ impl PeerStatus {
             session_id: None,
             waiting_for_input: false,
             exit_code: None,
+            startup_wait_detected: None,
+            trust_status: None,
         }
     }
 }
@@ -409,6 +419,8 @@ fn build_session_index_from(rows: &[PersistedSession]) -> HashMap<String, Vec<Ca
             name: ps.name.clone(),
             status,
             waiting_for_input: ps.waiting_for_input.unwrap_or(false),
+            startup_wait_detected: ps.startup_wait_detected.unwrap_or(false),
+            trust_status: ps.trust_status.clone(),
         });
     }
     index
@@ -479,6 +491,8 @@ fn compute_peer_status(
         session_id: Some(chosen.id.clone()),
         waiting_for_input: chosen.waiting_for_input,
         exit_code,
+        startup_wait_detected: Some(chosen.startup_wait_detected),
+        trust_status: chosen.trust_status.clone(),
     }
 }
 
@@ -622,6 +636,8 @@ fn build_wg_peer(
         session_id: ps.session_id,
         waiting_for_input: ps.waiting_for_input,
         exit_code: ps.exit_code,
+        startup_wait_detected: ps.startup_wait_detected,
+        trust_status: ps.trust_status,
         coding_agents: peer_config.tooling.coding_agents,
     }
 }
@@ -852,6 +868,8 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
                 session_id: ps.session_id,
                 waiting_for_input: ps.waiting_for_input,
                 exit_code: ps.exit_code,
+                startup_wait_detected: ps.startup_wait_detected,
+                trust_status: ps.trust_status.clone(),
                 coding_agents: peer_config.tooling.coding_agents,
             });
         }
@@ -1064,6 +1082,8 @@ fn build_root_agent_synthetic_peer(
         session_id: None,
         waiting_for_input: false,
         exit_code: None,
+        startup_wait_detected: None,
+        trust_status: None,
         coding_agents: std::collections::HashMap::new(),
     })
 }
@@ -1247,6 +1267,8 @@ mod tests {
             name: name.to_string(),
             status,
             waiting_for_input: waiting,
+            startup_wait_detected: false,
+            trust_status: None,
         }
     }
 
@@ -1821,6 +1843,8 @@ mod tests {
             session_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
             waiting_for_input: false,
             exit_code: None,
+            startup_wait_detected: Some(false),
+            trust_status: Some(crate::config::workspace_trust::TrustStatus::Trusted),
             coding_agents: HashMap::new(),
         }
     }

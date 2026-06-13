@@ -32,6 +32,8 @@ struct SessionEntry {
     working_directory: String,
     status: serde_json::Value,
     waiting_for_input: bool,
+    startup_wait_detected: bool,
+    trust_status: Option<crate::config::workspace_trust::TrustStatus>,
     created_at: String,
 }
 
@@ -58,6 +60,8 @@ fn to_entry(s: &PersistedSession) -> SessionEntry {
         working_directory: s.working_directory.clone(),
         status: status_value,
         waiting_for_input: s.waiting_for_input.unwrap_or(false),
+        startup_wait_detected: s.startup_wait_detected.unwrap_or(false),
+        trust_status: s.trust_status.clone(),
         created_at: s.created_at.clone().unwrap_or_default(),
     }
 }

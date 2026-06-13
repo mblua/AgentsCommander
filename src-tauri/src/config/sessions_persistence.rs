@@ -233,6 +233,10 @@ pub struct PersistedSession {
     /// Whether the session is waiting for user input (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_for_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_wait_detected: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_status: Option<crate::config::workspace_trust::TrustStatus>,
     /// ISO 8601 creation timestamp (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
@@ -778,6 +782,8 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             id: Some(s.id.clone()),
             status: Some(s.status.clone()),
             waiting_for_input: Some(s.waiting_for_input),
+            startup_wait_detected: Some(s.startup_wait_detected),
+            trust_status: s.trust_status.clone(),
             created_at: Some(s.created_at.clone()),
         })
         .collect();
@@ -1058,6 +1064,8 @@ pub(crate) fn sanitize_failed_recoverable(ps: &PersistedSession) -> PersistedSes
     clean.id = None;
     clean.status = None;
     clean.waiting_for_input = None;
+    clean.startup_wait_detected = None;
+    clean.trust_status = None;
     clean.created_at = None;
     clean
 }
@@ -1189,6 +1197,8 @@ mod tests {
             id: Some("uuid-prior-run".into()),
             status: Some(SessionStatus::Idle),
             waiting_for_input: Some(true),
+            startup_wait_detected: None,
+            trust_status: None,
             created_at: Some("2026-05-15T00:00:00Z".into()),
         };
 
@@ -1239,6 +1249,8 @@ mod tests {
             id: None,
             status: None,
             waiting_for_input: None,
+            startup_wait_detected: None,
+            trust_status: None,
             created_at: None,
         };
         let once = sanitize_failed_recoverable(&ps);
@@ -1732,6 +1744,8 @@ mod tests {
             id: None,
             status: None,
             waiting_for_input: None,
+            startup_wait_detected: None,
+            trust_status: None,
             created_at: None,
         };
 
@@ -1784,7 +1798,9 @@ mod tests {
                 id: Some("uuid".into()),
                 status: Some(status.clone()),
                 waiting_for_input: Some(false),
-                created_at: Some("2026-05-17T00:00:00Z".into()),
+                startup_wait_detected: None,
+            trust_status: None,
+            created_at: Some("2026-05-17T00:00:00Z".into()),
             };
             let json = serde_json::to_string(&ps).expect("serialize");
             let back: PersistedSession = serde_json::from_str(&json).expect("deserialize");
@@ -1847,6 +1863,8 @@ mod tests {
             id: None,
             status: None,
             waiting_for_input: None,
+            startup_wait_detected: None,
+            trust_status: None,
             created_at: None,
         };
 
