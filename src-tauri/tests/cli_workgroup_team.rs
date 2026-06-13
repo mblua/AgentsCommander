@@ -844,6 +844,41 @@ fn workgroup_add_normalizes_include_and_exclude_repo_assignments() {
     assert!(exclude_agents
         .iter()
         .any(|agent| agent == "_agent_dev-rust"));
+
+    let replica_repos = |agent: &str| -> Vec<String> {
+        let config_path = project
+            .join(".ac")
+            .join("wg-1-dev-team")
+            .join(format!("__agent_{}", agent))
+            .join("config.json");
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(config_path).expect("replica config"))
+                .expect("replica config json");
+        config["repos"]
+            .as_array()
+            .expect("replica repos")
+            .iter()
+            .map(|repo| repo.as_str().expect("repo string").to_string())
+            .collect()
+    };
+
+    assert_eq!(
+        replica_repos("architect"),
+        vec![
+            "../repo-all".to_string(),
+            "../repo-include".to_string(),
+            "../repo-exclude".to_string(),
+        ]
+    );
+    assert_eq!(
+        replica_repos("dev-rust"),
+        vec![
+            "../repo-all".to_string(),
+            "../repo-include".to_string(),
+            "../repo-exclude".to_string(),
+        ]
+    );
+    assert_eq!(replica_repos("qa"), vec!["../repo-all".to_string()]);
 }
 
 #[test]
