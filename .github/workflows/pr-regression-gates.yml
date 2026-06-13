@@ -19,6 +19,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-debt:
+    name: test-debt
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Check ignored and placeholder test debt
+        run: npm run test:debt
+
   rust-regression:
     name: rust-regression
     # Skip branch-deletion push events while still requiring pull request validation.

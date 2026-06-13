@@ -17,6 +17,8 @@
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:debt": "node scripts/check-test-debt.mjs",
+    "test:debt:self": "node scripts/check-test-debt.mjs --self-test",
     "test:watch": "vitest",
     "smoke:profile-matrix": "node scripts/smoke-profile-matrix-preview.mjs",
     "smoke:current-app": "node scripts/smoke-current-app-mockup.mjs"
