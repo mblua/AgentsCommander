@@ -1,5 +1,10 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { AcLoopSummary, AcWorkgroup, BusyCoordinatorPolicy } from "../../shared/types";
+import type {
+  AcLoopSummary,
+  AcWorkgroup,
+  LoopConfigDetails,
+  LoopUpdateInput,
+} from "../../shared/types";
 import { LoopAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
 import {
@@ -23,7 +28,6 @@ const EditLoopModal: Component<{
   onClose: () => void;
 }> = (props) => {
   const coordinatorOptions = createMemo(() => coordinatorOptionsFromWorkgroups(props.workgroups));
-  const initialPolicy: BusyCoordinatorPolicy = props.loop.busyCoordinator;
   const [name, setName] = createSignal(props.loop.name);
   const [expr, setExpr] = createSignal(props.loop.expr);
   const [selectedWorkgroup, setSelectedWorkgroup] = createSignal(props.loop.workgroup);
@@ -31,6 +35,7 @@ const EditLoopModal: Component<{
   const [enabled, setEnabled] = createSignal(props.loop.enabled);
   const [forceInject, setForceInject] = createSignal(props.loop.busyCoordinator === "forceInject");
   const [forceCheckboxTouched, setForceCheckboxTouched] = createSignal(false);
+  const [loadedDetails, setLoadedDetails] = createSignal<LoopConfigDetails | null>(null);
   const [error, setError] = createSignal("");
   const [saving, setSaving] = createSignal(false);
   const [loading, setLoading] = createSignal(true);
@@ -38,10 +43,15 @@ const EditLoopModal: Component<{
   let previewRequestId = 0;
   let mounted = true;
 
+  const loadedBusyPolicy = createMemo(
+    () => loadedDetails()?.summary.busyCoordinator ?? props.loop.busyCoordinator
+  );
+
   onMount(async () => {
     try {
       const details = await LoopAPI.getConfig(props.projectPath, props.loop.id);
       if (!mounted) return;
+      setLoadedDetails(details);
       setName(details.summary.name);
       setExpr(details.summary.expr);
       setSelectedWorkgroup(details.summary.workgroup);
@@ -115,18 +125,30 @@ const EditLoopModal: Component<{
     setSaving(true);
     setError("");
     try {
-      await LoopAPI.update(props.projectPath, props.loop.id, {
-        name: name().trim(),
-        expr: expr().trim(),
-        workgroup: selectedWorkgroup(),
-        promptBody: promptBody(),
-        busyCoordinator: busyPolicyForEdit(
-          initialPolicy,
-          forceInject(),
-          forceCheckboxTouched()
-        ),
-        enabled: enabled(),
-      });
+      const baseline = loadedDetails();
+      if (!baseline) {
+        setError("Loop config is still loading");
+        setSaving(false);
+        return;
+      }
+
+      const nextBusyPolicy = busyPolicyForEdit(
+        baseline.summary.busyCoordinator,
+        forceInject(),
+        forceCheckboxTouched()
+      );
+      const input: LoopUpdateInput = {};
+      const nextName = name().trim();
+      const nextExpr = expr().trim();
+
+      if (nextName !== baseline.summary.name) input.name = nextName;
+      if (nextExpr !== baseline.summary.expr) input.expr = nextExpr;
+      if (selectedWorkgroup() !== baseline.summary.workgroup) input.workgroup = selectedWorkgroup();
+      if (promptBody() !== baseline.promptBody) input.promptBody = promptBody();
+      if (nextBusyPolicy !== baseline.summary.busyCoordinator) input.busyCoordinator = nextBusyPolicy;
+      if (enabled() !== baseline.summary.enabled) input.enabled = enabled();
+
+      await LoopAPI.update(props.projectPath, props.loop.id, input);
       await projectStore.reloadProject(props.projectPath);
       props.onClose();
     } catch (e) {
@@ -260,7 +282,7 @@ const EditLoopModal: Component<{
             Force inject even if coordinator is busy
           </label>
 
-          <Show when={initialPolicy === "skip" && !forceCheckboxTouched()}>
+          <Show when={!loading() && loadedBusyPolicy() === "skip" && !forceCheckboxTouched()}>
             <div class="loop-preview">
               Existing busy policy is skip. Saving without changing the checkbox preserves it.
             </div>

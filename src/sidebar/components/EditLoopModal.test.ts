@@ -65,6 +65,10 @@ function workgroups(): AcWorkgroup[] {
   ];
 }
 
+function loopWith(overrides: Partial<AcLoopSummary>): AcLoopSummary {
+  return { ...loopSummary, ...overrides };
+}
+
 async function settle(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -73,6 +77,36 @@ async function settle(): Promise<void> {
 async function makePreviewReady(): Promise<void> {
   await settle();
   vi.advanceTimersByTime(300);
+  await settle();
+}
+
+let dispose: (() => void) | undefined;
+
+function renderModal(loop: AcLoopSummary = loopSummary): void {
+  const root = document.createElement("div");
+  document.body.append(root);
+  dispose = render(
+    () =>
+      EditLoopModal({
+        projectPath: "C:\\Project",
+        workgroups: workgroups(),
+        loop,
+        onClose: () => {},
+      }),
+    root,
+  );
+}
+
+function changeInput(selector: string, value: string): void {
+  const input = document.querySelector<HTMLInputElement>(selector);
+  if (!input) throw new Error(`Missing input ${selector}`);
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+async function clickSave(): Promise<void> {
+  await makePreviewReady();
+  document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.edit.save"]')?.click();
   await settle();
 }
 
@@ -93,43 +127,61 @@ describe("EditLoopModal", () => {
   });
 
   afterEach(() => {
+    dispose?.();
+    dispose = undefined;
     document.body.innerHTML = "";
     vi.useRealTimers();
   });
 
-  it("loads the full prompt body and preserves skip when the force checkbox is untouched", async () => {
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () =>
-        EditLoopModal({
-          projectPath: "C:\\Project",
-          workgroups: workgroups(),
-          loop: loopSummary,
-          onClose: () => {},
-        }),
-      root,
-    );
-
+  it("loads the full prompt body and sends an empty payload for a no-op save", async () => {
+    renderModal();
     await settle();
+
     expect(LoopAPI.getConfig).toHaveBeenCalledWith("C:\\Project", "weekday-standup");
     expect(document.querySelector<HTMLTextAreaElement>('[data-ac-testid="loop.edit.prompt"]')?.value).toBe(
       "Full prompt body from config",
     );
 
-    await makePreviewReady();
-    document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.edit.save"]')?.click();
+    await clickSave();
+
+    expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {});
+  });
+
+  it("sends only the changed name for a name-only edit", async () => {
+    renderModal();
     await settle();
 
-    expect(LoopAPI.update).toHaveBeenCalledWith(
-      "C:\\Project",
-      "weekday-standup",
-      expect.objectContaining({
-        promptBody: "Full prompt body from config",
-        busyCoordinator: "skip",
-      }),
-    );
+    changeInput('[data-ac-testid="loop.edit.name"]', "Renamed standup");
+    await clickSave();
 
-    dispose();
+    expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {
+      name: "Renamed standup",
+    });
+  });
+
+  it("preserves the loaded current forceInject policy when the summary prop is stale", async () => {
+    m.getConfig.mockResolvedValue({
+      summary: loopWith({ busyCoordinator: "forceInject" }),
+      promptBody: "Full prompt body from config",
+    });
+
+    renderModal(loopWith({ busyCoordinator: "skip" }));
+    await settle();
+
+    expect(document.querySelector<HTMLInputElement>('[data-ac-testid="loop.edit.forceInject"]')?.checked).toBe(true);
+    await clickSave();
+
+    expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {});
+  });
+
+  it("preserves loaded skip policy without sending busyCoordinator when the checkbox is untouched", async () => {
+    renderModal(loopWith({ busyCoordinator: "skip" }));
+    await settle();
+
+    expect(document.querySelector<HTMLInputElement>('[data-ac-testid="loop.edit.forceInject"]')?.checked).toBe(false);
+    expect(document.body.textContent).toContain("Existing busy policy is skip");
+    await clickSave();
+
+    expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {});
   });
 });
