@@ -20,10 +20,10 @@ import { TelegramIcon } from "./TelegramIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
 import {
   automationIdPart,
-  configuredReplicaRepoBadges,
   formatReplicaRepoBadgeLabel,
   repoLabelFromPath,
 } from "./replica-repo-badges";
+import { repoBadgesForReplica } from "./repo-badges";
 
 interface PendingLaunch {
   path: string;
@@ -552,12 +552,7 @@ const ProjectPanel: Component = () => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
-          const repoBadges = createMemo(() => {
-            const s = session();
-            return s && s.gitRepos.length > 0
-              ? s.gitRepos
-              : configuredReplicaRepoBadges(replica, wg);
-          });
+          const repoBadges = createMemo(() => repoBadgesForReplica(replica, session()));
           const rowTestId = () =>
             `replica.row.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const badgesTestId = () =>

@@ -7,6 +7,7 @@ import AgentPickerModal from "./AgentPickerModal";
 import { sessionsStore } from "../stores/sessions";
 import { stripFrontmatter } from "../../shared/markdown";
 import { homeStore } from "../../main/stores/home";
+import { repoBadgesForReplica } from "./repo-badges";
 
 interface PendingLaunch {
   path: string;
@@ -303,15 +304,13 @@ const AcDiscoveryPanel: Component = () => {
                                   <span class="ac-discovery-badge coord">C</span>
                                 </Show>
                                 <Show when={replica.isCoordinator}>
-                                  <Show when={replica.repoPaths.length === 1 && replica.repoBranch}>
-                                    <span class="ac-discovery-badge branch">
-                                      {(() => {
-                                        const dir = replica.repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
-                                        const label = dir.startsWith("repo-") ? dir.slice(5) : dir;
-                                        return `${label}/${replica.repoBranch}`;
-                                      })()}
-                                    </span>
-                                  </Show>
+                                  <For each={repoBadgesForReplica(replica)}>
+                                    {(repo) => (
+                                      <span class="ac-discovery-badge branch" title={repo.sourcePath}>
+                                        {repo.label}{repo.branch ? `/${repo.branch}` : ""}
+                                      </span>
+                                    )}
+                                  </For>
                                 </Show>
                                 <span class="ac-discovery-badge team">replica</span>
                               </div>
