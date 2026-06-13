@@ -300,7 +300,7 @@ fn upsert_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
     appended
 }
 
-fn enumerate_registered_project_candidates(project_paths: &[String]) -> Vec<ProjectResolution> {
+pub fn enumerate_registered_project_candidates(project_paths: &[String]) -> Vec<ProjectResolution> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
 

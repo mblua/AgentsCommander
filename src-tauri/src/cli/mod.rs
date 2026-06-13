@@ -5,6 +5,7 @@ pub mod create_agent_matrix;
 pub mod harness;
 pub mod list_peers;
 pub mod list_sessions;
+pub mod loop_cmd;
 pub mod new_project;
 pub mod open_project;
 pub mod role_experiment;
@@ -147,6 +148,8 @@ pub enum Commands {
     Workgroup(workgroup::WorkgroupArgs),
     /// Manage teams and scoped workgroup membership
     Team(team::TeamArgs),
+    /// Manage Project Loops
+    Loop(loop_cmd::LoopArgs),
     /// Execute commands through the policy harness
     Harness(harness::HarnessArgs),
     /// Delete only the disposable testable app state
@@ -282,6 +285,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::TelegramSendImage(args) => telegram_send_image::execute(args),
         Commands::Workgroup(args) => workgroup::execute(args),
         Commands::Team(args) => team::execute(args),
+        Commands::Loop(args) => loop_cmd::execute(args),
         Commands::Harness(args) => harness::execute(args),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
