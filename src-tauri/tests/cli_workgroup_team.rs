@@ -322,6 +322,33 @@ fn open_without_delete_share(path: &Path) -> std::fs::File {
         .expect("open with restricted share mode")
 }
 
+fn assert_no_side_effect_dirs(root: &Path) {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+                assert!(
+                    !(name.starts_with("wg-")
+                        || name.starts_with("_team_")
+                        || name.starts_with("_agent_")),
+                    "unexpected side-effect directory {}",
+                    path.display()
+                );
+                stack.push(path);
+            }
+        }
+    }
+}
+
 #[test]
 fn team_help_describes_existing_agents_and_workgroup_scoped_membership() {
     let tmp = Tmp::new("cli-team-help");
@@ -349,6 +376,58 @@ fn workgroup_add_help_hides_team_definition_flags() {
     assert!(!help.contains("--agent"));
     assert!(!help.contains("--repo"));
     assert!(!help.to_ascii_lowercase().contains("deprecated"));
+}
+
+#[test]
+fn workgroup_list_missing_project_errors_without_writes() {
+    let tmp = Tmp::new("cli-workgroup-list-missing-project");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let config_sentinel = config_dir.join("sentinel.txt");
+    std::fs::write(&config_sentinel, "keep").expect("write config sentinel");
+    let outside_sentinel = tmp.path().join("outside-sentinel.txt");
+    std::fs::write(&outside_sentinel, "keep").expect("write outside sentinel");
+
+    let stderr = run_fail(&bin, &["workgroup", "list", "--project", "MissingProject"]);
+
+    assert!(stderr.contains("MissingProject"), "stderr was:\n{}", stderr);
+    assert!(project_refresh_request_paths(&config_dir).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&config_sentinel).expect("read config sentinel"),
+        "keep"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&outside_sentinel).expect("read outside sentinel"),
+        "keep"
+    );
+    assert_no_side_effect_dirs(tmp.path());
+}
+
+#[test]
+fn team_list_missing_project_errors_without_writes() {
+    let tmp = Tmp::new("cli-team-list-missing-project");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let config_sentinel = config_dir.join("sentinel.txt");
+    std::fs::write(&config_sentinel, "keep").expect("write config sentinel");
+    let outside_sentinel = tmp.path().join("outside-sentinel.txt");
+    std::fs::write(&outside_sentinel, "keep").expect("write outside sentinel");
+
+    let stderr = run_fail(&bin, &["team", "list", "--project", "MissingProject"]);
+
+    assert!(stderr.contains("MissingProject"), "stderr was:\n{}", stderr);
+    assert!(project_refresh_request_paths(&config_dir).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&config_sentinel).expect("read config sentinel"),
+        "keep"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&outside_sentinel).expect("read outside sentinel"),
+        "keep"
+    );
+    assert_no_side_effect_dirs(tmp.path());
 }
 
 #[test]
