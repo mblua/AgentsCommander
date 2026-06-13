@@ -146,6 +146,18 @@ function findMatchingBrace(masked, openIndex) {
   return -1;
 }
 
+function findMatchingParen(masked, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < masked.length; i += 1) {
+    if (masked[i] === '(') depth += 1;
+    if (masked[i] === ')') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 function discoverFiles(root) {
   const files = [];
   const roots = [
@@ -212,8 +224,12 @@ function hasExecutableRustBody(originalBody, strippedBody) {
   if (/^(todo!\s*\(\s*\)|unimplemented!\s*\(\s*\)|panic!\s*\(\s*["'`]TODO[\s\S]*["'`]\s*\))\s*;?$/.test(compact)) {
     return false;
   }
-  if (/[A-Za-z_][A-Za-z0-9_]*\s*[!(.]/.test(withoutComments)) return true;
-  if (/[?=]|assert/.test(withoutComments)) return true;
+  if (/\b(?:assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|debug_assert_ne)!\s*\(/.test(withoutComments)) return true;
+  if (/\?/.test(withoutComments)) return true;
+  if (/\.(?:unwrap|expect)\s*\(/.test(withoutComments)) return true;
+  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*!\s*[\(\[]/.test(withoutComments)) return true;
+  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(withoutComments)) return true;
+  if (/\.[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(withoutComments)) return true;
   return false;
 }
 
@@ -265,7 +281,7 @@ function scanRustFile(root, filePath) {
     const line = lineOf(source, match.index);
     const hasIgnore = /#\s*\[\s*ignore(?:\s|\]|=)/.test(attrs);
     const originalBody = source.slice(bodyOpen + 1, bodyClose);
-    const strippedBody = maskedComments.slice(bodyOpen + 1, bodyClose);
+    const strippedBody = maskCommentsAndStrings(originalBody, { singleQuote: false });
     const executable = hasExecutableRustBody(originalBody, strippedBody);
 
     if (hasIgnore) {
@@ -314,29 +330,85 @@ function suiteAt(ranges, index) {
     .map((range) => range.name);
 }
 
-function addFrontendSkippedFindings(source, rel, ranges, findings) {
-  const patterns = [
-    /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(skip|todo)\s*\(\s*(['"`])([^'"`]+)\3/g,
-    /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(skip|todo)\s*\.\s*each\s*\([\s\S]*?\)\s*\(\s*(['"`])([^'"`]+)\3/g,
-    /\b(describe|it|test)\s*\.\s*each\s*\([\s\S]*?\)\s*\.\s*(skip|todo)\s*\(\s*(['"`])([^'"`]+)\3/g,
-    /\b(it|test)\s*\.\s*concurrent\s*\.\s*(skip|todo)\s*\(\s*(['"`])([^'"`]+)\3/g,
-  ];
+function skipWhitespace(source, index) {
+  let i = index;
+  while (i < source.length && /\s/.test(source[i])) i += 1;
+  return i;
+}
 
-  for (const re of patterns) {
-    let match;
-    while ((match = re.exec(source)) !== null) {
-      const kind = match[1];
-      const name = match[4];
-      const suite = kind === 'describe' ? suiteAt(ranges, match.index) : suiteAt(ranges, match.index);
-      const id = frontendId(rel, suite, name);
-      if (!findings.some((item) => item.category === 'skipped-frontend-test' && item.id === id)) {
-        findings.push({
-          category: 'skipped-frontend-test',
-          id,
-          file: rel,
-          line: lineOf(source, match.index),
-        });
-      }
+function readStringLiteral(source, index) {
+  let i = skipWhitespace(source, index);
+  const quote = source[i];
+  if (quote !== '"' && quote !== '\'' && quote !== '`') return null;
+  i += 1;
+  let value = '';
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '\\') {
+      if (i + 1 < source.length) value += source[i + 1];
+      i += 2;
+      continue;
+    }
+    if (ch === quote) {
+      return { value, end: i + 1 };
+    }
+    value += ch;
+    i += 1;
+  }
+  return null;
+}
+
+function addFrontendFinding(findings, category, source, rel, ranges, matchIndex, nameStart) {
+  const literal = readStringLiteral(source, nameStart);
+  if (!literal) return null;
+  const finding = {
+    category,
+    id: frontendId(rel, suiteAt(ranges, matchIndex), literal.value),
+    file: rel,
+    line: lineOf(source, matchIndex),
+  };
+  if (!findings.some((item) => item.category === finding.category && item.id === finding.id)) {
+    findings.push(finding);
+  }
+  return { finding, literal };
+}
+
+function addFrontendSkippedFindings(source, rel, ranges, findings) {
+  const masked = maskCommentsAndStrings(source);
+
+  let direct;
+  const directRe = /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\(/g;
+  while ((direct = directRe.exec(masked)) !== null) {
+    addFrontendFinding(findings, 'skipped-frontend-test', source, rel, ranges, direct.index, directRe.lastIndex);
+  }
+
+  let skipEach;
+  const skipEachRe = /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\.\s*each\s*\(/g;
+  while ((skipEach = skipEachRe.exec(masked)) !== null) {
+    const eachClose = findMatchingParen(masked, skipEachRe.lastIndex - 1);
+    if (eachClose === -1) continue;
+    const nameOpen = masked.indexOf('(', eachClose + 1);
+    if (nameOpen !== -1) {
+      addFrontendFinding(findings, 'skipped-frontend-test', source, rel, ranges, skipEach.index, nameOpen + 1);
+    }
+  }
+
+  let eachSkip;
+  const eachSkipRe = /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*each\s*\(/g;
+  while ((eachSkip = eachSkipRe.exec(masked)) !== null) {
+    const eachClose = findMatchingParen(masked, eachSkipRe.lastIndex - 1);
+    if (eachClose === -1) continue;
+    const suffix = masked.slice(eachClose + 1).match(/^\s*\.\s*(?:skip|todo)\s*\(/);
+    if (suffix) {
+      addFrontendFinding(
+        findings,
+        'skipped-frontend-test',
+        source,
+        rel,
+        ranges,
+        eachSkip.index,
+        eachClose + 1 + suffix[0].length,
+      );
     }
   }
 }
@@ -365,18 +437,44 @@ function isFrontendPlaceholder(body) {
 
 function addFrontendPlaceholderFindings(source, rel, ranges, findings, warnings) {
   const masked = maskCommentsAndStrings(source);
-  const re = /\b(it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\(\s*(['"`])([^'"`]+)\2\s*,/g;
+  const directRe = /\b(it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\(/g;
   let match;
-  while ((match = re.exec(source)) !== null) {
-    const name = match[3];
-    const body = callbackBody(source, masked, re.lastIndex);
+  while ((match = directRe.exec(masked)) !== null) {
+    const added = addFrontendFinding([], 'placeholder-frontend-test', source, rel, ranges, match.index, directRe.lastIndex);
+    if (!added) continue;
+    const comma = masked.indexOf(',', added.literal.end);
+    if (comma === -1) continue;
+    const body = callbackBody(source, masked, comma + 1);
     if (!body) {
       continue;
     }
     if (isFrontendPlaceholder(body.body)) {
       findings.push({
         category: 'placeholder-frontend-test',
-        id: frontendId(rel, suiteAt(ranges, match.index), name),
+        id: added.finding.id,
+        file: rel,
+        line: lineOf(source, match.index),
+      });
+    }
+  }
+
+  const eachRe = /\b(it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*each\s*\(/g;
+  while ((match = eachRe.exec(masked)) !== null) {
+    const eachClose = findMatchingParen(masked, eachRe.lastIndex - 1);
+    if (eachClose === -1) continue;
+    if (/^\s*\.\s*(?:skip|todo)\s*\(/.test(masked.slice(eachClose + 1))) continue;
+    const nameOpen = masked.indexOf('(', eachClose + 1);
+    if (nameOpen === -1) continue;
+    const added = addFrontendFinding([], 'placeholder-frontend-test', source, rel, ranges, match.index, nameOpen + 1);
+    if (!added) continue;
+    const comma = masked.indexOf(',', added.literal.end);
+    if (comma === -1) continue;
+    const body = callbackBody(source, masked, comma + 1);
+    if (!body) continue;
+    if (isFrontendPlaceholder(body.body)) {
+      findings.push({
+        category: 'placeholder-frontend-test',
+        id: added.finding.id,
         file: rel,
         line: lineOf(source, match.index),
       });
@@ -574,6 +672,12 @@ fn comment_only_case() {
 }
 
 #[test]
+fn assignment_only_placeholder() {
+    let value = 1;
+    let _copy = value;
+}
+
+#[test]
 #[ignore = "manual placeholder"]
 fn ignored_empty_case() {}
 `);
@@ -587,9 +691,11 @@ describe("frontend debt", () => {
   test.each([[1]]).skip("each skip", () => {});
   describe.skip.each([[1]])("describe skip each", () => {});
   it("empty", () => {});
+  test.each([[1]])("empty parameterized %s", () => {});
   test("tautology", () => {
     expect(true).toBe(true);
   });
+  // Example only: it.skip("not real debt", () => {});
 });
 `);
     writeFile(path.join(root, 'src-tauri/tests/comment_false_positive.rs'), `
@@ -604,8 +710,11 @@ fn real_test() {
     assertSelf(result.findings.some((f) => f.category === 'ignored-rust-test' && f.id.endsWith('ignored.rs::ignored_case')), 'ignored Rust finding missing');
     assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('ignored.rs::empty_case')), 'empty Rust finding missing');
     assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('ignored.rs::comment_only_case')), 'comment-only Rust finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('ignored.rs::assignment_only_placeholder')), 'assignment-only Rust finding missing');
     assertSelf(result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes('skip each')), 'skip.each finding missing');
     assertSelf(result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes('each skip')), 'each(...).skip finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'placeholder-frontend-test' && f.id.includes('empty parameterized')), 'parameterized frontend placeholder missing');
+    assertSelf(!result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes('not real debt')), 'commented frontend skip false positive detected');
     assertSelf(!result.findings.some((f) => f.id.endsWith('comment_false_positive.rs::real_test') && f.category === 'ignored-rust-test'), 'comment false positive detected');
 
     const entries = result.findings.map((finding) => ({
