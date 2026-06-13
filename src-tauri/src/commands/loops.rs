@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::config::loops::{
-    baseline_loop_state, details_from_parts, loop_dir, next_due_after, read_loop_config,
-    read_loop_state, sanitize_loop_id, validate_cron_expr, validate_loop_config, validate_loop_id,
-    write_loop_config, write_loop_state_atomic, AcLoopSummary, BusyCoordinatorPolicy,
-    LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
-    LoopTrigger, LoopTriggerKind, LOOP_TIMEZONE_LOCAL,
+    apply_loop_update_patch, baseline_loop_state, details_from_parts, loop_dir, next_due_after,
+    read_loop_config, read_loop_state, sanitize_loop_id, validate_cron_expr, validate_loop_config,
+    validate_loop_id, write_loop_config, write_loop_state_atomic, AcLoopSummary,
+    BusyCoordinatorPolicy, LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt,
+    LoopTarget, LoopTargetKind, LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
 use crate::config::workspace::existing_workspace_dir;
 use crate::loops::scheduler::LoopScheduler;
@@ -71,6 +71,7 @@ pub async fn create_loop(
     let project_dir = PathBuf::from(&request.project_path);
     let workspace_dir = workspace_for_project(&project_dir)?;
     crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir)?;
+    let _guard = scheduler.mutation_guard().await;
     let id = match request.id.as_deref() {
         Some(id) => sanitize_loop_id(id)?,
         None => sanitize_loop_id(&request.name)?,
@@ -129,39 +130,23 @@ pub async fn update_loop(
     let project_dir = PathBuf::from(&request.project_path);
     let workspace_dir = workspace_for_project(&project_dir)?;
     crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir)?;
+    let _guard = scheduler.mutation_guard().await;
     let dir = loop_dir(&workspace_dir, &request.id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", request.id));
     }
     let mut config = read_loop_config(&dir)?;
-    let mut reset_schedule = false;
-
-    if let Some(name) = request.name {
-        if name.trim().is_empty() {
-            return Err("Loop name cannot be empty".to_string());
-        }
-        config.loop_def.name = name;
-    }
-    if let Some(expr) = request.expr {
-        config.trigger.expr = expr;
-        reset_schedule = true;
-    }
-    if let Some(workgroup) = request.workgroup {
-        config.target.workgroup = workgroup;
-        reset_schedule = true;
-    }
-    if let Some(prompt_body) = request.prompt_body {
-        config.prompt.body = validated_prompt(prompt_body)?;
-        reset_schedule = true;
-    }
-    if let Some(policy) = request.busy_coordinator {
-        config.policy.busy_coordinator = policy;
-        reset_schedule = true;
-    }
-    if let Some(enabled) = request.enabled {
-        config.loop_def.enabled = enabled;
-        reset_schedule = true;
-    }
+    let reset_schedule = apply_loop_update_patch(
+        &mut config,
+        LoopUpdatePatch {
+            name: request.name,
+            expr: request.expr,
+            workgroup: request.workgroup,
+            prompt_body: request.prompt_body,
+            busy_coordinator: request.busy_coordinator,
+            enabled: request.enabled,
+        },
+    )?;
 
     validate_loop_config(&project_dir, &config)?;
     let dir = write_loop_config(&workspace_dir, &config)?;
@@ -197,6 +182,7 @@ pub async fn delete_loop(
     validate_loop_id(&id)?;
     let project_dir = PathBuf::from(&project_path);
     let workspace_dir = workspace_for_project(&project_dir)?;
+    let _guard = scheduler.mutation_guard().await;
     let dir = loop_dir(&workspace_dir, &id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", id));
@@ -218,16 +204,29 @@ pub async fn toggle_loop(
     validate_loop_id(&id)?;
     let project_dir = PathBuf::from(&project_path);
     let workspace_dir = workspace_for_project(&project_dir)?;
+    let _guard = scheduler.mutation_guard().await;
     let dir = loop_dir(&workspace_dir, &id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", id));
     }
     let mut config = read_loop_config(&dir)?;
-    config.loop_def.enabled = enabled;
+    let reset_schedule = apply_loop_update_patch(
+        &mut config,
+        LoopUpdatePatch {
+            enabled: Some(enabled),
+            ..LoopUpdatePatch::default()
+        },
+    )?;
     validate_loop_config(&project_dir, &config)?;
     let dir = write_loop_config(&workspace_dir, &config)?;
-    let state = baseline_loop_state(&config, Utc::now())?;
-    write_loop_state_atomic(&dir, &state)?;
+    let state = if reset_schedule {
+        baseline_loop_state(&config, Utc::now())?
+    } else {
+        read_loop_state(&dir).unwrap_or_default()
+    };
+    if reset_schedule {
+        write_loop_state_atomic(&dir, &state)?;
+    }
     let details = details_from_parts(&dir, &config, &state);
     emit_loop_change(
         &app,

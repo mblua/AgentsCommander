@@ -6,11 +6,11 @@ use serde::Serialize;
 
 use crate::cli::workgroup::{resolve_cli_project, resolve_cli_workspace, write_refresh};
 use crate::config::loops::{
-    baseline_loop_state, details_from_parts, discover_loops_in_project, loop_dir, read_loop_config,
-    read_loop_state, sanitize_loop_id, validate_loop_config, validate_loop_id, write_loop_config,
-    write_loop_state_atomic, AcLoopSummary, BusyCoordinatorPolicy, LoopConfigToml, LoopDef,
-    LoopPolicy, LoopPrompt, LoopState, LoopTarget, LoopTargetKind, LoopTrigger, LoopTriggerKind,
-    LOOP_TIMEZONE_LOCAL,
+    apply_loop_update_patch, baseline_loop_state, details_from_parts, discover_loops_in_project,
+    loop_dir, read_loop_config, read_loop_state, sanitize_loop_id, validate_loop_config,
+    validate_loop_id, write_loop_config, write_loop_state_atomic, AcLoopSummary,
+    BusyCoordinatorPolicy, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopState, LoopTarget,
+    LoopTargetKind, LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
 
 pub const MAX_LOOP_PROMPT_FILE_BYTES: u64 = 128 * 1024;
@@ -209,31 +209,33 @@ fn update(args: LoopUpdateArgs) -> Result<(), String> {
         return Err(format!("Loop '{}' not found", args.loop_id));
     }
     let mut config = read_loop_config(&dir)?;
-    let mut reset_schedule = false;
-
-    if let Some(name) = args.name {
-        if name.trim().is_empty() {
-            return Err("Loop name cannot be empty".to_string());
-        }
-        config.loop_def.name = name;
-    }
-    if let Some(expr) = args.cron {
-        config.trigger.expr = expr;
-        reset_schedule = true;
-    }
-    if let Some(workgroup) = args.workgroup {
-        config.target.workgroup = workgroup;
-        reset_schedule = true;
-    }
-    if args.prompt.is_some() || args.prompt_file.is_some() {
-        config.prompt.body = resolve_prompt(args.prompt.as_deref(), args.prompt_file.as_deref())?;
-        reset_schedule = true;
-    }
-    if args.busy_coordinator.is_some() || args.force_inject_when_busy {
-        config.policy.busy_coordinator =
-            resolve_busy_policy(args.busy_coordinator, args.force_inject_when_busy)?;
-        reset_schedule = true;
-    }
+    let prompt_body = if args.prompt.is_some() || args.prompt_file.is_some() {
+        Some(resolve_prompt(
+            args.prompt.as_deref(),
+            args.prompt_file.as_deref(),
+        )?)
+    } else {
+        None
+    };
+    let busy_coordinator = if args.busy_coordinator.is_some() || args.force_inject_when_busy {
+        Some(resolve_busy_policy(
+            args.busy_coordinator,
+            args.force_inject_when_busy,
+        )?)
+    } else {
+        None
+    };
+    let reset_schedule = apply_loop_update_patch(
+        &mut config,
+        LoopUpdatePatch {
+            name: args.name,
+            expr: args.cron,
+            workgroup: args.workgroup,
+            prompt_body,
+            busy_coordinator,
+            enabled: None,
+        },
+    )?;
 
     validate_loop_config(&project_path, &config)?;
     let dir = write_loop_config(&workspace_dir, &config)?;
@@ -279,11 +281,23 @@ fn set_enabled(args: LoopToggleArgs, enabled: bool) -> Result<(), String> {
         return Err(format!("Loop '{}' not found", args.loop_id));
     }
     let mut config = read_loop_config(&dir)?;
-    config.loop_def.enabled = enabled;
+    let reset_schedule = apply_loop_update_patch(
+        &mut config,
+        LoopUpdatePatch {
+            enabled: Some(enabled),
+            ..LoopUpdatePatch::default()
+        },
+    )?;
     validate_loop_config(&project_path, &config)?;
     let dir = write_loop_config(&workspace_dir, &config)?;
-    let state = initial_state(&config)?;
-    write_loop_state_atomic(&dir, &state)?;
+    let state = if reset_schedule {
+        initial_state(&config)?
+    } else {
+        read_loop_state(&dir).unwrap_or_default()
+    };
+    if reset_schedule {
+        write_loop_state_atomic(&dir, &state)?;
+    }
     write_refresh(
         &project_path,
         &dir,

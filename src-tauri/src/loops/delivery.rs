@@ -51,13 +51,29 @@ pub async fn deliver_loop_prompt(
     let policy = config.policy.busy_coordinator.clone();
     let prompt = config.prompt.body.clone();
 
-    let session = match find_live_coordinator_session(app, &target.coordinator_replica_dir).await {
-        Ok(Some(session)) => session,
-        Ok(None) => match spawn_coordinator_session(app, &target).await {
-            Ok(session) => session,
-            Err(e) => return failed_report(Some(target_fqn), None, e),
-        },
+    let lookup = match find_coordinator_session(app, &target.coordinator_replica_dir).await {
+        Ok(lookup) => lookup,
         Err(e) => return failed_report(Some(target_fqn), None, e),
+    };
+
+    let session = match lookup.live {
+        Some(session) => session,
+        None => {
+            for stale_id in lookup.stale_session_ids {
+                if let Err(e) = crate::commands::session::destroy_session_inner(app, stale_id).await
+                {
+                    log::warn!(
+                        "[loops] Failed to clear stale coordinator session {} before wake: {}",
+                        stale_id,
+                        e
+                    );
+                }
+            }
+            match spawn_coordinator_session(app, &target, lookup.had_any_match).await {
+                Ok(session) => session,
+                Err(e) => return failed_report(Some(target_fqn), None, e),
+            }
+        }
     };
 
     let session_id = match Uuid::parse_str(&session.id) {
@@ -140,10 +156,17 @@ fn failed_report(
     }
 }
 
-async fn find_live_coordinator_session(
+#[derive(Debug)]
+struct CoordinatorSessionLookup {
+    live: Option<SessionInfo>,
+    stale_session_ids: Vec<Uuid>,
+    had_any_match: bool,
+}
+
+async fn find_coordinator_session(
     app: &AppHandle,
     coordinator_replica_dir: &Path,
-) -> Result<Option<SessionInfo>, String> {
+) -> Result<CoordinatorSessionLookup, String> {
     let target_key = path_compare_key(coordinator_replica_dir);
     let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
     let mgr = session_mgr.read().await;
@@ -161,32 +184,67 @@ async fn find_live_coordinator_session(
         SessionStatus::Exited(_) => 2,
     });
 
+    let had_any_match = !matches.is_empty();
+    let mut stale_session_ids = Vec::new();
     for session in matches {
         let Ok(id) = Uuid::parse_str(&session.id) else {
             continue;
         };
-        if matches!(session.status, SessionStatus::Exited(_)) {
-            continue;
-        }
         let has_pty = {
-            let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-            let has_pty = pty_mgr
-                .lock()
-                .map_err(|_| "PtyManager lock poisoned".to_string())?
-                .has_session(id);
-            has_pty
+            if matches!(session.status, SessionStatus::Exited(_)) {
+                false
+            } else {
+                let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+                let has_pty = pty_mgr
+                    .lock()
+                    .map_err(|_| "PtyManager lock poisoned".to_string())?
+                    .has_session(id);
+                has_pty
+            }
         };
-        if has_pty {
-            return Ok(Some(session));
+        if loop_candidate_is_live(&session.status, has_pty) {
+            return Ok(CoordinatorSessionLookup {
+                live: Some(session),
+                stale_session_ids,
+                had_any_match,
+            });
+        }
+        if loop_candidate_should_respawn(&session.status, has_pty) {
+            if !matches!(session.status, SessionStatus::Exited(_)) {
+                log::warn!(
+                    "[loops] Skipping desync coordinator session {} with no PTY",
+                    id
+                );
+            }
+            stale_session_ids.push(id);
         }
     }
 
-    Ok(None)
+    Ok(CoordinatorSessionLookup {
+        live: None,
+        stale_session_ids,
+        had_any_match,
+    })
+}
+
+fn loop_candidate_is_live(status: &SessionStatus, has_pty: bool) -> bool {
+    match status {
+        SessionStatus::Active | SessionStatus::Running | SessionStatus::Idle => has_pty,
+        SessionStatus::Exited(_) => false,
+    }
+}
+
+fn loop_candidate_should_respawn(status: &SessionStatus, has_pty: bool) -> bool {
+    match status {
+        SessionStatus::Exited(_) => true,
+        SessionStatus::Active | SessionStatus::Running | SessionStatus::Idle => !has_pty,
+    }
 }
 
 async fn spawn_coordinator_session(
     app: &AppHandle,
     target: &crate::config::loops::ResolvedLoopTarget,
+    had_existing_match: bool,
 ) -> Result<SessionInfo, String> {
     let command = resolve_loop_agent_command(app, &target.coordinator_replica_dir).await?;
     let session_name = format!(
@@ -212,7 +270,7 @@ async fn spawn_coordinator_session(
         command.agent_label,
         false,
         Vec::<SessionRepo>::new(),
-        true,
+        loop_spawn_skip_auto_resume(had_existing_match),
     )
     .await?;
     let session_id = Uuid::parse_str(&info.id)
@@ -225,6 +283,10 @@ async fn spawn_coordinator_session(
         .into_iter()
         .find(|session| session.id == info.id)
         .ok_or_else(|| format!("Spawned session {} was not found", info.id))
+}
+
+fn loop_spawn_skip_auto_resume(_had_existing_match: bool) -> bool {
+    false
 }
 
 async fn wait_for_session_idle(app: &AppHandle, session_id: Uuid) -> Result<(), String> {
@@ -353,5 +415,28 @@ fn path_compare_key(path: &Path) -> String {
         value.to_lowercase()
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loop_spawn_allows_provider_resume_for_cold_and_known_state_wakes() {
+        assert!(!loop_spawn_skip_auto_resume(false));
+        assert!(!loop_spawn_skip_auto_resume(true));
+    }
+
+    #[test]
+    fn loop_candidate_rules_preserve_exited_and_phantom_respawn_paths() {
+        assert!(loop_candidate_should_respawn(
+            &SessionStatus::Exited(0),
+            false
+        ));
+        assert!(loop_candidate_should_respawn(&SessionStatus::Idle, false));
+        assert!(!loop_candidate_should_respawn(&SessionStatus::Idle, true));
+        assert!(loop_candidate_is_live(&SessionStatus::Idle, true));
+        assert!(!loop_candidate_is_live(&SessionStatus::Exited(0), false));
     }
 }

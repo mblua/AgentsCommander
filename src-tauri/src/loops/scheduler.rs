@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::config::loops::{
     append_loop_audit_once, baseline_loop_state, details_from_parts, latest_due_between, loop_dir,
     next_due_after, read_loop_config, read_loop_state, write_loop_state_atomic, LoopAuditEntry,
-    LoopAuditKind, LoopConfigDetails, LoopConfigToml, LoopLastResult, LoopState, LOOP_DIR_PREFIX,
+    LoopAuditKind, LoopConfigDetails, LoopConfigToml, LoopLastResult, LoopState, LOOP_CONFIG_FILE,
+    LOOP_DIR_PREFIX,
 };
 use crate::config::projects::enumerate_registered_project_candidates;
 use crate::config::settings::SettingsState;
@@ -32,6 +33,10 @@ impl LoopScheduler {
 
     pub fn request_scan(&self) {
         self.notify.notify_one();
+    }
+
+    pub async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.scan_lock.lock().await
     }
 
     pub fn start(self: Arc<Self>, app: AppHandle, shutdown: ShutdownSignal) {
@@ -70,10 +75,16 @@ impl LoopScheduler {
             return Err(format!("Loop '{}' not found", loop_id));
         }
         let config = read_loop_config(&dir)?;
+        if !config.loop_def.enabled {
+            return Err(format!("Loop '{}' is disabled", loop_id));
+        }
         let state = read_loop_state(&dir).unwrap_or_default();
         let run_id = Uuid::new_v4();
         let due_at = Utc::now();
         let started_at = Utc::now();
+        if !loop_is_current_for_delivery(&dir, &config)? {
+            return Err(format!("Loop '{}' changed before delivery", loop_id));
+        }
         let report = deliver_loop_prompt(&app, &project_dir, &config, run_id, due_at).await;
         let state = self
             .apply_delivery_report(
@@ -157,6 +168,9 @@ impl LoopScheduler {
         });
 
         if state.last_checked_at.is_none() {
+            if !loop_is_current_for_delivery(dir, &config)? {
+                return Ok(());
+            }
             state = baseline_loop_state(&config, Utc::now())?;
             write_loop_state_atomic(dir, &state)?;
             return Ok(());
@@ -164,6 +178,9 @@ impl LoopScheduler {
 
         if let (Some(pending_due), Some(pending_run)) = (state.pending_due_at, state.pending_run_id)
         {
+            if !loop_is_current_for_delivery(dir, &config)? {
+                return Ok(());
+            }
             let started_at = Utc::now();
             let report =
                 deliver_loop_prompt(app, project_dir, &config, pending_run, pending_due).await;
@@ -199,12 +216,18 @@ impl LoopScheduler {
 
         let run_id = Uuid::new_v4();
         if startup {
+            if !loop_is_current_for_delivery(dir, &config)? {
+                return Ok(());
+            }
             self.record_missed_while_closed(app, project_dir, dir, &config, state, run_id, due_at)
                 .await?;
             return Ok(());
         }
 
         let started_at = Utc::now();
+        if !loop_is_current_for_delivery(dir, &config)? {
+            return Ok(());
+        }
         let report = deliver_loop_prompt(app, project_dir, &config, run_id, due_at).await;
         self.apply_delivery_report(
             app,
@@ -229,6 +252,9 @@ impl LoopScheduler {
         config: &LoopConfigToml,
         state: &mut LoopState,
     ) -> Result<(), String> {
+        if !loop_is_current_for_delivery(dir, config)? {
+            return Ok(());
+        }
         let Some(pending_due) = state.pending_due_at else {
             return Ok(());
         };
@@ -288,6 +314,9 @@ impl LoopScheduler {
         run_id: Uuid,
         due_at: DateTime<Utc>,
     ) -> Result<LoopState, String> {
+        if !loop_is_current_for_delivery(dir, config)? {
+            return Ok(state);
+        }
         let now = Utc::now();
         state.last_checked_at = Some(now);
         state.last_due_at = Some(due_at);
@@ -341,6 +370,9 @@ impl LoopScheduler {
         due_at: DateTime<Utc>,
         started_at: DateTime<Utc>,
     ) -> Result<LoopState, String> {
+        if !loop_is_current_for_delivery(dir, config)? {
+            return Ok(state);
+        }
         let now = Utc::now();
         state.last_checked_at = Some(now);
         state.last_due_at = Some(due_at);
@@ -424,6 +456,72 @@ fn loop_dirs(workspace_dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(dirs)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopRevalidation {
+    Current,
+    Gone,
+    Disabled,
+    Changed,
+}
+
+fn loop_is_current_for_delivery(dir: &Path, expected: &LoopConfigToml) -> Result<bool, String> {
+    match revalidate_loop_current(dir, expected)? {
+        LoopRevalidation::Current => Ok(true),
+        LoopRevalidation::Gone => {
+            log::warn!(
+                "[loops] Skipping stale Loop delivery because {} no longer exists",
+                dir.display()
+            );
+            Ok(false)
+        }
+        LoopRevalidation::Disabled => {
+            log::warn!(
+                "[loops] Skipping stale Loop delivery because '{}' is disabled",
+                expected.loop_def.id
+            );
+            Ok(false)
+        }
+        LoopRevalidation::Changed => {
+            log::warn!(
+                "[loops] Skipping stale Loop delivery because '{}' changed",
+                expected.loop_def.id
+            );
+            Ok(false)
+        }
+    }
+}
+
+fn revalidate_loop_current(
+    dir: &Path,
+    expected: &LoopConfigToml,
+) -> Result<LoopRevalidation, String> {
+    if !dir.is_dir() || !dir.join(LOOP_CONFIG_FILE).is_file() {
+        return Ok(LoopRevalidation::Gone);
+    }
+    let current = read_loop_config(dir)?;
+    if !current.loop_def.enabled {
+        return Ok(LoopRevalidation::Disabled);
+    }
+    if loop_delivery_config_matches(&current, expected) {
+        Ok(LoopRevalidation::Current)
+    } else {
+        Ok(LoopRevalidation::Changed)
+    }
+}
+
+fn loop_delivery_config_matches(current: &LoopConfigToml, expected: &LoopConfigToml) -> bool {
+    current.loop_def.id == expected.loop_def.id
+        && current.loop_def.enabled == expected.loop_def.enabled
+        && current.trigger.kind == expected.trigger.kind
+        && current.trigger.expr == expected.trigger.expr
+        && current.trigger.timezone == expected.trigger.timezone
+        && current.target.kind == expected.target.kind
+        && current.target.workgroup == expected.target.workgroup
+        && current.prompt.body == expected.prompt.body
+        && current.policy.missed_while_closed == expected.policy.missed_while_closed
+        && current.policy.busy_coordinator == expected.policy.busy_coordinator
+}
+
 fn emit_transition(
     app: &AppHandle,
     project_dir: &Path,
@@ -464,5 +562,82 @@ fn audit_kind_event(kind: &LoopAuditKind) -> &'static str {
         LoopAuditKind::MissedWhileClosed => "missed",
         LoopAuditKind::DeliveryFailed => "failed",
         LoopAuditKind::CoalescedPending => "coalesced",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::loops::{
+        write_loop_config, BusyCoordinatorPolicy, LoopDef, LoopPolicy, LoopPrompt, LoopTarget,
+        LoopTargetKind, LoopTrigger, LoopTriggerKind, LOOP_TIMEZONE_LOCAL,
+    };
+
+    fn sample_config() -> LoopConfigToml {
+        LoopConfigToml {
+            loop_def: LoopDef {
+                id: "daily-sync".to_string(),
+                name: "Daily sync".to_string(),
+                enabled: true,
+            },
+            trigger: LoopTrigger {
+                kind: LoopTriggerKind::Cron,
+                expr: "0 9 * * *".to_string(),
+                timezone: LOOP_TIMEZONE_LOCAL.to_string(),
+            },
+            target: LoopTarget {
+                kind: LoopTargetKind::WorkgroupCoordinator,
+                workgroup: "wg-1-dev-team".to_string(),
+            },
+            prompt: LoopPrompt {
+                body: "Send status".to_string(),
+            },
+            policy: LoopPolicy {
+                busy_coordinator: BusyCoordinatorPolicy::WaitUntilIdle,
+                ..LoopPolicy::default()
+            },
+        }
+    }
+
+    #[test]
+    fn revalidate_loop_current_detects_deleted_disabled_and_changed_configs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = sample_config();
+        let dir = write_loop_config(tmp.path(), &config).expect("write config");
+
+        assert_eq!(
+            revalidate_loop_current(&dir, &config).expect("current"),
+            LoopRevalidation::Current
+        );
+
+        let mut renamed = config.clone();
+        renamed.loop_def.name = "Renamed sync".to_string();
+        write_loop_config(tmp.path(), &renamed).expect("write renamed config");
+        assert_eq!(
+            revalidate_loop_current(&dir, &config).expect("renamed"),
+            LoopRevalidation::Current
+        );
+
+        let mut retargeted = config.clone();
+        retargeted.target.workgroup = "wg-2-dev-team".to_string();
+        write_loop_config(tmp.path(), &retargeted).expect("write retargeted config");
+        assert_eq!(
+            revalidate_loop_current(&dir, &config).expect("retargeted"),
+            LoopRevalidation::Changed
+        );
+
+        let mut disabled = config.clone();
+        disabled.loop_def.enabled = false;
+        write_loop_config(tmp.path(), &disabled).expect("write disabled config");
+        assert_eq!(
+            revalidate_loop_current(&dir, &config).expect("disabled"),
+            LoopRevalidation::Disabled
+        );
+
+        std::fs::remove_dir_all(&dir).expect("remove loop dir");
+        assert_eq!(
+            revalidate_loop_current(&dir, &config).expect("gone"),
+            LoopRevalidation::Gone
+        );
     }
 }

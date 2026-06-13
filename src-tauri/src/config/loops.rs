@@ -52,6 +52,16 @@ pub struct LoopConfigToml {
     pub policy: LoopPolicy,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LoopUpdatePatch {
+    pub name: Option<String>,
+    pub expr: Option<String>,
+    pub workgroup: Option<String>,
+    pub prompt_body: Option<String>,
+    pub busy_coordinator: Option<BusyCoordinatorPolicy>,
+    pub enabled: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopDef {
     pub id: String,
@@ -465,20 +475,16 @@ pub fn latest_due_between(
     }
     let cron =
         croner::Cron::from_str(expr).map_err(|e| format!("Invalid cron expression: {}", e))?;
-    let mut cursor = after.with_timezone(&Local);
     let now_local = now.with_timezone(&Local);
-    let mut latest = None;
-    for _ in 0..10_000 {
-        let next = cron
-            .find_next_occurrence(&cursor, false)
-            .map_err(|e| format!("Failed to calculate Loop due time: {}", e))?;
-        if next > now_local {
-            return Ok(latest);
-        }
-        latest = Some(next.with_timezone(&Utc));
-        cursor = next;
+    let latest = cron
+        .find_previous_occurrence(&now_local, true)
+        .map_err(|e| format!("Failed to calculate Loop due time: {}", e))?
+        .with_timezone(&Utc);
+    if latest > after && latest <= now {
+        Ok(Some(latest))
+    } else {
+        Ok(None)
     }
-    Err("Failed to calculate Loop due time: too many occurrences".to_string())
 }
 
 pub fn baseline_loop_state(
@@ -490,6 +496,55 @@ pub fn baseline_loop_state(
         next_due_at: next_due_after(&config.trigger.expr, now)?,
         ..LoopState::default()
     })
+}
+
+pub fn apply_loop_update_patch(
+    config: &mut LoopConfigToml,
+    patch: LoopUpdatePatch,
+) -> Result<bool, String> {
+    let mut reset_schedule = false;
+
+    if let Some(name) = patch.name {
+        if name.trim().is_empty() {
+            return Err("Loop name cannot be empty".to_string());
+        }
+        config.loop_def.name = name;
+    }
+    if let Some(expr) = patch.expr {
+        if config.trigger.expr != expr {
+            config.trigger.expr = expr;
+            reset_schedule = true;
+        }
+    }
+    if let Some(workgroup) = patch.workgroup {
+        if config.target.workgroup != workgroup {
+            config.target.workgroup = workgroup;
+            reset_schedule = true;
+        }
+    }
+    if let Some(prompt_body) = patch.prompt_body {
+        if prompt_body.trim().is_empty() {
+            return Err("Loop prompt cannot be empty".to_string());
+        }
+        if config.prompt.body != prompt_body {
+            config.prompt.body = prompt_body;
+            reset_schedule = true;
+        }
+    }
+    if let Some(policy) = patch.busy_coordinator {
+        if config.policy.busy_coordinator != policy {
+            config.policy.busy_coordinator = policy;
+            reset_schedule = true;
+        }
+    }
+    if let Some(enabled) = patch.enabled {
+        if config.loop_def.enabled != enabled {
+            config.loop_def.enabled = enabled;
+            reset_schedule = true;
+        }
+    }
+
+    Ok(reset_schedule)
 }
 
 pub fn summary_from_parts(dir: &Path, config: &LoopConfigToml, state: &LoopState) -> AcLoopSummary {
@@ -664,6 +719,61 @@ mod tests {
             .expect("preview")
             .expect("next");
         assert!(next > after);
+    }
+
+    #[test]
+    fn latest_due_between_uses_previous_match_for_long_gaps() {
+        let now = "2026-06-13T21:17:00Z"
+            .parse::<DateTime<Utc>>()
+            .expect("time");
+        let after = now - chrono::Duration::days(30);
+        let due = latest_due_between("* * * * *", after, now)
+            .expect("due")
+            .expect("due present");
+
+        assert!(due > after);
+        assert!(due <= now);
+        assert!(now - due < chrono::Duration::minutes(2));
+    }
+
+    #[test]
+    fn loop_update_patch_only_resets_on_actual_schedule_or_delivery_changes() {
+        let mut config = sample_config();
+        let reset = apply_loop_update_patch(
+            &mut config,
+            LoopUpdatePatch {
+                name: Some("Renamed standup".to_string()),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect("name update");
+        assert!(!reset);
+        assert_eq!(config.loop_def.name, "Renamed standup");
+
+        let reset = apply_loop_update_patch(
+            &mut config,
+            LoopUpdatePatch {
+                expr: Some("0 9 * * 1-5".to_string()),
+                workgroup: Some("wg-1-dev-team".to_string()),
+                prompt_body: Some("Summarize status".to_string()),
+                busy_coordinator: Some(BusyCoordinatorPolicy::WaitUntilIdle),
+                enabled: Some(true),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect("noop update");
+        assert!(!reset);
+
+        let reset = apply_loop_update_patch(
+            &mut config,
+            LoopUpdatePatch {
+                expr: Some("30 9 * * 1-5".to_string()),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect("cron update");
+        assert!(reset);
+        assert_eq!(config.trigger.expr, "30 9 * * 1-5");
     }
 
     #[test]
