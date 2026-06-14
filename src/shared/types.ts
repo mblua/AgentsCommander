@@ -257,6 +257,7 @@ export interface UiAutomationTarget {
   testId: string;
   role: string | null;
   state: string | null;
+  metadata: Record<string, string>;
   tag: string;
   text: string;
   visible: boolean;

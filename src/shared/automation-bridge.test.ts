@@ -192,6 +192,42 @@ describe("automation bridge", () => {
     });
   });
 
+  it("returns allow-listed data-ac metadata without value-like attributes", async () => {
+    const source = addTarget("span", "settings.agentRow.0.envRow.0.source", "user");
+    source.setAttribute("data-ac-role", "status");
+    source.setAttribute("data-ac-env-source", "user");
+    source.setAttribute("data-ac-agent-id", "codex");
+    source.setAttribute("data-ac-agent-index", "0");
+    source.setAttribute("data-ac-agent-command", "codex");
+    source.setAttribute("data-ac-profile-letter", "B");
+    source.setAttribute("data-ac-requested-profile", "B");
+    source.setAttribute("data-ac-effective-profile", "A");
+    source.setAttribute("data-ac-configured", "false");
+    source.setAttribute("data-ac-value", "AIza123456789012345678901234567890");
+    source.setAttribute("data-ac-token", "abcdefghijklmnopqrstuvwxyz1234567890");
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("query", "settings.agentRow.0.envRow.0.source"),
+    );
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) throw new Error(response.message);
+    expect(response.target.text).toBe("");
+    expect(response.target.metadata).toEqual({
+      agentId: "codex",
+      agentIndex: "0",
+      agentCommand: "codex",
+      profileLetter: "B",
+      requestedProfile: "B",
+      effectiveProfile: "A",
+      configured: "false",
+      envSource: "user",
+    });
+    expect(response.target.metadata).not.toHaveProperty("value");
+    expect(response.target.metadata).not.toHaveProperty("token");
+  });
+
   it("briefly retries queries for asynchronously rendered targets", async () => {
     window.setTimeout(() => {
       addTarget("button", "settings.agent.addCustom", "+ Custom Agent");

@@ -755,6 +755,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     class={`settings-env-source ${row.source === "agentsCommander" ? "generated" : ""}`}
                     data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.source`}
                     data-ac-role="status"
+                    data-ac-env-source={row.source}
                   >
                     {row.source}
                   </span>

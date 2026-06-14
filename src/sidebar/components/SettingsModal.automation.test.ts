@@ -201,6 +201,7 @@ describe("SettingsModal automation hooks", () => {
     expect(byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.value")).toBeTruthy();
     expect(byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.enabled")).toBeTruthy();
     expect(byTestId("settings.agentRow.0.envRow.0.source").textContent).toContain("user");
+    expect(byTestId("settings.agentRow.0.envRow.0.source").getAttribute("data-ac-env-source")).toBe("user");
     expect(byTestId<HTMLButtonElement>("settings.agentRow.0.envRow.0.delete").disabled).toBe(false);
 
     const isolation = byTestId<HTMLInputElement>("settings.agentRow.0.codexHomeIsolation");
