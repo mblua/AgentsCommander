@@ -237,23 +237,23 @@ mod tests {
         assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo"), base));
 
         // Subdirectory
-        assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo\\sub"), base));      
+        assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo\\sub"), base));
 
         // Case-insensitive match on Windows
         #[cfg(windows)]
-        assert!(path_starts_with_case_insensitive_windows(Path::new("c:\\users\\test\\REPO\\sub"), base));      
+        assert!(path_starts_with_case_insensitive_windows(Path::new("c:\\users\\test\\REPO\\sub"), base));
 
         // False prefix matching (repo vs repo-other) should fail
-        assert!(!path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo-other"), base));    
+        assert!(!path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo-other"), base));
 
         // False prefix on Windows
         #[cfg(windows)]
-        assert!(!path_starts_with_case_insensitive_windows(Path::new("c:\\users\\test\\REPO-other"), base));    
-        
+        assert!(!path_starts_with_case_insensitive_windows(Path::new("c:\\users\\test\\REPO-other"), base));
+
         // Verbatim prefix handling
         #[cfg(windows)]
         assert!(path_starts_with_case_insensitive_windows(Path::new("\\\\?\\C:\\Users\\Test\\repo"), base));
-        
+
         // Trailing slash matching
         let base_with_slash = Path::new("C:\\Users\\Test\\repo\\");
         assert!(path_starts_with_case_insensitive_windows(Path::new("C:\\Users\\Test\\repo"), base_with_slash));
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn test_claude_trust_specificity() {
         use serde_json::json;
-        
+
         let projects_json = json!({
             "C:\\Users\\Test\\repo": { "hasTrustDialogAccepted": false },
             "C:\\Users\\Test\\repo\\child": { "hasTrustDialogAccepted": true }

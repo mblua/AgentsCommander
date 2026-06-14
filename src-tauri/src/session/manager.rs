@@ -858,14 +858,14 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         // At creation, last_started_at is now.
         mgr.mark_idle(session.id).await;
-        
+
         let after = mgr.get_session(session.id).await.unwrap();
         assert!(after.waiting_for_input);
         assert!(after.startup_wait_detected, "startup_wait_detected should be true when marked idle within 5 seconds");
-        
+
         mgr.mark_busy(session.id).await;
         let after_busy = mgr.get_session(session.id).await.unwrap();
         assert!(!after_busy.waiting_for_input);
@@ -925,9 +925,9 @@ mod tests {
         // Simulate time passing
         let old_time = session.last_started_at;
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        
+
         mgr.mark_spawn_started(session.id).await;
-        
+
         let updated = mgr.get_session(session.id).await.unwrap();
         assert!(updated.last_started_at > old_time);
     }
