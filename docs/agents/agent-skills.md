@@ -38,7 +38,10 @@ into one temporary workgroup session.
 
 Standalone agent folders can also contain a local `skills/` folder, but
 AgentsCommander runtime discovery does not scan standalone local skills unless
-canonical Agent Matrix state is resolved.
+canonical Agent Matrix state is resolved. The canonical Root Agent directory
+`ac-root-agent/` is the exception: its local `skills/` directory is durable Root
+Agent state, seeded by AgentsCommander, and discovered in generated Root Agent
+context.
 
 ## Minimal Skill Layout
 
@@ -142,3 +145,10 @@ AgentsCommander does not:
 - Recursively discover nested skills.
 - Discover standalone local `skills/` folders without canonical Agent Matrix
   state.
+
+## Root Agent Governance Skill
+
+Fresh Root Agent directories include `skills/role-skill-boundary-audit/SKILL.md`.
+This is a review lens for deciding whether instructions belong in a role, skill,
+global policy, workflow docs, memory, or an agent boundary change. It is not a
+separate governance agent and it does not automatically rewrite roles or skills.

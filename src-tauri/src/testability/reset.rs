@@ -113,7 +113,11 @@ fn execute_inner(args: TestResetArgs) -> Result<TestResetOutput, String> {
         validate_candidate(exe_parent, candidate).map_err(|e| {
             error_json(
                 e.as_str(),
-                serde_json::json!({"path": candidate, "exeParent": exe_parent}),
+                serde_json::json!({
+                    "path": candidate,
+                    "exeParent": exe_parent,
+                    "plannedDelete": &candidates,
+                }),
             )
         })?;
 
@@ -121,7 +125,12 @@ fn execute_inner(args: TestResetArgs) -> Result<TestResetOutput, String> {
             std::fs::remove_dir_all(candidate).map_err(|e| {
                 error_json(
                     "remove_dir_all_failed",
-                    serde_json::json!({"path": candidate, "message": e.to_string()}),
+                    serde_json::json!({
+                        "path": candidate,
+                        "message": e.to_string(),
+                        "exeParent": exe_parent,
+                        "plannedDelete": &candidates,
+                    }),
                 )
             })?;
             deleted.push(candidate.clone());
@@ -162,14 +171,14 @@ fn validate_candidate(exe_parent: &Path, candidate: &Path) -> Result<(), String>
         Err(e) => return Err(format!("reset_candidate_metadata_failed: {e}")),
     };
 
+    if has_windows_reparse_point(&metadata) {
+        return Err("reset_candidate_is_reparse_point".to_string());
+    }
     if metadata.file_type().is_symlink() {
         return Err("reset_candidate_is_symlink".to_string());
     }
     if !metadata.is_dir() {
         return Err("reset_candidate_not_directory".to_string());
-    }
-    if has_windows_reparse_point(&metadata) {
-        return Err("reset_candidate_is_reparse_point".to_string());
     }
 
     let canonical_parent = exe_parent
