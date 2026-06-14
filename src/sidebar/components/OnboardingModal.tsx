@@ -79,6 +79,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
       const updated: AppSettings = {
         ...settings,
         agents: [...settings.agents, agent],
+        onboardingDismissed: true,
       };
       await SettingsAPI.update(updated);
       settingsStore.refresh();

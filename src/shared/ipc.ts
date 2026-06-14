@@ -51,8 +51,39 @@ export interface RtkSweepResult {
   errors: { path: string; error: string }[];
 }
 
-// Select transport based on runtime environment
-const transport: Transport = isTauri ? new TauriTransport() : new WsTransport();
+function createDefaultTransport(): Transport {
+  return isTauri ? new TauriTransport() : new WsTransport();
+}
+
+let defaultTransport: Transport | null = null;
+let testTransport: Transport | null = null;
+
+function currentTransport(): Transport {
+  if (testTransport) return testTransport;
+  defaultTransport ??= createDefaultTransport();
+  return defaultTransport;
+}
+
+export function __setTransportForTests(next: Transport): () => void {
+  if (import.meta.env.MODE !== "test") {
+    throw new Error("__setTransportForTests is test-only");
+  }
+
+  const previous = testTransport;
+  testTransport = next;
+  return () => {
+    testTransport = previous;
+  };
+}
+
+const transport: Pick<Transport, "invoke" | "listen" | "emit"> = {
+  invoke: <T>(cmd: string, args?: Record<string, unknown>) =>
+    currentTransport().invoke<T>(cmd, args),
+  listen: <T>(event: string, callback: (payload: T) => void) =>
+    currentTransport().listen<T>(event, callback),
+  emit: <T>(event: string, payload: T) =>
+    currentTransport().emit<T>(event, payload),
+};
 
 export interface CreateSessionOptions {
   shell?: string;
@@ -121,6 +152,7 @@ export const SessionAPI = {
 
 export const PtyAPI = {
   write: (sessionId: string, data: Uint8Array) => {
+    const transport = currentTransport();
     // Use efficient binary transport if available (WS mode)
     if (transport.writePtyBinary) {
       transport.writePtyBinary(sessionId, data);

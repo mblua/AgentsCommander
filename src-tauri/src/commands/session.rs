@@ -1230,8 +1230,8 @@ pub(crate) async fn preserve_deferred_telegram_intent_if_valid(
     }
 }
 
-pub(crate) async fn attach_local_config_telegram_if_any(
-    app: &AppHandle,
+pub(crate) async fn attach_local_config_telegram_if_any<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session_id: Uuid,
     cwd: &str,
 ) {
@@ -1506,21 +1506,16 @@ fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
 ///
 /// The restarted session is automatically activated, Telegram bridges are
 /// re-attached, and state is persisted.
-// Tauri command: State<> injections push us over clippy's 7-arg threshold.
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn restart_session(
-    app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
-    _tg_mgr: State<'_, TelegramBridgeState>,
-    settings: State<'_, SettingsState>,
-    id: String,
+pub async fn restart_session_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    settings: &SettingsState,
+    uuid: Uuid,
     agent_id: Option<String>,
     skip_auto_resume: Option<bool>,
 ) -> Result<SessionInfo, String> {
-    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-
     // 1. Read config from existing session BEFORE destroying it
     let (
         shell,
@@ -1576,16 +1571,16 @@ pub async fn restart_session(
 
     // 3. Destroy the old session (resolves all State<> internally from app)
     if is_root_agent {
-        force_destroy_session_inner(&app, uuid).await?;
+        force_destroy_session_inner(app, uuid).await?;
     } else {
-        destroy_session_inner(&app, uuid).await?;
+        destroy_session_inner(app, uuid).await?;
     }
 
     // 4. Create new session with same config, or switch to the selected coding agent.
     let session_info = create_session_inner(
-        &app,
-        session_mgr.inner(),
-        pty_mgr.inner(),
+        app,
+        session_mgr,
+        pty_mgr,
         shell,
         shell_args,
         cwd.clone(),
@@ -1614,9 +1609,9 @@ pub async fn restart_session(
 
     // 6. Re-attach Telegram bridge from live persisted intent, or fall back to repo config.
     if telegram_bot_id.is_some() {
-        attach_persisted_telegram_if_configured(&app, new_uuid, telegram_bot_id.as_deref()).await;
+        attach_persisted_telegram_if_configured(app, new_uuid, telegram_bot_id.as_deref()).await;
     } else {
-        attach_local_config_telegram_if_any(&app, new_uuid, &cwd).await;
+        attach_local_config_telegram_if_any(app, new_uuid, &cwd).await;
     }
 
     // 7. Persist state — create_session_inner does NOT persist
@@ -1626,6 +1621,32 @@ pub async fn restart_session(
     }
 
     Ok(session_info)
+}
+
+// Tauri command: State<> injections push us over clippy's 7-arg threshold.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn restart_session(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    _tg_mgr: State<'_, TelegramBridgeState>,
+    settings: State<'_, SettingsState>,
+    id: String,
+    agent_id: Option<String>,
+    skip_auto_resume: Option<bool>,
+) -> Result<SessionInfo, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    restart_session_inner(
+        &app,
+        session_mgr.inner(),
+        pty_mgr.inner(),
+        settings.inner(),
+        uuid,
+        agent_id,
+        skip_auto_resume,
+    )
+    .await
 }
 
 #[tauri::command]

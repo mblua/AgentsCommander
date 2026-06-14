@@ -129,6 +129,33 @@ fn run_failure(bin: &Path, args: &[&str]) {
     );
 }
 
+fn assert_no_ac_side_effect_dirs(root: &Path) {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+                assert!(
+                    !(name.starts_with("wg-")
+                        || name.starts_with("_team_")
+                        || name.starts_with("_agent_")),
+                    "unexpected side-effect directory {}",
+                    path.display()
+                );
+                stack.push(path);
+            }
+        }
+    }
+}
+
 #[test]
 fn new_project_writes_project_registered_refresh() {
     let tmp = Tmp::new("cli-new-project-refresh");
@@ -174,6 +201,41 @@ fn open_project_noop_does_not_write_refresh() {
     run_success(&bin, &["open-project", &project_arg]);
 
     assert!(project_refresh_request_paths(&config_dir).is_empty());
+}
+
+#[test]
+fn new_project_bad_parent_path_does_not_write_settings_or_refresh() {
+    let tmp = Tmp::new("cli-new-project-bad-parent");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    let config_sentinel = config_dir.join("sentinel.txt");
+    std::fs::write(&config_sentinel, "keep").expect("write config sentinel");
+    let outside_sentinel = tmp.path().join("outside-sentinel.txt");
+    std::fs::write(&outside_sentinel, "keep").expect("write outside sentinel");
+
+    let parent_file = tmp.path().join("parent-file");
+    std::fs::write(&parent_file, "not a dir").expect("write parent file");
+    let bad_project = parent_file.join("ChildProject");
+    let bad_project_arg = bad_project.to_string_lossy().to_string();
+
+    run_failure(&bin, &["new-project", &bad_project_arg]);
+
+    assert!(!bad_project.exists());
+    assert!(
+        !config_dir.join("settings.json").exists(),
+        "settings.json should not be written on failed new-project"
+    );
+    assert!(project_refresh_request_paths(&config_dir).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&config_sentinel).expect("read config sentinel"),
+        "keep"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&outside_sentinel).expect("read outside sentinel"),
+        "keep"
+    );
+    assert_no_ac_side_effect_dirs(tmp.path());
 }
 
 #[test]

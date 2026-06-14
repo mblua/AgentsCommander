@@ -34,14 +34,6 @@
       "resolution": "Run manually with cargo test --release --test cli_powershell_capture -- --ignored on a machine with pwsh.exe."
     },
     {
-      "id": "rust:src-tauri/tests/cli_test_reset.rs::junction_target_refuses_and_deletes_nothing",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 489,
-      "reason": "Manual Windows junction smoke coverage needs mklink junction support in the test runner.",
-      "resolution": "Run manually on Windows with cargo test --test cli_test_reset junction_target_refuses_and_deletes_nothing -- --ignored."
-    },
-    {
       "id": "rust:src-tauri/src/commands/telegram.rs::attach_detach_persistence_tests::telegram_attach_detach_persistence_ordering_harness_note",
       "category": "ignored-rust-test",
       "owner": "dev-rust",

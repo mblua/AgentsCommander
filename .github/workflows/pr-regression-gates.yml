@@ -84,6 +84,50 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib --bins --tests
 
+  windows-release-cli-smoke:
+    name: windows-release-cli-smoke
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build Windows release binary
+        run: npm run build:prod
+
+      - name: Run Windows release CLI smoke
+        run: npm run smoke:cli-release-windows
+
+      - name: Upload CLI smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-cli-smoke-logs
+          path: artifacts/cli-release-smoke
+          if-no-files-found: ignore
+
   frontend-regression:
     name: frontend-regression
     # Skip branch-deletion push events while still requiring pull request validation.
