@@ -156,6 +156,7 @@ export function session(overrides: Partial<Session> = {}): Session {
     isRootAgent: false,
     token: "",
     agentKind: "codex",
+    startupWaitDetected: false,
     ...overrides,
   };
 }
