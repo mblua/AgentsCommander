@@ -220,6 +220,9 @@ const MainApp: Component = () => {
         "main-dragging": dragging(),
         "main-sidebar-right": sidebarSide() === "right",
       }}
+      data-ac-testid="main.root"
+      data-ac-role="surface"
+      data-ac-state={dragging() ? "dragging" : "idle"}
     >
       <Titlebar />
       <RtkBanner />
@@ -240,6 +243,9 @@ const MainApp: Component = () => {
           aria-valuemin={MAIN_SIDEBAR_MIN_WIDTH}
           aria-valuemax={MAIN_SIDEBAR_MAX_WIDTH}
           tabindex="0"
+          data-ac-testid="main.splitter"
+          data-ac-role="separator"
+          data-ac-state={dragging() ? "dragging" : "idle"}
         />
         <div class="main-terminal-pane">
           <TerminalApp embedded />

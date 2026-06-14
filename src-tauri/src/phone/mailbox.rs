@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +14,9 @@ use crate::config::teams;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
-use crate::session::session::SessionStatus;
+#[cfg(test)]
+use crate::session::session::SessionRepo;
+use crate::session::session::{SessionInfo, SessionStatus};
 use crate::{AppOutbox, MasterToken};
 
 fn sender_name_for_session_cwd_with_root_flag(
@@ -660,9 +664,49 @@ where
 
 /// The MailboxPoller runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
+#[cfg(test)]
+type MailboxAttachCalls = Arc<Mutex<Vec<(Uuid, Option<String>)>>>;
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct MailboxTestHooks {
+    pty_presence: Arc<Mutex<HashMap<Uuid, bool>>>,
+    inject_results: Arc<Mutex<VecDeque<Result<(), String>>>>,
+    inject_calls: Arc<Mutex<Vec<Uuid>>>,
+    destroy_calls: Arc<Mutex<Vec<Uuid>>>,
+    spawn_calls: Arc<Mutex<Vec<MailboxSpawnCall>>>,
+    attach_calls: MailboxAttachCalls,
+    events: Arc<Mutex<Vec<MailboxTestEvent>>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MailboxSpawnCall {
+    to: String,
+    session_name: String,
+    cwd: String,
+    shell: String,
+    shell_args: Vec<String>,
+    skip_auto_resume: bool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MailboxTestEvent {
+    Inject(Uuid),
+    Destroy(Uuid),
+    Spawn(MailboxSpawnCall),
+    Attach {
+        session_id: Uuid,
+        bot_id: Option<String>,
+    },
+}
+
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
     retry_tracker: HashMap<PathBuf, RetryState>,
+    #[cfg(test)]
+    test_hooks: Option<MailboxTestHooks>,
 }
 
 impl Default for MailboxPoller {
@@ -676,6 +720,17 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            #[cfg(test)]
+            test_hooks: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_test_hooks(test_hooks: MailboxTestHooks) -> Self {
+        Self {
+            poll_interval: std::time::Duration::from_secs(3),
+            retry_tracker: HashMap::new(),
+            test_hooks: Some(test_hooks),
         }
     }
 
@@ -854,9 +909,9 @@ impl MailboxPoller {
 
     /// Process a single outbox message file.
     /// `is_app_outbox`: true if the message came from the instance-private outbox (master token path).
-    async fn process_message(
+    async fn process_message<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         path: &Path,
         is_app_outbox: bool,
     ) -> Result<(), String> {
@@ -1225,9 +1280,9 @@ impl MailboxPoller {
     /// session; destroy and respawn if Exited; spawn persistent if none. Always
     /// delivers (no busy-gate — stdin buffer absorbs input while the agent is
     /// mid-turn).
-    async fn deliver_wake(
+    async fn deliver_wake<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         msg: &OutboxMessage,
     ) -> Result<(), String> {
         // Whether the spawn-fallback should allow provider auto-resume.
@@ -1284,7 +1339,7 @@ impl MailboxPoller {
 
             match wake_action_for(status) {
                 WakeAction::Inject => {
-                    match self.inject_into_pty(app, session_id, msg, true).await {
+                    match self.inject_wake_into_pty(app, session_id, msg).await {
                         Ok(()) => return Ok(()),
                         Err(e) if err_is_pty_session_missing(&e) => {
                             // Race: PTY died between `find_live_candidates`
@@ -1360,7 +1415,7 @@ impl MailboxPoller {
                 "[mailbox] wake: executing deferred destroy for Exited candidate {}",
                 exited_id
             );
-            if let Err(e) = crate::commands::session::destroy_session_inner(app, exited_id).await {
+            if let Err(e) = self.destroy_exited_wake_session(app, exited_id).await {
                 // Best-effort. Orphan SessionManager record lingers until AC3's
                 // runtime-dedup path (`#223-fu1`) drains it. spawn-persistent
                 // below still fires with the correct spawn_with_resume flag.
@@ -1441,9 +1496,6 @@ impl MailboxPoller {
             local.to_string()
         };
 
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-
         let resolved_spawn = if let Some(aid) = resolved_command.agent_id.as_deref() {
             let settings = app.state::<SettingsState>();
             let cfg = settings.read().await;
@@ -1476,34 +1528,32 @@ impl MailboxPoller {
             spawn_args
         );
 
-        let info = crate::commands::session::create_session_inner(
-            app,
-            session_mgr.inner(),
-            pty_mgr.inner(),
-            spawn_shell.clone(),
-            spawn_args.clone(),
-            cwd,
-            Some(session_name), // readable name, no [temp] prefix
-            resolved_command.agent_id, // links to agent config
-            spawn_label,        // human-readable label
-            false,              // skip_tooling_save = false → persist lastCodingAgent
-            Vec::new(),         // git_repos
-            wake_spawn_skip_auto_resume(spawn_with_resume), // see deliver_wake top
-            resolved_spawn,
-        )
-        .await
-        .map_err(|e| {
-            format!(
-                "Failed to spawn session for '{}': command from {} resolved raw_command={:?}, shell={:?}, args={:?}: {}",
-                msg.to, spawn_source, spawn_raw, spawn_shell, spawn_args, e
+        let info = self
+            .spawn_wake_session(
+                app,
+                msg,
+                &resolved_command,
+                cwd,
+                session_name,
+                spawn_with_resume,
+                spawn_shell.clone(),
+                spawn_args.clone(),
+                spawn_label,
+                resolved_spawn,
             )
-        })?;
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to spawn session for '{}': command from {} resolved raw_command={:?}, shell={:?}, args={:?}: {}",
+                    msg.to, spawn_source, spawn_raw, spawn_shell, spawn_args, e
+                )
+            })?;
 
         let session_id =
             Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {}", e))?;
 
         if pending_exited_telegram_bot_id.is_some() {
-            crate::commands::session::attach_persisted_telegram_if_configured(
+            self.attach_persisted_telegram_for_wake(
                 app,
                 session_id,
                 pending_exited_telegram_bot_id.as_deref(),
@@ -1511,10 +1561,221 @@ impl MailboxPoller {
             .await;
         }
 
-        // Wait for agent to boot and become idle (ready for input)
+        self.wait_for_spawned_wake_idle(app, session_id).await?;
+
+        // Inject message — interactive mode (session persists, user sees reply instructions)
+        self.inject_wake_into_pty(app, session_id, msg).await
+    }
+
+    async fn has_pty_session_for_wake<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        id: Uuid,
+    ) -> bool {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            let scripted = {
+                let presence = hooks.pty_presence.lock().unwrap();
+                presence.get(&id).copied()
+            };
+            if let Some(has_pty) = scripted {
+                return has_pty;
+            }
+        }
+
+        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+        let pty = pty_mgr.lock().unwrap();
+        pty.has_session(id)
+    }
+
+    async fn inject_wake_into_pty<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            {
+                let mut calls = hooks.inject_calls.lock().unwrap();
+                calls.push(session_id);
+            }
+            {
+                let mut events = hooks.events.lock().unwrap();
+                events.push(MailboxTestEvent::Inject(session_id));
+            }
+            let result = {
+                let mut results = hooks.inject_results.lock().unwrap();
+                results.pop_front()
+            };
+            return result.unwrap_or(Ok(()));
+        }
+
+        self.inject_into_pty(app, session_id, msg, true).await
+    }
+
+    async fn destroy_exited_wake_session<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            {
+                let mut calls = hooks.destroy_calls.lock().unwrap();
+                calls.push(session_id);
+            }
+            {
+                let mut events = hooks.events.lock().unwrap();
+                events.push(MailboxTestEvent::Destroy(session_id));
+            }
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            return mgr
+                .destroy_session(session_id)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
+
+        crate::commands::session::destroy_session_inner(app, session_id).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_wake_session<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        resolved_command: &ResolvedWakeAgentCommand,
+        cwd: String,
+        session_name: String,
+        spawn_with_resume: bool,
+        spawn_shell: String,
+        spawn_args: Vec<String>,
+        spawn_label: Option<String>,
+        resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+    ) -> Result<SessionInfo, String> {
+        #[cfg(not(test))]
+        let _ = msg;
+        let skip_auto_resume = wake_spawn_skip_auto_resume(spawn_with_resume);
+
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            let call = MailboxSpawnCall {
+                to: msg.to.clone(),
+                session_name: session_name.clone(),
+                cwd: cwd.clone(),
+                shell: spawn_shell.clone(),
+                shell_args: spawn_args.clone(),
+                skip_auto_resume,
+            };
+            {
+                let mut calls = hooks.spawn_calls.lock().unwrap();
+                calls.push(call.clone());
+            }
+            {
+                let mut events = hooks.events.lock().unwrap();
+                events.push(MailboxTestEvent::Spawn(call));
+            }
+
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            let session = mgr
+                .create_session(
+                    spawn_shell.clone(),
+                    spawn_args.clone(),
+                    cwd,
+                    resolved_spawn
+                        .as_ref()
+                        .map(|spawn| spawn.trusted_agent_id.clone())
+                        .or_else(|| resolved_command.agent_id.clone()),
+                    spawn_label.clone(),
+                    Vec::<SessionRepo>::new(),
+                    false,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            mgr.rename_session(session.id, session_name)
+                .await
+                .map_err(|e| e.to_string())?;
+            mgr.mark_idle(session.id).await;
+            let inserted = mgr
+                .get_session(session.id)
+                .await
+                .ok_or_else(|| format!("Session {} not found after test spawn", session.id))?;
+            return Ok(SessionInfo::from(&inserted));
+        }
+
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+        crate::commands::session::create_session_inner(
+            app,
+            session_mgr.inner(),
+            pty_mgr.inner(),
+            spawn_shell,
+            spawn_args,
+            cwd,
+            Some(session_name),                // readable name, no [temp] prefix
+            resolved_command.agent_id.clone(), // links to agent config
+            spawn_label,                       // human-readable label
+            false,            // skip_tooling_save = false -> persist lastCodingAgent
+            Vec::new(),       // git_repos
+            skip_auto_resume, // see deliver_wake top
+            resolved_spawn,
+        )
+        .await
+    }
+
+    async fn attach_persisted_telegram_for_wake<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        bot_id: Option<&str>,
+    ) {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            let bot_id = bot_id.map(str::to_string);
+            {
+                let mut calls = hooks.attach_calls.lock().unwrap();
+                calls.push((session_id, bot_id.clone()));
+            }
+            {
+                let mut events = hooks.events.lock().unwrap();
+                events.push(MailboxTestEvent::Attach { session_id, bot_id });
+            }
+            return;
+        }
+
+        #[cfg(not(test))]
+        {
+            crate::commands::session::attach_persisted_telegram_if_configured(
+                app, session_id, bot_id,
+            )
+            .await;
+        }
+        #[cfg(test)]
+        {
+            let _ = (app, session_id, bot_id);
+        }
+    }
+
+    async fn wait_for_spawned_wake_idle<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if self.test_hooks.is_some() {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.mark_idle(session_id).await;
+            return Ok(());
+        }
+
         let max_wait = std::time::Duration::from_secs(90);
         let poll = std::time::Duration::from_millis(500);
         let start = std::time::Instant::now();
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
 
         loop {
             if start.elapsed() >= max_wait {
@@ -1547,9 +1808,7 @@ impl MailboxPoller {
             }
             drop(mgr);
         }
-
-        // Inject message — interactive mode (session persists, user sees reply instructions)
-        self.inject_into_pty(app, session_id, msg, true).await
+        Ok(())
     }
 
     /// Inject a message into a session's PTY stdin.
@@ -1559,9 +1818,9 @@ impl MailboxPoller {
     /// `wake-and-sleep` non-interactive path was removed in 0.7.0). The
     /// `use_markers=true` branch below is retained for future non-interactive
     /// consumers; see _plans/delete-modes.md §2.4.
-    async fn inject_into_pty(
+    async fn inject_into_pty<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_id: Uuid,
         msg: &OutboxMessage,
         interactive: bool,
@@ -1777,8 +2036,8 @@ impl MailboxPoller {
 
     /// Wait for agent to become idle after a remote command, then inject body as follow-up.
     /// Static method — can be spawned as a detached task without borrowing self.
-    async fn inject_followup_after_idle_static(
-        app: &tauri::AppHandle,
+    async fn inject_followup_after_idle_static<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
         session_id: Uuid,
         msg: &OutboxMessage,
     ) -> Result<(), String> {
@@ -1823,7 +2082,11 @@ impl MailboxPoller {
     ///
     /// Used ONLY by stale-token logging (mailbox.rs:456, 501). Routing now uses
     /// `find_live_candidates` — do not add new callers. (grinch G.L5.)
-    async fn find_active_session(&self, app: &tauri::AppHandle, agent_name: &str) -> Option<Uuid> {
+    async fn find_active_session<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        agent_name: &str,
+    ) -> Option<Uuid> {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
@@ -1903,13 +2166,12 @@ impl MailboxPoller {
     ///   the predicate filter — the caller uses this to distinguish "no record
     ///   at all" (cold spawn) from "phantoms only" (warm spawn with auto-resume,
     ///   preserves on-disk Claude/Codex/Gemini transcript). (grinch G.H2.)
-    async fn find_live_candidates(
+    async fn find_live_candidates<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         agent_name: &str,
     ) -> (Vec<(Uuid, SessionStatus)>, bool /* had_any_match */) {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
@@ -1937,31 +2199,33 @@ impl MailboxPoller {
             (is_temp, status)
         });
 
-        // Take the PtyManager lock ONCE and probe each candidate.
-        let pty = pty_mgr.lock().unwrap();
-        let viable: Vec<(Uuid, SessionStatus)> = matches
+        let candidates: Vec<(Uuid, SessionStatus, String)> = matches
             .iter()
-            .filter_map(|s| Uuid::parse_str(&s.id).ok().map(|id| (id, *s)))
-            .filter_map(|(id, s)| {
-                let has_pty = pty.has_session(id);
-                let viable = is_viable_wake_candidate(&s.status, has_pty);
-                if !viable {
-                    // Phantom skip — observable in prod logs to scope the AC3
-                    // follow-up. (dev-rust R1.B4.)
-                    log::warn!(
-                        "[mailbox] skipping desync phantom: id={} status={:?} has_pty={} name='{}'",
-                        id,
-                        s.status,
-                        has_pty,
-                        s.name
-                    );
-                    None
-                } else {
-                    Some((id, s.status.clone()))
-                }
+            .filter_map(|s| {
+                Uuid::parse_str(&s.id)
+                    .ok()
+                    .map(|id| (id, s.status.clone(), s.name.clone()))
             })
             .collect();
-        drop(pty);
+        drop(mgr);
+
+        let mut viable = Vec::new();
+        for (id, status, name) in candidates {
+            let has_pty = self.has_pty_session_for_wake(app, id).await;
+            if !is_viable_wake_candidate(&status, has_pty) {
+                // Phantom skip — observable in prod logs to scope the AC3
+                // follow-up. (dev-rust R1.B4.)
+                log::warn!(
+                    "[mailbox] skipping desync phantom: id={} status={:?} has_pty={} name='{}'",
+                    id,
+                    status,
+                    has_pty,
+                    name
+                );
+            } else {
+                viable.push((id, status));
+            }
+        }
 
         log::info!(
             "[mailbox] {} viable wake candidate(s) for '{}' (had_any_match={}): {:?}",
@@ -1989,9 +2253,9 @@ impl MailboxPoller {
     /// `is_viable_wake_candidate`) — Exited records are returned as `None` so
     /// the caller's no-spawn guard sees `(empty, false)` instead of triggering
     /// the destroy-and-respawn path on a user-launched session.
-    async fn find_root_session_candidate(
+    async fn find_root_session_candidate<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
     ) -> Option<(Uuid, SessionStatus)> {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
@@ -2041,7 +2305,11 @@ impl MailboxPoller {
     /// Returns all matching session UUIDs, not just the "best" one.
     ///
     /// §AR2-G2: exact-FQN filter (same simplification as `find_active_session`).
-    async fn find_all_sessions(&self, app: &tauri::AppHandle, agent_name: &str) -> Vec<Uuid> {
+    async fn find_all_sessions<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        agent_name: &str,
+    ) -> Vec<Uuid> {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
@@ -2064,9 +2332,9 @@ impl MailboxPoller {
     /// primary write — for app-outbox messages it would land under
     /// `<config_dir>/instances/<id>/responses/`, a directory the CLI does
     /// not poll, leaking orphan JSON files with no GC.
-    async fn handle_close_session(
+    async fn handle_close_session<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
@@ -2377,27 +2645,41 @@ impl MailboxPoller {
     }
 
     /// Force-close a session immediately via destroy_session_inner.
-    async fn force_close_session(&self, app: &tauri::AppHandle, sid: Uuid) -> bool {
-        match crate::commands::session::destroy_session_inner(app, sid).await {
-            Ok(()) => {
-                log::info!("[mailbox] close-session: force-destroyed session {}", sid);
-                true
-            }
-            Err(e) => {
-                log::warn!(
-                    "[mailbox] close-session: failed to force-destroy session {}: {}",
-                    sid,
-                    e
-                );
-                false
+    async fn force_close_session<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        sid: Uuid,
+    ) -> bool {
+        #[cfg(test)]
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            return mgr.destroy_session(sid).await.is_ok();
+        }
+
+        #[cfg(not(test))]
+        {
+            match crate::commands::session::destroy_session_inner(app, sid).await {
+                Ok(()) => {
+                    log::info!("[mailbox] close-session: force-destroyed session {}", sid);
+                    true
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[mailbox] close-session: failed to force-destroy session {}: {}",
+                        sid,
+                        e
+                    );
+                    false
+                }
             }
         }
     }
 
     /// Gracefully close a session: inject exit command, poll for Exited, fallback to force on timeout.
-    async fn graceful_close_session(
+    async fn graceful_close_session<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         sid: Uuid,
         timeout_secs: u32,
     ) -> bool {
@@ -2514,7 +2796,11 @@ impl MailboxPoller {
     /// with §DR2-4 composition: `matches.push(...); break;` within a single
     /// `rp` iteration (FQN can only match one replica dir per project) while
     /// the outer loop continues so cross-project ambiguity is still detected.
-    async fn resolve_repo_path(&self, agent_name: &str, app: &tauri::AppHandle) -> Option<String> {
+    async fn resolve_repo_path<R: tauri::Runtime>(
+        &self,
+        agent_name: &str,
+        app: &tauri::AppHandle<R>,
+    ) -> Option<String> {
         let (target_project, target_local) = crate::config::teams::split_project_prefix(agent_name);
         let is_qualified = target_project.is_some();
         let mut matches: Vec<String> = Vec::new();
@@ -2659,9 +2945,9 @@ impl MailboxPoller {
 
     /// Resolve which agent CLI to spawn when `deliver_wake` needs a new
     /// persistent session for the destination agent.
-    async fn resolve_agent_command(
+    async fn resolve_agent_command<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         msg: &OutboxMessage,
     ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
         let agents = {
@@ -2701,9 +2987,9 @@ impl MailboxPoller {
     /// §4.4: peel optional `<project>:` prefix before splitting the local part.
     /// If the target is qualified, the returned candidate must also be in the
     /// same project (checked via derived FQN).
-    async fn resolve_wg_path_from_sessions(
+    async fn resolve_wg_path_from_sessions<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         agent_name: &str,
     ) -> Option<String> {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -2985,6 +3271,9 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::settings::AppSettings;
+    use crate::telegram::manager::TelegramBridgeManager;
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     // ── §224 D.5a — wait_for_restore_or_session unit tests ──
@@ -3121,6 +3410,270 @@ mod tests {
             wake_agent("codex", "Codex", "codex --yolo"),
             wake_agent("claude", "Claude", "claude"),
         ]
+    }
+
+    const MAILBOX_MASTER_TOKEN: &str = "mailbox-master-token";
+    const CANONICAL_WAKE_FROM: &str = "proj-a:wg-1-dev-team/tech-lead";
+    const CANONICAL_WAKE_TO: &str = "proj-a:wg-1-dev-team/dev-rust";
+    const LOCAL_WAKE_FROM: &str = "wg-1-dev-team/tech-lead";
+    const LOCAL_WAKE_TO: &str = "wg-1-dev-team/dev-rust";
+    const WAKE_BODY: &str = "wake body";
+
+    fn make_mailbox_app(projects_root: &Path) -> tauri::App<tauri::test::MockRuntime> {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+
+        let settings = AppSettings {
+            project_paths: vec![projects_root.to_string_lossy().to_string()],
+            agents: wake_agents(),
+            telegram_bots: vec![crate::telegram::types::TelegramBotConfig {
+                id: "bot-1".into(),
+                label: "Bot 1".into(),
+                token: "test-token".into(),
+                chat_id: 1,
+                color: "#10b981".into(),
+            }],
+            ..Default::default()
+        };
+
+        tauri::test::mock_builder()
+            .manage(MasterToken::new(MAILBOX_MASTER_TOKEN.into()))
+            .manage(AppOutbox::new(
+                projects_root
+                    .join(".app-outbox")
+                    .to_string_lossy()
+                    .to_string(),
+            ))
+            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(session_mgr.clone())
+            .manage(Arc::new(tokio::sync::Mutex::new(
+                TelegramBridgeManager::new(Arc::new(Mutex::new(HashMap::new()))),
+            )))
+            .manage(Arc::new(Mutex::new(HashSet::<Uuid>::new())))
+            .manage(Arc::new(crate::RestoreInProgress(AtomicBool::new(false))))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mailbox test app")
+    }
+
+    fn app_handle(
+        app: &tauri::App<tauri::test::MockRuntime>,
+    ) -> tauri::AppHandle<tauri::test::MockRuntime> {
+        app.handle().clone()
+    }
+
+    struct MailboxFixture {
+        _temp: tempfile::TempDir,
+        sender_cwd: PathBuf,
+        target_cwd: PathBuf,
+        app: tauri::App<tauri::test::MockRuntime>,
+    }
+
+    fn make_mailbox_fixture() -> MailboxFixture {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let workspace_dir = project.join(".ac");
+        let team_dir = workspace_dir.join("_team_dev-team");
+        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
+        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
+        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let sender_cwd = wg_dir.join("__agent_tech-lead");
+        let target_cwd = wg_dir.join("__agent_dev-rust");
+
+        for dir in [
+            &team_dir,
+            &origin_tech_lead,
+            &origin_dev_rust,
+            &sender_cwd,
+            &target_cwd,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sender_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            target_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust"}"#,
+        )
+        .unwrap();
+
+        let app = make_mailbox_app(temp.path());
+        MailboxFixture {
+            _temp: temp,
+            sender_cwd,
+            target_cwd,
+            app,
+        }
+    }
+
+    async fn add_mailbox_session<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        cwd: &Path,
+        name: &str,
+        status: SessionStatus,
+        telegram_bot_id: Option<&str>,
+    ) -> Uuid {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let session = mgr
+            .create_session(
+                "codex".into(),
+                vec!["--yolo".into()],
+                cwd.to_string_lossy().to_string(),
+                Some("codex".into()),
+                Some("Codex".into()),
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        mgr.rename_session(session.id, name.to_string())
+            .await
+            .unwrap();
+        match status {
+            SessionStatus::Active => {
+                mgr.switch_session(session.id).await.unwrap();
+            }
+            SessionStatus::Running => {}
+            SessionStatus::Idle => {
+                mgr.mark_idle(session.id).await;
+            }
+            SessionStatus::Exited(code) => {
+                mgr.mark_exited(session.id, code).await;
+            }
+        }
+        if let Some(bot_id) = telegram_bot_id {
+            mgr.set_telegram_bot_id(session.id, Some(bot_id.to_string()))
+                .await;
+        }
+        session.id
+    }
+
+    fn write_wake_outbox_message(sender_cwd: &Path, msg_id: &str) -> PathBuf {
+        write_wake_outbox_message_with_route(
+            sender_cwd,
+            msg_id,
+            CANONICAL_WAKE_FROM,
+            CANONICAL_WAKE_TO,
+        )
+    }
+
+    fn write_wake_outbox_message_with_route(
+        sender_cwd: &Path,
+        msg_id: &str,
+        from: &str,
+        to: &str,
+    ) -> PathBuf {
+        let outbox_dir = sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let message_path = outbox_dir.join(format!("{}.json", msg_id));
+        let msg = OutboxMessage {
+            id: msg_id.into(),
+            token: Some(MAILBOX_MASTER_TOKEN.into()),
+            from: from.into(),
+            to: to.into(),
+            body: WAKE_BODY.into(),
+            mode: "wake".into(),
+            get_output: false,
+            request_id: None,
+            sender_agent: Some("codex".into()),
+            preferred_agent: "codex".into(),
+            priority: "normal".into(),
+            timestamp: "2026-06-11T00:00:00Z".into(),
+            command: None,
+            action: None,
+            target: None,
+            force: None,
+            timeout_secs: None,
+        };
+        std::fs::write(&message_path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
+        message_path
+    }
+
+    fn assert_no_spawn_or_destroy_events(hooks: &MailboxTestHooks) {
+        let events = hooks.events.lock().unwrap().clone();
+        assert!(
+            events.iter().all(|event| !matches!(
+                event,
+                MailboxTestEvent::Spawn(_) | MailboxTestEvent::Destroy(_)
+            )),
+            "unexpected spawn or destroy event: {:?}",
+            events
+        );
+    }
+
+    fn assert_inject_results_consumed(hooks: &MailboxTestHooks) {
+        assert!(
+            hooks.inject_results.lock().unwrap().is_empty(),
+            "all scripted inject results should be consumed"
+        );
+    }
+
+    fn assert_spawn_call_matches_target(call: &MailboxSpawnCall, fixture: &MailboxFixture) {
+        assert_eq!(call.to, CANONICAL_WAKE_TO);
+        assert_eq!(call.cwd, fixture.target_cwd.to_string_lossy().to_string());
+        assert_eq!(call.session_name, LOCAL_WAKE_TO);
+        assert_eq!(call.shell, "codex");
+        assert_eq!(call.shell_args, vec!["--yolo"]);
+    }
+
+    async fn assert_spawned_session_matches_target<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        fixture: &MailboxFixture,
+    ) {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let spawned = mgr.get_session(session_id).await.unwrap();
+        assert_eq!(
+            spawned.working_directory,
+            fixture.target_cwd.to_string_lossy().to_string()
+        );
+        assert_eq!(spawned.name, LOCAL_WAKE_TO);
+        assert_eq!(spawned.shell, "codex");
+        assert_eq!(spawned.shell_args, vec!["--yolo"]);
+        assert!(spawned.waiting_for_input);
+    }
+
+    async fn run_mailbox_message<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        message_path: &Path,
+        hooks: MailboxTestHooks,
+    ) {
+        let msg_id = message_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap()
+            .to_string();
+        let delivered = message_path
+            .parent()
+            .unwrap()
+            .join("delivered")
+            .join(format!("{}.json", msg_id));
+        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        poller
+            .process_message(app, message_path, false)
+            .await
+            .expect("process mailbox message");
+        assert!(!message_path.exists());
+        assert!(delivered.exists());
+        let delivered_msg: OutboxMessage =
+            serde_json::from_str(&std::fs::read_to_string(&delivered).unwrap()).unwrap();
+        assert_eq!(delivered_msg.id, msg_id);
+        assert_eq!(delivered_msg.token, None);
+        assert_eq!(delivered_msg.from, CANONICAL_WAKE_FROM);
+        assert_eq!(delivered_msg.to, CANONICAL_WAKE_TO);
+        assert_eq!(delivered_msg.body, WAKE_BODY);
+        assert_eq!(delivered_msg.mode, "wake");
     }
 
     #[test]
@@ -4269,106 +4822,232 @@ mod tests {
         assert_eq!(batch.payloads[0].changed_name, None);
     }
 
-    // ── Issue #223 deliver_wake integration placeholders ──
+    // ── Issue #481 mailbox wake-routing integration tests ──
 
-    /// Issue #223 — full regression test the user explicitly requested:
-    ///   "two CWD-matching records, one dead PTY, one live — assert delivery
-    ///   reaches live."
-    /// Full-pipeline assertion needs a Tauri AppHandle harness with both
-    /// SessionManager and PtyManager state primed. Logic coverage lives in the
-    /// `is_viable_wake_candidate_*` unit tests above. Once a shared
-    /// AppHandle fixture exists (see existing #[ignore] stubs), un-ignore.
-    #[test]
-    #[ignore = "integration: needs Tauri AppHandle + Session/Pty fixtures"]
-    fn deliver_wake_routes_to_live_when_phantom_present() {
-        // Fixture shape:
-        //   1. SessionManager has two records, same working_directory:
-        //      A: id=A, status=Running, name="phantom"      → NO PtyManager entry
-        //      B: id=B, status=Idle,    name="live"         → has PtyManager entry
-        //   2. Call deliver_wake(msg{to=agent}).
-        //   3. Assert inject_text_into_session was called with B (NOT A).
-        //   4. Assert delivery returned Ok.
+    #[tokio::test]
+    async fn deliver_wake_routes_to_live_when_phantom_present() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let phantom_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "phantom",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let live_id =
+            add_mailbox_session(&app, &fixture.target_cwd, "live", SessionStatus::Idle, None).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(phantom_id, false);
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let message_path = write_wake_outbox_message_with_route(
+            &fixture.sender_cwd,
+            "msg-live",
+            LOCAL_WAKE_FROM,
+            LOCAL_WAKE_TO,
+        );
+
+        run_mailbox_message(&app, &message_path, hooks.clone()).await;
+
+        let injected = hooks.inject_calls.lock().unwrap().clone();
+        assert_eq!(injected, vec![live_id]);
+        assert!(!injected.contains(&phantom_id));
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert_no_spawn_or_destroy_events(&hooks);
+        assert_inject_results_consumed(&hooks);
     }
 
-    /// Issue #223 — secondary fallback test:
-    ///   "If first live candidate dies between liveness probe and inject,
-    ///   router must try next candidate within the SAME delivery attempt."
-    #[test]
-    #[ignore = "integration: needs Tauri AppHandle + Session/Pty fixtures"]
-    fn deliver_wake_falls_back_when_first_inject_race_kills_pty() {
-        // Fixture shape:
-        //   1. SessionManager has two records, same working_directory, both
-        //      status=Running, both initially with PtyManager entries.
-        //   2. Patch PtyManager::write so the first call returns SessionNotFound.
-        //   3. Call deliver_wake(msg{to=agent}).
-        //   4. Assert two inject attempts inside one delivery, second succeeds.
+    #[tokio::test]
+    async fn deliver_wake_falls_back_when_first_inject_race_kills_pty() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let first_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "first",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let second_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "second",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(first_id, true);
+        hooks.pty_presence.lock().unwrap().insert(second_id, true);
+        {
+            let mut results = hooks.inject_results.lock().unwrap();
+            results.push_back(Err(format!(
+                "PTY write failed: Session not found: {}",
+                first_id
+            )));
+            results.push_back(Ok(()));
+        }
+        let message_path = write_wake_outbox_message(&fixture.sender_cwd, "msg-race");
+
+        run_mailbox_message(&app, &message_path, hooks.clone()).await;
+
+        assert_eq!(
+            *hooks.inject_calls.lock().unwrap(),
+            vec![first_id, second_id]
+        );
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert_no_spawn_or_destroy_events(&hooks);
+        assert_inject_results_consumed(&hooks);
     }
 
-    /// Issue #223 — AC5 regression guard:
-    ///   Wake delivery to a deferred-non-coord session (status=Exited(0), no
-    ///   PTY) MUST still take the RespawnExited path, NOT silently fall through
-    ///   to cold spawn-persistent.
-    #[test]
-    #[ignore = "integration: needs Tauri AppHandle + Session/Pty fixtures"]
-    fn deliver_wake_respawns_exited_deferred_session_with_resume_flag() {
-        // Fixture shape:
-        //   1. SessionManager has one record: status=Exited(0), no PtyManager
-        //      entry (deferred-non-coord shape).
-        //   2. Call deliver_wake(msg{to=agent}).
-        //   3. Assert destroy_session_inner ran for the exited id.
-        //   4. Assert create_session_inner ran with skip_auto_resume=false
-        //      (spawn_with_resume=true → wake_spawn_skip_auto_resume(true)=false).
+    #[tokio::test]
+    async fn deliver_wake_respawns_exited_deferred_session_with_resume_flag() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "deferred",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(exited_id, false);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let message_path = write_wake_outbox_message(&fixture.sender_cwd, "msg-respawn");
+
+        run_mailbox_message(&app, &message_path, hooks.clone()).await;
+
+        assert_eq!(*hooks.destroy_calls.lock().unwrap(), vec![exited_id]);
+        let spawn_calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(spawn_calls.len(), 1);
+        assert!(!spawn_calls[0].skip_auto_resume);
+        assert_spawn_call_matches_target(&spawn_calls[0], &fixture);
+
+        let injected = hooks.inject_calls.lock().unwrap().clone();
+        assert_eq!(injected.len(), 1);
+        assert_ne!(injected[0], exited_id);
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        assert!(mgr.get_session(exited_id).await.is_none());
+        drop(mgr);
+        assert_spawned_session_matches_target(&app, injected[0], &fixture).await;
+        assert_inject_results_consumed(&hooks);
     }
 
-    /// Issue #295 — deferred Telegram intent must survive the mailbox wake
-    /// respawn path, which destroys the dormant Session before creating the
-    /// replacement live PTY.
-    #[test]
-    #[ignore = "integration: needs Tauri AppHandle + Session/Pty/Telegram fixtures"]
-    fn deliver_wake_respawns_exited_deferred_session_preserving_telegram_intent() {
-        // Fixture shape:
-        //   1. SessionManager has one record: status=Exited(0), no PtyManager
-        //      entry, telegram_bot_id=Some("bot-1").
-        //   2. Call deliver_wake(msg{to=agent}).
-        //   3. Assert the replacement session calls
-        //      attach_persisted_telegram_if_configured() before idle wait or
-        //      injection waits begin.
-        //   4. Assert a missing persisted bot id logs and clears the replacement
-        //      session carrier rather than failing delivery.
+    #[tokio::test]
+    async fn deliver_wake_respawns_exited_deferred_session_preserving_telegram_intent() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "deferred",
+            SessionStatus::Exited(0),
+            Some("bot-1"),
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(exited_id, false);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let message_path = write_wake_outbox_message(&fixture.sender_cwd, "msg-telegram");
+
+        run_mailbox_message(&app, &message_path, hooks.clone()).await;
+
+        assert_eq!(*hooks.destroy_calls.lock().unwrap(), vec![exited_id]);
+        let spawn_calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(spawn_calls.len(), 1);
+        assert!(!spawn_calls[0].skip_auto_resume);
+        assert_spawn_call_matches_target(&spawn_calls[0], &fixture);
+        let injected = hooks.inject_calls.lock().unwrap().clone();
+        assert_eq!(injected.len(), 1);
+        let new_session_id = injected[0];
+        assert_ne!(new_session_id, exited_id);
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        assert!(mgr.get_session(exited_id).await.is_none());
+        drop(mgr);
+        assert_spawned_session_matches_target(&app, new_session_id, &fixture).await;
+        assert_eq!(
+            *hooks.attach_calls.lock().unwrap(),
+            vec![(new_session_id, Some("bot-1".into()))]
+        );
+        let events = hooks.events.lock().unwrap().clone();
+        let attach_pos = events
+            .iter()
+            .position(|event| {
+                *event
+                    == MailboxTestEvent::Attach {
+                        session_id: new_session_id,
+                        bot_id: Some("bot-1".into()),
+                    }
+            })
+            .unwrap();
+        let inject_pos = events
+            .iter()
+            .position(|event| *event == MailboxTestEvent::Inject(new_session_id))
+            .unwrap();
+        assert!(attach_pos < inject_pos);
+        assert_inject_results_consumed(&hooks);
     }
 
-    /// Issue #223 — HIGH-1 (Step-7 review): symmetric to the phantoms-only
-    /// AC5 fall-through (grinch G.H2). When every viable Inject candidate
-    /// races to dead between liveness probe and `PtyManager::write`, the
-    /// post-loop branch MUST still promote `spawn_with_resume`. Otherwise
-    /// cold spawn-persistent runs and the on-disk transcript at the matched
-    /// CWD is silently abandoned — same AC5 outcome as the phantoms-only
-    /// case, just with a race-killed-siblings cause instead of desync.
-    /// Plausible triggers: system shutdown mid-wake, OOM kill of sibling
-    /// PTYs, container restart, Windows logoff with sibling sessions.
-    #[test]
-    #[ignore = "integration: needs Tauri AppHandle + Session/Pty fixtures"]
-    fn deliver_wake_promotes_resume_when_all_live_candidates_race_to_dead() {
-        // Fixture shape:
-        //   1. SessionManager has two records, same working_directory, both
-        //      status=Running, both initially with PtyManager entries — so
-        //      `find_live_candidates` returns both as viable with
-        //      had_any_match=true.
-        //   2. Patch PtyManager::write so BOTH attempts return SessionNotFound
-        //      (simulates the race-window: sibling PTYs die between probe
-        //      and write).
-        //   3. Call deliver_wake(msg{to=agent}).
-        //   4. Assert two inject attempts occurred inside one delivery, both
-        //      failing the `err_is_pty_session_missing` substring sniff and
-        //      hitting the `continue` arm.
-        //   5. Assert `pending_exited_destroy` stayed None (neither candidate
-        //      was Exited).
-        //   6. Load-bearing assertion: spawn-persistent ran with
-        //      `wake_spawn_skip_auto_resume(true) == false` (i.e.,
-        //      skip_auto_resume=false → `--continue` / `resume --last` /
-        //      `--resume latest` IS injected). Without the new
-        //      `lost_inject_to_race` flag, this would silently cold-spawn
-        //      (skip_auto_resume=true) and abandon the transcript.
+    #[tokio::test]
+    async fn deliver_wake_promotes_resume_when_all_live_candidates_race_to_dead() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let first_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "first",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let second_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "second",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(first_id, true);
+        hooks.pty_presence.lock().unwrap().insert(second_id, true);
+        {
+            let mut results = hooks.inject_results.lock().unwrap();
+            results.push_back(Err(format!(
+                "PTY write failed: Session not found: {}",
+                first_id
+            )));
+            results.push_back(Err(format!(
+                "PTY write failed: Session not found: {}",
+                second_id
+            )));
+            results.push_back(Ok(()));
+        }
+        let message_path = write_wake_outbox_message(&fixture.sender_cwd, "msg-promote");
+
+        run_mailbox_message(&app, &message_path, hooks.clone()).await;
+
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        let spawn_calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(spawn_calls.len(), 1);
+        assert!(!spawn_calls[0].skip_auto_resume);
+        assert_spawn_call_matches_target(&spawn_calls[0], &fixture);
+        let injected = hooks.inject_calls.lock().unwrap().clone();
+        assert_eq!(injected.len(), 3);
+        assert_eq!(&injected[0..2], &[first_id, second_id]);
+        assert_ne!(injected[2], first_id);
+        assert_ne!(injected[2], second_id);
+        assert_spawned_session_matches_target(&app, injected[2], &fixture).await;
+        assert_inject_results_consumed(&hooks);
     }
 
     // ── BOM-tolerant reader tests (issue #130) ──

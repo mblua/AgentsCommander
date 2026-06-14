@@ -601,7 +601,7 @@ impl DiscoveryBranchWatcher {
                 let refreshed: Vec<SessionRepo> = entry
                     .repos
                     .iter()
-                    .zip(branches.into_iter())
+                    .zip(branches)
                     .map(|((label, path), branch)| SessionRepo {
                         label: label.clone(),
                         source_path: path.clone(),
@@ -1103,7 +1103,7 @@ pub async fn discover_ac_agents(
                             }
                         }
                     }
-                    wg_agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                    wg_agents.sort_by_key(|a| a.name.to_lowercase());
 
                     workgroups.push(AcWorkgroup {
                         name: dir_name.clone(),
@@ -1156,9 +1156,9 @@ pub async fn discover_ac_agents(
     }
 
     // Sort alphabetically
-    agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    workgroups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    agents.sort_by_key(|a| a.name.to_lowercase());
+    teams.sort_by_key(|a| a.name.to_lowercase());
+    workgroups.sort_by_key(|a| a.name.to_lowercase());
     drop(cfg);
 
     // Associate each workgroup with its team by matching replica membership.
@@ -1542,7 +1542,7 @@ pub async fn discover_project(
                     }
                 }
             }
-            wg_agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            wg_agents.sort_by_key(|a| a.name.to_lowercase());
 
             workgroups.push(AcWorkgroup {
                 name: dir_name.clone(),
@@ -1591,9 +1591,9 @@ pub async fn discover_project(
         }
     }
 
-    agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    workgroups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    agents.sort_by_key(|a| a.name.to_lowercase());
+    teams.sort_by_key(|a| a.name.to_lowercase());
+    workgroups.sort_by_key(|a| a.name.to_lowercase());
 
     // Associate each workgroup with its team by matching replica membership.
     // Two-pass approach: exact match across ALL teams first, then suffix fallback.

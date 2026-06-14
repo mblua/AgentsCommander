@@ -61,6 +61,9 @@ This creates a **draft release** with:
 
 - Auto-generated changelog (from commits since the previous tag)
 - Windows installers (signed by SignPath via the release workflow)
+- Windows raw executables:
+  - `src-tauri/target/release/agentscommander.exe`
+  - `src-tauri/target/release/agentscommander_testeable.exe`
 - Linux `.AppImage`
 - macOS `.dmg` (Apple Silicon + Intel) — unsigned today
 

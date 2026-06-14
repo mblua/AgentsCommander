@@ -34,6 +34,10 @@ fn main() {
                                 | agentscommander_lib::cli::Commands::ListPeersLean(_)
                                 | agentscommander_lib::cli::Commands::ListSessions(_)
                                 | agentscommander_lib::cli::Commands::AgencyTemplates(_)
+                                | agentscommander_lib::cli::Commands::UiQuery(_)
+                                | agentscommander_lib::cli::Commands::UiClick(_)
+                                | agentscommander_lib::cli::Commands::UiSet(_)
+                                | agentscommander_lib::cli::Commands::UiWait(_)
                         ) {
                             std::env::set_var("AC_MACHINE_OUTPUT", "1");
                         }
@@ -50,11 +54,49 @@ fn main() {
                     }
                     None => {
                         // GUI mode (with or without --app)
+                        let placement = match agentscommander_lib::testability::window_placement::resolve_from_cli_or_env(
+                            cli.window_x,
+                            cli.window_y,
+                            cli.window_width,
+                            cli.window_height,
+                            cli.window_maximized,
+                        ) {
+                            Ok(placement) => placement,
+                            Err(e) => {
+                                agentscommander_lib::cli::attach_parent_console();
+                                eprintln!("Error: {}", e);
+                                agentscommander_lib::cli::flush_outputs();
+                                std::process::exit(1);
+                            }
+                        };
+
+                        let ui_automation_enabled = match agentscommander_lib::testability::ui_automation::resolve_enabled_from_cli_or_env(cli.ui_automation) {
+                            Ok(enabled) => enabled,
+                            Err(e) => {
+                                agentscommander_lib::cli::attach_parent_console();
+                                eprintln!("{}", e);
+                                agentscommander_lib::cli::flush_outputs();
+                                std::process::exit(1);
+                            }
+                        };
+
                         if !try_acquire_single_instance() {
-                            // Another GUI instance is already running — exit silently
+                            if ui_automation_enabled {
+                                if agentscommander_lib::testability::ui_automation::existing_enabled_session_for_current_config() {
+                                    std::process::exit(0);
+                                }
+                                agentscommander_lib::cli::attach_parent_console();
+                                eprintln!(
+                                    "{}",
+                                    agentscommander_lib::testability::ui_automation::automation_not_enabled_json()
+                                );
+                                agentscommander_lib::cli::flush_outputs();
+                                std::process::exit(1);
+                            }
+                            // Another GUI instance is already running; exit silently
                             std::process::exit(0);
                         }
-                        agentscommander_lib::run();
+                        agentscommander_lib::run(placement, ui_automation_enabled);
                     }
                 },
                 Err(e) => {

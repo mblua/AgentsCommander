@@ -15,6 +15,8 @@ This document is the definitive guide for any AI agent tasked with creating or m
 
 `.ac/` is the only supported Project AC Root directory.
 
+The team is the logical capability and organization: it defines who can work together, who coordinates, and which repos are available. The workgroup is an operational runtime replica instance of a team for a specific task: it contains replica agents and `repo-*` working repositories.
+
 **Hierarchy:** Project → Agents + Teams → Workgroups (with replicated agents + repo clones)
 
 ---

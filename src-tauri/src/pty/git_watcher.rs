@@ -121,7 +121,7 @@ impl GitWatcher {
 
             let refreshed: Vec<SessionRepo> = repos
                 .iter()
-                .zip(branches.into_iter())
+                .zip(branches)
                 .map(|(r, branch)| SessionRepo {
                     label: r.label.clone(),
                     source_path: r.source_path.clone(),

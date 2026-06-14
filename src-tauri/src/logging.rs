@@ -33,6 +33,10 @@ const APP_LOG_MAX_BYTES: u64 = 50 * 1024 * 1024;
 /// `.KEEP` via `std::fs::rename`'s replace semantics — see `rotate()`.
 const APP_LOG_KEEP: u32 = 5;
 
+fn machine_output_enabled() -> bool {
+    std::env::var_os("AC_MACHINE_OUTPUT").is_some()
+}
+
 /// #280 §2 — log file plus a bookkeeping counter for size-based rotation.
 /// `bytes` is read/written with `Relaxed` ordering: it's a best-effort cap
 /// counter, not a synchronization primitive. A small over-shoot at the
@@ -70,20 +74,24 @@ fn rotate(state: &AppLogFile) {
     let parent = match base.parent() {
         Some(p) => p,
         None => {
-            eprintln!(
-                "[log] rotate: cannot resolve parent for {} — skipping",
-                base.display()
-            );
+            if !machine_output_enabled() {
+                eprintln!(
+                    "[log] rotate: cannot resolve parent for {}, skipping",
+                    base.display()
+                );
+            }
             return;
         }
     };
     let stem = match base.file_name().and_then(|n| n.to_str()) {
         Some(s) => s,
         None => {
-            eprintln!(
-                "[log] rotate: cannot extract file name for {} — skipping",
-                base.display()
-            );
+            if !machine_output_enabled() {
+                eprintln!(
+                    "[log] rotate: cannot extract file name for {}, skipping",
+                    base.display()
+                );
+            }
             return;
         }
     };
@@ -101,12 +109,14 @@ fn rotate(state: &AppLogFile) {
             }
             let to = numbered(i + 1);
             if let Err(e) = std::fs::rename(&from, &to) {
-                eprintln!(
-                    "[log] rotate: failed to rename {} → {}: {} (continuing)",
-                    from.display(),
-                    to.display(),
-                    e
-                );
+                if !machine_output_enabled() {
+                    eprintln!(
+                        "[log] rotate: failed to rename {} to {}: {} (continuing)",
+                        from.display(),
+                        to.display(),
+                        e
+                    );
+                }
             }
         }
     } else {
@@ -119,22 +129,26 @@ fn rotate(state: &AppLogFile) {
     if APP_LOG_KEEP >= 1 {
         let one = numbered(1);
         if let Err(e) = std::fs::rename(base, &one) {
-            eprintln!(
-                "[log] rotate: failed to rename {} → {}: {} — leaving active file in place",
-                base.display(),
-                one.display(),
-                e
-            );
+            if !machine_output_enabled() {
+                eprintln!(
+                    "[log] rotate: failed to rename {} to {}: {}, leaving active file in place",
+                    base.display(),
+                    one.display(),
+                    e
+                );
+            }
             // Active file stays — next writes append to it; cap will be
             // breached temporarily.
             return;
         }
     } else if let Err(e) = std::fs::remove_file(base) {
-        eprintln!(
-            "[log] rotate: KEEP=0 and failed to remove {}: {} — leaving active file in place",
-            base.display(),
-            e
-        );
+        if !machine_output_enabled() {
+            eprintln!(
+                "[log] rotate: KEEP=0 and failed to remove {}: {}, leaving active file in place",
+                base.display(),
+                e
+            );
+        }
         return;
     }
 
@@ -147,11 +161,13 @@ fn rotate(state: &AppLogFile) {
         .or_else(|e| {
             // Fallback: another process already created it. Open append-mode
             // so we don't truncate their content. Log to stderr for visibility.
-            eprintln!(
-                "[log] rotate: create_new failed for {} ({}); falling back to append",
-                base.display(),
-                e
-            );
+            if !machine_output_enabled() {
+                eprintln!(
+                    "[log] rotate: create_new failed for {} ({}); falling back to append",
+                    base.display(),
+                    e
+                );
+            }
             std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -164,11 +180,13 @@ fn rotate(state: &AppLogFile) {
             state.bytes.store(0, Ordering::Relaxed);
         }
         Err(e) => {
-            eprintln!(
-                "[log] rotate: failed to open fresh active file at {}: {}",
-                base.display(),
-                e
-            );
+            if !machine_output_enabled() {
+                eprintln!(
+                    "[log] rotate: failed to open fresh active file at {}: {}",
+                    base.display(),
+                    e
+                );
+            }
             // Counter NOT reset — next writes will see "over cap" and try
             // rotating again. Active fd in `file_guard` is now stale: on
             // both Unix and Windows the open handle survives `rename()` and
@@ -207,7 +225,7 @@ fn init_logger_inner() {
             .open(&path)
             .ok()
             .map(|f| {
-                if std::env::var("AC_MACHINE_OUTPUT").is_err() {
+                if !machine_output_enabled() {
                     eprintln!("[log] file logging to {}", path.display());
                 }
                 let initial_bytes = f.metadata().map(|m| m.len()).unwrap_or(0);
@@ -272,9 +290,7 @@ fn init_logger_inner() {
                 if should_capture(record) {
                     error_sink().capture(ErrorLogEntry::from_record(ts.to_string(), record));
                 }
-                if std::env::var("AC_MACHINE_OUTPUT").is_err()
-                    || record.level() == log::Level::Error
-                {
+                if !machine_output_enabled() {
                     buf.write_all(line.as_bytes())?;
                 }
                 if let Some(ref state) = *log_state {

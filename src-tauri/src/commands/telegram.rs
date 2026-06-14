@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::config::sessions_persistence::persist_current_state_result;
 use crate::config::settings::SettingsState;
+use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
@@ -82,8 +83,8 @@ pub(crate) fn derive_reader(
     }
 }
 
-pub(crate) async fn attach_telegram_bot_by_id(
-    app: &AppHandle,
+pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session_id: Uuid,
     bot_id: &str,
 ) -> Result<BridgeInfo, String> {
@@ -91,6 +92,7 @@ pub(crate) async fn attach_telegram_bot_by_id(
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
     let tg_mgr = app.state::<TelegramBridgeState>();
     let settings = app.state::<SettingsState>();
+    let network = app.state::<OutboundNetwork>().inner().clone();
 
     let (agent_kind, shell, shell_args, working_directory, effective_codex_home) = {
         let mgr = session_mgr.read().await;
@@ -149,6 +151,7 @@ pub(crate) async fn attach_telegram_bot_by_id(
                 session_id,
                 &bot,
                 pty_mgr.inner().clone(),
+                network.clone(),
                 app.clone(),
                 reader,
             )
@@ -158,7 +161,7 @@ pub(crate) async fn attach_telegram_bot_by_id(
             .await;
         if let Err(e) = persist_current_state_result(&mgr).await {
             mgr.set_telegram_bot_id(session_id, None).await;
-            let _ = tg.detach(session_id);
+            let shutdown = tg.detach(session_id).ok();
             let err_msg = format!(
                 "Telegram bridge attached but sessions.json could not be persisted; rolled back live bridge for session {}: {}",
                 session_id, e
@@ -171,6 +174,11 @@ pub(crate) async fn attach_telegram_bot_by_id(
                     "error": err_msg,
                 }),
             );
+            drop(tg);
+            drop(mgr);
+            if let Some(shutdown) = shutdown {
+                shutdown.spawn_wait_or_abort();
+            }
             return Err(err_msg);
         }
         info
@@ -200,13 +208,15 @@ pub async fn telegram_detach(
     session_id: String,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let mut shutdown = Some({
+        let mut tg = tg_mgr.lock().await;
+        tg.detach(uuid).map_err(|e| e.to_string())?
+    });
 
     {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
-        let mut tg = tg_mgr.lock().await;
 
-        tg.detach(uuid).map_err(|e| e.to_string())?;
         mgr.set_telegram_bot_id(uuid, None).await;
         if let Err(e) = persist_current_state_result(&mgr).await {
             let err_msg = format!(
@@ -221,8 +231,14 @@ pub async fn telegram_detach(
                     "error": err_msg,
                 }),
             );
+            if let Some(shutdown) = shutdown.take() {
+                shutdown.spawn_wait_or_abort();
+            }
             return Err(err_msg);
         }
+    }
+    if let Some(shutdown) = shutdown.take() {
+        shutdown.spawn_wait_or_abort();
     }
 
     let _ = app.emit(
@@ -278,14 +294,12 @@ mod attach_detach_persistence_tests {
 /// sends a confirmation message back, and returns the discovered chat_id.
 /// The user just needs to send any message to the bot before clicking Test.
 #[tauri::command]
-pub async fn telegram_send_test(token: String) -> Result<i64, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
+pub async fn telegram_send_test(
+    network: State<'_, OutboundNetwork>,
+    token: String,
+) -> Result<i64, String> {
     // Fetch recent updates to discover chat_id
-    let updates = crate::telegram::api::get_updates(&client, &token, 0, 0)
+    let updates = crate::telegram::api::get_updates(&network, &token, 0, 0)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -294,7 +308,7 @@ pub async fn telegram_send_test(token: String) -> Result<i64, String> {
         .map(|u| u.chat_id)
         .ok_or_else(|| "No messages found. Send any message to your bot in Telegram first, then click Test again.".to_string())?;
 
-    crate::telegram::api::send_message(&client, &token, chat_id, "agentscommander connected")
+    crate::telegram::api::send_message(&network, &token, chat_id, "agentscommander connected")
         .await
         .map_err(|e| e.to_string())?;
 
@@ -402,6 +416,7 @@ fn truncate_caption(input: &str) -> String {
 /// command `telegram_send_image` and the `telegram-send-image` CLI verb so
 /// validation/multipart logic lives in exactly one place.
 pub(crate) async fn perform_send_image(
+    network: &OutboundNetwork,
     bot: &TelegramBotConfig,
     path: &str,
     caption: Option<&str>,
@@ -474,14 +489,9 @@ pub(crate) async fn perform_send_image(
         mime
     );
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-
     let result = match endpoint {
         Endpoint::Photo => crate::telegram::api::send_photo(
-            &client,
+            network,
             &bot.token,
             bot.chat_id,
             bytes,
@@ -492,7 +502,7 @@ pub(crate) async fn perform_send_image(
         .await
         .map_err(|e| e.to_string()),
         Endpoint::Document => crate::telegram::api::send_document(
-            &client,
+            network,
             &bot.token,
             bot.chat_id,
             bytes,
@@ -513,6 +523,7 @@ pub(crate) async fn perform_send_image(
 #[tauri::command]
 pub async fn telegram_send_image(
     settings: State<'_, SettingsState>,
+    network: State<'_, OutboundNetwork>,
     bot_id: String,
     path: String,
     caption: Option<String>,
@@ -526,7 +537,7 @@ pub async fn telegram_send_image(
         .clone();
     drop(cfg);
 
-    perform_send_image(&bot, &path, caption.as_deref()).await
+    perform_send_image(&network, &bot, &path, caption.as_deref()).await
 }
 
 #[cfg(test)]

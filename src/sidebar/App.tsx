@@ -330,6 +330,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         class="sidebar-layout"
         onPointerEnter={() => sessionsStore.setSidebarPointerInside(true)}
         onPointerLeave={() => sessionsStore.setSidebarPointerInside(false)}
+        data-ac-testid="sidebar.root"
+        data-ac-role="surface"
       >
         <Show when={!props.embedded}>
           <Titlebar />

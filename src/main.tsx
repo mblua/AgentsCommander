@@ -6,6 +6,7 @@ import GuideApp from "./guide/App";
 import BrowserApp from "./browser/App";
 import SpecBoardApp from "./spec-board/App";
 import MainApp from "./main/App";
+import { initAutomationBridge } from "./shared/automation-bridge";
 
 const params = new URLSearchParams(window.location.search);
 const windowType = params.get("window");
@@ -18,6 +19,10 @@ if (remoteToken) {
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");
+
+if (isTauri) {
+  void initAutomationBridge();
+}
 
 // Browser mode (no Tauri): BrowserApp regardless of ?window param.
 // Remote web clients load ?window=main but still need the split-browser UX.

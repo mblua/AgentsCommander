@@ -442,7 +442,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                     }
                 }
             }
-            results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            results.sort_by_key(|a| a.name.to_lowercase());
             serde_json::to_value(results).map_err(|e| e.to_string())
         }
 

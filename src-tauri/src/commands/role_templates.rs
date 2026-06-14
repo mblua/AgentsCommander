@@ -736,7 +736,7 @@ fn collect_local_templates(dir: &Path) -> Vec<RoleTemplateMeta> {
     }
     // read_dir order is filesystem-arbitrary; §3.2 requires local templates
     // sorted by name (mirrors `list_all_agents`).
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out
 }
 

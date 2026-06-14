@@ -48,8 +48,18 @@ const TABS: { key: SettingsTab; label: string }[] = [
 const isValidSettingsTab = (s: string): s is SettingsTab =>
   TABS.some((t) => t.key === s);
 
+const cloneSettings = (value: AppSettings | null): AppSettings | null => {
+  if (!value) return null;
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as AppSettings;
+};
+
 const SettingsModal: Component<{ onClose: () => void; section?: string }> = (props) => {
-  const [settings, setSettings] = createStore<{ data: AppSettings | null }>({ data: null });
+  const seededSettings = cloneSettings(settingsStore.current);
+  const [settings, setSettings] = createStore<{ data: AppSettings | null }>({
+    data: seededSettings,
+  });
+  const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
   const [testResult, setTestResult] = createSignal<{
@@ -77,7 +87,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // against the live form value to decide whether to fire sweepRtkHook.
   // updateField is local-only (mutates the form draft), so the sweep only
   // dispatches when the user actually clicks Save and the value changed.
-  const [initialInjectRtk, setInitialInjectRtk] = createSignal<boolean | null>(null);
+  const [initialInjectRtk, setInitialInjectRtk] = createSignal<boolean | null>(
+    seededSettings?.injectRtkHook ?? null,
+  );
   // Disables the Save button and the rtk checkbox while the per-replica sweep
   // is in flight, preventing a rapid double-Save from queuing two concurrent
   // sweeps with opposite enabled values (silent partial state).
@@ -90,9 +102,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       SettingsAPI.get(),
       SettingsAPI.getWebServerStatus().catch(() => false),
     ]);
-    setSettings("data", loaded);
-    setInitialInjectRtk(loaded.injectRtkHook);
     setWebServerRunning(wsRunning);
+    if (!draftDirty()) {
+      setSettings("data", cloneSettings(loaded));
+      setInitialInjectRtk(loaded.injectRtkHook);
+    }
   });
 
   // ── Generic field updater ──
@@ -101,6 +115,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     value: AppSettings[K]
   ) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", key as any, value as any);
   };
 
@@ -111,6 +126,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     value: string | boolean | string[] | CodingAgentEnv[]
   ) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "agents", index, field as any, value as any);
   };
 
@@ -257,6 +273,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const addAgent = (preset?: Omit<AgentConfig, "id">) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     const agent: AgentConfig = preset
       ? { id: newAgentId(), ...preset }
       : {
@@ -274,6 +291,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const removeAgent = (index: number) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "agents", (prev) => prev.filter((_, i) => i !== index));
   };
 
@@ -284,11 +302,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     value: string | number
   ) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "telegramBots", index, field as any, value as any);
   };
 
   const addBot = () => {
     if (!settings.data) return;
+    setDraftDirty(true);
     const bot: TelegramBotConfig = {
       id: newAgentId(),
       label: "",
@@ -301,6 +321,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const removeBot = (index: number) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "telegramBots", (prev) => (prev || []).filter((_, i) => i !== index));
   };
 
@@ -764,7 +785,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       <For each={settings.data!.agents}>
         {(agent, i) => (
           <div class="settings-button-card">
-            <div class="settings-button-card-header">
+            <div
+              class="settings-button-card-header"
+              data-ac-testid={`settings.agentRow.${i()}`}
+              data-ac-role="group"
+            >
               <div
                 class="settings-color-dot"
                 style={{ background: agent.color }}
@@ -774,6 +799,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 class="settings-agent-remove"
                 onClick={() => removeAgent(i())}
                 title="Remove agent"
+                data-ac-testid={`settings.agentRow.${i()}.remove`}
+                data-ac-role="button"
               >
                 &#x2715;
               </button>
@@ -787,6 +814,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   updateAgent(i(), "label", e.currentTarget.value)
                 }
                 placeholder="My Agent"
+                data-ac-testid={`settings.agentRow.${i()}.label`}
+                data-ac-role="textbox"
               />
             </label>
             <label class="settings-field">
@@ -798,6 +827,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   updateAgent(i(), "command", e.currentTarget.value)
                 }
                 placeholder="agent-cli"
+                data-ac-testid={`settings.agentRow.${i()}.command`}
+                data-ac-role="textbox"
               />
             </label>
             <label class="settings-field">
@@ -810,6 +841,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   onInput={(e) =>
                     updateAgent(i(), "color", e.currentTarget.value)
                   }
+                  data-ac-testid={`settings.agentRow.${i()}.colorPicker`}
+                  data-ac-role="input"
                 />
                 <input
                   class="settings-input settings-input-sm"
@@ -817,6 +850,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   onInput={(e) =>
                     updateAgent(i(), "color", e.currentTarget.value)
                   }
+                  data-ac-testid={`settings.agentRow.${i()}.color`}
+                  data-ac-role="textbox"
                 />
               </div>
             </label>
@@ -848,43 +883,54 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       </For>
 
       <div class="settings-agent-actions">
-        <Show when={!hasAgentByCommand("claude")}>
-          <button
-            class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
-          >
-            <span
-              class="settings-color-dot"
-              style={{ background: AGENT_PRESET_MAP.claude.color }}
-            />
-            + Claude Code
-          </button>
-        </Show>
-        <Show when={!hasAgentByCommand("codex")}>
-          <button
-            class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
-          >
-            <span
-              class="settings-color-dot"
-              style={{ background: AGENT_PRESET_MAP.codex.color }}
-            />
-            + Codex
-          </button>
-        </Show>
-        <Show when={!hasAgentByCommand("gemini")}>
-          <button
-            class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
-          >
-            <span
-              class="settings-color-dot"
-              style={{ background: AGENT_PRESET_MAP.gemini.color }}
-            />
-            + Gemini CLI
-          </button>
-        </Show>
-        <button class="settings-add-btn" onClick={() => addAgent()}>
+        <button
+          class="settings-preset-btn"
+          onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
+          disabled={hasAgentByCommand("claude")}
+          data-ac-testid="settings.agentPreset.claude"
+          data-ac-role="button"
+          data-ac-state={hasAgentByCommand("claude") ? "disabled" : "available"}
+        >
+          <span
+            class="settings-color-dot"
+            style={{ background: AGENT_PRESET_MAP.claude.color }}
+          />
+          + Claude Code
+        </button>
+        <button
+          class="settings-preset-btn"
+          onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
+          disabled={hasAgentByCommand("codex")}
+          data-ac-testid="settings.agentPreset.codex"
+          data-ac-role="button"
+          data-ac-state={hasAgentByCommand("codex") ? "disabled" : "available"}
+        >
+          <span
+            class="settings-color-dot"
+            style={{ background: AGENT_PRESET_MAP.codex.color }}
+          />
+          + Codex
+        </button>
+        <button
+          class="settings-preset-btn"
+          onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
+          disabled={hasAgentByCommand("gemini")}
+          data-ac-testid="settings.agentPreset.gemini"
+          data-ac-role="button"
+          data-ac-state={hasAgentByCommand("gemini") ? "disabled" : "available"}
+        >
+          <span
+            class="settings-color-dot"
+            style={{ background: AGENT_PRESET_MAP.gemini.color }}
+          />
+          + Gemini CLI
+        </button>
+        <button
+          class="settings-add-btn"
+          onClick={() => addAgent()}
+          data-ac-testid="settings.agent.addCustom"
+          data-ac-role="button"
+        >
           + Custom Agent
         </button>
       </div>
@@ -1197,8 +1243,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   );
 
   return (
-    <div class="modal-overlay">
-      <div class="modal-container modal-container-lg">
+    <div
+      class="modal-overlay"
+      data-ac-testid="settings.overlay"
+      data-ac-role="overlay"
+    >
+      <div
+        class="modal-container modal-container-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        data-ac-testid="settings.modal"
+        data-ac-role="dialog"
+      >
         <div class="modal-header">
           <span class="modal-title">Settings</span>
         </div>
@@ -1210,6 +1267,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               <button
                 class={`settings-tab ${activeTab() === tab.key ? "active" : ""}`}
                 onClick={() => setActiveTab(tab.key)}
+                role="tab"
+                aria-selected={activeTab() === tab.key}
+                data-ac-testid={`settings.tab.${tab.key}`}
+                data-ac-role="tab"
+                data-ac-state={activeTab() === tab.key ? "active" : "idle"}
               >
                 {tab.label}
               </button>
@@ -1239,13 +1301,21 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <Show when={saveError()}>
             <span class="modal-save-error">{saveError()}</span>
           </Show>
-          <button class="modal-btn modal-btn-cancel" onClick={props.onClose}>
+          <button
+            class="modal-btn modal-btn-cancel"
+            onClick={props.onClose}
+            data-ac-testid="settings.cancel"
+            data-ac-role="button"
+          >
             Cancel
           </button>
           <button
             class="modal-btn modal-btn-save"
             onClick={handleSave}
             disabled={saving() || rtkSweepInFlight()}
+            data-ac-testid="settings.save"
+            data-ac-role="button"
+            data-ac-state={saving() ? "saving" : rtkSweepInFlight() ? "sweeping" : "ready"}
           >
             {saving() ? "Saving..." : rtkSweepInFlight() ? "Sweeping..." : "Save"}
           </button>

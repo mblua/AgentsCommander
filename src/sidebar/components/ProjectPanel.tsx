@@ -19,6 +19,12 @@ import AgentPickerModal from "./AgentPickerModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
+import {
+  automationIdPart,
+  configuredReplicaRepoBadges,
+  formatReplicaRepoBadgeLabel,
+  repoLabelFromPath,
+} from "./replica-repo-badges";
 
 interface PendingLaunch {
   path: string;
@@ -30,25 +36,11 @@ interface PendingLaunch {
 /** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
 function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   return (replica.repoPaths ?? []).map((p) => {
-    const dir = p.replace(/\\/g, "/").split("/").pop() ?? "";
-    const label = dir.startsWith("repo-") ? dir.slice(5) : dir;
-    return { label, sourcePath: p };
+    return { label: repoLabelFromPath(p), sourcePath: p };
   });
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
-
-/** Strip 'repo-' prefix from a directory name */
-function stripRepoPrefix(name: string): string {
-  return name.startsWith("repo-") ? name.slice(5) : name;
-}
-
-/** Derive the repo name from a replica's repoPaths (strip 'repo-' prefix) */
-function replicaRepoName(replica: AcAgentReplica): string | undefined {
-  if (!replica.repoPaths?.length) return undefined;
-  const dirName = replica.repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
-  return stripRepoPrefix(dirName);
-}
 
 /** Build the session name used to link a replica to its session */
 function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
@@ -532,12 +524,24 @@ const ProjectPanel: Component = () => {
           wg: AcWorkgroup,
           extraBadge?: string,
           runningPeers?: () => AcAgentReplica[],
-          taskTitle?: string | null
+          taskTitle?: string | null,
+          rowContext = "workgroups"
         ) => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
-          const rn = () => replicaRepoName(replica) || stripRepoPrefix(wg.repoPath?.replace(/\\/g, "/").split("/").pop() ?? "") || proj.folderName;
           const session = () => replicaSession(wg, replica);
+          const repoBadges = createMemo(() => {
+            const s = session();
+            return s && s.gitRepos.length > 0
+              ? s.gitRepos
+              : configuredReplicaRepoBadges(replica, wg);
+          });
+          const rowTestId = () =>
+            `replica.row.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+          const badgesTestId = () =>
+            `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+          const repoBadgeTestId = (label: string, index: number) =>
+            `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
           const liveAgentLabel = () => {
             const s = session();
             if (!s) return null;
@@ -622,6 +626,7 @@ const ProjectPanel: Component = () => {
             <div
               class="replica-item"
               classList={{ active: session()?.id === sessionsStore.activeId }}
+              data-ac-testid={rowTestId()}
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
                 const s = session();
@@ -635,7 +640,7 @@ const ProjectPanel: Component = () => {
                   <span class="coord-task-title" title={taskTitle ?? undefined}>{taskTitle}</span>
                 </Show>
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
-                <div class="ac-discovery-badges">
+                <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
                   <Show when={runningPeers && runningPeers()!.length > 0}>
                     <For each={runningPeers!()}>
                       {(peer) => (
@@ -648,27 +653,18 @@ const ProjectPanel: Component = () => {
                       )}
                     </For>
                   </Show>
-                  <Show when={isCoord()}>
-                    <Show
-                      when={(() => { const s = session(); return s && s.gitRepos.length > 0 ? s : undefined; })()}
-                      fallback={
-                        <Show when={replica.repoPaths.length === 1 && replica.repoBranch}>
-                          <span class="ac-discovery-badge branch">
-                            {rn()}/{replica.repoBranch}
-                          </span>
-                        </Show>
-                      }
-                    >
-                      {(s) => (
-                        <For each={s().gitRepos}>
-                          {(repo) => (
-                            <span class="ac-discovery-badge branch">
-                              {repo.label}{repo.branch ? `/${repo.branch}` : ""}
-                            </span>
-                          )}
-                        </For>
+                  <Show when={isCoord() && repoBadges().length > 0}>
+                    <For each={repoBadges()}>
+                      {(repo, index) => (
+                        <span
+                          class="ac-discovery-badge branch"
+                          title={repo.sourcePath}
+                          data-ac-testid={repoBadgeTestId(repo.label, index())}
+                        >
+                          {formatReplicaRepoBadgeLabel(repo)}
+                        </span>
                       )}
-                    </Show>
+                    </For>
                   </Show>
                   <Show when={liveAgentLabel()}>
                     <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
@@ -728,7 +724,7 @@ const ProjectPanel: Component = () => {
           );
         };
 
-        const renderWorkgroupSubgroup = (wg: AcWorkgroup) => {
+        const renderWorkgroupSubgroup = (wg: AcWorkgroup, rowContext: string) => {
           const [wgCollapsed, setWgCollapsed] = createSignal(false);
           return (
             <div class="ac-wg-subgroup">
@@ -750,7 +746,7 @@ const ProjectPanel: Component = () => {
               </div>
               <Show when={!wgCollapsed()}>
                 <For each={wg.agents}>
-                  {(replica) => renderReplicaItem(replica, wg)}
+                  {(replica) => renderReplicaItem(replica, wg, undefined, undefined, undefined, rowContext)}
                 </For>
               </Show>
             </div>
@@ -857,7 +853,7 @@ const ProjectPanel: Component = () => {
                                 return dot === "running" || dot === "active";
                               })
                             );
-                            return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.taskTitle);
+                            return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.taskTitle, "quick");
                           }}
                         </For>
                       </div>
@@ -886,7 +882,7 @@ const ProjectPanel: Component = () => {
                         <Show when={!selectedCollapsed()}>
                           <Show when={selectedWorkgroup()} fallback={<div class="ac-empty-hint">No selected workgroup</div>}>
                             <For each={[selectedWorkgroup()!]}>
-                              {(wg) => renderWorkgroupSubgroup(wg)}
+                              {(wg) => renderWorkgroupSubgroup(wg, "selected")}
                             </For>
                           </Show>
                         </Show>
@@ -946,7 +942,7 @@ const ProjectPanel: Component = () => {
                           fallback={<div class="ac-empty-hint">No workgroups</div>}
                         >
                           <For each={proj.workgroups}>
-                            {(wg) => renderWorkgroupSubgroup(wg)}
+                            {(wg) => renderWorkgroupSubgroup(wg, "workgroups")}
                           </For>
                         </Show>
                       </Show>

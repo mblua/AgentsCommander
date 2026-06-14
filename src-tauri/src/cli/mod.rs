@@ -85,6 +85,30 @@ pub struct Cli {
     #[arg(long)]
     pub app: bool,
 
+    /// Test-only GUI placement: virtual-desktop X coordinate in physical pixels
+    #[arg(long, allow_hyphen_values = true)]
+    pub window_x: Option<f64>,
+
+    /// Test-only GUI placement: virtual-desktop Y coordinate in physical pixels
+    #[arg(long, allow_hyphen_values = true)]
+    pub window_y: Option<f64>,
+
+    /// Test-only GUI placement: window width in physical pixels
+    #[arg(long, allow_hyphen_values = true)]
+    pub window_width: Option<f64>,
+
+    /// Test-only GUI placement: window height in physical pixels
+    #[arg(long, allow_hyphen_values = true)]
+    pub window_height: Option<f64>,
+
+    /// Test-only GUI placement: maximize after applying the requested rectangle
+    #[arg(long)]
+    pub window_maximized: bool,
+
+    /// Test-only GUI automation bridge opt-in
+    #[arg(long)]
+    pub ui_automation: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -125,6 +149,18 @@ pub enum Commands {
     Team(team::TeamArgs),
     /// Execute commands through the policy harness
     Harness(harness::HarnessArgs),
+    /// Delete only the disposable testable app state
+    TestReset(crate::testability::reset::TestResetArgs),
+    /// Inspect running AgentsCommander GUI windows for this binary identity
+    WindowInfo(crate::testability::window_info::WindowInfoArgs),
+    /// Query a WebView automation target by data-ac-testid
+    UiQuery(crate::testability::ui_automation::UiQueryArgs),
+    /// Click a WebView automation target by data-ac-testid
+    UiClick(crate::testability::ui_automation::UiClickArgs),
+    /// Set an input/select WebView automation target by data-ac-testid
+    UiSet(crate::testability::ui_automation::UiSetArgs),
+    /// Wait until a WebView automation target is available by data-ac-testid
+    UiWait(crate::testability::ui_automation::UiWaitArgs),
 }
 
 /// Attach to parent console (or allocate a new one) ONLY if both stdout and stderr
@@ -247,6 +283,12 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::Workgroup(args) => workgroup::execute(args),
         Commands::Team(args) => team::execute(args),
         Commands::Harness(args) => harness::execute(args),
+        Commands::TestReset(args) => crate::testability::reset::execute(args),
+        Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
+        Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),
+        Commands::UiClick(args) => crate::testability::ui_automation::execute_click(args),
+        Commands::UiSet(args) => crate::testability::ui_automation::execute_set(args),
+        Commands::UiWait(args) => crate::testability::ui_automation::execute_wait(args),
     };
 
     flush_outputs();

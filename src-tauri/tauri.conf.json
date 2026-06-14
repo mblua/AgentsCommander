@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/dev/packages/tauri-utils/schema.json",
   "productName": "Agents Commander",
-  "version": "0.8.51",
+  "version": "0.8.53",
   "identifier": "dev.agentscommander.app",
   "mainBinaryName": "agentscommander",
   "build": {

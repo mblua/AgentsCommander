@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::config::claude_settings::{ensure_rtk_pretool_hook, enumerate_managed_agent_dirs};
@@ -7,6 +8,7 @@ use crate::config::settings::{
     validate_and_repair_settings, AppSettings, CodingAgentEnv, CodingAgentProfilesConfig,
     SettingsState,
 };
+use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::web::auth::WebAccessToken;
@@ -18,6 +20,7 @@ const HOME_MARKDOWN_URL: &str =
 
 const HOME_MARKDOWN_MAX_BYTES: usize = 256 * 1024; // 256 KB
 const HOME_MARKDOWN_TIMEOUT_SECS: u64 = 5;
+const WEB_STATUS_CONNECT_TIMEOUT_MS: u64 = 500;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -262,7 +265,7 @@ pub async fn start_web_server(
 
     // Check if already listening
     let addr = format!("{}:{}", bind, port);
-    if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+    if is_tcp_listening(&addr).await {
         return Ok(false); // already running
     }
 
@@ -300,11 +303,18 @@ pub async fn get_web_server_status(settings: State<'_, SettingsState>) -> Result
     let s = settings.read().await;
     let addr = format!("{}:{}", s.web_server_bind, s.web_server_port);
     drop(s);
-    // Probe the port to check if the server is actually listening
-    match tokio::net::TcpStream::connect(&addr).await {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
-    }
+    Ok(is_tcp_listening(&addr).await)
+}
+
+async fn is_tcp_listening(addr: &str) -> bool {
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(WEB_STATUS_CONNECT_TIMEOUT_MS),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await,
+        Ok(Ok(_))
+    )
 }
 
 /// Returns the runtime instance label for the titlebar badge.
@@ -491,18 +501,22 @@ pub async fn get_rtk_startup_status(
 /// Errors are returned as user-facing strings; the frontend renders them in
 /// the Home view's error state.
 #[tauri::command]
-pub async fn fetch_home_markdown() -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(HOME_MARKDOWN_TIMEOUT_SECS))
-        .user_agent(concat!("agentscommander/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
-
-    let resp = client
-        .get(HOME_MARKDOWN_URL)
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {}", e))?;
+pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<String, String> {
+    let _permit = network.acquire("docs.fetch_home_markdown").await?;
+    let resp = tokio::time::timeout(
+        Duration::from_secs(HOME_MARKDOWN_TIMEOUT_SECS),
+        network
+            .general()
+            .get(HOME_MARKDOWN_URL)
+            .header(
+                reqwest::header::USER_AGENT,
+                concat!("agentscommander/", env!("CARGO_PKG_VERSION")),
+            )
+            .send(),
+    )
+    .await
+    .map_err(|_| "Network error: request timed out".to_string())?
+    .map_err(|e| format!("Network error: {}", e))?;
 
     if !resp.status().is_success() {
         return Err(format!("Server returned status {}", resp.status().as_u16()));

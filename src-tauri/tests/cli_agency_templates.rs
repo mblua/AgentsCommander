@@ -118,6 +118,25 @@ fn seed_cache(config_dir: &Path) {
 }
 
 #[test]
+fn agency_templates_unknown_subcommand_exits_one_with_usage() {
+    let tmp = Tmp::new("agency-unknown-subcommand");
+    let bin = copy_binary_into(tmp.path());
+    let output = Command::new(&bin)
+        .args(["agency-templates", "unknown-subcommand"])
+        .output()
+        .expect("run unknown subcommand");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("Usage:") || stderr.contains("unrecognized subcommand"),
+        "unexpected stderr:\n{}",
+        stderr
+    );
+}
+
+#[test]
 fn agency_templates_update_prints_json_on_success_and_noop() {
     let tmp = Tmp::new("agency-update-json");
     let bin = copy_binary_into(tmp.path());
