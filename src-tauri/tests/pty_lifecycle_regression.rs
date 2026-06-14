@@ -611,6 +611,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             true,
             persisted_row.git_repos,
             false,
+            false,
         )
         .await
         .unwrap_or_else(|e| {
@@ -701,6 +702,7 @@ impl LifecycleFixture {
             false,
             Vec::new(),
             true,
+            false,
         )
         .await
     }
