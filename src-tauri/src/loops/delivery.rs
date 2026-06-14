@@ -119,13 +119,14 @@ pub async fn deliver_loop_prompt(
         Err(e) => return failed_report(Some(target_fqn), Some(session_id), e),
     }
 
-    if let Some(report) =
-        stale_delivery_report_if_needed(&loop_storage_dir, config, &target_fqn, session_id)
+    match crate::pty::inject::inject_text_into_session_with_pre_write_check(
+        app,
+        session_id,
+        &prompt,
+        || stale_delivery_error_if_needed(&loop_storage_dir, config, &target_fqn, session_id),
+    )
+    .await
     {
-        return report;
-    }
-
-    match crate::pty::inject::inject_text_into_session(app, session_id, &prompt).await {
         Ok(()) => {
             if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
                 log::warn!(
@@ -145,6 +146,18 @@ pub async fn deliver_loop_prompt(
             }
         }
         Err(e) => failed_report(Some(target_fqn), Some(session_id), e),
+    }
+}
+
+fn stale_delivery_error_if_needed(
+    loop_storage_dir: &Path,
+    config: &LoopConfigToml,
+    target_fqn: &str,
+    session_id: Uuid,
+) -> Result<(), String> {
+    match stale_delivery_report_if_needed(loop_storage_dir, config, target_fqn, session_id) {
+        Some(report) => Err(report.error.unwrap_or(report.message)),
+        None => Ok(()),
     }
 }
 
@@ -512,6 +525,15 @@ mod tests {
         }
     }
 
+    fn make_inject_test_app(
+        session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(session_mgr)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build inject test app")
+    }
+
     #[test]
     fn loop_spawn_allows_provider_resume_for_cold_and_known_state_wakes() {
         assert!(!loop_spawn_skip_auto_resume(false));
@@ -565,6 +587,53 @@ mod tests {
         assert_eq!(report.session_id, Some(session_id));
         assert!(report.prompt_snapshot.is_none());
         assert!(report.message.contains("skipped stale delivery"));
+    }
+
+    #[tokio::test]
+    async fn pre_write_revalidation_blocks_stale_loop_after_inject_shell_lookup() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = sample_config();
+        let dir = write_loop_config(tmp.path(), &config).expect("write config");
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app = make_inject_test_app(session_mgr.clone());
+        let session = {
+            let mgr = session_mgr.read().await;
+            mgr.create_session(
+                "codex".to_string(),
+                Vec::new(),
+                tmp.path().to_string_lossy().to_string(),
+                None,
+                None,
+                Vec::<SessionRepo>::new(),
+                false,
+            )
+            .await
+            .expect("create session")
+        };
+        let session_id = session.id;
+
+        let mut changed = config.clone();
+        changed.prompt.body = "New prompt".to_string();
+        write_loop_config(tmp.path(), &changed).expect("write changed config");
+
+        let result = crate::pty::inject::inject_text_into_session_with_pre_write_check(
+            &app.handle().clone(),
+            session_id,
+            &config.prompt.body,
+            || {
+                stale_delivery_error_if_needed(
+                    &dir,
+                    &config,
+                    "project:wg-1-dev-team/tech-lead",
+                    session_id,
+                )
+            },
+        )
+        .await;
+
+        let err = result.expect_err("stale loop should block before PTY write");
+        assert!(err.contains("skipped stale delivery"));
     }
 
     #[test]
