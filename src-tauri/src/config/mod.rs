@@ -35,6 +35,13 @@ pub fn agent_local_dir_name() -> String {
 pub fn config_dir() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
+        #[cfg(debug_assertions)]
+        if let Ok(path) = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR") {
+            if !path.trim().is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+
         // Primary: portable config next to the binary
         if let Ok(exe_path) = std::env::current_exe() {
             match (exe_path.parent(), exe_path.file_stem()) {
