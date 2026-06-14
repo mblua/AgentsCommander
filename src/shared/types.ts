@@ -188,7 +188,7 @@ export interface AppSettings {
   specBoardEnabled: boolean;
 }
 
-export type UiAutomationAction = "query" | "click" | "setValue";
+export type UiAutomationAction = "query" | "click" | "contextClick" | "setValue";
 
 export interface UiAutomationRequest {
   requestId: string;
