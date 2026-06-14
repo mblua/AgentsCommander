@@ -225,6 +225,11 @@ export const projectStore = {
           queuedReloads.delete(normalized);
           try {
             const result = await ProjectAPI.discover(path);
+            if (queuedReloads.has(normalized)) {
+              // A mutation/event may have already applied fresher summary data while this
+              // discovery was awaiting. Let the queued discovery provide the next full state.
+              continue;
+            }
             setProjects((prev) =>
               prev.map((p) =>
                 normalizePath(p.path) === normalized

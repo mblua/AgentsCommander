@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel from "./ProjectPanel";
 import type { AcLoopSummary } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -44,6 +44,16 @@ function disabledLoop(): AcLoopSummary {
 
 function enabledLoop(): AcLoopSummary {
   return { ...disabledLoop(), enabled: true };
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function discoveryWithLoop(loop: AcLoopSummary) {
@@ -142,13 +152,11 @@ describe("ProjectPanel loop automation hooks", () => {
     }
   });
 
-  it("refreshes disabled loop row state and toggle text after Enable succeeds", async () => {
+  it("does not regress enabled loop row while a queued reload follows a stale response", async () => {
     const fake = new FakeTransport();
     let discoverCalls = 0;
-    let releaseStaleReload: () => void = () => {};
-    const staleReload = new Promise<void>((resolve) => {
-      releaseStaleReload = resolve;
-    });
+    const staleReload = deferred<void>();
+    const queuedReload = deferred<void>();
 
     fake.resolve("new_project", {
       path: projectPath,
@@ -159,8 +167,12 @@ describe("ProjectPanel loop automation hooks", () => {
       discoverCalls += 1;
       if (discoverCalls === 1) return discoveryWithLoop(disabledLoop());
       if (discoverCalls === 2) {
-        await staleReload;
+        await staleReload.promise;
         return discoveryWithLoop(disabledLoop());
+      }
+      if (discoverCalls === 3) {
+        await queuedReload.promise;
+        return discoveryWithLoop(enabledLoop());
       }
       return discoveryWithLoop(enabledLoop());
     });
@@ -211,8 +223,20 @@ describe("ProjectPanel loop automation hooks", () => {
       click(enableAction);
 
       await waitFor(() => expect(fake.callsFor("toggle_loop")).toHaveLength(1));
-      await Promise.resolve();
-      releaseStaleReload();
+      await waitFor(() => {
+        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+          "enabled",
+        );
+      });
+
+      staleReload.resolve();
+      await waitFor(() => expect(discoverCalls).toBe(3));
+
+      expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+        "enabled",
+      );
+
+      queuedReload.resolve();
       await staleReloadPromise;
 
       await waitFor(() => {
@@ -232,6 +256,95 @@ describe("ProjectPanel loop automation hooks", () => {
         expect(document.body.querySelector(toggleSelector)?.textContent?.trim()).toBe("Disable");
       });
     } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps the enabled loop summary visible when the queued follow-up reload fails", async () => {
+    const fake = new FakeTransport();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    let discoverCalls = 0;
+    const staleReload = deferred<void>();
+    const queuedReload = deferred<void>();
+
+    fake.resolve("new_project", {
+      path: projectPath,
+      registered: true,
+      created: false,
+    });
+    fake.onInvoke("discover_project", async () => {
+      discoverCalls += 1;
+      if (discoverCalls === 1) return discoveryWithLoop(disabledLoop());
+      if (discoverCalls === 2) {
+        await staleReload.promise;
+        return discoveryWithLoop(disabledLoop());
+      }
+      if (discoverCalls === 3) {
+        await queuedReload.promise;
+        throw new Error("queued reload failed");
+      }
+      return discoveryWithLoop(enabledLoop());
+    });
+    fake.onInvoke("toggle_loop", () => ({
+      summary: enabledLoop(),
+      promptBody: "Short preview",
+    }));
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+
+      const projectId = automationIdPart(projectPath);
+      const loopId = automationIdPart("weekday-standup");
+      const rowSelector = `[data-ac-testid="loop.row.${projectId}.${loopId}"]`;
+      const toggleSelector = `[data-ac-testid="loop.action.toggle.${projectId}.${loopId}"]`;
+
+      await waitFor(() => {
+        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+          "loop-disabled",
+        );
+      });
+
+      const staleReloadPromise = projectStore.reloadProject(projectPath);
+      await waitFor(() => expect(discoverCalls).toBe(2));
+
+      const row = rendered.root.querySelector(rowSelector);
+      if (!(row instanceof HTMLElement)) {
+        throw new Error("Loop row not found");
+      }
+      contextMenu(row);
+
+      await waitFor(() => {
+        expect(document.body.querySelector(toggleSelector)?.textContent?.trim()).toBe("Enable");
+      });
+
+      const enableAction = document.body.querySelector(toggleSelector);
+      if (!(enableAction instanceof HTMLButtonElement)) {
+        throw new Error("Loop toggle action not found");
+      }
+      click(enableAction);
+
+      await waitFor(() => expect(fake.callsFor("toggle_loop")).toHaveLength(1));
+      await waitFor(() => {
+        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+          "enabled",
+        );
+      });
+
+      staleReload.resolve();
+      await waitFor(() => expect(discoverCalls).toBe(3));
+      expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+        "enabled",
+      );
+
+      queuedReload.resolve();
+      await staleReloadPromise;
+
+      expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+        "enabled",
+      );
+    } finally {
+      consoleError.mockRestore();
       rendered.cleanup();
     }
   });
