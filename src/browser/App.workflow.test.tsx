@@ -100,13 +100,17 @@ function browserDiscovery() {
   });
 }
 
-function setupBrowserTransport(fake: FakeTransport): void {
+function setupBrowserTransport(
+  fake: FakeTransport,
+  settingsOverrides: Parameters<typeof baseSettings>[0] = {}
+): void {
   fake.resolve(
     "get_settings",
     baseSettings({
       projectPaths: [projectPath],
       projectPath,
       telegramBots: [],
+      ...settingsOverrides,
     })
   );
   fake.resolve("open_project", {
@@ -129,12 +133,14 @@ describe("BrowserApp workflow", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
+    document.documentElement.classList.remove("light-theme");
   });
 
   afterEach(() => {
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
+    document.documentElement.classList.remove("light-theme");
   });
 
   it("loads sidebar and terminal panes from fake transport", async () => {
@@ -195,6 +201,59 @@ describe("BrowserApp workflow", () => {
       );
 
       expect(sidebar.style.width).toBe("480px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("applies persisted light theme while children are embedded", async () => {
+    const fake = new FakeTransport();
+    setupBrowserTransport(fake, { themeLight: true });
+
+    const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("get_settings").length).toBeGreaterThan(0));
+      expect(document.documentElement.classList.contains("light-theme")).toBe(true);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("removes optimistic light theme for persisted dark setting", async () => {
+    const fake = new FakeTransport();
+    setupBrowserTransport(fake, { themeLight: false });
+    document.documentElement.classList.add("light-theme");
+
+    const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
+    try {
+      await waitFor(() =>
+        expect(document.documentElement.classList.contains("light-theme")).toBe(false)
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("follows backend theme_changed events in browser mode", async () => {
+    const fake = new FakeTransport();
+    setupBrowserTransport(fake, { themeLight: false });
+    document.documentElement.classList.add("light-theme");
+
+    const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
+    try {
+      await waitFor(() =>
+        expect(document.documentElement.classList.contains("light-theme")).toBe(false)
+      );
+
+      fake.emitFromBackend("theme_changed", { light: true });
+      await waitFor(() =>
+        expect(document.documentElement.classList.contains("light-theme")).toBe(true)
+      );
+
+      fake.emitFromBackend("theme_changed", { light: false });
+      await waitFor(() =>
+        expect(document.documentElement.classList.contains("light-theme")).toBe(false)
+      );
     } finally {
       rendered.cleanup();
     }
