@@ -230,6 +230,10 @@ const ProjectPanel: Component = () => {
         const [loopActionInProgress, setLoopActionInProgress] = createSignal<string | null>(null);
         const [deletingLoop, setDeletingLoop] = createSignal<AcLoopSummary | null>(null);
         const [loopDeleteError, setLoopDeleteError] = createSignal("");
+        const currentLoopDeleteInProgress = () => {
+          const loop = deletingLoop();
+          return !!loop && loopActionInProgress() === `${loop.id}:delete`;
+        };
         const [teamsHeaderCtxMenu, setTeamsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [deletingAgent, setDeletingAgent] = createSignal<{ name: string; path: string } | null>(null);
         const [agentDeleteError, setAgentDeleteError] = createSignal("");
@@ -256,7 +260,7 @@ const ProjectPanel: Component = () => {
           setDeletingTeam(null);
         };
         const closeLoopDeleteModal = () => {
-          if (loopActionInProgress()) return;
+          if (currentLoopDeleteInProgress()) return;
           setLoopDeleteError("");
           setDeletingLoop(null);
         };
@@ -1706,12 +1710,12 @@ const ProjectPanel: Component = () => {
                   <div class="context-separator" />
                   <button
                     class="session-context-option context-option-danger"
-                    disabled={loopActionInProgress() === `${loopCtxMenu()!.loop.id}:delete`}
+                    disabled={!!loopActionInProgress()}
                     onClick={() => {
                       const menu = loopCtxMenu();
                       setLoopCtxMenu(null);
                       cleanupCtx();
-                      if (!menu) return;
+                      if (!menu || loopActionInProgress()) return;
                       setLoopDeleteError("");
                       setDeletingLoop(menu.loop);
                     }}
@@ -1747,7 +1751,7 @@ const ProjectPanel: Component = () => {
                       <button
                         class="new-agent-cancel-btn"
                         onClick={closeLoopDeleteModal}
-                        disabled={loopActionInProgress() === `${deletingLoop()!.id}:delete`}
+                        disabled={currentLoopDeleteInProgress()}
                         data-ac-testid={`loop.delete.cancel.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
                       >
                         Cancel
@@ -1755,15 +1759,15 @@ const ProjectPanel: Component = () => {
                       <button
                         class="new-agent-create-btn"
                         style={{ "background": "var(--danger, #c0392b)" }}
-                        disabled={loopActionInProgress() === `${deletingLoop()!.id}:delete`}
+                        disabled={!!loopActionInProgress()}
                         onClick={() => {
                           const loop = deletingLoop();
-                          if (!loop) return;
+                          if (!loop || loopActionInProgress()) return;
                           void deleteLoop(loop);
                         }}
                         data-ac-testid={`loop.delete.confirm.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
                       >
-                        {loopActionInProgress() === `${deletingLoop()!.id}:delete` ? "Deleting..." : "Delete"}
+                        {currentLoopDeleteInProgress() ? "Deleting..." : "Delete"}
                       </button>
                     </div>
                   </div>
