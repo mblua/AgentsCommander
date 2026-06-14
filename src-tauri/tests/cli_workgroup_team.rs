@@ -1,6 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use agentscommander_lib::config::sessions_persistence::{
+    load_sessions_raw_from_dir_for_test, PersistedSession,
+};
+use agentscommander_lib::session::session::SessionStatus;
+
 struct Tmp(PathBuf);
 
 impl Drop for Tmp {
@@ -115,6 +120,30 @@ fn find_refresh_request<'a>(
         .unwrap_or_else(|| panic!("missing refresh request reason {}", reason))
 }
 
+fn has_refresh_reason(config_dir: &Path, reason: &str) -> bool {
+    read_project_refresh_requests(config_dir)
+        .iter()
+        .any(|request| request["reason"] == reason)
+}
+
+fn create_outside_sentinel(project: &Path, name: &str) -> PathBuf {
+    let sentinel = project
+        .join(format!("outside-sentinel-{name}"))
+        .join("keep.txt");
+    std::fs::create_dir_all(sentinel.parent().expect("sentinel parent"))
+        .expect("create outside sentinel parent");
+    std::fs::write(&sentinel, "keep").expect("write outside sentinel");
+    sentinel
+}
+
+fn assert_outside_sentinel_survives(sentinel: &Path) {
+    assert!(
+        sentinel.is_file(),
+        "outside sentinel should survive destructive operation: {}",
+        sentinel.display()
+    );
+}
+
 fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     let project = tmp.join("ProjectAlpha");
     let workspace_dir = project.join(".ac");
@@ -166,6 +195,20 @@ fn run_fail(bin: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
+    let out = Command::new(bin).args(args).output().expect("spawn");
+    assert!(
+        !out.status.success(),
+        "expected failure\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
 fn run_stdout(bin: &Path, args: &[&str]) -> String {
     let out = Command::new(bin).args(args).output().expect("spawn");
     assert!(
@@ -176,6 +219,107 @@ fn run_stdout(bin: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+fn create_basic_workgroup(tmp: &Path, bin: &Path, config_dir: &Path) -> (PathBuf, PathBuf) {
+    write_settings(config_dir, tmp);
+    let project = project_with_agents(tmp, &["architect"]);
+    let created = run_json(
+        bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+            "--coordinator",
+            "architect",
+        ],
+    );
+    let wg_dir = project.join(".ac").join("wg-1-dev-team");
+    assert_eq!(created["path"], wg_dir.to_string_lossy().as_ref());
+    (project, wg_dir)
+}
+
+fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+fn create_dirty_repo(repo_dir: &Path) {
+    std::fs::create_dir_all(repo_dir).expect("create repo");
+    let init = Command::new("git")
+        .arg("init")
+        .current_dir(repo_dir)
+        .output()
+        .expect("git init");
+    assert!(
+        init.status.success(),
+        "git init failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&init.stdout),
+        String::from_utf8_lossy(&init.stderr)
+    );
+    std::fs::write(repo_dir.join("untracked.txt"), "dirty").expect("write dirty file");
+}
+
+fn write_live_session(config_dir: &Path, working_directory: &Path) {
+    let sessions = vec![PersistedSession {
+        name: "Live Rust".to_string(),
+        shell: "powershell.exe".to_string(),
+        shell_args: Vec::new(),
+        working_directory: working_directory.to_string_lossy().to_string(),
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        status: Some(SessionStatus::Running),
+        waiting_for_input: Some(false),
+        created_at: Some("2026-06-13T00:00:00Z".to_string()),
+        ..PersistedSession::default()
+    }];
+    std::fs::write(
+        config_dir.join("sessions.json"),
+        serde_json::to_string_pretty(&sessions).expect("sessions json"),
+    )
+    .expect("write sessions");
+}
+
+#[cfg(target_os = "windows")]
+fn create_junction(junction: &Path, target: &Path) -> Result<(), String> {
+    let output = Command::new("cmd")
+        .args([
+            "/C",
+            "mklink",
+            "/J",
+            junction.to_str().expect("junction path"),
+            target.to_str().expect("target path"),
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_without_delete_share(path: &Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x00000001;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+        .expect("open with restricted share mode")
 }
 
 #[test]
@@ -417,6 +561,220 @@ fn workgroup_remove_deletes_and_reuses_number() {
         .as_str()
         .expect("path")
         .ends_with("wg-1-qa-team"));
+}
+
+#[test]
+fn workgroup_remove_refuses_dirty_repo_without_force() {
+    if !git_available() {
+        println!("skipping dirty repo workgroup regression because git is unavailable");
+        return;
+    }
+
+    let tmp = Tmp::new("cli-workgroup-dirty-refuse");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "dirty-refuse");
+    let dirty_file = wg_dir.join("repo-dirty").join("untracked.txt");
+    create_dirty_repo(dirty_file.parent().expect("dirty repo parent"));
+
+    let stderr = run_fail(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+        ],
+    );
+    assert!(stderr.contains("pending work"));
+    assert!(stderr.contains("repo-dirty"));
+    assert!(
+        wg_dir.is_dir(),
+        "dirty refusal should leave workgroup intact"
+    );
+    assert!(dirty_file.is_file(), "dirty repo file should remain");
+    assert_outside_sentinel_survives(&outside);
+    assert!(!has_refresh_reason(&config_dir, "workgroupRemoved"));
+}
+
+#[test]
+fn workgroup_remove_force_dirty_deletes_dirty_repo() {
+    if !git_available() {
+        println!("skipping force dirty workgroup regression because git is unavailable");
+        return;
+    }
+
+    let tmp = Tmp::new("cli-workgroup-dirty-force");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "dirty-force");
+    create_dirty_repo(&wg_dir.join("repo-dirty"));
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--force-dirty",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!wg_dir.exists(), "force-dirty should delete workgroup");
+    assert_outside_sentinel_survives(&outside);
+    assert!(has_refresh_reason(&config_dir, "workgroupRemoved"));
+}
+
+#[test]
+fn workgroup_remove_refuses_live_persisted_session_even_with_force() {
+    let tmp = Tmp::new("cli-workgroup-live-refuse");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "live-refuse");
+    let session_cwd = wg_dir.join("__agent_architect");
+    write_live_session(&config_dir, &session_cwd);
+
+    let parsed = load_sessions_raw_from_dir_for_test(&config_dir);
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].status, Some(SessionStatus::Running));
+    assert!(parsed[0].id.is_some(), "live session fixture must carry id");
+
+    let stderr = run_fail(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--force-dirty",
+        ],
+    );
+    assert!(stderr.contains("Cannot delete while live sessions exist"));
+    assert!(stderr.contains("Live Rust"));
+    assert!(
+        wg_dir.is_dir(),
+        "live session refusal should leave workgroup intact"
+    );
+    assert_outside_sentinel_survives(&outside);
+    assert!(!has_refresh_reason(&config_dir, "workgroupRemoved"));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn workgroup_remove_locked_file_reports_blockers_without_refresh() {
+    let tmp = Tmp::new("cli-workgroup-locked");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "locked");
+    let locked = wg_dir.join("locked.bin");
+    std::fs::write(&locked, b"locked").expect("write locked file");
+    let _handle = open_without_delete_share(&locked);
+
+    let (_stdout, stderr) = run_fail_output(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--force-dirty",
+        ],
+    );
+    assert!(stderr.contains("file in use") || stderr.contains("Failed to delete workgroup"));
+    assert!(wg_dir.is_dir(), "blocked workgroup should remain");
+    assert!(locked.is_file(), "locked file should remain");
+    assert_outside_sentinel_survives(&outside);
+    assert!(!has_refresh_reason(&config_dir, "workgroupRemoved"));
+}
+
+#[test]
+fn workgroup_remove_deletes_long_path_tree() {
+    let tmp = Tmp::new("cli-workgroup-long-path");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (_project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let mut deep = wg_dir.clone();
+    for idx in 0..10 {
+        deep = deep.join(format!("long-segment-{idx:02}-abcdef"));
+    }
+    if let Err(e) = std::fs::create_dir_all(&deep) {
+        println!(
+            "skipping long path workgroup regression; see docs/testing/destructive-filesystem-regression.md#workgroup-long-path-check: {}",
+            e
+        );
+        return;
+    }
+    std::fs::write(deep.join("payload.txt"), "payload").expect("write payload");
+    let keep = wg_dir.parent().expect("wg parent").join("keep-sibling");
+    std::fs::create_dir_all(&keep).expect("create keep sibling");
+
+    let removed = run_json_machine(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--force-dirty",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!wg_dir.exists(), "workgroup should be deleted");
+    assert!(keep.is_dir(), "sibling outside workgroup should remain");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn workgroup_remove_refuses_reparse_root() {
+    let tmp = Tmp::new("cli-workgroup-reparse-root");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
+    let outside = create_outside_sentinel(&project, "reparse-root");
+    std::fs::remove_dir_all(&wg_dir).expect("remove real workgroup");
+    let real = tmp.path().join("real-wg-target");
+    std::fs::create_dir_all(&real).expect("create real target");
+    std::fs::write(real.join("sentinel.txt"), "target").expect("write sentinel");
+    if let Err(e) = create_junction(&wg_dir, &real) {
+        println!(
+            "skipping reparse root workgroup regression; see docs/testing/destructive-filesystem-regression.md#workgroup-reparse-root-check: {}",
+            e
+        );
+        return;
+    }
+
+    let stderr = run_fail(
+        &bin,
+        &[
+            "workgroup",
+            "remove",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "wg-1-dev-team",
+            "--force-dirty",
+        ],
+    );
+    assert!(stderr.contains("delete_root_is_reparse_point"));
+    assert!(wg_dir.exists(), "junction should remain");
+    assert!(real.join("sentinel.txt").is_file(), "target should remain");
+    assert_outside_sentinel_survives(&outside);
+    assert!(!has_refresh_reason(&config_dir, "workgroupRemoved"));
 }
 
 #[test]
