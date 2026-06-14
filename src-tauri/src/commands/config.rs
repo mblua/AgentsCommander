@@ -119,12 +119,11 @@ async fn persist_coding_agent_profiles_update(
     settings: &SettingsState,
     profiles: CodingAgentProfilesConfig,
 ) -> Result<(), String> {
-    let mut candidate = settings.read().await.clone();
+    let mut s = settings.write().await;
+    let mut candidate = s.clone();
     candidate.coding_agent_profiles = profiles;
     validate_and_repair_settings(&mut candidate)?;
     save_settings(&candidate)?;
-
-    let mut s = settings.write().await;
     *s = candidate;
     Ok(())
 }
@@ -152,7 +151,8 @@ async fn persist_coding_agent_env_settings_update(
     envs: Vec<CodingAgentEnv>,
     isolate_codex_home: bool,
 ) -> Result<(), String> {
-    let mut candidate = settings.read().await.clone();
+    let mut s = settings.write().await;
+    let mut candidate = s.clone();
     let agent = candidate
         .agents
         .iter_mut()
@@ -162,8 +162,6 @@ async fn persist_coding_agent_env_settings_update(
     agent.isolate_codex_home = isolate_codex_home;
     validate_and_repair_settings(&mut candidate)?;
     save_settings(&candidate)?;
-
-    let mut s = settings.write().await;
     *s = candidate;
     Ok(())
 }
