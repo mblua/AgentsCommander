@@ -117,6 +117,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     );
     unlisteners.push(
       await onLoopEvent((data) => {
+        if (data.summary) {
+          projectStore.upsertLoop(data.projectPath, data.summary);
+        } else if (data.kind === "deleted") {
+          projectStore.removeLoop(data.projectPath, data.loopId);
+        }
         void projectStore.reloadProjectIfLoaded(data.projectPath);
         const toast = loopToastFromEvent(data);
         if (toast) showLoopToast(toast);

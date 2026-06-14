@@ -4,6 +4,7 @@ import ProjectPanel from "./ProjectPanel";
 import type { AcLoopSummary } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
+  click,
   contextMenu,
   discovery,
   installBrowserDomStubs,
@@ -41,42 +42,47 @@ function disabledLoop(): AcLoopSummary {
   };
 }
 
+function enabledLoop(): AcLoopSummary {
+  return { ...disabledLoop(), enabled: true };
+}
+
+function discoveryWithLoop(loop: AcLoopSummary) {
+  return discovery({
+    teams: [
+      {
+        name: "dev-team",
+        agents: ["architect"],
+        coordinator: "architect",
+      },
+    ],
+    workgroups: [
+      {
+        name: workgroupName,
+        path: workgroupPath,
+        task: null,
+        taskTitle: "Loop automation",
+        teamName: "dev-team",
+        agents: [
+          {
+            name: "architect",
+            path: `${workgroupPath}\\__agent_architect`,
+            repoPaths: [],
+            isCoordinator: true,
+          },
+        ],
+      },
+    ],
+    loops: [loop],
+  });
+}
+
 function setupProject(fake: FakeTransport): void {
   fake.resolve("new_project", {
     path: projectPath,
     registered: true,
     created: false,
   });
-  fake.resolve(
-    "discover_project",
-    discovery({
-      teams: [
-        {
-          name: "dev-team",
-          agents: ["architect"],
-          coordinator: "architect",
-        },
-      ],
-      workgroups: [
-        {
-          name: workgroupName,
-          path: workgroupPath,
-          task: null,
-          taskTitle: "Loop automation",
-          teamName: "dev-team",
-          agents: [
-            {
-              name: "architect",
-              path: `${workgroupPath}\\__agent_architect`,
-              repoPaths: [],
-              isCoordinator: true,
-            },
-          ],
-        },
-      ],
-      loops: [disabledLoop()],
-    }),
-  );
+  fake.resolve("discover_project", discoveryWithLoop(disabledLoop()));
 }
 
 describe("ProjectPanel loop automation hooks", () => {
@@ -130,6 +136,100 @@ describe("ProjectPanel loop automation hooks", () => {
         );
         expect(toggle?.textContent?.trim()).toBe("Enable");
         expect(deleteAction?.textContent?.trim()).toBe("Delete Loop");
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("refreshes disabled loop row state and toggle text after Enable succeeds", async () => {
+    const fake = new FakeTransport();
+    let discoverCalls = 0;
+    let releaseStaleReload: () => void = () => {};
+    const staleReload = new Promise<void>((resolve) => {
+      releaseStaleReload = resolve;
+    });
+
+    fake.resolve("new_project", {
+      path: projectPath,
+      registered: true,
+      created: false,
+    });
+    fake.onInvoke("discover_project", async () => {
+      discoverCalls += 1;
+      if (discoverCalls === 1) return discoveryWithLoop(disabledLoop());
+      if (discoverCalls === 2) {
+        await staleReload;
+        return discoveryWithLoop(disabledLoop());
+      }
+      return discoveryWithLoop(enabledLoop());
+    });
+    fake.onInvoke("toggle_loop", (args) => {
+      expect(args).toEqual({
+        projectPath,
+        id: "weekday-standup",
+        enabled: true,
+      });
+      return {
+        summary: enabledLoop(),
+        promptBody: "Short preview",
+      };
+    });
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+
+      const projectId = automationIdPart(projectPath);
+      const loopId = automationIdPart("weekday-standup");
+      const rowSelector = `[data-ac-testid="loop.row.${projectId}.${loopId}"]`;
+      const toggleSelector = `[data-ac-testid="loop.action.toggle.${projectId}.${loopId}"]`;
+
+      await waitFor(() => {
+        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+          "loop-disabled",
+        );
+      });
+
+      const staleReloadPromise = projectStore.reloadProject(projectPath);
+      await waitFor(() => expect(discoverCalls).toBe(2));
+
+      const row = rendered.root.querySelector(rowSelector);
+      if (!(row instanceof HTMLElement)) {
+        throw new Error("Loop row not found");
+      }
+      contextMenu(row);
+
+      await waitFor(() => {
+        expect(document.body.querySelector(toggleSelector)?.textContent?.trim()).toBe("Enable");
+      });
+
+      const enableAction = document.body.querySelector(toggleSelector);
+      if (!(enableAction instanceof HTMLButtonElement)) {
+        throw new Error("Loop toggle action not found");
+      }
+      click(enableAction);
+
+      await waitFor(() => expect(fake.callsFor("toggle_loop")).toHaveLength(1));
+      await Promise.resolve();
+      releaseStaleReload();
+      await staleReloadPromise;
+
+      await waitFor(() => {
+        expect(discoverCalls).toBeGreaterThanOrEqual(3);
+        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+          "enabled",
+        );
+      });
+
+      const refreshedRow = rendered.root.querySelector(rowSelector);
+      if (!(refreshedRow instanceof HTMLElement)) {
+        throw new Error("Refreshed Loop row not found");
+      }
+      contextMenu(refreshedRow);
+
+      await waitFor(() => {
+        expect(document.body.querySelector(toggleSelector)?.textContent?.trim()).toBe("Disable");
       });
     } finally {
       rendered.cleanup();

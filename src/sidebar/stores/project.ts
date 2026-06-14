@@ -19,6 +19,7 @@ const [projects, setProjects] = createSignal<ProjectState[]>([]);
 const [loading, setLoading] = createSignal(false);
 const inFlightLoads = new Map<string, Promise<void>>();
 const inFlightReloads = new Map<string, Promise<void>>();
+const queuedReloads = new Set<string>();
 let loadingCount = 0;
 
 function normalizePath(p: string): string {
@@ -181,32 +182,69 @@ export const projectStore = {
     );
   },
 
+  /** Apply a Loop summary returned by a mutation/event without waiting for discovery. */
+  upsertLoop(projectPath: string, loop: AcLoopSummary) {
+    const normalized = normalizePath(projectPath);
+    setProjects((prev) =>
+      prev.map((proj) => {
+        if (normalizePath(proj.path) !== normalized) return proj;
+        const existingIndex = proj.loops.findIndex((candidate) => candidate.id === loop.id);
+        const loops =
+          existingIndex === -1
+            ? [...proj.loops, loop]
+            : proj.loops.map((candidate) => (candidate.id === loop.id ? loop : candidate));
+        return { ...proj, loops };
+      })
+    );
+  },
+
+  /** Remove a Loop summary returned by a delete event without waiting for discovery. */
+  removeLoop(projectPath: string, loopId: string) {
+    const normalized = normalizePath(projectPath);
+    setProjects((prev) =>
+      prev.map((proj) =>
+        normalizePath(proj.path) === normalized
+          ? { ...proj, loops: proj.loops.filter((loop) => loop.id !== loopId) }
+          : proj
+      )
+    );
+  },
+
   /** Re-discover a single project and update its data in place */
   async reloadProject(path: string) {
     const normalized = normalizePath(path);
     const existing = inFlightReloads.get(normalized);
-    if (existing) return existing;
+    if (existing) {
+      queuedReloads.add(normalized);
+      return existing;
+    }
 
     const promise = (async () => {
       try {
-        const result = await ProjectAPI.discover(path);
-        setProjects((prev) =>
-          prev.map((p) =>
-            normalizePath(p.path) === normalized
-              ? {
-                  ...p,
-                  workgroups: result.workgroups,
-                  agents: result.agents,
-                  teams: result.teams,
-                  loops: result.loops,
-                }
-              : p
-          )
-        );
-      } catch (e) {
-        console.error("Failed to reload project:", e);
+        do {
+          queuedReloads.delete(normalized);
+          try {
+            const result = await ProjectAPI.discover(path);
+            setProjects((prev) =>
+              prev.map((p) =>
+                normalizePath(p.path) === normalized
+                  ? {
+                      ...p,
+                      workgroups: result.workgroups,
+                      agents: result.agents,
+                      teams: result.teams,
+                      loops: result.loops,
+                    }
+                  : p
+              )
+            );
+          } catch (e) {
+            console.error("Failed to reload project:", e);
+          }
+        } while (queuedReloads.has(normalized));
       } finally {
         inFlightReloads.delete(normalized);
+        queuedReloads.delete(normalized);
       }
     })();
     inFlightReloads.set(normalized, promise);
@@ -234,6 +272,7 @@ export const projectStore = {
     setLoading(false);
     inFlightLoads.clear();
     inFlightReloads.clear();
+    queuedReloads.clear();
   },
 };
 

@@ -470,13 +470,16 @@ const ProjectPanel: Component = () => {
         const runLoopAction = async (
           loop: AcLoopSummary,
           action: "run" | "toggle" | "delete",
-          task: () => Promise<void>
+          task: () => Promise<AcLoopSummary | null>
         ) => {
           const actionKey = `${loop.id}:${action}`;
           if (loopActionInProgress()) return;
           setLoopActionInProgress(actionKey);
           try {
-            await task();
+            const updatedLoop = await task();
+            if (updatedLoop) {
+              projectStore.upsertLoop(proj.path, updatedLoop);
+            }
             await projectStore.reloadProject(proj.path);
           } catch (e) {
             console.error(`Loop ${action} failed:`, e);
@@ -1634,7 +1637,8 @@ const ProjectPanel: Component = () => {
                       cleanupCtx();
                       if (!menu) return;
                       await runLoopAction(menu.loop, "run", async () => {
-                        await LoopAPI.runNow(proj.path, menu.loop.id);
+                        const details = await LoopAPI.runNow(proj.path, menu.loop.id);
+                        return details.summary;
                       });
                     }}
                     data-ac-testid={`loop.action.runNow.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
@@ -1662,7 +1666,8 @@ const ProjectPanel: Component = () => {
                       cleanupCtx();
                       if (!menu) return;
                       await runLoopAction(menu.loop, "toggle", async () => {
-                        await LoopAPI.setEnabled(proj.path, menu.loop.id, !menu.loop.enabled);
+                        const details = await LoopAPI.setEnabled(proj.path, menu.loop.id, !menu.loop.enabled);
+                        return details.summary;
                       });
                     }}
                     data-ac-testid={`loop.action.toggle.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
@@ -1682,6 +1687,7 @@ const ProjectPanel: Component = () => {
                       if (!confirmed) return;
                       await runLoopAction(menu.loop, "delete", async () => {
                         await LoopAPI.delete(proj.path, menu.loop.id);
+                        return null;
                       });
                     }}
                     data-ac-testid={`loop.action.delete.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
