@@ -56,7 +56,7 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-function discoveryWithLoop(loop: AcLoopSummary) {
+function discoveryWithLoops(loops: AcLoopSummary[]) {
   return discovery({
     teams: [
       {
@@ -82,8 +82,12 @@ function discoveryWithLoop(loop: AcLoopSummary) {
         ],
       },
     ],
-    loops: [loop],
+    loops,
   });
+}
+
+function discoveryWithLoop(loop: AcLoopSummary) {
+  return discoveryWithLoops([loop]);
 }
 
 function setupProject(fake: FakeTransport): void {
@@ -147,6 +151,108 @@ describe("ProjectPanel loop automation hooks", () => {
         expect(toggle?.textContent?.trim()).toBe("Enable");
         expect(deleteAction?.textContent?.trim()).toBe("Delete Loop");
       });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("opens selector-addressable delete confirmation and keeps the loop on cancel", async () => {
+    const fake = new FakeTransport();
+    setupProject(fake);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+
+      const projectId = automationIdPart(projectPath);
+      const loopId = automationIdPart("weekday-standup");
+      const rowSelector = `[data-ac-testid="loop.row.${projectId}.${loopId}"]`;
+      const deleteActionSelector = `[data-ac-testid="loop.action.delete.${projectId}.${loopId}"]`;
+      const cancelSelector = `[data-ac-testid="loop.delete.cancel.${projectId}.${loopId}"]`;
+
+      await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeTruthy());
+      const row = rendered.root.querySelector(rowSelector);
+      if (!(row instanceof HTMLElement)) {
+        throw new Error("Loop row not found");
+      }
+
+      contextMenu(row);
+      await waitFor(() => expect(document.body.querySelector(deleteActionSelector)).toBeTruthy());
+      const deleteAction = document.body.querySelector(deleteActionSelector);
+      if (!(deleteAction instanceof HTMLButtonElement)) {
+        throw new Error("Loop delete action not found");
+      }
+      click(deleteAction);
+
+      await waitFor(() => expect(document.body.querySelector(cancelSelector)).toBeTruthy());
+      const cancelAction = document.body.querySelector(cancelSelector);
+      if (!(cancelAction instanceof HTMLButtonElement)) {
+        throw new Error("Loop delete cancel action not found");
+      }
+      click(cancelAction);
+
+      expect(fake.callsFor("delete_loop")).toHaveLength(0);
+      expect(rendered.root.querySelector(rowSelector)).toBeTruthy();
+      expect(document.body.querySelector(cancelSelector)).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("confirms loop delete through selectors and removes the visible loop", async () => {
+    const fake = new FakeTransport();
+    let deleted = false;
+
+    fake.resolve("new_project", {
+      path: projectPath,
+      registered: true,
+      created: false,
+    });
+    fake.onInvoke("discover_project", () =>
+      deleted ? discoveryWithLoops([]) : discoveryWithLoop(disabledLoop())
+    );
+    fake.onInvoke("delete_loop", (args) => {
+      expect(args).toEqual({
+        projectPath,
+        id: "weekday-standup",
+      });
+      deleted = true;
+    });
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+
+      const projectId = automationIdPart(projectPath);
+      const loopId = automationIdPart("weekday-standup");
+      const rowSelector = `[data-ac-testid="loop.row.${projectId}.${loopId}"]`;
+      const deleteActionSelector = `[data-ac-testid="loop.action.delete.${projectId}.${loopId}"]`;
+      const confirmSelector = `[data-ac-testid="loop.delete.confirm.${projectId}.${loopId}"]`;
+
+      await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeTruthy());
+      const row = rendered.root.querySelector(rowSelector);
+      if (!(row instanceof HTMLElement)) {
+        throw new Error("Loop row not found");
+      }
+
+      contextMenu(row);
+      await waitFor(() => expect(document.body.querySelector(deleteActionSelector)).toBeTruthy());
+      const deleteAction = document.body.querySelector(deleteActionSelector);
+      if (!(deleteAction instanceof HTMLButtonElement)) {
+        throw new Error("Loop delete action not found");
+      }
+      click(deleteAction);
+
+      await waitFor(() => expect(document.body.querySelector(confirmSelector)).toBeTruthy());
+      const confirmAction = document.body.querySelector(confirmSelector);
+      if (!(confirmAction instanceof HTMLButtonElement)) {
+        throw new Error("Loop delete confirm action not found");
+      }
+      click(confirmAction);
+
+      await waitFor(() => expect(fake.callsFor("delete_loop")).toHaveLength(1));
+      await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeNull());
+      expect(document.body.querySelector(confirmSelector)).toBeNull();
     } finally {
       rendered.cleanup();
     }

@@ -228,6 +228,8 @@ const ProjectPanel: Component = () => {
         const [loopCtxMenu, setLoopCtxMenu] = createSignal<{ loop: AcLoopSummary; x: number; y: number } | null>(null);
         const [loopsHeaderCtxMenu, setLoopsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [loopActionInProgress, setLoopActionInProgress] = createSignal<string | null>(null);
+        const [deletingLoop, setDeletingLoop] = createSignal<AcLoopSummary | null>(null);
+        const [loopDeleteError, setLoopDeleteError] = createSignal("");
         const [teamsHeaderCtxMenu, setTeamsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [deletingAgent, setDeletingAgent] = createSignal<{ name: string; path: string } | null>(null);
         const [agentDeleteError, setAgentDeleteError] = createSignal("");
@@ -253,8 +255,13 @@ const ProjectPanel: Component = () => {
           setDeleteInProgress(false);
           setDeletingTeam(null);
         };
+        const closeLoopDeleteModal = () => {
+          if (loopActionInProgress()) return;
+          setLoopDeleteError("");
+          setDeletingLoop(null);
+        };
         createEffect(() => {
-          if (!deletingAgent() && !deletingWg() && !deletingTeam()) return;
+          if (!deletingAgent() && !deletingWg() && !deletingTeam() && !deletingLoop()) return;
           const handleDeleteModalKeyDown = (e: KeyboardEvent) => {
             if (e.key !== "Escape") return;
             if (deletingAgent()) {
@@ -263,6 +270,10 @@ const ProjectPanel: Component = () => {
             }
             if (deletingWg()) {
               closeWgDeleteModal();
+              return;
+            }
+            if (deletingLoop()) {
+              closeLoopDeleteModal();
               return;
             }
             closeTeamDeleteModal();
@@ -483,6 +494,24 @@ const ProjectPanel: Component = () => {
             await projectStore.reloadProject(proj.path);
           } catch (e) {
             console.error(`Loop ${action} failed:`, e);
+          } finally {
+            setLoopActionInProgress(null);
+          }
+        };
+
+        const deleteLoop = async (loop: AcLoopSummary) => {
+          const actionKey = `${loop.id}:delete`;
+          if (loopActionInProgress()) return;
+          setLoopActionInProgress(actionKey);
+          setLoopDeleteError("");
+          try {
+            await LoopAPI.delete(proj.path, loop.id);
+            projectStore.removeLoop(proj.path, loop.id);
+            await projectStore.reloadProject(proj.path);
+            setDeletingLoop(null);
+          } catch (e: unknown) {
+            console.error("delete_loop failed:", e);
+            setLoopDeleteError(typeof e === "string" ? e : e instanceof Error ? e.message : "Failed to delete Loop");
           } finally {
             setLoopActionInProgress(null);
           }
@@ -1678,22 +1707,66 @@ const ProjectPanel: Component = () => {
                   <button
                     class="session-context-option context-option-danger"
                     disabled={loopActionInProgress() === `${loopCtxMenu()!.loop.id}:delete`}
-                    onClick={async () => {
+                    onClick={() => {
                       const menu = loopCtxMenu();
                       setLoopCtxMenu(null);
                       cleanupCtx();
                       if (!menu) return;
-                      const confirmed = window.confirm(`Delete Loop '${menu.loop.name}'?`);
-                      if (!confirmed) return;
-                      await runLoopAction(menu.loop, "delete", async () => {
-                        await LoopAPI.delete(proj.path, menu.loop.id);
-                        return null;
-                      });
+                      setLoopDeleteError("");
+                      setDeletingLoop(menu.loop);
                     }}
                     data-ac-testid={`loop.action.delete.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
                   >
                     Delete Loop
                   </button>
+                </div>
+              </Portal>
+            )}
+
+            {/* Delete Loop confirmation */}
+            {deletingLoop() && (
+              <Portal>
+                <div class="modal-overlay">
+                  <div
+                    class="agent-modal"
+                    style={{ "max-width": "360px" }}
+                    data-ac-testid={`loop.delete.dialog.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                  >
+                    <div class="agent-modal-header">
+                      <span class="agent-modal-title">Delete Loop</span>
+                    </div>
+                    <div class="new-agent-form">
+                      <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
+                        Delete Loop <strong>{deletingLoop()!.name}</strong>? This will remove the Loop configuration and scheduled delivery state. This action cannot be undone.
+                      </p>
+                      <Show when={loopDeleteError()}>
+                        <div class="new-agent-error">{loopDeleteError()}</div>
+                      </Show>
+                    </div>
+                    <div class="new-agent-footer">
+                      <button
+                        class="new-agent-cancel-btn"
+                        onClick={closeLoopDeleteModal}
+                        disabled={loopActionInProgress() === `${deletingLoop()!.id}:delete`}
+                        data-ac-testid={`loop.delete.cancel.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        class="new-agent-create-btn"
+                        style={{ "background": "var(--danger, #c0392b)" }}
+                        disabled={loopActionInProgress() === `${deletingLoop()!.id}:delete`}
+                        onClick={() => {
+                          const loop = deletingLoop();
+                          if (!loop) return;
+                          void deleteLoop(loop);
+                        }}
+                        data-ac-testid={`loop.delete.confirm.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                      >
+                        {loopActionInProgress() === `${deletingLoop()!.id}:delete` ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </Portal>
             )}

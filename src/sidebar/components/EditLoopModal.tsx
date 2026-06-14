@@ -307,6 +307,7 @@ const EditLoopModal: Component<{
             class="new-agent-cancel-btn"
             onClick={() => props.onClose()}
             disabled={saving()}
+            data-ac-testid="loop.edit.cancel"
           >
             Cancel
           </button>

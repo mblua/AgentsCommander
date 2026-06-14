@@ -82,7 +82,7 @@ async function makePreviewReady(): Promise<void> {
 
 let dispose: (() => void) | undefined;
 
-function renderModal(loop: AcLoopSummary = loopSummary): void {
+function renderModal(loop: AcLoopSummary = loopSummary, onClose: () => void = () => {}): void {
   const root = document.createElement("div");
   document.body.append(root);
   dispose = render(
@@ -91,7 +91,7 @@ function renderModal(loop: AcLoopSummary = loopSummary): void {
         projectPath: "C:\\Project",
         workgroups: workgroups(),
         loop,
-        onClose: () => {},
+        onClose,
       }),
     root,
   );
@@ -157,6 +157,18 @@ describe("EditLoopModal", () => {
     expect(LoopAPI.update).toHaveBeenCalledWith("C:\\Project", "weekday-standup", {
       name: "Renamed standup",
     });
+  });
+
+  it("exposes selector-addressable cancel and closes without saving changes", async () => {
+    const onClose = vi.fn();
+    renderModal(loopSummary, onClose);
+    await settle();
+
+    changeInput('[data-ac-testid="loop.edit.name"]', "Renamed standup");
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.edit.cancel"]')?.click();
+
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(LoopAPI.update).not.toHaveBeenCalled();
   });
 
   it("preserves the loaded current forceInject policy when the summary prop is stale", async () => {
