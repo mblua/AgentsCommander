@@ -9,6 +9,7 @@ vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
     get: vi.fn(() => Promise.resolve(settings())),
     update: vi.fn(() => Promise.resolve()),
+    saveDraft: vi.fn(() => Promise.resolve()),
     updateCodingAgentProfiles: vi.fn(() => Promise.resolve()),
     updateCodingAgentEnvSettings: vi.fn(() => Promise.resolve()),
     getWebServerStatus: vi.fn(() => Promise.resolve(false)),
@@ -236,9 +237,12 @@ describe("SettingsModal automation hooks", () => {
     document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
     await settle();
 
-    expect(SettingsAPI.update).toHaveBeenCalledWith(
+    expect(SettingsAPI.saveDraft).toHaveBeenCalledWith(
       expect.objectContaining({ injectRtkHook: true }),
     );
+    expect(SettingsAPI.update).not.toHaveBeenCalled();
+    expect(SettingsAPI.updateCodingAgentProfiles).not.toHaveBeenCalled();
+    expect(SettingsAPI.updateCodingAgentEnvSettings).not.toHaveBeenCalled();
     expect(SettingsAPI.sweepRtkHook).toHaveBeenCalledWith(true);
 
     resolveLoadedSettings(settings());

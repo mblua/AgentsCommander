@@ -424,15 +424,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         settings.data,
         await SettingsAPI.get()
       );
-      await SettingsAPI.update(nextSettings);
-      await SettingsAPI.updateCodingAgentProfiles(nextSettings.codingAgentProfiles);
-      for (const agent of nextSettings.agents) {
-        await SettingsAPI.updateCodingAgentEnvSettings(
-          agent.id,
-          agent.envs ?? [],
-          agent.isolateCodexHome ?? false
-        );
-      }
+      await SettingsAPI.saveDraft(nextSettings);
       setSettings("data", nextSettings);
       // #158 — push soundsEnabled into sound.ts synchronously so the gate
       // updates before the settingsStore.refresh() roundtrip below resolves.
@@ -444,7 +436,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
       }
       // RTK sweep — only when the toggle value changed during this modal session.
-      // Fired AFTER update_settings persists, so a sweep failure cannot leave
+      // Fired AFTER save_settings_draft persists, so a sweep failure cannot leave
       // the persisted setting in disagreement with the on-disk replica state
       // worse than the pre-save baseline.
       const initial = initialInjectRtk();
