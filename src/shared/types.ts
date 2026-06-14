@@ -188,7 +188,7 @@ export interface AppSettings {
   specBoardEnabled: boolean;
 }
 
-export type UiAutomationAction = "query" | "click" | "setValue";
+export type UiAutomationAction = "query" | "click" | "contextClick" | "setValue";
 
 export interface UiAutomationRequest {
   requestId: string;
@@ -361,10 +361,79 @@ export interface AcWorkgroup {
   teamName?: string;
 }
 
+export type LoopTriggerKind = "cron";
+export type LoopTargetKind = "workgroupCoordinator";
+export type MissedWhileClosedPolicy = "notify";
+export type BusyCoordinatorPolicy = "waitUntilIdle" | "forceInject" | "skip";
+
+export interface LoopLastResult {
+  kind: string;
+  message: string;
+}
+
+export interface AcLoopSummary {
+  id: string;
+  name: string;
+  enabled: boolean;
+  expr: string;
+  timezone: string;
+  targetKind: LoopTargetKind;
+  workgroup: string;
+  promptPreview: string;
+  busyCoordinator: BusyCoordinatorPolicy;
+  path: string;
+  configPath: string;
+  lastCheckedAt: string | null;
+  lastDueAt: string | null;
+  lastDeliveredAt: string | null;
+  lastResult: LoopLastResult | null;
+  pendingDueAt: string | null;
+  lastMissedClosedAt: string | null;
+  nextDueAt: string | null;
+}
+
+export interface LoopConfigDetails {
+  summary: AcLoopSummary;
+  promptBody: string;
+}
+
+export interface LoopCreateInput {
+  id?: string | null;
+  name: string;
+  expr: string;
+  workgroup: string;
+  promptBody: string;
+  busyCoordinator?: BusyCoordinatorPolicy | null;
+  enabled?: boolean | null;
+}
+
+export interface LoopUpdateInput {
+  name?: string | null;
+  expr?: string | null;
+  workgroup?: string | null;
+  promptBody?: string | null;
+  busyCoordinator?: BusyCoordinatorPolicy | null;
+  enabled?: boolean | null;
+}
+
+export interface LoopCronPreview {
+  nextDueAt: string | null;
+  upcoming: string[];
+}
+
+export interface LoopEventPayload {
+  kind: string;
+  projectPath: string;
+  loopId: string;
+  summary?: AcLoopSummary | null;
+  message?: string | null;
+}
+
 export interface AcDiscoveryResult {
   agents: AcAgentMatrix[];
   teams: AcTeam[];
   workgroups: AcWorkgroup[];
+  loops: AcLoopSummary[];
 }
 
 export type AcProjectRefreshReason =

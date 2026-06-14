@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod errors;
 pub mod logging;
+pub mod loops;
 pub mod network;
 pub mod phone;
 pub mod pty;
@@ -242,10 +243,19 @@ pub fn run(
                 );
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
+                let app_for_idle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let mgr = mgr_clone.read().await;
                     mgr.mark_idle(id).await;
                     crate::config::sessions_persistence::persist_current_state(&mgr).await;
+                    if let Some(scheduler) =
+                        app_for_idle.try_state::<Arc<loops::scheduler::LoopScheduler>>()
+                    {
+                        scheduler
+                            .inner()
+                            .on_session_idle(app_for_idle.clone(), id)
+                            .await;
+                    }
                 });
             }
         },
@@ -291,6 +301,8 @@ pub fn run(
     let spec_board_state: SpecBoardState = Arc::new(tokio::sync::RwLock::new(
         commands::spec_board::SpecBoardManager::new(),
     ));
+    let loop_scheduler = Arc::new(loops::scheduler::LoopScheduler::new());
+    let loop_scheduler_for_setup = Arc::clone(&loop_scheduler);
 
     // Issue #120 — RTK sweep mutex. Acquired by every in-process writer of
     // `.claude/settings.local.json`. See plan §7.5 for the design.
@@ -321,6 +333,7 @@ pub fn run(
         .manage(settings)
         .manage(detached_sessions.clone())
         .manage(spec_board_state.clone())
+        .manage(loop_scheduler.clone())
         .manage(web_access_token.clone())
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
@@ -552,6 +565,10 @@ pub fn run(
             // Start the mailbox poller for inter-agent message delivery
             let mailbox_poller = phone::mailbox::MailboxPoller::new();
             mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone());
+
+            loop_scheduler_for_setup
+                .clone()
+                .start(app.handle().clone(), shutdown_for_setup.clone());
 
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .expect("Failed to load app icon");
@@ -1637,6 +1654,13 @@ pub fn run(
             commands::ac_discovery::discover_project,
             commands::ac_discovery::get_replica_context_files,
             commands::ac_discovery::set_replica_context_files,
+            commands::loops::create_loop,
+            commands::loops::update_loop,
+            commands::loops::delete_loop,
+            commands::loops::toggle_loop,
+            commands::loops::run_loop_now,
+            commands::loops::get_loop_config,
+            commands::loops::preview_loop_cron,
             commands::entity_creation::create_agent_matrix,
             commands::entity_creation::delete_agent_matrix,
             commands::entity_creation::list_all_agents,

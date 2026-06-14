@@ -38,6 +38,19 @@ pub async fn inject_text_into_session<R: tauri::Runtime>(
     session_id: Uuid,
     text: &str,
 ) -> Result<(), String> {
+    inject_text_into_session_with_pre_write_check(app, session_id, text, || Ok(())).await
+}
+
+pub(crate) async fn inject_text_into_session_with_pre_write_check<R, F>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    text: &str,
+    pre_write_check: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    F: FnOnce() -> Result<(), String>,
+{
     // Resolve shell without holding any lock across an await point
     let shell = {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -54,6 +67,8 @@ pub async fn inject_text_into_session<R: tauri::Runtime>(
         shell,
         send_enter
     );
+
+    pre_write_check()?;
 
     // Write the text block
     {
