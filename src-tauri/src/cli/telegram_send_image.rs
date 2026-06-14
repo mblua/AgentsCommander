@@ -144,7 +144,16 @@ pub fn execute(args: TelegramSendImageArgs) -> i32 {
         }
     };
 
+    let network = match crate::network::OutboundNetwork::new() {
+        Ok(network) => network,
+        Err(e) => {
+            eprintln!("Error: failed to build network client: {}", e);
+            return 1;
+        }
+    };
+
     let result = rt.block_on(crate::commands::telegram::perform_send_image(
+        &network,
         &bot,
         &args.path,
         args.caption.as_deref(),

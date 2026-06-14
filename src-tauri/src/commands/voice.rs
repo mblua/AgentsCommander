@@ -2,6 +2,7 @@ use base64::Engine;
 use tauri::State;
 
 use crate::config::settings::SettingsState;
+use crate::network::OutboundNetwork;
 use crate::voice::tracker::VoiceTrackingState;
 
 #[derive(serde::Deserialize)]
@@ -132,9 +133,21 @@ pub async fn transcribe_audio(
     Ok(text)
 }
 
+pub async fn transcribe_audio_with_network(
+    network: &OutboundNetwork,
+    audio_bytes: &[u8],
+    mime_type: &str,
+    api_key: &str,
+    model: &str,
+) -> Result<String, String> {
+    let _permit = network.acquire("gemini.transcribe_audio").await?;
+    transcribe_audio(network.gemini(), audio_bytes, mime_type, api_key, model).await
+}
+
 #[tauri::command]
 pub async fn voice_transcribe(
     settings: State<'_, SettingsState>,
+    network: State<'_, OutboundNetwork>,
     audio: Vec<u8>,
     mime_type: String,
 ) -> Result<String, String> {
@@ -157,12 +170,7 @@ pub async fn voice_transcribe(
         return Err("No audio data provided".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    transcribe_audio(&client, &audio, &mime_type, &api_key, &model).await
+    transcribe_audio_with_network(&network, &audio, &mime_type, &api_key, &model).await
 }
 
 #[tauri::command]

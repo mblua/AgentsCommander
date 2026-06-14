@@ -1,4 +1,4 @@
-# 04 Terminal Sessions
+# 07 Terminal Sessions
 
 These cases validate terminal creation, PTY output, keyboard input, terminal resize/reflow, session switching, detached terminal windows, and terminal cleanup when sessions stop or close.
 

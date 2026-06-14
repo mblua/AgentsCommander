@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+const WS_CLIENT_QUEUE_CAP: usize = 1024;
+
 /// Message types sent to WebSocket clients.
 #[derive(Clone, Debug)]
 pub enum WsOutMsg {
@@ -14,7 +16,7 @@ pub enum WsOutMsg {
 /// Thread-safe (Mutex-based) so it can be called from native PTY read threads.
 #[derive(Clone)]
 pub struct WsBroadcaster {
-    senders: Arc<Mutex<Vec<mpsc::UnboundedSender<WsOutMsg>>>>,
+    senders: Arc<Mutex<Vec<mpsc::Sender<WsOutMsg>>>>,
 }
 
 impl Default for WsBroadcaster {
@@ -31,8 +33,8 @@ impl WsBroadcaster {
     }
 
     /// Register a new client's sender. Returns the receiver for the WS write loop.
-    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<WsOutMsg> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    pub fn subscribe(&self) -> mpsc::Receiver<WsOutMsg> {
+        let (tx, rx) = mpsc::channel(WS_CLIENT_QUEUE_CAP);
         let mut senders = self.senders.lock().unwrap();
         senders.push(tx);
         rx
@@ -46,7 +48,7 @@ impl WsBroadcaster {
         let out = WsOutMsg::Text(text);
 
         let mut senders = self.senders.lock().unwrap();
-        senders.retain(|tx| tx.send(out.clone()).is_ok());
+        senders.retain(|tx| tx.try_send(out.clone()).is_ok());
     }
 
     /// Broadcast PTY output as binary frame: 36-byte UUID ASCII + raw bytes.
@@ -65,11 +67,31 @@ impl WsBroadcaster {
 
         let out = WsOutMsg::Binary(frame);
         let mut senders = self.senders.lock().unwrap();
-        senders.retain(|tx| tx.send(out.clone()).is_ok());
+        senders.retain(|tx| tx.try_send(out.clone()).is_ok());
     }
 
     /// Number of connected clients (for diagnostics).
     pub fn client_count(&self) -> usize {
         self.senders.lock().unwrap().len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drops_slow_client_when_queue_is_full() {
+        let broadcaster = WsBroadcaster::new();
+        let _slow_rx = broadcaster.subscribe();
+        assert_eq!(broadcaster.client_count(), 1);
+
+        for n in 0..WS_CLIENT_QUEUE_CAP {
+            broadcaster.broadcast_event("tick", &serde_json::json!({ "n": n }));
+            assert_eq!(broadcaster.client_count(), 1);
+        }
+
+        broadcaster.broadcast_event("tick", &serde_json::json!({ "n": "overflow" }));
+        assert_eq!(broadcaster.client_count(), 0);
     }
 }

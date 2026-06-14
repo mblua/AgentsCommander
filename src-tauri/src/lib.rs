@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod errors;
 pub mod logging;
+pub mod network;
 pub mod phone;
 pub mod pty;
 pub mod session;
@@ -160,6 +161,7 @@ pub(crate) fn should_auto_create_root_agent_on_first_restore(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
+    ui_automation_enabled: bool,
 ) {
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
     // for the rationale. Idempotent, so a hypothetical second call (or the
@@ -185,6 +187,10 @@ pub fn run(
     let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
     let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
+    let ui_automation_state = crate::testability::ui_automation::UiAutomationState::new(
+        ui_automation_enabled,
+        config_dir.clone(),
+    );
 
     // Generate web access token — separate from master token for limited blast radius
     let web_access_token = Arc::new(WebAccessToken::new(uuid::Uuid::new_v4().to_string()));
@@ -301,6 +307,8 @@ pub fn run(
     let shutdown_for_setup = shutdown_signal.clone();
     let shutdown_for_exit = shutdown_signal.clone();
     let tg_mgr_for_exit = tg_mgr.clone();
+    let ui_automation_state_for_setup = ui_automation_state.clone();
+    let ui_automation_state_for_exit = ui_automation_state.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -308,6 +316,7 @@ pub fn run(
         .manage(app_outbox)
         .manage(session_mgr)
         .manage(tg_mgr)
+        .manage(network::OutboundNetwork::new().expect("failed to build shared network clients"))
         .manage(voice_tracking)
         .manage(settings)
         .manage(detached_sessions.clone())
@@ -317,6 +326,7 @@ pub fn run(
         .manage(WebServerHandle::default())
         .manage(rtk_sweep_lock)
         .manage(rtk_startup_mode)
+        .manage(ui_automation_state)
         .manage(shutdown_signal)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
         .setup(move |app| {
@@ -890,6 +900,8 @@ pub fn run(
             if saved_settings.main_always_on_top {
                 let _ = main_win.set_always_on_top(true);
             }
+
+            ui_automation_state_for_setup.start(app.handle().clone(), shutdown_for_setup.clone());
 
             // Suppress unused variable warning
             let _ = &main_win;
@@ -1576,6 +1588,9 @@ pub fn run(
             commands::telegram::telegram_get_bridge,
             commands::telegram::telegram_send_test,
             commands::telegram::telegram_send_image,
+            commands::testability::ui_automation_enabled,
+            commands::testability::ui_automation_frontend_ready,
+            commands::testability::ui_automation_complete,
             commands::window::detach_terminal,
             commands::window::attach_terminal,
             commands::window::list_detached_sessions,
@@ -1695,9 +1710,12 @@ pub fn run(
                 }
                 tauri::RunEvent::Exit => {
                     // Cancel all active Telegram bridges before general shutdown
-                    {
-                        let tg = tauri::async_runtime::block_on(tg_mgr_for_exit.lock());
-                        tg.cancel_all();
+                    let bridge_shutdowns = {
+                        let mut tg = tauri::async_runtime::block_on(tg_mgr_for_exit.lock());
+                        tg.cancel_all()
+                    };
+                    for shutdown in bridge_shutdowns {
+                        shutdown.abort_now();
                     }
 
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
@@ -1717,6 +1735,7 @@ pub fn run(
                     // Still runs before process exit — subsequent CLI invocations
                     // see NoPidFile (not StalePidFile) once we return.
                     crate::config::daemon_pid::remove_pid_file();
+                    ui_automation_state_for_exit.cleanup_session_file();
                 }
                 _ => {}
             }

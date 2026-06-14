@@ -3345,6 +3345,11 @@ mod tests {
     }
 
     const MAILBOX_MASTER_TOKEN: &str = "mailbox-master-token";
+    const CANONICAL_WAKE_FROM: &str = "proj-a:wg-1-dev-team/tech-lead";
+    const CANONICAL_WAKE_TO: &str = "proj-a:wg-1-dev-team/dev-rust";
+    const LOCAL_WAKE_FROM: &str = "wg-1-dev-team/tech-lead";
+    const LOCAL_WAKE_TO: &str = "wg-1-dev-team/dev-rust";
+    const WAKE_BODY: &str = "wake body";
 
     fn make_mailbox_app(projects_root: &Path) -> tauri::App<tauri::test::MockRuntime> {
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -3484,6 +3489,20 @@ mod tests {
     }
 
     fn write_wake_outbox_message(sender_cwd: &Path, msg_id: &str) -> PathBuf {
+        write_wake_outbox_message_with_route(
+            sender_cwd,
+            msg_id,
+            CANONICAL_WAKE_FROM,
+            CANONICAL_WAKE_TO,
+        )
+    }
+
+    fn write_wake_outbox_message_with_route(
+        sender_cwd: &Path,
+        msg_id: &str,
+        from: &str,
+        to: &str,
+    ) -> PathBuf {
         let outbox_dir = sender_cwd
             .join(crate::config::agent_local_dir_name())
             .join("outbox");
@@ -3492,9 +3511,9 @@ mod tests {
         let msg = OutboxMessage {
             id: msg_id.into(),
             token: Some(MAILBOX_MASTER_TOKEN.into()),
-            from: "proj-a:wg-1-dev-team/tech-lead".into(),
-            to: "proj-a:wg-1-dev-team/dev-rust".into(),
-            body: "wake body".into(),
+            from: from.into(),
+            to: to.into(),
+            body: WAKE_BODY.into(),
             mode: "wake".into(),
             get_output: false,
             request_id: None,
@@ -3510,6 +3529,51 @@ mod tests {
         };
         std::fs::write(&message_path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
         message_path
+    }
+
+    fn assert_no_spawn_or_destroy_events(hooks: &MailboxTestHooks) {
+        let events = hooks.events.lock().unwrap().clone();
+        assert!(
+            events.iter().all(|event| !matches!(
+                event,
+                MailboxTestEvent::Spawn(_) | MailboxTestEvent::Destroy(_)
+            )),
+            "unexpected spawn or destroy event: {:?}",
+            events
+        );
+    }
+
+    fn assert_inject_results_consumed(hooks: &MailboxTestHooks) {
+        assert!(
+            hooks.inject_results.lock().unwrap().is_empty(),
+            "all scripted inject results should be consumed"
+        );
+    }
+
+    fn assert_spawn_call_matches_target(call: &MailboxSpawnCall, fixture: &MailboxFixture) {
+        assert_eq!(call.to, CANONICAL_WAKE_TO);
+        assert_eq!(call.cwd, fixture.target_cwd.to_string_lossy().to_string());
+        assert_eq!(call.session_name, LOCAL_WAKE_TO);
+        assert_eq!(call.shell, "codex");
+        assert_eq!(call.shell_args, vec!["--yolo"]);
+    }
+
+    async fn assert_spawned_session_matches_target<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        fixture: &MailboxFixture,
+    ) {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let spawned = mgr.get_session(session_id).await.unwrap();
+        assert_eq!(
+            spawned.working_directory,
+            fixture.target_cwd.to_string_lossy().to_string()
+        );
+        assert_eq!(spawned.name, LOCAL_WAKE_TO);
+        assert_eq!(spawned.shell, "codex");
+        assert_eq!(spawned.shell_args, vec!["--yolo"]);
+        assert!(spawned.waiting_for_input);
     }
 
     async fn run_mailbox_message<R: tauri::Runtime>(
@@ -3534,6 +3598,14 @@ mod tests {
             .expect("process mailbox message");
         assert!(!message_path.exists());
         assert!(delivered.exists());
+        let delivered_msg: OutboxMessage =
+            serde_json::from_str(&std::fs::read_to_string(&delivered).unwrap()).unwrap();
+        assert_eq!(delivered_msg.id, msg_id);
+        assert_eq!(delivered_msg.token, None);
+        assert_eq!(delivered_msg.from, CANONICAL_WAKE_FROM);
+        assert_eq!(delivered_msg.to, CANONICAL_WAKE_TO);
+        assert_eq!(delivered_msg.body, WAKE_BODY);
+        assert_eq!(delivered_msg.mode, "wake");
     }
 
     #[test]
@@ -4702,13 +4774,22 @@ mod tests {
         hooks.pty_presence.lock().unwrap().insert(phantom_id, false);
         hooks.pty_presence.lock().unwrap().insert(live_id, true);
         hooks.inject_results.lock().unwrap().push_back(Ok(()));
-        let message_path = write_wake_outbox_message(&fixture.sender_cwd, "msg-live");
+        let message_path = write_wake_outbox_message_with_route(
+            &fixture.sender_cwd,
+            "msg-live",
+            LOCAL_WAKE_FROM,
+            LOCAL_WAKE_TO,
+        );
 
         run_mailbox_message(&app, &message_path, hooks.clone()).await;
 
-        assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![live_id]);
+        let injected = hooks.inject_calls.lock().unwrap().clone();
+        assert_eq!(injected, vec![live_id]);
+        assert!(!injected.contains(&phantom_id));
         assert!(hooks.destroy_calls.lock().unwrap().is_empty());
         assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert_no_spawn_or_destroy_events(&hooks);
+        assert_inject_results_consumed(&hooks);
     }
 
     #[tokio::test]
@@ -4750,7 +4831,10 @@ mod tests {
             *hooks.inject_calls.lock().unwrap(),
             vec![first_id, second_id]
         );
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
         assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert_no_spawn_or_destroy_events(&hooks);
+        assert_inject_results_consumed(&hooks);
     }
 
     #[tokio::test]
@@ -4776,28 +4860,17 @@ mod tests {
         let spawn_calls = hooks.spawn_calls.lock().unwrap().clone();
         assert_eq!(spawn_calls.len(), 1);
         assert!(!spawn_calls[0].skip_auto_resume);
-        assert_eq!(
-            spawn_calls[0].cwd,
-            fixture.target_cwd.to_string_lossy().to_string()
-        );
-        assert_eq!(spawn_calls[0].session_name, "wg-1-dev-team/dev-rust");
-        assert_eq!(spawn_calls[0].shell, "codex");
-        assert_eq!(spawn_calls[0].shell_args, vec!["--yolo"]);
+        assert_spawn_call_matches_target(&spawn_calls[0], &fixture);
 
         let injected = hooks.inject_calls.lock().unwrap().clone();
         assert_eq!(injected.len(), 1);
         assert_ne!(injected[0], exited_id);
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
-        let spawned = mgr.get_session(injected[0]).await.unwrap();
-        assert_eq!(
-            spawned.working_directory,
-            fixture.target_cwd.to_string_lossy().to_string()
-        );
-        assert_eq!(spawned.name, "wg-1-dev-team/dev-rust");
-        assert_eq!(spawned.shell, "codex");
-        assert_eq!(spawned.shell_args, vec!["--yolo"]);
-        assert!(spawned.waiting_for_input);
+        assert!(mgr.get_session(exited_id).await.is_none());
+        drop(mgr);
+        assert_spawned_session_matches_target(&app, injected[0], &fixture).await;
+        assert_inject_results_consumed(&hooks);
     }
 
     #[tokio::test]
@@ -4820,9 +4893,19 @@ mod tests {
         run_mailbox_message(&app, &message_path, hooks.clone()).await;
 
         assert_eq!(*hooks.destroy_calls.lock().unwrap(), vec![exited_id]);
+        let spawn_calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(spawn_calls.len(), 1);
+        assert!(!spawn_calls[0].skip_auto_resume);
+        assert_spawn_call_matches_target(&spawn_calls[0], &fixture);
         let injected = hooks.inject_calls.lock().unwrap().clone();
         assert_eq!(injected.len(), 1);
         let new_session_id = injected[0];
+        assert_ne!(new_session_id, exited_id);
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        assert!(mgr.get_session(exited_id).await.is_none());
+        drop(mgr);
+        assert_spawned_session_matches_target(&app, new_session_id, &fixture).await;
         assert_eq!(
             *hooks.attach_calls.lock().unwrap(),
             vec![(new_session_id, Some("bot-1".into()))]
@@ -4843,7 +4926,7 @@ mod tests {
             .position(|event| *event == MailboxTestEvent::Inject(new_session_id))
             .unwrap();
         assert!(attach_pos < inject_pos);
-        assert!(!hooks.spawn_calls.lock().unwrap()[0].skip_auto_resume);
+        assert_inject_results_consumed(&hooks);
     }
 
     #[tokio::test]
@@ -4889,11 +4972,14 @@ mod tests {
         let spawn_calls = hooks.spawn_calls.lock().unwrap().clone();
         assert_eq!(spawn_calls.len(), 1);
         assert!(!spawn_calls[0].skip_auto_resume);
+        assert_spawn_call_matches_target(&spawn_calls[0], &fixture);
         let injected = hooks.inject_calls.lock().unwrap().clone();
         assert_eq!(injected.len(), 3);
         assert_eq!(&injected[0..2], &[first_id, second_id]);
         assert_ne!(injected[2], first_id);
         assert_ne!(injected[2], second_id);
+        assert_spawned_session_matches_target(&app, injected[2], &fixture).await;
+        assert_inject_results_consumed(&hooks);
     }
 
     // ── BOM-tolerant reader tests (issue #130) ──

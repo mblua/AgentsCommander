@@ -24,7 +24,9 @@ import type {
   RoleTemplateMeta,
   SpecBoardDocument,
   SpecBoardSnapshot,
-  SpecBoardChangedEvent
+  SpecBoardChangedEvent,
+  UiAutomationRequest,
+  UiAutomationResponse
 } from "./types";
 
 export interface SessionRepoInput {
@@ -224,6 +226,20 @@ export const DebugAPI = {
   drainErrorLogs: () =>
     transport.invoke<ErrorLogEntry[]>("drain_error_logs"),
 };
+
+export const AutomationAPI = {
+  enabled: () => transport.invoke<boolean>("ui_automation_enabled"),
+  frontendReady: (window: string) =>
+    transport.invoke<void>("ui_automation_frontend_ready", { window }),
+  complete: (result: UiAutomationResponse) =>
+    transport.invoke<void>("ui_automation_complete", { result }),
+};
+
+export function onUiAutomationRequest(
+  callback: (request: UiAutomationRequest) => void
+): Promise<UnlistenFn> {
+  return transport.listen<UiAutomationRequest>("ui_automation_request", callback);
+}
 
 // #264 — content-free ping fired when a new ERROR-level log entry is captured.
 // The listener responds by calling DebugAPI.drainErrorLogs().

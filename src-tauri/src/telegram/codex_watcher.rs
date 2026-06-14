@@ -15,6 +15,7 @@ use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::codex_resolver::canonicalize_cwd_for_codex;
+use crate::network::OutboundNetwork;
 use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
 use crate::telegram::jsonl_kernel::{
     read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
@@ -39,6 +40,7 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
     search_root: PathBuf,
     expected_cwd: String,
     attach_time: DateTime<Utc>,
+    network: OutboundNetwork,
     bot_token: String,
     chat_id: i64,
     session_id: String,
@@ -50,6 +52,7 @@ pub fn spawn_watch_task<R: tauri::Runtime>(
             search_root,
             expected_cwd,
             attach_time,
+            network,
             bot_token,
             chat_id,
             session_id.clone(),
@@ -209,17 +212,13 @@ async fn watch_loop<R: tauri::Runtime>(
     search_root: PathBuf,
     expected_cwd: String,
     attach_time: DateTime<Utc>,
+    network: OutboundNetwork,
     token: String,
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
 ) {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
-
     let mut logger = BridgeLogger::new(&session_id);
     let mut diag = DiagLogger::new();
     let mut buffer = String::new();
@@ -347,7 +346,7 @@ async fn watch_loop<R: tauri::Runtime>(
                     let elapsed = last_buffer_add.elapsed();
                     if elapsed >= flush_delay || buffer.len() > FLUSH_BYTES {
                         flush_buffer(
-                            &mut buffer, &client, &token, chat_id,
+                            &mut buffer, &network, &token, chat_id,
                             &session_id, &app, &mut logger, &mut diag,
                             true,
                         ).await;
@@ -371,7 +370,7 @@ async fn watch_loop<R: tauri::Runtime>(
     if !buffer.is_empty() {
         flush_buffer(
             &mut buffer,
-            &client,
+            &network,
             &token,
             chat_id,
             &session_id,

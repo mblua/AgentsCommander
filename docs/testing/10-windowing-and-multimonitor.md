@@ -1,4 +1,4 @@
-# 08 Windowing And Multimonitor
+# 10 Windowing And Multimonitor
 
 These cases validate deterministic window placement, multi-monitor capture, modal/menu visibility, detached terminal placement, restart geometry, and capture fallback conventions on Windows.
 

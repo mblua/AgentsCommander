@@ -1,4 +1,4 @@
-# 03 Agent Templates And Agency
+# 06 Agent Templates And Agency
 
 These cases validate the GUI surfaces that expose local agent templates, agency-provided templates, install or update prompts, template metadata, filtering, and launching an agent from a selected template.
 

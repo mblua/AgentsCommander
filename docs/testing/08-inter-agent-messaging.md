@@ -1,4 +1,4 @@
-# 05 Inter-Agent Messaging
+# 08 Inter-Agent Messaging
 
 These cases validate CLI-driven and GUI-observable inter-agent messaging, including peer discovery, fire-and-forget delivery, wake routing, file-based message delivery, invalid peer handling, and visible evidence in recipient sessions.
 

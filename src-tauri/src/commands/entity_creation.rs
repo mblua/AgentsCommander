@@ -2214,11 +2214,15 @@ pub(crate) fn determine_next_wg_number(workspace_dir: &Path) -> u32 {
 async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
     #[cfg(windows)]
     const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const GIT_CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    const GIT_RESET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+    let git_target = git_cli_path(target);
     let mut cmd = tokio::process::Command::new("git");
     crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
     cmd.args(["-c", "core.longpaths=true", "clone", "--depth", "1", url])
-        .arg(target.as_os_str());
+        .arg(git_target.as_os_str());
+    cmd.kill_on_drop(true);
 
     #[cfg(windows)]
     {
@@ -2227,9 +2231,14 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = cmd
-        .output()
+    let output = tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output())
         .await
+        .map_err(|_| {
+            format!(
+                "git clone timed out after {} seconds",
+                GIT_CLONE_TIMEOUT.as_secs()
+            )
+        })?
         .map_err(|e| format!("Failed to spawn git clone: {}", e))?;
 
     if !output.status.success() {
@@ -2251,17 +2260,58 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
         );
         let mut reset_cmd = tokio::process::Command::new("git");
         crate::pty::credentials::scrub_credentials_from_tokio_command(&mut reset_cmd);
-        reset_cmd.args(["reset"]).current_dir(target);
+        reset_cmd.args(["reset"]).current_dir(&git_target);
+        reset_cmd.kill_on_drop(true);
         #[cfg(windows)]
         {
             #[allow(unused_imports)]
             use std::os::windows::process::CommandExt;
             reset_cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let _ = reset_cmd.output().await;
+        match tokio::time::timeout(GIT_RESET_TIMEOUT, reset_cmd.output()).await {
+            Ok(Ok(output)) if output.status.success() => {}
+            Ok(Ok(output)) => {
+                log::warn!(
+                    "[entity_creation] fallback git reset failed for {}: {}",
+                    url,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Ok(Err(e)) => {
+                log::warn!(
+                    "[entity_creation] failed to spawn fallback git reset for {}: {}",
+                    url,
+                    e
+                );
+            }
+            Err(_) => {
+                log::warn!(
+                    "[entity_creation] fallback git reset timed out after {} seconds for {}",
+                    GIT_RESET_TIMEOUT.as_secs(),
+                    url
+                );
+            }
+        }
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn git_cli_path(path: &Path) -> PathBuf {
+    let s = path.as_os_str().to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", rest))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(not(windows))]
+fn git_cli_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 #[cfg(test)]
@@ -2271,6 +2321,26 @@ mod tests {
     //! the #107 helper `parse_task_title`.
 
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn git_cli_path_strips_windows_verbatim_prefix() {
+        assert_eq!(
+            git_cli_path(Path::new(r"\\?\C:\tmp\repo-Hello-World")),
+            PathBuf::from(r"C:\tmp\repo-Hello-World")
+        );
+        assert_eq!(
+            git_cli_path(Path::new(r"\\?\UNC\server\share\repo-Hello-World")),
+            PathBuf::from(r"\\server\share\repo-Hello-World")
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn git_cli_path_preserves_non_windows_path() {
+        let path = Path::new("/tmp/repo-Hello-World");
+        assert_eq!(git_cli_path(path), path);
+    }
 
     #[test]
     fn create_agent_matrix_layout_creates_root_and_canonical_subdirs() {

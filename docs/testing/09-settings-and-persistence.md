@@ -1,4 +1,4 @@
-# 07 Settings And Persistence
+# 09 Settings And Persistence
 
 These cases validate settings surfaces and durable state across app restart, including harmless setting changes, project/workgroup registration, window geometry, test reset boundaries, and recovery from invalid or missing disposable settings.
 
