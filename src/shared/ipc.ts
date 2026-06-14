@@ -24,6 +24,7 @@ import type {
   AgencyTemplatesStatus,
   AgencyTemplatesUpdateResult,
   RoleTemplateMeta,
+  CodingAgentProfileResolution,
   SpecBoardDocument,
   SpecBoardSnapshot,
   SpecBoardChangedEvent
@@ -61,6 +62,7 @@ export interface CreateSessionOptions {
 
 export interface RestartSessionOptions {
   agentId?: string;
+  requestedProfile?: string;
   /**
    * Forwarded to the backend `restart_session` command. Omit (or pass `true`)
    * for a true user-intent restart that starts a fresh conversation. Pass
@@ -75,6 +77,7 @@ export interface RestartSessionOptions {
 
 export interface CreateRootAgentOptions {
   agentId?: string;
+  requestedProfile?: string;
 }
 
 export type ProfileSelectionScope = "default" | "instance";
@@ -103,6 +106,7 @@ export const SessionAPI = {
     transport.invoke<Session>("restart_session", {
       id,
       agentId: opts?.agentId ?? null,
+      requestedProfile: opts?.requestedProfile ?? null,
       skipAutoResume: opts?.skipAutoResume ?? null,
     }),
 
@@ -121,6 +125,7 @@ export const SessionAPI = {
   createRootAgent: (opts?: CreateRootAgentOptions) =>
     transport.invoke<Session>("create_root_agent_session", {
       agentId: opts?.agentId ?? null,
+      requestedProfile: opts?.requestedProfile ?? null,
     }),
 };
 
@@ -187,6 +192,16 @@ export const SettingsAPI = {
     transport.invoke<void>("set_agent_default_profile", { agentPath, profile }),
   setInstanceProfileOverride: (agentPath: string, profile: string | null) =>
     transport.invoke<void>("set_instance_profile_override", { agentPath, profile }),
+  resolveCodingAgentProfile: (
+    agentPath: string | null,
+    agentId: string,
+    requestedProfile?: string | null,
+  ) =>
+    transport.invoke<CodingAgentProfileResolution>("resolve_coding_agent_profile", {
+      agentPath,
+      agentId,
+      requestedProfile: requestedProfile ?? null,
+    }),
   sweepRtkHook: (enabled: boolean) =>
     transport.invoke<RtkSweepResult>("sweep_rtk_hook", { enabled }),
   getRtkStartupStatus: () =>

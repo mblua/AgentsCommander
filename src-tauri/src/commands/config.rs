@@ -34,6 +34,20 @@ pub struct RtkSweepError {
     pub error: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingAgentProfileResolutionResult {
+    pub requested_profile: String,
+    pub effective_profile: String,
+    pub fallback_chain: Vec<String>,
+    pub fallback_applied: bool,
+    pub requested_profile_input: Option<String>,
+    pub instance_profile_override: Option<String>,
+    pub origin_default_profile: Option<String>,
+    pub agent_default_profile: Option<String>,
+    pub warnings: Vec<String>,
+}
+
 #[tauri::command]
 pub async fn save_debug_logs(content: String) -> Result<(), String> {
     let path = crate::config::config_dir()
@@ -133,10 +147,13 @@ pub async fn update_coding_agent_env_settings(
 #[tauri::command]
 pub async fn set_agent_default_profile(
     app: AppHandle,
+    settings: State<'_, SettingsState>,
     agent_path: String,
     profile: String,
 ) -> Result<(), String> {
+    let snapshot = settings.read().await.clone();
     crate::config::coding_agent_profiles::set_agent_default_profile(
+        &snapshot,
         std::path::Path::new(&agent_path),
         &profile,
     )?;
@@ -150,10 +167,13 @@ pub async fn set_agent_default_profile(
 #[tauri::command]
 pub async fn set_instance_profile_override(
     app: AppHandle,
+    settings: State<'_, SettingsState>,
     agent_path: String,
     profile: Option<String>,
 ) -> Result<(), String> {
+    let snapshot = settings.read().await.clone();
     crate::config::coding_agent_profiles::set_instance_profile_override(
+        &snapshot,
         std::path::Path::new(&agent_path),
         profile.as_deref(),
     )?;
@@ -162,6 +182,39 @@ pub async fn set_instance_profile_override(
         serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "instance" }),
     );
     Ok(())
+}
+
+#[tauri::command]
+pub async fn resolve_coding_agent_profile(
+    settings: State<'_, SettingsState>,
+    agent_path: Option<String>,
+    agent_id: String,
+    requested_profile: Option<String>,
+) -> Result<CodingAgentProfileResolutionResult, String> {
+    let snapshot = settings.read().await.clone();
+    let agent_path = agent_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from);
+    let details = crate::config::coding_agent_profiles::resolve_profile_selection(
+        &snapshot,
+        agent_path.as_deref(),
+        &agent_id,
+        requested_profile.as_deref(),
+    )?;
+
+    Ok(CodingAgentProfileResolutionResult {
+        requested_profile: details.resolution.requested_profile,
+        effective_profile: details.resolution.effective_profile,
+        fallback_chain: details.resolution.fallback_chain,
+        fallback_applied: details.resolution.fallback_applied,
+        requested_profile_input: details.requested_profile_input,
+        instance_profile_override: details.instance_profile_override,
+        origin_default_profile: details.origin_default_profile,
+        agent_default_profile: details.agent_default_profile,
+        warnings: details.resolution.warnings,
+    })
 }
 
 #[tauri::command]

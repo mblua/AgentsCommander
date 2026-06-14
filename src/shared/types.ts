@@ -127,6 +127,18 @@ export interface ProfileCellConfig {
   notes: string;
 }
 
+export interface CodingAgentProfileResolution {
+  requestedProfile: string;
+  effectiveProfile: string;
+  fallbackChain: string[];
+  fallbackApplied: boolean;
+  requestedProfileInput: string | null;
+  instanceProfileOverride: string | null;
+  originDefaultProfile: string | null;
+  agentDefaultProfile: string | null;
+  warnings: string[];
+}
+
 export interface RepoMatch {
   name: string;
   path: string;

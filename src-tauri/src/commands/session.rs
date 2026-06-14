@@ -1540,6 +1540,13 @@ fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
     requested.unwrap_or(true)
 }
 
+fn effective_restart_requested_profile(
+    requested: Option<String>,
+    stored: Option<String>,
+) -> Option<String> {
+    requested.or(stored)
+}
+
 /// Restart a session: destroy the existing one and recreate it with the same
 /// configuration but a fresh PTY. By default suppresses provider auto-resume
 /// (true user-intent restart — fresh conversation).
@@ -1574,6 +1581,7 @@ pub async fn restart_session(
     settings: State<'_, SettingsState>,
     id: String,
     agent_id: Option<String>,
+    requested_profile: Option<String>,
     skip_auto_resume: Option<bool>,
 ) -> Result<SessionInfo, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
@@ -1625,13 +1633,15 @@ pub async fn restart_session(
 
     let requested_agent_id = agent_id;
     let selected_agent_id = requested_agent_id.clone().or(stored_agent_id.clone());
+    let selected_requested_profile =
+        effective_restart_requested_profile(requested_profile, stored_requested_profile);
     let resolved_spawn = if let Some(ref aid) = selected_agent_id {
         let cfg = settings.read().await;
         let resolved = build_configured_agent_spawn_for_cwd(
             &cfg,
             aid,
             &cwd,
-            stored_requested_profile.as_deref(),
+            selected_requested_profile.as_deref(),
         )?;
         drop(cfg);
         resolved
@@ -2043,6 +2053,7 @@ pub(crate) async fn create_root_agent_inner(
     _tg_mgr: &TelegramBridgeState,
     settings: &SettingsState,
     requested_agent_id: Option<String>,
+    requested_profile: Option<String>,
     skip_auto_resume_for_new_session: bool,
 ) -> Result<SessionInfo, String> {
     let _guard = root_agent_session_lock().lock().await;
@@ -2131,7 +2142,12 @@ pub(crate) async fn create_root_agent_inner(
         };
     let resolved_spawn = if let Some(aid) = agent_id.as_deref() {
         let cfg = settings.read().await;
-        build_configured_agent_spawn_for_cwd(&cfg, aid, &root_agent_path, None)?
+        build_configured_agent_spawn_for_cwd(
+            &cfg,
+            aid,
+            &root_agent_path,
+            requested_profile.as_deref(),
+        )?
     } else {
         None
     };
@@ -2190,6 +2206,7 @@ pub async fn create_root_agent_session(
     tg_mgr: State<'_, TelegramBridgeState>,
     settings: State<'_, SettingsState>,
     agent_id: Option<String>,
+    requested_profile: Option<String>,
 ) -> Result<SessionInfo, String> {
     create_root_agent_inner(
         &app,
@@ -2198,6 +2215,7 @@ pub async fn create_root_agent_session(
         tg_mgr.inner(),
         settings.inner(),
         agent_id,
+        requested_profile,
         true, // skip_auto_resume = true → fresh create, no `--continue` injection
     )
     .await
@@ -2206,13 +2224,14 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_existing_root, inject_codex_resume, resolve_actual_agent, resolve_agent_command,
-        resolve_agent_from_shell, resolve_root_agent_command, should_inject_continue,
-        ExistingRootAction,
+        classify_existing_root, effective_restart_requested_profile, inject_codex_resume,
+        resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
+        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
     };
-    use crate::config::settings::{AgentConfig, AppSettings};
+    use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::session::manager::SessionManager;
     use crate::session::session::SessionStatus;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn test_settings() -> AppSettings {
@@ -2293,6 +2312,49 @@ mod tests {
             resolve_root_agent_command(&settings, Some("stale"), Some("also-stale")).unwrap_err();
 
         assert!(err.contains("No resolvable coding agent"));
+    }
+
+    #[test]
+    fn restart_requested_profile_prefers_explicit_then_stored() {
+        assert_eq!(
+            effective_restart_requested_profile(Some("C".to_string()), Some("B".to_string())),
+            Some("C".to_string())
+        );
+        assert_eq!(
+            effective_restart_requested_profile(None, Some("B".to_string())),
+            Some("B".to_string())
+        );
+        assert_eq!(effective_restart_requested_profile(None, None), None);
+    }
+
+    #[test]
+    fn build_configured_agent_spawn_for_cwd_honors_requested_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = test_settings();
+        settings
+            .coding_agent_profiles
+            .matrix
+            .entry("codex".to_string())
+            .or_default()
+            .insert(
+                "C".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    argv: vec!["--profile-c".to_string()],
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+
+        let cwd = temp.path().to_string_lossy().to_string();
+        let spawn =
+            super::build_configured_agent_spawn_for_cwd(&settings, "codex", &cwd, Some("C"))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(spawn.profile_resolution.requested_profile, "C");
+        assert_eq!(spawn.profile_resolution.effective_profile, "C");
+        assert_eq!(spawn.shell_args, vec!["--profile-c".to_string()]);
     }
 
     #[test]

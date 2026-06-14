@@ -787,6 +787,7 @@ pub fn run() {
                                         &tg_mgr_clone,
                                         &settings_state_clone,
                                         None,
+                                        None,
                                         true,
                                     )
                                     .await
@@ -1441,6 +1442,7 @@ pub fn run() {
             commands::config::update_coding_agent_env_settings,
             commands::config::set_agent_default_profile,
             commands::config::set_instance_profile_override,
+            commands::config::resolve_coding_agent_profile,
             commands::config::set_inject_rtk_hook,
             commands::config::set_rtk_prompt_dismissed,
             commands::config::set_sounds_enabled,
