@@ -246,14 +246,12 @@ impl UiAutomationState {
             }
         }
         {
-            let labels = self
+            let mut labels = self
                 .inner
                 .window_labels
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            if !labels.contains(caller_label) {
-                return Err("window_unavailable".to_string());
-            }
+            labels.insert(caller_label.to_string());
         }
         {
             let mut ready = self
@@ -343,6 +341,7 @@ impl UiAutomationState {
     }
 
     fn poll_once_inner(&self, app: &AppHandle) -> io::Result<()> {
+        self.sync_live_window_labels(available_window_labels(app))?;
         self.expire_pending_requests();
 
         let requests_dir = self.requests_dir();
@@ -363,6 +362,41 @@ impl UiAutomationState {
             self.process_request_file(app, request_file);
         }
 
+        Ok(())
+    }
+
+    fn sync_live_window_labels(&self, live_labels: Vec<String>) -> io::Result<()> {
+        let live_labels = live_labels.into_iter().collect::<HashSet<_>>();
+        let mut changed = false;
+
+        {
+            let mut labels = self
+                .inner
+                .window_labels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if *labels != live_labels {
+                *labels = live_labels.clone();
+                changed = true;
+            }
+        }
+
+        {
+            let mut ready = self
+                .inner
+                .ready_window_labels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let before_len = ready.len();
+            ready.retain(|label| live_labels.contains(label));
+            if ready.len() != before_len {
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.write_session_snapshot()?;
+        }
         Ok(())
     }
 
@@ -1503,6 +1537,47 @@ mod tests {
             state.complete("main", response).unwrap_err(),
             "unknown_request_id"
         );
+    }
+
+    #[test]
+    fn frontend_ready_registers_dynamic_caller_label() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        state.initialize_files().unwrap();
+
+        state
+            .mark_frontend_ready("resource-monitor", Some("resource-monitor"))
+            .unwrap();
+
+        let raw = fs::read_to_string(&state.inner.session_path).unwrap();
+        let session: UiAutomationSession = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            session.window_labels,
+            vec!["main".to_string(), "resource-monitor".to_string()]
+        );
+        assert_eq!(
+            session.ready_window_labels,
+            vec!["resource-monitor".to_string()]
+        );
+    }
+
+    #[test]
+    fn live_window_sync_prunes_closed_dynamic_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        state.initialize_files().unwrap();
+        state
+            .mark_frontend_ready("resource-monitor", Some("resource-monitor"))
+            .unwrap();
+
+        state
+            .sync_live_window_labels(vec!["main".to_string()])
+            .unwrap();
+
+        let raw = fs::read_to_string(&state.inner.session_path).unwrap();
+        let session: UiAutomationSession = serde_json::from_str(&raw).unwrap();
+        assert_eq!(session.window_labels, vec!["main".to_string()]);
+        assert!(session.ready_window_labels.is_empty());
     }
 
     #[test]
