@@ -1,10 +1,12 @@
-# 04 Team And Workgroup Lifecycle
+# 04 Team, Workgroup, And Peer Lifecycle
 
-These cases validate that a user can compose project agents into a team and activate that team into a workgroup from the GUI.
+These cases validate that a user can compose project agents into a team, activate that team into a workgroup from the GUI, and verify workgroup-specific peer discovery and isolation.
 
 Use only disposable projects and disposable agents created for the current run. If a test adds repository access to a team, use a deliberately safe public test repository or a local disposable repository approved by the test request.
 
 Product actions must be performed through the GUI. CLI is allowed only for harness control, semantic UI automation, screenshots, logs, and read-only verification.
+
+For peer discovery checks, run `list-peers-lean` only from disposable sender roots and compare canonical peer names with GUI-visible participants. Never infer valid peers from filesystem directory names.
 
 ## Execution Log
 
@@ -19,11 +21,13 @@ Result summary:
 - WGP-000 team gating was partially exercised: empty-name disabled state and Back/Cancel no-mutation state were captured.
 - WGP-001 did not pass. Keyboard entry/focus into the New Team flow was unreliable, and later evidence showed the app had returned to first-run onboarding instead of New Team step 2.
 - WGP-002 and WGP-003 were not reached.
+- WGP-004 through WGP-006 are documented #485 peer/isolation cases and were not executed in the 2026-06-13 baseline run.
 - Until New Team/New Workgroup selectors exist and onboarding persistence is fixed, this suite should be treated as blocked for automated baseline PASS.
 
 Known automation support:
 
 - Workgroup replica rows have some semantic selectors for quick/workgroup contexts, mainly for repo badge verification.
+- `list-peers-lean` provides canonical peer names and reachability for cross-checking GUI-visible workgroup participants.
 
 Known automation gaps:
 
@@ -181,3 +185,113 @@ Evidence Required:
 Pass/Fail Criteria:
 
 Pass if the coordinator session starts or focuses with the expected workgroup identity. Fail if the wrong replica launches, no session starts, or the session starts outside the workgroup.
+
+### WGP-004: Peer discovery matches visible workgroup participants
+
+Purpose:
+
+Verify that CLI peer discovery aligns with GUI-visible disposable workgroup participants.
+
+Preconditions:
+
+- Depends on WGP-002.
+- At least one disposable sender session/root is available.
+- Visible participant names are captured from the GUI.
+
+Steps:
+
+1. Capture the GUI participant list for the selected disposable workgroup.
+2. From the disposable sender root, run `list-peers-lean` with the current token/root.
+3. Save peer discovery stdout/stderr.
+4. Confirm each tested peer JSON entry uses a canonical `name` and belongs to the expected workgroup/team.
+5. Confirm any recipient candidate has `reachable:true` before considering it addressable.
+6. Compare the peer JSON with visible GUI participants and record any expected exclusions.
+
+Expected Result:
+
+Peer discovery returns canonical names for reachable disposable peers that match the visible workgroup participants and routing rules.
+
+Evidence Required:
+
+- `WGP-004-visible-participants.png`.
+- `WGP-004-list-peers-lean.json` or command log.
+- Notes mapping GUI participants to canonical peer names and `reachable:true` state.
+
+Pass/Fail Criteria:
+
+PASS if peer JSON matches visible disposable participants and reachable peers are clear. PARTIAL if expected exclusions are documented but one GUI participant is not capturable. FAIL if peer names must be inferred from directories, live peers appear as test targets, or reachability is wrong. BLOCKED if no disposable sender root is available.
+
+### WGP-005: Multiple workgroups remain isolated
+
+Purpose:
+
+Verify that two disposable workgroups do not bleed peer/session state into each other.
+
+Preconditions:
+
+- Depends on WGP-002.
+- The tester can create or select a second disposable workgroup without mutating live state.
+- Each workgroup has distinct names or participant markers.
+
+Steps:
+
+1. Capture the first disposable workgroup's participants, sessions, and peer JSON.
+2. Create or select a second disposable workgroup with a distinct title/name.
+3. Capture the second workgroup's participants, sessions, and peer JSON.
+4. Switch back to the first workgroup and capture its participant/session list again.
+5. Compare visible workgroup names, roots, peer names, and sessions.
+6. Record any shared team membership that is expected but confirm replica/session identity remains workgroup-specific.
+
+Expected Result:
+
+Each workgroup retains its own visible participants, replicas, sessions, peer names, and workgroup root. State from one workgroup does not appear as active state in the other.
+
+Evidence Required:
+
+- `WGP-005-first-workgroup.png`.
+- `WGP-005-first-peers.json`.
+- `WGP-005-second-workgroup.png`.
+- `WGP-005-second-peers.json`.
+- `WGP-005-return-first-workgroup.png`.
+
+Pass/Fail Criteria:
+
+PASS if peer/session state remains isolated by workgroup. PARTIAL if isolation is clear but one optional peer JSON artifact is missing. FAIL if sessions, peers, or roots bleed across workgroups. BLOCKED if a second disposable workgroup cannot be created safely.
+
+### WGP-006: Workgroup and peer state refreshes after restart
+
+Purpose:
+
+Verify that visible workgroups and peer/session state remain predictable after restarting the testable app.
+
+Preconditions:
+
+- Depends on WGP-002 and WGP-004.
+- The disposable workgroup state has been captured before restart.
+- The tester can close and relaunch only the testable app.
+
+Steps:
+
+1. Capture the pre-restart workgroup list, selected workgroup, participants, sessions, and peer JSON.
+2. Close `Agents Commander [TESTEABLE]` normally.
+3. Relaunch `agentscommander_testeable.exe --app` with deterministic placement.
+4. Run `agentscommander_testeable.exe window-info` and capture the relaunched target.
+5. Capture the post-restart workgroup list and selected/active workgroup.
+6. Run `list-peers-lean` again from the disposable sender root if the sender session/root is available.
+7. Compare post-restart GUI and peer state against pre-restart evidence.
+
+Expected Result:
+
+After restart, disposable workgroups, selected workgroup behavior, participant visibility, and peer discovery state are coherent and do not introduce live-state bleed or duplicate entries.
+
+Evidence Required:
+
+- `WGP-006-pre-restart-workgroups.png`.
+- `WGP-006-pre-restart-peers.json`.
+- `WGP-006-post-window-info.json`.
+- `WGP-006-post-restart-workgroups.png`.
+- Optional `WGP-006-post-restart-peers.json`.
+
+Pass/Fail Criteria:
+
+PASS if post-restart state matches documented recovery behavior and remains isolated. PARTIAL if GUI state is coherent but peer discovery cannot be rerun after restart. FAIL if workgroups duplicate, disappear unexpectedly, or mix state. BLOCKED if restart cannot be performed without affecting live windows.
