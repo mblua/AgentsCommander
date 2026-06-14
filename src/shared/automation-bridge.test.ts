@@ -165,6 +165,31 @@ describe("automation bridge", () => {
     expect(menuResponse.ok).toBe(true);
   });
 
+  it("dispatches contextmenu on a disabled loop row domain state", async () => {
+    const row = addTarget("div", "loop.row.test.weekday-standup", "Weekday standup");
+    row.setAttribute("data-ac-state", "loop-disabled");
+    topmostElement = row;
+    const onContextMenu = vi.fn((event: MouseEvent) => {
+      event.preventDefault();
+      addTarget("button", "loop.action.toggle.test.weekday-standup", "Enable");
+    });
+    row.addEventListener("contextmenu", onContextMenu);
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("contextClick", "loop.row.test.weekday-standup"),
+    );
+    const menuResponse = await executeAutomationRequest(
+      "main",
+      request("query", "loop.action.toggle.test.weekday-standup"),
+    );
+
+    if (!response.ok) throw new Error(response.message);
+    expect(response.ok).toBe(true);
+    expect(onContextMenu).toHaveBeenCalledTimes(1);
+    expect(menuResponse.ok).toBe(true);
+  });
+
   it("waits for click-driven dynamic targets before completing", async () => {
     const button = addTarget("button", "settings.agent.addCustom", "+ Custom Agent");
     topmostElement = button;
@@ -408,6 +433,21 @@ describe("automation bridge", () => {
     const response = await executeAutomationRequest(
       "main",
       request("click", "disabled.target"),
+    );
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected target_disabled");
+    expect(response.error).toBe("target_disabled");
+  });
+
+  it("reports data-ac-state disabled action targets", async () => {
+    const button = addTarget("button", "state.disabled.target", "Disabled");
+    button.setAttribute("data-ac-state", "disabled");
+    topmostElement = button;
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("click", "state.disabled.target"),
     );
 
     expect(response.ok).toBe(false);

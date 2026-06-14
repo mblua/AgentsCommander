@@ -1158,7 +1158,7 @@ const ProjectPanel: Component = () => {
                                 title={loop.promptPreview}
                                 data-ac-testid={loopTestId(loop)}
                                 data-ac-state={[
-                                  loop.enabled ? "enabled" : "disabled",
+                                  loop.enabled ? "enabled" : "loop-disabled",
                                   loop.pendingDueAt ? "pending" : "",
                                 ].filter(Boolean).join(" ")}
                               >
