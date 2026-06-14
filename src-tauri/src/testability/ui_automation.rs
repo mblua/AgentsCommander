@@ -50,6 +50,16 @@ pub struct UiClickArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct UiContextClickArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    #[arg(long)]
+    pub selector: String,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
 pub struct UiSetArgs {
     #[arg(long, default_value = "main")]
     pub window: String,
@@ -102,6 +112,7 @@ pub struct UiAutomationRequest {
 pub enum UiAutomationAction {
     Query,
     Click,
+    ContextClick,
     SetValue,
 }
 
@@ -670,6 +681,16 @@ pub fn execute_click(args: UiClickArgs) -> i32 {
         window: args.window,
         selector: args.selector,
         action: UiAutomationAction::Click,
+        value: None,
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_context_click(args: UiContextClickArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::ContextClick,
         value: None,
         timeout_ms: args.timeout_ms,
     })
@@ -1485,6 +1506,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&UiAutomationAction::Query).unwrap(),
             "\"query\""
+        );
+        assert_eq!(
+            serde_json::to_string(&UiAutomationAction::ContextClick).unwrap(),
+            "\"contextClick\""
         );
         assert_eq!(
             serde_json::to_string(&UiAutomationAction::SetValue).unwrap(),

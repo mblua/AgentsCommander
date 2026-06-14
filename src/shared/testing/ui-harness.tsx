@@ -175,6 +175,7 @@ export function discovery(
     agents: [],
     teams: [],
     workgroups: [],
+    loops: [],
     ...overrides,
   };
 }

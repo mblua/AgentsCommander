@@ -150,6 +150,15 @@ async function executeAutomationRequestInner(
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
 
+  if (request.action === "contextClick") {
+    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+    if (expired) return expired;
+    element.focus();
+    element.dispatchEvent(createContextMenuEvent(element, elementCenterPoint(element)));
+    await settleAfterDomMutation();
+    return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
+  }
+
   if (request.action === "setValue") {
     return setElementValue(windowLabel, request, element, diagnostics);
   }
@@ -467,13 +476,46 @@ function parentElementOrHost(element: HTMLElement): HTMLElement | null {
   return null;
 }
 
+function elementCenterPoint(element: HTMLElement): { clientX: number; clientY: number } {
+  const rect = element.getBoundingClientRect();
+  return {
+    clientX: rect.x + rect.width / 2,
+    clientY: rect.y + rect.height / 2,
+  };
+}
+
+function createContextMenuEvent(
+  element: HTMLElement,
+  point: { clientX: number; clientY: number },
+): MouseEvent {
+  const eventView = element.ownerDocument.defaultView ?? window;
+  const eventInit: MouseEventInit = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    button: 2,
+    buttons: 2,
+    clientX: point.clientX,
+    clientY: point.clientY,
+    screenX: Math.round(point.clientX),
+    screenY: Math.round(point.clientY),
+  };
+
+  try {
+    return new eventView.MouseEvent("contextmenu", { ...eventInit, view: eventView });
+  } catch (error) {
+    if (!String(error).includes("member view is not of type Window")) throw error;
+    return new eventView.MouseEvent("contextmenu", eventInit);
+  }
+}
+
 function topmostElementAtCenter(element: HTMLElement): { ok: true } | { ok: false; element: HTMLElement | null } {
   if (typeof document.elementFromPoint !== "function") {
     return { ok: true };
   }
 
-  const rect = element.getBoundingClientRect();
-  const top = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  const { clientX, clientY } = elementCenterPoint(element);
+  const top = document.elementFromPoint(clientX, clientY);
   if (!top) {
     return { ok: false, element: null };
   }

@@ -13,6 +13,11 @@ import type {
   AgentInfo,
   AcDiscoveryResult,
   AcProjectRefreshRequestedPayload,
+  LoopConfigDetails,
+  LoopCreateInput,
+  LoopCronPreview,
+  LoopEventPayload,
+  LoopUpdateInput,
   TeamConfigResult,
   WindowGeometry,
   TaskUpdateResult,
@@ -442,6 +447,12 @@ export function onAcProjectRefreshRequested(
   );
 }
 
+export function onLoopEvent(
+  callback: (data: LoopEventPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<LoopEventPayload>("loop_event", callback);
+}
+
 export function onSessionIdle(
   callback: (data: { id: string }) => void
 ): Promise<UnlistenFn> {
@@ -522,6 +533,56 @@ export const ProjectAPI = {
    */
   new: (path: string) =>
     transport.invoke<ProjectRegistration>("new_project", { path }),
+};
+
+// Project Loops API
+export const LoopAPI = {
+  create: (projectPath: string, input: LoopCreateInput) =>
+    transport.invoke<LoopConfigDetails>("create_loop", {
+      request: {
+        projectPath,
+        id: input.id ?? null,
+        name: input.name,
+        expr: input.expr,
+        workgroup: input.workgroup,
+        promptBody: input.promptBody,
+        busyCoordinator: input.busyCoordinator ?? null,
+        enabled: input.enabled ?? null,
+      },
+    }),
+
+  update: (projectPath: string, id: string, input: LoopUpdateInput) =>
+    transport.invoke<LoopConfigDetails>("update_loop", {
+      request: {
+        projectPath,
+        id,
+        name: input.name ?? null,
+        expr: input.expr ?? null,
+        workgroup: input.workgroup ?? null,
+        promptBody: input.promptBody ?? null,
+        busyCoordinator: input.busyCoordinator ?? null,
+        enabled: input.enabled ?? null,
+      },
+    }),
+
+  delete: (projectPath: string, id: string) =>
+    transport.invoke<void>("delete_loop", { projectPath, id }),
+
+  setEnabled: (projectPath: string, id: string, enabled: boolean) =>
+    transport.invoke<LoopConfigDetails>("toggle_loop", {
+      projectPath,
+      id,
+      enabled,
+    }),
+
+  runNow: (projectPath: string, id: string) =>
+    transport.invoke<LoopConfigDetails>("run_loop_now", { projectPath, id }),
+
+  getConfig: (projectPath: string, id: string) =>
+    transport.invoke<LoopConfigDetails>("get_loop_config", { projectPath, id }),
+
+  previewCron: (expr: string) =>
+    transport.invoke<LoopCronPreview>("preview_loop_cron", { expr }),
 };
 
 // Role template picker (#271)
