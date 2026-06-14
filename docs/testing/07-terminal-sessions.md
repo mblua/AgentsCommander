@@ -28,21 +28,21 @@ Test data: TBD
 
 | Case | Result | Evidence | Notes |
 | --- | --- | --- | --- |
-| TRM-001 | NOT RUN | TBD | Terminal target readiness not executed in this run. |
-| TRM-002 | NOT RUN | TBD | PTY output checks not executed in this run. |
-| TRM-003 | NOT RUN | TBD | Keyboard input checks not executed in this run. |
-| TRM-004 | NOT RUN | TBD | Resize/reflow checks not executed in this run. |
-| TRM-005 | NOT RUN | TBD | Session switching terminal preservation not executed in this run. |
-| TRM-006 | NOT RUN | TBD | Detached terminal window checks not executed in this run. |
-| TRM-007 | NOT RUN | TBD | Terminal cleanup checks not executed in this run. |
+| TRM-001 | NOT RUN | No evidence because NOT RUN. | Terminal target readiness not executed in this run. |
+| TRM-002 | NOT RUN | No evidence because NOT RUN. | PTY output checks not executed in this run. |
+| TRM-003 | NOT RUN | No evidence because NOT RUN. | Keyboard input checks not executed in this run. |
+| TRM-004 | NOT RUN | No evidence because NOT RUN. | Resize/reflow checks not executed in this run. |
+| TRM-005 | NOT RUN | No evidence because NOT RUN. | Session switching terminal preservation not executed in this run. |
+| TRM-006 | NOT RUN | No evidence because NOT RUN. | Detached terminal window checks not executed in this run. |
+| TRM-007 | NOT RUN | No evidence because NOT RUN. | Terminal cleanup checks not executed in this run. |
 
 Residual test data:
 
-- TBD during execution.
+- None recorded; suite not executed yet.
 
 Automation gaps observed:
 
-- TBD during execution.
+- No automation gaps recorded; suite not executed yet.
 
 ### TRM-001: Terminal surface is visible for an active session
 

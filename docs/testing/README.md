@@ -108,6 +108,7 @@ It refuses files, symlinks, junctions, mount points, Windows reparse-point direc
 Use a three-letter functional prefix followed by a zero-padded number:
 
 - `PRJ-###`: Project lifecycle.
+- `OCA-###`: Onboarding and coding-agent configuration.
 - `AGT-###`: Agent lifecycle.
 - `TPL-###`: Agent templates and agency setup.
 - `TRM-###`: Terminal sessions.

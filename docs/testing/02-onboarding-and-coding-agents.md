@@ -21,9 +21,9 @@ Result summary:
 - Onboarding completed with Codex after selecting Claude once and then Codex once.
 - Direct Codex selection initially left `onboarding.confirm` disabled; preserve this as a regression/edge case if it reproduces.
 - Final settings showed a Codex coding-agent row, but `onboardingDismissed = false`; the target later returned to first-run onboarding during the longer journey.
-- SET-001 currently verifies both configured-agent persistence and dismissed-onboarding persistence before it can pass.
+- OCA-001 currently verifies both configured-agent persistence and dismissed-onboarding persistence before it can pass.
 - Rerun evidence from `ui-regression-baseline-rerun-20260613-202450` reproduced the baseline acceptance failure: Codex row persisted and the main UI opened, but `onboardingDismissed` remained `false` after onboarding and after relaunch.
-- Product intent is tracked as GitHub issue #505. If `onboardingDismissed` is confirmed to mean only "user skipped onboarding", adjust SET-001/003/004/005 expectations instead of treating the setup path as a product bug.
+- Product intent is tracked as GitHub issue #505. If `onboardingDismissed` is confirmed to mean only "user skipped onboarding", adjust OCA-001/003/004/005 expectations instead of treating the setup path as a product bug.
 
 Known automation support:
 
@@ -45,18 +45,18 @@ First-run onboarding controls:
 
 Required clean-state slices:
 
-- SET-001 covers Codex as the default acceptance preset.
-- SET-002 covers Skip and verifies the app remains usable with no coding agent configured.
-- SET-003 covers Claude Code.
-- SET-004 covers Gemini CLI.
-- SET-005 covers Custom Agent with valid fields.
-- SET-006 and SET-007 cover the Coding Agents settings surface after onboarding.
+- OCA-001 covers Codex as the default acceptance preset.
+- OCA-002 covers Skip and verifies the app remains usable with no coding agent configured.
+- OCA-003 covers Claude Code.
+- OCA-004 covers Gemini CLI.
+- OCA-005 covers Custom Agent with valid fields.
+- OCA-006 and OCA-007 cover the Coding Agents settings surface after onboarding.
 
 Each slice must start from a reset testable config unless the case explicitly says it is using an existing settings state. Do not use a passing Codex run as proof that Skip, Claude, Gemini, or Custom Agent works.
 
 Dismissal semantics note: until issue #505 is resolved, setup-path cases expect `onboardingDismissed = true` after `Get started` as a conservative acceptance contract. If product intent says the flag is skip-only, replace that assertion with the intended persistence signal.
 
-### SET-001: First-run onboarding selects Codex
+### OCA-001: First-run onboarding selects Codex
 
 Purpose:
 
@@ -97,7 +97,7 @@ Pass/Fail Criteria:
 
 Pass if onboarding completes through the GUI, Codex appears in Coding Agents settings, dismissal is persisted, and onboarding does not reappear after relaunch. Fail if onboarding cannot be completed, settings do not persist the preset, dismissal remains false, or the app does not reach normal UI. Partial if the flow completes but one transient state cannot be captured.
 
-### SET-002: First-run onboarding Skip path
+### OCA-002: First-run onboarding Skip path
 
 Purpose:
 
@@ -134,7 +134,7 @@ Pass/Fail Criteria:
 
 Pass if Skip dismisses onboarding persistently without adding an agent. Fail if onboarding reappears, the app is unusable after Skip, or Skip creates an unintended coding-agent row.
 
-### SET-003: First-run onboarding selects Claude Code
+### OCA-003: First-run onboarding selects Claude Code
 
 Purpose:
 
@@ -173,7 +173,7 @@ Pass/Fail Criteria:
 
 Pass if the Claude Code preset persists and onboarding is dismissed. Fail if the wrong agent is created, dismissal remains false, or onboarding reappears.
 
-### SET-004: First-run onboarding selects Gemini CLI
+### OCA-004: First-run onboarding selects Gemini CLI
 
 Purpose:
 
@@ -212,7 +212,7 @@ Pass/Fail Criteria:
 
 Pass if the Gemini CLI preset persists and onboarding is dismissed. Fail if the wrong agent is created, dismissal remains false, or onboarding reappears.
 
-### SET-005: First-run onboarding creates a custom coding agent
+### OCA-005: First-run onboarding creates a custom coding agent
 
 Purpose:
 
@@ -257,7 +257,7 @@ Pass/Fail Criteria:
 
 Pass if required-field gating works, the custom row persists, and onboarding is dismissed. Fail if incomplete custom input can be confirmed, the row is wrong or missing, dismissal remains false, or onboarding reappears.
 
-### SET-006: Coding Agents settings preserve preset configuration
+### OCA-006: Coding Agents settings preserve preset configuration
 
 Purpose:
 
@@ -265,7 +265,7 @@ Verify that a user can inspect and save the Coding Agents settings without losin
 
 Preconditions:
 
-- Depends on SET-001 or an equivalent state with a configured preset.
+- Depends on OCA-001 or an equivalent state with a configured preset.
 
 Steps:
 
@@ -288,7 +288,7 @@ Pass/Fail Criteria:
 
 Pass if the preset row is stable. Fail if saving removes, duplicates, or corrupts the row.
 
-### SET-007: Add and save a custom coding agent
+### OCA-007: Add and save a custom coding agent
 
 Purpose:
 

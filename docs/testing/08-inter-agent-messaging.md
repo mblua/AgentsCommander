@@ -28,20 +28,20 @@ Test data: TBD
 
 | Case | Result | Evidence | Notes |
 | --- | --- | --- | --- |
-| MSG-001 | NOT RUN | TBD | Peer discovery checks not executed in this run. |
-| MSG-002 | NOT RUN | TBD | Running peer delivery not executed in this run. |
-| MSG-003 | NOT RUN | TBD | Wake routing checks not executed in this run. |
-| MSG-004 | NOT RUN | TBD | File-based message delivery not executed in this run. |
-| MSG-005 | NOT RUN | TBD | Invalid peer handling not executed in this run. |
-| MSG-006 | NOT RUN | TBD | Evidence/correlation checks not executed in this run. |
+| MSG-001 | NOT RUN | No evidence because NOT RUN. | Peer discovery checks not executed in this run. |
+| MSG-002 | NOT RUN | No evidence because NOT RUN. | Running peer delivery not executed in this run. |
+| MSG-003 | NOT RUN | No evidence because NOT RUN. | Wake routing checks not executed in this run. |
+| MSG-004 | NOT RUN | No evidence because NOT RUN. | File-based message delivery not executed in this run. |
+| MSG-005 | NOT RUN | No evidence because NOT RUN. | Invalid peer handling not executed in this run. |
+| MSG-006 | NOT RUN | No evidence because NOT RUN. | Evidence/correlation checks not executed in this run. |
 
 Residual test data:
 
-- TBD during execution.
+- None recorded; suite not executed yet.
 
 Automation gaps observed:
 
-- TBD during execution.
+- No automation gaps recorded; suite not executed yet.
 
 ### MSG-001: Peer discovery returns canonical peer names
 

@@ -28,20 +28,20 @@ Test data: TBD
 
 | Case | Result | Evidence | Notes |
 | --- | --- | --- | --- |
-| WIN-001 | NOT RUN | TBD | Deterministic placement checks not executed in this run. |
-| WIN-002 | NOT RUN | TBD | Target window capture checks not executed in this run. |
-| WIN-003 | NOT RUN | TBD | Modal/menu placement checks not executed in this run. |
-| WIN-004 | NOT RUN | TBD | Detached terminal placement checks not executed in this run. |
-| WIN-005 | NOT RUN | TBD | Restart geometry checks not executed in this run. |
-| WIN-006 | NOT RUN | TBD | Capture fallback checks not executed in this run. |
+| WIN-001 | NOT RUN | No evidence because NOT RUN. | Deterministic placement checks not executed in this run. |
+| WIN-002 | NOT RUN | No evidence because NOT RUN. | Target window capture checks not executed in this run. |
+| WIN-003 | NOT RUN | No evidence because NOT RUN. | Modal/menu placement checks not executed in this run. |
+| WIN-004 | NOT RUN | No evidence because NOT RUN. | Detached terminal placement checks not executed in this run. |
+| WIN-005 | NOT RUN | No evidence because NOT RUN. | Restart geometry checks not executed in this run. |
+| WIN-006 | NOT RUN | No evidence because NOT RUN. | Capture fallback checks not executed in this run. |
 
 Residual test data:
 
-- TBD during execution.
+- None recorded; suite not executed yet.
 
 Automation gaps observed:
 
-- TBD during execution.
+- No automation gaps recorded; suite not executed yet.
 
 ### WIN-001: Testable app launches at the requested monitor rectangle
 

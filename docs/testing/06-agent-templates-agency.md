@@ -28,20 +28,20 @@ Test data: TBD
 
 | Case | Result | Evidence | Notes |
 | --- | --- | --- | --- |
-| TPL-001 | NOT RUN | TBD | Template entry point checks not executed in this run. |
-| TPL-002 | NOT RUN | TBD | Local template metadata checks not executed in this run. |
-| TPL-003 | NOT RUN | TBD | Agency install/update prompt checks not executed in this run. |
-| TPL-004 | NOT RUN | TBD | Template search/filter checks not executed in this run. |
-| TPL-005 | NOT RUN | TBD | Launch-from-template checks not executed in this run. |
-| TPL-006 | NOT RUN | TBD | Persistence after restart checks not executed in this run. |
+| TPL-001 | NOT RUN | No evidence because NOT RUN. | Template entry point checks not executed in this run. |
+| TPL-002 | NOT RUN | No evidence because NOT RUN. | Local template metadata checks not executed in this run. |
+| TPL-003 | NOT RUN | No evidence because NOT RUN. | Agency install/update prompt checks not executed in this run. |
+| TPL-004 | NOT RUN | No evidence because NOT RUN. | Template search/filter checks not executed in this run. |
+| TPL-005 | NOT RUN | No evidence because NOT RUN. | Launch-from-template checks not executed in this run. |
+| TPL-006 | NOT RUN | No evidence because NOT RUN. | Persistence after restart checks not executed in this run. |
 
 Residual test data:
 
-- TBD during execution.
+- None recorded; suite not executed yet.
 
 Automation gaps observed:
 
-- TBD during execution.
+- No automation gaps recorded; suite not executed yet.
 
 ### TPL-001: Template and agency entry points are visible
 

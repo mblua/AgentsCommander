@@ -28,20 +28,20 @@ Test data: TBD
 
 | Case | Result | Evidence | Notes |
 | --- | --- | --- | --- |
-| SET-001 | NOT RUN | TBD | Settings target readiness not executed in this run. |
-| SET-002 | NOT RUN | TBD | Settings save checks not executed in this run. |
-| SET-003 | NOT RUN | TBD | Project/workgroup persistence checks not executed in this run. |
-| SET-004 | NOT RUN | TBD | Window geometry persistence checks not executed in this run. |
-| SET-005 | NOT RUN | TBD | Test reset boundary checks not executed in this run. |
-| SET-006 | NOT RUN | TBD | Invalid/missing settings recovery not executed in this run. |
+| SET-001 | NOT RUN | No evidence because NOT RUN. | Settings target readiness not executed in this run. |
+| SET-002 | NOT RUN | No evidence because NOT RUN. | Settings save checks not executed in this run. |
+| SET-003 | NOT RUN | No evidence because NOT RUN. | Project/workgroup persistence checks not executed in this run. |
+| SET-004 | NOT RUN | No evidence because NOT RUN. | Window geometry persistence checks not executed in this run. |
+| SET-005 | NOT RUN | No evidence because NOT RUN. | Test reset boundary checks not executed in this run. |
+| SET-006 | NOT RUN | No evidence because NOT RUN. | Invalid/missing settings recovery not executed in this run. |
 
 Residual test data:
 
-- TBD during execution.
+- None recorded; suite not executed yet.
 
 Automation gaps observed:
 
-- TBD during execution.
+- No automation gaps recorded; suite not executed yet.
 
 ### SET-001: Settings surface opens from the target app
 
