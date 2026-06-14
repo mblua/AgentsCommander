@@ -110,13 +110,22 @@ pub async fn update_coding_agent_profiles(
     settings: State<'_, SettingsState>,
     profiles: CodingAgentProfilesConfig,
 ) -> Result<(), String> {
-    let mut s = settings.write().await;
-    s.coding_agent_profiles = profiles;
-    validate_and_repair_settings(&mut s)?;
-    let snapshot = s.clone();
-    save_settings(&snapshot)?;
-    drop(s);
+    persist_coding_agent_profiles_update(settings.inner(), profiles).await?;
     let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
+    Ok(())
+}
+
+async fn persist_coding_agent_profiles_update(
+    settings: &SettingsState,
+    profiles: CodingAgentProfilesConfig,
+) -> Result<(), String> {
+    let mut candidate = settings.read().await.clone();
+    candidate.coding_agent_profiles = profiles;
+    validate_and_repair_settings(&mut candidate)?;
+    save_settings(&candidate)?;
+
+    let mut s = settings.write().await;
+    *s = candidate;
     Ok(())
 }
 
@@ -128,22 +137,34 @@ pub async fn update_coding_agent_env_settings(
     envs: Vec<CodingAgentEnv>,
     isolate_codex_home: bool,
 ) -> Result<(), String> {
-    let mut s = settings.write().await;
-    let agent = s
+    persist_coding_agent_env_settings_update(settings.inner(), &agent_id, envs, isolate_codex_home)
+        .await?;
+    let _ = app.emit(
+        "coding_agent_env_settings_updated",
+        serde_json::json!({ "agentId": agent_id }),
+    );
+    Ok(())
+}
+
+async fn persist_coding_agent_env_settings_update(
+    settings: &SettingsState,
+    agent_id: &str,
+    envs: Vec<CodingAgentEnv>,
+    isolate_codex_home: bool,
+) -> Result<(), String> {
+    let mut candidate = settings.read().await.clone();
+    let agent = candidate
         .agents
         .iter_mut()
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Agent '{}' is not configured", agent_id))?;
     agent.envs = envs;
     agent.isolate_codex_home = isolate_codex_home;
-    validate_and_repair_settings(&mut s)?;
-    let snapshot = s.clone();
-    save_settings(&snapshot)?;
-    drop(s);
-    let _ = app.emit(
-        "coding_agent_env_settings_updated",
-        serde_json::json!({ "agentId": agent_id }),
-    );
+    validate_and_repair_settings(&mut candidate)?;
+    save_settings(&candidate)?;
+
+    let mut s = settings.write().await;
+    *s = candidate;
     Ok(())
 }
 
@@ -544,7 +565,100 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{RtkSweepError, RtkSweepResult};
+    use super::{
+        persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
+        RtkSweepError, RtkSweepResult,
+    };
+    use crate::config::settings::{
+        AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
+        SettingsState,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    fn settings_with_single_agent() -> AppSettings {
+        AppSettings {
+            agents: vec![AgentConfig {
+                id: "agent-0".to_string(),
+                label: "Codex".to_string(),
+                command: "codex".to_string(),
+                color: "#000000".to_string(),
+                git_pull_before: false,
+                exclude_global_claude_md: false,
+                envs: Vec::new(),
+                isolate_codex_home: false,
+            }],
+            ..AppSettings::default()
+        }
+    }
+
+    fn state_for(settings: AppSettings) -> SettingsState {
+        Arc::new(RwLock::new(settings))
+    }
+
+    #[tokio::test]
+    async fn invalid_env_settings_update_leaves_live_settings_unchanged() {
+        let mut original = settings_with_single_agent();
+        original.agents[0].envs = vec![CodingAgentEnv {
+            key: "OPENAI_API_BASE".to_string(),
+            value: "current".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+        original.agents[0].isolate_codex_home = true;
+        let state = state_for(original.clone());
+
+        let err = persist_coding_agent_env_settings_update(
+            &state,
+            "agent-0",
+            vec![CodingAgentEnv {
+                key: "AGENTSCOMMANDER_TOKEN".to_string(),
+                value: "bad".to_string(),
+                source: CodingAgentEnvSource::User,
+                enabled: true,
+            }],
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("reserved by AgentsCommander"), "{err}");
+        let live = state.read().await;
+        assert_eq!(live.agents[0].envs, original.agents[0].envs);
+        assert_eq!(
+            live.agents[0].isolate_codex_home,
+            original.agents[0].isolate_codex_home
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_profile_settings_update_leaves_live_settings_unchanged() {
+        let original = settings_with_single_agent();
+        let mut invalid_profiles = original.coding_agent_profiles.clone();
+        invalid_profiles
+            .matrix
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    argv: Vec::new(),
+                    env: BTreeMap::from([("AGENTSCOMMANDER_ROOT".to_string(), "bad".to_string())]),
+                    notes: String::new(),
+                },
+            );
+        let state = state_for(original.clone());
+
+        let err = persist_coding_agent_profiles_update(&state, invalid_profiles)
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("reserved by AgentsCommander"), "{err}");
+        let live = state.read().await;
+        assert_eq!(live.coding_agent_profiles, original.coding_agent_profiles);
+    }
 
     /// `RtkSweepResult` and `RtkSweepError` cross the Tauri IPC boundary, so
     /// the `#[serde(rename_all = "camelCase")]` rename is part of the public
