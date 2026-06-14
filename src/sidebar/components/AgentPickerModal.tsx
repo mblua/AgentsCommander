@@ -349,6 +349,10 @@ const AgentPickerModal: Component<{
                         onClick={() => setHighlightIndex(i())}
                         onMouseEnter={() => setHighlightIndex(i())}
                         data-component={`${agent.label} coding agent option`}
+                        data-ac-agent-id={agent.id}
+                        data-ac-agent-command={agent.command}
+                        data-ac-effective-profile={defaultPreview().effectiveProfile}
+                        data-ac-requested-profile={defaultPreview().requestedProfile}
                         style={{ "--agent-color": agent.color }}
                         {...automationAttrs(`agentPicker.provider.${agent.id}`, "button", active() ? "active" : "inactive")}
                       >
@@ -406,6 +410,10 @@ const AgentPickerModal: Component<{
                         aria-pressed={selected()}
                         onClick={() => chooseProfile(letter)}
                         data-component={`${selectedAgent()?.label ?? "Coding Agent"} ${profileLabel(letter)} profile selector card`}
+                        data-ac-agent-id={selectedAgent()?.id}
+                        data-ac-profile-letter={letter}
+                        data-ac-effective-profile={preview().effectiveProfile}
+                        data-ac-configured={configured()}
                         {...automationAttrs(
                           `agentPicker.profile.${letter}`,
                           "button",

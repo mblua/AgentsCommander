@@ -121,6 +121,12 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+function byTestId<T extends Element = Element>(testId: string): T {
+  const element = document.querySelector<T>(`[data-ac-testid="${testId}"]`);
+  if (!element) throw new Error(`missing selector ${testId}`);
+  return element;
+}
+
 describe("SettingsModal automation hooks", () => {
   afterEach(() => {
     document.body.innerHTML = "";
@@ -175,6 +181,41 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("exposes environment and Codex isolation controls for automation", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    expect(byTestId("settings.agentRow.0.env")).toBeTruthy();
+    expect(byTestId("settings.agentRow.0.env.empty")).toBeTruthy();
+    const addEnv = byTestId<HTMLButtonElement>("settings.agentRow.0.env.add");
+    addEnv.click();
+    await settle();
+
+    expect(byTestId("settings.agentRow.0.envRow.0").getAttribute("data-ac-state")).toBe("enabled");
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.key")).toBeTruthy();
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.value")).toBeTruthy();
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.enabled")).toBeTruthy();
+    expect(byTestId("settings.agentRow.0.envRow.0.source").textContent).toContain("user");
+    expect(byTestId<HTMLButtonElement>("settings.agentRow.0.envRow.0.delete").disabled).toBe(false);
+
+    const isolation = byTestId<HTMLInputElement>("settings.agentRow.0.codexHomeIsolation");
+    expect(isolation.checked).toBe(false);
+    expect(isolation.getAttribute("data-ac-state")).toBe("unchecked");
+    isolation.checked = true;
+    isolation.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.codexHomeIsolation").checked).toBe(true);
+    expect(byTestId("settings.agentRow.0.codexHomeIsolation.preview").getAttribute("data-ac-state")).toBe("isolated");
+
+    dispose();
+  });
+
   it("keeps an early custom agent draft when the fresh load resolves late", async () => {
     let resolveLoadedSettings: (value: AppSettings) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(
@@ -225,14 +266,13 @@ describe("SettingsModal automation hooks", () => {
     );
     await settle();
 
-    const addEnv = document.querySelector<HTMLButtonElement>(".settings-env-add");
+    const addEnv = document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.agentRow.0.env.add"]');
     if (!addEnv) throw new Error("missing environment add button");
     addEnv.click();
     await settle();
 
-    const envRow = document.querySelector(".settings-env-row");
-    const keyInput = envRow?.querySelector<HTMLInputElement>(".settings-env-key");
-    const valueInput = envRow?.querySelector<HTMLInputElement>(".settings-env-value");
+    const keyInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.agentRow.0.envRow.0.key"]');
+    const valueInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.agentRow.0.envRow.0.value"]');
     if (!keyInput || !valueInput) throw new Error("missing environment inputs");
     keyInput.value = "USER_TOKEN";
     keyInput.dispatchEvent(new Event("input", { bubbles: true }));
@@ -259,6 +299,54 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("exposes profile letter and matrix controls for automation", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      codingAgentProfiles: {
+        schemaVersion: 1,
+        letters: {
+          A: { name: "" },
+          B: { name: "fast" },
+        },
+        agentDefaults: {},
+        matrix: {
+          codex: {
+            A: { enabled: true, argv: ["--baseline"], env: {}, notes: "" },
+          },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    expect(byTestId("settings.profiles.letters")).toBeTruthy();
+    expect(byTestId("settings.profileLetter.A")).toBeTruthy();
+    expect(byTestId<HTMLInputElement>("settings.profileLetter.A.name")).toBeTruthy();
+    expect(byTestId<HTMLButtonElement>("settings.profileLetter.A.delete").disabled).toBe(true);
+    expect(byTestId("settings.profileLetter.B")).toBeTruthy();
+    expect(byTestId<HTMLInputElement>("settings.profileLetter.B.name")).toBeTruthy();
+    expect(byTestId<HTMLButtonElement>("settings.profileLetter.B.delete").disabled).toBe(false);
+
+    expect(byTestId("settings.profiles.matrix")).toBeTruthy();
+    expect(byTestId("settings.profileMatrix.agent.0").getAttribute("data-ac-agent-id")).toBe("codex");
+    expect(byTestId("settings.profileMatrix.row.A")).toBeTruthy();
+    expect(byTestId("settings.profileCell.0.A").getAttribute("data-ac-state")).toBe("editable");
+    expect(byTestId<HTMLInputElement>("settings.profileCell.0.A.argv").value).toBe("--baseline");
+    expect(byTestId<HTMLButtonElement>("settings.profileCell.0.A.delete").disabled).toBe(true);
+
+    expect(byTestId("settings.profileMatrix.row.B")).toBeTruthy();
+    expect(byTestId("settings.profileCell.0.B").getAttribute("data-ac-state")).toBe("missing");
+    expect(byTestId("settings.profileCell.0.B.missing")).toBeTruthy();
+    expect(byTestId<HTMLButtonElement>("settings.profileCell.0.B.add")).toBeTruthy();
+    expect(byTestId<HTMLButtonElement>("settings.profiles.add").disabled).toBe(false);
+
+    dispose();
+  });
+
   it("keeps early profile cell edits when the fresh load resolves late", async () => {
     let resolveLoadedSettings: (value: AppSettings) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(
@@ -275,7 +363,7 @@ describe("SettingsModal automation hooks", () => {
     );
     await settle();
 
-    const argvInput = document.querySelector<HTMLInputElement>(".settings-profile-argv");
+    const argvInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.profileCell.0.A.argv"]');
     if (!argvInput) throw new Error("missing profile argv input");
     argvInput.value = "--fast";
     argvInput.dispatchEvent(new Event("input", { bubbles: true }));

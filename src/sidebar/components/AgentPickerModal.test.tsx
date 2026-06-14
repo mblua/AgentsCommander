@@ -253,6 +253,9 @@ describe("AgentPickerModal", () => {
     expect(target("agentPicker.cancel")).toBeTruthy();
     expect(target("agentPicker.setDefault")).toBeTruthy();
     expect(target("agentPicker.setInstance")).toBeTruthy();
+    expect(target("agentPicker.provider.codex").getAttribute("data-ac-agent-id")).toBe("codex");
+    expect(target("agentPicker.profile.A").getAttribute("data-ac-profile-letter")).toBe("A");
+    expect(target("agentPicker.profile.A").getAttribute("data-ac-agent-id")).toBe("codex");
     expect(document.querySelector('[data-component="Coding Agents selector panel"]')).toBeTruthy();
     expect(document.querySelector('[data-component="Selected profile projected parameters panel"]')).toBeTruthy();
 

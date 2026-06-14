@@ -692,22 +692,41 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const codex = () => isCodexAgent(agent);
     const hasUserCodexHome = () => hasEnabledEnvKey(agent.envs ?? [], "CODEX_HOME");
     return (
-      <div class="settings-env-editor">
+      <div
+        class="settings-env-editor"
+        data-ac-testid={`settings.agentRow.${agentIndex}.env`}
+        data-ac-role="surface"
+      >
         <div class="settings-subsection-title">Environment</div>
         <Show when={(agent.envs ?? []).length > 0} fallback={
-          <div class="settings-empty-note">No environment rows configured.</div>
+          <div
+            class="settings-empty-note"
+            data-ac-testid={`settings.agentRow.${agentIndex}.env.empty`}
+            data-ac-role="status"
+          >
+            No environment rows configured.
+          </div>
         }>
           <For each={agent.envs ?? []}>
             {(row, rowIndex) => {
               const readOnly = () => row.source === "agentsCommander";
               return (
-                <div class="settings-env-row">
+                <div
+                  class="settings-env-row"
+                  data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}`}
+                  data-ac-role="row"
+                  data-ac-state={readOnly() ? "managed" : row.enabled ? "enabled" : "disabled"}
+                  data-ac-env-source={row.source}
+                >
                   <input
                     class="settings-input settings-env-key"
                     value={row.key}
                     disabled={readOnly()}
                     onInput={(e) => updateAgentEnv(agentIndex, rowIndex(), "key", e.currentTarget.value)}
                     placeholder="KEY"
+                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.key`}
+                    data-ac-role="textbox"
+                    data-ac-state={readOnly() ? "disabled" : "editable"}
                   />
                   <input
                     class="settings-input settings-env-value"
@@ -716,6 +735,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     disabled={readOnly()}
                     onInput={(e) => updateAgentEnv(agentIndex, rowIndex(), "value", e.currentTarget.value)}
                     placeholder="value"
+                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.value`}
+                    data-ac-role="textbox"
+                    data-ac-state={readOnly() ? "disabled" : "editable"}
                   />
                   <label class="settings-env-toggle" title="Enable row">
                     <input
@@ -724,9 +746,16 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                       checked={row.enabled}
                       disabled={readOnly()}
                       onChange={(e) => updateAgentEnv(agentIndex, rowIndex(), "enabled", e.currentTarget.checked)}
+                      data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.enabled`}
+                      data-ac-role="checkbox"
+                      data-ac-state={readOnly() ? "disabled" : row.enabled ? "checked" : "unchecked"}
                     />
                   </label>
-                  <span class={`settings-env-source ${row.source === "agentsCommander" ? "generated" : ""}`}>
+                  <span
+                    class={`settings-env-source ${row.source === "agentsCommander" ? "generated" : ""}`}
+                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.source`}
+                    data-ac-role="status"
+                  >
                     {row.source}
                   </span>
                   <button
@@ -734,6 +763,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     disabled={readOnly()}
                     onClick={() => removeAgentEnv(agentIndex, rowIndex())}
                     title={readOnly() ? "Managed by AgentsCommander" : "Delete environment row"}
+                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.delete`}
+                    data-ac-role="button"
+                    data-ac-state={readOnly() ? "disabled" : "enabled"}
                   >
                     &#x2715;
                   </button>
@@ -742,7 +774,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             }}
           </For>
         </Show>
-        <button class="settings-add-btn settings-env-add" onClick={() => addAgentEnv(agentIndex)}>
+        <button
+          class="settings-add-btn settings-env-add"
+          onClick={() => addAgentEnv(agentIndex)}
+          data-ac-testid={`settings.agentRow.${agentIndex}.env.add`}
+          data-ac-role="button"
+        >
           + Environment Row
         </button>
         <Show when={codex()}>
@@ -754,11 +791,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               onChange={(e) =>
                 updateAgent(agentIndex, "isolateCodexHome", e.currentTarget.checked)
               }
+              data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation`}
+              data-ac-role="checkbox"
+              data-ac-state={agent.isolateCodexHome ? "checked" : "unchecked"}
             />
             <span>Isolate CODEX_HOME for this Codex agent</span>
           </label>
           <Show when={agent.isolateCodexHome}>
-            <div class="settings-codex-home-preview warning">
+            <div
+              class="settings-codex-home-preview warning"
+              data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation.preview`}
+              data-ac-role="status"
+              data-ac-state="isolated"
+            >
               <span class="settings-env-source generated">agentsCommander</span>
               Generated CODEX_HOME will be used for launches from this agent.
               <Show when={hasUserCodexHome()}>
@@ -767,7 +812,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
           </Show>
           <Show when={!agent.isolateCodexHome && hasUserCodexHome()}>
-            <div class="settings-codex-home-preview">
+            <div
+              class="settings-codex-home-preview"
+              data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation.preview`}
+              data-ac-role="status"
+              data-ac-state="user"
+            >
               User CODEX_HOME is active for this Codex agent. Values remain masked in Settings.
             </div>
           </Show>
@@ -864,6 +914,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 onChange={(e) =>
                   updateAgent(i(), "gitPullBefore", e.currentTarget.checked)
                 }
+                data-ac-testid={`settings.agentRow.${i()}.gitPullBefore`}
+                data-ac-role="checkbox"
+                data-ac-state={agent.gitPullBefore ? "checked" : "unchecked"}
               />
               <span>Run git pull before launch</span>
             </label>
@@ -875,6 +928,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 onChange={(e) =>
                   updateAgent(i(), "excludeGlobalClaudeMd", e.currentTarget.checked)
                 }
+                data-ac-testid={`settings.agentRow.${i()}.excludeGlobalClaudeMd`}
+                data-ac-role="checkbox"
+                data-ac-state={agent.excludeGlobalClaudeMd ? "checked" : "unchecked"}
               />
               <span>Exclude global CLAUDE.md on agent creation</span>
             </label>
@@ -942,11 +998,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     <div class="settings-section settings-profiles-section">
       <div class="settings-section-title">Profiles</div>
 
-      <div class="settings-profile-letter-list">
+      <div
+        class="settings-profile-letter-list"
+        data-ac-testid="settings.profiles.letters"
+        data-ac-role="list"
+      >
         <For each={profileLetters()}>
           {(letter) => (
-            <div class="settings-profile-letter-row">
-              <span class="settings-profile-letter-badge">
+            <div
+              class="settings-profile-letter-row"
+              data-ac-testid={`settings.profileLetter.${letter}`}
+              data-ac-role="row"
+              data-ac-profile-letter={letter}
+            >
+              <span
+                class="settings-profile-letter-badge"
+                data-ac-testid={`settings.profileLetter.${letter}.badge`}
+                data-ac-role="status"
+              >
                 {letter}
               </span>
               <input
@@ -954,12 +1023,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 value={settings.data!.codingAgentProfiles.letters[letter]?.name ?? ""}
                 onInput={(e) => updateProfileName(letter, e.currentTarget.value)}
                 placeholder={letter === "A" ? "Baseline" : "Profile name"}
+                data-ac-testid={`settings.profileLetter.${letter}.name`}
+                data-ac-role="textbox"
               />
               <button
                 class="settings-env-delete"
                 disabled={letter === "A"}
                 onClick={() => removeProfileLetter(letter)}
                 title={letter === "A" ? "Profile A cannot be deleted" : "Delete profile"}
+                data-ac-testid={`settings.profileLetter.${letter}.delete`}
+                data-ac-role="button"
+                data-ac-state={letter === "A" ? "disabled" : "enabled"}
               >
                 &#x2715;
               </button>
@@ -968,19 +1042,28 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         </For>
       </div>
 
-      <div class="settings-profile-matrix-wrap">
+      <div
+        class="settings-profile-matrix-wrap"
+        data-ac-testid="settings.profiles.matrixWrap"
+        data-ac-role="surface"
+      >
         <div
           class="settings-profile-matrix"
           style={{
             "grid-template-columns": `minmax(96px, 128px) repeat(${Math.max(settings.data!.agents.length, 1)}, minmax(180px, 1fr))`,
           }}
+          data-ac-testid="settings.profiles.matrix"
+          data-ac-role="list"
         >
           <div class="settings-profile-cell settings-profile-head">Profile</div>
           <For each={settings.data!.agents}>
-            {(agent) => (
+            {(agent, agentIndex) => (
               <div
                 class="settings-profile-cell settings-profile-head"
                 style={{ "--agent-color": agent.color }}
+                data-ac-testid={`settings.profileMatrix.agent.${agentIndex()}`}
+                data-ac-role="status"
+                data-ac-agent-id={agent.id}
               >
                 <span class="settings-color-dot" style={{ background: agent.color }} />
                 <span>{agent.label || agent.id}</span>
@@ -991,11 +1074,16 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <For each={profileLetters()}>
             {(letter) => (
               <>
-                <div class="settings-profile-cell settings-profile-row-head">
+                <div
+                  class="settings-profile-cell settings-profile-row-head"
+                  data-ac-testid={`settings.profileMatrix.row.${letter}`}
+                  data-ac-role="row"
+                  data-ac-profile-letter={letter}
+                >
                   {profileDisplayLabel(settings.data!.codingAgentProfiles, letter)}
                 </div>
                 <For each={settings.data!.agents}>
-                  {(agent) => {
+                  {(agent, agentIndex) => {
                     const rawCell = () => profileCell(agent.id, letter);
                     const editable = () => letter === "A" || !!rawCell()?.enabled;
                     const preview = () =>
@@ -1005,15 +1093,29 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                         letter
                       );
                     return (
-                      <div class="settings-profile-cell settings-profile-edit-cell">
+                      <div
+                        class="settings-profile-cell settings-profile-edit-cell"
+                        data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}`}
+                        data-ac-role="row"
+                        data-ac-state={editable() ? "editable" : "missing"}
+                        data-ac-agent-id={agent.id}
+                        data-ac-agent-index={agentIndex()}
+                        data-ac-profile-letter={letter}
+                      >
                         <Show
                           when={editable()}
                           fallback={
-                            <div class="settings-profile-missing">
+                            <div
+                              class="settings-profile-missing"
+                              data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.missing`}
+                              data-ac-role="status"
+                            >
                               <span>{letter} -&gt; {preview().effectiveProfile}</span>
                               <button
                                 class="settings-profile-cell-btn"
                                 onClick={() => addProfileCell(agent.id, letter)}
+                                data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.add`}
+                                data-ac-role="button"
                               >
                                 Add
                               </button>
@@ -1027,15 +1129,25 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                               updateProfileCellText(agent.id, letter, e.currentTarget.value)
                             }
                             placeholder="argv"
+                            data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.argv`}
+                            data-ac-role="textbox"
                           />
                           <div class="settings-profile-cell-actions">
                             <Show when={profileCellErrors[profileCellKey(agent.id, letter)]}>
-                              <span class="settings-profile-cell-error">
+                              <span
+                                class="settings-profile-cell-error"
+                                data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.error`}
+                                data-ac-role="status"
+                              >
                                 {profileCellErrors[profileCellKey(agent.id, letter)]}
                               </span>
                             </Show>
                             <Show when={preview().fallbackApplied}>
-                              <span class="settings-profile-fallback">
+                              <span
+                                class="settings-profile-fallback"
+                                data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.fallback`}
+                                data-ac-role="status"
+                              >
                                 {preview().requestedProfile} -&gt; {preview().effectiveProfile}
                               </span>
                             </Show>
@@ -1044,6 +1156,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                               disabled={letter === "A"}
                               onClick={() => removeProfileCell(agent.id, letter)}
                               title={letter === "A" ? "Profile A cell cannot be deleted" : "Delete cell"}
+                              data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.delete`}
+                              data-ac-role="button"
+                              data-ac-state={letter === "A" ? "disabled" : "enabled"}
                             >
                               Delete
                             </button>
@@ -1063,6 +1178,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         class="settings-add-btn settings-profile-add"
         onClick={addProfileLetter}
         disabled={!nextAvailableProfileLetter(settings.data!.codingAgentProfiles)}
+        data-ac-testid="settings.profiles.add"
+        data-ac-role="button"
+        data-ac-state={nextAvailableProfileLetter(settings.data!.codingAgentProfiles) ? "enabled" : "disabled"}
       >
         + Profile
       </button>
