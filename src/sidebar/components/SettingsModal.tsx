@@ -15,6 +15,7 @@ import { sessionsStore } from "../stores/sessions";
 import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
+  executableTokenBasename,
   hasEnabledEnvKey,
   isCodexAgent,
   nextAvailableProfileLetter,
@@ -321,12 +322,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return settings.data.agents.some((a) => a.command.startsWith(command));
   };
 
-  const executableBasename = (token: string): string => {
-    const normalized = token.replace(/\\/g, "/");
-    const leaf = normalized.split("/").pop() || normalized;
-    return leaf.replace(/\.[^.]+$/, "").toLowerCase();
-  };
-
   const tokenHasUnclosedQuote = (token: string, quote: string): boolean =>
     (token.split(quote).length - 1) % 2 === 1;
 
@@ -367,8 +362,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       if (envError) {
         return `Agent "${agent.label || "Unnamed"}": ${envError}`;
       }
-      const tokens = agent.command.trim().split(/\s+/).filter(Boolean);
-      const claudeIndex = tokens.findIndex((token) => executableBasename(token) === "claude");
+      const parsedCommand = parseArgvText(agent.command);
+      if (parsedCommand.error) {
+        return `Agent "${agent.label || "Unnamed"}": ${parsedCommand.error}`;
+      }
+      const tokens = parsedCommand.argv;
+      const claudeIndex = tokens.findIndex((token) => executableTokenBasename(token) === "claude");
       if (
         claudeIndex >= 0 &&
         tokens
@@ -378,7 +377,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         return `Agent "${agent.label || "Unnamed"}": Claude commands must not include --continue or -c`;
       }
 
-      const codexIndex = tokens.findIndex((token) => executableBasename(token) === "codex");
+      const codexIndex = tokens.findIndex((token) => executableTokenBasename(token) === "codex");
       if (codexIndex >= 0 && codexHasManualResume(tokens, codexIndex)) {
         return `Agent "${agent.label || "Unnamed"}": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically`;
       }

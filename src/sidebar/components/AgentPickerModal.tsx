@@ -1,5 +1,5 @@
-import { Component, createSignal, createMemo, For, Show, onMount } from "solid-js";
-import type { AgentConfig, AppSettings } from "../../shared/types";
+import { Component, createSignal, createMemo, For, Show, onMount, createEffect } from "solid-js";
+import type { AgentConfig, AppSettings, CodingAgentProfileResolution } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
 import {
   agentNameFromPathOrSession,
@@ -13,7 +13,7 @@ import {
 
 export interface AgentPickerSelection {
   agent: AgentConfig;
-  requestedProfile: string;
+  requestedProfile: string | null;
   effectiveProfile: string;
   scope: "default" | "instance";
 }
@@ -30,9 +30,13 @@ const AgentPickerModal: Component<{
   const [agents, setAgents] = createSignal<AgentConfig[]>([]);
   const [highlightIndex, setHighlightIndex] = createSignal(0);
   const [selectedProfile, setSelectedProfile] = createSignal("A");
+  const [profileTouched, setProfileTouched] = createSignal(false);
+  const [backendPreview, setBackendPreview] = createSignal<CodingAgentProfileResolution | null>(null);
+  const [profileResolving, setProfileResolving] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
   let overlayRef!: HTMLDivElement;
+  let profileResolveSeq = 0;
 
   const sortedAgents = createMemo(() =>
     [...agents()].sort((a, b) =>
@@ -51,12 +55,25 @@ const AgentPickerModal: Component<{
     targetProfileFqn(props.agentPath, props.sessionName)
   );
   const canPersistProfileSelection = createMemo(() => isAcAgentPath(props.agentPath));
+  const canUseBackendProfileResolution = createMemo(() => isAcAgentPath(props.agentPath));
   const configuredDefault = createMemo(() => {
+    const resolved = backendPreview();
+    const backendDefault = resolved?.originDefaultProfile ?? resolved?.agentDefaultProfile;
+    if (backendDefault) return backendDefault;
     const current = settings();
     if (!current) return "A";
     return current.codingAgentProfiles.agentDefaults[targetName()] ?? "A";
   });
   const effectivePreview = createMemo(() => {
+    const resolved = backendPreview();
+    if (resolved) {
+      return {
+        requestedProfile: resolved.requestedProfile,
+        effectiveProfile: resolved.effectiveProfile,
+        fallbackChain: resolved.fallbackChain,
+        fallbackApplied: resolved.fallbackApplied,
+      };
+    }
     const current = settings();
     const agent = selectedAgent();
     if (!current || !agent) {
@@ -91,16 +108,62 @@ const AgentPickerModal: Component<{
     setSelectedProfile(requested);
   });
 
+  createEffect(() => {
+    const current = settings();
+    const agent = selectedAgent();
+    const agentPath = props.agentPath;
+    if (!current || !agent || !agentPath || !canUseBackendProfileResolution()) {
+      profileResolveSeq += 1;
+      setBackendPreview(null);
+      setProfileResolving(false);
+      return;
+    }
+
+    const requested = profileTouched()
+      ? selectedProfile()
+      : normalizeProfileLetter(props.currentRequestedProfile);
+    const seq = ++profileResolveSeq;
+    setProfileResolving(true);
+    SettingsAPI.resolveCodingAgentProfile(agentPath, agent.id, requested)
+      .then((resolution) => {
+        if (seq !== profileResolveSeq) return;
+        setError("");
+        setBackendPreview(resolution);
+        if (!profileTouched()) {
+          setSelectedProfile(resolution.requestedProfile);
+        }
+      })
+      .catch((err: unknown) => {
+        if (seq !== profileResolveSeq) return;
+        setBackendPreview(null);
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (seq === profileResolveSeq) setProfileResolving(false);
+      });
+  });
+
   const moveProfile = (delta: number) => {
     const letters = profileLetters();
     const current = Math.max(0, letters.indexOf(selectedProfile()));
     const next = Math.min(Math.max(current + delta, 0), letters.length - 1);
+    setProfileTouched(true);
     setSelectedProfile(letters[next]);
+  };
+
+  const chooseProfile = (letter: string) => {
+    setProfileTouched(true);
+    setSelectedProfile(letter);
+  };
+
+  const requestedProfileForSelection = (): string | null => {
+    if (canUseBackendProfileResolution()) return selectedProfile();
+    return profileTouched() ? selectedProfile() : null;
   };
 
   const commit = async (scope: "default" | "instance") => {
     const agent = selectedAgent();
-    if (!agent || busy()) return;
+    if (!agent || busy() || profileResolving()) return;
     setBusy(true);
     setError("");
     try {
@@ -113,7 +176,7 @@ const AgentPickerModal: Component<{
       }
       await props.onSelect({
         agent,
-        requestedProfile: selectedProfile(),
+        requestedProfile: requestedProfileForSelection(),
         effectiveProfile: effectivePreview().effectiveProfile,
         scope,
       });
@@ -166,7 +229,9 @@ const AgentPickerModal: Component<{
             <div>
               Effective:{" "}
               <strong>
-                {effectivePreview().fallbackApplied
+                {profileResolving()
+                  ? "Resolving..."
+                  : effectivePreview().fallbackApplied
                   ? `${effectivePreview().requestedProfile} -> ${effectivePreview().effectiveProfile}`
                   : effectivePreview().effectiveProfile}
               </strong>
@@ -204,7 +269,7 @@ const AgentPickerModal: Component<{
               <button
                 class="agent-profile-chip"
                 classList={{ active: selectedProfile() === letter }}
-                onClick={() => setSelectedProfile(letter)}
+                onClick={() => chooseProfile(letter)}
               >
                 {settings()
                   ? profileDisplayLabel(settings()!.codingAgentProfiles, letter)
@@ -222,7 +287,7 @@ const AgentPickerModal: Component<{
           </button>
           <button
             class="modal-btn modal-btn-save"
-            disabled={busy() || !selectedAgent() || !canPersistProfileSelection()}
+            disabled={busy() || profileResolving() || !selectedAgent() || !canPersistProfileSelection()}
             onClick={() => commit("default")}
             title={!canPersistProfileSelection() ? "Default profiles require an AgentsCommander agent path" : undefined}
           >
@@ -230,7 +295,7 @@ const AgentPickerModal: Component<{
           </button>
           <button
             class="modal-btn modal-btn-save"
-            disabled={busy() || !selectedAgent()}
+            disabled={busy() || profileResolving() || !selectedAgent()}
             onClick={() => commit("instance")}
           >
             Set just for instance

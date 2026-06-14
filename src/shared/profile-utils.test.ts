@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { CodingAgentProfilesConfig } from "./types";
+import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
+  executableBasename,
   parseArgvText,
   profileDisplayLabel,
   resolveProfilePreview,
   isAcAgentPath,
+  isCodexAgent,
   sessionProfileBadge,
   stringifyArgv,
   validateEnvRows,
@@ -25,6 +27,20 @@ function profiles(): CodingAgentProfilesConfig {
         C: { enabled: true, argv: ["--model", "gpt-5"], env: {}, notes: "" },
       },
     },
+  };
+}
+
+function agent(overrides: Partial<AgentConfig>): AgentConfig {
+  return {
+    id: "custom",
+    label: "Custom",
+    command: "custom",
+    color: "#000",
+    gitPullBefore: false,
+    excludeGlobalClaudeMd: false,
+    envs: [],
+    isolateCodexHome: false,
+    ...overrides,
   };
 }
 
@@ -55,6 +71,42 @@ describe("profile utils", () => {
       error: null,
     });
     expect(stringifyArgv(parsed.argv)).toBe('--model "gpt 5" --config effort=high');
+  });
+
+  it("preserves Windows path backslashes in argv text", () => {
+    expect(parseArgvText("--config C:\\Users\\maria\\codex.json")).toEqual({
+      argv: ["--config", "C:\\Users\\maria\\codex.json"],
+      error: null,
+    });
+    expect(
+      parseArgvText('"C:\\Program Files\\Codex\\codex.exe" --yolo')
+    ).toEqual({
+      argv: ["C:\\Program Files\\Codex\\codex.exe", "--yolo"],
+      error: null,
+    });
+  });
+
+  it("parses escaped quotes without treating normal backslashes as escapes", () => {
+    expect(parseArgvText('--name "say \\"hi\\""')).toEqual({
+      argv: ["--name", 'say "hi"'],
+      error: null,
+    });
+  });
+
+  it("roundtrips stringified Windows argv values", () => {
+    const argv = [
+      "C:\\Program Files\\Codex\\codex.exe",
+      "--config",
+      "C:\\Users\\maria\\codex.json",
+      "C:\\Program Files\\Codex\\",
+    ];
+    expect(parseArgvText(stringifyArgv(argv))).toEqual({ argv, error: null });
+  });
+
+  it("detects Codex from quoted Windows executable paths", () => {
+    const command = '"C:\\Program Files\\Codex\\codex.exe" --yolo';
+    expect(executableBasename(command)).toBe("codex");
+    expect(isCodexAgent(agent({ command }))).toBe(true);
   });
 
   it("reports duplicate env keys case-insensitively for UI validation", () => {

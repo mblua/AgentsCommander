@@ -331,11 +331,18 @@ const ProjectPanel: Component = () => {
           );
         };
 
-        const restartReplicaSession = async (sessionId: string, agentId?: string) => {
+        const restartReplicaSession = async (
+          sessionId: string,
+          agentId?: string,
+          requestedProfile?: string | null,
+        ) => {
           setReplicaCtxMenu(null);
           cleanupCtx();
           try {
-            await SessionAPI.restart(sessionId, agentId ? { agentId } : undefined);
+            await SessionAPI.restart(
+              sessionId,
+              agentId ? { agentId, requestedProfile } : undefined,
+            );
           } catch (e) {
             console.error("Failed to restart session:", e);
           }
@@ -1430,7 +1437,11 @@ const ProjectPanel: Component = () => {
                     const target = replicaCodingAgentTarget();
                     setReplicaCodingAgentTarget(null);
                     if (target) {
-                      await restartReplicaSession(target.sessionId, selection.agent.id);
+                      await restartReplicaSession(
+                        target.sessionId,
+                        selection.agent.id,
+                        selection.requestedProfile,
+                      );
                     }
                   }}
                   onClose={() => setReplicaCodingAgentTarget(null)}

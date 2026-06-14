@@ -15,7 +15,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
 import { sessionProfileBadge } from "../../shared/profile-utils";
-import AgentPickerModal from "./AgentPickerModal";
+import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import { rootAgentCodingAgentAction } from "./root-agent-action";
 import { TelegramIcon } from "./TelegramIcon";
 
@@ -216,16 +216,20 @@ const RootAgentBanner: Component = () => {
     setShowAgentPicker(true);
   };
 
-  const handleAgentSelected = async (agentId: string) => {
+  const handleAgentSelected = async (selection: AgentPickerSelection) => {
     setShowAgentPicker(false);
     if (busy()) return;
     setBusy(true);
     try {
-      const action = rootAgentCodingAgentAction(rootSession(), agentId);
+      const action = rootAgentCodingAgentAction(rootSession(), selection.agent.id);
       const session = action.kind === "create"
-        ? await SessionAPI.createRootAgent({ agentId: action.agentId })
+        ? await SessionAPI.createRootAgent({
+            agentId: action.agentId,
+            requestedProfile: selection.requestedProfile,
+          })
         : await SessionAPI.restart(action.id, {
             agentId: action.agentId,
+            requestedProfile: selection.requestedProfile,
             skipAutoResume: action.skipAutoResume,
           });
       sessionsStore.addSession(session);
@@ -546,7 +550,7 @@ const RootAgentBanner: Component = () => {
             agentPath={rootSession()?.workingDirectory}
             currentAgentId={rootSession()?.agentId}
             currentRequestedProfile={rootSession()?.requestedProfile}
-            onSelect={(selection) => handleAgentSelected(selection.agent.id)}
+            onSelect={handleAgentSelected}
             onClose={() => setShowAgentPicker(false)}
           />
         </Portal>

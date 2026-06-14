@@ -56,13 +56,13 @@ export interface CreateSessionOptions {
   cwd?: string;
   sessionName?: string;
   agentId?: string;
-  requestedProfile?: string;
+  requestedProfile?: string | null;
   gitRepos?: SessionRepoInput[];
 }
 
 export interface RestartSessionOptions {
   agentId?: string;
-  requestedProfile?: string;
+  requestedProfile?: string | null;
   /**
    * Forwarded to the backend `restart_session` command. Omit (or pass `true`)
    * for a true user-intent restart that starts a fresh conversation. Pass
@@ -77,7 +77,7 @@ export interface RestartSessionOptions {
 
 export interface CreateRootAgentOptions {
   agentId?: string;
-  requestedProfile?: string;
+  requestedProfile?: string | null;
 }
 
 export type ProfileSelectionScope = "default" | "instance";

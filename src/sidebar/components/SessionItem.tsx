@@ -213,11 +213,14 @@ const SessionItem: Component<{
     });
   };
 
-  const restartSession = async (agentId?: string) => {
+  const restartSession = async (agentId?: string, requestedProfile?: string | null) => {
     setShowContextMenu(false);
     cleanupContextMenu();
     try {
-      await SessionAPI.restart(props.session.id, agentId ? { agentId } : undefined);
+      await SessionAPI.restart(
+        props.session.id,
+        agentId ? { agentId, requestedProfile } : undefined,
+      );
     } catch (e) {
       console.error("Failed to restart session:", e);
     }
@@ -463,7 +466,7 @@ const SessionItem: Component<{
             currentRequestedProfile={props.session.requestedProfile}
             onSelect={async (selection) => {
               setShowCodingAgentPicker(false);
-              await restartSession(selection.agent.id);
+              await restartSession(selection.agent.id, selection.requestedProfile);
             }}
             onClose={() => setShowCodingAgentPicker(false)}
           />

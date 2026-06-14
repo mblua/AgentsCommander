@@ -112,17 +112,28 @@ export function parseArgvText(input: string): ArgvParseResult {
   const argv: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
-  let escaping = false;
 
-  for (const char of input) {
-    if (escaping) {
-      current += char;
-      escaping = false;
-      continue;
-    }
+  for (let index = 0; index < input.length;) {
+    const char = input[index];
 
-    if (char === "\\") {
-      escaping = true;
+    if (quote && char === "\\") {
+      let slashCount = 0;
+      while (input[index] === "\\") {
+        slashCount += 1;
+        index += 1;
+      }
+      if (input[index] === quote) {
+        current += "\\".repeat(Math.floor(slashCount / 2));
+        if (slashCount % 2 === 1) {
+          current += quote;
+          index += 1;
+        } else {
+          quote = null;
+          index += 1;
+        }
+      } else {
+        current += "\\".repeat(slashCount);
+      }
       continue;
     }
 
@@ -132,11 +143,13 @@ export function parseArgvText(input: string): ArgvParseResult {
       } else {
         current += char;
       }
+      index += 1;
       continue;
     }
 
     if (char === "'" || char === '"') {
       quote = char;
+      index += 1;
       continue;
     }
 
@@ -145,13 +158,14 @@ export function parseArgvText(input: string): ArgvParseResult {
         argv.push(current);
         current = "";
       }
+      index += 1;
       continue;
     }
 
     current += char;
+    index += 1;
   }
 
-  if (escaping) current += "\\";
   if (quote) return { argv: [], error: `Unclosed ${quote} quote` };
   if (current.length > 0) argv.push(current);
   return { argv, error: null };
@@ -159,8 +173,27 @@ export function parseArgvText(input: string): ArgvParseResult {
 
 function quoteArgvToken(token: string): string {
   if (token.length === 0) return '""';
-  if (!/[\s"'\\]/.test(token)) return token;
-  return `"${token.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  if (!/[\s"']/.test(token)) return token;
+
+  let quoted = "";
+  let slashCount = 0;
+  for (const char of token) {
+    if (char === "\\") {
+      slashCount += 1;
+      continue;
+    }
+    if (char === '"') {
+      quoted += "\\".repeat(slashCount * 2 + 1);
+      quoted += char;
+      slashCount = 0;
+      continue;
+    }
+    quoted += "\\".repeat(slashCount);
+    slashCount = 0;
+    quoted += char;
+  }
+  quoted += "\\".repeat(slashCount * 2);
+  return `"${quoted}"`;
 }
 
 export function stringifyArgv(argv: string[]): string {
@@ -189,11 +222,16 @@ export function hasEnabledEnvKey(rows: CodingAgentEnv[], key: string): boolean {
   return rows.some((row) => row.enabled && envKeyCompare(row.key) === target);
 }
 
-function executableBasename(command: string): string {
-  const first = command.trim().split(/\s+/)[0] ?? "";
-  const normalized = first.replace(/\\/g, "/");
+export function executableTokenBasename(token: string): string {
+  const normalized = token.replace(/\\/g, "/");
   const leaf = normalized.split("/").pop() || normalized;
   return leaf.replace(/\.[^.]+$/, "").toLowerCase();
+}
+
+export function executableBasename(command: string): string {
+  const parsed = parseArgvText(command);
+  const first = parsed.error ? command.trim().split(/\s+/)[0] ?? "" : parsed.argv[0] ?? "";
+  return executableTokenBasename(first);
 }
 
 export function isCodexAgent(agent: AgentConfig): boolean {
