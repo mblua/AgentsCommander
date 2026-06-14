@@ -209,6 +209,90 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("keeps early environment edits when the fresh load resolves late", async () => {
+    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    vi.mocked(SettingsAPI.get).mockReturnValueOnce(
+      new Promise<AppSettings>((resolve) => {
+        resolveLoadedSettings = resolve;
+      }),
+    );
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    const addEnv = document.querySelector<HTMLButtonElement>(".settings-env-add");
+    if (!addEnv) throw new Error("missing environment add button");
+    addEnv.click();
+    await settle();
+
+    const envRow = document.querySelector(".settings-env-row");
+    const keyInput = envRow?.querySelector<HTMLInputElement>(".settings-env-key");
+    const valueInput = envRow?.querySelector<HTMLInputElement>(".settings-env-value");
+    if (!keyInput || !valueInput) throw new Error("missing environment inputs");
+    keyInput.value = "USER_TOKEN";
+    keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+    valueInput.value = "secret";
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    resolveLoadedSettings(settings());
+    await settle();
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agents[0]?.envs).toEqual([
+      {
+        key: "USER_TOKEN",
+        value: "secret",
+        source: "user",
+        enabled: true,
+      },
+    ]);
+
+    dispose();
+  });
+
+  it("keeps early profile cell edits when the fresh load resolves late", async () => {
+    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    vi.mocked(SettingsAPI.get).mockReturnValueOnce(
+      new Promise<AppSettings>((resolve) => {
+        resolveLoadedSettings = resolve;
+      }),
+    );
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    const argvInput = document.querySelector<HTMLInputElement>(".settings-profile-argv");
+    if (!argvInput) throw new Error("missing profile argv input");
+    argvInput.value = "--fast";
+    argvInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    resolveLoadedSettings(settings());
+    await settle();
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.codingAgentProfiles.matrix.codex?.A?.argv).toEqual(["--fast"]);
+
+    dispose();
+  });
+
   it("uses the seeded RTK baseline when saving before the fresh load resolves", async () => {
     let resolveLoadedSettings: (value: AppSettings) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(

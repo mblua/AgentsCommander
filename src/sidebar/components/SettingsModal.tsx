@@ -137,11 +137,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     value: string | boolean
   ) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "agents", agentIndex, "envs", rowIndex, field as any, value as any);
   };
 
   const addAgentEnv = (agentIndex: number) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     const row: CodingAgentEnv = {
       key: "",
       value: "",
@@ -153,6 +155,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const removeAgentEnv = (agentIndex: number, rowIndex: number) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "agents", agentIndex, "envs", (prev) =>
       (prev ?? []).filter((_, i) => i !== rowIndex)
     );
@@ -179,6 +182,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     cell: ProfileCellConfig
   ) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "codingAgentProfiles", "matrix", (matrix) => ({
       ...matrix,
       [agentId]: {
@@ -197,6 +201,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const removeProfileCell = (agentId: string, letter: string) => {
     if (!settings.data || letter === "A") return;
+    setDraftDirty(true);
     const cells = settings.data.codingAgentProfiles.matrix[agentId] ?? {};
     const nextCells = { ...cells };
     delete nextCells[letter];
@@ -219,6 +224,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const updateProfileName = (letter: string, name: string) => {
     if (!settings.data) return;
+    setDraftDirty(true);
     setSettings("data", "codingAgentProfiles", "letters", (letters) => ({
       ...letters,
       [letter]: { name },
@@ -229,6 +235,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (!settings.data) return;
     const letter = nextAvailableProfileLetter(settings.data.codingAgentProfiles);
     if (!letter) return;
+    setDraftDirty(true);
     setSettings("data", "codingAgentProfiles", "letters", (letters) => ({
       ...letters,
       [letter]: { name: "" },
@@ -237,6 +244,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const removeProfileLetter = (letter: string) => {
     if (!settings.data || letter === "A") return;
+    setDraftDirty(true);
     const letters = { ...settings.data.codingAgentProfiles.letters };
     delete letters[letter];
     const matrix = Object.fromEntries(
@@ -252,6 +260,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const updateProfileCellText = (agentId: string, letter: string, text: string) => {
     const key = profileCellKey(agentId, letter);
+    setDraftDirty(true);
     setProfileCellText(key, text);
     const parsed = parseArgvText(text);
     if (parsed.error) {
