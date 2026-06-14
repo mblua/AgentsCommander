@@ -463,11 +463,29 @@ pub fn get_instance_label() -> String {
     crate::config::profile::instance_label().to_string()
 }
 
+async fn persist_narrow_settings_update(
+    settings: &SettingsState,
+    mutate_candidate: impl FnOnce(&mut AppSettings),
+) -> Result<(), String> {
+    persist_narrow_settings_update_with_saver(settings, mutate_candidate, save_settings).await
+}
+
+async fn persist_narrow_settings_update_with_saver(
+    settings: &SettingsState,
+    mutate_candidate: impl FnOnce(&mut AppSettings),
+    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut s = settings.write().await;
+    let mut candidate = s.clone();
+    mutate_candidate(&mut candidate);
+    save(&candidate)?;
+    *s = candidate;
+    Ok(())
+}
+
 /// Narrow setter for `inject_rtk_hook`. Holds the SettingsState
-/// write lock through `save_settings` so the in-memory mutation, the cloned
-/// snapshot, and the disk write happen atomically with respect to each other
-/// (issue #120, grinch H3 + N1). The explicit `drop(s)` after `save_settings`
-/// makes the guard scope visually unambiguous: lock-then-write-then-release.
+/// write lock through `save_settings` and publishes the candidate only after
+/// the disk write succeeds (issue #120, grinch H3 + N1).
 /// Broad settings updates now use the same write-lock-through-save pattern, so
 /// stale full-object payloads cannot interleave with this setter and overwrite
 /// the live value after this save publishes.
@@ -479,30 +497,26 @@ pub async fn set_inject_rtk_hook(
     settings: State<'_, SettingsState>,
     value: bool,
 ) -> Result<(), String> {
-    let mut s = settings.write().await;
-    s.inject_rtk_hook = value;
-    let snapshot = s.clone();
-    save_settings(&snapshot)?;
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(())
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate.inject_rtk_hook = value;
+    })
+    .await
 }
 
-/// Narrow setter for `rtk_prompt_dismissed`. Same lock-held-through-save
+/// Narrow setter for `rtk_prompt_dismissed`. Same candidate-save-publish
 /// pattern as `set_inject_rtk_hook` (issue #120, grinch H3 + N1).
 #[tauri::command]
 pub async fn set_rtk_prompt_dismissed(
     settings: State<'_, SettingsState>,
     value: bool,
 ) -> Result<(), String> {
-    let mut s = settings.write().await;
-    s.rtk_prompt_dismissed = value;
-    let snapshot = s.clone();
-    save_settings(&snapshot)?;
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(())
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate.rtk_prompt_dismissed = value;
+    })
+    .await
 }
 
-/// Narrow setter for `sounds_enabled`. Same lock-held-through-save
+/// Narrow setter for `sounds_enabled`. Same candidate-save-publish
 /// pattern as `set_inject_rtk_hook` (issue #158). Replaces the toolbar's
 /// previous full-object `update_settings(next)` call, which could clobber
 /// unrelated fields from a stale `settingsStore.current` snapshot.
@@ -511,15 +525,13 @@ pub async fn set_sounds_enabled(
     settings: State<'_, SettingsState>,
     value: bool,
 ) -> Result<(), String> {
-    let mut s = settings.write().await;
-    s.sounds_enabled = value;
-    let snapshot = s.clone();
-    save_settings(&snapshot)?;
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(())
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate.sounds_enabled = value;
+    })
+    .await
 }
 
-/// Narrow setter for `theme_light`. Same lock-held-through-save
+/// Narrow setter for `theme_light`. Same candidate-save-publish
 /// pattern as `set_sounds_enabled` (issue #289). Lets the UI persist the
 /// user's light/dark mode choice without going through `update_settings`,
 /// which could clobber unrelated fields from a stale snapshot.
@@ -528,12 +540,10 @@ pub async fn set_theme_light(
     settings: State<'_, SettingsState>,
     value: bool,
 ) -> Result<(), String> {
-    let mut s = settings.write().await;
-    s.theme_light = value;
-    let snapshot = s.clone();
-    save_settings(&snapshot)?;
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(())
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate.theme_light = value;
+    })
+    .await
 }
 
 /// Sweep every AC-managed agent directory and apply
@@ -672,8 +682,8 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
 mod tests {
     use super::{
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
-        persist_protected_settings_update_with_saver, persist_settings_draft_update_with_saver,
-        RtkSweepError, RtkSweepResult,
+        persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
+        persist_settings_draft_update_with_saver, RtkSweepError, RtkSweepResult,
     };
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
@@ -872,6 +882,72 @@ mod tests {
             live.agents[0].isolate_codex_home,
             original.agents[0].isolate_codex_home
         );
+    }
+
+    async fn assert_narrow_setter_save_failure_rolls_back(
+        field_name: &'static str,
+        mutate_candidate: impl FnOnce(&mut AppSettings) + Send,
+        assert_candidate: impl FnOnce(&AppSettings) + Send,
+    ) {
+        let mut original = settings_with_single_agent();
+        original.inject_rtk_hook = false;
+        original.rtk_prompt_dismissed = false;
+        original.sounds_enabled = true;
+        original.theme_light = false;
+        let state = state_for(original.clone());
+        let expected_err = format!("simulated save failure for {field_name}");
+
+        let err = persist_narrow_settings_update_with_saver(
+            &state,
+            |candidate| {
+                mutate_candidate(candidate);
+                assert_candidate(candidate);
+            },
+            |_| Err(expected_err.clone()),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, expected_err);
+        let live = state.read().await;
+        assert_eq!(
+            live.inject_rtk_hook, original.inject_rtk_hook,
+            "{field_name}"
+        );
+        assert_eq!(
+            live.rtk_prompt_dismissed, original.rtk_prompt_dismissed,
+            "{field_name}"
+        );
+        assert_eq!(live.sounds_enabled, original.sounds_enabled, "{field_name}");
+        assert_eq!(live.theme_light, original.theme_light, "{field_name}");
+    }
+
+    #[tokio::test]
+    async fn narrow_settings_setter_save_failure_leaves_live_settings_unchanged() {
+        assert_narrow_setter_save_failure_rolls_back(
+            "inject_rtk_hook",
+            |candidate| candidate.inject_rtk_hook = true,
+            |candidate| assert!(candidate.inject_rtk_hook),
+        )
+        .await;
+        assert_narrow_setter_save_failure_rolls_back(
+            "rtk_prompt_dismissed",
+            |candidate| candidate.rtk_prompt_dismissed = true,
+            |candidate| assert!(candidate.rtk_prompt_dismissed),
+        )
+        .await;
+        assert_narrow_setter_save_failure_rolls_back(
+            "sounds_enabled",
+            |candidate| candidate.sounds_enabled = false,
+            |candidate| assert!(!candidate.sounds_enabled),
+        )
+        .await;
+        assert_narrow_setter_save_failure_rolls_back(
+            "theme_light",
+            |candidate| candidate.theme_light = true,
+            |candidate| assert!(candidate.theme_light),
+        )
+        .await;
     }
 
     #[tokio::test]
