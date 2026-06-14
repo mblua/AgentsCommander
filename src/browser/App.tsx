@@ -1,6 +1,8 @@
-import { Component, createSignal, onCleanup } from "solid-js";
+import { Component, createSignal, onCleanup, onMount } from "solid-js";
 import SidebarApp from "../sidebar/App";
 import TerminalApp from "../terminal/App";
+import type { UnlistenFn } from "../shared/transport";
+import { SettingsAPI, onThemeChanged } from "../shared/ipc";
 import "../sidebar/styles/sidebar.css";
 import "../terminal/styles/terminal.css";
 import "./styles/browser.css";
@@ -12,6 +14,42 @@ import "./styles/browser.css";
 const BrowserApp: Component = () => {
   const [sidebarWidth, setSidebarWidth] = createSignal(300);
   const [dragging, setDragging] = createSignal(false);
+  let disposed = false;
+  let unlistenThemeChanged: UnlistenFn | null = null;
+
+  const applyTheme = (light: boolean) => {
+    document.documentElement.classList.toggle("light-theme", light);
+  };
+
+  onMount(async () => {
+    // BrowserApp owns the document theme because its children are embedded to
+    // suppress titlebars/window geometry. Match MainApp's optimistic light
+    // first paint, then correct from persisted settings.
+    applyTheme(true);
+
+    const unlisten = await onThemeChanged(({ light }) => {
+      applyTheme(light);
+    });
+    if (disposed) {
+      unlisten();
+      return;
+    }
+    unlistenThemeChanged = unlisten;
+
+    try {
+      const settings = await SettingsAPI.get();
+      if (!disposed) {
+        applyTheme(settings.themeLight);
+      }
+    } catch (err) {
+      console.error("[browser] failed to load theme setting:", err);
+    }
+  });
+
+  onCleanup(() => {
+    disposed = true;
+    unlistenThemeChanged?.();
+  });
 
   const onMouseDown = (e: MouseEvent) => {
     e.preventDefault();
@@ -56,7 +94,7 @@ const BrowserApp: Component = () => {
   return (
     <div class="browser-layout" classList={{ "browser-dragging": dragging() }}>
       <div class="browser-sidebar" style={{ width: `${sidebarWidth()}px` }}>
-        <SidebarApp />
+        <SidebarApp embedded />
       </div>
       <div
         class="browser-divider"
@@ -66,7 +104,7 @@ const BrowserApp: Component = () => {
         <div class="browser-divider-handle" />
       </div>
       <div class="browser-terminal">
-        <TerminalApp />
+        <TerminalApp embedded />
       </div>
     </div>
   );
