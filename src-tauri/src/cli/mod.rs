@@ -160,6 +160,8 @@ pub enum Commands {
     UiQuery(crate::testability::ui_automation::UiQueryArgs),
     /// Click a WebView automation target by data-ac-testid
     UiClick(crate::testability::ui_automation::UiClickArgs),
+    /// Dispatch a WebView contextmenu event on an automation target by data-ac-testid
+    UiContextClick(crate::testability::ui_automation::UiContextClickArgs),
     /// Set an input/select WebView automation target by data-ac-testid
     UiSet(crate::testability::ui_automation::UiSetArgs),
     /// Wait until a WebView automation target is available by data-ac-testid
@@ -291,6 +293,9 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
         Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),
         Commands::UiClick(args) => crate::testability::ui_automation::execute_click(args),
+        Commands::UiContextClick(args) => {
+            crate::testability::ui_automation::execute_context_click(args)
+        }
         Commands::UiSet(args) => crate::testability::ui_automation::execute_set(args),
         Commands::UiWait(args) => crate::testability::ui_automation::execute_wait(args),
     };
