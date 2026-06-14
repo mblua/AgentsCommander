@@ -123,18 +123,53 @@ const Titlebar: Component = () => {
       </div>
       <Show when={isTauri}>
         <div class="rm-titlebar-controls">
-          <button class="rm-titlebar-btn" onClick={handleDock} title="Dock">
-            &#x21B2;
+          <button
+            class="rm-titlebar-btn"
+            onClick={handleDock}
+            title="Dock"
+            aria-label="Dock Resource Monitor"
+            data-ac-testid="resourceMonitor.titlebar.dock"
+            data-ac-role="button"
+          >
+            <span
+              class="rm-titlebar-btn-alias"
+              data-ac-testid="resourceMonitor.dock"
+              data-ac-role="button"
+            >
+              &#x21B2;
+            </span>
           </button>
-          <button class="rm-titlebar-btn" onClick={handleMinimize} title="Minimize">
-            &#x2014;
+          <button
+            class="rm-titlebar-btn"
+            onClick={handleMinimize}
+            title="Minimize"
+            aria-label="Minimize Resource Monitor"
+            data-ac-testid="resourceMonitor.titlebar.minimize"
+            data-ac-role="button"
+          >
+            <span
+              class="rm-titlebar-btn-alias"
+              data-ac-testid="resourceMonitor.minimize"
+              data-ac-role="button"
+            >
+              &#x2014;
+            </span>
           </button>
           <button
             class="rm-titlebar-btn rm-titlebar-btn-close"
             onClick={handleClose}
             title="Close"
+            aria-label="Close Resource Monitor"
+            data-ac-testid="resourceMonitor.titlebar.close"
+            data-ac-role="button"
           >
-            &#x2715;
+            <span
+              class="rm-titlebar-btn-alias"
+              data-ac-testid="resourceMonitor.close"
+              data-ac-role="button"
+            >
+              &#x2715;
+            </span>
           </button>
         </div>
       </Show>
