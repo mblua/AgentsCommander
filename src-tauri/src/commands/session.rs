@@ -8,6 +8,10 @@ use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
+use crate::resource_monitor::{
+    AgentLaunchPermit, ResourceLaunchMetadata, ResourceLaunchRegistration, ResourceLimits,
+    ResourceMonitorState,
+};
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
 use crate::session::session::{SessionInfo, SessionRepo, SessionStatus};
@@ -81,6 +85,15 @@ async fn rollback_pre_created_session<R: tauri::Runtime>(
                 e
             );
         }
+    }
+}
+
+fn release_resource_launch_permit(
+    monitor: &Arc<ResourceMonitorState>,
+    permit: &mut Option<AgentLaunchPermit>,
+) {
+    if let Some(permit) = permit.take() {
+        monitor.release_unregistered_permit(permit);
     }
 }
 
@@ -722,8 +735,18 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
     let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
 
+    let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
+    let is_agent_owned_launch = agent_id.is_some() || agent_kind.is_some() || is_root_agent;
+    let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
+    let mut resource_permit = if is_agent_owned_launch {
+        let cfg = app.state::<SettingsState>().read().await.clone();
+        resource_monitor.try_reserve_agent_slot(ResourceLimits::from(&cfg))?
+    } else {
+        None
+    };
+
     let mgr = session_mgr.read().await;
-    let mut session = mgr
+    let mut session = match mgr
         .create_session(
             shell.clone(),
             shell_args.clone(),
@@ -734,7 +757,13 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             is_coordinator,
         )
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(session) => session,
+        Err(e) => {
+            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            return Err(e.to_string());
+        }
+    };
 
     if is_root_agent {
         mgr.set_is_root_agent(session.id, true).await;
@@ -744,6 +773,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     if let Some(name) = session_name {
         if let Err(e) = mgr.rename_session(session.id, name.clone()).await {
             let err = e.to_string();
+            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
             drop(mgr);
             rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
             return Err(err);
@@ -755,10 +785,9 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 
     let mut shell_args = shell_args;
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
-    // #260 — single detector (session/profile.rs). Replaces the old
+    // #260: single detector (session/profile.rs). Replaces the old
     // starts_with triple; this is the SAME call `strip_auto_injected_args`
     // makes, so the persisted recipe and the runtime identity cannot disagree.
-    let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
     let context_target = match agent_kind {
         Some(CodingAgentKind::Claude) => {
             Some(crate::config::session_context::ManagedContextTarget::Claude)
@@ -845,6 +874,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                     .message(&dialog_msg)
                     .title("Context File Error")
                     .show(|_| {});
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
                 drop(mgr);
                 rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
                 return Err(e);
@@ -890,6 +920,18 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     } else {
         Vec::new()
     };
+    let resource_registration = resource_permit.take().map(|permit| {
+        ResourceLaunchRegistration::new(
+            resource_monitor.as_ref().clone(),
+            permit,
+            ResourceLaunchMetadata {
+                session_id: id,
+                name: session.name.clone(),
+                agent_id: agent_id.clone(),
+                agent_label: agent_label.clone(),
+            },
+        )
+    });
 
     let spawn_result = {
         pty_mgr.lock().unwrap().spawn(
@@ -902,6 +944,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             &extra_env,
             crate::session::profile::idle_tuning_for(agent_kind),
             app.clone(),
+            resource_registration,
         )
     };
     if let Err(e) = spawn_result {
@@ -1335,6 +1378,28 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
     }
     if let Some(shutdown) = bridge_shutdown.take() {
         shutdown.spawn_wait_or_abort();
+    }
+
+    {
+        let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
+        if resource_monitor.has_registered_group(uuid) {
+            let monitor = Arc::clone(&resource_monitor);
+            let result = tokio::task::spawn_blocking(move || {
+                monitor.kill_group(
+                    uuid,
+                    crate::resource_monitor::ResourceKillReason::SessionDestroy,
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            if result.quarantined {
+                log::warn!(
+                    "[session] Resource cleanup for {} quarantined: {}",
+                    id,
+                    result.message
+                );
+            }
+        }
     }
 
     // Kill the PTY first

@@ -420,3 +420,65 @@ pub async fn open_spec_board_window(app: AppHandle) -> Result<(), String> {
 
     Ok(())
 }
+
+/// Open the floating Resource Monitor window.
+/// If already open, just focus it.
+#[tauri::command]
+pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    if let Some(existing) = app.get_webview_window("resource-monitor") {
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
+        .expect("Failed to load app icon");
+
+    WebviewWindowBuilder::new(
+        &app,
+        "resource-monitor",
+        WebviewUrl::App("index.html?window=resource-monitor".into()),
+    )
+    .title(format!(
+        "Resource Monitor - {}",
+        crate::config::profile::app_title_suffix()
+    ))
+    .icon(icon)
+    .map_err(|e| e.to_string())?
+    .inner_size(760.0, 560.0)
+    .min_inner_size(520.0, 420.0)
+    .decorations(false)
+    .zoom_hotkeys_enabled(false)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Move the Resource Monitor beside the main window.
+#[tauri::command]
+pub async fn dock_resource_monitor_window(app: AppHandle) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is not available".to_string())?;
+    let monitor = app
+        .get_webview_window("resource-monitor")
+        .ok_or_else(|| "Resource Monitor window is not open".to_string())?;
+
+    let main_pos = main.outer_position().map_err(|e| e.to_string())?;
+    let main_size = main.outer_size().map_err(|e| e.to_string())?;
+    let width = 420_u32;
+    let height = main_size.height.max(420);
+    let x = main_pos.x.saturating_add(main_size.width as i32);
+    let y = main_pos.y;
+
+    monitor
+        .set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }))
+        .map_err(|e| e.to_string())?;
+    monitor
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
+        .map_err(|e| e.to_string())?;
+    monitor.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}

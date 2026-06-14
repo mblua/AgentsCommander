@@ -92,6 +92,13 @@ pub struct TelegramNetworkPollErrorLogging {
     pub recovery_level: TelegramPollRecoveryLogLevel,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ResourceWatchdogAction {
+    Warn,
+    KillGroup,
+}
+
 impl Default for TelegramNetworkPollErrorLogging {
     fn default() -> Self {
         Self {
@@ -283,6 +290,22 @@ pub struct AppSettings {
     /// board is an opt-in feature enabled manually from settings.json.
     #[serde(default)]
     pub spec_board_enabled: bool,
+    #[serde(default = "default_resource_monitor_enabled")]
+    pub resource_monitor_enabled: bool,
+    #[serde(default = "default_max_concurrent_agent_processes")]
+    pub max_concurrent_agent_processes: u32,
+    #[serde(default = "default_resource_watchdog_action")]
+    pub resource_watchdog_action: ResourceWatchdogAction,
+    #[serde(default = "default_agent_group_warn_private_bytes")]
+    pub agent_group_warn_private_bytes: u64,
+    #[serde(default = "default_agent_group_kill_private_bytes")]
+    pub agent_group_kill_private_bytes: u64,
+    #[serde(default = "default_agent_process_kill_private_bytes")]
+    pub agent_process_kill_private_bytes: u64,
+    #[serde(default = "default_resource_keep_last_snapshot")]
+    pub resource_keep_last_snapshot: bool,
+    #[serde(default = "default_resource_backoff_polling")]
+    pub resource_backoff_polling: bool,
 }
 
 fn default_true() -> bool {
@@ -341,6 +364,38 @@ fn default_main_sidebar_width() -> f64 {
     240.0
 }
 
+fn default_resource_monitor_enabled() -> bool {
+    true
+}
+
+fn default_max_concurrent_agent_processes() -> u32 {
+    3
+}
+
+fn default_resource_watchdog_action() -> ResourceWatchdogAction {
+    ResourceWatchdogAction::Warn
+}
+
+fn default_agent_group_warn_private_bytes() -> u64 {
+    8 * 1024 * 1024 * 1024
+}
+
+fn default_agent_group_kill_private_bytes() -> u64 {
+    12 * 1024 * 1024 * 1024
+}
+
+fn default_agent_process_kill_private_bytes() -> u64 {
+    12 * 1024 * 1024 * 1024
+}
+
+fn default_resource_keep_last_snapshot() -> bool {
+    true
+}
+
+fn default_resource_backoff_polling() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         let (default_shell, default_shell_args) = if cfg!(target_os = "windows") {
@@ -395,6 +450,14 @@ impl Default for AppSettings {
             agent_templates_path: None,
             theme_light: true,
             spec_board_enabled: false,
+            resource_monitor_enabled: default_resource_monitor_enabled(),
+            max_concurrent_agent_processes: default_max_concurrent_agent_processes(),
+            resource_watchdog_action: default_resource_watchdog_action(),
+            agent_group_warn_private_bytes: default_agent_group_warn_private_bytes(),
+            agent_group_kill_private_bytes: default_agent_group_kill_private_bytes(),
+            agent_process_kill_private_bytes: default_agent_process_kill_private_bytes(),
+            resource_keep_last_snapshot: default_resource_keep_last_snapshot(),
+            resource_backoff_polling: default_resource_backoff_polling(),
         }
     }
 }
@@ -546,6 +609,25 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+pub fn validate_resource_settings(settings: &AppSettings) -> Result<(), String> {
+    if !(1..=16).contains(&settings.max_concurrent_agent_processes) {
+        return Err("maxConcurrentAgentProcesses must be between 1 and 16".to_string());
+    }
+    if settings.agent_group_warn_private_bytes > settings.agent_group_kill_private_bytes {
+        return Err(
+            "agentGroupWarnPrivateBytes must be less than or equal to agentGroupKillPrivateBytes"
+                .to_string(),
+        );
+    }
+    if settings.agent_group_kill_private_bytes == 0 {
+        return Err("agentGroupKillPrivateBytes must be greater than 0".to_string());
+    }
+    if settings.agent_process_kill_private_bytes == 0 {
+        return Err("agentProcessKillPrivateBytes must be greater than 0".to_string());
+    }
     Ok(())
 }
 
@@ -808,8 +890,9 @@ mod tests {
     }
 
     use super::{
-        validate_agent_commands, AgentConfig, AppSettings, MainSidebarSide,
-        TelegramNetworkPollErrorLogging, TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
+        validate_agent_commands, validate_resource_settings, AgentConfig, AppSettings,
+        MainSidebarSide, ResourceWatchdogAction, TelegramNetworkPollErrorLogging,
+        TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
     };
 
     fn settings_with_agents(commands: &[(&str, &str)]) -> AppSettings {
@@ -1151,6 +1234,92 @@ mod tests {
 
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(back.spec_board_enabled);
+    }
+
+    #[test]
+    fn resource_monitor_settings_round_trip_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(s.resource_monitor_enabled);
+        assert_eq!(s.max_concurrent_agent_processes, 3);
+        assert_eq!(s.resource_watchdog_action, ResourceWatchdogAction::Warn);
+        assert_eq!(s.agent_group_warn_private_bytes, 8 * 1024 * 1024 * 1024);
+        assert_eq!(s.agent_group_kill_private_bytes, 12 * 1024 * 1024 * 1024);
+        assert_eq!(s.agent_process_kill_private_bytes, 12 * 1024 * 1024 * 1024);
+        assert!(s.resource_keep_last_snapshot);
+        assert!(s.resource_backoff_polling);
+
+        s.resource_monitor_enabled = false;
+        s.max_concurrent_agent_processes = 5;
+        s.resource_watchdog_action = ResourceWatchdogAction::KillGroup;
+        s.agent_group_warn_private_bytes = 128;
+        s.agent_group_kill_private_bytes = 256;
+        s.agent_process_kill_private_bytes = 512;
+        s.resource_keep_last_snapshot = false;
+        s.resource_backoff_polling = false;
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"resourceMonitorEnabled\":false"));
+        assert!(json.contains("\"resourceWatchdogAction\":\"killGroup\""));
+
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(!back.resource_monitor_enabled);
+        assert_eq!(back.max_concurrent_agent_processes, 5);
+        assert_eq!(
+            back.resource_watchdog_action,
+            ResourceWatchdogAction::KillGroup
+        );
+        assert_eq!(back.agent_group_warn_private_bytes, 128);
+        assert_eq!(back.agent_group_kill_private_bytes, 256);
+        assert_eq!(back.agent_process_kill_private_bytes, 512);
+        assert!(!back.resource_keep_last_snapshot);
+        assert!(!back.resource_backoff_polling);
+    }
+
+    #[test]
+    fn validate_resource_settings_rejects_invalid_limits() {
+        let s = AppSettings {
+            max_concurrent_agent_processes: 0,
+            ..AppSettings::default()
+        };
+        assert!(validate_resource_settings(&s)
+            .unwrap_err()
+            .contains("maxConcurrentAgentProcesses"));
+
+        let s = AppSettings {
+            max_concurrent_agent_processes: 17,
+            ..AppSettings::default()
+        };
+        assert!(validate_resource_settings(&s)
+            .unwrap_err()
+            .contains("maxConcurrentAgentProcesses"));
+
+        let s = AppSettings {
+            agent_group_warn_private_bytes: 10,
+            agent_group_kill_private_bytes: 9,
+            ..AppSettings::default()
+        };
+        assert!(validate_resource_settings(&s)
+            .unwrap_err()
+            .contains("agentGroupWarnPrivateBytes"));
+
+        let s = AppSettings {
+            agent_group_warn_private_bytes: 1,
+            agent_group_kill_private_bytes: 0,
+            ..AppSettings::default()
+        };
+        assert!(validate_resource_settings(&s)
+            .unwrap_err()
+            .contains("agentGroupKillPrivateBytes"));
+
+        let s = AppSettings {
+            agent_group_warn_private_bytes: 1,
+            agent_group_kill_private_bytes: 10,
+            agent_process_kill_private_bytes: 0,
+            ..AppSettings::default()
+        };
+        assert!(validate_resource_settings(&s)
+            .unwrap_err()
+            .contains("agentProcessKillPrivateBytes"));
     }
 
     #[test]
@@ -1563,5 +1732,21 @@ mod tests {
 
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(!s.spec_board_enabled);
+    }
+
+    #[test]
+    fn resource_monitor_settings_default_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(s.resource_monitor_enabled);
+        assert_eq!(s.max_concurrent_agent_processes, 3);
+        assert_eq!(s.resource_watchdog_action, ResourceWatchdogAction::Warn);
+        assert!(validate_resource_settings(&s).is_ok());
     }
 }
