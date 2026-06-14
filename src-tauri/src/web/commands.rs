@@ -288,17 +288,41 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 serde_json::from_value(args.get("newSettings").cloned().unwrap_or(args.clone()))
                     .map_err(|e| e.to_string())?;
 
-            let current = state.settings.read().await.clone();
-            let mut to_save = crate::config::settings::merge_protected_coding_agent_settings(
-                &current,
+            let saved = crate::commands::config::persist_protected_settings_update(
+                &state.settings,
                 new_settings,
-            );
-            to_save.root_token = current.root_token.clone();
-            crate::config::settings::validate_and_repair_settings(&mut to_save)?;
-            let mut cfg = state.settings.write().await;
-            *cfg = to_save.clone();
-            drop(cfg);
-            crate::config::settings::save_settings(&to_save).map_err(|e| e.to_string())?;
+            )
+            .await?;
+            crate::commands::config::purge_sessions_after_settings_update(&saved);
+
+            Ok(json!(null))
+        }
+
+        "save_settings_draft" => {
+            let draft: crate::config::settings::AppSettings =
+                serde_json::from_value(args.get("draft").cloned().unwrap_or(args.clone()))
+                    .map_err(|e| e.to_string())?;
+
+            let (saved, events) =
+                crate::commands::config::persist_settings_draft_update(&state.settings, draft)
+                    .await?;
+            crate::commands::config::purge_sessions_after_settings_update(&saved);
+            if events.profiles_changed {
+                broadcast_all(
+                    &state.app_handle,
+                    &state.broadcaster,
+                    "coding_agent_profiles_updated",
+                    &json!({}),
+                );
+            }
+            for agent_id in events.env_agent_ids {
+                broadcast_all(
+                    &state.app_handle,
+                    &state.broadcaster,
+                    "coding_agent_env_settings_updated",
+                    &json!({ "agentId": agent_id }),
+                );
+            }
 
             Ok(json!(null))
         }

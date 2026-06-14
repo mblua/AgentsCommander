@@ -194,6 +194,8 @@ export const SettingsAPI = {
   get: () => transport.invoke<AppSettings>("get_settings"),
   update: (settings: AppSettings) =>
     transport.invoke<void>("update_settings", { newSettings: settings }),
+  saveDraft: (settings: AppSettings) =>
+    transport.invoke<void>("save_settings_draft", { draft: settings }),
   openWebRemote: () => transport.invoke<void>("open_web_remote"),
   startWebServer: () => transport.invoke<boolean>("start_web_server"),
   stopWebServer: () => transport.invoke<boolean>("stop_web_server"),

@@ -1655,6 +1655,7 @@ pub fn run(
             commands::pty::pty_resize,
             commands::config::get_settings,
             commands::config::update_settings,
+            commands::config::save_settings_draft,
             commands::config::update_coding_agent_profiles,
             commands::config::update_coding_agent_env_settings,
             commands::config::set_agent_default_profile,

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
@@ -51,6 +52,12 @@ pub struct CodingAgentProfileResolutionResult {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SettingsDraftUpdateEvents {
+    pub profiles_changed: bool,
+    pub env_agent_ids: Vec<String>,
+}
+
 #[tauri::command]
 pub async fn save_debug_logs(content: String) -> Result<(), String> {
     let path = crate::config::config_dir()
@@ -85,23 +92,136 @@ pub async fn update_settings(
     settings: State<'_, SettingsState>,
     new_settings: AppSettings,
 ) -> Result<(), String> {
-    let current = settings.read().await.clone();
-    let mut to_save = merge_protected_coding_agent_settings(&current, new_settings);
-    // Preserve existing root token — frontend cannot overwrite it
-    to_save.root_token = current.root_token.clone();
-    validate_and_repair_settings(&mut to_save)?;
-    save_settings(&to_save)?;
+    let saved = persist_protected_settings_update(settings.inner(), new_settings).await?;
+    purge_sessions_after_settings_update(&saved);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_settings_draft(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    draft: AppSettings,
+) -> Result<(), String> {
+    let (saved, events) = persist_settings_draft_update(settings.inner(), draft).await?;
+    purge_sessions_after_settings_update(&saved);
+    emit_settings_draft_update_events(&app, &events);
+    Ok(())
+}
+
+pub(crate) async fn persist_protected_settings_update(
+    settings: &SettingsState,
+    new_settings: AppSettings,
+) -> Result<AppSettings, String> {
+    persist_protected_settings_update_with_saver(settings, new_settings, save_settings).await
+}
+
+async fn persist_protected_settings_update_with_saver(
+    settings: &SettingsState,
+    new_settings: AppSettings,
+    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+) -> Result<AppSettings, String> {
+    let mut s = settings.write().await;
+    let current = s.clone();
+    let candidate = build_protected_settings_candidate(&current, new_settings)?;
+    save(&candidate)?;
+    *s = candidate.clone();
+    Ok(candidate)
+}
+
+fn build_protected_settings_candidate(
+    current: &AppSettings,
+    new_settings: AppSettings,
+) -> Result<AppSettings, String> {
+    let mut candidate = merge_protected_coding_agent_settings(current, new_settings);
+    // Preserve existing root token. Frontend settings payloads cannot overwrite it.
+    candidate.root_token = current.root_token.clone();
+    validate_and_repair_settings(&mut candidate)?;
+    Ok(candidate)
+}
+
+pub(crate) async fn persist_settings_draft_update(
+    settings: &SettingsState,
+    draft: AppSettings,
+) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
+    persist_settings_draft_update_with_saver(settings, draft, save_settings).await
+}
+
+async fn persist_settings_draft_update_with_saver(
+    settings: &SettingsState,
+    mut draft: AppSettings,
+    save: impl FnOnce(&AppSettings) -> Result<(), String>,
+) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
+    let mut s = settings.write().await;
+    let current = s.clone();
+    draft.root_token = current.root_token.clone();
+    validate_and_repair_settings(&mut draft)?;
+    let events = settings_draft_update_events(&current, &draft);
+    save(&draft)?;
+    *s = draft.clone();
+    Ok((draft, events))
+}
+
+pub(crate) fn purge_sessions_after_settings_update(saved: &AppSettings) {
     if let Err(e) = crate::config::sessions_persistence::purge_sessions_outside_project_paths(
-        &to_save.project_paths,
+        &saved.project_paths,
     ) {
         log::warn!(
             "[settings] Failed to purge sessions outside current projectPaths after settings update: {}",
             e
         );
     }
-    let mut s = settings.write().await;
-    *s = to_save;
-    Ok(())
+}
+
+fn settings_draft_update_events(
+    before: &AppSettings,
+    after: &AppSettings,
+) -> SettingsDraftUpdateEvents {
+    let before_envs = agent_env_settings_by_id(before);
+    let after_envs = agent_env_settings_by_id(after);
+    let mut env_agent_ids = Vec::new();
+
+    for agent_id in before_envs.keys().chain(after_envs.keys()) {
+        if env_agent_ids.iter().any(|existing| existing == agent_id) {
+            continue;
+        }
+        if before_envs.get(agent_id) != after_envs.get(agent_id) {
+            env_agent_ids.push(agent_id.clone());
+        }
+    }
+
+    SettingsDraftUpdateEvents {
+        profiles_changed: before.coding_agent_profiles != after.coding_agent_profiles,
+        env_agent_ids,
+    }
+}
+
+fn agent_env_settings_by_id(
+    settings: &AppSettings,
+) -> BTreeMap<String, (Vec<CodingAgentEnv>, bool)> {
+    settings
+        .agents
+        .iter()
+        .map(|agent| {
+            (
+                agent.id.clone(),
+                (agent.envs.clone(), agent.isolate_codex_home),
+            )
+        })
+        .collect()
+}
+
+fn emit_settings_draft_update_events(app: &AppHandle, events: &SettingsDraftUpdateEvents) {
+    if events.profiles_changed {
+        let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
+    }
+
+    for agent_id in &events.env_agent_ids {
+        let _ = app.emit(
+            "coding_agent_env_settings_updated",
+            serde_json::json!({ "agentId": agent_id }),
+        );
+    }
 }
 
 #[tauri::command]
@@ -343,21 +463,14 @@ pub fn get_instance_label() -> String {
     crate::config::profile::instance_label().to_string()
 }
 
-/// Narrow setter — flips ONLY `inject_rtk_hook`. Holds the SettingsState
+/// Narrow setter for `inject_rtk_hook`. Holds the SettingsState
 /// write lock through `save_settings` so the in-memory mutation, the cloned
 /// snapshot, and the disk write happen atomically with respect to each other
 /// (issue #120, grinch H3 + N1). The explicit `drop(s)` after `save_settings`
 /// makes the guard scope visually unambiguous: lock-then-write-then-release.
-///
-/// **Caveat (out of scope per plan §7.5).** The pre-existing `update_settings`
-/// command writes to disk OUTSIDE the SettingsState write lock (it does
-/// `save_settings` then acquires the lock to assign in-memory). A concurrent
-/// `update_settings` whose draft has the OLD `inject_rtk_hook` value can
-/// therefore still produce on-disk / in-memory divergence interleaved with
-/// this setter. Closing that race requires re-shaping `update_settings`
-/// itself; flagged in the plan as a follow-up. For the banner flow which
-/// drove this setter, the divergence window is small and idempotently
-/// repaired by the next user toggle.
+/// Broad settings updates now use the same write-lock-through-save pattern, so
+/// stale full-object payloads cannot interleave with this setter and overwrite
+/// the live value after this save publishes.
 ///
 /// Caller is responsible for triggering `sweep_rtk_hook` if disk side-effects
 /// on replicas are desired.
@@ -374,10 +487,8 @@ pub async fn set_inject_rtk_hook(
     Ok(())
 }
 
-/// Narrow setter — flips ONLY `rtk_prompt_dismissed`. Same lock-held-through-save
-/// pattern as `set_inject_rtk_hook` (issue #120, grinch H3 + N1). The same
-/// `update_settings` caveat applies — see `set_inject_rtk_hook` doc for
-/// details.
+/// Narrow setter for `rtk_prompt_dismissed`. Same lock-held-through-save
+/// pattern as `set_inject_rtk_hook` (issue #120, grinch H3 + N1).
 #[tauri::command]
 pub async fn set_rtk_prompt_dismissed(
     settings: State<'_, SettingsState>,
@@ -391,12 +502,10 @@ pub async fn set_rtk_prompt_dismissed(
     Ok(())
 }
 
-/// Narrow setter — flips ONLY `sounds_enabled`. Same lock-held-through-save
+/// Narrow setter for `sounds_enabled`. Same lock-held-through-save
 /// pattern as `set_inject_rtk_hook` (issue #158). Replaces the toolbar's
 /// previous full-object `update_settings(next)` call, which could clobber
 /// unrelated fields from a stale `settingsStore.current` snapshot.
-/// The `update_settings` caveat documented on `set_inject_rtk_hook` applies
-/// here too.
 #[tauri::command]
 pub async fn set_sounds_enabled(
     settings: State<'_, SettingsState>,
@@ -410,12 +519,10 @@ pub async fn set_sounds_enabled(
     Ok(())
 }
 
-/// Narrow setter — flips ONLY `theme_light`. Same lock-held-through-save
+/// Narrow setter for `theme_light`. Same lock-held-through-save
 /// pattern as `set_sounds_enabled` (issue #289). Lets the UI persist the
 /// user's light/dark mode choice without going through `update_settings`,
-/// which could clobber unrelated fields from a stale snapshot. The
-/// `update_settings` caveat documented on `set_inject_rtk_hook` applies here
-/// too.
+/// which could clobber unrelated fields from a stale snapshot.
 #[tauri::command]
 pub async fn set_theme_light(
     settings: State<'_, SettingsState>,
@@ -565,6 +672,7 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
 mod tests {
     use super::{
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
+        persist_protected_settings_update_with_saver, persist_settings_draft_update_with_saver,
         RtkSweepError, RtkSweepResult,
     };
     use crate::config::settings::{
@@ -656,6 +764,175 @@ mod tests {
         assert!(err.contains("reserved by AgentsCommander"), "{err}");
         let live = state.read().await;
         assert_eq!(live.coding_agent_profiles, original.coding_agent_profiles);
+    }
+
+    #[tokio::test]
+    async fn invalid_settings_draft_transaction_leaves_generic_profiles_and_env_unchanged() {
+        let mut original = settings_with_single_agent();
+        original.sidebar_style = "noir-minimal".to_string();
+        original.agents[0].envs = vec![CodingAgentEnv {
+            key: "OPENAI_API_BASE".to_string(),
+            value: "current".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+        original.agents[0].isolate_codex_home = true;
+        original
+            .coding_agent_profiles
+            .matrix
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "B".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    argv: vec!["--current-profile".to_string()],
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+        let state = state_for(original.clone());
+
+        let mut draft = original.clone();
+        draft.sidebar_style = "command-center".to_string();
+        draft.agents[0].envs = vec![CodingAgentEnv {
+            key: "OPENAI_API_BASE".to_string(),
+            value: "draft".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+        draft.agents[0].isolate_codex_home = false;
+        draft
+            .coding_agent_profiles
+            .matrix
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "C".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    argv: vec!["--draft-profile".to_string()],
+                    env: BTreeMap::from([("AGENTSCOMMANDER_TOKEN".to_string(), "bad".to_string())]),
+                    notes: String::new(),
+                },
+            );
+
+        let err =
+            persist_settings_draft_update_with_saver(&state, draft, |_| -> Result<(), String> {
+                panic!("save must not run")
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("reserved by AgentsCommander"), "{err}");
+        let live = state.read().await;
+        assert_eq!(live.sidebar_style, original.sidebar_style);
+        assert_eq!(live.coding_agent_profiles, original.coding_agent_profiles);
+        assert_eq!(live.agents[0].envs, original.agents[0].envs);
+        assert_eq!(
+            live.agents[0].isolate_codex_home,
+            original.agents[0].isolate_codex_home
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_draft_transaction_save_failure_leaves_live_settings_unchanged() {
+        let mut original = settings_with_single_agent();
+        original.agents[0].envs = vec![CodingAgentEnv {
+            key: "OPENAI_API_BASE".to_string(),
+            value: "current".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+        original.agents[0].isolate_codex_home = true;
+        let state = state_for(original.clone());
+
+        let mut draft = original.clone();
+        draft.sidebar_style = "command-center".to_string();
+        draft.agents[0].envs = vec![CodingAgentEnv {
+            key: "OPENAI_API_BASE".to_string(),
+            value: "draft".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+        draft.agents[0].isolate_codex_home = false;
+
+        let err = persist_settings_draft_update_with_saver(&state, draft, |_| {
+            Err("simulated save failure".to_string())
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, "simulated save failure");
+        let live = state.read().await;
+        assert_eq!(live.sidebar_style, original.sidebar_style);
+        assert_eq!(live.coding_agent_profiles, original.coding_agent_profiles);
+        assert_eq!(live.agents[0].envs, original.agents[0].envs);
+        assert_eq!(
+            live.agents[0].isolate_codex_home,
+            original.agents[0].isolate_codex_home
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_update_settings_transaction_preserves_current_coding_fields() {
+        let mut current = settings_with_single_agent();
+        current.agents[0].envs = vec![CodingAgentEnv {
+            key: "OPENAI_API_BASE".to_string(),
+            value: "current".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+        current.agents[0].isolate_codex_home = true;
+        current
+            .coding_agent_profiles
+            .matrix
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "B".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    argv: vec!["--current-profile".to_string()],
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+        let state = state_for(current.clone());
+
+        let mut stale = current.clone();
+        stale.sidebar_style = "command-center".to_string();
+        stale.agents[0].envs.clear();
+        stale.agents[0].isolate_codex_home = false;
+        stale.coding_agent_profiles.matrix.clear();
+
+        let saved = persist_protected_settings_update_with_saver(&state, stale, |_| Ok(()))
+            .await
+            .unwrap();
+
+        assert_eq!(saved.sidebar_style, "command-center");
+        assert_eq!(saved.agents[0].envs, current.agents[0].envs);
+        assert_eq!(
+            saved.agents[0].isolate_codex_home,
+            current.agents[0].isolate_codex_home
+        );
+        assert!(saved
+            .coding_agent_profiles
+            .matrix
+            .get("agent-0")
+            .is_some_and(|cells| cells.contains_key("B")));
+        let live = state.read().await;
+        assert_eq!(live.sidebar_style, "command-center");
+        assert_eq!(live.agents[0].envs, current.agents[0].envs);
+        assert_eq!(
+            live.agents[0].isolate_codex_home,
+            current.agents[0].isolate_codex_home
+        );
+        assert!(live
+            .coding_agent_profiles
+            .matrix
+            .get("agent-0")
+            .is_some_and(|cells| cells.contains_key("B")));
     }
 
     /// `RtkSweepResult` and `RtkSweepError` cross the Tauri IPC boundary, so
