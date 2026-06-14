@@ -6,6 +6,145 @@ use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
 use crate::DetachedSessionsState;
 
+const MAIN_WINDOW_LABEL: &str = "main";
+const RESOURCE_MONITOR_WINDOW_LABEL: &str = "resource-monitor";
+const RESOURCE_MONITOR_FLOATING_WIDTH: u32 = 760;
+const RESOURCE_MONITOR_FLOATING_HEIGHT: u32 = 560;
+const RESOURCE_MONITOR_DOCK_WIDTH: u32 = 420;
+const RESOURCE_MONITOR_MIN_WIDTH: u32 = 520;
+const RESOURCE_MONITOR_MIN_HEIGHT: u32 = 420;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PhysicalWindowRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl PhysicalWindowRect {
+    const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn right(self) -> i32 {
+        self.x.saturating_add(u32_to_i32(self.width))
+    }
+
+    fn bottom(self) -> i32 {
+        self.y.saturating_add(u32_to_i32(self.height))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResourceMonitorPlacement {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MonitorWorkArea {
+    rect: PhysicalWindowRect,
+    scale_factor: f64,
+}
+
+fn u32_to_i32(value: u32) -> i32 {
+    value.min(i32::MAX as u32) as i32
+}
+
+fn effective_scale_factor(scale_factor: f64) -> f64 {
+    if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    }
+}
+
+fn clamp_position(value: i32, min: i32, max: i32) -> i32 {
+    if min > max {
+        min
+    } else {
+        value.clamp(min, max)
+    }
+}
+
+fn fits_horizontally(x: i32, width: u32, bounds: PhysicalWindowRect) -> bool {
+    x >= bounds.x && x.saturating_add(u32_to_i32(width)) <= bounds.right()
+}
+
+fn resource_monitor_placement_for_main(
+    main_rect: PhysicalWindowRect,
+    monitor_bounds: PhysicalWindowRect,
+    requested_width: u32,
+    requested_height: u32,
+) -> ResourceMonitorPlacement {
+    let width = requested_width.min(monitor_bounds.width).max(1);
+    let height = requested_height.min(monitor_bounds.height).max(1);
+    let max_x = monitor_bounds.right().saturating_sub(u32_to_i32(width));
+    let max_y = monitor_bounds.bottom().saturating_sub(u32_to_i32(height));
+
+    let right_x = main_rect.right();
+    let left_x = main_rect.x.saturating_sub(u32_to_i32(width));
+    let x = if fits_horizontally(right_x, width, monitor_bounds) {
+        right_x
+    } else if fits_horizontally(left_x, width, monitor_bounds) {
+        left_x
+    } else {
+        clamp_position(
+            main_rect.right().saturating_sub(u32_to_i32(width)),
+            monitor_bounds.x,
+            max_x,
+        )
+    };
+
+    ResourceMonitorPlacement {
+        x,
+        y: clamp_position(main_rect.y, monitor_bounds.y, max_y),
+        width,
+        height,
+    }
+}
+
+fn window_outer_rect<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<PhysicalWindowRect, String> {
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    Ok(PhysicalWindowRect::new(
+        position.x,
+        position.y,
+        size.width,
+        size.height,
+    ))
+}
+
+fn monitor_work_area_for_window<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<MonitorWorkArea, String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .ok_or_else(|| "No monitor is available for main window".to_string())?;
+    let work_area = monitor.work_area();
+    Ok(MonitorWorkArea {
+        rect: PhysicalWindowRect::new(
+            work_area.position.x,
+            work_area.position.y,
+            work_area.size.width,
+            work_area.size.height,
+        ),
+        scale_factor: monitor.scale_factor(),
+    })
+}
+
 /// Canonical detach implementation shared by the Tauri command + the Phase 3 restore
 /// loop (plan §A2.2.G1 + §A3.2.3). Ordering invariants, in order:
 ///
@@ -427,17 +566,30 @@ pub async fn open_spec_board_window(app: AppHandle) -> Result<(), String> {
 pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
-    if let Some(existing) = app.get_webview_window("resource-monitor") {
+    if let Some(existing) = app.get_webview_window(RESOURCE_MONITOR_WINDOW_LABEL) {
         existing.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
     }
 
+    let main = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "Main window is not available".to_string())?;
+    let main_rect = window_outer_rect(&main)?;
+    let monitor_work_area = monitor_work_area_for_window(&main)?;
+    let placement = resource_monitor_placement_for_main(
+        main_rect,
+        monitor_work_area.rect,
+        RESOURCE_MONITOR_FLOATING_WIDTH,
+        RESOURCE_MONITOR_FLOATING_HEIGHT,
+    );
+    let scale_factor = effective_scale_factor(monitor_work_area.scale_factor);
+
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .expect("Failed to load app icon");
 
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         &app,
-        "resource-monitor",
+        RESOURCE_MONITOR_WINDOW_LABEL,
         WebviewUrl::App("index.html?window=resource-monitor".into()),
     )
     .title(format!(
@@ -446,12 +598,42 @@ pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> 
     ))
     .icon(icon)
     .map_err(|e| e.to_string())?
-    .inner_size(760.0, 560.0)
-    .min_inner_size(520.0, 420.0)
+    .inner_size(
+        placement.width as f64 / scale_factor,
+        placement.height as f64 / scale_factor,
+    )
+    .position(
+        placement.x as f64 / scale_factor,
+        placement.y as f64 / scale_factor,
+    )
+    .min_inner_size(
+        RESOURCE_MONITOR_MIN_WIDTH as f64,
+        RESOURCE_MONITOR_MIN_HEIGHT as f64,
+    )
     .decorations(false)
     .zoom_hotkeys_enabled(false)
     .build()
     .map_err(|e| e.to_string())?;
+
+    window
+        .set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: placement.width,
+            height: placement.height,
+        }))
+        .map_err(|e| e.to_string())?;
+    let actual_size = window.outer_size().map_err(|e| e.to_string())?;
+    let placement = resource_monitor_placement_for_main(
+        main_rect,
+        monitor_work_area.rect,
+        actual_size.width,
+        actual_size.height,
+    );
+    window
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: placement.x,
+            y: placement.y,
+        }))
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -460,25 +642,77 @@ pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> 
 #[tauri::command]
 pub async fn dock_resource_monitor_window(app: AppHandle) -> Result<(), String> {
     let main = app
-        .get_webview_window("main")
+        .get_webview_window(MAIN_WINDOW_LABEL)
         .ok_or_else(|| "Main window is not available".to_string())?;
     let monitor = app
-        .get_webview_window("resource-monitor")
+        .get_webview_window(RESOURCE_MONITOR_WINDOW_LABEL)
         .ok_or_else(|| "Resource Monitor window is not open".to_string())?;
 
-    let main_pos = main.outer_position().map_err(|e| e.to_string())?;
-    let main_size = main.outer_size().map_err(|e| e.to_string())?;
-    let width = 420_u32;
-    let height = main_size.height.max(420);
-    let x = main_pos.x.saturating_add(main_size.width as i32);
-    let y = main_pos.y;
+    let main_rect = window_outer_rect(&main)?;
+    let monitor_work_area = monitor_work_area_for_window(&main)?;
+    let placement = resource_monitor_placement_for_main(
+        main_rect,
+        monitor_work_area.rect,
+        RESOURCE_MONITOR_DOCK_WIDTH,
+        main_rect.height.max(RESOURCE_MONITOR_MIN_HEIGHT),
+    );
 
     monitor
-        .set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }))
+        .set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: placement.width,
+            height: placement.height,
+        }))
         .map_err(|e| e.to_string())?;
+    let actual_size = monitor.outer_size().map_err(|e| e.to_string())?;
+    let placement = resource_monitor_placement_for_main(
+        main_rect,
+        monitor_work_area.rect,
+        actual_size.width,
+        actual_size.height,
+    );
     monitor
-        .set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: placement.x,
+            y: placement.y,
+        }))
         .map_err(|e| e.to_string())?;
     monitor.set_focus().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        resource_monitor_placement_for_main, PhysicalWindowRect, RESOURCE_MONITOR_DOCK_WIDTH,
+    };
+
+    #[test]
+    fn resource_monitor_stays_inside_negative_x_monitor_when_right_side_is_full() {
+        let main = PhysicalWindowRect::new(-1920, 0, 1920, 1040);
+        let monitor = PhysicalWindowRect::new(-1920, 0, 1920, 1040);
+
+        let placement =
+            resource_monitor_placement_for_main(main, monitor, RESOURCE_MONITOR_DOCK_WIDTH, 1040);
+
+        assert_eq!(placement.x, -420);
+        assert_eq!(placement.y, 0);
+        assert_eq!(placement.width, 420);
+        assert_eq!(placement.height, 1040);
+        assert!(placement.x >= monitor.x);
+        assert!(placement.x + placement.width as i32 <= monitor.right());
+    }
+
+    #[test]
+    fn resource_monitor_uses_right_side_when_it_fits_same_monitor() {
+        let main = PhysicalWindowRect::new(80, 40, 1000, 700);
+        let monitor = PhysicalWindowRect::new(0, 0, 1920, 1080);
+
+        let placement =
+            resource_monitor_placement_for_main(main, monitor, RESOURCE_MONITOR_DOCK_WIDTH, 700);
+
+        assert_eq!(placement.x, 1080);
+        assert_eq!(placement.y, 40);
+        assert_eq!(placement.width, 420);
+        assert_eq!(placement.height, 700);
+    }
 }
