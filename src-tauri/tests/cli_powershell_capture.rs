@@ -6,6 +6,10 @@
 //! IMPORTANT: marked #[ignore] because the bug only reproduces in release mode
 //! (`windows_subsystem = "windows"` is gated on `not(debug_assertions)`). To run:
 //!     cargo test --release --test cli_powershell_capture -- --ignored
+//!
+//! CI coverage for shipped/testable release executable names lives in:
+//!     npm run build:prod
+//!     npm run smoke:cli-release-windows
 
 use std::process::{Command, Stdio};
 
@@ -59,7 +63,7 @@ fn debug_guard() {
 // from unfixed binaries.
 
 #[test]
-#[ignore = "Requires release build (windows_subsystem=\"windows\"); run with --release --ignored"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
 fn list_peers_outputs_valid_json_under_powershell_noninteractive() {
     debug_guard();
 
@@ -91,7 +95,7 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive() {
 }
 
 #[test]
-#[ignore = "Requires release build; run with --release --ignored"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
 fn send_help_outputs_under_powershell_noninteractive() {
     debug_guard();
 
@@ -111,7 +115,7 @@ fn send_help_outputs_under_powershell_noninteractive() {
 }
 
 #[test]
-#[ignore = "Requires release build; run with --release --ignored"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
 fn send_unknown_flag_emits_stderr_under_powershell_noninteractive() {
     debug_guard();
 
@@ -125,7 +129,7 @@ fn send_unknown_flag_emits_stderr_under_powershell_noninteractive() {
 
 // G8: parallel pwsh.exe tests. Skip if pwsh not installed.
 #[test]
-#[ignore = "Requires release build + pwsh.exe; run with --release --ignored"]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names when pwsh.exe is installed"]
 fn list_peers_outputs_valid_json_under_pwsh_noninteractive() {
     debug_guard();
 

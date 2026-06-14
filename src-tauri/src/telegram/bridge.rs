@@ -5,11 +5,13 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::config::settings::TelegramNetworkPollErrorLogging;
+use crate::network::{NetworkBackoff, OutboundNetwork};
 use crate::pty::manager::PtyManager;
 use crate::telegram::api;
 use crate::telegram::types::BridgeInfo;
@@ -629,72 +631,32 @@ pub struct BridgeHandle {
     pub info: BridgeInfo,
     pub cancel: CancellationToken,
     pub output_sender: mpsc::Sender<Vec<u8>>,
+    pub tasks: Vec<JoinHandle<()>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_bridge<R: tauri::Runtime>(
     bot_token: String,
     chat_id: i64,
     session_id: Uuid,
     info: BridgeInfo,
     pty_mgr: Arc<Mutex<PtyManager>>,
+    network: OutboundNetwork,
     app_handle: tauri::AppHandle<R>,
     reader: Option<SessionReaderKind>,
 ) -> BridgeHandle {
     let cancel = CancellationToken::new();
     let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
+    let mut tasks = Vec::new();
 
     let session_id_str = session_id.to_string();
 
     match reader {
         Some(SessionReaderKind::Claude { project_dir }) => {
-            drop(rx); // not needed — no PTY bytes feed
-            super::claude_watcher::spawn_watch_task(
+            drop(rx);
+            tasks.push(super::claude_watcher::spawn_watch_task(
                 project_dir,
-                bot_token.clone(),
-                chat_id,
-                session_id_str.clone(),
-                cancel.clone(),
-                app_handle.clone(),
-            );
-        }
-        Some(SessionReaderKind::Codex {
-            search_root,
-            cwd,
-            attach_time,
-        }) => {
-            drop(rx);
-            super::codex_watcher::spawn_watch_task(
-                search_root,
-                cwd,
-                attach_time,
-                bot_token.clone(),
-                chat_id,
-                session_id_str.clone(),
-                cancel.clone(),
-                app_handle.clone(),
-            );
-        }
-        Some(SessionReaderKind::Gemini {
-            gemini_home,
-            cwd,
-            attach_time,
-        }) => {
-            drop(rx);
-            super::gemini_watcher::spawn_watch_task(
-                gemini_home,
-                cwd,
-                attach_time,
-                bot_token.clone(),
-                chat_id,
-                session_id_str.clone(),
-                cancel.clone(),
-                app_handle.clone(),
-            );
-        }
-        None => {
-            // PTY mode: existing 6-phase pipeline
-            tokio::spawn(output_task(
-                rx,
+                network.clone(),
                 bot_token.clone(),
                 chat_id,
                 session_id_str.clone(),
@@ -702,23 +664,72 @@ pub fn spawn_bridge<R: tauri::Runtime>(
                 app_handle.clone(),
             ));
         }
+        Some(SessionReaderKind::Codex {
+            search_root,
+            cwd,
+            attach_time,
+        }) => {
+            drop(rx);
+            tasks.push(super::codex_watcher::spawn_watch_task(
+                search_root,
+                cwd,
+                attach_time,
+                network.clone(),
+                bot_token.clone(),
+                chat_id,
+                session_id_str.clone(),
+                cancel.clone(),
+                app_handle.clone(),
+            ));
+        }
+        Some(SessionReaderKind::Gemini {
+            gemini_home,
+            cwd,
+            attach_time,
+        }) => {
+            drop(rx);
+            tasks.push(super::gemini_watcher::spawn_watch_task(
+                gemini_home,
+                cwd,
+                attach_time,
+                network.clone(),
+                bot_token.clone(),
+                chat_id,
+                session_id_str.clone(),
+                cancel.clone(),
+                app_handle.clone(),
+            ));
+        }
+        None => {
+            tasks.push(tokio::spawn(output_task(
+                rx,
+                network.clone(),
+                bot_token.clone(),
+                chat_id,
+                session_id_str.clone(),
+                cancel.clone(),
+                app_handle.clone(),
+            )));
+        }
     }
 
     // Poll task: Telegram getUpdates -> write to PTY stdin (runs in BOTH modes)
-    tokio::spawn(poll_task(
+    tasks.push(tokio::spawn(poll_task(
         bot_token,
         chat_id,
         session_id,
         session_id_str,
         pty_mgr,
+        network,
         cancel.clone(),
         app_handle,
-    ));
+    )));
 
     BridgeHandle {
         info,
         cancel,
         output_sender: tx,
+        tasks,
     }
 }
 
@@ -740,17 +751,13 @@ const FLUSH_DELAY_MS: u64 = 500;
 
 async fn output_task<R: tauri::Runtime>(
     mut rx: mpsc::Receiver<Vec<u8>>,
+    network: OutboundNetwork,
     token: String,
     chat_id: i64,
     session_id: String,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
 ) {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
-
     let mut logger = BridgeLogger::new(&session_id);
     let mut diag = DiagLogger::new();
     let mut buffer = String::new();
@@ -807,7 +814,7 @@ async fn output_task<R: tauri::Runtime>(
                     let buf_len = buffer.trim().len();
                     if since_last >= flush_delay || buf_len > 2000 {
                         flush_buffer(
-                            &mut buffer, &client, &token, chat_id,
+                            &mut buffer, &network, &token, chat_id,
                             &session_id, &app, &mut logger, &mut diag,
                             false,
                         ).await;
@@ -846,7 +853,7 @@ async fn output_task<R: tauri::Runtime>(
     if !buffer.is_empty() {
         flush_buffer(
             &mut buffer,
-            &client,
+            &network,
             &token,
             chat_id,
             &session_id,
@@ -866,7 +873,7 @@ async fn output_task<R: tauri::Runtime>(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn flush_buffer<R: tauri::Runtime>(
     buffer: &mut String,
-    client: &reqwest::Client,
+    network: &OutboundNetwork,
     token: &str,
     chat_id: i64,
     session_id: &str,
@@ -902,7 +909,7 @@ pub(super) async fn flush_buffer<R: tauri::Runtime>(
         logger.log("SEND_TG", session_id, &chunk);
         diag.log_sent(&chunk);
 
-        if let Err(e) = api::send_message(client, token, chat_id, &chunk).await {
+        if let Err(e) = api::send_message(network, token, chat_id, &chunk).await {
             // #280 — defense-in-depth scrub before `msg` reaches the
             // `telegram_bridge_error` Tauri event payload (which bypasses
             // the env_logger format closure that protects stderr/app.log).
@@ -971,20 +978,17 @@ pub(super) fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
 
 // ── Poll task (Telegram -> PTY) ──────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn poll_task<R: tauri::Runtime>(
     token: String,
     chat_id: i64,
     session_id: Uuid,
     session_id_str: String,
     _pty_mgr: Arc<Mutex<PtyManager>>,
+    network: OutboundNetwork,
     cancel: CancellationToken,
     app: tauri::AppHandle<R>,
 ) {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_default();
-
     let mut logger = BridgeLogger::new(&session_id_str);
     let mut offset: i64 = 0;
     let network_error_policy = {
@@ -993,10 +997,12 @@ async fn poll_task<R: tauri::Runtime>(
         cfg.telegram_network_poll_error_logging.clone()
     };
     let mut network_error_state = PollNetworkErrorState::new();
+    let mut poll_backoff = new_poll_backoff(&session_id_str);
 
     // Skip old messages
-    match api::get_updates(&client, &token, 0, 0).await {
+    match api::get_updates(&network, &token, 0, 0).await {
         Ok(updates) => {
+            poll_backoff.reset();
             if let Some(last) = updates.last() {
                 offset = last.update_id + 1;
                 logger.log(
@@ -1059,15 +1065,21 @@ async fn poll_task<R: tauri::Runtime>(
                     msg
                 );
             }
+            if !sleep_backoff_or_cancel(&cancel, &mut poll_backoff, &mut logger, &session_id_str)
+                .await
+            {
+                return;
+            }
         }
     }
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
-            result = api::get_updates(&client, &token, offset, 5) => {
+            result = api::get_updates(&network, &token, offset, 5) => {
                 match result {
                     Ok(updates) => {
+                        poll_backoff.reset();
                         match network_error_state.record_success(&network_error_policy) {
                             PollNetworkLogAction::Recovery {
                                 level,
@@ -1124,43 +1136,37 @@ async fn poll_task<R: tauri::Runtime>(
 
                                     if api_key.is_empty() {
                                         log::warn!("[bridge] Voice message received but no Gemini API key configured");
-                                        let _ = api::send_message(&client, &token, chat_id, "Cannot transcribe voice: Gemini API key not configured").await;
+                                        let _ = api::send_message(&network, &token, chat_id, "Cannot transcribe voice: Gemini API key not configured").await;
                                         continue;
                                     }
 
-                                    let file_path = match api::get_file(&client, &token, &file_id).await {
+                                    let file_path = match api::get_file(&network, &token, &file_id).await {
                                         Ok(fp) => fp,
                                         Err(e) => {
                                             logger.log("VOICE_ERR", &session_id_str, &format!("get_file failed: {}", e));
-                                            let _ = api::send_message(&client, &token, chat_id, &format!("Failed to get voice file: {}", e)).await;
+                                            let _ = api::send_message(&network, &token, chat_id, &format!("Failed to get voice file: {}", e)).await;
                                             continue;
                                         }
                                     };
 
-                                    let audio_bytes = match api::download_file(&client, &token, &file_path).await {
+                                    let audio_bytes = match api::download_file(&network, &token, &file_path).await {
                                         Ok(bytes) => bytes,
                                         Err(e) => {
                                             logger.log("VOICE_ERR", &session_id_str, &format!("download failed: {}", e));
-                                            let _ = api::send_message(&client, &token, chat_id, &format!("Failed to download voice: {}", e)).await;
+                                            let _ = api::send_message(&network, &token, chat_id, &format!("Failed to download voice: {}", e)).await;
                                             continue;
                                         }
                                     };
 
-                                    // Dedicated client with 30s timeout for Gemini (poll client is 15s)
-                                    let gemini_client = reqwest::Client::builder()
-                                        .timeout(std::time::Duration::from_secs(30))
-                                        .build()
-                                        .unwrap_or_default();
-
-                                    match crate::commands::voice::transcribe_audio(&gemini_client, &audio_bytes, "audio/ogg", &api_key, &model).await {
+                                    match crate::commands::voice::transcribe_audio_with_network(&network, &audio_bytes, "audio/ogg", &api_key, &model).await {
                                         Ok(text) => {
                                             logger.log("VOICE_OK", &session_id_str, &format!("transcribed {} chars", text.len()));
-                                            let _ = api::send_message(&client, &token, chat_id, &format!("Transcribed: {}", text)).await;
+                                            let _ = api::send_message(&network, &token, chat_id, &format!("Transcribed: {}", text)).await;
                                             text
                                         }
                                         Err(e) => {
                                             logger.log("VOICE_ERR", &session_id_str, &format!("transcription failed: {}", e));
-                                            let _ = api::send_message(&client, &token, chat_id, &format!("Transcription failed: {}", e)).await;
+                                            let _ = api::send_message(&network, &token, chat_id, &format!("Transcription failed: {}", e)).await;
                                             continue;
                                         }
                                     }
@@ -1215,7 +1221,16 @@ async fn poll_task<R: tauri::Runtime>(
                                 token_prefix,
                                 msg
                             );
-                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            if !sleep_backoff_or_cancel(
+                                &cancel,
+                                &mut poll_backoff,
+                                &mut logger,
+                                &session_id_str,
+                            )
+                            .await
+                            {
+                                break;
+                            }
                             continue;
                         }
 
@@ -1260,7 +1275,16 @@ async fn poll_task<R: tauri::Runtime>(
                                 unreachable!("record_network_failure only returns Failure or Suppressed")
                             }
                         }
-                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        if !sleep_backoff_or_cancel(
+                            &cancel,
+                            &mut poll_backoff,
+                            &mut logger,
+                            &session_id_str,
+                        )
+                        .await
+                        {
+                            break;
+                        }
                     }
                 }
             }
@@ -1268,9 +1292,52 @@ async fn poll_task<R: tauri::Runtime>(
     }
 }
 
+async fn sleep_backoff_or_cancel(
+    cancel: &CancellationToken,
+    backoff: &mut NetworkBackoff,
+    logger: &mut BridgeLogger,
+    session_id: &str,
+) -> bool {
+    let delay = backoff.next_delay();
+    let sleep_ms = delay.as_millis();
+    logger.log("POLL_BACKOFF", session_id, &format!("sleep_ms={sleep_ms}"));
+    log::debug!(
+        "[bridge] POLL_BACKOFF session_id={} sleep_ms={}",
+        session_id,
+        sleep_ms
+    );
+    tokio::select! {
+        _ = cancel.cancelled() => false,
+        _ = tokio::time::sleep(delay) => true,
+    }
+}
+
+fn new_poll_backoff(session_id: &str) -> NetworkBackoff {
+    NetworkBackoff::new(
+        Duration::from_secs(3),
+        Duration::from_secs(60),
+        NetworkBackoff::salt_from_str(session_id),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poll_backoff_uses_plan_bounds_and_session_salt() {
+        let mut first = new_poll_backoff("session-a");
+        let mut second = new_poll_backoff("session-b");
+
+        let first_delay = first.next_delay();
+        let second_delay = second.next_delay();
+
+        assert!(first_delay >= Duration::from_secs(3));
+        assert!(second_delay >= Duration::from_secs(3));
+        assert!(first_delay <= Duration::from_secs(60));
+        assert!(second_delay <= Duration::from_secs(60));
+        assert_ne!(first_delay, second_delay);
+    }
 
     // ── #280 §3.2 — TelegramErrKind::classify ────────────────────
 

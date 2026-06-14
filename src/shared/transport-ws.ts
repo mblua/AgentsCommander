@@ -15,6 +15,8 @@ export class WsTransport implements Transport {
   private reconnectDelay = 1000;
   private maxReconnectDelay = 10000;
   private connected = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private closed = false;
   private url: string;
 
   constructor() {
@@ -26,17 +28,25 @@ export class WsTransport implements Transport {
   }
 
   private connect() {
-    try {
-      this.ws = new WebSocket(this.url);
-      this.ws.binaryType = "arraybuffer";
+    if (this.closed) return;
 
-      this.ws.onopen = () => {
+    try {
+      const socket = new WebSocket(this.url);
+      this.ws = socket;
+      socket.binaryType = "arraybuffer";
+
+      socket.onopen = () => {
+        if (this.ws !== socket || this.closed) {
+          socket.close();
+          return;
+        }
         this.connected = true;
         this.reconnectDelay = 1000;
         console.log("[ws-transport] Connected");
       };
 
-      this.ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (this.ws !== socket || this.closed) return;
         if (event.data instanceof ArrayBuffer) {
           this.handleBinary(new Uint8Array(event.data));
         } else {
@@ -44,13 +54,15 @@ export class WsTransport implements Transport {
         }
       };
 
-      this.ws.onclose = () => {
+      socket.onclose = () => {
+        if (this.ws !== socket) return;
+        this.ws = null;
         this.connected = false;
         this.rejectAllPending("WebSocket closed");
         this.scheduleReconnect();
       };
 
-      this.ws.onerror = () => {
+      socket.onerror = () => {
         // onclose will fire after this
       };
     } catch {
@@ -59,16 +71,49 @@ export class WsTransport implements Transport {
   }
 
   private scheduleReconnect() {
-    setTimeout(() => {
+    if (this.closed || this.reconnectTimer) return;
+
+    const delay =
+      this.reconnectDelay +
+      Math.floor(Math.random() * Math.min(250, this.reconnectDelay));
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.closed) return;
+      if (
+        this.ws &&
+        (this.ws.readyState === WebSocket.OPEN ||
+          this.ws.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
       console.log(
-        `[ws-transport] Reconnecting in ${this.reconnectDelay}ms...`
+        `[ws-transport] Reconnecting after ${delay}ms...`
       );
       this.connect();
       this.reconnectDelay = Math.min(
         this.reconnectDelay * 2,
         this.maxReconnectDelay
       );
-    }, this.reconnectDelay);
+    }, delay);
+  }
+
+  close() {
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const socket = this.ws;
+    this.ws = null;
+    this.connected = false;
+    if (
+      socket &&
+      (socket.readyState === WebSocket.OPEN ||
+        socket.readyState === WebSocket.CONNECTING)
+    ) {
+      socket.close();
+    }
+    this.rejectAllPending("WebSocket closed");
   }
 
   private rejectAllPending(reason: string) {

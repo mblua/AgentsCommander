@@ -1,6 +1,6 @@
 {
   "name": "agentscommander",
-  "version": "0.8.51",
+  "version": "0.8.52",
   "private": true,
   "type": "module",
   "scripts": {
@@ -20,6 +20,7 @@
     "test:debt": "node scripts/check-test-debt.mjs",
     "test:debt:self": "node scripts/check-test-debt.mjs --self-test",
     "test:watch": "vitest",
+    "smoke:cli-release-windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/smoke-cli-release-windows.ps1",
     "smoke:profile-matrix": "node scripts/smoke-profile-matrix-preview.mjs",
     "smoke:current-app": "node scripts/smoke-current-app-mockup.mjs"
   },

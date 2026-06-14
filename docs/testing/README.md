@@ -4,6 +4,10 @@ This directory contains repeatable, versioned regression suites for AgentsComman
 
 The goal is to make future rounds reproducible without turning every run into one large ad hoc report. Each functional area has its own file and should be executed in order unless a case explicitly states that it is independent.
 
+## Regression Map Objective
+
+This directory is the product regression map for acceptance testing. Every user-facing feature, button, option, menu item, dialog action, and persistence expectation should have either a documented case or an explicit planned gap. When a code change touches a UI surface or workflow, scope audit must map the changed files and selectors to the relevant documented cases before deciding what to rerun.
+
 ## Visual Test Environment
 
 - The app under test should be `agentscommander_testeable.exe` for deterministic GUI regression runs.
@@ -18,6 +22,8 @@ The goal is to make future rounds reproducible without turning every run into on
   - Physical and logical rectangles can differ because DPI scaling changes the coordinate space reported by different Windows APIs.
 - Before each execution, record the target HWND/PID, process path, window rectangle, whether the window is maximized, and the capture method used.
 - In multi-monitor setups, modals and menus can appear outside the crop for the target monitor. Use virtual desktop capture, HWND capture, adjacent crop, or relative-window coordinate capture as fallback evidence.
+- If the user assigns a monitor and confirms they will not touch it during the run, treat that monitor as reserved after the launch/placement/maximized gate passes. Recheck placement after relaunches or visible anomalies, but do not spend the run repeatedly proving foreground/process ownership for every screenshot.
+- If the monitor is not reserved, or the image visibly shows another window, verify the target window is foreground and unobscured before counting the image as product evidence. Foreground terminals or other windows can contaminate otherwise correct target-rectangle captures.
 - Prefer coordinates relative to the detected target window. Do not hardcode absolute screen coordinates except when documenting a concrete execution.
 
 ## Deterministic Testable App
@@ -76,6 +82,12 @@ When the testable GUI is launched with `--ui-automation`, prefer semantic `ui-*`
 
 The selector seed and missing-affordance tracker lives in [semantic-ui-automation-affordance-matrix.md](semantic-ui-automation-affordance-matrix.md). If acceptance can perform a behavior with screen and mouse but cannot inspect or operate it semantically, report the missing selector/action there.
 
+## Control Coverage Discipline
+
+Before a GUI suite can be considered complete for a surface, it must inventory the visible controls a user can reasonably press and map them to cases: primary path, alternate choices, cancel/skip, invalid input, save/cancel, and persistence after restart where applicable. Mutually exclusive first-run choices need separate clean-state slices instead of being collapsed into a single happy path.
+
+If a run is intentionally narrower than the full inventory, the report must say so and list the uncovered controls as follow-up coverage. A PASS for a targeted slice is not a PASS for the whole surface.
+
 ## Test Reset
 
 Use the explicit reset command only from `agentscommander_testeable.exe` and only when the testable GUI is not running:
@@ -103,6 +115,7 @@ Use a three-letter functional prefix followed by a zero-padded number:
 - `WGP-###`: Workgroups and peers.
 - `SET-###`: Settings and persistence.
 - `WIN-###`: Windowing and multi-monitor behavior.
+- `E2E-###`: Cross-surface user journeys that stitch multiple suites together.
 
 Cases should become progressively more complex inside each file. If a case depends on an earlier case, state the dependency in the preconditions.
 
@@ -117,17 +130,31 @@ Evidence should be enough for another tester to verify the observed state withou
 - Record any fallback used, such as HWND capture, virtual desktop capture, keyboard navigation, or relative coordinates.
 - Do not delete user data to clean up after tests. Use `test-reset --confirm-testeable` only for the disposable testable app identity. If a test creates data outside that identity, document the residual test project.
 
+## Current Baseline Seed
+
+The 2026-06-13 end-to-end seeding run produced a PARTIAL result, not a baseline PASS.
+
+Evidence root:
+
+```text
+C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000
+```
+
+Use that evidence for future targeted reruns of onboarding, project creation, agent creation, team creation, workgroup activation, and restart persistence. Do not treat team/workgroup coverage as passed from that run.
+
 ## Execution Order
 
 Recommended phase order:
 
 1. `01-project-lifecycle.md`
-2. `02-agent-lifecycle.md`
-3. `03-agent-templates-agency.md`
-4. `04-terminal-sessions.md`
-5. `05-inter-agent-messaging.md`
-6. `06-workgroups-and-peers.md`
-7. `07-settings-and-persistence.md`
-8. `08-windowing-and-multimonitor.md`
+2. `02-onboarding-and-coding-agents.md`
+3. `03-agent-lifecycle.md`
+4. `04-team-and-workgroup-lifecycle.md`
+5. `05-end-to-end-user-journey.md`
+6. `06-agent-templates-agency.md`
+7. `07-terminal-sessions.md`
+8. `08-inter-agent-messaging.md`
+9. `09-settings-and-persistence.md`
+10. `10-windowing-and-multimonitor.md`
 
 Within a functional file, run cases in ascending ID order unless the case says it is independent.
