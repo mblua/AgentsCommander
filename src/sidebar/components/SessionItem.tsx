@@ -11,6 +11,7 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
 import { TelegramIcon } from "./TelegramIcon";
+import { sessionProfileBadge } from "../../shared/profile-utils";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -38,6 +39,7 @@ const SessionItem: Component<{
     if (!props.session.agentId) return null;
     return settingsStore.current?.agents?.find((a) => a.id === props.session.agentId)?.label ?? null;
   };
+  const profileBadge = () => sessionProfileBadge(props.session);
   const sessionHasLivePty = () => !isInactive() && typeof props.session.status === "string";
   const isRecording = () => voiceRecorder.recordingSessionId() === props.session.id;
   const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
@@ -342,6 +344,16 @@ const SessionItem: Component<{
                   </span>
                 )}
               </Show>
+              <Show when={profileBadge()}>
+                {(badge) => (
+                  <span
+                    class="profile-badge"
+                    title={`Profile ${badge()}`}
+                  >
+                    {badge()}
+                  </span>
+                )}
+              </Show>
               <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
                 <div class="session-item-branches">
                   <For each={props.session.gitRepos}>
@@ -446,9 +458,12 @@ const SessionItem: Component<{
         <Portal>
           <AgentPickerModal
             sessionName={props.session.name}
-            onSelect={async (agent) => {
+            agentPath={props.session.workingDirectory}
+            currentAgentId={props.session.agentId}
+            currentRequestedProfile={props.session.requestedProfile}
+            onSelect={async (selection) => {
               setShowCodingAgentPicker(false);
-              await restartSession(agent.id);
+              await restartSession(selection.agent.id);
             }}
             onClose={() => setShowCodingAgentPicker(false)}
           />

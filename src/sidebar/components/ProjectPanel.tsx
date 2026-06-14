@@ -10,6 +10,7 @@ import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
+import { sessionProfileBadge } from "../../shared/profile-utils";
 import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
@@ -23,6 +24,7 @@ interface PendingLaunch {
   path: string;
   sessionName: string;
   gitRepos: SessionRepoInput[];
+  currentAgentId?: string;
 }
 
 /** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
@@ -137,30 +139,12 @@ const ProjectPanel: Component = () => {
     // Not instantiated — create session in-place
     const gitRepos = buildGitRepos(replica);
 
-    if (!replica.preferredAgentId) {
-      setPendingLaunch({
-        path: replica.path,
-        sessionName: replicaSessionName(wg, replica),
-        gitRepos,
-      });
-      return;
-    }
-
-    const newSession = await SessionAPI.create({
-      cwd: replica.path,
+    setPendingLaunch({
+      path: replica.path,
       sessionName: replicaSessionName(wg, replica),
-      agentId: replica.preferredAgentId,
       gitRepos,
+      currentAgentId: replica.preferredAgentId,
     });
-    await SessionAPI.switch(newSession.id);
-    if (isTauri) {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const detachedLabel = `terminal-${newSession.id.replace(/-/g, "")}`;
-      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-      if (!detachedWin) {
-        await WindowAPI.ensureTerminal();
-      }
-    }
   };
 
   const handleAgentClick = async (agent: { name: string; path: string; preferredAgentId?: string }) => {
@@ -178,25 +162,12 @@ const ProjectPanel: Component = () => {
       return;
     }
 
-    if (!agent.preferredAgentId) {
-      setPendingLaunch({ path: agent.path, sessionName: agent.name, gitRepos: [] });
-      return;
-    }
-
-    const newSession = await SessionAPI.create({
-      cwd: agent.path,
+    setPendingLaunch({
+      path: agent.path,
       sessionName: agent.name,
-      agentId: agent.preferredAgentId,
+      gitRepos: [],
+      currentAgentId: agent.preferredAgentId,
     });
-    await SessionAPI.switch(newSession.id);
-    if (isTauri) {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const detachedLabel = `terminal-${newSession.id.replace(/-/g, "")}`;
-      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-      if (!detachedWin) {
-        await WindowAPI.ensureTerminal();
-      }
-    }
   };
 
   return (
@@ -567,6 +538,10 @@ const ProjectPanel: Component = () => {
             if (!s.agentId) return null;
             return settingsStore.current?.agents?.find((a) => a.id === s.agentId)?.label ?? null;
           };
+          const profileBadge = () => {
+            const s = session();
+            return s ? sessionProfileBadge(s) : null;
+          };
           const isLive = () => isSessionLive(session());
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
           const isDetached = () => { const s = session(); return s ? sessionsStore.isDetached(s.id) : false; };
@@ -690,6 +665,9 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <Show when={liveAgentLabel()}>
                     <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
+                  </Show>
+                  <Show when={profileBadge()}>
+                    {(badge) => <span class="profile-badge">{badge()}</span>}
                   </Show>
                   <Show when={isCoord()}>
                     <span class="ac-discovery-badge coord">coordinator</span>
@@ -1445,11 +1423,14 @@ const ProjectPanel: Component = () => {
               <Portal>
                 <AgentPickerModal
                   sessionName={replicaCodingAgentTarget()!.sessionName}
-                  onSelect={async (agent) => {
+                  agentPath={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.workingDirectory}
+                  currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
+                  currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
+                  onSelect={async (selection) => {
                     const target = replicaCodingAgentTarget();
                     setReplicaCodingAgentTarget(null);
                     if (target) {
-                      await restartReplicaSession(target.sessionId, agent.id);
+                      await restartReplicaSession(target.sessionId, selection.agent.id);
                     }
                   }}
                   onClose={() => setReplicaCodingAgentTarget(null)}
@@ -1751,12 +1732,15 @@ const ProjectPanel: Component = () => {
       <Portal>
         <AgentPickerModal
           sessionName={pendingLaunch()!.sessionName}
-          onSelect={async (agent) => {
+          agentPath={pendingLaunch()!.path}
+          currentAgentId={pendingLaunch()!.currentAgentId}
+          onSelect={async (selection) => {
             const pending = pendingLaunch()!;
             const newSession = await SessionAPI.create({
               cwd: pending.path,
               sessionName: pending.sessionName,
-              agentId: agent.id,
+              agentId: selection.agent.id,
+              requestedProfile: selection.requestedProfile,
               gitRepos: pending.gitRepos,
             });
             await SessionAPI.switch(newSession.id);

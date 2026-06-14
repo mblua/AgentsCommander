@@ -23,6 +23,9 @@ import {
   onTerminalAttached,
   onWorkgroupTaskUpdated,
   onAcProjectRefreshRequested,
+  onCodingAgentProfilesUpdated,
+  onCodingAgentEnvSettingsUpdated,
+  onCodingAgentProfileSelectionUpdated,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
@@ -100,6 +103,22 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentProfilesUpdated(() => {
+        settingsStore.refresh();
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentEnvSettingsUpdated(() => {
+        settingsStore.refresh();
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentProfileSelectionUpdated((data) => {
+        settingsStore.refresh();
+        void projectStore.reloadProjectIfLoaded(data.agentPath);
       })
     );
 

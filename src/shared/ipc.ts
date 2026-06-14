@@ -7,6 +7,8 @@ import type {
   SessionRepo,
   PtyOutputEvent,
   AppSettings,
+  CodingAgentEnv,
+  CodingAgentProfilesConfig,
   RepoMatch,
   BridgeInfo,
   PhoneMessage,
@@ -53,6 +55,7 @@ export interface CreateSessionOptions {
   cwd?: string;
   sessionName?: string;
   agentId?: string;
+  requestedProfile?: string;
   gitRepos?: SessionRepoInput[];
 }
 
@@ -74,6 +77,14 @@ export interface CreateRootAgentOptions {
   agentId?: string;
 }
 
+export type ProfileSelectionScope = "default" | "instance";
+
+export interface CodingAgentProfileSelectionUpdatedPayload {
+  agentPath: string;
+  profile: string | null;
+  scope: ProfileSelectionScope;
+}
+
 export const SessionAPI = {
   create: (opts?: CreateSessionOptions) =>
     transport.invoke<Session>("create_session", {
@@ -82,6 +93,7 @@ export const SessionAPI = {
       cwd: opts?.cwd ?? null,
       sessionName: opts?.sessionName ?? null,
       agentId: opts?.agentId ?? null,
+      requestedProfile: opts?.requestedProfile ?? null,
       gitRepos: opts?.gitRepos ?? null,
     }),
 
@@ -159,6 +171,22 @@ export const SettingsAPI = {
     transport.invoke<void>("set_sounds_enabled", { value }),
   setThemeLight: (value: boolean) =>
     transport.invoke<void>("set_theme_light", { value }),
+  updateCodingAgentProfiles: (profiles: CodingAgentProfilesConfig) =>
+    transport.invoke<void>("update_coding_agent_profiles", { profiles }),
+  updateCodingAgentEnvSettings: (
+    agentId: string,
+    envs: CodingAgentEnv[],
+    isolateCodexHome: boolean,
+  ) =>
+    transport.invoke<void>("update_coding_agent_env_settings", {
+      agentId,
+      envs,
+      isolateCodexHome,
+    }),
+  setAgentDefaultProfile: (agentPath: string, profile: string) =>
+    transport.invoke<void>("set_agent_default_profile", { agentPath, profile }),
+  setInstanceProfileOverride: (agentPath: string, profile: string | null) =>
+    transport.invoke<void>("set_instance_profile_override", { agentPath, profile }),
   sweepRtkHook: (enabled: boolean) =>
     transport.invoke<RtkSweepResult>("sweep_rtk_hook", { enabled }),
   getRtkStartupStatus: () =>
@@ -591,6 +619,30 @@ export function onRtkStartupStatus(
   return transport.listen<{ mode: RtkStartupMode }>(
     "rtk_startup_status",
     (data) => callback(data.mode)
+  );
+}
+
+export function onCodingAgentProfilesUpdated(
+  callback: () => void
+): Promise<UnlistenFn> {
+  return transport.listen<unknown>("coding_agent_profiles_updated", () => callback());
+}
+
+export function onCodingAgentEnvSettingsUpdated(
+  callback: (data: { agentId: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ agentId: string }>(
+    "coding_agent_env_settings_updated",
+    callback
+  );
+}
+
+export function onCodingAgentProfileSelectionUpdated(
+  callback: (data: CodingAgentProfileSelectionUpdatedPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<CodingAgentProfileSelectionUpdatedPayload>(
+    "coding_agent_profile_selection_updated",
+    callback
   );
 }
 
