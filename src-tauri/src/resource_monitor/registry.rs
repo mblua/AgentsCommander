@@ -346,9 +346,18 @@ impl ResourceMonitorState {
         match self.backend.observe_tree(root_identity) {
             Ok(tree) => {
                 let current_processes = tree.processes.clone();
-                if !tree.errors.is_empty() {
+                let cleanup_errors = tree
+                    .errors
+                    .iter()
+                    .filter(|error| !is_missing_root_cleanup_error(error, root_identity))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !cleanup_errors.is_empty() {
+                    errors.extend(cleanup_errors.clone());
+                }
+                if !tree.errors.is_empty() && cleanup_errors.is_empty() {
                     log::debug!(
-                        "[resource-monitor] cleanup sample for session {} had non-fatal errors: {}",
+                        "[resource-monitor] cleanup sample for session {} had ignored root-missing error: {}",
                         session_id,
                         tree.errors.join("; ")
                     );
@@ -357,11 +366,7 @@ impl ResourceMonitorState {
                 let _ = self.merge_tree(session_id, tree);
             }
             Err(err) => {
-                log::debug!(
-                    "[resource-monitor] cleanup sample for session {} failed before termination: {}",
-                    session_id,
-                    err
-                );
+                errors.push(err.to_string());
             }
         }
 
@@ -377,7 +382,14 @@ impl ResourceMonitorState {
         });
 
         let mut killed = Vec::new();
-        for process in targets.iter().filter(|p| p.kill_allowed) {
+        for process in targets.iter() {
+            if !process.kill_allowed {
+                errors.push(format!(
+                    "pid {} identity unavailable; cleanup ownership could not be verified",
+                    process.identity.pid
+                ));
+                continue;
+            }
             match self.backend.terminate_verified(process) {
                 Ok(TerminateOutcome::Terminated) => {
                     killed.push(process.identity);
@@ -534,6 +546,10 @@ fn join_errors(errors: Vec<String>) -> Option<String> {
     (!errors.is_empty()).then(|| errors.join("; "))
 }
 
+fn is_missing_root_cleanup_error(error: &str, root_identity: ProcessIdentity) -> bool {
+    error == format!("root pid {} was not in process snapshot", root_identity.pid)
+}
+
 fn root_placeholder(identity: ProcessIdentity) -> ObservedProcess {
     ObservedProcess {
         identity,
@@ -671,6 +687,8 @@ mod tests {
         identities: Mutex<HashMap<u32, ProcessIdentity>>,
         stale: Mutex<BTreeSet<ProcessIdentity>>,
         stubborn: Mutex<BTreeSet<ProcessIdentity>>,
+        unverifiable: Mutex<BTreeSet<u32>>,
+        exit_during_terminate: Mutex<BTreeSet<ProcessIdentity>>,
         terminated: Mutex<Vec<ProcessIdentity>>,
     }
 
@@ -723,6 +741,14 @@ mod tests {
             self.stubborn.lock().unwrap().insert(identity);
         }
 
+        fn mark_unverifiable(&self, pid: u32) {
+            self.unverifiable.lock().unwrap().insert(pid);
+        }
+
+        fn mark_exit_during_terminate(&self, identity: ProcessIdentity) {
+            self.exit_during_terminate.lock().unwrap().insert(identity);
+        }
+
         fn terminated(&self) -> Vec<ProcessIdentity> {
             self.terminated.lock().unwrap().clone()
         }
@@ -743,6 +769,11 @@ mod tests {
         }
 
         fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            if self.unverifiable.lock().unwrap().contains(&pid) {
+                return Err(ResourceError::Message(format!(
+                    "identity unavailable for pid {pid}"
+                )));
+            }
             Ok(self.identities.lock().unwrap().get(&pid).copied())
         }
 
@@ -753,6 +784,17 @@ mod tests {
             if self.stale.lock().unwrap().contains(&process.identity) {
                 return Ok(TerminateOutcome::AlreadyGone);
             }
+            if self
+                .unverifiable
+                .lock()
+                .unwrap()
+                .contains(&process.identity.pid)
+            {
+                return Err(ResourceError::Message(format!(
+                    "identity unavailable for pid {}",
+                    process.identity.pid
+                )));
+            }
             let current = self
                 .identities
                 .lock()
@@ -760,6 +802,18 @@ mod tests {
                 .get(&process.identity.pid)
                 .copied();
             if current != Some(process.identity) {
+                return Ok(TerminateOutcome::AlreadyGone);
+            }
+            if self
+                .exit_during_terminate
+                .lock()
+                .unwrap()
+                .contains(&process.identity)
+            {
+                self.identities
+                    .lock()
+                    .unwrap()
+                    .remove(&process.identity.pid);
                 return Ok(TerminateOutcome::AlreadyGone);
             }
             if self.stubborn.lock().unwrap().contains(&process.identity) {
@@ -798,6 +852,23 @@ mod tests {
             working_set_bytes: Some(pid as u64),
             cpu_percent: None,
             kill_allowed: true,
+        }
+    }
+
+    fn observed_unverifiable(pid: u32, parent_pid: Option<u32>, depth: u32) -> ObservedProcess {
+        ObservedProcess {
+            identity: ProcessIdentity {
+                pid,
+                creation_time_100ns: 0,
+            },
+            parent_pid,
+            parent_identity: parent_pid.map(|p| identity(p, p as u64)),
+            exe_name: format!("p{pid}"),
+            depth,
+            private_bytes: Some(pid as u64),
+            working_set_bytes: Some(pid as u64),
+            cpu_percent: None,
+            kill_allowed: false,
         }
     }
 
@@ -938,6 +1009,82 @@ mod tests {
         let result = state
             .kill_group(id, ResourceKillReason::SessionDestroy)
             .unwrap();
+        assert!(!result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert!(result.killed_processes.is_empty());
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    #[test]
+    fn observed_unverifiable_process_quarantines_and_keeps_permit() {
+        let (state, backend) = state_with_fake();
+        let root = identity(35, 35);
+        let unverifiable_child_pid = 36;
+        backend.add_tree(root, vec![observed(35, 35, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        backend.replace_tree(
+            root,
+            vec![
+                observed(35, 35, None, 0),
+                observed_unverifiable(unverifiable_child_pid, Some(root.pid), 1),
+            ],
+            vec![format!(
+                "identity unavailable for pid {unverifiable_child_pid}"
+            )],
+        );
+
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+        assert!(result.quarantined);
+        assert!(result.message.contains("identity unavailable"));
+        assert_eq!(state.active_agent_groups(), 1);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_err());
+    }
+
+    #[test]
+    fn observe_identity_error_quarantines_and_keeps_permit() {
+        let (state, backend) = state_with_fake();
+        let root = identity(37, 37);
+        backend.add_tree(root, vec![observed(37, 37, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        backend.mark_unverifiable(root.pid);
+        backend.replace_tree(
+            root,
+            Vec::new(),
+            vec![format!("root pid {} was not in process snapshot", root.pid)],
+        );
+
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+        assert!(result.quarantined);
+        assert!(result.message.contains("identity unavailable"));
+        assert_eq!(state.active_agent_groups(), 1);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_err());
+    }
+
+    #[test]
+    fn exited_during_termination_releases_permit() {
+        let (state, backend) = state_with_fake();
+        let root = identity(38, 38);
+        backend.add_tree(root, vec![observed(38, 38, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        backend.mark_exit_during_terminate(root);
+
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(!result.quarantined);
         assert_eq!(result.state, ResourceGroupState::Terminated);
         assert!(result.killed_processes.is_empty());

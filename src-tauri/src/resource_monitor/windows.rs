@@ -111,10 +111,13 @@ mod platform {
                 return Ok(TerminateOutcome::AlreadyGone);
             }
 
-            let handle = open_process(
+            let handle = match open_process(
                 process.identity.pid,
                 PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
-            )?;
+            ) {
+                Ok(handle) => handle,
+                Err(err) => return verify_identity_exited(process.identity, err.to_string()),
+            };
             let ok = unsafe { TerminateProcess(handle.raw(), 1) };
             if ok == 0 {
                 return verify_identity_exited(
@@ -229,7 +232,9 @@ mod platform {
     fn observe_identity(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
         let handle = match open_process(pid, PROCESS_QUERY_INFORMATION) {
             Ok(handle) => handle,
-            Err(_) => return Ok(None),
+            Err(err) => {
+                return if pid_exists(pid)? { Err(err) } else { Ok(None) };
+            }
         };
         let mut creation = FILETIME {
             dwLowDateTime: 0,
@@ -248,7 +253,8 @@ mod platform {
             )
         };
         if ok == 0 {
-            return Ok(None);
+            let err = last_error("GetProcessTimes failed");
+            return if pid_exists(pid)? { Err(err) } else { Ok(None) };
         }
         Ok(Some(ProcessIdentity {
             pid,
@@ -282,6 +288,10 @@ mod platform {
             return Err(last_error(&format!("OpenProcess({pid}) failed")));
         }
         Ok(OwnedHandle(handle))
+    }
+
+    fn pid_exists(pid: u32) -> Result<bool, ResourceError> {
+        Ok(process_entries()?.contains_key(&pid))
     }
 
     fn verify_identity_exited(
