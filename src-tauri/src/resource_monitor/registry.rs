@@ -345,12 +345,24 @@ impl ResourceMonitorState {
         let mut errors = Vec::new();
         match self.backend.observe_tree(root_identity) {
             Ok(tree) => {
-                targets.extend(tree.processes.clone());
-                if let Some(error) = self.merge_tree(session_id, tree) {
-                    errors.push(error);
+                let current_processes = tree.processes.clone();
+                if !tree.errors.is_empty() {
+                    log::debug!(
+                        "[resource-monitor] cleanup sample for session {} had non-fatal errors: {}",
+                        session_id,
+                        tree.errors.join("; ")
+                    );
                 }
+                targets.extend(current_processes);
+                let _ = self.merge_tree(session_id, tree);
             }
-            Err(err) => errors.push(err.to_string()),
+            Err(err) => {
+                log::debug!(
+                    "[resource-monitor] cleanup sample for session {} failed before termination: {}",
+                    session_id,
+                    err
+                );
+            }
         }
 
         let mut unique = BTreeMap::new();
@@ -658,6 +670,7 @@ mod tests {
         trees: Mutex<HashMap<ProcessIdentity, ObservedProcessTree>>,
         identities: Mutex<HashMap<u32, ProcessIdentity>>,
         stale: Mutex<BTreeSet<ProcessIdentity>>,
+        stubborn: Mutex<BTreeSet<ProcessIdentity>>,
         terminated: Mutex<Vec<ProcessIdentity>>,
     }
 
@@ -679,8 +692,35 @@ mod tests {
             );
         }
 
+        fn replace_tree(
+            &self,
+            root: ProcessIdentity,
+            processes: Vec<ObservedProcess>,
+            errors: Vec<String>,
+        ) {
+            self.trees
+                .lock()
+                .unwrap()
+                .insert(root, ObservedProcessTree { processes, errors });
+        }
+
         fn mark_stale(&self, identity: ProcessIdentity) {
             self.stale.lock().unwrap().insert(identity);
+            self.identities.lock().unwrap().insert(
+                identity.pid,
+                ProcessIdentity {
+                    pid: identity.pid,
+                    creation_time_100ns: identity.creation_time_100ns.saturating_add(1),
+                },
+            );
+        }
+
+        fn mark_gone(&self, identity: ProcessIdentity) {
+            self.identities.lock().unwrap().remove(&identity.pid);
+        }
+
+        fn mark_stubborn(&self, identity: ProcessIdentity) {
+            self.stubborn.lock().unwrap().insert(identity);
         }
 
         fn terminated(&self) -> Vec<ProcessIdentity> {
@@ -711,9 +751,27 @@ mod tests {
             process: &ObservedProcess,
         ) -> Result<TerminateOutcome, ResourceError> {
             if self.stale.lock().unwrap().contains(&process.identity) {
-                return Err(ResourceError::Message("stale identity".to_string()));
+                return Ok(TerminateOutcome::AlreadyGone);
+            }
+            let current = self
+                .identities
+                .lock()
+                .unwrap()
+                .get(&process.identity.pid)
+                .copied();
+            if current != Some(process.identity) {
+                return Ok(TerminateOutcome::AlreadyGone);
+            }
+            if self.stubborn.lock().unwrap().contains(&process.identity) {
+                return Err(ResourceError::Message(
+                    "process still alive after terminate".to_string(),
+                ));
             }
             self.terminated.lock().unwrap().push(process.identity);
+            self.identities
+                .lock()
+                .unwrap()
+                .remove(&process.identity.pid);
             Ok(TerminateOutcome::Terminated)
         }
 
@@ -815,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_identity_quarantines_and_keeps_permit() {
+    fn stale_identity_is_not_killed_and_releases_permit() {
         let (state, backend) = state_with_fake();
         let root = identity(30, 30);
         let child = identity(31, 31);
@@ -830,10 +888,61 @@ mod tests {
             .register_group(permit, id, "agent".into(), None, None, root)
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+        assert!(!result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert!(!backend.terminated().contains(&child));
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    #[test]
+    fn stubborn_identity_quarantines_and_keeps_permit() {
+        let (state, backend) = state_with_fake();
+        let root = identity(32, 32);
+        let child = identity(33, 33);
+        backend.add_tree(
+            root,
+            vec![observed(32, 32, None, 0), observed(33, 33, Some(32), 1)],
+        );
+        backend.mark_stubborn(child);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(result.quarantined);
         assert_eq!(result.state, ResourceGroupState::Quarantined);
         assert_eq!(state.active_agent_groups(), 1);
         assert!(state.try_reserve_agent_slot(limits(1)).is_err());
+    }
+
+    #[test]
+    fn vanished_root_and_already_gone_identities_release_permit() {
+        let (state, backend) = state_with_fake();
+        let root = identity(34, 34);
+        backend.add_tree(root, vec![observed(34, 34, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        backend.mark_gone(root);
+        backend.replace_tree(
+            root,
+            Vec::new(),
+            vec![format!("root pid {} was not in process snapshot", root.pid)],
+        );
+
+        let result = state
+            .kill_group(id, ResourceKillReason::SessionDestroy)
+            .unwrap();
+        assert!(!result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert!(result.killed_processes.is_empty());
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
     }
 
     #[test]

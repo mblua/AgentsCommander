@@ -9,7 +9,8 @@ mod platform {
 
     use super::*;
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -107,10 +108,7 @@ mod platform {
                 return Ok(TerminateOutcome::AlreadyGone);
             };
             if current != process.identity {
-                return Err(ResourceError::Message(format!(
-                    "stale identity for pid {}",
-                    process.identity.pid
-                )));
+                return Ok(TerminateOutcome::AlreadyGone);
             }
 
             let handle = open_process(
@@ -119,12 +117,34 @@ mod platform {
             )?;
             let ok = unsafe { TerminateProcess(handle.raw(), 1) };
             if ok == 0 {
-                return Err(last_error("TerminateProcess failed"));
+                return verify_identity_exited(
+                    process.identity,
+                    last_error("TerminateProcess failed").to_string(),
+                );
             }
-            unsafe {
-                WaitForSingleObject(handle.raw(), 2_000);
+            let wait_result = unsafe { WaitForSingleObject(handle.raw(), 2_000) };
+            let failure = match wait_result {
+                WAIT_OBJECT_0 => None,
+                WAIT_TIMEOUT => Some(format!(
+                    "timed out waiting for pid {} to exit",
+                    process.identity.pid
+                )),
+                WAIT_FAILED => Some(last_error("WaitForSingleObject failed").to_string()),
+                other => Some(format!(
+                    "unexpected WaitForSingleObject result {other} for pid {}",
+                    process.identity.pid
+                )),
+            };
+            if let Some(failure) = failure {
+                return verify_identity_exited(process.identity, failure);
             }
-            Ok(TerminateOutcome::Terminated)
+            verify_identity_exited(
+                process.identity,
+                format!(
+                    "pid {} is still alive after termination",
+                    process.identity.pid
+                ),
+            )
         }
 
         fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
@@ -262,6 +282,16 @@ mod platform {
             return Err(last_error(&format!("OpenProcess({pid}) failed")));
         }
         Ok(OwnedHandle(handle))
+    }
+
+    fn verify_identity_exited(
+        identity: ProcessIdentity,
+        failure: String,
+    ) -> Result<TerminateOutcome, ResourceError> {
+        match observe_identity(identity.pid)? {
+            Some(current) if current == identity => Err(ResourceError::Message(failure)),
+            _ => Ok(TerminateOutcome::Terminated),
+        }
     }
 
     fn filetime_to_u64(value: FILETIME) -> u64 {
