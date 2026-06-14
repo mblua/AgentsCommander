@@ -686,6 +686,66 @@ html, body, #root {
   color: var(--sidebar-fg);
 }
 
+.resource-monitor-btn {
+  position: relative;
+  font-size: 15px;
+}
+
+.resource-monitor-btn::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-offline);
+  box-shadow: 0 0 0 2px var(--sidebar-bg);
+}
+
+.resource-monitor-btn.state-ok {
+  color: var(--status-waiting);
+}
+
+.resource-monitor-btn.state-ok::after {
+  background: var(--status-waiting);
+}
+
+.resource-monitor-btn.state-warn,
+.resource-monitor-btn.state-limit,
+.resource-monitor-btn.state-unknown {
+  color: var(--status-pending);
+}
+
+.resource-monitor-btn.state-warn::after,
+.resource-monitor-btn.state-limit::after,
+.resource-monitor-btn.state-unknown::after {
+  background: var(--status-pending);
+}
+
+.resource-monitor-btn.state-critical,
+.resource-monitor-btn.state-enforcing {
+  color: var(--status-exited);
+}
+
+.resource-monitor-btn.state-critical::after,
+.resource-monitor-btn.state-enforcing::after {
+  background: var(--status-exited);
+}
+
+.resource-monitor-btn.state-disabled {
+  color: var(--sidebar-fg-dim);
+}
+
+.resource-monitor-btn.state-disabled::after {
+  background: var(--status-offline);
+}
+
+.resource-monitor-glyph {
+  display: block;
+  line-height: 1;
+}
+
 /* ActionBar */
 .action-bar {
   display: flex;
@@ -1027,6 +1087,12 @@ html.light-theme .root-agent-avatar {
 .settings-field-inline .settings-checkbox {
   width: 14px;
   height: 14px;
+}
+
+.settings-resource-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--spacing-sm);
 }
 
 .settings-label {
@@ -1680,6 +1746,12 @@ html.light-theme .root-agent-avatar {
 .settings-select option {
   background: var(--sidebar-surface);
   color: var(--sidebar-fg);
+}
+
+@media (max-width: 560px) {
+  .settings-resource-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Settings hint text */

@@ -3,11 +3,21 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { UnlistenFn } from "../../shared/transport";
-import { ProjectAPI, GuideAPI, SettingsAPI, SpecBoardAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
+import { ProjectAPI, GuideAPI, SettingsAPI, SpecBoardAPI, WindowAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
+import { resourceMonitorStore } from "../../shared/stores/resourceMonitor";
 import { setSoundsEnabled } from "../../shared/sound";
 import { homeStore } from "../../main/stores/home";
 import SettingsModal from "./SettingsModal";
+
+type ResourceBadgeState =
+  | "disabled"
+  | "unknown"
+  | "ok"
+  | "warn"
+  | "critical"
+  | "enforcing"
+  | "limit";
 
 const ActionBar: Component = () => {
   const [showDropdown, setShowDropdown] = createSignal(false);
@@ -74,14 +84,23 @@ const ActionBar: Component = () => {
   // the `section` prop and its createEffect re-targets the tab if the modal is
   // already open.
   let unlistenOpenSettings: UnlistenFn | null = null;
+  let stopResourcePolling: (() => void) | null = null;
   onMount(async () => {
     unlistenOpenSettings = await onOpenSettings((section) => {
       setPendingSection(section);
       setShowSettings(true);
     });
+    stopResourcePolling = resourceMonitorStore.startPolling({
+      activeIntervalMs: 10_000,
+      idleIntervalMs: 15_000,
+      backoffIntervalMs: 20_000,
+      backoffWhenIdle: settingsStore.current?.resourceBackoffPolling ?? true,
+      keepLastSnapshot: settingsStore.current?.resourceKeepLastSnapshot ?? true,
+    });
   });
   onCleanup(() => {
     if (unlistenOpenSettings) unlistenOpenSettings();
+    if (stopResourcePolling) stopResourcePolling();
   });
 
   const handleNewProject = async () => {
@@ -181,6 +200,42 @@ const ActionBar: Component = () => {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(`Failed to switch to ${newValue ? "light" : "dark"} theme: ${msg}`);
     }
+  };
+
+  const resourceBadgeState = (): ResourceBadgeState => {
+    if (settingsStore.current?.resourceMonitorEnabled === false) return "disabled";
+
+    const snapshot = resourceMonitorStore.snapshot;
+    if (!snapshot || resourceMonitorStore.error) return "unknown";
+    if (snapshot.overallState === "critical" || snapshot.overallState === "enforcing") {
+      return snapshot.overallState;
+    }
+    if (snapshot.overallState === "warn") return "warn";
+    if (
+      snapshot.maxConcurrentAgentGroups > 0 &&
+      snapshot.activeAgentGroups >= snapshot.maxConcurrentAgentGroups
+    ) {
+      return "limit";
+    }
+    if (snapshot.overallState === "unknown" || snapshot.networkState === "unknown") {
+      return "unknown";
+    }
+    return "ok";
+  };
+
+  const resourceBadgeTitle = (): string => {
+    const state = resourceBadgeState();
+    const snapshot = resourceMonitorStore.snapshot;
+    if (state === "disabled") return "Resource Monitor disabled";
+    if (!snapshot) return "Resource Monitor status unknown";
+    return `Resource Monitor: ${snapshot.activeAgentGroups}/${snapshot.maxConcurrentAgentGroups} agent groups, ${state}`;
+  };
+
+  const handleOpenResourceMonitor = () => {
+    WindowAPI.openResourceMonitor().catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Failed to open Resource Monitor: ${msg}`);
+    });
   };
 
   return (
@@ -314,6 +369,17 @@ const ActionBar: Component = () => {
             data-ac-role="button"
           >
             &#x1F4A1;
+          </button>
+          <button
+            class={`toolbar-gear-btn resource-monitor-btn state-${resourceBadgeState()}`}
+            onClick={handleOpenResourceMonitor}
+            title={resourceBadgeTitle()}
+            aria-label={resourceBadgeTitle()}
+            data-ac-testid="actionBar.resourceMonitor"
+            data-ac-role="button"
+            data-ac-state={resourceBadgeState()}
+          >
+            <span class="resource-monitor-glyph" aria-hidden="true">&#x25A6;</span>
           </button>
           <button
             class="toolbar-gear-btn"

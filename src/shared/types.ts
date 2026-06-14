@@ -186,6 +186,104 @@ export interface AppSettings {
   agentTemplatesPath: string | null;
   themeLight: boolean;
   specBoardEnabled: boolean;
+  resourceMonitorEnabled: boolean;
+  maxConcurrentAgentProcesses: number;
+  resourceWatchdogAction: ResourceWatchdogAction;
+  agentGroupWarnPrivateBytes: number;
+  agentGroupKillPrivateBytes: number;
+  agentProcessKillPrivateBytes: number;
+  resourceKeepLastSnapshot: boolean;
+  resourceBackoffPolling: boolean;
+}
+
+export type ResourceWatchdogAction = "warn" | "killGroup";
+export type ResourceOverallState =
+  | "ok"
+  | "warn"
+  | "critical"
+  | "enforcing"
+  | "unknown";
+export type ResourceNetworkState = "unknown" | "observed";
+export type ResourceGroupState =
+  | "starting"
+  | "running"
+  | "terminating"
+  | "terminated"
+  | "quarantined"
+  | "failedCleanup"
+  | "unknownOwnership";
+export type ResourceKillReason =
+  | "user"
+  | "watchdog"
+  | "sessionDestroy"
+  | "appShutdown"
+  | "spawnRollback";
+
+export interface ResourceProcessIdentity {
+  pid: number;
+  creationTime100ns: number;
+}
+
+export interface ResourceProcessSnapshot {
+  identity?: ResourceProcessIdentity | null;
+  pid: number;
+  creationTime100ns?: number;
+  parentPid?: number | null;
+  parentIdentity?: ResourceProcessIdentity | null;
+  name?: string;
+  exeName?: string;
+  privateBytes?: number | null;
+  workingSetBytes?: number | null;
+  cpuPercent?: number | null;
+  owned?: boolean;
+  killAllowed: boolean;
+  depth?: number;
+}
+
+export interface ResourceAgentGroupSnapshot {
+  sessionId: string;
+  name: string;
+  rootPid?: number | null;
+  rootIdentity?: ResourceProcessIdentity | null;
+  state: ResourceGroupState;
+  descendantsObserved: boolean;
+  processCount: number;
+  privateBytes?: number | null;
+  workingSetBytes?: number | null;
+  cpuPercent?: number | null;
+  networkState: ResourceNetworkState;
+  networkSummary: string;
+  killAllowed?: boolean;
+  processes: ResourceProcessSnapshot[];
+  lastError?: string | null;
+}
+
+export interface ResourceSnapshot {
+  capturedAt: string;
+  overallState: ResourceOverallState;
+  monitorEnabled: boolean;
+  activeAgentGroups: number;
+  maxConcurrentAgentGroups: number;
+  appPrivateBytes?: number | null;
+  appWorkingSetBytes?: number | null;
+  networkState: ResourceNetworkState;
+  networkSummary: string;
+  groups: ResourceAgentGroupSnapshot[];
+  warnings: string[];
+}
+
+export interface ResourceKillRequest {
+  sessionId: string;
+  reason: ResourceKillReason;
+}
+
+export interface ResourceKillResult {
+  sessionId: string;
+  state: ResourceGroupState;
+  killedProcesses?: ResourceProcessIdentity[];
+  killedPids?: number[];
+  quarantined: boolean;
+  message: string;
 }
 
 export type UiAutomationAction = "query" | "click" | "setValue";

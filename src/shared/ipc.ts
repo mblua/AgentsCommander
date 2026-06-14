@@ -26,7 +26,10 @@ import type {
   SpecBoardSnapshot,
   SpecBoardChangedEvent,
   UiAutomationRequest,
-  UiAutomationResponse
+  UiAutomationResponse,
+  ResourceKillRequest,
+  ResourceKillResult,
+  ResourceSnapshot
 } from "./types";
 
 export interface SessionRepoInput {
@@ -330,6 +333,18 @@ export const WindowAPI = {
   // non-http(s) schemes (issue #164).
   openExternal: (url: string) =>
     transport.invoke<void>("open_external_url", { url }),
+
+  openResourceMonitor: () =>
+    transport.invoke<void>("open_resource_monitor_window"),
+
+  dockResourceMonitor: () =>
+    transport.invoke<void>("dock_resource_monitor_window"),
+};
+
+export const ResourceMonitorAPI = {
+  snapshot: () => transport.invoke<ResourceSnapshot>("get_resource_snapshot"),
+  killGroup: (request: ResourceKillRequest) =>
+    transport.invoke<ResourceKillResult>("kill_resource_group", { request }),
 };
 
 // Brief API (issue #162)
