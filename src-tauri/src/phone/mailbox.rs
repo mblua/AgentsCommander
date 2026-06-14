@@ -167,11 +167,11 @@ fn normalize_agent_for_wake(
 ) -> Result<ResolvedWakeAgentCommand, String> {
     let normalized = crate::config::agent_command::normalize_legacy_agent_command(&agent.command)
         .map_err(|e| {
-            format!(
-                "Invalid agent command from {} (agent id '{}', label '{}'): {}. command={:?}",
-                source, agent.id, agent.label, e, agent.command
-            )
-        })?;
+        format!(
+            "Invalid agent command from {} (agent id '{}', label '{}'): {}. command={:?}",
+            source, agent.id, agent.label, e, agent.command
+        )
+    })?;
 
     Ok(ResolvedWakeAgentCommand {
         shell: normalized.shell,
@@ -1444,9 +1444,27 @@ impl MailboxPoller {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
+        let resolved_spawn = if let Some(aid) = resolved_command.agent_id.as_deref() {
+            let settings = app.state::<SettingsState>();
+            let cfg = settings.read().await;
+            crate::commands::session::build_configured_agent_spawn_for_cwd(&cfg, aid, &cwd, None)?
+        } else {
+            None
+        };
+        let (spawn_shell, spawn_args, spawn_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+            (
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                Some(spawn.trusted_agent_label.clone()),
+            )
+        } else {
+            (
+                resolved_command.shell.clone(),
+                resolved_command.shell_args.clone(),
+                resolved_command.agent_label.clone(),
+            )
+        };
         let spawn_source = resolved_command.source.clone();
-        let spawn_shell = resolved_command.shell.clone();
-        let spawn_args = resolved_command.shell_args.clone();
         let spawn_raw = resolved_command.raw_command.clone();
 
         log::info!(
@@ -1462,15 +1480,16 @@ impl MailboxPoller {
             app,
             session_mgr.inner(),
             pty_mgr.inner(),
-            resolved_command.shell,
-            resolved_command.shell_args,
+            spawn_shell.clone(),
+            spawn_args.clone(),
             cwd,
             Some(session_name), // readable name, no [temp] prefix
             resolved_command.agent_id, // links to agent config
-            resolved_command.agent_label, // human-readable label
+            spawn_label,        // human-readable label
             false,              // skip_tooling_save = false → persist lastCodingAgent
             Vec::new(),         // git_repos
             wake_spawn_skip_auto_resume(spawn_with_resume), // see deliver_wake top
+            resolved_spawn,
         )
         .await
         .map_err(|e| {
@@ -2855,20 +2874,51 @@ impl MailboxPoller {
 
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+            let resolved_spawn = {
+                let settings = app.state::<SettingsState>();
+                let cfg = settings.read().await;
+                match crate::commands::session::build_configured_agent_spawn_for_cwd(
+                    &cfg,
+                    &request.agent_id,
+                    &request.cwd,
+                    request.requested_profile.as_deref(),
+                ) {
+                    Ok(spawn) => spawn,
+                    Err(e) => {
+                        log::error!(
+                            "[session-requests] Failed to rebuild configured agent command for '{}': {}",
+                            request.session_name,
+                            e
+                        );
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                }
+            };
+            let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+                (
+                    spawn.shell.clone(),
+                    spawn.shell_args.clone(),
+                    Some(spawn.trusted_agent_label.clone()),
+                )
+            } else {
+                (request.shell.clone(), request.shell_args.clone(), None)
+            };
 
             match crate::commands::session::create_session_inner(
                 app,
                 session_mgr.inner(),
                 pty_mgr.inner(),
-                request.shell.clone(),
-                request.shell_args.clone(),
+                shell,
+                shell_args,
                 request.cwd.clone(),
                 Some(request.session_name.clone()),
                 Some(request.agent_id.clone()),
-                None,       // No agent label — auto-detected from shell
-                false,      // Persist tooling
-                Vec::new(), // git_repos
-                true,       // skip_auto_resume = true → CLI session-request is a fresh create
+                agent_label, // No agent label for legacy custom-shell fallback
+                false,       // Persist tooling
+                Vec::new(),  // git_repos
+                true,        // skip_auto_resume = true → CLI session-request is a fresh create
+                resolved_spawn,
             )
             .await
             {
@@ -2968,6 +3018,11 @@ mod tests {
             is_root_agent: false,
             token: "t".into(),
             agent_kind: Some(crate::session::profile::CodingAgentKind::Claude),
+            requested_profile: None,
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
@@ -3056,6 +3111,8 @@ mod tests {
             color: "#10b981".into(),
             git_pull_before: false,
             exclude_global_claude_md: false,
+            envs: Vec::new(),
+            isolate_codex_home: false,
         }
     }
 

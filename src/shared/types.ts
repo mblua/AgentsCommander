@@ -24,6 +24,10 @@ export interface Session {
   isRootAgent: boolean;
   token: string;
   agentKind: CodingAgentKind | null;
+  requestedProfile: string | null;
+  effectiveProfile: string | null;
+  profileFallbackChain: string[];
+  profileFallbackApplied: boolean;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
@@ -92,6 +96,35 @@ export interface AgentConfig {
   color: string;
   gitPullBefore: boolean;
   excludeGlobalClaudeMd: boolean;
+  envs: CodingAgentEnv[];
+  isolateCodexHome: boolean;
+}
+
+export type CodingAgentEnvSource = "user" | "agentsCommander";
+
+export interface CodingAgentEnv {
+  key: string;
+  value: string;
+  source: CodingAgentEnvSource;
+  enabled: boolean;
+}
+
+export interface CodingAgentProfilesConfig {
+  schemaVersion: number;
+  letters: Record<string, ProfileLetterConfig>;
+  agentDefaults: Record<string, string>;
+  matrix: Record<string, Record<string, ProfileCellConfig>>;
+}
+
+export interface ProfileLetterConfig {
+  name: string;
+}
+
+export interface ProfileCellConfig {
+  enabled: boolean;
+  argv: string[];
+  env: Record<string, string>;
+  notes: string;
 }
 
 export interface RepoMatch {
@@ -148,6 +181,7 @@ export interface AppSettings {
   defaultShell: string;
   defaultShellArgs: string[];
   agents: AgentConfig[];
+  codingAgentProfiles: CodingAgentProfilesConfig;
   telegramBots: TelegramBotConfig[];
   telegramNetworkPollErrorLogging: TelegramNetworkPollErrorLogging;
   restoreCoordinatorWakeState: boolean;

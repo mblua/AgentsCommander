@@ -32,6 +32,7 @@ pub(crate) fn derive_reader(
     shell_args: &[String],
     cwd: &str,
     agent_kind: Option<CodingAgentKind>,
+    effective_codex_home: Option<&str>,
 ) -> Result<Option<SessionReaderKind>, String> {
     let attach_time = chrono::Utc::now();
 
@@ -43,8 +44,12 @@ pub(crate) fn derive_reader(
             }
         }
         Some(CodingAgentKind::Codex) => {
-            match crate::commands::codex_resolver::resolve_codex_sessions_root(
-                shell, shell_args, cwd,
+            let effective_home = effective_codex_home.map(Path::new);
+            match crate::commands::codex_resolver::resolve_codex_sessions_root_with_effective_home(
+                effective_home,
+                shell,
+                shell_args,
+                cwd,
             ) {
                 Some(root) => Ok(Some(SessionReaderKind::Codex {
                     search_root: root,
@@ -87,7 +92,7 @@ pub(crate) async fn attach_telegram_bot_by_id(
     let tg_mgr = app.state::<TelegramBridgeState>();
     let settings = app.state::<SettingsState>();
 
-    let (agent_kind, shell, shell_args, working_directory) = {
+    let (agent_kind, shell, shell_args, working_directory, effective_codex_home) = {
         let mgr = session_mgr.read().await;
         let session = mgr
             .get_session(session_id)
@@ -98,10 +103,17 @@ pub(crate) async fn attach_telegram_bot_by_id(
             session.shell.clone(),
             session.shell_args.clone(),
             session.working_directory.clone(),
+            session.effective_codex_home.clone(),
         )
     };
 
-    let reader = match derive_reader(&shell, &shell_args, &working_directory, agent_kind) {
+    let reader = match derive_reader(
+        &shell,
+        &shell_args,
+        &working_directory,
+        agent_kind,
+        effective_codex_home.as_deref(),
+    ) {
         Ok(r) => r,
         Err(reason) => {
             let err_msg = format!(

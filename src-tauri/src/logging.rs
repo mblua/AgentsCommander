@@ -272,16 +272,16 @@ fn init_logger_inner() {
                 if should_capture(record) {
                     error_sink().capture(ErrorLogEntry::from_record(ts.to_string(), record));
                 }
-                if std::env::var("AC_MACHINE_OUTPUT").is_err() || record.level() == log::Level::Error {
+                if std::env::var("AC_MACHINE_OUTPUT").is_err()
+                    || record.level() == log::Level::Error
+                {
                     buf.write_all(line.as_bytes())?;
                 }
                 if let Some(ref state) = *log_state {
                     if let Ok(mut f) = state.file.lock() {
                         let _ = f.write_all(line.as_bytes());
                     }
-                    let new_total = state
-                        .bytes
-                        .fetch_add(line.len() as u64, Ordering::Relaxed)
+                    let new_total = state.bytes.fetch_add(line.len() as u64, Ordering::Relaxed)
                         + line.len() as u64;
                     if new_total >= APP_LOG_MAX_BYTES {
                         rotate(state);
@@ -645,10 +645,16 @@ mod tests {
 
         rotate(&state);
 
-        assert_eq!(read_marker(tmp.path(), "app.log.1").as_deref(), Some("ACTIVE"));
+        assert_eq!(
+            read_marker(tmp.path(), "app.log.1").as_deref(),
+            Some("ACTIVE")
+        );
         // Fresh active file exists and is empty.
         let active = std::fs::read(tmp.path().join("app.log")).expect("read active");
-        assert!(active.is_empty(), "active file should be empty after rotate");
+        assert!(
+            active.is_empty(),
+            "active file should be empty after rotate"
+        );
         // Counter reset.
         assert_eq!(state.bytes.load(Ordering::Relaxed), 0);
     }
@@ -663,7 +669,10 @@ mod tests {
 
         rotate(&state);
 
-        assert_eq!(read_marker(tmp.path(), "app.log.1").as_deref(), Some("ACTIVE"));
+        assert_eq!(
+            read_marker(tmp.path(), "app.log.1").as_deref(),
+            Some("ACTIVE")
+        );
         assert_eq!(read_marker(tmp.path(), "app.log.2").as_deref(), Some("ONE"));
         assert_eq!(read_marker(tmp.path(), "app.log.3").as_deref(), Some("TWO"));
     }
@@ -696,13 +705,20 @@ mod tests {
 
         // `.<KEEP + 1>` must NOT exist.
         let overflow = tmp.path().join(format!("app.log.{}", APP_LOG_KEEP + 1));
-        assert!(!overflow.exists(), "overflow file should not exist: {:?}", overflow);
+        assert!(
+            !overflow.exists(),
+            "overflow file should not exist: {:?}",
+            overflow
+        );
 
         // Oldest retained slot (.<KEEP>) is the former .<KEEP - 1> content
         // (because we walked descending and renamed .<KEEP - 1> over the
         // prior .<KEEP>, evicting it).
         let oldest = read_marker(tmp.path(), &format!("app.log.{}", APP_LOG_KEEP));
-        assert_eq!(oldest.as_deref(), Some(format!("DOT_{}", APP_LOG_KEEP - 1).as_str()));
+        assert_eq!(
+            oldest.as_deref(),
+            Some(format!("DOT_{}", APP_LOG_KEEP - 1).as_str())
+        );
     }
 
     /// G-MED-1 — under concurrent invocation, `rotate()` re-checks the
@@ -717,14 +733,20 @@ mod tests {
 
         // First rotation: shifts ACTIVE → .1.
         rotate(&state);
-        assert_eq!(read_marker(tmp.path(), "app.log.1").as_deref(), Some("ACTIVE"));
+        assert_eq!(
+            read_marker(tmp.path(), "app.log.1").as_deref(),
+            Some("ACTIVE")
+        );
         assert_eq!(state.bytes.load(Ordering::Relaxed), 0);
 
         // Second rotation with bytes already reset: must be a no-op. If it
         // wasn't idempotent, the (now-empty) active file would shift to
         // .1, evicting the real backup.
         rotate(&state);
-        assert_eq!(read_marker(tmp.path(), "app.log.1").as_deref(), Some("ACTIVE"));
+        assert_eq!(
+            read_marker(tmp.path(), "app.log.1").as_deref(),
+            Some("ACTIVE")
+        );
         assert!(
             read_marker(tmp.path(), "app.log.2").is_none(),
             "no second-slot file should exist after idempotent second rotation"

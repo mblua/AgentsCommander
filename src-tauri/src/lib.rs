@@ -858,19 +858,58 @@ pub fn run() {
                                     }
                                 }
                                 if should_create {
+                                    let mut rebuild_failed = false;
+                                    let resolved_spawn = if let Some(aid) = ps.agent_id.as_deref() {
+                                        match commands::session::build_configured_agent_spawn_for_cwd(
+                                            &settings_snapshot,
+                                            aid,
+                                            &root_path,
+                                            ps.requested_profile.as_deref(),
+                                        ) {
+                                            Ok(spawn) => spawn,
+                                            Err(e) => {
+                                                log::error!(
+                                                    "[root-agent] Failed to rebuild configured agent command for restore '{}': {}",
+                                                    ps.name,
+                                                    e
+                                                );
+                                                failed_recoverable.push(ps.clone());
+                                                rebuild_failed = true;
+                                                None
+                                            }
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    if !rebuild_failed {
+                                    let (shell, shell_args, agent_label) =
+                                        if let Some(spawn) = resolved_spawn.as_ref() {
+                                            (
+                                                spawn.shell.clone(),
+                                                spawn.shell_args.clone(),
+                                                Some(spawn.trusted_agent_label.clone()),
+                                            )
+                                        } else {
+                                            (
+                                                ps.shell.clone(),
+                                                ps.shell_args.clone(),
+                                                ps.agent_label.clone(),
+                                            )
+                                        };
                                     match commands::session::create_session_inner(
                                         &app_handle,
                                         &session_mgr_clone,
                                         &pty_mgr_clone,
-                                        ps.shell.clone(),
-                                        ps.shell_args.clone(),
+                                        shell,
+                                        shell_args,
                                         root_path.clone(),
                                         Some(ps.name.clone()),
                                         ps.agent_id.clone(),
-                                        ps.agent_label.clone(),
+                                        agent_label,
                                         false,
                                         ps.git_repos.clone(),
                                         false,
+                                        resolved_spawn,
                                     )
                                     .await
                                     {
@@ -943,6 +982,7 @@ pub fn run() {
                                             );
                                             failed_recoverable.push(ps.clone());
                                         }
+                                    }
                                     }
                                 }
                             }
@@ -1146,20 +1186,59 @@ pub fn run() {
                             continue;
                         }
 
+                        // Wake: rebuild configured-agent sessions from the persisted recipe,
+                        // while custom-shell records keep their materialized shell args.
+                        let resolved_spawn = if let Some(aid) = ps.agent_id.as_deref() {
+                            match commands::session::build_configured_agent_spawn_for_cwd(
+                                &settings_snapshot,
+                                aid,
+                                &ps.working_directory,
+                                ps.requested_profile.as_deref(),
+                            ) {
+                                Ok(spawn) => spawn,
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to rebuild configured agent command for restore '{}': {}",
+                                        ps.name,
+                                        e
+                                    );
+                                    failed_recoverable.push(ps.clone());
+                                    continue;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let (shell, shell_args, agent_label) =
+                            if let Some(spawn) = resolved_spawn.as_ref() {
+                                (
+                                    spawn.shell.clone(),
+                                    spawn.shell_args.clone(),
+                                    Some(spawn.trusted_agent_label.clone()),
+                                )
+                            } else {
+                                (
+                                    ps.shell.clone(),
+                                    ps.shell_args.clone(),
+                                    ps.agent_label.clone(),
+                                )
+                            };
+
                         // Wake: full PTY restore via the existing create_session_inner call.
                         match commands::session::create_session_inner(
                             &app_handle,
                             &session_mgr_clone,
                             &pty_mgr_clone,
-                            ps.shell.clone(),
-                            ps.shell_args.clone(),
+                            shell,
+                            shell_args,
                             ps.working_directory.clone(),
                             Some(ps.name.clone()),
                             ps.agent_id.clone(),
-                            ps.agent_label.clone(),
+                            agent_label,
                             false, // Persist tooling on restore
                             ps.git_repos.clone(),
                             false, // skip_auto_resume = false → restore path; allow `--continue`
+                            resolved_spawn,
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {
@@ -1358,6 +1437,10 @@ pub fn run() {
             commands::pty::pty_resize,
             commands::config::get_settings,
             commands::config::update_settings,
+            commands::config::update_coding_agent_profiles,
+            commands::config::update_coding_agent_env_settings,
+            commands::config::set_agent_default_profile,
+            commands::config::set_instance_profile_override,
             commands::config::set_inject_rtk_hook,
             commands::config::set_rtk_prompt_dismissed,
             commands::config::set_sounds_enabled,
@@ -1536,6 +1619,8 @@ mod tests {
                 color: "#10b981".to_string(),
                 git_pull_before: false,
                 exclude_global_claude_md: false,
+                envs: Vec::new(),
+                isolate_codex_home: false,
             }],
             ..AppSettings::default()
         }

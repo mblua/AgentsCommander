@@ -405,7 +405,10 @@ pub(crate) fn slug_segment(raw: &str) -> Result<String, String> {
             | "lpt9"
     );
     if reserved || slug.ends_with('.') || slug.ends_with(' ') {
-        return Err(format!("Slug \"{}\" is not safe as a Windows path segment", slug));
+        return Err(format!(
+            "Slug \"{}\" is not safe as a Windows path segment",
+            slug
+        ));
     }
     Ok(slug)
 }
@@ -416,18 +419,14 @@ pub fn validate_role_template_body(source_id: &str, body: &str) -> Result<(), St
         return Err(format!("Template {} Role.md is empty", source_id));
     }
     for ch in trimmed.chars() {
-        if ch == '\0'
-            || (ch.is_control() && ch != '\t' && ch != '\n' && ch != '\r')
-        {
+        if ch == '\0' || (ch.is_control() && ch != '\t' && ch != '\n' && ch != '\r') {
             return Err(format!(
                 "Template {} Role.md contains unsupported control characters",
                 source_id
             ));
         }
     }
-    if trimmed.contains("<!-- ac:role-profile")
-        || trimmed.contains("<!-- /ac:role-profile -->")
-    {
+    if trimmed.contains("<!-- ac:role-profile") || trimmed.contains("<!-- /ac:role-profile -->") {
         return Err(format!(
             "Template {} Role.md contains reserved AgentsCommander role delimiters",
             source_id
@@ -486,9 +485,7 @@ fn is_valid_commit_sha(commit: &str) -> bool {
     commit.len() == 40 && commit.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-pub fn read_agency_manifest(
-    config_dir: &Path,
-) -> Result<Option<AgencyTemplatesManifest>, String> {
+pub fn read_agency_manifest(config_dir: &Path) -> Result<Option<AgencyTemplatesManifest>, String> {
     let root = agency_templates_dir(config_dir);
     if !root.exists() {
         return Ok(None);
@@ -501,11 +498,13 @@ pub fn read_agency_manifest(
     if !manifest_path.exists() {
         return Err("manifestMissing".into());
     }
-    let manifest_meta = lstat_no_links(&manifest_path).map_err(|()| "manifestMissing".to_string())?;
+    let manifest_meta =
+        lstat_no_links(&manifest_path).map_err(|()| "manifestMissing".to_string())?;
     if !manifest_meta.is_file() {
         return Err("manifestMissing".into());
     }
-    let raw = std::fs::read_to_string(&manifest_path).map_err(|_| "manifestMalformed".to_string())?;
+    let raw =
+        std::fs::read_to_string(&manifest_path).map_err(|_| "manifestMalformed".to_string())?;
     let manifest: AgencyTemplatesManifest =
         serde_json::from_str(&raw).map_err(|_| "manifestMalformed".to_string())?;
     if !is_valid_commit_sha(&manifest.commit) {
@@ -515,7 +514,9 @@ pub fn read_agency_manifest(
 }
 
 pub fn agency_templates_status(config_dir: &Path) -> AgencyTemplatesStatus {
-    let path = agency_templates_dir(config_dir).to_string_lossy().to_string();
+    let path = agency_templates_dir(config_dir)
+        .to_string_lossy()
+        .to_string();
     let unavailable = |reason: &str| AgencyTemplatesStatus {
         available: false,
         path: path.clone(),
@@ -546,9 +547,10 @@ pub fn agency_templates_status(config_dir: &Path) -> AgencyTemplatesStatus {
     }
 }
 
-pub(crate) fn load_cached_agency_templates(config_dir: &Path) -> Result<Vec<AgencyTemplate>, String> {
-    let manifest = read_agency_manifest(config_dir)?
-        .ok_or_else(|| "missing".to_string())?;
+pub(crate) fn load_cached_agency_templates(
+    config_dir: &Path,
+) -> Result<Vec<AgencyTemplate>, String> {
+    let manifest = read_agency_manifest(config_dir)?.ok_or_else(|| "missing".to_string())?;
     let root = agency_templates_dir(config_dir);
     let templates = collect_agency_templates_from_dir(&root)?;
     if templates.len() != manifest.template_count {
@@ -557,7 +559,9 @@ pub(crate) fn load_cached_agency_templates(config_dir: &Path) -> Result<Vec<Agen
     Ok(templates)
 }
 
-pub(crate) fn collect_agency_templates_from_dir(root: &Path) -> Result<Vec<AgencyTemplate>, String> {
+pub(crate) fn collect_agency_templates_from_dir(
+    root: &Path,
+) -> Result<Vec<AgencyTemplate>, String> {
     let root_meta = lstat_no_links(root).map_err(|()| "cacheInvalid".to_string())?;
     if !root_meta.is_dir() {
         return Err("cacheInvalid".into());
@@ -577,7 +581,8 @@ pub(crate) fn collect_agency_templates_from_dir(root: &Path) -> Result<Vec<Agenc
             }
             continue;
         }
-        let division_meta = lstat_no_links(&entry.path()).map_err(|()| "cacheInvalid".to_string())?;
+        let division_meta =
+            lstat_no_links(&entry.path()).map_err(|()| "cacheInvalid".to_string())?;
         if !division_meta.is_dir() {
             return Err("cacheInvalid".into());
         }
@@ -614,7 +619,8 @@ pub(crate) fn collect_agency_templates_from_dir(root: &Path) -> Result<Vec<Agenc
                 return Err("cacheInvalid".into());
             }
             let role_path = stem_entry.path().join("Role.md");
-            let raw = std::fs::read_to_string(&role_path).map_err(|_| "cacheInvalid".to_string())?;
+            let raw =
+                std::fs::read_to_string(&role_path).map_err(|_| "cacheInvalid".to_string())?;
             let fm = parse_agency_template_frontmatter(&raw);
             let body = strip_yaml_frontmatter(&raw).trim().to_string();
             let id = format!("agency:{}-{}", division_slug, stem_slug);
@@ -974,7 +980,8 @@ pub async fn get_agency_templates_status() -> Result<AgencyTemplatesStatus, Stri
 }
 
 #[tauri::command]
-pub async fn update_agency_templates() -> Result<crate::cli::agency_templates::UpdateResult, String> {
+pub async fn update_agency_templates() -> Result<crate::cli::agency_templates::UpdateResult, String>
+{
     tauri::async_runtime::spawn_blocking(|| {
         crate::cli::agency_templates::update_cache(
             crate::cli::agency_templates::AgencyTemplatesUpdateArgs::default_ui_update(),

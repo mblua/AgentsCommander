@@ -223,7 +223,10 @@ mod tests {
 
     #[test]
     fn detect_plain_shell_is_none() {
-        assert_eq!(CodingAgentKind::detect("powershell.exe", &["-NoLogo".into()]), None);
+        assert_eq!(
+            CodingAgentKind::detect("powershell.exe", &["-NoLogo".into()]),
+            None
+        );
         assert_eq!(CodingAgentKind::detect("cmd.exe", &[]), None);
     }
 

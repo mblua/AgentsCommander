@@ -20,6 +20,8 @@ export const AGENT_PRESETS: AgentPreset[] = [
       color: "#d97706",
       gitPullBefore: false,
       excludeGlobalClaudeMd: true,
+      envs: [],
+      isolateCodexHome: false,
     },
   },
   {
@@ -33,6 +35,8 @@ export const AGENT_PRESETS: AgentPreset[] = [
       color: "#10b981",
       gitPullBefore: false,
       excludeGlobalClaudeMd: false,
+      envs: [],
+      isolateCodexHome: false,
     },
   },
   {
@@ -46,6 +50,8 @@ export const AGENT_PRESETS: AgentPreset[] = [
       color: "#4285f4",
       gitPullBefore: false,
       excludeGlobalClaudeMd: false,
+      envs: [],
+      isolateCodexHome: false,
     },
   },
 ];

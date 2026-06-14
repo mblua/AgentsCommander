@@ -45,10 +45,7 @@ fn print_status_prose(content: &str) {
     let Ok(resp) = serde_json::from_str::<serde_json::Value>(content) else {
         return;
     };
-    let target = resp
-        .get("target")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let target = resp.get("target").and_then(|v| v.as_str()).unwrap_or("");
     match resp.get("status").and_then(|v| v.as_str()) {
         Some("no_match") => {
             crate::cli_println!("No sessions matched '{}' — nothing to close.", target);

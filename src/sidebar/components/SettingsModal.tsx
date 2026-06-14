@@ -108,6 +108,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           color: "#6366f1",
           gitPullBefore: false,
           excludeGlobalClaudeMd: true,
+          envs: [],
+          isolateCodexHome: false,
         };
     setSettings("data", "agents", (prev) => [...prev, agent]);
   };

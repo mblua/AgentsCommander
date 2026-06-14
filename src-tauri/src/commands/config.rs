@@ -1,8 +1,12 @@
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::config::claude_settings::{ensure_rtk_pretool_hook, enumerate_managed_agent_dirs};
-use crate::config::settings::{load_settings, save_settings, AppSettings, SettingsState};
+use crate::config::settings::{
+    load_settings, merge_protected_coding_agent_settings, save_settings,
+    validate_and_repair_settings, AppSettings, CodingAgentEnv, CodingAgentProfilesConfig,
+    SettingsState,
+};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::web::auth::WebAccessToken;
@@ -64,10 +68,11 @@ pub async fn update_settings(
     settings: State<'_, SettingsState>,
     new_settings: AppSettings,
 ) -> Result<(), String> {
-    let mut to_save = new_settings;
+    let current = settings.read().await.clone();
+    let mut to_save = merge_protected_coding_agent_settings(&current, new_settings);
     // Preserve existing root token — frontend cannot overwrite it
-    to_save.root_token = settings.read().await.root_token.clone();
-    crate::config::settings::validate_agent_commands(&to_save)?;
+    to_save.root_token = current.root_token.clone();
+    validate_and_repair_settings(&mut to_save)?;
     save_settings(&to_save)?;
     if let Err(e) = crate::config::sessions_persistence::purge_sessions_outside_project_paths(
         &to_save.project_paths,
@@ -79,6 +84,83 @@ pub async fn update_settings(
     }
     let mut s = settings.write().await;
     *s = to_save;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_coding_agent_profiles(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    profiles: CodingAgentProfilesConfig,
+) -> Result<(), String> {
+    let mut s = settings.write().await;
+    s.coding_agent_profiles = profiles;
+    validate_and_repair_settings(&mut s)?;
+    let snapshot = s.clone();
+    save_settings(&snapshot)?;
+    drop(s);
+    let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_coding_agent_env_settings(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    agent_id: String,
+    envs: Vec<CodingAgentEnv>,
+    isolate_codex_home: bool,
+) -> Result<(), String> {
+    let mut s = settings.write().await;
+    let agent = s
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| format!("Agent '{}' is not configured", agent_id))?;
+    agent.envs = envs;
+    agent.isolate_codex_home = isolate_codex_home;
+    validate_and_repair_settings(&mut s)?;
+    let snapshot = s.clone();
+    save_settings(&snapshot)?;
+    drop(s);
+    let _ = app.emit(
+        "coding_agent_env_settings_updated",
+        serde_json::json!({ "agentId": agent_id }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_agent_default_profile(
+    app: AppHandle,
+    agent_path: String,
+    profile: String,
+) -> Result<(), String> {
+    crate::config::coding_agent_profiles::set_agent_default_profile(
+        std::path::Path::new(&agent_path),
+        &profile,
+    )?;
+    let _ = app.emit(
+        "coding_agent_profile_selection_updated",
+        serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "default" }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_instance_profile_override(
+    app: AppHandle,
+    agent_path: String,
+    profile: Option<String>,
+) -> Result<(), String> {
+    crate::config::coding_agent_profiles::set_instance_profile_override(
+        std::path::Path::new(&agent_path),
+        profile.as_deref(),
+    )?;
+    let _ = app.emit(
+        "coding_agent_profile_selection_updated",
+        serde_json::json!({ "agentPath": agent_path, "profile": profile, "scope": "instance" }),
+    );
     Ok(())
 }
 

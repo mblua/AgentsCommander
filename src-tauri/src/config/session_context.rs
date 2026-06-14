@@ -2064,7 +2064,9 @@ fn root_agency_cache_guidance(agent_root: &str) -> String {
     let cache_path = std::path::Path::new(agent_root)
         .parent()
         .map(|p| p.join(crate::commands::role_templates::AGENCY_TEMPLATES_DIR))
-        .unwrap_or_else(|| std::path::PathBuf::from(crate::commands::role_templates::AGENCY_TEMPLATES_DIR));
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(crate::commands::role_templates::AGENCY_TEMPLATES_DIR)
+        });
     format!(
         "Root Agent Agency template cache: `{}`. You may offer to manage it only through documented `agency-templates update`, `agency-templates status`, and `agency-templates list` CLI commands. This does not grant direct shell writes to the cache and does not grant access to arbitrary `*_templates` paths.\n\n",
         display_path(&cache_path)

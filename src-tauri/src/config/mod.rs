@@ -2,6 +2,7 @@ pub mod agent_command;
 pub mod agent_config;
 pub mod agent_creation;
 pub mod claude_settings;
+pub mod coding_agent_profiles;
 pub mod daemon_pid;
 pub mod profile;
 pub mod projects;

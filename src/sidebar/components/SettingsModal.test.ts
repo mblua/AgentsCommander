@@ -44,6 +44,12 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     mainSidebarSide: "right",
     mainAlwaysOnTop: false,
     agents: [],
+    codingAgentProfiles: {
+      schemaVersion: 1,
+      letters: { A: { name: "" } },
+      agentDefaults: {},
+      matrix: {},
+    },
     telegramBots: [],
     onboardingDismissed: false,
     projectPaths: [],
