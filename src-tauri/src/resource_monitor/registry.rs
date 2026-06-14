@@ -342,10 +342,13 @@ impl ResourceMonitorState {
         };
 
         let mut targets = previous_targets;
+        let mut current_cleanup_identities = BTreeSet::new();
         let mut errors = Vec::new();
         match self.backend.observe_tree(root_identity) {
             Ok(tree) => {
                 let current_processes = tree.processes.clone();
+                current_cleanup_identities
+                    .extend(current_processes.iter().map(|process| process.identity));
                 let cleanup_errors = tree
                     .errors
                     .iter()
@@ -384,10 +387,15 @@ impl ResourceMonitorState {
         let mut killed = Vec::new();
         for process in targets.iter() {
             if !process.kill_allowed {
-                errors.push(format!(
-                    "pid {} identity unavailable; cleanup ownership could not be verified",
-                    process.identity.pid
-                ));
+                if current_cleanup_identities.contains(&process.identity) {
+                    errors.push(unverifiable_process_error(process.identity.pid));
+                    continue;
+                }
+                match self.backend.observe_identity(process.identity.pid) {
+                    Ok(None) => {}
+                    Ok(Some(_)) => errors.push(unverifiable_process_error(process.identity.pid)),
+                    Err(err) => errors.push(format!("pid {}: {err}", process.identity.pid)),
+                }
                 continue;
             }
             match self.backend.terminate_verified(process) {
@@ -548,6 +556,10 @@ fn join_errors(errors: Vec<String>) -> Option<String> {
 
 fn is_missing_root_cleanup_error(error: &str, root_identity: ProcessIdentity) -> bool {
     error == format!("root pid {} was not in process snapshot", root_identity.pid)
+}
+
+fn unverifiable_process_error(pid: u32) -> String {
+    format!("pid {pid} identity unavailable; cleanup ownership could not be verified")
 }
 
 fn root_placeholder(identity: ProcessIdentity) -> ObservedProcess {
@@ -1044,6 +1056,43 @@ mod tests {
         assert!(result.message.contains("identity unavailable"));
         assert_eq!(state.active_agent_groups(), 1);
         assert!(state.try_reserve_agent_slot(limits(1)).is_err());
+    }
+
+    #[test]
+    fn stale_unverifiable_placeholder_gone_before_cleanup_releases_permit() {
+        let (state, backend) = state_with_fake();
+        let root = identity(36, 36);
+        let unverifiable_child_pid = 360;
+        backend.add_tree(root, vec![observed(36, 36, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        backend.replace_tree(
+            root,
+            vec![
+                observed(36, 36, None, 0),
+                observed_unverifiable(unverifiable_child_pid, Some(root.pid), 1),
+            ],
+            vec![format!(
+                "identity unavailable for pid {unverifiable_child_pid}"
+            )],
+        );
+        let snapshot = state.snapshot(limits(1));
+        assert_eq!(snapshot.groups[0].process_count, 2);
+
+        backend.replace_tree(root, vec![observed(36, 36, None, 0)], Vec::new());
+
+        let result = state
+            .kill_group(id, ResourceKillReason::SessionDestroy)
+            .unwrap();
+        assert!(!result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert_eq!(backend.terminated(), vec![root]);
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
     }
 
     #[test]
