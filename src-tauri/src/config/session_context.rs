@@ -2411,6 +2411,14 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
         return false;
     }
 
+    let Some(expected) = reconstruct_legacy_rendered_default_context(normalized) else {
+        return false;
+    };
+
+    normalize_context_for_compat(&expected) == normalized
+}
+
+fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<String> {
     let required_once = [
         "# AgentsCommander Context",
         "## GOLDEN RULE",
@@ -2424,18 +2432,17 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
         .iter()
         .any(|marker| count_context_occurrences(normalized, marker) != 1)
     {
-        return false;
+        return None;
     }
     if !normalized.contains("## Inter-Agent Messaging")
         || !normalized.contains("### List available peers")
+        || !has_legacy_default_tail(normalized)
+        || has_unknown_legacy_default_heading(normalized)
     {
-        return false;
-    }
-    if !has_legacy_default_tail(normalized) || has_unknown_legacy_default_heading(normalized) {
-        return false;
+        return None;
     }
 
-    context_markers_in_order(
+    if !context_markers_in_order(
         normalized,
         &[
             "# AgentsCommander Context",
@@ -2447,11 +2454,56 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
             "## Inter-Agent Messaging",
             "### List available peers",
         ],
-    ) && normalized.contains("The CLI `--help` output documents every subcommand")
-        && normalized.contains("The filesystem directory name is NEVER a valid `--to` value")
-        && normalized.contains(
+    ) {
+        return None;
+    }
+    if !normalized.contains("The CLI `--help` output documents every subcommand")
+        || !normalized.contains("The filesystem directory name is NEVER a valid `--to` value")
+        || !normalized.contains(
             "\"<AGENTSCOMMANDER_BINARY_PATH>\" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"",
         )
+    {
+        return None;
+    }
+
+    let agent_root = extract_legacy_code_block_after(normalized, "assigned root:")?;
+    let matrix_root = if normalized.contains("3. **Your origin Agent Matrix") {
+        Some(extract_legacy_code_block_after(
+            normalized,
+            "3. **Your origin Agent Matrix",
+        )?)
+    } else {
+        None
+    };
+    let skills_section = extract_legacy_skills_section(normalized)?;
+    if normalize_context_for_compat(&skills_section)
+        != normalize_context_for_compat(&render_skills_section(&discover_skill_index(None)))
+    {
+        return None;
+    }
+
+    Some(legacy_rendered_default_context_for_compat(
+        &agent_root,
+        matrix_root.as_deref(),
+        &skills_section,
+    ))
+}
+
+fn extract_legacy_code_block_after(value: &str, marker: &str) -> Option<String> {
+    let marker_pos = value.find(marker)? + marker.len();
+    let after_marker = &value[marker_pos..];
+    let fence_pos = after_marker.find("```")? + 3;
+    let after_fence = after_marker[fence_pos..].strip_prefix('\n')?;
+    let fence_end = after_fence.find("```")?;
+    Some(after_fence[..fence_end].trim().to_string())
+}
+
+fn extract_legacy_skills_section(value: &str) -> Option<String> {
+    let delegated = "## Delegated Task Reporting\n\nWhen finishing a delegated task or getting blocked, you must explicitly reply to the coordinator or peer with a concrete artifact or message. Do not just remain idle, waiting, or set working to false.\n\n";
+    let start = value.find(delegated)? + delegated.len();
+    let rest = &value[start..];
+    let end = rest.find("\n\n## CLI executable")?;
+    Some(rest[..end].to_string())
 }
 
 fn has_legacy_default_tail(normalized: &str) -> bool {
@@ -3246,6 +3298,57 @@ mod tests {
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
 
         assert!(content.contains("KEEP_CUSTOM_PROJECT_RULES_IN_CONTEXT"));
+        assert_contains_canonical_path(&content, &new_replica);
+        assert_contains_canonical_path(&content, &new_matrix);
+        assert!(content.contains("## GOLDEN RULE"));
+        assert!(content.contains("## Inter-Agent Messaging"));
+    }
+
+    #[test]
+    fn inline_edited_legacy_rendered_default_preserves_custom_template_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let new_matrix = workspace_dir.join("_agent_tech-lead");
+        let old_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&new_matrix).expect("create new matrix");
+        std::fs::create_dir_all(&old_replica).expect("create old replica");
+        std::fs::create_dir_all(&new_replica).expect("create new replica");
+        std::fs::write(
+            new_replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica),
+            Some(&path_string(&old_matrix)),
+            &no_skill_section(),
+        );
+        let edited = legacy.replace(
+            "Your agent root is your current working directory.",
+            "Your agent root is your current working directory.\n\nKEEP_INLINE_CUSTOM_RULE_IN_CONTEXT",
+        );
+        assert_ne!(edited, legacy);
+        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
+            .expect("write inline edited rendered legacy template");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&new_replica),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("KEEP_INLINE_CUSTOM_RULE_IN_CONTEXT"));
         assert_contains_canonical_path(&content, &new_replica);
         assert_contains_canonical_path(&content, &new_matrix);
         assert!(content.contains("## GOLDEN RULE"));
