@@ -84,12 +84,12 @@ export async function waitFor(
 
 function defaultCodingAgentProfiles(): CodingAgentProfilesConfig {
   return {
-    schemaVersion: 1,
-    letters: {
-      A: { name: "" },
+    schemaVersion: 2,
+    profileSlots: {
+      A: { label: "" },
     },
-    agentDefaults: {},
-    matrix: {},
+    defaultProfileByAgent: {},
+    profilesByAgent: {},
   };
 }
 

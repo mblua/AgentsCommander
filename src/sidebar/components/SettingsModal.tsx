@@ -15,17 +15,19 @@ import { sessionsStore } from "../stores/sessions";
 import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
+  commandExecutableBasename,
   executableTokenBasename,
+  hasAcRootPlaceholder,
   hasEnabledEnvKey,
   isCodexAgent,
   nextAvailableProfileLetter,
   parseArgvText,
-  profileDisplayLabel,
   resolveProfilePreview,
   sortedProfileLetters,
-  stringifyArgv,
   validateEnvRows,
 } from "../../shared/profile-utils";
+
+type ProfileCellEnvRow = { key: string; value: string };
 
 const GEMINI_MODELS = [
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (recommended)" },
@@ -83,6 +85,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [saveError, setSaveError] = createSignal("");
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
+  // Per-cell env editing draft (ordered rows). Mirrors profileCellText: keeps
+  // in-progress key/value edits stable while the underlying Record<string,string>
+  // is rebuilt on every keystroke. Keyed by `${agentId}:${letter}`.
+  const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
   // Snapshot of injectRtkHook captured at modal open. handleSave compares it
   // against the live form value to decide whether to fire sweepRtkHook.
   // updateField is local-only (mutates the form draft), so the sweep only
@@ -163,7 +169,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const emptyProfileCell = (): ProfileCellConfig => ({
     enabled: true,
-    argv: [],
+    command: "",
     env: {},
     notes: "",
   });
@@ -174,7 +180,40 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const profileCellKey = (agentId: string, letter: string) => `${agentId}:${letter}`;
 
   const profileCell = (agentId: string, letter: string): ProfileCellConfig | null =>
-    settings.data?.codingAgentProfiles.matrix[agentId]?.[letter] ?? null;
+    settings.data?.codingAgentProfiles.profilesByAgent[agentId]?.[letter] ?? null;
+
+  // True when this letter has an enabled cell on some OTHER coding agent — used
+  // to distinguish a red MISSING badge (slot exists elsewhere) from a plain
+  // fallback. Excludes the agent itself.
+  const profileConfiguredElsewhere = (agentId: string, letter: string): boolean => {
+    const byAgent = settings.data?.codingAgentProfiles.profilesByAgent ?? {};
+    return Object.entries(byAgent).some(
+      ([id, cells]) => id !== agentId && Boolean(cells[letter]?.enabled),
+    );
+  };
+
+  type ProfileBadge = "match" | "fallback" | "missing" | "invalid";
+
+  const profileCellBadge = (agentId: string, letter: string): ProfileBadge => {
+    if (profileCellErrors[profileCellKey(agentId, letter)]) return "invalid";
+    const cell = profileCell(agentId, letter);
+    const configuredHere = letter === "A" || Boolean(cell?.enabled);
+    if (configuredHere) {
+      const preview = resolveProfilePreview(
+        settings.data!.codingAgentProfiles,
+        agentId,
+        letter,
+      );
+      return preview.fallbackApplied ? "fallback" : "match";
+    }
+    if (profileConfiguredElsewhere(agentId, letter)) return "missing";
+    const preview = resolveProfilePreview(
+      settings.data!.codingAgentProfiles,
+      agentId,
+      letter,
+    );
+    return preview.fallbackApplied ? "fallback" : "missing";
+  };
 
   const setProfileCell = (
     agentId: string,
@@ -183,10 +222,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   ) => {
     if (!settings.data) return;
     setDraftDirty(true);
-    setSettings("data", "codingAgentProfiles", "matrix", (matrix) => ({
-      ...matrix,
+    setSettings("data", "codingAgentProfiles", "profilesByAgent", (byAgent) => ({
+      ...byAgent,
       [agentId]: {
-        ...(matrix[agentId] ?? {}),
+        ...(byAgent[agentId] ?? {}),
         [letter]: cell,
       },
     }));
@@ -197,16 +236,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const key = profileCellKey(agentId, letter);
     setProfileCellText(key, "");
     setProfileCellErrors(key, "");
+    setProfileCellEnvRows(key, []);
   };
 
   const removeProfileCell = (agentId: string, letter: string) => {
     if (!settings.data || letter === "A") return;
     setDraftDirty(true);
-    const cells = settings.data.codingAgentProfiles.matrix[agentId] ?? {};
+    const cells = settings.data.codingAgentProfiles.profilesByAgent[agentId] ?? {};
     const nextCells = { ...cells };
     delete nextCells[letter];
-    setSettings("data", "codingAgentProfiles", "matrix", (matrix) => ({
-      ...matrix,
+    setSettings("data", "codingAgentProfiles", "profilesByAgent", (byAgent) => ({
+      ...byAgent,
       [agentId]: nextCells,
     }));
     const key = profileCellKey(agentId, letter);
@@ -220,14 +260,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       delete next[key];
       return next;
     });
+    setProfileCellEnvRows((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   };
 
-  const updateProfileName = (letter: string, name: string) => {
+  const updateProfileLabel = (letter: string, label: string) => {
     if (!settings.data) return;
     setDraftDirty(true);
-    setSettings("data", "codingAgentProfiles", "letters", (letters) => ({
-      ...letters,
-      [letter]: { name },
+    setSettings("data", "codingAgentProfiles", "profileSlots", (slots) => ({
+      ...slots,
+      [letter]: { label },
     }));
   };
 
@@ -236,49 +281,103 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const letter = nextAvailableProfileLetter(settings.data.codingAgentProfiles);
     if (!letter) return;
     setDraftDirty(true);
-    setSettings("data", "codingAgentProfiles", "letters", (letters) => ({
-      ...letters,
-      [letter]: { name: "" },
+    setSettings("data", "codingAgentProfiles", "profileSlots", (slots) => ({
+      ...slots,
+      [letter]: { label: "" },
     }));
   };
 
   const removeProfileLetter = (letter: string) => {
     if (!settings.data || letter === "A") return;
     setDraftDirty(true);
-    const letters = { ...settings.data.codingAgentProfiles.letters };
-    delete letters[letter];
-    const matrix = Object.fromEntries(
-      Object.entries(settings.data.codingAgentProfiles.matrix).map(([agentId, cells]) => {
+    const slots = { ...settings.data.codingAgentProfiles.profileSlots };
+    delete slots[letter];
+    const byAgent = Object.fromEntries(
+      Object.entries(settings.data.codingAgentProfiles.profilesByAgent).map(([agentId, cells]) => {
         const nextCells = { ...cells };
         delete nextCells[letter];
         return [agentId, nextCells];
       })
     );
-    setSettings("data", "codingAgentProfiles", "letters", letters);
-    setSettings("data", "codingAgentProfiles", "matrix", matrix);
+    setSettings("data", "codingAgentProfiles", "profileSlots", slots);
+    setSettings("data", "codingAgentProfiles", "profilesByAgent", byAgent);
   };
 
-  const updateProfileCellText = (agentId: string, letter: string, text: string) => {
+  // ── Profile cell command string (one full invocation per cell) ──
+  const updateProfileCellCommand = (agentId: string, letter: string, text: string) => {
     const key = profileCellKey(agentId, letter);
     setDraftDirty(true);
     setProfileCellText(key, text);
     const parsed = parseArgvText(text);
-    if (parsed.error) {
-      setProfileCellErrors(key, parsed.error);
-      return;
-    }
-    setProfileCellErrors(key, "");
+    setProfileCellErrors(key, parsed.error ?? "");
     const existing = profileCell(agentId, letter) ?? emptyProfileCell();
-    setProfileCell(agentId, letter, { ...existing, argv: parsed.argv });
+    setProfileCell(agentId, letter, { ...existing, command: text });
   };
 
-  const displayedProfileCellText = (agentId: string, letter: string): string => {
+  const displayedProfileCellCommand = (agentId: string, letter: string): string => {
     const key = profileCellKey(agentId, letter);
     if (Object.prototype.hasOwnProperty.call(profileCellText, key)) {
       return profileCellText[key] ?? "";
     }
-    return stringifyArgv(profileCell(agentId, letter)?.argv ?? []);
+    return profileCell(agentId, letter)?.command ?? "";
   };
+
+  // ── Profile cell env rows ──
+  const cellEnvRows = (agentId: string, letter: string): ProfileCellEnvRow[] => {
+    const key = profileCellKey(agentId, letter);
+    if (Object.prototype.hasOwnProperty.call(profileCellEnvRows, key)) {
+      return profileCellEnvRows[key] ?? [];
+    }
+    const env = profileCell(agentId, letter)?.env ?? {};
+    return Object.entries(env).map(([k, v]) => ({ key: k, value: v }));
+  };
+
+  const syncCellEnv = (agentId: string, letter: string, rows: ProfileCellEnvRow[]) => {
+    const env: Record<string, string> = {};
+    for (const row of rows) {
+      const k = row.key.trim();
+      if (k) env[k] = row.value;
+    }
+    const existing = profileCell(agentId, letter) ?? emptyProfileCell();
+    setProfileCell(agentId, letter, { ...existing, env });
+  };
+
+  const setCellEnvRows = (agentId: string, letter: string, rows: ProfileCellEnvRow[]) => {
+    const key = profileCellKey(agentId, letter);
+    setDraftDirty(true);
+    setProfileCellEnvRows(key, rows);
+    syncCellEnv(agentId, letter, rows);
+  };
+
+  const addCellEnvRow = (agentId: string, letter: string) =>
+    setCellEnvRows(agentId, letter, [...cellEnvRows(agentId, letter), { key: "", value: "" }]);
+
+  const updateCellEnvRow = (
+    agentId: string,
+    letter: string,
+    rowIndex: number,
+    field: keyof ProfileCellEnvRow,
+    value: string,
+  ) => {
+    const rows = cellEnvRows(agentId, letter).map((row, i) =>
+      i === rowIndex ? { ...row, [field]: value } : row,
+    );
+    setCellEnvRows(agentId, letter, rows);
+  };
+
+  const removeCellEnvRow = (agentId: string, letter: string, rowIndex: number) =>
+    setCellEnvRows(agentId, letter, cellEnvRows(agentId, letter).filter((_, i) => i !== rowIndex));
+
+  // Display-only env-row validation reusing the agent-env validator.
+  const cellEnvError = (agentId: string, letter: string): string | null =>
+    validateEnvRows(
+      cellEnvRows(agentId, letter).map((row) => ({
+        key: row.key,
+        value: row.value,
+        source: "user" as const,
+        enabled: true,
+      })),
+    );
 
   const addAgent = (preset?: Omit<AgentConfig, "id">) => {
     if (!settings.data) return;
@@ -293,7 +392,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           gitPullBefore: false,
           excludeGlobalClaudeMd: true,
           envs: [],
-          isolateCodexHome: false,
+          isolatedHome: false,
         };
     setSettings("data", "agents", (prev) => [...prev, agent]);
   };
@@ -385,6 +484,25 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   // ── Validation ──
+  // Provider resume-flag rules, shared by agent commands and profile-cell
+  // commands (#384 §2: enabled cell commands reject the same manual resume flags).
+  const commandFlagError = (label: string, tokens: string[]): string | null => {
+    const claudeIndex = tokens.findIndex((token) => executableTokenBasename(token) === "claude");
+    if (
+      claudeIndex >= 0 &&
+      tokens
+        .slice(claudeIndex + 1)
+        .some((token) => token === "--continue" || token === "-c")
+    ) {
+      return `${label}: Claude commands must not include --continue or -c`;
+    }
+    const codexIndex = tokens.findIndex((token) => executableTokenBasename(token) === "codex");
+    if (codexIndex >= 0 && codexHasManualResume(tokens, codexIndex)) {
+      return `${label}: Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically`;
+    }
+    return null;
+  };
+
   const validateAgents = (): string | null => {
     if (!settings.data) return null;
     for (const agent of settings.data.agents) {
@@ -396,24 +514,29 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       if (parsedCommand.error) {
         return `Agent "${agent.label || "Unnamed"}": ${parsedCommand.error}`;
       }
-      const tokens = parsedCommand.argv;
-      const claudeIndex = tokens.findIndex((token) => executableTokenBasename(token) === "claude");
-      if (
-        claudeIndex >= 0 &&
-        tokens
-          .slice(claudeIndex + 1)
-          .some((token) => token === "--continue" || token === "-c")
-      ) {
-        return `Agent "${agent.label || "Unnamed"}": Claude commands must not include --continue or -c`;
-      }
-
-      const codexIndex = tokens.findIndex((token) => executableTokenBasename(token) === "codex");
-      if (codexIndex >= 0 && codexHasManualResume(tokens, codexIndex)) {
-        return `Agent "${agent.label || "Unnamed"}": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically`;
-      }
+      const flagError = commandFlagError(`Agent "${agent.label || "Unnamed"}"`, parsedCommand.argv);
+      if (flagError) return flagError;
     }
+    // Live profile-cell command parse errors (red "invalid" badge) block save.
     for (const [key, error] of Object.entries(profileCellErrors)) {
       if (error) return `Profile cell ${key}: ${error}`;
+    }
+    // Enabled profile-cell command + env validation (#384 §2/§3).
+    const byAgent = settings.data.codingAgentProfiles.profilesByAgent;
+    for (const [agentId, cells] of Object.entries(byAgent)) {
+      for (const [letter, cell] of Object.entries(cells)) {
+        if (!cell.enabled) continue;
+        const cellLabel = `Profile ${agentId}:${letter}`;
+        const command = displayedProfileCellCommand(agentId, letter);
+        if (command.trim()) {
+          const parsed = parseArgvText(command);
+          if (parsed.error) return `${cellLabel}: ${parsed.error}`;
+          const flagError = commandFlagError(cellLabel, parsed.argv);
+          if (flagError) return flagError;
+        }
+        const envError = cellEnvError(agentId, letter);
+        if (envError) return `${cellLabel}: ${envError}`;
+      }
     }
     return null;
   };
@@ -709,7 +832,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         }>
           <For each={agent.envs ?? []}>
             {(row, rowIndex) => {
-              const readOnly = () => row.source === "agentsCommander";
+              const readOnly = () => row.source === "system";
               return (
                 <div
                   class="settings-env-row"
@@ -752,7 +875,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     />
                   </label>
                   <span
-                    class={`settings-env-source ${row.source === "agentsCommander" ? "generated" : ""}`}
+                    class={`settings-env-source ${row.source === "system" ? "generated" : ""}`}
                     data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.source`}
                     data-ac-role="status"
                     data-ac-env-source={row.source}
@@ -788,31 +911,31 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <input
               type="checkbox"
               class="settings-checkbox"
-              checked={agent.isolateCodexHome}
+              checked={agent.isolatedHome}
               onChange={(e) =>
-                updateAgent(agentIndex, "isolateCodexHome", e.currentTarget.checked)
+                updateAgent(agentIndex, "isolatedHome", e.currentTarget.checked)
               }
               data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation`}
               data-ac-role="checkbox"
-              data-ac-state={agent.isolateCodexHome ? "checked" : "unchecked"}
+              data-ac-state={agent.isolatedHome ? "checked" : "unchecked"}
             />
             <span>Isolate CODEX_HOME for this Codex agent</span>
           </label>
-          <Show when={agent.isolateCodexHome}>
+          <Show when={agent.isolatedHome}>
             <div
               class="settings-codex-home-preview warning"
               data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation.preview`}
               data-ac-role="status"
               data-ac-state="isolated"
             >
-              <span class="settings-env-source generated">agentsCommander</span>
+              <span class="settings-env-source generated">system</span>
               Generated CODEX_HOME will be used for launches from this agent.
               <Show when={hasUserCodexHome()}>
                 <span> Saved CODEX_HOME rows are kept but overridden while isolation is on.</span>
               </Show>
             </div>
           </Show>
-          <Show when={!agent.isolateCodexHome && hasUserCodexHome()}>
+          <Show when={!agent.isolatedHome && hasUserCodexHome()}>
             <div
               class="settings-codex-home-preview"
               data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation.preview`}
@@ -995,184 +1118,246 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     </div>
   );
 
-  const renderProfilesTab = () => (
-    <div class="settings-section settings-profiles-section">
-      <div class="settings-section-title">Profiles</div>
+  const BADGE_LABEL: Record<ProfileBadge, string> = {
+    match: "MATCH",
+    fallback: "FALLBACK",
+    missing: "MISSING",
+    invalid: "invalid",
+  };
 
-      <div
-        class="settings-profile-letter-list"
-        data-ac-testid="settings.profiles.letters"
-        data-ac-role="list"
+  // One full invocation string per profile cell — model/effort/sandbox are NOT
+  // split into separate fields (#384). Each coding agent gets its own rail; rails
+  // wrap into side-by-side columns when the viewport permits (CSS auto-fit).
+  const renderProfileCard = (agent: AgentConfig, agentIndex: number, letter: string) => {
+    const cell = () => profileCell(agent.id, letter);
+    const configured = () => letter === "A" || Boolean(cell()?.enabled);
+    const badge = () => profileCellBadge(agent.id, letter);
+    const preview = () =>
+      resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
+    const command = () => displayedProfileCellCommand(agent.id, letter);
+    const cellError = () => profileCellErrors[profileCellKey(agent.id, letter)];
+    const cardId = `settings.profileCard.${agentIndex}.${letter}`;
+    return (
+      <article
+        class="settings-profile-card"
+        classList={{
+          match: badge() === "match",
+          fallback: badge() === "fallback",
+          missing: badge() === "missing",
+          invalid: badge() === "invalid",
+        }}
+        data-ac-testid={cardId}
+        data-ac-role="row"
+        data-ac-state={badge()}
+        data-ac-agent-id={agent.id}
+        data-ac-profile-letter={letter}
       >
-        <For each={profileLetters()}>
-          {(letter) => (
+        <div class="settings-profile-card-head">
+          <span class="settings-profile-letter-badge">{letter}</span>
+          <input
+            class="settings-input settings-profile-label"
+            value={settings.data!.codingAgentProfiles.profileSlots[letter]?.label ?? ""}
+            onInput={(e) => updateProfileLabel(letter, e.currentTarget.value)}
+            placeholder={letter === "A" ? "Baseline" : "Profile label"}
+            data-ac-testid={`${cardId}.label`}
+            data-ac-role="textbox"
+          />
+          <span
+            class={`settings-profile-badge ${badge()}`}
+            data-ac-testid={`${cardId}.badge`}
+            data-ac-role="status"
+            data-ac-state={badge()}
+          >
+            {BADGE_LABEL[badge()]}
+          </span>
+        </div>
+
+        <Show
+          when={configured()}
+          fallback={
             <div
-              class="settings-profile-letter-row"
-              data-ac-testid={`settings.profileLetter.${letter}`}
-              data-ac-role="row"
-              data-ac-profile-letter={letter}
+              class="settings-profile-missing"
+              data-ac-testid={`${cardId}.missing`}
+              data-ac-role="status"
             >
-              <span
-                class="settings-profile-letter-badge"
-                data-ac-testid={`settings.profileLetter.${letter}.badge`}
-                data-ac-role="status"
-              >
-                {letter}
+              <span>
+                {letter} &rarr; {preview().effectiveProfile} (fallback)
               </span>
-              <input
-                class="settings-input"
-                value={settings.data!.codingAgentProfiles.letters[letter]?.name ?? ""}
-                onInput={(e) => updateProfileName(letter, e.currentTarget.value)}
-                placeholder={letter === "A" ? "Baseline" : "Profile name"}
-                data-ac-testid={`settings.profileLetter.${letter}.name`}
-                data-ac-role="textbox"
-              />
               <button
-                class="settings-env-delete"
-                disabled={letter === "A"}
-                onClick={() => removeProfileLetter(letter)}
-                title={letter === "A" ? "Profile A cannot be deleted" : "Delete profile"}
-                data-ac-testid={`settings.profileLetter.${letter}.delete`}
+                class="settings-profile-cell-btn"
+                onClick={() => addProfileCell(agent.id, letter)}
+                data-ac-testid={`${cardId}.add`}
                 data-ac-role="button"
-                data-ac-state={letter === "A" ? "disabled" : "enabled"}
               >
-                &#x2715;
+                Add cell
               </button>
             </div>
-          )}
-        </For>
+          }
+        >
+          <label class="settings-profile-field-label">Command</label>
+          <input
+            class="settings-input settings-profile-command"
+            classList={{ invalid: Boolean(cellError()) }}
+            value={command()}
+            onInput={(e) => updateProfileCellCommand(agent.id, letter, e.currentTarget.value)}
+            placeholder="codex --sandbox workspace-write --model gpt-5-codex"
+            data-ac-testid={`${cardId}.command`}
+            data-ac-role="textbox"
+            data-ac-state={cellError() ? "invalid" : "valid"}
+          />
+          <Show when={cellError()}>
+            <div
+              class="settings-profile-cell-error"
+              data-ac-testid={`${cardId}.command.error`}
+              data-ac-role="status"
+            >
+              {cellError()}
+            </div>
+          </Show>
+          <Show when={hasAcRootPlaceholder(command())}>
+            <div class="settings-profile-ph-hint" data-ac-testid={`${cardId}.command.placeholder`}>
+              <span class="settings-profile-ph-token">%AC_ROOT%</span> expands to this
+              replica&rsquo;s root at launch; the backend validates the result.
+            </div>
+          </Show>
+
+          <div
+            class="settings-profile-env"
+            data-ac-testid={`${cardId}.env`}
+            data-ac-role="surface"
+          >
+            <For each={cellEnvRows(agent.id, letter)}>
+              {(row, rowIndex) => (
+                <div
+                  class="settings-profile-env-row"
+                  data-ac-testid={`${cardId}.envRow.${rowIndex()}`}
+                  data-ac-role="row"
+                >
+                  <input
+                    class="settings-input settings-env-key"
+                    value={row.key}
+                    onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex(), "key", e.currentTarget.value)}
+                    placeholder="KEY"
+                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.key`}
+                    data-ac-role="textbox"
+                  />
+                  <input
+                    class="settings-input settings-env-value"
+                    value={row.value}
+                    onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex(), "value", e.currentTarget.value)}
+                    placeholder="value"
+                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.value`}
+                    data-ac-role="textbox"
+                  />
+                  <button
+                    class="settings-env-delete"
+                    onClick={() => removeCellEnvRow(agent.id, letter, rowIndex())}
+                    title="Delete environment row"
+                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.delete`}
+                    data-ac-role="button"
+                  >
+                    &#x2715;
+                  </button>
+                  <Show when={hasAcRootPlaceholder(row.value)}>
+                    <div
+                      class="settings-profile-ph-preview"
+                      data-ac-testid={`${cardId}.envRow.${rowIndex()}.placeholder`}
+                      data-ac-role="status"
+                    >
+                      <span class="arrow">&rarr;</span>
+                      <span>expands to this replica&rsquo;s root at launch</span>
+                    </div>
+                  </Show>
+                </div>
+              )}
+            </For>
+            <Show when={cellEnvError(agent.id, letter)}>
+              <div
+                class="settings-profile-cell-error"
+                data-ac-testid={`${cardId}.env.error`}
+                data-ac-role="status"
+              >
+                {cellEnvError(agent.id, letter)}
+              </div>
+            </Show>
+            <button
+              class="settings-profile-cell-btn"
+              onClick={() => addCellEnvRow(agent.id, letter)}
+              data-ac-testid={`${cardId}.env.add`}
+              data-ac-role="button"
+            >
+              + Env
+            </button>
+          </div>
+
+          <Show when={letter !== "A"}>
+            <button
+              class="settings-profile-cell-btn settings-profile-delete-cell"
+              onClick={() => removeProfileCell(agent.id, letter)}
+              data-ac-testid={`${cardId}.delete`}
+              data-ac-role="button"
+            >
+              Delete cell
+            </button>
+          </Show>
+        </Show>
+      </article>
+    );
+  };
+
+  const renderProfilesTab = () => (
+    <div class="settings-section settings-profiles-section" data-ac-testid="settings.profiles.section">
+      <div class="settings-section-title">Profiles</div>
+      <div class="settings-hint">
+        One full command string per profile, plus optional env rows. Each coding
+        agent has its own rail. <span class="settings-profile-ph-token">%AC_ROOT%</span>{" "}
+        is supported in commands and env values; the backend expands and validates it at launch.
       </div>
 
       <div
-        class="settings-profile-matrix-wrap"
-        data-ac-testid="settings.profiles.matrixWrap"
-        data-ac-role="surface"
+        class="settings-profile-rails"
+        data-ac-testid="settings.profiles.rails"
+        data-ac-role="list"
       >
-        <div
-          class="settings-profile-matrix"
-          style={{
-            "grid-template-columns": `minmax(96px, 128px) repeat(${Math.max(settings.data!.agents.length, 1)}, minmax(180px, 1fr))`,
-          }}
-          data-ac-testid="settings.profiles.matrix"
-          data-ac-role="list"
+        <Show
+          when={settings.data!.agents.length > 0}
+          fallback={
+            <div class="settings-empty-note" data-ac-testid="settings.profiles.empty" data-ac-role="status">
+              No coding agents configured. Add one in the Coding Agents tab.
+            </div>
+          }
         >
-          <div class="settings-profile-cell settings-profile-head">Profile</div>
           <For each={settings.data!.agents}>
             {(agent, agentIndex) => (
-              <div
-                class="settings-profile-cell settings-profile-head"
+              <section
+                class="settings-profile-rail"
                 style={{ "--agent-color": agent.color }}
-                data-ac-testid={`settings.profileMatrix.agent.${agentIndex()}`}
-                data-ac-role="status"
+                data-ac-testid={`settings.profileRail.${agentIndex()}`}
+                data-ac-role="surface"
                 data-ac-agent-id={agent.id}
               >
-                <span class="settings-color-dot" style={{ background: agent.color }} />
-                <span>{agent.label || agent.id}</span>
-              </div>
-            )}
-          </For>
-
-          <For each={profileLetters()}>
-            {(letter) => (
-              <>
-                <div
-                  class="settings-profile-cell settings-profile-row-head"
-                  data-ac-testid={`settings.profileMatrix.row.${letter}`}
-                  data-ac-role="row"
-                  data-ac-profile-letter={letter}
-                >
-                  {profileDisplayLabel(settings.data!.codingAgentProfiles, letter)}
+                <div class="settings-profile-rail-header">
+                  <span class="settings-profile-rail-dot" style={{ background: agent.color }} />
+                  <div class="settings-profile-rail-heading">
+                    <div class="settings-profile-rail-title">{agent.label || agent.id}</div>
+                    <div
+                      class="settings-profile-rail-subtitle"
+                      data-ac-testid={`settings.profileRail.${agentIndex()}.subtitle`}
+                      data-ac-role="status"
+                    >
+                      {commandExecutableBasename(agent.command) || agent.command || "—"}
+                    </div>
+                  </div>
                 </div>
-                <For each={settings.data!.agents}>
-                  {(agent, agentIndex) => {
-                    const rawCell = () => profileCell(agent.id, letter);
-                    const editable = () => letter === "A" || !!rawCell()?.enabled;
-                    const preview = () =>
-                      resolveProfilePreview(
-                        settings.data!.codingAgentProfiles,
-                        agent.id,
-                        letter
-                      );
-                    return (
-                      <div
-                        class="settings-profile-cell settings-profile-edit-cell"
-                        data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}`}
-                        data-ac-role="row"
-                        data-ac-state={editable() ? "editable" : "missing"}
-                        data-ac-agent-id={agent.id}
-                        data-ac-agent-index={agentIndex()}
-                        data-ac-profile-letter={letter}
-                      >
-                        <Show
-                          when={editable()}
-                          fallback={
-                            <div
-                              class="settings-profile-missing"
-                              data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.missing`}
-                              data-ac-role="status"
-                            >
-                              <span>{letter} -&gt; {preview().effectiveProfile}</span>
-                              <button
-                                class="settings-profile-cell-btn"
-                                onClick={() => addProfileCell(agent.id, letter)}
-                                data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.add`}
-                                data-ac-role="button"
-                              >
-                                Add
-                              </button>
-                            </div>
-                          }
-                        >
-                          <input
-                            class="settings-input settings-profile-argv"
-                            value={displayedProfileCellText(agent.id, letter)}
-                            onInput={(e) =>
-                              updateProfileCellText(agent.id, letter, e.currentTarget.value)
-                            }
-                            placeholder="argv"
-                            data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.argv`}
-                            data-ac-role="textbox"
-                          />
-                          <div class="settings-profile-cell-actions">
-                            <Show when={profileCellErrors[profileCellKey(agent.id, letter)]}>
-                              <span
-                                class="settings-profile-cell-error"
-                                data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.error`}
-                                data-ac-role="status"
-                              >
-                                {profileCellErrors[profileCellKey(agent.id, letter)]}
-                              </span>
-                            </Show>
-                            <Show when={preview().fallbackApplied}>
-                              <span
-                                class="settings-profile-fallback"
-                                data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.fallback`}
-                                data-ac-role="status"
-                              >
-                                {preview().requestedProfile} -&gt; {preview().effectiveProfile}
-                              </span>
-                            </Show>
-                            <button
-                              class="settings-profile-cell-btn"
-                              disabled={letter === "A"}
-                              onClick={() => removeProfileCell(agent.id, letter)}
-                              title={letter === "A" ? "Profile A cell cannot be deleted" : "Delete cell"}
-                              data-ac-testid={`settings.profileCell.${agentIndex()}.${letter}.delete`}
-                              data-ac-role="button"
-                              data-ac-state={letter === "A" ? "disabled" : "enabled"}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </Show>
-                      </div>
-                    );
-                  }}
-                </For>
-              </>
+                <div class="settings-profile-rail-body">
+                  <For each={profileLetters()}>
+                    {(letter) => renderProfileCard(agent, agentIndex(), letter)}
+                  </For>
+                </div>
+              </section>
             )}
           </For>
-        </div>
+        </Show>
       </div>
 
       <button

@@ -95,14 +95,14 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
         gitPullBefore: false,
         excludeGlobalClaudeMd: true,
         envs: [],
-        isolateCodexHome: false,
+        isolatedHome: false,
       },
     ],
     codingAgentProfiles: {
-      schemaVersion: 1,
-      letters: { A: { name: "" } },
-      agentDefaults: {},
-      matrix: {},
+      schemaVersion: 2,
+      profileSlots: { A: { label: "" } },
+      defaultProfileByAgent: {},
+      profilesByAgent: {},
     },
     telegramBots: [],
     onboardingDismissed: true,
@@ -300,18 +300,50 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("exposes profile letter and matrix controls for automation", async () => {
+  it("renders coding-agent rails, profile cards, command inputs, env rows, and badges", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
-      codingAgentProfiles: {
-        schemaVersion: 1,
-        letters: {
-          A: { name: "" },
-          B: { name: "fast" },
+      agents: [
+        {
+          id: "codex",
+          label: "Codex",
+          command: "codex",
+          color: "#10b981",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: true,
+          envs: [],
+          isolatedHome: false,
         },
-        agentDefaults: {},
-        matrix: {
+        {
+          id: "claude",
+          label: "Claude Code",
+          command: "claude",
+          color: "#d97706",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+        },
+      ],
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: {
+          A: { label: "" },
+          B: { label: "fast" },
+        },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
           codex: {
-            A: { enabled: true, argv: ["--baseline"], env: {}, notes: "" },
+            A: {
+              enabled: true,
+              command: "codex --model gpt-5-codex",
+              env: { OPENAI_ORG: "ac-prod" },
+              notes: "",
+            },
+          },
+          // Claude configures B; codex does not → codex B renders as MISSING.
+          claude: {
+            A: { enabled: true, command: "claude", env: {}, notes: "" },
+            B: { enabled: true, command: "claude --model opus", env: {}, notes: "" },
           },
         },
       },
@@ -324,26 +356,97 @@ describe("SettingsModal automation hooks", () => {
     );
     await settle();
 
-    expect(byTestId("settings.profiles.letters")).toBeTruthy();
-    expect(byTestId("settings.profileLetter.A")).toBeTruthy();
-    expect(byTestId<HTMLInputElement>("settings.profileLetter.A.name")).toBeTruthy();
-    expect(byTestId<HTMLButtonElement>("settings.profileLetter.A.delete").disabled).toBe(true);
-    expect(byTestId("settings.profileLetter.B")).toBeTruthy();
-    expect(byTestId<HTMLInputElement>("settings.profileLetter.B.name")).toBeTruthy();
-    expect(byTestId<HTMLButtonElement>("settings.profileLetter.B.delete").disabled).toBe(false);
+    // Rail per coding agent, subtitle = binary basename (not model/sandbox).
+    expect(byTestId("settings.profiles.section")).toBeTruthy();
+    expect(byTestId("settings.profiles.rails")).toBeTruthy();
+    expect(byTestId("settings.profileRail.0").getAttribute("data-ac-agent-id")).toBe("codex");
+    expect(byTestId("settings.profileRail.0.subtitle").textContent).toContain("codex");
 
-    expect(byTestId("settings.profiles.matrix")).toBeTruthy();
-    expect(byTestId("settings.profileMatrix.agent.0").getAttribute("data-ac-agent-id")).toBe("codex");
-    expect(byTestId("settings.profileMatrix.row.A")).toBeTruthy();
-    expect(byTestId("settings.profileCell.0.A").getAttribute("data-ac-state")).toBe("editable");
-    expect(byTestId<HTMLInputElement>("settings.profileCell.0.A.argv").value).toBe("--baseline");
-    expect(byTestId<HTMLButtonElement>("settings.profileCell.0.A.delete").disabled).toBe(true);
+    // Profile A card: configured → MATCH, one command input, an env row.
+    expect(byTestId("settings.profileCard.0.A").getAttribute("data-ac-state")).toBe("match");
+    expect(byTestId("settings.profileCard.0.A.badge").textContent).toContain("MATCH");
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.command").value).toBe("codex --model gpt-5-codex");
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.label")).toBeTruthy();
+    expect(byTestId("settings.profileCard.0.A.env")).toBeTruthy();
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.key").value).toBe("OPENAI_ORG");
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.value").value).toBe("ac-prod");
 
-    expect(byTestId("settings.profileMatrix.row.B")).toBeTruthy();
-    expect(byTestId("settings.profileCell.0.B").getAttribute("data-ac-state")).toBe("missing");
-    expect(byTestId("settings.profileCell.0.B.missing")).toBeTruthy();
-    expect(byTestId<HTMLButtonElement>("settings.profileCell.0.B.add")).toBeTruthy();
+    // Profile B slot is configured on Claude but not on codex → MISSING with Add.
+    expect(byTestId("settings.profileCard.0.B").getAttribute("data-ac-state")).toBe("missing");
+    expect(byTestId("settings.profileCard.0.B.badge").textContent).toContain("MISSING");
+    expect(byTestId("settings.profileCard.0.B.missing")).toBeTruthy();
+    expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.add")).toBeTruthy();
+    // Claude rail: B is configured → MATCH.
+    expect(byTestId("settings.profileCard.1.B").getAttribute("data-ac-state")).toBe("match");
     expect(byTestId<HTMLButtonElement>("settings.profiles.add").disabled).toBe(false);
+
+    dispose();
+  });
+
+  it("shows the red invalid badge for a bad command string and blocks save", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: { A: { label: "" } },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
+          codex: { A: { enabled: true, command: "codex", env: {}, notes: "" } },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    const command = byTestId<HTMLInputElement>("settings.profileCard.0.A.command");
+    command.value = 'codex --review --prompt "missing close';
+    command.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    expect(byTestId("settings.profileCard.0.A").getAttribute("data-ac-state")).toBe("invalid");
+    expect(byTestId("settings.profileCard.0.A.command.error")).toBeTruthy();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    // Save is blocked by the parse error; no draft is persisted.
+    expect(SettingsAPI.saveDraft).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-ac-testid="settings.modal"] .modal-save-error')).toBeTruthy();
+
+    dispose();
+  });
+
+  it("renders the %AC_ROOT% template preview for env rows", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: { A: { label: "" } },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
+          codex: {
+            A: {
+              enabled: true,
+              command: "codex",
+              env: { CODEX_HOME: "%AC_ROOT%\\.codex\\agents\\codex" },
+              notes: "",
+            },
+          },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    expect(byTestId("settings.profileCard.0.A.envRow.0.placeholder")).toBeTruthy();
 
     dispose();
   });
@@ -364,10 +467,10 @@ describe("SettingsModal automation hooks", () => {
     );
     await settle();
 
-    const argvInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.profileCell.0.A.argv"]');
-    if (!argvInput) throw new Error("missing profile argv input");
-    argvInput.value = "--fast";
-    argvInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const commandInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.profileCard.0.A.command"]');
+    if (!commandInput) throw new Error("missing profile command input");
+    commandInput.value = "codex --fast";
+    commandInput.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
 
     resolveLoadedSettings(settings());
@@ -377,7 +480,7 @@ describe("SettingsModal automation hooks", () => {
     await settle();
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
-    expect(saved?.codingAgentProfiles.matrix.codex?.A?.argv).toEqual(["--fast"]);
+    expect(saved?.codingAgentProfiles.profilesByAgent.codex?.A?.command).toBe("codex --fast");
 
     dispose();
   });

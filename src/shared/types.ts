@@ -97,10 +97,19 @@ export interface AgentConfig {
   gitPullBefore: boolean;
   excludeGlobalClaudeMd: boolean;
   envs: CodingAgentEnv[];
-  isolateCodexHome: boolean;
+  /**
+   * v2 (#384): renamed from `isolateCodexHome`. Until adapters support other
+   * providers, only Codex consumes this flag. Serialized as `isolatedHome`.
+   */
+  isolatedHome: boolean;
 }
 
-export type CodingAgentEnvSource = "user" | "agentsCommander";
+/**
+ * `"system"` is the v2 name for AgentsCommander-managed rows. The legacy v1
+ * value `"agentsCommander"` is migrated to `"system"` by the backend on load,
+ * so the frontend only ever sees v2 values after `SettingsAPI.get()`.
+ */
+export type CodingAgentEnvSource = "user" | "system";
 
 export interface CodingAgentEnv {
   key: string;
@@ -111,18 +120,26 @@ export interface CodingAgentEnv {
 
 export interface CodingAgentProfilesConfig {
   schemaVersion: number;
-  letters: Record<string, ProfileLetterConfig>;
-  agentDefaults: Record<string, string>;
-  matrix: Record<string, Record<string, ProfileCellConfig>>;
+  /** v2 (#384): renamed from `letters`. Keyed by profile slot letter A–Z. */
+  profileSlots: Record<string, ProfileSlotConfig>;
+  /** v2 (#384): renamed from `agentDefaults`. agentId → default profile letter. */
+  defaultProfileByAgent: Record<string, string>;
+  /** v2 (#384): renamed from `matrix`. agentId → letter → cell. */
+  profilesByAgent: Record<string, Record<string, ProfileCellConfig>>;
 }
 
-export interface ProfileLetterConfig {
-  name: string;
+export interface ProfileSlotConfig {
+  /** v2 (#384): renamed from `name`. Human display label of the profile slot. */
+  label: string;
 }
 
 export interface ProfileCellConfig {
   enabled: boolean;
-  argv: string[];
+  /**
+   * v2 (#384): one complete invocation string per profile, replacing the v1
+   * `argv` array. An empty string falls back to `agents[].command` at launch.
+   */
+  command: string;
   env: Record<string, string>;
   notes: string;
 }
@@ -396,6 +413,10 @@ export interface AcAgentReplica {
   repoPaths: string[];
   repoBranch?: string;
   isCoordinator: boolean;
+  /** #384: per-replica stable coding-agent selection (`tooling.currentCodingAgent`). */
+  currentCodingAgentId?: string;
+  /** #384: per-replica profile letter (`tooling.profile`, then legacy override). */
+  currentProfile?: string;
 }
 
 export interface AcWorkgroup {
@@ -412,6 +433,84 @@ export interface AcDiscoveryResult {
   agents: AcAgentMatrix[];
   teams: AcTeam[];
   workgroups: AcWorkgroup[];
+}
+
+// ---------------------------------------------------------------------------
+// Broad-scope coding-agent profile assignment (#384 §7)
+// Mirrors src-tauri/src/commands/config.rs DTOs (all camelCase via serde).
+// ---------------------------------------------------------------------------
+
+/** `"replica"` | `"kind"` | `"workgroup"` — matches Rust `ProfileAssignmentScope`. */
+export type ProfileAssignmentScope = "replica" | "kind" | "workgroup";
+
+export interface ProfileAssignmentTarget {
+  workgroupName: string;
+  workgroupPath: string;
+  replicaName: string;
+  replicaPath: string;
+  identityPath: string;
+  originProject: string | null;
+  /** Every live session whose working directory resolves to this replica. */
+  liveSessionIds: string[];
+}
+
+export interface PreviewCodingAgentProfileSelectionRequest {
+  targetReplicaPath: string;
+  codingAgentId: string;
+  profile: string;
+  scope: ProfileAssignmentScope;
+  /**
+   * #384: the preview `targetFingerprint` is hashed over `restartSessions` (plan
+   * §7, test #29), and apply re-validates that fingerprint — so the preview must
+   * carry the restart choice or the two fingerprints can never match. The §7
+   * Rust DTO listing omits this field; backend must include `restart_sessions`
+   * here for the fingerprint to be consistent. (Flagged to tech-lead/dev-rust.)
+   */
+  restartSessions: boolean;
+}
+
+export interface PreviewCodingAgentProfileSelectionResult {
+  scope: ProfileAssignmentScope;
+  targetCount: number;
+  liveSessionCount: number;
+  /** Hash of (codingAgentId, profile, restart, sorted canonical target paths). */
+  targetFingerprint: string;
+  /** True for `kind`; requires the typed confirmation phrase. */
+  requiresExplicitConfirmation: boolean;
+  targets: ProfileAssignmentTarget[];
+  warnings: string[];
+}
+
+export interface ApplyCodingAgentProfileSelectionRequest {
+  targetReplicaPath: string;
+  codingAgentId: string;
+  profile: string;
+  scope: ProfileAssignmentScope;
+  restartSessions: boolean;
+  /** Required for `kind`/`workgroup`; `null` allowed for single-target `replica`. */
+  confirmedTargetFingerprint?: string | null;
+  /** Required for `kind`; the exact typed phrase from the preview. */
+  typedConfirmation?: string | null;
+}
+
+export interface ProfileAssignmentError {
+  code: string;
+  message: string;
+  sessionIds: string[];
+  replicaPaths: string[];
+}
+
+export interface ApplyCodingAgentProfileSelectionResult {
+  scope: ProfileAssignmentScope;
+  updatedCount: number;
+  restartedCount: number;
+  updatedReplicaPaths: string[];
+  restartedSessionIds: string[];
+  /** Sessions destroyed during restart that could not be recreated — surfaced as errors. */
+  destroyedButNotRecreatedSessionIds: string[];
+  targetFingerprint: string;
+  warnings: string[];
+  errors: ProfileAssignmentError[];
 }
 
 export type AcProjectRefreshReason =

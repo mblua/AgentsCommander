@@ -118,7 +118,16 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onCodingAgentProfileSelectionUpdated((data) => {
         settingsStore.refresh();
-        void projectStore.reloadProjectIfLoaded(data.agentPath);
+        if (data.agentPath) {
+          void projectStore.reloadProjectIfLoaded(data.agentPath);
+        } else {
+          // Broad-scope apply (#384) touched many replicas with no single
+          // agentPath — reload every loaded project so discovery refreshes
+          // currentCodingAgentId/currentProfile everywhere.
+          for (const proj of projectStore.projects) {
+            void projectStore.reloadProject(proj.path);
+          }
+        }
       })
     );
 

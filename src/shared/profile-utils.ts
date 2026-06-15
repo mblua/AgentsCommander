@@ -24,10 +24,14 @@ export interface ArgvParseResult {
 
 const EMPTY_CELL: ProfileCellConfig = {
   enabled: true,
-  argv: [],
+  command: "",
   env: {},
   notes: "",
 };
+
+/** Display-only `%AC_ROOT%` placeholder. The backend is authoritative for the
+ *  real expansion + validation at launch (#384 F17). */
+export const AC_ROOT_PLACEHOLDER = "%AC_ROOT%";
 
 export function isProfileLetter(value: string): boolean {
   return /^[A-Z]$/.test(value);
@@ -40,7 +44,7 @@ export function normalizeProfileLetter(value: string | null | undefined): string
 }
 
 export function sortedProfileLetters(profiles: CodingAgentProfilesConfig): string[] {
-  const letters = new Set(Object.keys(profiles.letters).filter(isProfileLetter));
+  const letters = new Set(Object.keys(profiles.profileSlots).filter(isProfileLetter));
   letters.add("A");
   return [...letters].sort();
 }
@@ -49,14 +53,14 @@ export function profileDisplayLabel(
   profiles: CodingAgentProfilesConfig,
   letter: string,
 ): string {
-  const name = profiles.letters[letter]?.name.trim();
-  return name ? `${letter}-${name.toUpperCase()}` : letter;
+  const label = profiles.profileSlots[letter]?.label.trim();
+  return label ? `${letter}-${label.toUpperCase()}` : letter;
 }
 
 export function nextAvailableProfileLetter(
   profiles: CodingAgentProfilesConfig,
 ): string | null {
-  const used = new Set(Object.keys(profiles.letters));
+  const used = new Set(Object.keys(profiles.profileSlots));
   return PROFILE_LETTERS.find((letter) => !used.has(letter)) ?? null;
 }
 
@@ -65,7 +69,7 @@ function cellForLetter(
   agentId: string,
   letter: string,
 ): ProfileCellConfig | null {
-  const cell = profiles.matrix[agentId]?.[letter] ?? null;
+  const cell = profiles.profilesByAgent[agentId]?.[letter] ?? null;
   if (!cell || !cell.enabled) return null;
   return cell;
 }
@@ -75,7 +79,30 @@ export function profileCellOrDefault(
   agentId: string,
   letter: string,
 ): ProfileCellConfig {
-  return profiles.matrix[agentId]?.[letter] ?? EMPTY_CELL;
+  return profiles.profilesByAgent[agentId]?.[letter] ?? EMPTY_CELL;
+}
+
+/** v2 (#384): the full invocation string stored on a profile cell. */
+export function profileCellCommandText(cell: ProfileCellConfig | null | undefined): string {
+  return cell?.command ?? "";
+}
+
+/** True when a value still contains the `%AC_ROOT%` placeholder (display check). */
+export function hasAcRootPlaceholder(value: string): boolean {
+  return value.includes(AC_ROOT_PLACEHOLDER);
+}
+
+/**
+ * Display-only preview of `%AC_ROOT%` expansion against a known replica root.
+ * Returns the value unchanged when no root is available — the backend performs
+ * the authoritative expansion and absolute-path validation at launch.
+ */
+export function expandAcRootPreview(
+  value: string,
+  acRoot: string | null | undefined,
+): string {
+  if (!acRoot || !hasAcRootPlaceholder(value)) return value;
+  return value.split(AC_ROOT_PLACEHOLDER).join(acRoot);
 }
 
 export function resolveProfilePreview(
@@ -234,6 +261,15 @@ export function executableBasename(command: string): string {
   return executableTokenBasename(first);
 }
 
+/**
+ * v2 (#384): basename of the executable token of a command string. Used as the
+ * coding-agent subtitle in the Config Screen (binary name, not model/sandbox).
+ * Identical resolution to {@link executableBasename}; named for the command-string model.
+ */
+export function commandExecutableBasename(command: string): string {
+  return executableBasename(command);
+}
+
 export function isCodexAgent(agent: AgentConfig): boolean {
   return agent.id.toLowerCase() === "codex" || executableBasename(agent.command) === "codex";
 }
@@ -274,6 +310,21 @@ export function isAcAgentPath(path: string | null | undefined): boolean {
   const parts = normalized.split("/");
   const leaf = parts[parts.length - 1] ?? "";
   return parts.includes(".ac") && /^__?agent_/.test(leaf);
+}
+
+/**
+ * True only for a workgroup replica directory, i.e. a `__agent_<name>` leaf whose
+ * parent is a `wg-<name>` directory under an `.ac` root. Broad-scope assignment
+ * (kind/workgroup) and backend preview/apply require a real WG replica anchor;
+ * origin agents (single-underscore `_agent_<name>`) and normal repos do not
+ * qualify. (#384 §7)
+ */
+export function isWgReplicaPath(path: string | null | undefined): boolean {
+  if (!path) return false;
+  const parts = path.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+  const leaf = parts[parts.length - 1] ?? "";
+  const parent = parts[parts.length - 2] ?? "";
+  return parts.includes(".ac") && /^__agent_/.test(leaf) && /^wg-/.test(parent);
 }
 
 export function sessionProfileBadge(

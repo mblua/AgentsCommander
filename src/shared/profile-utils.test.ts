@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
+  commandExecutableBasename,
   executableBasename,
-  parseArgvText,
-  profileDisplayLabel,
-  resolveProfilePreview,
+  expandAcRootPreview,
+  hasAcRootPlaceholder,
   isAcAgentPath,
   isCodexAgent,
+  isWgReplicaPath,
+  parseArgvText,
+  profileCellCommandText,
+  profileDisplayLabel,
+  resolveProfilePreview,
   sessionProfileBadge,
   stringifyArgv,
   validateEnvRows,
@@ -14,17 +19,17 @@ import {
 
 function profiles(): CodingAgentProfilesConfig {
   return {
-    schemaVersion: 1,
-    letters: {
-      A: { name: "" },
-      B: { name: "full power" },
-      C: { name: "fast" },
+    schemaVersion: 2,
+    profileSlots: {
+      A: { label: "" },
+      B: { label: "full power" },
+      C: { label: "fast" },
     },
-    agentDefaults: {},
-    matrix: {
+    defaultProfileByAgent: {},
+    profilesByAgent: {
       codex: {
-        A: { enabled: true, argv: [], env: {}, notes: "" },
-        C: { enabled: true, argv: ["--model", "gpt-5"], env: {}, notes: "" },
+        A: { enabled: true, command: "", env: {}, notes: "" },
+        C: { enabled: true, command: "codex --model gpt-5", env: {}, notes: "" },
       },
     },
   };
@@ -39,7 +44,7 @@ function agent(overrides: Partial<AgentConfig>): AgentConfig {
     gitPullBefore: false,
     excludeGlobalClaudeMd: false,
     envs: [],
-    isolateCodexHome: false,
+    isolatedHome: false,
     ...overrides,
   };
 }
@@ -50,7 +55,7 @@ describe("profile utils", () => {
     expect(profileDisplayLabel(profiles(), "A")).toBe("A");
   });
 
-  it("previews fallback to the nearest lower available cell", () => {
+  it("previews fallback to the nearest lower available cell (v2 profileSlots/profilesByAgent)", () => {
     expect(resolveProfilePreview(profiles(), "codex", "B")).toMatchObject({
       requestedProfile: "B",
       effectiveProfile: "A",
@@ -62,6 +67,36 @@ describe("profile utils", () => {
       effectiveProfile: "C",
       fallbackApplied: false,
     });
+  });
+
+  it("reads the full command string from a v2 profile cell", () => {
+    expect(profileCellCommandText(profiles().profilesByAgent.codex.C)).toBe("codex --model gpt-5");
+    expect(profileCellCommandText(null)).toBe("");
+    expect(profileCellCommandText(undefined)).toBe("");
+  });
+
+  it("derives the binary basename from a full command string", () => {
+    expect(commandExecutableBasename("codex --sandbox workspace-write --model gpt-5-codex")).toBe("codex");
+    expect(commandExecutableBasename('"C:\\Program Files\\OpenAI Codex\\codex.exe" --yolo')).toBe("codex");
+  });
+
+  it("recognizes WG replica paths but not origin agents or repos", () => {
+    expect(isWgReplicaPath("C:/repo/.ac/wg-7-dev-team/__agent_dev-webpage-ui")).toBe(true);
+    expect(isWgReplicaPath("C:\\repo\\.ac\\wg-7-dev-team\\__agent_dev-webpage-ui")).toBe(true);
+    // origin agent (single underscore, no wg- parent) is NOT a WG replica
+    expect(isWgReplicaPath("C:/repo/.ac/_agent_architect")).toBe(false);
+    expect(isWgReplicaPath("C:/repo/worktree")).toBe(false);
+    expect(isWgReplicaPath(null)).toBe(false);
+  });
+
+  it("previews %AC_ROOT% expansion for display only", () => {
+    expect(hasAcRootPlaceholder("%AC_ROOT%\\.codex")).toBe(true);
+    expect(hasAcRootPlaceholder("D:\\manual\\codex")).toBe(false);
+    expect(expandAcRootPreview("%AC_ROOT%\\.codex\\agents\\codex", "C:\\wg\\__agent_codex")).toBe(
+      "C:\\wg\\__agent_codex\\.codex\\agents\\codex",
+    );
+    // No root context → returned unchanged (backend expands authoritatively at launch).
+    expect(expandAcRootPreview("%AC_ROOT%\\.codex", null)).toBe("%AC_ROOT%\\.codex");
   });
 
   it("parses and stringifies argv text with quoted values", () => {

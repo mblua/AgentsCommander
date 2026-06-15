@@ -10,12 +10,12 @@ import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
-import { sessionProfileBadge } from "../../shared/profile-utils";
+import { isWgReplicaPath, sessionProfileBadge } from "../../shared/profile-utils";
 import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
-import AgentPickerModal from "./AgentPickerModal";
+import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
@@ -31,6 +31,8 @@ interface PendingLaunch {
   sessionName: string;
   gitRepos: SessionRepoInput[];
   currentAgentId?: string;
+  currentRequestedProfile?: string | null;
+  scopeContext?: AgentPickerScopeContext;
 }
 
 /** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
@@ -38,6 +40,53 @@ function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   return (replica.repoPaths ?? []).map((p) => {
     return { label: repoLabelFromPath(p), sourcePath: p };
   });
+}
+
+/**
+ * Build the AgentPicker scope context for a launching WG replica (#384 Frontend §5).
+ * Broad-scope assignment is only offered when the launch resolves to a real WG
+ * replica; the backend re-enumerates and is authoritative either way.
+ */
+function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPickerScopeContext {
+  return {
+    workgroupPath: wg.path,
+    workgroupName: wg.name,
+    targetReplicaPath: replica.path,
+    targetReplicaName: replica.name,
+    currentCodingAgentId: replica.currentCodingAgentId ?? null,
+    currentProfile: replica.currentProfile ?? null,
+  };
+}
+
+/** Derive scope context from a live replica session for the right-click "Coding
+ *  Agent" action. Falls back to a single-path (no broad scope) context when the
+ *  session is not a WG replica. */
+function deriveScopeContextFromSession(
+  session: Session | undefined,
+  sessionName: string,
+): AgentPickerScopeContext | undefined {
+  if (!session) return undefined;
+  const replicaPath = session.workingDirectory;
+  if (!isWgReplicaPath(replicaPath)) {
+    return {
+      targetReplicaPath: replicaPath,
+      currentCodingAgentId: session.agentId,
+      currentProfile: session.requestedProfile,
+    };
+  }
+  // Workgroup dir = parent of the replica dir, preserving the original separators.
+  const dirMatch = replicaPath.match(/^(.*)[\\/][^\\/]+[\\/]?$/);
+  const slash = sessionName.indexOf("/");
+  const wgName = slash >= 0 ? sessionName.slice(0, slash) : "";
+  const replicaName = slash >= 0 ? sessionName.slice(slash + 1) : sessionName;
+  return {
+    workgroupPath: dirMatch?.[1] ?? "",
+    workgroupName: wgName,
+    targetReplicaPath: replicaPath,
+    targetReplicaName: replicaName,
+    currentCodingAgentId: session.agentId,
+    currentProfile: session.requestedProfile,
+  };
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
@@ -135,7 +184,9 @@ const ProjectPanel: Component = () => {
       path: replica.path,
       sessionName: replicaSessionName(wg, replica),
       gitRepos,
-      currentAgentId: replica.preferredAgentId,
+      currentAgentId: replica.currentCodingAgentId ?? replica.preferredAgentId,
+      currentRequestedProfile: replica.currentProfile ?? null,
+      scopeContext: replicaScopeContext(wg, replica),
     });
   };
 
@@ -1429,10 +1480,23 @@ const ProjectPanel: Component = () => {
                   agentPath={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.workingDirectory}
                   currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
                   currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
+                  scopeContext={deriveScopeContextFromSession(
+                    sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
+                    replicaCodingAgentTarget()!.sessionName,
+                  )}
                   onSelect={async (selection) => {
+                    // The picker already applied the selection through the backend
+                    // (config write + restart when the toggle is on) for WG replicas.
+                    // Only fall back to a manual restart when there was no broad-scope
+                    // apply path (non-WG agent session) but the user changed the agent.
                     const target = replicaCodingAgentTarget();
                     setReplicaCodingAgentTarget(null);
-                    if (target) {
+                    if (
+                      target &&
+                      !isWgReplicaPath(
+                        sessionsStore.sessions.find((s) => s.id === target.sessionId)?.workingDirectory,
+                      )
+                    ) {
                       await restartReplicaSession(
                         target.sessionId,
                         selection.agent.id,
@@ -1741,6 +1805,8 @@ const ProjectPanel: Component = () => {
           sessionName={pendingLaunch()!.sessionName}
           agentPath={pendingLaunch()!.path}
           currentAgentId={pendingLaunch()!.currentAgentId}
+          currentRequestedProfile={pendingLaunch()!.currentRequestedProfile}
+          scopeContext={pendingLaunch()!.scopeContext}
           onSelect={async (selection) => {
             const pending = pendingLaunch()!;
             const newSession = await SessionAPI.create({

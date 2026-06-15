@@ -21,7 +21,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
       gitPullBefore: false,
       excludeGlobalClaudeMd: true,
       envs: [],
-      isolateCodexHome: false,
+      isolatedHome: false,
     },
   },
   {
@@ -36,7 +36,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
       gitPullBefore: false,
       excludeGlobalClaudeMd: false,
       envs: [],
-      isolateCodexHome: false,
+      isolatedHome: false,
     },
   },
   {
@@ -51,7 +51,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
       gitPullBefore: false,
       excludeGlobalClaudeMd: false,
       envs: [],
-      isolateCodexHome: false,
+      isolatedHome: false,
     },
   },
 ];

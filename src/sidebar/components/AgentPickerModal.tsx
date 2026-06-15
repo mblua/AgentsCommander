@@ -1,29 +1,55 @@
 import { Component, createSignal, createMemo, For, Show, onMount, createEffect } from "solid-js";
-import type { AgentConfig, AppSettings, CodingAgentProfileResolution, ProfileCellConfig } from "../../shared/types";
+import type {
+  AgentConfig,
+  AppSettings,
+  CodingAgentProfileResolution,
+  ProfileCellConfig,
+  ProfileAssignmentScope,
+  ProfileAssignmentError,
+  PreviewCodingAgentProfileSelectionResult,
+} from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
+  expandAcRootPreview,
+  hasAcRootPlaceholder,
   isAcAgentPath,
   isCodexAgent,
+  isWgReplicaPath,
   normalizeProfileLetter,
+  profileCellCommandText,
   profileDisplayLabel,
   resolveProfilePreview,
   sortedProfileLetters,
-  stringifyArgv,
   targetProfileFqn,
 } from "../../shared/profile-utils";
+
+/** Scope/replica context supplied by ProjectPanel for WG replica launches. When
+ *  absent (OpenAgentModal / normal repo / RootAgentBanner) only the safe
+ *  "this replica" scope is offered. (#384 Frontend §4) */
+export type AgentPickerScopeContext = {
+  workgroupPath?: string;
+  workgroupName?: string;
+  targetReplicaPath?: string;
+  targetReplicaName?: string;
+  currentCodingAgentId?: string | null;
+  currentProfile?: string | null;
+};
 
 export interface AgentPickerSelection {
   agent: AgentConfig;
   requestedProfile: string | null;
   effectiveProfile: string;
-  scope: "default" | "instance";
+  scope: ProfileAssignmentScope;
+  restartSessions: boolean;
+  updatedCount?: number;
+  restartedCount?: number;
 }
 
 const EMPTY_DISPLAY_CELL: ProfileCellConfig = {
   enabled: true,
-  argv: [],
+  command: "",
   env: {},
   notes: "",
 };
@@ -33,6 +59,7 @@ const AgentPickerModal: Component<{
   agentPath?: string | null;
   currentAgentId?: string | null;
   currentRequestedProfile?: string | null;
+  scopeContext?: AgentPickerScopeContext;
   onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
   onClose: () => void;
 }> = (props) => {
@@ -46,8 +73,20 @@ const AgentPickerModal: Component<{
   const [profileResolving, setProfileResolving] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
+
+  // ── V2 scope picker state ──
+  const [selectedScope, setSelectedScope] = createSignal<ProfileAssignmentScope>("replica");
+  const [restartSessions, setRestartSessions] = createSignal(false);
+  const [dangerArmed, setDangerArmed] = createSignal(false);
+  const [kindConfirmationText, setKindConfirmationText] = createSignal("");
+  const [scopePreview, setScopePreview] = createSignal<PreviewCodingAgentProfileSelectionResult | null>(null);
+  const [scopePreviewBusy, setScopePreviewBusy] = createSignal(false);
+  const [scopePreviewError, setScopePreviewError] = createSignal("");
+  const [applyErrors, setApplyErrors] = createSignal<ProfileAssignmentError[]>([]);
+
   let overlayRef!: HTMLDivElement;
   let profileResolveSeq = 0;
+  let previewSeq = 0;
 
   const sortedAgents = createMemo(() =>
     [...agents()].sort((a, b) =>
@@ -59,14 +98,26 @@ const AgentPickerModal: Component<{
   const profileLetters = createMemo(() =>
     settings() ? sortedProfileLetters(settings()!.codingAgentProfiles) : ["A"]
   );
+  // Prefer the explicit scope-context replica path; fall back to the legacy agentPath.
+  const targetReplicaPath = createMemo(
+    () => props.scopeContext?.targetReplicaPath ?? props.agentPath ?? null
+  );
   const targetName = createMemo(() =>
-    agentNameFromPathOrSession(props.agentPath, props.sessionName)
+    agentNameFromPathOrSession(targetReplicaPath(), props.sessionName)
   );
   const targetFqn = createMemo(() =>
-    targetProfileFqn(props.agentPath, props.sessionName)
+    targetProfileFqn(targetReplicaPath(), props.sessionName)
   );
-  const canPersistProfileSelection = createMemo(() => isAcAgentPath(props.agentPath));
-  const canUseBackendProfileResolution = createMemo(() => isAcAgentPath(props.agentPath));
+  const isWgReplica = createMemo(() => isWgReplicaPath(targetReplicaPath()));
+  // Broad scope (kind/workgroup) is only offered for a real WG replica with
+  // workgroup context. Everything else collapses to "assign to this replica".
+  const showBroadScope = createMemo(
+    () => Boolean(props.scopeContext?.workgroupPath) && isWgReplica()
+  );
+  const canPersistProfileSelection = createMemo(() => isAcAgentPath(targetReplicaPath()));
+  const canUseBackendProfileResolution = createMemo(() => isAcAgentPath(targetReplicaPath()));
+  const acRoot = createMemo(() => targetReplicaPath());
+
   const configuredDefault = createMemo(() => {
     const resolved = backendPreview();
     const backendDefault = resolved?.originDefaultProfile ?? resolved?.agentDefaultProfile;
@@ -74,14 +125,14 @@ const AgentPickerModal: Component<{
     if (!canPersistProfileSelection()) return "A";
     const current = settings();
     if (!current) return "A";
-    return normalizeProfileLetter(current.codingAgentProfiles.agentDefaults[targetName()]) ?? "A";
+    return normalizeProfileLetter(current.codingAgentProfiles.defaultProfileByAgent[targetName()]) ?? "A";
   });
   const profileLabel = (letter: string) =>
     settings() ? profileDisplayLabel(settings()!.codingAgentProfiles, letter) : letter;
   const profileCellFor = (agent: AgentConfig | null, letter: string) => {
     const current = settings();
     if (!current || !agent) return null;
-    return current.codingAgentProfiles.matrix[agent.id]?.[letter] ?? null;
+    return current.codingAgentProfiles.profilesByAgent[agent.id]?.[letter] ?? null;
   };
   const enabledLaunchCellFor = (agent: AgentConfig | null, letter: string): ProfileCellConfig => {
     const cell = profileCellFor(agent, letter);
@@ -126,7 +177,12 @@ const AgentPickerModal: Component<{
     if (!agent) return EMPTY_DISPLAY_CELL;
     return enabledLaunchCellFor(agent, effectivePreview().effectiveProfile);
   });
-  const formattedArgv = (argv: string[]) => stringifyArgv(argv) || "none";
+  // The cell command is the full invocation; an empty cell command falls back to
+  // the agent's base command. Display-only %AC_ROOT% expansion uses the replica root.
+  const projectedCommand = createMemo(() => {
+    const cmd = profileCellCommandText(projectedCell()) || selectedAgent()?.command || "";
+    return expandAcRootPreview(cmd, acRoot());
+  });
   const formattedEnv = (env: Record<string, string>) => {
     const enabled = Object.keys(env).sort((a, b) => a.localeCompare(b));
     return enabled.length ? enabled.join(", ") : "none";
@@ -173,18 +229,19 @@ const AgentPickerModal: Component<{
     setSettings(loaded);
     setAgents(loaded.agents);
     const currentRequested = normalizeProfileLetter(props.currentRequestedProfile);
-    const acDefault = isAcAgentPath(props.agentPath)
-      ? normalizeProfileLetter(loaded.codingAgentProfiles.agentDefaults[targetName()])
+    const acDefault = isAcAgentPath(targetReplicaPath())
+      ? normalizeProfileLetter(loaded.codingAgentProfiles.defaultProfileByAgent[targetName()])
       : null;
     const requested = currentRequested ?? acDefault ?? "A";
     setSelectedProfile(requested);
     setInitialProfileShouldLaunch(Boolean(currentRequested) || Boolean(acDefault));
   });
 
+  // Backend profile resolution for the projected preview (effective letter, fallback).
   createEffect(() => {
     const current = settings();
     const agent = selectedAgent();
-    const agentPath = props.agentPath;
+    const agentPath = targetReplicaPath();
     if (!current || !agent || !agentPath || !canUseBackendProfileResolution()) {
       profileResolveSeq += 1;
       setBackendPreview(null);
@@ -217,6 +274,58 @@ const AgentPickerModal: Component<{
       });
   });
 
+  // Backend scope preview — authoritative target/live-session enumeration and the
+  // fingerprint that apply re-validates. Re-runs (and clears the typed confirmation,
+  // arm checkbox, preview, fingerprint) whenever scope, coding agent, profile,
+  // restart toggle, or target replica changes (#384 Frontend §4).
+  const runScopePreview = (scope: ProfileAssignmentScope, agentId: string, profile: string) => {
+    const target = targetReplicaPath();
+    if (!target || !isWgReplica()) return;
+    const seq = ++previewSeq;
+    setScopePreviewBusy(true);
+    setScopePreviewError("");
+    SettingsAPI.previewCodingAgentProfileSelection({
+      targetReplicaPath: target,
+      codingAgentId: agentId,
+      profile,
+      scope,
+      restartSessions: restartSessions(),
+    })
+      .then((result) => {
+        if (seq !== previewSeq) return;
+        setScopePreview(result);
+      })
+      .catch((err: unknown) => {
+        if (seq !== previewSeq) return;
+        setScopePreview(null);
+        setScopePreviewError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (seq === previewSeq) setScopePreviewBusy(false);
+      });
+  };
+
+  createEffect(() => {
+    const scope = selectedScope();
+    const agent = selectedAgent();
+    const profile = selectedProfile();
+    // Track these so any change resets the confirmation gate and re-previews.
+    restartSessions();
+    targetReplicaPath();
+
+    // Reset every transient confirmation/preview artifact on any input change.
+    previewSeq += 1;
+    setDangerArmed(false);
+    setKindConfirmationText("");
+    setScopePreview(null);
+    setScopePreviewError("");
+    setApplyErrors([]);
+    setScopePreviewBusy(false);
+
+    if (!agent || !isWgReplica()) return;
+    runScopePreview(scope, agent.id, profile);
+  });
+
   const moveProfile = (delta: number) => {
     const letters = profileLetters();
     const current = Math.max(0, letters.indexOf(selectedProfile()));
@@ -235,25 +344,93 @@ const AgentPickerModal: Component<{
     return profileTouched() || initialProfileShouldLaunch() ? selectedProfile() : null;
   };
 
-  const commit = async (scope: "default" | "instance") => {
+  // Typed confirmation phrase for the cross-workgroup `kind` scope. Must match the
+  // backend phrase exactly, including count and restart wording (#384 §7).
+  const kindPhrase = createMemo(() => {
+    const preview = scopePreview();
     const agent = selectedAgent();
-    if (!agent || busy() || profileResolving()) return;
+    if (!preview || !agent) return "";
+    const restart = restartSessions() ? "WITH RESTART" : "WITHOUT RESTART";
+    return `APPLY ${agent.id}:${selectedProfile()} TO ${preview.targetCount} REPLICAS ${restart}`;
+  });
+
+  const scopeCount = (scope: ProfileAssignmentScope): number => {
+    const preview = scopePreview();
+    if (preview && selectedScope() === scope) return preview.targetCount;
+    return scope === "replica" ? 1 : 0;
+  };
+
+  const distinctWorkgroupCount = createMemo(() => {
+    const targets = scopePreview()?.targets ?? [];
+    return new Set(targets.map((t) => t.workgroupName)).size;
+  });
+
+  const applyLabel = createMemo(() => {
+    const scope = selectedScope();
+    if (scope === "replica") return "Assign to this replica";
+    const count = scopePreview()?.targetCount ?? 0;
+    if (scope === "kind") return `Overwrite ${count} of this kind`;
+    const wg = props.scopeContext?.workgroupName;
+    return `Overwrite ${count}${wg ? ` in ${wg}` : " in this workgroup"}`;
+  });
+
+  const applyEnabled = createMemo(() => {
+    if (busy() || profileResolving() || !selectedAgent()) return false;
+    const scope = selectedScope();
+    if (scope === "replica") return true;
+    if (!isWgReplica()) return false;
+    if (scopePreviewBusy() || !scopePreview()) return false;
+    if (scope === "workgroup") return dangerArmed();
+    if (scope === "kind") return kindConfirmationText().trim() === kindPhrase();
+    return false;
+  });
+
+  const apply = async () => {
+    const agent = selectedAgent();
+    if (!agent || !applyEnabled()) return;
     setBusy(true);
     setError("");
+    setApplyErrors([]);
+    const scope = selectedScope();
+    const requested = requestedProfileForSelection();
+    const effective = effectivePreview().effectiveProfile;
     try {
-      if (props.agentPath && canPersistProfileSelection()) {
-        if (scope === "default") {
-          await SettingsAPI.setAgentDefaultProfile(props.agentPath, selectedProfile());
-          await SettingsAPI.setInstanceProfileOverride(props.agentPath, null);
-        } else {
-          await SettingsAPI.setInstanceProfileOverride(props.agentPath, selectedProfile());
+      let updatedCount: number | undefined;
+      let restartedCount: number | undefined;
+      const target = targetReplicaPath();
+      // Broad-scope writes are backend-owned; only call apply for a real WG replica.
+      if (target && isWgReplica()) {
+        const result = await SettingsAPI.applyCodingAgentProfileSelection({
+          targetReplicaPath: target,
+          codingAgentId: agent.id,
+          profile: selectedProfile(),
+          scope,
+          restartSessions: restartSessions(),
+          confirmedTargetFingerprint:
+            scope === "replica" ? null : scopePreview()?.targetFingerprint ?? null,
+          typedConfirmation: scope === "kind" ? kindConfirmationText().trim() : null,
+        });
+        if (result.errors.length > 0) {
+          // Stale fingerprint / failed targets: surface errors, keep the modal open,
+          // reset the typed confirmation and re-run preview so the user re-confirms.
+          setApplyErrors(result.errors);
+          setKindConfirmationText("");
+          setDangerArmed(false);
+          setBusy(false);
+          runScopePreview(scope, agent.id, selectedProfile());
+          return;
         }
+        updatedCount = result.updatedCount;
+        restartedCount = result.restartedCount;
       }
       await props.onSelect({
         agent,
-        requestedProfile: requestedProfileForSelection(),
-        effectiveProfile: effectivePreview().effectiveProfile,
+        requestedProfile: requested,
+        effectiveProfile: effective,
         scope,
+        restartSessions: restartSessions(),
+        updatedCount,
+        restartedCount,
       });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -289,7 +466,7 @@ const AgentPickerModal: Component<{
       moveProfile(1);
     } else if (e.key === "Enter" && list.length > 0 && !isInteractiveTarget(e.target)) {
       e.preventDefault();
-      void commit("instance");
+      void apply();
     }
   };
 
@@ -441,8 +618,8 @@ const AgentPickerModal: Component<{
                         </span>
                         <span class="agent-profile-param-list">
                           <span class="agent-profile-param">
-                            <span>Profile args </span>
-                            <span>{formattedArgv(cell().argv)}</span>
+                            <span>Command </span>
+                            <span>{profileCellCommandText(cell()) || selectedAgent()?.command || "none"}</span>
                           </span>
                           <Show when={!configured()}>
                             <span class="agent-profile-token warn">
@@ -480,14 +657,16 @@ const AgentPickerModal: Component<{
                   {selectedAgent()?.label ?? "Coding Agent"} / {profileLabel(selectedProfile())}
                 </div>
                 <div class="agent-profile-param-list">
-                  <div class="agent-profile-param"><span>Command </span><span>{selectedAgent()?.command ?? "none"}</span></div>
+                  <div class="agent-profile-param"><span>Command </span><span>{projectedCommand() || "none"}</span></div>
+                  <Show when={hasAcRootPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || "")}>
+                    <div class="agent-profile-param"><span>Placeholder </span><span>%AC_ROOT% expands at launch; backend validates the path.</span></div>
+                  </Show>
                   <div class="agent-profile-param"><span>Agent env </span><span>{formattedAgentEnv(selectedAgent())}</span></div>
-                  <Show when={selectedIsCodex() || selectedAgent()?.isolateCodexHome}>
-                    <div class="agent-profile-param"><span>Codex home isolation </span><span>{selectedAgent()?.isolateCodexHome ? "enabled" : "disabled"}</span></div>
+                  <Show when={selectedIsCodex() || selectedAgent()?.isolatedHome}>
+                    <div class="agent-profile-param"><span>Home isolation </span><span>{selectedAgent()?.isolatedHome ? "enabled" : "disabled"}</span></div>
                   </Show>
                   <div class="agent-profile-param"><span>Effective profile </span><span>{profileLabel(effectivePreview().effectiveProfile)}</span></div>
                   <div class="agent-profile-param"><span>Fallback chain </span><span>{effectivePreview().fallbackChain.join(" -> ") || "none"}</span></div>
-                  <div class="agent-profile-param"><span>Profile args </span><span>{formattedArgv(projectedCell().argv)}</span></div>
                   <div class="agent-profile-param"><span>Profile env </span><span>{formattedEnv(projectedCell().env)}</span></div>
                   <Show when={projectedCell().notes}>
                     <div class="agent-profile-param"><span>Notes </span><span>{projectedCell().notes}</span></div>
@@ -521,32 +700,189 @@ const AgentPickerModal: Component<{
           <div class="agent-picker-error">{error()}</div>
         </Show>
 
-        <div class="agent-picker-actions">
-          <button
-            class="modal-btn modal-btn-cancel"
-            disabled={busy()}
-            onClick={props.onClose}
-            {...automationAttrs("agentPicker.cancel", "button")}
-          >
-            Cancel
-          </button>
-          <button
-            class="modal-btn modal-btn-save"
-            disabled={busy() || profileResolving() || !selectedAgent() || !canPersistProfileSelection()}
-            onClick={() => commit("default")}
-            title={!canPersistProfileSelection() ? "Default profiles require an AgentsCommander agent path" : undefined}
-            {...automationAttrs("agentPicker.setDefault", "button", canPersistProfileSelection() ? "enabled" : "disabled")}
-          >
-            Set selected profile as new default for {targetFqn()}
-          </button>
-          <button
-            class="modal-btn modal-btn-save"
-            disabled={busy() || profileResolving() || !selectedAgent()}
-            onClick={() => commit("instance")}
-            {...automationAttrs("agentPicker.setInstance", "button")}
-          >
-            Set just for instance
-          </button>
+        {/* ── V2 scope picker botonera ── */}
+        <div
+          class="agent-picker-botonera"
+          data-component="Coding Agent assignment scope picker"
+          {...automationAttrs("agentPicker.scope", "surface", selectedScope())}
+        >
+          <Show when={showBroadScope()}>
+            <div class="agent-scope-picker" role="radiogroup" aria-label="Apply scope">
+              <span class="agent-scope-label">Apply to</span>
+              <label
+                class="agent-scope-opt"
+                classList={{ active: selectedScope() === "replica" }}
+                {...automationAttrs("agentPicker.scope.replica", "button", selectedScope() === "replica" ? "active" : "inactive")}
+              >
+                <input
+                  type="radio"
+                  name="agentPickerScope"
+                  checked={selectedScope() === "replica"}
+                  onChange={() => setSelectedScope("replica")}
+                />
+                This replica <span class="agent-scope-count">{scopeCount("replica")} replica</span>
+              </label>
+              <label
+                class="agent-scope-opt"
+                classList={{ active: selectedScope() === "kind", dangerous: selectedScope() === "kind" }}
+                {...automationAttrs("agentPicker.scope.kind", "button", selectedScope() === "kind" ? "active" : "inactive")}
+              >
+                <input
+                  type="radio"
+                  name="agentPickerScope"
+                  checked={selectedScope() === "kind"}
+                  onChange={() => setSelectedScope("kind")}
+                />
+                All replicas of this kind <span class="agent-scope-count">{scopeCount("kind")} replicas</span>
+              </label>
+              <label
+                class="agent-scope-opt"
+                classList={{ active: selectedScope() === "workgroup", dangerous: selectedScope() === "workgroup" }}
+                {...automationAttrs("agentPicker.scope.workgroup", "button", selectedScope() === "workgroup" ? "active" : "inactive")}
+              >
+                <input
+                  type="radio"
+                  name="agentPickerScope"
+                  checked={selectedScope() === "workgroup"}
+                  onChange={() => setSelectedScope("workgroup")}
+                />
+                Entire workgroup <span class="agent-scope-count">{scopeCount("workgroup")} replicas</span>
+              </label>
+            </div>
+            <div class="agent-scope-live-note">
+              <span class="agent-scope-live-tag">live</span>
+              Counts are read from the current workgroup; the backend re-enumerates targets before applying.
+            </div>
+          </Show>
+
+          <Show when={scopePreviewBusy()}>
+            <div class="agent-scope-status" data-ac-testid="agentPicker.previewBusy" data-ac-role="status">
+              Loading targets…
+            </div>
+          </Show>
+          <Show when={scopePreviewError()}>
+            <div class="agent-scope-error" data-ac-testid="agentPicker.previewError" data-ac-role="status">
+              {scopePreviewError()}
+            </div>
+          </Show>
+
+          {/* Cross-workgroup target review for `kind` */}
+          <Show when={selectedScope() === "kind" && scopePreview()}>
+            <div
+              class="agent-scope-targets"
+              data-ac-testid="agentPicker.targets"
+              data-ac-role="list"
+            >
+              <div class="agent-scope-targets-head">
+                {scopePreview()!.targetCount} replica(s) across {distinctWorkgroupCount()} workgroup(s) ·{" "}
+                {scopePreview()!.liveSessionCount} live session(s)
+              </div>
+              <For each={scopePreview()!.targets}>
+                {(t) => (
+                  <div
+                    class="agent-scope-target-row"
+                    data-ac-role="row"
+                    data-ac-replica-path={t.replicaPath}
+                    data-ac-live-sessions={t.liveSessionIds.length}
+                  >
+                    <span class="agent-scope-target-wg">{t.workgroupName}</span>
+                    <span class="agent-scope-target-name">{t.replicaName}</span>
+                    <span class="agent-scope-target-path">{t.replicaPath}</span>
+                    <Show when={t.liveSessionIds.length > 0}>
+                      <span class="agent-scope-target-live">{t.liveSessionIds.length} live</span>
+                    </Show>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
+
+          <Show when={applyErrors().length > 0}>
+            <div class="agent-scope-errors" data-ac-testid="agentPicker.errors" data-ac-role="status">
+              <For each={applyErrors()}>
+                {(e) => (
+                  <div class="agent-scope-error-row">
+                    <strong>{e.code}</strong> {e.message}
+                    <Show when={e.sessionIds.length > 0}>
+                      <span class="agent-scope-error-ids"> ({e.sessionIds.join(", ")})</span>
+                    </Show>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
+          <Show when={(scopePreview()?.warnings.length ?? 0) > 0}>
+            <div class="agent-scope-warnings" data-ac-testid="agentPicker.warnings" data-ac-role="status">
+              <For each={scopePreview()!.warnings}>{(w) => <div>{w}</div>}</For>
+            </div>
+          </Show>
+
+          <div class="agent-picker-bar">
+            <Show when={isWgReplica()}>
+              <label class="agent-scope-switch" title="Restart matching sessions after writing the selection">
+                <input
+                  type="checkbox"
+                  checked={restartSessions()}
+                  onChange={(e) => setRestartSessions(e.currentTarget.checked)}
+                  {...automationAttrs("agentPicker.restartToggle", "checkbox", restartSessions() ? "checked" : "unchecked")}
+                />
+                <span>Restart sessions after apply</span>
+              </label>
+            </Show>
+
+            <div class="agent-picker-bar-spacer" />
+
+            <Show when={selectedScope() === "workgroup"}>
+              <label class="agent-scope-arm">
+                <input
+                  type="checkbox"
+                  checked={dangerArmed()}
+                  disabled={!scopePreview()}
+                  onChange={(e) => setDangerArmed(e.currentTarget.checked)}
+                  {...automationAttrs("agentPicker.armToggle", "checkbox", dangerArmed() ? "checked" : "unchecked")}
+                />
+                <span>I understand this overwrites {scopeCount("workgroup")} replicas</span>
+              </label>
+            </Show>
+
+            <button
+              class="modal-btn modal-btn-cancel"
+              disabled={busy()}
+              onClick={props.onClose}
+              {...automationAttrs("agentPicker.cancel", "button")}
+            >
+              Cancel
+            </button>
+            <button
+              class="modal-btn modal-btn-save agent-picker-apply"
+              classList={{ danger: selectedScope() !== "replica" }}
+              disabled={!applyEnabled()}
+              onClick={() => void apply()}
+              {...automationAttrs(
+                "agentPicker.apply",
+                "button",
+                applyEnabled() ? "enabled" : "disabled",
+              )}
+            >
+              {applyLabel()}
+            </button>
+          </div>
+
+          <Show when={selectedScope() === "kind"}>
+            <div class="agent-scope-confirm">
+              <label class="agent-scope-confirm-label">
+                Type to confirm: <code>{kindPhrase()}</code>
+              </label>
+              <input
+                class="agent-scope-confirm-input"
+                value={kindConfirmationText()}
+                onInput={(e) => setKindConfirmationText(e.currentTarget.value)}
+                placeholder={kindPhrase()}
+                spellcheck={false}
+                {...automationAttrs("agentPicker.kindConfirm", "textbox", applyEnabled() ? "matched" : "unmatched")}
+              />
+            </div>
+          </Show>
         </div>
       </div>
     </div>

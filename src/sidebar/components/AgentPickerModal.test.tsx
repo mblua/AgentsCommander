@@ -1,29 +1,48 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
-import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
-import type { AgentConfig, AppSettings, CodingAgentProfileResolution } from "../../shared/types";
-import { SettingsAPI } from "../../shared/ipc";
+import AgentPickerModal, {
+  type AgentPickerScopeContext,
+  type AgentPickerSelection,
+} from "./AgentPickerModal";
+import type {
+  AgentConfig,
+  AppSettings,
+  CodingAgentProfileResolution,
+  PreviewCodingAgentProfileSelectionResult,
+  ApplyCodingAgentProfileSelectionResult,
+  ProfileAssignmentTarget,
+} from "../../shared/types";
 import { resolveProfilePreview } from "../../shared/profile-utils";
 
 const mockSettingsApi = vi.hoisted(() => ({
   get: vi.fn(),
   resolveCodingAgentProfile: vi.fn(),
-  setAgentDefaultProfile: vi.fn(),
-  setInstanceProfileOverride: vi.fn(),
+  previewCodingAgentProfileSelection: vi.fn(),
+  applyCodingAgentProfileSelection: vi.fn(),
 }));
 
 vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
     get: mockSettingsApi.get,
     resolveCodingAgentProfile: mockSettingsApi.resolveCodingAgentProfile,
-    setAgentDefaultProfile: mockSettingsApi.setAgentDefaultProfile,
-    setInstanceProfileOverride: mockSettingsApi.setInstanceProfileOverride,
+    previewCodingAgentProfileSelection: mockSettingsApi.previewCodingAgentProfileSelection,
+    applyCodingAgentProfileSelection: mockSettingsApi.applyCodingAgentProfileSelection,
   },
 }));
 
-const AC_AGENT_PATH = "C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac\\__agent_architect";
+const ORIGIN_AGENT_PATH = "C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac\\_agent_architect";
 const REPO_PATH = "C:\\work\\repo";
+const WG_REPLICA_PATH = "C:\\repos\\proj\\.ac\\wg-7-dev-team\\__agent_dev-webpage-ui";
+
+const WG_SCOPE_CONTEXT: AgentPickerScopeContext = {
+  workgroupPath: "C:\\repos\\proj\\.ac\\wg-7-dev-team",
+  workgroupName: "wg-7-dev-team",
+  targetReplicaPath: WG_REPLICA_PATH,
+  targetReplicaName: "dev-webpage-ui",
+  currentCodingAgentId: "codex",
+  currentProfile: "A",
+};
 
 let currentSettings: AppSettings;
 
@@ -36,7 +55,7 @@ function agent(overrides: Partial<AgentConfig>): AgentConfig {
     gitPullBefore: false,
     excludeGlobalClaudeMd: true,
     envs: [],
-    isolateCodexHome: false,
+    isolatedHome: false,
     ...overrides,
   };
 }
@@ -101,24 +120,24 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
       }),
     ],
     codingAgentProfiles: {
-      schemaVersion: 1,
-      letters: {
-        A: { name: "" },
-        B: { name: "fast" },
-        C: { name: "review" },
+      schemaVersion: 2,
+      profileSlots: {
+        A: { label: "" },
+        B: { label: "fast" },
+        C: { label: "review" },
       },
-      agentDefaults: { architect: "B" },
-      matrix: {
+      defaultProfileByAgent: { architect: "B" },
+      profilesByAgent: {
         codex: {
           A: {
             enabled: true,
-            argv: ["--model", "gpt-5"],
+            command: "codex --model gpt-5",
             env: { OPENAI_MODEL: "gpt-5" },
             notes: "baseline",
           },
           B: {
             enabled: true,
-            argv: ["--profile", "fast"],
+            command: "codex --profile fast",
             env: { CODEX_PROFILE: "fast" },
             notes: "fast lane",
           },
@@ -126,7 +145,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
         claude: {
           A: {
             enabled: true,
-            argv: ["--dangerously-skip-permissions"],
+            command: "claude --dangerously-skip-permissions",
             env: {},
             notes: "",
           },
@@ -167,18 +186,101 @@ function defaultBackendResolve(
   agentId: string,
   requestedProfile?: string | null,
 ): Promise<CodingAgentProfileResolution> {
-  const requested = requestedProfile ?? currentSettings.codingAgentProfiles.agentDefaults.architect ?? "A";
+  const requested =
+    requestedProfile ?? currentSettings.codingAgentProfiles.defaultProfileByAgent.architect ?? "A";
   const preview = resolveProfilePreview(currentSettings.codingAgentProfiles, agentId, requested);
   return Promise.resolve(
     resolution({
       ...preview,
       requestedProfileInput: requestedProfile ?? null,
-      agentDefaultProfile: currentSettings.codingAgentProfiles.agentDefaults.architect ?? null,
+      agentDefaultProfile: currentSettings.codingAgentProfiles.defaultProfileByAgent.architect ?? null,
     }),
   );
 }
 
-async function settle(times = 3): Promise<void> {
+function makeTarget(name: string, wg: string, liveSessions: string[]): ProfileAssignmentTarget {
+  return {
+    workgroupName: wg,
+    workgroupPath: `C:\\repos\\proj\\.ac\\${wg}`,
+    replicaName: name,
+    replicaPath: `C:\\repos\\proj\\.ac\\${wg}\\__agent_${name}`,
+    identityPath: `C:\\repos\\proj\\.ac\\${wg}\\__agent_${name}\\identity.json`,
+    originProject: "proj",
+    liveSessionIds: liveSessions,
+  };
+}
+
+function previewResult(
+  overrides: Partial<PreviewCodingAgentProfileSelectionResult> = {},
+): PreviewCodingAgentProfileSelectionResult {
+  return {
+    scope: "replica",
+    targetCount: 1,
+    liveSessionCount: 1,
+    targetFingerprint: "fp-replica",
+    requiresExplicitConfirmation: false,
+    targets: [makeTarget("dev-webpage-ui", "wg-7-dev-team", ["sess-1"])],
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function scopeAwarePreview(): void {
+  mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation((req: { scope: string }) => {
+    if (req.scope === "kind") {
+      return Promise.resolve(
+        previewResult({
+          scope: "kind",
+          targetCount: 3,
+          liveSessionCount: 3,
+          targetFingerprint: "fp-kind",
+          requiresExplicitConfirmation: true,
+          targets: [
+            makeTarget("dev-webpage-ui", "wg-7-dev-team", ["sess-1", "sess-2"]),
+            makeTarget("dev-webpage-ui", "wg-9-other", ["sess-3"]),
+            makeTarget("dev-webpage-ui", "wg-12-more", []),
+          ],
+        }),
+      );
+    }
+    if (req.scope === "workgroup") {
+      return Promise.resolve(
+        previewResult({
+          scope: "workgroup",
+          targetCount: 4,
+          liveSessionCount: 2,
+          targetFingerprint: "fp-wg",
+          targets: [
+            makeTarget("dev-webpage-ui", "wg-7-dev-team", ["sess-1"]),
+            makeTarget("dev-rust", "wg-7-dev-team", ["sess-2"]),
+            makeTarget("architect", "wg-7-dev-team", []),
+            makeTarget("shipper", "wg-7-dev-team", []),
+          ],
+        }),
+      );
+    }
+    return Promise.resolve(previewResult({ scope: "replica", targetFingerprint: "fp-replica" }));
+  });
+}
+
+function applyResult(
+  overrides: Partial<ApplyCodingAgentProfileSelectionResult> = {},
+): ApplyCodingAgentProfileSelectionResult {
+  return {
+    scope: "replica",
+    updatedCount: 1,
+    restartedCount: 0,
+    updatedReplicaPaths: [WG_REPLICA_PATH],
+    restartedSessionIds: [],
+    destroyedButNotRecreatedSessionIds: [],
+    targetFingerprint: "fp-replica",
+    warnings: [],
+    errors: [],
+    ...overrides,
+  };
+}
+
+async function settle(times = 4): Promise<void> {
   for (let index = 0; index < times; index += 1) {
     await Promise.resolve();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -191,8 +293,18 @@ function target<T extends HTMLElement = HTMLElement>(testId: string): T {
   return element;
 }
 
+function maybe<T extends HTMLElement = HTMLElement>(testId: string): T | null {
+  return document.querySelector<T>(`[data-ac-testid="${testId}"]`);
+}
+
 function text(testId: string): string {
   return target(testId).textContent?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function clickRadio(testId: string): void {
+  const input = target(testId).querySelector<HTMLInputElement>("input");
+  if (!input) throw new Error(`Missing radio input in ${testId}`);
+  input.click();
 }
 
 function renderPicker(
@@ -201,6 +313,7 @@ function renderPicker(
     agentPath: string | null;
     currentAgentId: string | null;
     currentRequestedProfile: string | null;
+    scopeContext: AgentPickerScopeContext | undefined;
     onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
     onClose: () => void;
   }> = {},
@@ -213,9 +326,10 @@ function renderPicker(
     () => (
       <AgentPickerModal
         sessionName={overrides.sessionName ?? "architect"}
-        agentPath={overrides.agentPath === undefined ? AC_AGENT_PATH : overrides.agentPath}
+        agentPath={overrides.agentPath === undefined ? ORIGIN_AGENT_PATH : overrides.agentPath}
         currentAgentId={overrides.currentAgentId ?? "codex"}
         currentRequestedProfile={overrides.currentRequestedProfile}
+        scopeContext={overrides.scopeContext}
         onSelect={overrides.onSelect ?? onSelect}
         onClose={overrides.onClose ?? onClose}
       />
@@ -230,12 +344,12 @@ describe("AgentPickerModal", () => {
     currentSettings = settings();
     mockSettingsApi.get.mockReset();
     mockSettingsApi.resolveCodingAgentProfile.mockReset();
-    mockSettingsApi.setAgentDefaultProfile.mockReset();
-    mockSettingsApi.setInstanceProfileOverride.mockReset();
+    mockSettingsApi.previewCodingAgentProfileSelection.mockReset();
+    mockSettingsApi.applyCodingAgentProfileSelection.mockReset();
     mockSettingsApi.get.mockResolvedValue(currentSettings);
     mockSettingsApi.resolveCodingAgentProfile.mockImplementation(defaultBackendResolve);
-    mockSettingsApi.setAgentDefaultProfile.mockResolvedValue(undefined);
-    mockSettingsApi.setInstanceProfileOverride.mockResolvedValue(undefined);
+    scopeAwarePreview();
+    mockSettingsApi.applyCodingAgentProfileSelection.mockResolvedValue(applyResult());
   });
 
   afterEach(() => {
@@ -243,7 +357,7 @@ describe("AgentPickerModal", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the Variant C regions and footer actions", async () => {
+  it("renders the selector regions and the scope-picker apply button", async () => {
     const { dispose } = renderPicker();
     await settle();
 
@@ -251,31 +365,41 @@ describe("AgentPickerModal", () => {
     expect(target("agentPicker.profiles")).toBeTruthy();
     expect(target("agentPicker.projected")).toBeTruthy();
     expect(target("agentPicker.cancel")).toBeTruthy();
-    expect(target("agentPicker.setDefault")).toBeTruthy();
-    expect(target("agentPicker.setInstance")).toBeTruthy();
+    expect(target("agentPicker.apply")).toBeTruthy();
+    expect(text("agentPicker.apply")).toContain("Assign to this replica");
     expect(target("agentPicker.provider.codex").getAttribute("data-ac-agent-id")).toBe("codex");
     expect(target("agentPicker.profile.A").getAttribute("data-ac-profile-letter")).toBe("A");
-    expect(target("agentPicker.profile.A").getAttribute("data-ac-agent-id")).toBe("codex");
-    expect(document.querySelector('[data-component="Coding Agents selector panel"]')).toBeTruthy();
-    expect(document.querySelector('[data-component="Selected profile projected parameters panel"]')).toBeTruthy();
 
     dispose();
   });
 
-  it("preserves the no-agent empty state", async () => {
+  it("hides broad scope when no scope context is supplied", async () => {
+    const { dispose } = renderPicker({ scopeContext: undefined });
+    await settle();
+
+    expect(maybe("agentPicker.scope.replica")).toBeNull();
+    expect(maybe("agentPicker.scope.kind")).toBeNull();
+    expect(maybe("agentPicker.scope.workgroup")).toBeNull();
+    // Replica scope is implied; apply is enabled.
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+    dispose();
+  });
+
+  it("preserves the no-agent empty state with apply disabled", async () => {
     currentSettings = settings({ agents: [] });
     mockSettingsApi.get.mockResolvedValue(currentSettings);
     const { dispose } = renderPicker({ currentAgentId: null });
     await settle();
 
     expect(document.body.textContent).toContain("No agents configured. Add agents in Settings.");
-    expect(target<HTMLButtonElement>("agentPicker.setInstance").disabled).toBe(true);
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
 
     dispose();
   });
 
-  it("updates active provider state and projected parameters when a coding agent is clicked", async () => {
-    const { dispose } = renderPicker();
+  it("updates active provider state and projected command when a coding agent is clicked", async () => {
+    const { dispose } = renderPicker({ agentPath: REPO_PATH });
     await settle();
 
     target<HTMLButtonElement>("agentPicker.provider.claude").click();
@@ -283,7 +407,7 @@ describe("AgentPickerModal", () => {
 
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
     expect(text("agentPicker.projected")).toContain("Selected coding agent: Claude Code");
-    expect(text("agentPicker.profile.B")).toContain("missing; launches A");
+    expect(text("agentPicker.projected")).toContain("claude --dangerously-skip-permissions");
 
     dispose();
   });
@@ -304,78 +428,303 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  it("commits instance selections with requested and effective profiles", async () => {
-    const { dispose, onSelect } = renderPicker({ agentPath: REPO_PATH });
+  it("renders safe, workgroup-danger, and cross-workgroup kind scopes for a WG replica", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
     await settle();
 
-    target<HTMLButtonElement>("agentPicker.profile.C").click();
-    await settle();
-    target<HTMLButtonElement>("agentPicker.setInstance").click();
+    expect(target("agentPicker.scope.replica")).toBeTruthy();
+    expect(target("agentPicker.scope.kind")).toBeTruthy();
+    expect(target("agentPicker.scope.workgroup")).toBeTruthy();
+    // Replica scope is safe → apply enabled immediately.
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+    dispose();
+  });
+
+  it("keeps workgroup apply disabled until the arm checkbox is checked", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
     await settle();
 
-    expect(onSelect).toHaveBeenCalledWith(
+    clickRadio("agentPicker.scope.workgroup");
+    await settle();
+
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+    target<HTMLInputElement>("agentPicker.armToggle").click();
+    await settle();
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+    dispose();
+  });
+
+  it("keeps kind apply disabled until preview succeeds and the typed phrase matches", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.kind");
+    await settle();
+
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+    const phrase = target<HTMLInputElement>("agentPicker.kindConfirm").getAttribute("placeholder")!;
+    expect(phrase).toBe("APPLY codex:A TO 3 REPLICAS WITHOUT RESTART");
+
+    const input = target<HTMLInputElement>("agentPicker.kindConfirm");
+    input.value = "APPLY codex:A TO 3 REPLICAS";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+    input.value = phrase;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+    dispose();
+  });
+
+  it("resets the typed confirmation when the profile changes", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.kind");
+    await settle();
+    const input = target<HTMLInputElement>("agentPicker.kindConfirm");
+    input.value = target<HTMLInputElement>("agentPicker.kindConfirm").getAttribute("placeholder")!;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+    // Changing the profile must reset the typed confirmation and re-disable apply.
+    target<HTMLButtonElement>("agentPicker.profile.B").click();
+    await settle();
+    expect(target<HTMLInputElement>("agentPicker.kindConfirm").value).toBe("");
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+    dispose();
+  });
+
+  it("sends confirmedTargetFingerprint and typedConfirmation for a kind apply", async () => {
+    const { dispose, onSelect } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.kind");
+    await settle();
+    const input = target<HTMLInputElement>("agentPicker.kindConfirm");
+    const phrase = input.getAttribute("placeholder")!;
+    input.value = phrase;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+
+    expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
       expect.objectContaining({
-        requestedProfile: "C",
-        effectiveProfile: "B",
-        scope: "instance",
+        scope: "kind",
+        codingAgentId: "codex",
+        profile: "A",
+        restartSessions: false,
+        confirmedTargetFingerprint: "fp-kind",
+        typedConfirmation: phrase,
+      }),
+    );
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "kind", restartSessions: false }),
+    );
+
+    dispose();
+  });
+
+  it("requires a backend preview fingerprint plus the arm checkbox for a workgroup apply", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.workgroup");
+    await settle();
+    target<HTMLInputElement>("agentPicker.armToggle").click();
+    await settle();
+
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+
+    expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "workgroup",
+        confirmedTargetFingerprint: "fp-wg",
+        typedConfirmation: null,
       }),
     );
 
     dispose();
   });
 
-  it("keeps normal repo paths from inheriting matching AC agent defaults", async () => {
-    currentSettings = settings({
-      codingAgentProfiles: {
-        ...settings().codingAgentProfiles,
-        agentDefaults: { repo: "C" },
-      },
+  it("includes the restart toggle in both preview and apply requests", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
     });
-    mockSettingsApi.get.mockResolvedValue(currentSettings);
+    await settle();
+
+    target<HTMLInputElement>("agentPicker.restartToggle").click();
+    await settle();
+
+    // Restart change re-previews with restartSessions: true.
+    expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ restartSessions: true }),
+    );
+
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+    expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "replica", restartSessions: true }),
+    );
+
+    dispose();
+  });
+
+  it("renders live counts and the cross-workgroup target list from the backend preview", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.kind");
+    await settle();
+
+    const targets = target("agentPicker.targets");
+    expect(targets).toBeTruthy();
+    expect(text("agentPicker.targets")).toContain("3 replica(s) across 3 workgroup(s)");
+    expect(text("agentPicker.targets")).toContain("3 live session(s)");
+    // A replica with two live sessions is surfaced per-row.
+    const rows = targets.querySelectorAll('[data-ac-role="row"]');
+    expect(rows.length).toBe(3);
+    expect(targets.querySelector('[data-ac-live-sessions="2"]')).toBeTruthy();
+
+    dispose();
+  });
+
+  it("renders apply errors and keeps the modal open without selecting", async () => {
+    mockSettingsApi.applyCodingAgentProfileSelection.mockResolvedValue(
+      applyResult({
+        scope: "kind",
+        updatedCount: 0,
+        errors: [
+          { code: "staleFingerprint", message: "Targets changed; rerun preview.", sessionIds: [], replicaPaths: [] },
+        ],
+      }),
+    );
     const { dispose, onSelect } = renderPicker({
-      sessionName: "repo",
-      agentPath: REPO_PATH,
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
     });
     await settle();
 
-    expect(target<HTMLButtonElement>("agentPicker.setDefault").disabled).toBe(true);
-    expect(text("agentPicker.projected")).toContain("Default: A");
-    target<HTMLButtonElement>("agentPicker.setInstance").click();
+    clickRadio("agentPicker.scope.kind");
+    await settle();
+    const input = target<HTMLInputElement>("agentPicker.kindConfirm");
+    input.value = input.getAttribute("placeholder")!;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
 
-    expect(onSelect).toHaveBeenCalledWith(
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+
+    expect(target("agentPicker.errors")).toBeTruthy();
+    expect(text("agentPicker.errors")).toContain("staleFingerprint");
+    // Modal stays open; selection is not committed; typed confirmation is reset.
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(maybe("agentPicker.modal")).toBeTruthy();
+
+    dispose();
+  });
+
+  it("applies a replica-scope selection through the backend and then commits", async () => {
+    const { dispose, onSelect } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+
+    expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
       expect.objectContaining({
-        requestedProfile: null,
+        scope: "replica",
+        codingAgentId: "codex",
+        profile: "A",
+        confirmedTargetFingerprint: null,
+        typedConfirmation: null,
+      }),
+    );
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "replica", effectiveProfile: "A" }),
+    );
+
+    dispose();
+  });
+
+  it("does not call the backend apply for a normal repo path", async () => {
+    const { dispose, onSelect } = renderPicker({ agentPath: REPO_PATH, scopeContext: undefined });
+    await settle();
+
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+
+    expect(mockSettingsApi.applyCodingAgentProfileSelection).not.toHaveBeenCalled();
+    expect(mockSettingsApi.previewCodingAgentProfileSelection).not.toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ scope: "replica" }));
+
+    dispose();
+  });
+
+  it("surfaces backend profile-resolution warnings without disabling apply", async () => {
+    mockSettingsApi.resolveCodingAgentProfile.mockResolvedValue(
+      resolution({
+        requestedProfile: "A",
         effectiveProfile: "A",
-        scope: "instance",
+        fallbackChain: ["A"],
+        warnings: ["invalid persisted override ignored"],
       }),
     );
+    const { dispose } = renderPicker();
+    await settle();
+
+    expect(text("agentPicker.fallback")).toContain("Profile warning: invalid persisted override ignored");
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
 
     dispose();
   });
 
-  it("keeps explicit current requested profiles for normal repo paths", async () => {
-    const { dispose, onSelect } = renderPicker({
-      agentPath: REPO_PATH,
-      currentRequestedProfile: "B",
-    });
-    await settle();
-
-    target<HTMLButtonElement>("agentPicker.setInstance").click();
-    await settle();
-
-    expect(onSelect).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestedProfile: "B",
-        effectiveProfile: "B",
-        scope: "instance",
-      }),
-    );
-
-    dispose();
-  });
-
-  it("ignores stale backend preview results after the selected coding agent changes", async () => {
+  it("ignores stale backend resolution results after the selected coding agent changes", async () => {
     const pending: Array<{
       agentId: string;
       resolve: (value: CodingAgentProfileResolution) => void;
@@ -394,166 +743,11 @@ describe("AgentPickerModal", () => {
     expect(pending.map((item) => item.agentId)).toEqual(["codex", "claude"]);
 
     pending[0].resolve(
-      resolution({
-        requestedProfile: "C",
-        effectiveProfile: "C",
-        fallbackChain: ["C"],
-        warnings: ["old warning"],
-      }),
+      resolution({ requestedProfile: "C", effectiveProfile: "C", fallbackChain: ["C"], warnings: ["old warning"] }),
     );
     await settle();
     expect(text("agentPicker.fallback")).not.toContain("old warning");
     expect(text("agentPicker.projected")).toContain("Selected coding agent: Claude Code");
-
-    pending[1].resolve(
-      resolution({
-        requestedProfile: "A",
-        effectiveProfile: "A",
-        fallbackChain: ["A"],
-      }),
-    );
-    await settle();
-    expect(text("agentPicker.projected")).toContain("Requested A resolves to A as configured");
-
-    dispose();
-  });
-
-  it("clears existing instance override when setting a new default", async () => {
-    const { dispose, onSelect } = renderPicker({ currentRequestedProfile: "C" });
-    await settle();
-
-    target<HTMLButtonElement>("agentPicker.profile.B").click();
-    await settle();
-    target<HTMLButtonElement>("agentPicker.setDefault").click();
-    await settle();
-
-    expect(SettingsAPI.setAgentDefaultProfile).toHaveBeenCalledWith(AC_AGENT_PATH, "B");
-    expect(SettingsAPI.setInstanceProfileOverride).toHaveBeenCalledWith(AC_AGENT_PATH, null);
-    expect(onSelect).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestedProfile: "B",
-        effectiveProfile: "B",
-        scope: "default",
-      }),
-    );
-
-    dispose();
-  });
-
-  it("does not project argv or env from disabled profile cells", async () => {
-    currentSettings = settings({
-      codingAgentProfiles: {
-        ...settings().codingAgentProfiles,
-        agentDefaults: {},
-        matrix: {
-          codex: {
-            A: {
-              enabled: false,
-              argv: ["--stale"],
-              env: { STALE_ENV: "1" },
-              notes: "stale",
-            },
-          },
-        },
-      },
-    });
-    mockSettingsApi.get.mockResolvedValue(currentSettings);
-    const { dispose } = renderPicker({ agentPath: REPO_PATH });
-    await settle();
-
-    expect(text("agentPicker.projected")).toContain("Profile args none");
-    expect(text("agentPicker.projected")).toContain("Profile env none");
-    expect(text("agentPicker.projected")).not.toContain("--stale");
-    expect(text("agentPicker.projected")).not.toContain("STALE_ENV");
-
-    dispose();
-  });
-
-  it("does not convert focused footer Enter into the instance action", async () => {
-    const { dispose, onSelect } = renderPicker();
-    await settle();
-
-    const defaultButton = target<HTMLButtonElement>("agentPicker.setDefault");
-    defaultButton.focus();
-    defaultButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    await settle();
-    expect(onSelect).not.toHaveBeenCalled();
-
-    defaultButton.click();
-    await settle();
-    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ scope: "default" }));
-
-    dispose();
-  });
-
-  it("surfaces backend profile-resolution warnings without disabling instance launch", async () => {
-    mockSettingsApi.resolveCodingAgentProfile.mockResolvedValue(
-      resolution({
-        requestedProfile: "A",
-        effectiveProfile: "A",
-        fallbackChain: ["A"],
-        warnings: ["invalid persisted override ignored"],
-      }),
-    );
-    const { dispose } = renderPicker();
-    await settle();
-
-    expect(text("agentPicker.fallback")).toContain("Profile warning: invalid persisted override ignored");
-    expect(target<HTMLButtonElement>("agentPicker.setInstance").disabled).toBe(false);
-
-    dispose();
-  });
-
-  it("keeps fallback explanation visible when backend warnings are also present", async () => {
-    mockSettingsApi.resolveCodingAgentProfile.mockResolvedValue(
-      resolution({
-        requestedProfile: "C",
-        effectiveProfile: "B",
-        fallbackChain: ["C", "B"],
-        fallbackApplied: true,
-        warnings: ["persisted profile required fallback"],
-      }),
-    );
-    const { dispose } = renderPicker({ currentRequestedProfile: "C" });
-    await settle();
-
-    expect(text("agentPicker.fallback")).toContain("Profile warning: persisted profile required fallback");
-    expect(text("agentPicker.fallback")).toContain("C-REVIEW is not configured");
-    expect(text("agentPicker.fallback")).toContain("A remains the final fallback");
-
-    dispose();
-  });
-
-  it("shows Codex home isolation for command-based Codex agents with custom IDs", async () => {
-    currentSettings = settings({
-      agents: [
-        agent({
-          id: "codex-fast",
-          label: "Codex Fast",
-          command: "codex",
-          isolateCodexHome: false,
-        }),
-      ],
-      codingAgentProfiles: {
-        ...settings().codingAgentProfiles,
-        matrix: {
-          "codex-fast": {
-            A: {
-              enabled: true,
-              argv: [],
-              env: {},
-              notes: "",
-            },
-          },
-        },
-      },
-    });
-    mockSettingsApi.get.mockResolvedValue(currentSettings);
-    const { dispose } = renderPicker({ currentAgentId: "codex-fast" });
-    await settle();
-
-    expect(text("agentPicker.projected")).toContain("Selected coding agent: Codex Fast");
-    expect(text("agentPicker.projected")).toContain("Codex home isolation disabled");
 
     dispose();
   });

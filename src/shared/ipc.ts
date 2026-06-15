@@ -25,6 +25,12 @@ import type {
   AgencyTemplatesUpdateResult,
   RoleTemplateMeta,
   CodingAgentProfileResolution,
+  ProfileAssignmentScope,
+  ProfileAssignmentError,
+  PreviewCodingAgentProfileSelectionRequest,
+  PreviewCodingAgentProfileSelectionResult,
+  ApplyCodingAgentProfileSelectionRequest,
+  ApplyCodingAgentProfileSelectionResult,
   SpecBoardDocument,
   SpecBoardSnapshot,
   SpecBoardChangedEvent,
@@ -113,12 +119,27 @@ export interface CreateRootAgentOptions {
   requestedProfile?: string | null;
 }
 
+/** @deprecated Issue #384 v1 compatibility: the legacy per-agent default/instance
+ *  scope. Superseded by {@link ProfileAssignmentScope}. */
 export type ProfileSelectionScope = "default" | "instance";
 
+/**
+ * Single stable payload for `coding_agent_profile_selection_updated`, emitted by
+ * both the legacy `set_agent_default_profile`/`set_instance_profile_override`
+ * commands and the new broad-scope apply (#384 §7). All fields beyond `scope`
+ * are optional because broad-scope applies touch many replicas (no single
+ * `agentPath`). `scope` is a plain string to tolerate both the legacy
+ * default/instance emitters and the v2 replica/kind/workgroup apply.
+ */
 export interface CodingAgentProfileSelectionUpdatedPayload {
-  agentPath: string;
-  profile: string | null;
-  scope: ProfileSelectionScope;
+  scope: ProfileAssignmentScope | ProfileSelectionScope | string;
+  agentPath?: string;
+  codingAgentId?: string;
+  profile?: string | null;
+  updatedCount?: number;
+  restartedCount?: number;
+  targetFingerprint?: string;
+  errors?: ProfileAssignmentError[];
 }
 
 export const SessionAPI = {
@@ -228,6 +249,24 @@ export const SettingsAPI = {
     transport.invoke<void>("set_agent_default_profile", { agentPath, profile }),
   setInstanceProfileOverride: (agentPath: string, profile: string | null) =>
     transport.invoke<void>("set_instance_profile_override", { agentPath, profile }),
+  // #384 §7 — broad-scope assignment. Preview enumerates targets + live sessions
+  // and returns a fingerprint; apply re-enumerates on the backend and rejects a
+  // stale `confirmedTargetFingerprint`. The frontend target list is display-only;
+  // the backend is authoritative for enumeration, writes, and restarts.
+  previewCodingAgentProfileSelection: (
+    request: PreviewCodingAgentProfileSelectionRequest,
+  ) =>
+    transport.invoke<PreviewCodingAgentProfileSelectionResult>(
+      "preview_coding_agent_profile_selection",
+      { request },
+    ),
+  applyCodingAgentProfileSelection: (
+    request: ApplyCodingAgentProfileSelectionRequest,
+  ) =>
+    transport.invoke<ApplyCodingAgentProfileSelectionResult>(
+      "apply_coding_agent_profile_selection",
+      { request },
+    ),
   resolveCodingAgentProfile: (
     agentPath: string | null,
     agentId: string,

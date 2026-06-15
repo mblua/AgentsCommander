@@ -17,7 +17,7 @@ const CUSTOM_PRESET: AgentPreset = {
     gitPullBefore: false,
     excludeGlobalClaudeMd: true,
     envs: [],
-    isolateCodexHome: false,
+    isolatedHome: false,
   },
 };
 
@@ -74,7 +74,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
           gitPullBefore: false,
           excludeGlobalClaudeMd: true,
           envs: [],
-          isolateCodexHome: false,
+          isolatedHome: false,
         };
       } else {
         agent = { id: newAgentId(), ...preset.config };
