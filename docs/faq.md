@@ -8,11 +8,11 @@ No. AC does not include an LLM. It spawns and coordinates the coding-agent CLIs 
 
 ## Which coding agents are supported?
 
-Claude Code, Codex, and Gemini. Adding more is on the [roadmap](../ROADMAP.md) — OpenCode and a Nvidia agent are the next two slots.
+Claude Code, Codex, and Gemini have first-class tuned profiles (resume tokens, idle tuning). OpenCode works today too, through the custom coding-agent path: because OpenCode is provider-agnostic you can point it at any provider or model. A first-class OpenCode profile and an Nvidia agent are on the [roadmap](../ROADMAP.md).
 
 ## What about OpenCode?
 
-Planned, not yet wired. See `session/profile.rs::CodingAgentKind` for the current enum; OpenCode will join when the per-agent profile work lands. Track it on the [roadmap](../ROADMAP.md).
+Usable today. OpenCode is provider-agnostic, so you add it as a custom coding agent (Settings, Coding Agents, Add agent) and point it at any provider or model. That is what lets AC drive any model through it, including OpenRouter Fusion. What is still planned is a first-class tuned profile: its own `CodingAgentKind` variant with resume tokens and idle tuning. The current enum is in `session/profile.rs::CodingAgentKind`. Track the tuned profile on the [roadmap](../ROADMAP.md).
 
 ## Do I need Python or LangChain?
 

@@ -12,6 +12,8 @@ AgentsCommander is **not** a coding agent. It spawns coding-agent processes and 
 | **Codex** | `codex` | `resume --last` | OpenAI's coding agent CLI. |
 | **Gemini** | `gemini` | `--resume latest` | Google's CLI. |
 
+> **OpenCode** runs today through the custom coding-agent path (see [Adding a custom coding-agent profile](#adding-a-custom-coding-agent-profile)). OpenCode is provider-agnostic, so you can point it at any provider or model, including OpenRouter Fusion. It does not yet have a first-class tuned profile (resume tokens, idle tuning); that work is tracked as [#315](https://github.com/mblua/AgentsCommander/issues/315).
+
 Detection rule: AC inspects the shell command + args, takes each token's executable basename (lowercased, `.exe` stripped), and matches by **prefix** with precedence Claude > Codex > Gemini. Wrappers named `claude-foo` or `codex-bar` match automatically. Anything else falls through to the plain-shell behavior (no resume tokens, generic idle tuning).
 
 The full enum is in `session/profile.rs::CodingAgentKind`.
@@ -79,7 +81,7 @@ To make AC recognise a new CLI (e.g. a custom wrapper) under the **Coding Agents
 
 The new entry appears in the launcher dropdown immediately. AC will spawn the binary as-is — no resume tokens are injected unless the binary's basename starts with `claude`, `codex`, or `gemini`.
 
-For deeper integration (a new `CodingAgentKind` with its own resume tokens and idle tuning), you need to add a profile to `src-tauri/src/session/profile.rs` and rebuild. Track the OpenCode integration on the [roadmap](../../ROADMAP.md) for the canonical example of how this is done.
+For deeper integration (a new `CodingAgentKind` with its own resume tokens and idle tuning), you need to add a profile to `src-tauri/src/session/profile.rs` and rebuild. OpenCode already runs through the custom-agent steps above; its first-class tuned profile is tracked on the [roadmap](../../ROADMAP.md) ([#315](https://github.com/mblua/AgentsCommander/issues/315)) as the canonical example of how a new `CodingAgentKind` is added.
 
 ## Authentication and secrets
 
@@ -98,4 +100,4 @@ If you use the AC-managed agent directories, AC may write minimal `.claude/setti
 - [Creating agents](../agents/creating-agents.md) — make a new agent dir
 - [Settings reference](../reference/settings.md) — full schema for `agents[]`
 - [RTK integration](../features/rtk-integration.md) — Claude Code Bash-tool compression
-- [Roadmap — coding agents](../../ROADMAP.md) — OpenCode, Nvidia agent, more
+- [Roadmap: coding agents](../../ROADMAP.md): OpenCode first-class profile, Nvidia agent, more
