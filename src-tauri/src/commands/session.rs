@@ -1591,6 +1591,32 @@ pub async fn restart_session_inner<R: tauri::Runtime>(
     requested_profile: Option<String>,
     skip_auto_resume: Option<bool>,
 ) -> Result<SessionInfo, String> {
+    restart_session_inner_with_activation(
+        app,
+        session_mgr,
+        pty_mgr,
+        settings,
+        uuid,
+        agent_id,
+        requested_profile,
+        skip_auto_resume,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    settings: &SettingsState,
+    uuid: Uuid,
+    agent_id: Option<String>,
+    requested_profile: Option<String>,
+    skip_auto_resume: Option<bool>,
+    activate_after: bool,
+) -> Result<SessionInfo, String> {
     // 1. Read config from existing session BEFORE destroying it
     let (
         shell,
@@ -1688,19 +1714,21 @@ pub async fn restart_session_inner<R: tauri::Runtime>(
     )
     .await?;
 
-    // 5. Explicitly activate the new session.
-    //    destroy_session_inner may have auto-activated a sibling.
-    //    create_session_inner only auto-activates if active.is_none().
-    //    With multiple sessions, the new session would NOT be active without this.
     let new_uuid = Uuid::parse_str(&session_info.id).map_err(|e| e.to_string())?;
-    {
-        let mgr = session_mgr.read().await;
-        let _ = mgr.switch_session(new_uuid).await;
+    if activate_after {
+        // 5. Explicitly activate the new session.
+        //    destroy_session_inner may have auto-activated a sibling.
+        //    create_session_inner only auto-activates if active.is_none().
+        //    With multiple sessions, the new session would NOT be active without this.
+        {
+            let mgr = session_mgr.read().await;
+            let _ = mgr.switch_session(new_uuid).await;
+        }
+        let _ = app.emit(
+            "session_switched",
+            serde_json::json!({ "id": session_info.id, "userInitiated": true }),
+        );
     }
-    let _ = app.emit(
-        "session_switched",
-        serde_json::json!({ "id": session_info.id, "userInitiated": true }),
-    );
 
     // 6. Re-attach Telegram bridge from live persisted intent, or fall back to repo config.
     if telegram_bot_id.is_some() {
@@ -2278,7 +2306,7 @@ mod tests {
                     git_pull_before: false,
                     exclude_global_claude_md: false,
                     envs: Vec::new(),
-                    isolate_codex_home: false,
+                    isolated_home: false,
                 },
                 AgentConfig {
                     id: "codex".to_string(),
@@ -2288,7 +2316,7 @@ mod tests {
                     git_pull_before: false,
                     exclude_global_claude_md: false,
                     envs: Vec::new(),
-                    isolate_codex_home: false,
+                    isolated_home: false,
                 },
             ],
             ..AppSettings::default()
@@ -2366,14 +2394,14 @@ mod tests {
         let mut settings = test_settings();
         settings
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .entry("codex".to_string())
             .or_default()
             .insert(
                 "C".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    argv: vec!["--profile-c".to_string()],
+                    command: "codex --profile-c".to_string(),
                     env: BTreeMap::new(),
                     notes: String::new(),
                 },
@@ -2758,7 +2786,7 @@ mod tests {
             git_pull_before: false,
             exclude_global_claude_md: false,
             envs: Vec::new(),
-            isolate_codex_home: false,
+            isolated_home: false,
         });
 
         let resolved = resolve_actual_agent(
@@ -2835,7 +2863,7 @@ mod tests {
             git_pull_before: false,
             exclude_global_claude_md: false,
             envs: Vec::new(),
-            isolate_codex_home: false,
+            isolated_home: false,
         }];
 
         let resolved = resolve_agent_from_shell("codex", &[], &settings);

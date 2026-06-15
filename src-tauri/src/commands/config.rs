@@ -1,5 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
@@ -12,6 +15,7 @@ use crate::config::settings::{
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::session::SessionInfo;
 use crate::web::auth::WebAccessToken;
 use crate::web::broadcast::WsBroadcaster;
 use crate::{RtkStartupModeState, RtkSweepLockState, WebServerHandle};
@@ -202,12 +206,7 @@ fn agent_env_settings_by_id(
     settings
         .agents
         .iter()
-        .map(|agent| {
-            (
-                agent.id.clone(),
-                (agent.envs.clone(), agent.isolate_codex_home),
-            )
-        })
+        .map(|agent| (agent.id.clone(), (agent.envs.clone(), agent.isolated_home)))
         .collect()
 }
 
@@ -254,9 +253,9 @@ pub async fn update_coding_agent_env_settings(
     settings: State<'_, SettingsState>,
     agent_id: String,
     envs: Vec<CodingAgentEnv>,
-    isolate_codex_home: bool,
+    isolated_home: bool,
 ) -> Result<(), String> {
-    persist_coding_agent_env_settings_update(settings.inner(), &agent_id, envs, isolate_codex_home)
+    persist_coding_agent_env_settings_update(settings.inner(), &agent_id, envs, isolated_home)
         .await?;
     let _ = app.emit(
         "coding_agent_env_settings_updated",
@@ -269,7 +268,7 @@ async fn persist_coding_agent_env_settings_update(
     settings: &SettingsState,
     agent_id: &str,
     envs: Vec<CodingAgentEnv>,
-    isolate_codex_home: bool,
+    isolated_home: bool,
 ) -> Result<(), String> {
     let mut s = settings.write().await;
     let mut candidate = s.clone();
@@ -279,7 +278,7 @@ async fn persist_coding_agent_env_settings_update(
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Agent '{}' is not configured", agent_id))?;
     agent.envs = envs;
-    agent.isolate_codex_home = isolate_codex_home;
+    agent.isolated_home = isolated_home;
     validate_and_repair_settings(&mut candidate)?;
     save_settings(&candidate)?;
     *s = candidate;
@@ -357,6 +356,598 @@ pub async fn resolve_coding_agent_profile(
         agent_default_profile: details.agent_default_profile,
         warnings: details.resolution.warnings,
     })
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileAssignmentScope {
+    Replica,
+    Kind,
+    Workgroup,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileAssignmentTarget {
+    pub workgroup_name: String,
+    pub workgroup_path: String,
+    pub replica_name: String,
+    pub replica_path: String,
+    pub identity_path: String,
+    pub origin_project: Option<String>,
+    pub live_session_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCodingAgentProfileSelectionRequest {
+    pub target_replica_path: String,
+    pub coding_agent_id: String,
+    pub profile: String,
+    pub scope: ProfileAssignmentScope,
+    #[serde(default)]
+    pub restart_sessions: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCodingAgentProfileSelectionResult {
+    pub scope: ProfileAssignmentScope,
+    pub target_count: usize,
+    pub live_session_count: usize,
+    pub target_fingerprint: String,
+    pub requires_explicit_confirmation: bool,
+    pub targets: Vec<ProfileAssignmentTarget>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyCodingAgentProfileSelectionRequest {
+    pub target_replica_path: String,
+    pub coding_agent_id: String,
+    pub profile: String,
+    pub scope: ProfileAssignmentScope,
+    pub restart_sessions: bool,
+    pub confirmed_target_fingerprint: Option<String>,
+    pub typed_confirmation: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileAssignmentError {
+    pub code: String,
+    pub message: String,
+    pub session_ids: Vec<String>,
+    pub replica_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyCodingAgentProfileSelectionResult {
+    pub scope: ProfileAssignmentScope,
+    pub updated_count: usize,
+    pub restarted_count: usize,
+    pub updated_replica_paths: Vec<String>,
+    pub restarted_session_ids: Vec<String>,
+    pub destroyed_but_not_recreated_session_ids: Vec<String>,
+    pub target_fingerprint: String,
+    pub warnings: Vec<String>,
+    pub errors: Vec<ProfileAssignmentError>,
+}
+
+#[tauri::command]
+pub async fn preview_coding_agent_profile_selection(
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    settings: State<'_, SettingsState>,
+    request: PreviewCodingAgentProfileSelectionRequest,
+) -> Result<PreviewCodingAgentProfileSelectionResult, String> {
+    let settings_snapshot = settings.read().await.clone();
+    validate_profile_assignment_request(
+        &settings_snapshot,
+        &request.coding_agent_id,
+        &request.profile,
+    )?;
+    let sessions = { session_mgr.read().await.list_sessions().await };
+    let enumeration = enumerate_profile_assignment_targets(
+        &settings_snapshot,
+        Path::new(&request.target_replica_path),
+        &request.scope,
+        &sessions,
+    )?;
+    let normalized_profile = normalize_profile_letter_for_assignment(&request.profile)?;
+    let target_fingerprint = profile_assignment_fingerprint(
+        &request.coding_agent_id,
+        &normalized_profile,
+        request.restart_sessions,
+        &enumeration.canonical_target_paths,
+    );
+    let live_session_count = enumeration
+        .targets
+        .iter()
+        .map(|target| target.live_session_ids.len())
+        .sum();
+    Ok(PreviewCodingAgentProfileSelectionResult {
+        scope: request.scope.clone(),
+        target_count: enumeration.targets.len(),
+        live_session_count,
+        target_fingerprint,
+        requires_explicit_confirmation: request.scope == ProfileAssignmentScope::Kind,
+        targets: enumeration.targets,
+        warnings: enumeration.warnings,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn apply_coding_agent_profile_selection(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    pty_mgr: State<'_, Arc<std::sync::Mutex<PtyManager>>>,
+    settings: State<'_, SettingsState>,
+    request: ApplyCodingAgentProfileSelectionRequest,
+) -> Result<ApplyCodingAgentProfileSelectionResult, String> {
+    let apply_lock = broad_profile_apply_lock().lock().await;
+    let settings_snapshot = settings.read().await.clone();
+    validate_profile_assignment_request(
+        &settings_snapshot,
+        &request.coding_agent_id,
+        &request.profile,
+    )?;
+    let normalized_profile = normalize_profile_letter_for_assignment(&request.profile)?;
+    let sessions = { session_mgr.read().await.list_sessions().await };
+    let enumeration = enumerate_profile_assignment_targets(
+        &settings_snapshot,
+        Path::new(&request.target_replica_path),
+        &request.scope,
+        &sessions,
+    )?;
+    let target_fingerprint = profile_assignment_fingerprint(
+        &request.coding_agent_id,
+        &normalized_profile,
+        request.restart_sessions,
+        &enumeration.canonical_target_paths,
+    );
+    validate_profile_assignment_confirmation(
+        &request,
+        &target_fingerprint,
+        enumeration.targets.len(),
+    )?;
+
+    if request.restart_sessions {
+        prevalidate_profile_assignment_restarts(
+            &settings_snapshot,
+            &request.coding_agent_id,
+            &normalized_profile,
+            &enumeration.targets,
+        )?;
+    }
+
+    let mut updated_replica_paths = Vec::new();
+    let mut write_succeeded_keys = BTreeSet::new();
+    let mut errors = Vec::new();
+    for target in &enumeration.targets {
+        match crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+            &settings_snapshot,
+            Path::new(&target.replica_path),
+            &request.coding_agent_id,
+            &normalized_profile,
+        ) {
+            Ok(()) => {
+                updated_replica_paths.push(target.replica_path.clone());
+                write_succeeded_keys.insert(canonical_compare_key(Path::new(&target.replica_path)));
+            }
+            Err(e) => errors.push(ProfileAssignmentError {
+                code: "configWriteFailed".to_string(),
+                message: e,
+                session_ids: target.live_session_ids.clone(),
+                replica_paths: vec![target.replica_path.clone()],
+            }),
+        }
+    }
+    drop(apply_lock);
+
+    let mut restarted_session_ids = Vec::new();
+    let mut destroyed_but_not_recreated_session_ids = Vec::new();
+    if request.restart_sessions && !write_succeeded_keys.is_empty() {
+        for target in &enumeration.targets {
+            if !write_succeeded_keys
+                .contains(&canonical_compare_key(Path::new(&target.replica_path)))
+            {
+                continue;
+            }
+            for session_id in &target.live_session_ids {
+                let Ok(uuid) = uuid::Uuid::parse_str(session_id) else {
+                    continue;
+                };
+                match crate::commands::session::restart_session_inner_with_activation(
+                    &app,
+                    session_mgr.inner(),
+                    pty_mgr.inner(),
+                    settings.inner(),
+                    uuid,
+                    Some(request.coding_agent_id.clone()),
+                    Some(normalized_profile.clone()),
+                    Some(true),
+                    false,
+                )
+                .await
+                {
+                    Ok(_) => restarted_session_ids.push(session_id.clone()),
+                    Err(e) => {
+                        errors.push(ProfileAssignmentError {
+                            code: "restartFailed".to_string(),
+                            message: e,
+                            session_ids: vec![session_id.clone()],
+                            replica_paths: vec![target.replica_path.clone()],
+                        });
+                        destroyed_but_not_recreated_session_ids.push(session_id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let result = ApplyCodingAgentProfileSelectionResult {
+        scope: request.scope.clone(),
+        updated_count: updated_replica_paths.len(),
+        restarted_count: restarted_session_ids.len(),
+        updated_replica_paths,
+        restarted_session_ids,
+        destroyed_but_not_recreated_session_ids,
+        target_fingerprint,
+        warnings: enumeration.warnings,
+        errors,
+    };
+    let _ = app.emit(
+        "coding_agent_profile_selection_updated",
+        serde_json::json!({
+            "scope": request.scope,
+            "codingAgentId": request.coding_agent_id,
+            "profile": normalized_profile,
+            "updatedCount": result.updated_count,
+            "restartedCount": result.restarted_count,
+            "targetFingerprint": &result.target_fingerprint,
+            "errors": &result.errors,
+        }),
+    );
+    Ok(result)
+}
+
+struct ProfileTargetEnumeration {
+    targets: Vec<ProfileAssignmentTarget>,
+    canonical_target_paths: Vec<String>,
+    warnings: Vec<String>,
+}
+
+fn broad_profile_apply_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn validate_profile_assignment_request(
+    settings: &AppSettings,
+    coding_agent_id: &str,
+    profile: &str,
+) -> Result<(), String> {
+    if !settings
+        .agents
+        .iter()
+        .any(|agent| agent.id == coding_agent_id)
+    {
+        return Err(format!("Agent '{}' is not configured", coding_agent_id));
+    }
+    normalize_profile_letter_for_assignment(profile)?;
+    Ok(())
+}
+
+fn normalize_profile_letter_for_assignment(profile: &str) -> Result<String, String> {
+    crate::config::settings::normalize_profile_letter(profile)
+        .ok_or_else(|| "Profile must be a single letter A through Z".to_string())
+}
+
+fn validate_profile_assignment_confirmation(
+    request: &ApplyCodingAgentProfileSelectionRequest,
+    fingerprint: &str,
+    target_count: usize,
+) -> Result<(), String> {
+    if request.scope != ProfileAssignmentScope::Replica {
+        match request.confirmed_target_fingerprint.as_deref() {
+            Some(value) if value == fingerprint => {}
+            _ => {
+                return Err(
+                    "Target selection changed. Rerun preview before applying profile selection."
+                        .to_string(),
+                )
+            }
+        }
+    } else if let Some(value) = request.confirmed_target_fingerprint.as_deref() {
+        if value != fingerprint {
+            return Err(
+                "Target selection changed. Rerun preview before applying profile selection."
+                    .to_string(),
+            );
+        }
+    }
+
+    if request.scope == ProfileAssignmentScope::Kind {
+        let restart = if request.restart_sessions {
+            "WITH RESTART"
+        } else {
+            "WITHOUT RESTART"
+        };
+        let expected = format!(
+            "APPLY {}:{} TO {} REPLICAS {}",
+            request.coding_agent_id,
+            normalize_profile_letter_for_assignment(&request.profile)?,
+            target_count,
+            restart
+        );
+        if request.typed_confirmation.as_deref() != Some(expected.as_str()) {
+            return Err("Typed confirmation does not match the current target preview".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn prevalidate_profile_assignment_restarts(
+    settings: &AppSettings,
+    coding_agent_id: &str,
+    profile: &str,
+    targets: &[ProfileAssignmentTarget],
+) -> Result<(), String> {
+    for target in targets {
+        if target.live_session_ids.is_empty() {
+            continue;
+        }
+        crate::config::agent_command::build_agent_spawn_command(
+            settings,
+            coding_agent_id,
+            Some(Path::new(&target.replica_path)),
+            Some(profile),
+        )?;
+    }
+    Ok(())
+}
+
+fn enumerate_profile_assignment_targets(
+    settings: &AppSettings,
+    target_replica_path: &Path,
+    scope: &ProfileAssignmentScope,
+    sessions: &[SessionInfo],
+) -> Result<ProfileTargetEnumeration, String> {
+    let target_replica = canonical_real_dir(target_replica_path, "target replica")?;
+    validate_wg_replica_path(&target_replica)?;
+    let (_target_config, target_identity) =
+        crate::config::replica_identity::read_wg_replica_config_read_only(&target_replica)?;
+    let mut warnings = Vec::new();
+    let mut candidate_dirs = Vec::new();
+    match scope {
+        ProfileAssignmentScope::Replica => candidate_dirs.push(target_replica.clone()),
+        ProfileAssignmentScope::Workgroup => {
+            let wg_dir = target_replica
+                .parent()
+                .ok_or_else(|| "Target replica has no workgroup parent".to_string())?;
+            collect_replica_dirs_in_workgroup(wg_dir, &mut candidate_dirs)?;
+        }
+        ProfileAssignmentScope::Kind => {
+            for workspace in
+                crate::config::coding_agent_profiles::configured_workspace_dirs(settings)
+            {
+                collect_kind_replica_dirs(&workspace, &mut candidate_dirs)?;
+            }
+        }
+    }
+
+    let live_by_cwd = live_sessions_by_cwd(sessions);
+    let mut seen = BTreeSet::new();
+    let mut targets = Vec::new();
+    for candidate in candidate_dirs {
+        let Ok(replica_dir) = canonical_real_dir(&candidate, "candidate replica") else {
+            warnings.push(format!(
+                "Skipping unreadable replica '{}'",
+                candidate.display()
+            ));
+            continue;
+        };
+        let key = canonical_compare_key(&replica_dir);
+        if !seen.insert(key) {
+            continue;
+        }
+        let Ok((_, identity)) =
+            crate::config::replica_identity::read_wg_replica_config_read_only(&replica_dir)
+        else {
+            warnings.push(format!(
+                "Skipping invalid replica '{}'",
+                replica_dir.display()
+            ));
+            continue;
+        };
+        if *scope == ProfileAssignmentScope::Kind
+            && canonical_compare_key(&identity.matrix_dir)
+                != canonical_compare_key(&target_identity.matrix_dir)
+        {
+            continue;
+        }
+        let target = build_profile_assignment_target(&replica_dir, &identity, &live_by_cwd);
+        targets.push(target);
+    }
+    targets.sort_by(|a, b| {
+        a.workgroup_name
+            .cmp(&b.workgroup_name)
+            .then_with(|| a.replica_name.cmp(&b.replica_name))
+            .then_with(|| a.replica_path.cmp(&b.replica_path))
+    });
+    let canonical_target_paths = targets
+        .iter()
+        .map(|target| canonical_compare_key(Path::new(&target.replica_path)))
+        .collect();
+    Ok(ProfileTargetEnumeration {
+        targets,
+        canonical_target_paths,
+        warnings,
+    })
+}
+
+pub(crate) fn canonical_compare_key(path: &Path) -> String {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut text = path
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .replace('\\', "/");
+    if cfg!(windows) {
+        text = text.to_ascii_lowercase();
+    }
+    text
+}
+
+fn canonical_real_dir(path: &Path, label: &str) -> Result<PathBuf, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("{} '{}' is not readable: {}", label, path.display(), e))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{} '{}' is not a real directory",
+            label,
+            path.display()
+        ));
+    }
+    std::fs::canonicalize(path)
+        .map(|path| {
+            let text = path.to_string_lossy();
+            text.strip_prefix(r"\\?\")
+                .map(PathBuf::from)
+                .unwrap_or(path)
+        })
+        .map_err(|e| {
+            format!(
+                "Failed to canonicalize {} '{}': {}",
+                label,
+                path.display(),
+                e
+            )
+        })
+}
+
+fn validate_wg_replica_path(path: &Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !name.starts_with("__agent_") {
+        return Err(format!("Target '{}' is not a WG replica", path.display()));
+    }
+    let wg_name = path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !wg_name.starts_with("wg-") {
+        return Err(format!(
+            "Target '{}' is not inside a wg-* workgroup",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(wg_dir)
+        .map_err(|e| format!("Failed to read workgroup '{}': {}", wg_dir.display(), e))?;
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with("__agent_") {
+            out.push(entry.path());
+        }
+    }
+    Ok(())
+}
+
+fn collect_kind_replica_dirs(workspace: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(workspace)
+        .map_err(|e| format!("Failed to read workspace '{}': {}", workspace.display(), e))?;
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || !entry.file_name().to_string_lossy().starts_with("wg-") {
+            continue;
+        }
+        collect_replica_dirs_in_workgroup(&entry.path(), out)?;
+    }
+    Ok(())
+}
+
+fn live_sessions_by_cwd(sessions: &[SessionInfo]) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for session in sessions {
+        if matches!(
+            session.status,
+            crate::session::session::SessionStatus::Exited(_)
+        ) {
+            continue;
+        }
+        out.entry(canonical_compare_key(Path::new(&session.working_directory)))
+            .or_default()
+            .push(session.id.clone());
+    }
+    out
+}
+
+fn build_profile_assignment_target(
+    replica_dir: &Path,
+    identity: &crate::config::replica_identity::WgReplicaIdentity,
+    live_by_cwd: &BTreeMap<String, Vec<String>>,
+) -> ProfileAssignmentTarget {
+    let wg_dir = replica_dir.parent().unwrap_or_else(|| Path::new(""));
+    let workgroup_name = wg_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_string();
+    let replica_name = replica_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("__agent_"))
+        .unwrap_or("")
+        .to_string();
+    let origin_project = identity
+        .workspace_dir
+        .parent()
+        .and_then(|project| project.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::to_string);
+    ProfileAssignmentTarget {
+        workgroup_name,
+        workgroup_path: wg_dir.to_string_lossy().to_string(),
+        replica_name,
+        replica_path: replica_dir.to_string_lossy().to_string(),
+        identity_path: identity.identity.clone(),
+        origin_project,
+        live_session_ids: live_by_cwd
+            .get(&canonical_compare_key(replica_dir))
+            .cloned()
+            .unwrap_or_default(),
+    }
+}
+
+fn profile_assignment_fingerprint(
+    coding_agent_id: &str,
+    profile: &str,
+    restart_sessions: bool,
+    canonical_target_paths: &[String],
+) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    coding_agent_id.hash(&mut hasher);
+    profile.hash(&mut hasher);
+    restart_sessions.hash(&mut hasher);
+    canonical_target_paths.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 #[tauri::command]
@@ -703,7 +1294,7 @@ mod tests {
                 git_pull_before: false,
                 exclude_global_claude_md: false,
                 envs: Vec::new(),
-                isolate_codex_home: false,
+                isolated_home: false,
             }],
             ..AppSettings::default()
         }
@@ -711,6 +1302,25 @@ mod tests {
 
     fn state_for(settings: AppSettings) -> SettingsState {
         Arc::new(RwLock::new(settings))
+    }
+
+    #[test]
+    fn profile_assignment_fingerprint_uses_typed_fields() {
+        let targets = vec!["c:/ac/wg-1/__agent_a".to_string()];
+
+        let ab_c = super::profile_assignment_fingerprint("ab", "C", false, &targets);
+        let a_bc = super::profile_assignment_fingerprint("a", "BC", false, &targets);
+        let restart = super::profile_assignment_fingerprint("ab", "C", true, &targets);
+        let other_targets = super::profile_assignment_fingerprint(
+            "ab",
+            "C",
+            false,
+            &["c:/ac/wg-1/__agent_b".to_string()],
+        );
+
+        assert_ne!(ab_c, a_bc);
+        assert_ne!(ab_c, restart);
+        assert_ne!(ab_c, other_targets);
     }
 
     #[tokio::test]
@@ -722,7 +1332,7 @@ mod tests {
             source: CodingAgentEnvSource::User,
             enabled: true,
         }];
-        original.agents[0].isolate_codex_home = true;
+        original.agents[0].isolated_home = true;
         let state = state_for(original.clone());
 
         let err = persist_coding_agent_env_settings_update(
@@ -743,8 +1353,8 @@ mod tests {
         let live = state.read().await;
         assert_eq!(live.agents[0].envs, original.agents[0].envs);
         assert_eq!(
-            live.agents[0].isolate_codex_home,
-            original.agents[0].isolate_codex_home
+            live.agents[0].isolated_home,
+            original.agents[0].isolated_home
         );
     }
 
@@ -753,14 +1363,14 @@ mod tests {
         let original = settings_with_single_agent();
         let mut invalid_profiles = original.coding_agent_profiles.clone();
         invalid_profiles
-            .matrix
+            .profiles_by_agent
             .entry("agent-0".to_string())
             .or_default()
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    argv: Vec::new(),
+                    command: String::new(),
                     env: BTreeMap::from([("AGENTSCOMMANDER_ROOT".to_string(), "bad".to_string())]),
                     notes: String::new(),
                 },
@@ -786,17 +1396,17 @@ mod tests {
             source: CodingAgentEnvSource::User,
             enabled: true,
         }];
-        original.agents[0].isolate_codex_home = true;
+        original.agents[0].isolated_home = true;
         original
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .entry("agent-0".to_string())
             .or_default()
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    argv: vec!["--current-profile".to_string()],
+                    command: "codex --current-profile".to_string(),
                     env: BTreeMap::new(),
                     notes: String::new(),
                 },
@@ -811,17 +1421,17 @@ mod tests {
             source: CodingAgentEnvSource::User,
             enabled: true,
         }];
-        draft.agents[0].isolate_codex_home = false;
+        draft.agents[0].isolated_home = false;
         draft
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .entry("agent-0".to_string())
             .or_default()
             .insert(
                 "C".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    argv: vec!["--draft-profile".to_string()],
+                    command: "codex --draft-profile".to_string(),
                     env: BTreeMap::from([("AGENTSCOMMANDER_TOKEN".to_string(), "bad".to_string())]),
                     notes: String::new(),
                 },
@@ -840,8 +1450,8 @@ mod tests {
         assert_eq!(live.coding_agent_profiles, original.coding_agent_profiles);
         assert_eq!(live.agents[0].envs, original.agents[0].envs);
         assert_eq!(
-            live.agents[0].isolate_codex_home,
-            original.agents[0].isolate_codex_home
+            live.agents[0].isolated_home,
+            original.agents[0].isolated_home
         );
     }
 
@@ -854,7 +1464,7 @@ mod tests {
             source: CodingAgentEnvSource::User,
             enabled: true,
         }];
-        original.agents[0].isolate_codex_home = true;
+        original.agents[0].isolated_home = true;
         let state = state_for(original.clone());
 
         let mut draft = original.clone();
@@ -865,7 +1475,7 @@ mod tests {
             source: CodingAgentEnvSource::User,
             enabled: true,
         }];
-        draft.agents[0].isolate_codex_home = false;
+        draft.agents[0].isolated_home = false;
 
         let err = persist_settings_draft_update_with_saver(&state, draft, |_| {
             Err("simulated save failure".to_string())
@@ -879,8 +1489,8 @@ mod tests {
         assert_eq!(live.coding_agent_profiles, original.coding_agent_profiles);
         assert_eq!(live.agents[0].envs, original.agents[0].envs);
         assert_eq!(
-            live.agents[0].isolate_codex_home,
-            original.agents[0].isolate_codex_home
+            live.agents[0].isolated_home,
+            original.agents[0].isolated_home
         );
     }
 
@@ -959,17 +1569,17 @@ mod tests {
             source: CodingAgentEnvSource::User,
             enabled: true,
         }];
-        current.agents[0].isolate_codex_home = true;
+        current.agents[0].isolated_home = true;
         current
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .entry("agent-0".to_string())
             .or_default()
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    argv: vec!["--current-profile".to_string()],
+                    command: "codex --current-profile".to_string(),
                     env: BTreeMap::new(),
                     notes: String::new(),
                 },
@@ -979,8 +1589,8 @@ mod tests {
         let mut stale = current.clone();
         stale.sidebar_style = "command-center".to_string();
         stale.agents[0].envs.clear();
-        stale.agents[0].isolate_codex_home = false;
-        stale.coding_agent_profiles.matrix.clear();
+        stale.agents[0].isolated_home = false;
+        stale.coding_agent_profiles.profiles_by_agent.clear();
 
         let saved = persist_protected_settings_update_with_saver(&state, stale, |_| Ok(()))
             .await
@@ -989,24 +1599,24 @@ mod tests {
         assert_eq!(saved.sidebar_style, "command-center");
         assert_eq!(saved.agents[0].envs, current.agents[0].envs);
         assert_eq!(
-            saved.agents[0].isolate_codex_home,
-            current.agents[0].isolate_codex_home
+            saved.agents[0].isolated_home,
+            current.agents[0].isolated_home
         );
         assert!(saved
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .get("agent-0")
             .is_some_and(|cells| cells.contains_key("B")));
         let live = state.read().await;
         assert_eq!(live.sidebar_style, "command-center");
         assert_eq!(live.agents[0].envs, current.agents[0].envs);
         assert_eq!(
-            live.agents[0].isolate_codex_home,
-            current.agents[0].isolate_codex_home
+            live.agents[0].isolated_home,
+            current.agents[0].isolated_home
         );
         assert!(live
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .get("agent-0")
             .is_some_and(|cells| cells.contains_key("B")));
     }

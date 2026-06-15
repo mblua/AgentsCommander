@@ -4,8 +4,13 @@ use std::path::{Path, PathBuf};
 use crate::config::coding_agent_profiles::{
     resolve_profile, ProfileResolution, ProfileResolutionRequest,
 };
+use crate::config::placeholders::{
+    ac_root_error, expand_placeholders, expand_placeholders_in_args,
+    placeholder_context_for_launch_root, reject_unexpanded_markers, value_contains_ac_root,
+    PlaceholderContext,
+};
 use crate::config::settings::{
-    is_codex_home_key, normalize_env_key_for_platform, validate_codex_home_value,
+    is_codex_home_key, normalize_env_key_for_platform, validate_expanded_codex_home_value,
     validate_user_env_key, AgentConfig, AppSettings,
 };
 use crate::session::profile::CodingAgentKind;
@@ -42,8 +47,21 @@ pub fn normalize_legacy_agent_command(command: &str) -> Result<NormalizedAgentCo
     let mut quote: Option<char> = None;
     let mut token_started = false;
 
-    for ch in input.chars() {
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
         match (quote, ch) {
+            (Some('"'), '\\') => {
+                if let Some(next) = chars.peek().copied() {
+                    if next == '"' || next == '\\' {
+                        current.push(chars.next().expect("peeked char exists"));
+                    } else {
+                        current.push('\\');
+                    }
+                } else {
+                    current.push('\\');
+                }
+                token_started = true;
+            }
             (Some(q), c) if c == q => {
                 quote = None;
                 token_started = true;
@@ -93,6 +111,36 @@ pub fn normalize_legacy_agent_command(command: &str) -> Result<NormalizedAgentCo
     })
 }
 
+pub fn stringify_agent_command_tokens(tokens: &[String]) -> String {
+    tokens
+        .iter()
+        .map(|token| stringify_agent_command_token(token))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn stringify_agent_command_token(token: &str) -> String {
+    if token.is_empty() {
+        return "\"\"".to_string();
+    }
+    if !token
+        .chars()
+        .any(|ch| ch.is_ascii_whitespace() || ch == '"' || ch == '\\')
+    {
+        return token.to_string();
+    }
+    let mut out = String::with_capacity(token.len() + 2);
+    out.push('"');
+    for ch in token.chars() {
+        if ch == '"' || ch == '\\' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('"');
+    out
+}
+
 fn executable_basename(s: &str) -> String {
     std::path::Path::new(s)
         .file_stem()
@@ -101,7 +149,10 @@ fn executable_basename(s: &str) -> String {
         .to_lowercase()
 }
 
-fn collect_agent_env(agent: &AgentConfig) -> Result<BTreeMap<String, String>, String> {
+fn collect_agent_env(
+    agent: &AgentConfig,
+    placeholder_context: Option<&PlaceholderContext>,
+) -> Result<BTreeMap<String, String>, String> {
     let mut out = BTreeMap::new();
     let mut seen = BTreeMap::new();
     for row in agent.envs.iter().filter(|row| row.enabled) {
@@ -114,10 +165,12 @@ fn collect_agent_env(agent: &AgentConfig) -> Result<BTreeMap<String, String>, St
                 context, previous, row.key
             ));
         }
-        if is_codex_home_key(&row.key) {
-            validate_codex_home_value(&row.value, &context)?;
+        let strict_path = is_codex_home_key(&row.key);
+        let value = expand_runtime_value(&row.value, placeholder_context, &context, strict_path)?;
+        if strict_path {
+            validate_expanded_codex_home_value(&value, &context)?;
         }
-        out.insert(row.key.clone(), row.value.clone());
+        out.insert(row.key.clone(), value);
     }
     Ok(out)
 }
@@ -126,6 +179,7 @@ fn collect_profile_env(
     agent_id: &str,
     profile: &str,
     env: &BTreeMap<String, String>,
+    placeholder_context: Option<&PlaceholderContext>,
 ) -> Result<BTreeMap<String, String>, String> {
     let context = format!("Profile '{}:{}' env settings", agent_id, profile);
     let mut out = BTreeMap::new();
@@ -139,12 +193,36 @@ fn collect_profile_env(
                 context, previous, key
             ));
         }
-        if is_codex_home_key(key) {
-            validate_codex_home_value(value, &context)?;
+        let strict_path = is_codex_home_key(key);
+        let value = expand_runtime_value(value, placeholder_context, &context, strict_path)?;
+        if strict_path {
+            validate_expanded_codex_home_value(&value, &context)?;
         }
-        out.insert(key.clone(), value.clone());
+        out.insert(key.clone(), value);
     }
     Ok(out)
+}
+
+fn expand_runtime_value(
+    value: &str,
+    placeholder_context: Option<&PlaceholderContext>,
+    context: &str,
+    strict_path_value: bool,
+) -> Result<String, String> {
+    match placeholder_context {
+        Some(context_obj) => {
+            let expanded = expand_placeholders(value, context_obj)?;
+            reject_unexpanded_markers(&expanded, context, strict_path_value)?;
+            Ok(expanded)
+        }
+        None => {
+            if value_contains_ac_root(value) {
+                return Err(ac_root_error().to_string());
+            }
+            reject_unexpanded_markers(value, context, strict_path_value)?;
+            Ok(value.to_string())
+        }
+    }
 }
 
 fn find_env_value<'a>(env: &'a BTreeMap<String, String>, key: &str) -> Option<&'a String> {
@@ -197,7 +275,7 @@ fn compute_codex_home(
         });
     }
 
-    if agent.isolate_codex_home {
+    if agent.isolated_home {
         let config_dir = crate::config::config_dir()
             .ok_or_else(|| "Could not determine config directory for CODEX_HOME".to_string())?;
         let home = config_dir
@@ -219,7 +297,7 @@ fn compute_codex_home(
     }
 
     if let Some(value) = find_env_value(profile_env, "CODEX_HOME") {
-        let path = validate_codex_home_value(value, "Profile CODEX_HOME")?;
+        let path = validate_expanded_codex_home_value(value, "Profile CODEX_HOME")?;
         return Ok(ComputedCodexHome {
             generated_env,
             effective_codex_home: Some(path),
@@ -227,7 +305,7 @@ fn compute_codex_home(
         });
     }
     if let Some(value) = find_env_value(agent_env, "CODEX_HOME") {
-        let path = validate_codex_home_value(value, "Agent CODEX_HOME")?;
+        let path = validate_expanded_codex_home_value(value, "Agent CODEX_HOME")?;
         return Ok(ComputedCodexHome {
             generated_env,
             effective_codex_home: Some(path),
@@ -235,7 +313,7 @@ fn compute_codex_home(
         });
     }
     if let Ok(value) = std::env::var("CODEX_HOME") {
-        match validate_codex_home_value(&value, "Inherited CODEX_HOME") {
+        match validate_expanded_codex_home_value(&value, "Inherited CODEX_HOME") {
             Ok(path) => {
                 return Ok(ComputedCodexHome {
                     generated_env,
@@ -338,12 +416,6 @@ pub fn build_agent_spawn_command(
         .iter()
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Agent '{}' is not configured", agent_id))?;
-    let normalized = normalize_legacy_agent_command(&agent.command).map_err(|e| {
-        format!(
-            "Invalid agent command for '{}' ({}): {}. command={:?}",
-            agent.id, agent.label, e, agent.command
-        )
-    })?;
     let profile_resolution = resolve_profile(
         settings,
         ProfileResolutionRequest {
@@ -357,15 +429,62 @@ pub fn build_agent_spawn_command(
         log::warn!("[profiles] {}", warning);
     }
 
-    let mut shell = normalized.shell;
-    let mut shell_args = normalized.shell_args;
-    shell_args.extend(profile_resolution.cell.argv.clone());
+    let selected_command = if profile_resolution.cell.command.trim().is_empty() {
+        agent.command.as_str()
+    } else {
+        profile_resolution.cell.command.as_str()
+    };
+    let normalized = normalize_legacy_agent_command(selected_command).map_err(|e| {
+        format!(
+            "Invalid profile command for '{}:{}': {}. command={:?}",
+            agent.id, profile_resolution.effective_profile, e, selected_command
+        )
+    })?;
+    let mut command_tokens = Vec::with_capacity(normalized.shell_args.len() + 1);
+    command_tokens.push(normalized.shell);
+    command_tokens.extend(normalized.shell_args);
+    let needs_placeholder_context = command_tokens
+        .iter()
+        .any(|value| value_contains_ac_root(value))
+        || agent
+            .envs
+            .iter()
+            .filter(|row| row.enabled)
+            .any(|row| value_contains_ac_root(&row.value))
+        || profile_resolution
+            .cell
+            .env
+            .values()
+            .any(|value| value_contains_ac_root(value));
+    let placeholder_context = if needs_placeholder_context {
+        Some(
+            launch_path
+                .ok_or_else(|| ac_root_error().to_string())
+                .and_then(placeholder_context_for_launch_root)?,
+        )
+    } else {
+        None
+    };
+    let expanded_command_tokens = if let Some(context) = placeholder_context.as_ref() {
+        expand_placeholders_in_args(&command_tokens, context)?
+    } else {
+        for token in &command_tokens {
+            reject_unexpanded_markers(token, "Agent command", false)?;
+        }
+        command_tokens
+    };
+    let Some((shell, shell_args)) = expanded_command_tokens.split_first() else {
+        return Err("agent command is empty".to_string());
+    };
+    let mut shell = shell.clone();
+    let mut shell_args = shell_args.to_vec();
 
-    let agent_env = collect_agent_env(agent)?;
+    let agent_env = collect_agent_env(agent, placeholder_context.as_ref())?;
     let profile_env = collect_profile_env(
         &agent.id,
         &profile_resolution.effective_profile,
         &profile_resolution.cell.env,
+        placeholder_context.as_ref(),
     )?;
     let computed_codex_home =
         compute_codex_home(agent, &shell, &shell_args, &agent_env, &profile_env)?;
@@ -431,6 +550,21 @@ mod tests {
     }
 
     #[test]
+    fn stringifies_migration_tokens_with_spaces_quotes_and_empty_args() {
+        let tokens = vec![
+            "C:\\Program Files\\Codex\\codex.exe".to_string(),
+            "--config".to_string(),
+            "".to_string(),
+            "a\"b".to_string(),
+        ];
+        let text = super::stringify_agent_command_tokens(&tokens);
+        let normalized = normalize_legacy_agent_command(&text).unwrap();
+        let mut round_trip = vec![normalized.shell];
+        round_trip.extend(normalized.shell_args);
+        assert_eq!(round_trip, tokens);
+    }
+
+    #[test]
     fn rejects_unclosed_quote() {
         let err = normalize_legacy_agent_command("codex \"unterminated").unwrap_err();
         assert!(err.contains("unclosed double quote"));
@@ -451,26 +585,26 @@ mod tests {
             git_pull_before: false,
             exclude_global_claude_md: false,
             envs: Vec::new(),
-            isolate_codex_home: false,
+            isolated_home: false,
         }
     }
 
     #[test]
-    fn build_spawn_appends_profile_argv() {
+    fn build_spawn_uses_profile_command_as_complete_invocation() {
         let mut settings = AppSettings {
             agents: vec![agent("codex", "codex --base")],
             ..AppSettings::default()
         };
         settings
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .entry("codex".to_string())
             .or_default()
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    argv: vec!["--profile".to_string(), "fast".to_string()],
+                    command: "codex --profile fast".to_string(),
                     env: BTreeMap::new(),
                     notes: String::new(),
                 },
@@ -479,7 +613,7 @@ mod tests {
         let spawn = build_agent_spawn_command(&settings, "codex", None, Some("B")).unwrap();
 
         assert_eq!(spawn.shell, "codex");
-        assert_eq!(spawn.shell_args, vec!["--base", "--profile", "fast"]);
+        assert_eq!(spawn.shell_args, vec!["--profile", "fast"]);
         assert_eq!(spawn.profile_resolution.effective_profile, "B");
     }
 
@@ -503,7 +637,7 @@ mod tests {
                 enabled: true,
             },
         ];
-        codex.isolate_codex_home = true;
+        codex.isolated_home = true;
         let mut settings = AppSettings {
             agents: vec![codex],
             ..AppSettings::default()
@@ -511,14 +645,14 @@ mod tests {
         let profile_home = std::env::temp_dir().join("profile-codex");
         settings
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .entry("codex".to_string())
             .or_default()
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    argv: Vec::new(),
+                    command: String::new(),
                     env: BTreeMap::from([
                         ("OPENAI_API_BASE".to_string(), "profile".to_string()),
                         (
@@ -579,14 +713,14 @@ mod tests {
         };
         settings
             .coding_agent_profiles
-            .matrix
+            .profiles_by_agent
             .entry("codex".to_string())
             .or_default()
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    argv: Vec::new(),
+                    command: String::new(),
                     env: BTreeMap::from([(
                         "CODEX_HOME".to_string(),
                         profile_home.to_string_lossy().to_string(),
@@ -602,6 +736,88 @@ mod tests {
             Some(profile_home.as_path())
         );
         assert!(spawn.generated_env.is_empty());
+    }
+
+    #[test]
+    fn ac_root_command_expands_after_parse_for_replica_launch_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = temp
+            .path()
+            .join("root with spaces")
+            .join(".ac")
+            .join("wg-7-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).unwrap();
+        let mut settings = AppSettings {
+            agents: vec![agent("codex", "codex")],
+            ..AppSettings::default()
+        };
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("codex".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "%AC_ROOT%\\bin\\codex.exe --flag".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+
+        let spawn = build_agent_spawn_command(&settings, "codex", Some(&replica), Some("A"))
+            .expect("replica launch root should expand");
+
+        assert_eq!(
+            spawn.shell,
+            replica.join("bin").join("codex.exe").to_string_lossy()
+        );
+        assert_eq!(spawn.shell_args, vec!["--flag"]);
+    }
+
+    #[test]
+    fn ac_root_in_normal_repo_launch_returns_clear_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo-thing");
+        std::fs::create_dir_all(&repo).unwrap();
+        let settings = AppSettings {
+            agents: vec![agent("codex", "%AC_ROOT%\\bin\\codex.exe")],
+            ..AppSettings::default()
+        };
+
+        let err = build_agent_spawn_command(&settings, "codex", Some(&repo), Some("A"))
+            .expect_err("normal repo launch must reject AC_ROOT");
+
+        assert!(err.contains("%AC_ROOT% requires an AC replica or root-agent launch root"));
+    }
+
+    #[test]
+    fn non_path_env_allows_literal_dollar_but_rejects_unknown_percent_marker() {
+        let mut codex = agent("codex", "codex");
+        codex.envs = vec![
+            CodingAgentEnv {
+                key: "SECRET".to_string(),
+                value: "s3cr$tP4ss".to_string(),
+                source: CodingAgentEnvSource::User,
+                enabled: true,
+            },
+            CodingAgentEnv {
+                key: "BAD_MARKER".to_string(),
+                value: "%UNKNOWN%".to_string(),
+                source: CodingAgentEnvSource::User,
+                enabled: true,
+            },
+        ];
+        let settings = AppSettings {
+            agents: vec![codex],
+            ..AppSettings::default()
+        };
+
+        let err = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap_err();
+
+        assert!(err.contains("unknown placeholder"), "{err}");
     }
 
     #[cfg(windows)]
@@ -660,6 +876,6 @@ mod tests {
         };
 
         let err = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap_err();
-        assert!(err.contains("percent"), "{err}");
+        assert!(err.contains("unknown placeholder"), "{err}");
     }
 }

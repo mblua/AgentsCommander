@@ -97,6 +97,10 @@ pub struct AcAgentReplica {
     pub origin_project: Option<String>,
     /// Preferred coding agent ID inherited from the identity matrix
     pub preferred_agent_id: Option<String>,
+    /// Persisted selection UI coding agent ID for this replica
+    pub current_coding_agent_id: Option<String>,
+    /// Persisted selection UI profile for this replica
+    pub current_profile: Option<String>,
     /// Absolute paths to repos this replica works on (resolved from config.json "repos")
     pub repo_paths: Vec<String>,
     /// Git branch of the first repo (if exactly one repo), for sidebar display
@@ -1041,6 +1045,14 @@ pub async fn discover_ac_agents(
                                     identity_read.identity.as_ref().and_then(|identity| {
                                         read_preferred_agent_id(&identity.matrix_dir, &cfg.agents)
                                     });
+                                let current_coding_agent_id = crate::config::coding_agent_profiles::read_replica_current_coding_agent(&wg_path)
+                                    .filter(|id| cfg.agents.iter().any(|agent| agent.id == *id));
+                                let profile_read =
+                                    crate::config::coding_agent_profiles::read_replica_profile_result(&wg_path);
+                                if let Some(warning) = &profile_read.warning {
+                                    log::warn!("[ac-discovery] {}", warning);
+                                }
+                                let current_profile = profile_read.profile;
 
                                 // Extract repos from config.json and resolve to absolute paths
                                 let repo_paths: Vec<String> = identity_read
@@ -1096,6 +1108,8 @@ pub async fn discover_ac_agents(
                                     identity_path,
                                     origin_project,
                                     preferred_agent_id,
+                                    current_coding_agent_id,
+                                    current_profile,
                                     repo_paths,
                                     repo_branch,
                                     is_coordinator,
@@ -1484,6 +1498,16 @@ pub async fn discover_project(
                             identity_read.identity.as_ref().and_then(|identity| {
                                 read_preferred_agent_id(&identity.matrix_dir, &cfg.agents)
                             });
+                        let current_coding_agent_id = crate::config::coding_agent_profiles::read_replica_current_coding_agent(&wg_path)
+                            .filter(|id| cfg.agents.iter().any(|agent| agent.id == *id));
+                        let profile_read =
+                            crate::config::coding_agent_profiles::read_replica_profile_result(
+                                &wg_path,
+                            );
+                        if let Some(warning) = &profile_read.warning {
+                            log::warn!("[ac-discovery] {}", warning);
+                        }
+                        let current_profile = profile_read.profile;
 
                         let repo_paths: Vec<String> = identity_read
                             .config
@@ -1535,6 +1559,8 @@ pub async fn discover_project(
                             identity_path,
                             origin_project,
                             preferred_agent_id,
+                            current_coding_agent_id,
+                            current_profile,
                             repo_paths,
                             repo_branch,
                             is_coordinator,
@@ -1710,28 +1736,14 @@ pub async fn get_replica_context_files(path: String) -> Result<Vec<String>, Stri
 pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Result<(), String> {
     let config_path = Path::new(&path).join("config.json");
 
-    // Read existing config or start fresh
-    let mut config: serde_json::Value = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config.json: {}", e))?;
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse config.json: {}", e))?
-    } else {
-        serde_json::json!({})
-    };
-
-    // Update context field
-    if files.is_empty() {
-        if let Some(obj) = config.as_object_mut() {
+    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+        if files.is_empty() {
             obj.remove("context");
+        } else {
+            obj.insert("context".to_string(), serde_json::json!(files));
         }
-    } else {
-        config["context"] = serde_json::json!(files);
-    }
-
-    let serialized = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    std::fs::write(&config_path, &serialized)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+        Ok(())
+    })?;
 
     log::info!("Updated context files for replica at {}: {:?}", path, files);
     Ok(())

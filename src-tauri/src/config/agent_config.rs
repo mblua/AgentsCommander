@@ -54,6 +54,17 @@ pub struct AgentTooling {
     /// Last agent config ID used (maps to AgentConfig.id in settings.json)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_coding_agent: Option<String>,
+    /// Selection UI coding agent assignment. Does not replace lastCodingAgent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_coding_agent: Option<String>,
+    /// Selection UI profile assignment. Legacy instanceProfileOverride is
+    /// read separately from raw JSON during the migration window.
+    #[serde(
+        default,
+        alias = "instanceProfileOverride",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profile: Option<String>,
     /// Per-agent-config-id history of coding apps used in this repo
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub coding_agents: HashMap<String, CodingAgentEntry>,
@@ -65,6 +76,8 @@ pub struct AgentTooling {
 impl AgentTooling {
     pub fn is_empty(&self) -> bool {
         self.last_coding_agent.is_none()
+            && self.current_coding_agent.is_none()
+            && self.profile.is_none()
             && self.coding_agents.is_empty()
             && self.telegram_bot.is_none()
     }
@@ -174,43 +187,15 @@ fn upsert_config(
     agent_id: &str,
     entry: &CodingAgentEntry,
 ) -> Result<(), String> {
-    let mut root: serde_json::Value = if config_path.exists() {
-        let content = std::fs::read_to_string(config_path)
-            .map_err(|e| format!("Failed to read config: {}", e))?;
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_else(|e| {
-            log::warn!(
-                "Failed to parse config at {:?}, starting fresh: {}",
-                config_path,
-                e
-            );
-            serde_json::json!({})
-        });
-        if !parsed.is_object() {
-            log::warn!(
-                "upsert_config: root at {:?} is not an object, starting fresh",
-                config_path
-            );
-            serde_json::json!({})
-        } else {
-            parsed
-        }
-    } else {
-        serde_json::json!({})
-    };
+    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+        let tooling = ensure_object(obj, "tooling", config_path);
+        tooling.insert("lastCodingAgent".to_string(), serde_json::json!(agent_id));
 
-    let obj = root.as_object_mut().expect("guaranteed object above");
-
-    let tooling = ensure_object(obj, "tooling", config_path);
-    tooling.insert("lastCodingAgent".to_string(), serde_json::json!(agent_id));
-
-    let coding_agents = ensure_object(tooling, "codingAgents", config_path);
-    let entry_val =
-        serde_json::to_value(entry).map_err(|e| format!("Failed to serialize entry: {}", e))?;
-    coding_agents.insert(agent_id.to_string(), entry_val);
-
-    let json = serde_json::to_string_pretty(&root)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    std::fs::write(config_path, json).map_err(|e| format!("Failed to write config: {}", e))?;
-
+        let coding_agents = ensure_object(tooling, "codingAgents", config_path);
+        let entry_val =
+            serde_json::to_value(entry).map_err(|e| format!("Failed to serialize entry: {}", e))?;
+        coding_agents.insert(agent_id.to_string(), entry_val);
+        Ok(())
+    })?;
     Ok(())
 }

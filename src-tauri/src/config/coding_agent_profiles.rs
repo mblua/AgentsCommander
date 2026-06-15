@@ -70,32 +70,24 @@ fn write_tooling_string(agent_dir: &Path, key: &str, value: Option<&str>) -> Res
         ));
     }
     let config_path = agent_dir.join("config.json");
-    let mut root = read_json_object(&config_path).unwrap_or_else(|| serde_json::json!({}));
-    if !root.is_object() {
-        root = serde_json::json!({});
-    }
-
-    let obj = root.as_object_mut().expect("root set to object");
-    let tooling = obj
-        .entry("tooling")
-        .or_insert_with(|| serde_json::json!({}));
-    if !tooling.is_object() {
-        *tooling = serde_json::json!({});
-    }
-    let tooling = tooling.as_object_mut().expect("tooling set to object");
-    match value {
-        Some(value) => {
-            tooling.insert(key.to_string(), Value::String(value.to_string()));
+    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+        let tooling = obj
+            .entry("tooling".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !tooling.is_object() {
+            *tooling = serde_json::json!({});
         }
-        None => {
-            tooling.remove(key);
+        let tooling = tooling.as_object_mut().expect("tooling set to object");
+        match value {
+            Some(value) => {
+                tooling.insert(key.to_string(), Value::String(value.to_string()));
+            }
+            None => {
+                tooling.remove(key);
+            }
         }
-    }
-
-    let json = serde_json::to_string_pretty(&root)
-        .map_err(|e| format!("Failed to serialize '{}': {}", config_path.display(), e))?;
-    std::fs::write(&config_path, json)
-        .map_err(|e| format!("Failed to write '{}': {}", config_path.display(), e))?;
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -152,7 +144,7 @@ fn collect_workspace_candidate(out: &mut Vec<PathBuf>, candidate: &Path) {
     }
 }
 
-fn configured_workspace_dirs(settings: &AppSettings) -> Vec<PathBuf> {
+pub(crate) fn configured_workspace_dirs(settings: &AppSettings) -> Vec<PathBuf> {
     let mut workspaces = Vec::new();
     for project_path in &settings.project_paths {
         let base = Path::new(project_path);
@@ -357,9 +349,42 @@ fn normalize_profile_from_source(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaProfileRead {
+    pub profile: Option<String>,
+    pub warning: Option<String>,
+}
+
+pub fn read_replica_profile_result(launch_path: &Path) -> ReplicaProfileRead {
+    let v2 = read_tooling_string(launch_path, "profile");
+    let legacy = read_tooling_string(launch_path, "instanceProfileOverride");
+    let v2_normalized = v2.as_deref().and_then(normalize_profile_letter);
+    let legacy_normalized = legacy.as_deref().and_then(normalize_profile_letter);
+    let warning = match (&v2_normalized, &legacy_normalized) {
+        (Some(v2), Some(legacy)) if v2 != legacy => Some(format!(
+            "tooling.profile ({}) differs from legacy instanceProfileOverride ({}) at {}",
+            v2,
+            legacy,
+            launch_path.display()
+        )),
+        _ => None,
+    };
+    ReplicaProfileRead {
+        profile: v2_normalized.or(legacy_normalized),
+        warning,
+    }
+}
+
 pub fn read_instance_profile_override(launch_path: &Path) -> Option<String> {
-    read_tooling_string(launch_path, "instanceProfileOverride")
-        .and_then(|value| normalize_profile_letter(&value))
+    read_replica_profile_result(launch_path).profile
+}
+
+pub fn read_replica_profile(launch_path: &Path) -> Option<String> {
+    read_replica_profile_result(launch_path).profile
+}
+
+pub fn read_replica_current_coding_agent(launch_path: &Path) -> Option<String> {
+    read_tooling_string(launch_path, "currentCodingAgent")
 }
 
 pub fn read_origin_default_profile(launch_path: &Path) -> Result<Option<String>, String> {
@@ -398,24 +423,94 @@ pub fn set_instance_profile_override(
         None => None,
     };
     let validated = validate_profile_selection_agent_path(settings, launch_path)?;
-    write_tooling_string(
-        &validated.launch_path,
-        "instanceProfileOverride",
-        normalized.as_deref(),
-    )?;
-    if normalized.is_some() {
-        write_tooling_string(
-            &validated.launch_path,
-            "instanceProfileOverrideSource",
-            Some("manual"),
-        )?;
-    } else {
-        write_tooling_string(
-            &validated.launch_path,
-            "instanceProfileOverrideSource",
-            None,
-        )?;
+    write_profile_to_launch_path(&validated.launch_path, normalized.as_deref())?;
+    Ok(())
+}
+
+pub fn set_replica_coding_agent_selection(
+    settings: &AppSettings,
+    replica_path: &Path,
+    coding_agent_id: &str,
+    profile: &str,
+) -> Result<(), String> {
+    if !settings
+        .agents
+        .iter()
+        .any(|agent| agent.id == coding_agent_id)
+    {
+        return Err(format!("Agent '{}' is not configured", coding_agent_id));
     }
+    let profile = normalize_profile_letter(profile)
+        .ok_or_else(|| "Profile must be a single letter A through Z".to_string())?;
+    let validated = validate_profile_selection_agent_path(settings, replica_path)?;
+    let name = validated
+        .launch_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !name.starts_with("__agent_") {
+        return Err(format!(
+            "Profile assignment target '{}' must be a WG replica",
+            validated.launch_path.display()
+        ));
+    }
+    let config_path = validated.launch_path.join("config.json");
+    crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
+        let tooling = obj
+            .entry("tooling".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !tooling.is_object() {
+            *tooling = serde_json::json!({});
+        }
+        let tooling = tooling.as_object_mut().expect("tooling set to object");
+        tooling.insert(
+            "currentCodingAgent".to_string(),
+            Value::String(coding_agent_id.to_string()),
+        );
+        tooling.insert("profile".to_string(), Value::String(profile.clone()));
+        tooling.insert(
+            "instanceProfileOverride".to_string(),
+            Value::String(profile.clone()),
+        );
+        tooling.insert(
+            "instanceProfileOverrideSource".to_string(),
+            Value::String("manual".to_string()),
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Result<(), String> {
+    let config_path = launch_path.join("config.json");
+    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+        let tooling = obj
+            .entry("tooling".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !tooling.is_object() {
+            *tooling = serde_json::json!({});
+        }
+        let tooling = tooling.as_object_mut().expect("tooling set to object");
+        match profile {
+            Some(profile) => {
+                tooling.insert("profile".to_string(), Value::String(profile.to_string()));
+                tooling.insert(
+                    "instanceProfileOverride".to_string(),
+                    Value::String(profile.to_string()),
+                );
+                tooling.insert(
+                    "instanceProfileOverrideSource".to_string(),
+                    Value::String("manual".to_string()),
+                );
+            }
+            None => {
+                tooling.remove("profile");
+                tooling.remove("instanceProfileOverride");
+                tooling.remove("instanceProfileOverrideSource");
+            }
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -443,18 +538,22 @@ pub fn resolve_profile_selection(
         .as_ref()
         .map(|validated| validated.origin_matrix_dir.as_path());
     let agent_name = launch_path.and_then(agent_name_from_dir);
-    let instance_profile_override = launch_path
-        .and_then(|path| read_tooling_string(path, "instanceProfileOverride"))
-        .and_then(|value| normalize_profile_letter(&value));
+    let instance_read = launch_path.map(read_replica_profile_result);
+    let instance_profile_override = instance_read.as_ref().and_then(|read| read.profile.clone());
     let origin_default_profile = origin_matrix_dir
         .and_then(|path| read_tooling_string(path, "defaultProfile"))
         .and_then(|value| normalize_profile_letter(&value));
     let agent_default_profile = agent_name
         .as_ref()
-        .and_then(|name| settings.coding_agent_profiles.agent_defaults.get(name))
+        .and_then(|name| {
+            settings
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .get(name)
+        })
         .and_then(|value| normalize_profile_letter(value));
     let requested_profile_input = requested_profile.map(str::to_string);
-    let resolution = resolve_profile(
+    let mut resolution = resolve_profile(
         settings,
         ProfileResolutionRequest {
             coding_agent_id,
@@ -463,6 +562,9 @@ pub fn resolve_profile_selection(
             requested_profile,
         },
     );
+    if let Some(warning) = instance_read.and_then(|read| read.warning) {
+        resolution.warnings.push(warning);
+    }
 
     Ok(ProfileSelectionResolution {
         requested_profile_input,
@@ -480,7 +582,7 @@ fn cell_for_letter(
 ) -> Option<ProfileCellConfig> {
     settings
         .coding_agent_profiles
-        .matrix
+        .profiles_by_agent
         .get(coding_agent_id)
         .and_then(|cells| cells.get(letter))
         .filter(|cell| cell.enabled)
@@ -509,11 +611,11 @@ pub fn resolve_profile(
         .or_else(|| launch_path.and_then(agent_name_from_dir));
 
     let instance_override = launch_path.and_then(|path| {
-        normalize_profile_from_source(
-            read_tooling_string(path, "instanceProfileOverride"),
-            &mut warnings,
-            "instance override",
-        )
+        let read = read_replica_profile_result(path);
+        if let Some(warning) = read.warning {
+            warnings.push(warning);
+        }
+        normalize_profile_from_source(read.profile, &mut warnings, "instance override")
     });
 
     let origin_default =
@@ -536,7 +638,12 @@ pub fn resolve_profile(
 
     let agent_default = agent_name
         .as_ref()
-        .and_then(|name| settings.coding_agent_profiles.agent_defaults.get(name))
+        .and_then(|name| {
+            settings
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .get(name)
+        })
         .and_then(|letter| {
             normalize_profile_from_source(Some(letter.clone()), &mut warnings, "agent default")
         });
@@ -580,39 +687,39 @@ pub fn resolve_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::settings::{AgentConfig, ProfileCellConfig, ProfileLetterConfig};
+    use crate::config::settings::{AgentConfig, ProfileCellConfig, ProfileSlotConfig};
     use std::collections::BTreeMap;
     use std::path::Path;
 
     fn settings_with_cells(cells: &[(&str, Vec<&str>)]) -> AppSettings {
         let mut settings = AppSettings::default();
-        settings.coding_agent_profiles.letters = BTreeMap::from([
+        settings.coding_agent_profiles.profile_slots = BTreeMap::from([
             (
                 "A".to_string(),
-                ProfileLetterConfig {
-                    name: String::new(),
+                ProfileSlotConfig {
+                    label: String::new(),
                 },
             ),
             (
                 "B".to_string(),
-                ProfileLetterConfig {
-                    name: String::new(),
+                ProfileSlotConfig {
+                    label: String::new(),
                 },
             ),
             (
                 "C".to_string(),
-                ProfileLetterConfig {
-                    name: String::new(),
+                ProfileSlotConfig {
+                    label: String::new(),
                 },
             ),
             (
                 "D".to_string(),
-                ProfileLetterConfig {
-                    name: String::new(),
+                ProfileSlotConfig {
+                    label: String::new(),
                 },
             ),
         ]);
-        settings.coding_agent_profiles.matrix = cells
+        settings.coding_agent_profiles.profiles_by_agent = cells
             .iter()
             .map(|(agent_id, letters)| {
                 (
@@ -624,7 +731,7 @@ mod tests {
                                 (*letter).to_string(),
                                 ProfileCellConfig {
                                     enabled: true,
-                                    argv: vec![format!("--{}", letter.to_ascii_lowercase())],
+                                    command: format!("codex --{}", letter.to_ascii_lowercase()),
                                     env: BTreeMap::new(),
                                     notes: String::new(),
                                 },
@@ -648,7 +755,7 @@ mod tests {
             git_pull_before: false,
             exclude_global_claude_md: false,
             envs: Vec::new(),
-            isolate_codex_home: false,
+            isolated_home: false,
         }];
         settings
     }
@@ -670,7 +777,7 @@ mod tests {
         assert_eq!(resolved.effective_profile, "C");
         assert!(resolved.fallback_applied);
         assert_eq!(resolved.fallback_chain, vec!["D", "C"]);
-        assert_eq!(resolved.cell.argv, vec!["--c"]);
+        assert_eq!(resolved.cell.command, "codex --c");
     }
 
     #[test]
@@ -687,7 +794,7 @@ mod tests {
         );
 
         assert_eq!(resolved.effective_profile, "A");
-        assert!(resolved.cell.argv.is_empty());
+        assert!(resolved.cell.command.is_empty());
     }
 
     #[test]
@@ -714,6 +821,50 @@ mod tests {
 
         assert_eq!(resolved.requested_profile, "C");
         assert_eq!(resolved.effective_profile, "C");
+    }
+
+    #[test]
+    fn selection_write_dual_writes_profile_and_preserves_last_coding_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let workspace = project.join(".ac");
+        let matrix = workspace.join("_agent_dev-rust");
+        let replica = workspace.join("wg-7-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix).unwrap();
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","tooling":{"lastCodingAgent":"claude"}}"#,
+        )
+        .unwrap();
+        let settings = settings_with_project(&project);
+
+        set_replica_coding_agent_selection(&settings, &replica, "codex", "b").unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(replica.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+        assert_eq!(saved["tooling"]["profile"], "B");
+        assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
+        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+    }
+
+    #[test]
+    fn divergent_profile_and_legacy_override_returns_warning_and_prefers_v2() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent_dir = temp.path().join("__agent_dev-rust");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("config.json"),
+            r#"{"tooling":{"profile":"B","instanceProfileOverride":"C"}}"#,
+        )
+        .unwrap();
+
+        let read = read_replica_profile_result(&agent_dir);
+
+        assert_eq!(read.profile.as_deref(), Some("B"));
+        assert!(read.warning.unwrap().contains("differs"));
     }
 
     #[test]

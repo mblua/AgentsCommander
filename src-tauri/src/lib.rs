@@ -1661,6 +1661,8 @@ pub fn run(
             commands::config::set_agent_default_profile,
             commands::config::set_instance_profile_override,
             commands::config::resolve_coding_agent_profile,
+            commands::config::preview_coding_agent_profile_selection,
+            commands::config::apply_coding_agent_profile_selection,
             commands::config::set_inject_rtk_hook,
             commands::config::set_rtk_prompt_dismissed,
             commands::config::set_sounds_enabled,
@@ -1847,7 +1849,7 @@ mod tests {
                 git_pull_before: false,
                 exclude_global_claude_md: false,
                 envs: Vec::new(),
-                isolate_codex_home: false,
+                isolated_home: false,
             }],
             ..AppSettings::default()
         }

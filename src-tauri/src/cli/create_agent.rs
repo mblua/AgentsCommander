@@ -156,7 +156,7 @@ mod tests {
             git_pull_before: false,
             exclude_global_claude_md: false,
             envs: Vec::new(),
-            isolate_codex_home: false,
+            isolated_home: false,
         }
     }
 
