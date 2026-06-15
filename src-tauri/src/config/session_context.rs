@@ -1762,6 +1762,23 @@ fn render_agent_context_template(
         )
 }
 
+fn render_default_agent_context(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+    cwd_path: &Path,
+    config: Option<&serde_json::Value>,
+) -> String {
+    render_agent_context_template(
+        get_default_agent_template(),
+        agent_root,
+        matrix_root,
+        skills_section,
+        cwd_path,
+        config,
+    )
+}
+
 fn resolve_agent_context(
     agent_root: &str,
     matrix_root: Option<&str>,
@@ -1774,18 +1791,30 @@ fn resolve_agent_context(
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
         get_default_agent_template(),
     )?
-    .unwrap_or_else(|| default_context(agent_root, matrix_root, skills_section));
-    if template == default_context(agent_root, matrix_root, skills_section) {
-        Ok(template)
-    } else {
-        Ok(render_agent_context_template(
+    .unwrap_or_else(|| get_default_agent_template().to_string());
+
+    match classify_legacy_rendered_default_context(
+        &template,
+        agent_root,
+        matrix_root,
+        skills_section,
+    ) {
+        LegacyRenderedDefaultContext::Current => Ok(template),
+        LegacyRenderedDefaultContext::StaleGenerated => Ok(render_default_agent_context(
+            agent_root,
+            matrix_root,
+            skills_section,
+            cwd_path,
+            config,
+        )),
+        LegacyRenderedDefaultContext::NotLegacy => Ok(render_agent_context_template(
             &template,
             agent_root,
             matrix_root,
             skills_section,
             cwd_path,
             config,
-        ))
+        )),
     }
 }
 
@@ -1801,43 +1830,23 @@ const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
 
 const DEFAULT_CLI_CONTEXT: &str = r#"## CLI executable
 
-Your AgentsCommander session credentials are available as environment variables:
+Your AgentsCommander credentials are in these environment variables:
 
-- `AGENTSCOMMANDER_TOKEN`: your session authentication token
-- `AGENTSCOMMANDER_ROOT`: your working directory (agent root)
-- `AGENTSCOMMANDER_BINARY`: the CLI binary name
-- `AGENTSCOMMANDER_BINARY_PATH`: the full path to the CLI executable you must use
+- `AGENTSCOMMANDER_TOKEN`: session authentication token
+- `AGENTSCOMMANDER_ROOT`: agent root
+- `AGENTSCOMMANDER_BINARY`: binary name
+- `AGENTSCOMMANDER_BINARY_PATH`: full CLI path to invoke
 - `AGENTSCOMMANDER_LOCAL_DIR`: the config directory name for this instance
 
-Use `AGENTSCOMMANDER_BINARY_PATH` when invoking the CLI. This ensures you use the correct binary for your instance, whether it is the installed version or a dev/WG build.
-
-```
-"<AGENTSCOMMANDER_BINARY_PATH>" <subcommand> [args]
-```
-
-**RULE:** Never hardcode or guess the binary path. Use the environment variables above. If they are unavailable in an agent session, restart or respawn the session.
+Always invoke the CLI through `AGENTSCOMMANDER_BINARY_PATH`; never hardcode or guess another binary. If credentials are unavailable or validation fails, restart or respawn the session.
 
 ## Self-discovery via --help
 
-The CLI `--help` output documents every subcommand, flag, and accepted value. Use it as a FALLBACK reference for commands or flags NOT covered inline in this context.
-
-**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly. You do NOT need to consult `--help` to confirm their syntax.
-
-```
-"<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
-"<AGENTSCOMMANDER_BINARY_PATH>" send --help             # Full docs for sending messages
-"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help  # Full docs for discovering peers
-```
-
-**RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly."#;
+For commands or flags not documented in this context, run `<AGENTSCOMMANDER_BINARY_PATH> --help` or `<AGENTSCOMMANDER_BINARY_PATH> <subcommand> --help`. For peer discovery and inter-agent messaging, use the Inter-Agent Messaging section below as authoritative."#;
 
 const DEFAULT_SESSION_CREDENTIALS: &str = r#"## Session credentials
 
-Your session credentials are delivered only through the `AGENTSCOMMANDER_*` environment variables listed above.
-
-Live token refresh without respawn is not supported, because a parent process cannot portably mutate an already-running child process environment. If credential validation fails, restart or respawn the session so AgentsCommander can create a new child process with fresh env values.
-
-Your agent root is your current working directory."#;
+Your session credentials are delivered only through the `AGENTSCOMMANDER_*` environment variables listed above. Your agent root is the current working directory. Live token refresh is not supported; restart or respawn the session if credential validation fails."#;
 
 const DEFAULT_DELEGATED_TASK_REPORTING: &str = r#"## Delegated Task Reporting
 
@@ -1920,10 +1929,7 @@ fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) ->
 
 {send_message_instructions}
 
-The recipient receives a short notification pointing to your file's absolute
-path and reads the content via filesystem. Do NOT use `--get-output`, it
-blocks and is only for non-interactive sessions. After sending, stay idle and
-wait for the reply.
+The recipient receives a notification with the file path and reads the file from disk. Do NOT use `--get-output`; it blocks and is only for non-interactive sessions. After sending, wait for the reply.
 
 ### List available peers
 
@@ -2094,7 +2100,22 @@ fn root_agency_cache_guidance(agent_root: &str) -> String {
     )
 }
 
+#[cfg(test)]
 fn default_context(agent_root: &str, matrix_root: Option<&str>, skills_section: &str) -> String {
+    render_default_agent_context(
+        agent_root,
+        matrix_root,
+        skills_section,
+        Path::new(agent_root),
+        None,
+    )
+}
+
+fn legacy_rendered_default_context_for_compat(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> String {
     enum MessagingContextMode {
         None,
         Workgroup(String),
@@ -2344,6 +2365,111 @@ wait for the reply.
     )
 }
 
+enum LegacyRenderedDefaultContext {
+    Current,
+    StaleGenerated,
+    NotLegacy,
+}
+
+fn classify_legacy_rendered_default_context(
+    template: &str,
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> LegacyRenderedDefaultContext {
+    let normalized = normalize_context_for_compat(template);
+    let current = normalize_context_for_compat(&current_legacy_rendered_default_context(
+        agent_root,
+        matrix_root,
+        skills_section,
+    ));
+
+    if normalized == current {
+        return LegacyRenderedDefaultContext::Current;
+    }
+
+    if looks_like_generated_legacy_default_context(&normalized) {
+        return LegacyRenderedDefaultContext::StaleGenerated;
+    }
+
+    LegacyRenderedDefaultContext::NotLegacy
+}
+
+fn current_legacy_rendered_default_context(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) -> String {
+    legacy_rendered_default_context_for_compat(agent_root, matrix_root, skills_section)
+}
+
+fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
+    if normalized.contains("{{") || normalized.contains("}}") {
+        return false;
+    }
+    if normalized.contains("## Core Concepts") || normalized.contains("# Workspace Repos") {
+        return false;
+    }
+
+    let required_once = [
+        "# AgentsCommander Context",
+        "## GOLDEN RULE",
+        "## Delegated Task Reporting",
+        "## CLI executable",
+        "## Self-discovery via --help",
+        "## Session credentials",
+        "### Send a message to another agent",
+    ];
+    if required_once
+        .iter()
+        .any(|marker| count_context_occurrences(normalized, marker) != 1)
+    {
+        return false;
+    }
+    if !normalized.contains("## Inter-Agent Messaging")
+        || !normalized.contains("### List available peers")
+    {
+        return false;
+    }
+
+    context_markers_in_order(
+        normalized,
+        &[
+            "# AgentsCommander Context",
+            "## GOLDEN RULE",
+            "## Delegated Task Reporting",
+            "## CLI executable",
+            "## Self-discovery via --help",
+            "## Session credentials",
+            "## Inter-Agent Messaging",
+            "### List available peers",
+        ],
+    ) && normalized.contains("The CLI `--help` output documents every subcommand")
+        && normalized.contains("The filesystem directory name is NEVER a valid `--to` value")
+        && normalized.contains(
+            "\"<AGENTSCOMMANDER_BINARY_PATH>\" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"",
+        )
+}
+
+fn context_markers_in_order(value: &str, markers: &[&str]) -> bool {
+    let mut offset = 0;
+    for marker in markers {
+        let Some(found) = value[offset..].find(marker) else {
+            return false;
+        };
+        offset += found + marker.len();
+    }
+    true
+}
+
+fn count_context_occurrences(haystack: &str, needle: &str) -> usize {
+    haystack.matches(needle).count()
+}
+
+fn normalize_context_for_compat(value: &str) -> String {
+    value.replace("\r\n", "\n").trim_end().to_string()
+}
+
 fn is_replica_agent_dir(cwd: &str) -> bool {
     std::path::Path::new(cwd)
         .file_name()
@@ -2377,6 +2503,55 @@ mod tests {
             content.contains(&expected),
             "content should contain canonical path {expected}"
         );
+    }
+
+    fn assert_no_raw_template_placeholders(out: &str) {
+        assert!(
+            !out.contains("{{"),
+            "raw opening placeholder marker found:\n{out}"
+        );
+        assert!(
+            !out.contains("}}"),
+            "raw closing placeholder marker found:\n{out}"
+        );
+    }
+
+    fn assert_mandatory_sections_once(out: &str) {
+        assert_eq!(count_context_occurrences(out, "## GOLDEN RULE"), 1);
+        assert_eq!(
+            count_context_occurrences(out, "## Delegated Task Reporting"),
+            1
+        );
+        assert_eq!(count_context_occurrences(out, "## Skills"), 1);
+        assert_eq!(count_context_occurrences(out, "# Workspace Repos"), 1);
+        assert_eq!(count_context_occurrences(out, "## CLI executable"), 1);
+        assert_eq!(count_context_occurrences(out, "## Session credentials"), 1);
+        assert_eq!(
+            count_context_occurrences(out, "## Inter-Agent Messaging"),
+            1
+        );
+    }
+
+    fn seed_stale_managed_context_files(agent_root: &Path) {
+        for filename in MANAGED_CONTEXT_FILENAMES {
+            let filename = *filename;
+            std::fs::write(agent_root.join(filename), "STALE_MANAGED_CONTEXT")
+                .expect("write stale managed context");
+        }
+    }
+
+    fn assert_only_selected_managed_context_file_exists(
+        agent_root: &Path,
+        expected_filename: &str,
+    ) {
+        for filename in MANAGED_CONTEXT_FILENAMES {
+            let filename = *filename;
+            assert_eq!(
+                agent_root.join(filename).exists(),
+                filename == expected_filename,
+                "managed context file presence mismatch for {filename}"
+            );
+        }
     }
 
     struct PartialFailWriter {
@@ -2749,6 +2924,56 @@ mod tests {
     }
 
     #[test]
+    fn default_context_uses_template_renderer_without_unexpanded_placeholders() {
+        for out in [
+            default_context(
+                "C:/fake/wg-7-dev-team/__agent_architect",
+                Some("C:/fake/_agent_architect"),
+                &no_skill_section(),
+            ),
+            default_context("C:/fake/plain/agent", None, &no_skill_section()),
+            default_context("C:/fake/ac-root-agent", None, &no_skill_section()),
+        ] {
+            assert!(out.contains("# AgentsCommander Context"));
+            assert!(out.contains("## Core Concepts"));
+            assert!(out.contains("## GOLDEN RULE"));
+            assert!(out.contains("## Inter-Agent Messaging"));
+            assert!(out.contains("## CLI executable"));
+            assert!(out.contains("## Session credentials"));
+            assert!(out.contains("# Workspace Repos"));
+            assert_no_raw_template_placeholders(&out);
+        }
+    }
+
+    #[test]
+    fn default_context_does_not_duplicate_mandatory_sections() {
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+
+        assert_mandatory_sections_once(&out);
+    }
+
+    #[test]
+    #[ignore = "manual size snapshot for context template optimization"]
+    fn measure_default_context_size_for_workgroup_replica() {
+        let agent_root = "C:/fake/wg-7-dev-team/__agent_architect";
+        let matrix_root = Some("C:/fake/_agent_architect");
+        let skills_section = no_skill_section();
+        let legacy =
+            legacy_rendered_default_context_for_compat(agent_root, matrix_root, &skills_section);
+        let out = default_context(agent_root, matrix_root, &skills_section);
+        eprintln!("legacy workgroup context bytes={}", legacy.len());
+        eprintln!("default workgroup context bytes={}", out.len());
+        eprintln!(
+            "default workgroup context savings_bytes={}",
+            legacy.len() as isize - out.len() as isize
+        );
+    }
+
+    #[test]
     fn custom_agent_template_is_used_for_wg_replica() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
@@ -2853,6 +3078,128 @@ mod tests {
                 "placeholder {placeholder} should be rendered"
             );
         }
+    }
+
+    #[test]
+    fn legacy_rendered_default_template_is_not_fallback_appended() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+
+        let agent_root = path_string(&replica_root);
+        let matrix_root = path_string(&matrix_root);
+        let legacy = legacy_rendered_default_context_for_compat(
+            &agent_root,
+            Some(&matrix_root),
+            &no_skill_section(),
+        );
+        std::fs::write(
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            &legacy,
+        )
+        .expect("write legacy rendered template");
+
+        let rendered = resolve_agent_context(
+            &agent_root,
+            Some(&matrix_root),
+            &no_skill_section(),
+            &replica_root,
+            None,
+        )
+        .expect("resolve context");
+
+        assert_eq!(rendered, legacy);
+        assert_eq!(count_context_occurrences(&rendered, "## GOLDEN RULE"), 1);
+    }
+
+    #[test]
+    fn stale_generated_legacy_default_for_other_wg_replica_regenerates_current_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let new_matrix = workspace_dir.join("_agent_tech-lead");
+        let old_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&new_matrix).expect("create new matrix");
+        std::fs::create_dir_all(&old_replica).expect("create old replica");
+        std::fs::create_dir_all(&new_replica).expect("create new replica");
+        std::fs::write(
+            new_replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica),
+            Some(&path_string(&old_matrix)),
+            &no_skill_section(),
+        );
+        std::fs::write(
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            &legacy,
+        )
+        .expect("write stale generated default");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&new_replica),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_contains_canonical_path(&content, &new_replica);
+        assert_contains_canonical_path(&content, &new_matrix);
+        assert!(!content.contains(&canonical_display_path(&old_replica)));
+        assert!(!content.contains(&canonical_display_path(&old_matrix)));
+        assert_mandatory_sections_once(&content);
+        assert_no_raw_template_placeholders(&content);
+    }
+
+    #[test]
+    fn stale_generated_legacy_default_for_direct_matrix_regenerates_current_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let target_matrix = workspace_dir.join("_agent_architect");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&target_matrix).expect("create target matrix");
+
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_matrix),
+            None,
+            &no_skill_section(),
+        );
+        std::fs::write(
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            &legacy,
+        )
+        .expect("write stale generated default");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&target_matrix),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_contains_canonical_path(&content, &target_matrix);
+        assert!(!content.contains(&canonical_display_path(&old_matrix)));
+        assert_mandatory_sections_once(&content);
+        assert_no_raw_template_placeholders(&content);
     }
 
     #[test]
@@ -3034,11 +3381,13 @@ mod tests {
             (ManagedContextTarget::Claude, "CLAUDE.md"),
             (ManagedContextTarget::Gemini, "GEMINI.md"),
         ] {
+            seed_stale_managed_context_files(&matrix_root);
             let materialized =
                 materialize_agent_context_file(&path_string(&matrix_root), target, false)
                     .expect("materialize context")
                     .expect("context path");
             assert!(materialized.ends_with(expected_filename));
+            assert_only_selected_managed_context_file_exists(&matrix_root, expected_filename);
             let content = std::fs::read_to_string(materialized).expect("read materialized context");
             assert!(content.contains("CUSTOM_AGENT_BODY"));
         }
