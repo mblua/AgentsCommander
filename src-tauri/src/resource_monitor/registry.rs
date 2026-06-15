@@ -343,26 +343,39 @@ impl ResourceMonitorState {
 
         let mut targets = previous_targets;
         let mut current_cleanup_identities = BTreeSet::new();
+        let mut pending_identity_errors = Vec::new();
         let mut errors = Vec::new();
         match self.backend.observe_tree(root_identity) {
             Ok(tree) => {
                 let current_processes = tree.processes.clone();
                 current_cleanup_identities
                     .extend(current_processes.iter().map(|process| process.identity));
-                let cleanup_errors = tree
-                    .errors
-                    .iter()
-                    .filter(|error| !is_missing_root_cleanup_error(error, root_identity))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if !cleanup_errors.is_empty() {
-                    errors.extend(cleanup_errors.clone());
+                let mut ignored_root_errors = Vec::new();
+                for error in &tree.errors {
+                    if is_missing_root_cleanup_error(error, root_identity) {
+                        ignored_root_errors.push(error.clone());
+                        continue;
+                    }
+                    if let Some(pid) = identity_unavailable_pid(error) {
+                        if let Some(process) = current_processes
+                            .iter()
+                            .find(|process| process.identity.pid == pid)
+                        {
+                            push_pending_identity_error(
+                                &mut pending_identity_errors,
+                                process.identity,
+                                error.clone(),
+                            );
+                            continue;
+                        }
+                    }
+                    errors.push(error.clone());
                 }
-                if !tree.errors.is_empty() && cleanup_errors.is_empty() {
+                if !tree.errors.is_empty() && errors.is_empty() && !ignored_root_errors.is_empty() {
                     log::debug!(
                         "[resource-monitor] cleanup sample for session {} had ignored root-missing error: {}",
                         session_id,
-                        tree.errors.join("; ")
+                        ignored_root_errors.join("; ")
                     );
                 }
                 targets.extend(current_processes);
@@ -385,27 +398,29 @@ impl ResourceMonitorState {
         });
 
         let mut killed = Vec::new();
-        let mut pending_identity_errors = Vec::new();
         for process in targets.iter() {
             if !process.kill_allowed {
                 if current_cleanup_identities.contains(&process.identity) {
-                    pending_identity_errors.push((
+                    push_pending_identity_error(
+                        &mut pending_identity_errors,
                         process.identity,
                         unverifiable_process_error(process.identity.pid),
-                    ));
+                    );
                     continue;
                 }
                 match self.backend.observe_identity(process.identity.pid) {
                     Ok(None) => {}
                     Ok(Some(identity)) if identity != process.identity => {}
-                    Ok(Some(_)) => pending_identity_errors.push((
+                    Ok(Some(_)) => push_pending_identity_error(
+                        &mut pending_identity_errors,
                         process.identity,
                         unverifiable_process_error(process.identity.pid),
-                    )),
-                    Err(err) => pending_identity_errors.push((
+                    ),
+                    Err(err) => push_pending_identity_error(
+                        &mut pending_identity_errors,
                         process.identity,
                         format!("pid {}: {err}", process.identity.pid),
-                    )),
+                    ),
                 }
                 continue;
             }
@@ -420,10 +435,11 @@ impl ResourceMonitorState {
                     );
                 }
                 Ok(TerminateOutcome::AlreadyGone) => {}
-                Err(err) => pending_identity_errors.push((
+                Err(err) => push_pending_identity_error(
+                    &mut pending_identity_errors,
                     process.identity,
                     format!("pid {}: {err}", process.identity.pid),
-                )),
+                ),
             }
         }
 
@@ -590,6 +606,26 @@ fn join_errors(errors: Vec<String>) -> Option<String> {
 
 fn is_missing_root_cleanup_error(error: &str, root_identity: ProcessIdentity) -> bool {
     error == format!("root pid {} was not in process snapshot", root_identity.pid)
+}
+
+fn identity_unavailable_pid(error: &str) -> Option<u32> {
+    error
+        .strip_prefix("identity unavailable for pid ")?
+        .parse()
+        .ok()
+}
+
+fn push_pending_identity_error(
+    pending: &mut Vec<(ProcessIdentity, String)>,
+    identity: ProcessIdentity,
+    error: String,
+) {
+    if !pending
+        .iter()
+        .any(|(pending_identity, _)| *pending_identity == identity)
+    {
+        pending.push((identity, error));
+    }
 }
 
 fn unverifiable_process_error(pid: u32) -> String {
@@ -782,6 +818,13 @@ mod tests {
 
         fn mark_gone(&self, identity: ProcessIdentity) {
             self.identities.lock().unwrap().remove(&identity.pid);
+        }
+
+        fn mark_present(&self, identity: ProcessIdentity) {
+            self.identities
+                .lock()
+                .unwrap()
+                .insert(identity.pid, identity);
         }
 
         fn mark_stubborn(&self, identity: ProcessIdentity) {
@@ -1093,6 +1136,10 @@ mod tests {
         let (state, backend) = state_with_fake();
         let root = identity(35, 35);
         let unverifiable_child_pid = 36;
+        let unverifiable_child = ProcessIdentity {
+            pid: unverifiable_child_pid,
+            creation_time_100ns: 0,
+        };
         backend.add_tree(root, vec![observed(35, 35, None, 0)]);
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
@@ -1110,6 +1157,8 @@ mod tests {
                 "identity unavailable for pid {unverifiable_child_pid}"
             )],
         );
+        backend.mark_present(unverifiable_child);
+        backend.mark_unverifiable(unverifiable_child.pid);
 
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(result.quarantined);
@@ -1134,6 +1183,45 @@ mod tests {
         state
             .register_group(permit, id, "agent".into(), None, None, root)
             .unwrap();
+
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+
+        assert!(!result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert_eq!(result.killed_processes, vec![root]);
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    #[test]
+    fn cleanup_sample_child_identity_error_clears_if_parent_termination_removes_child() {
+        let (state, backend) = state_with_fake();
+        let root = identity(43, 43);
+        let unverifiable_child_pid = 44;
+        let unverifiable_child = ProcessIdentity {
+            pid: unverifiable_child_pid,
+            creation_time_100ns: 0,
+        };
+        backend.add_tree(root, vec![observed(43, 43, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        backend.replace_tree(
+            root,
+            vec![
+                observed(43, 43, None, 0),
+                observed_unverifiable(unverifiable_child_pid, Some(root.pid), 1),
+            ],
+            vec![format!(
+                "identity unavailable for pid {unverifiable_child_pid}"
+            )],
+        );
+        backend.mark_present(unverifiable_child);
+        backend.mark_unverifiable(unverifiable_child.pid);
+        backend.mark_remove_on_terminate(root, vec![unverifiable_child]);
 
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
 
