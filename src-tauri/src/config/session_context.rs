@@ -2431,6 +2431,9 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
     {
         return false;
     }
+    if !has_legacy_default_tail(normalized) || has_unknown_legacy_default_heading(normalized) {
+        return false;
+    }
 
     context_markers_in_order(
         normalized,
@@ -2448,6 +2451,40 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
         && normalized.contains("The filesystem directory name is NEVER a valid `--to` value")
         && normalized.contains(
             "\"<AGENTSCOMMANDER_BINARY_PATH>\" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"",
+        )
+}
+
+fn has_legacy_default_tail(normalized: &str) -> bool {
+    normalized.ends_with(
+        "\"<AGENTSCOMMANDER_BINARY_PATH>\" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n```",
+    )
+}
+
+fn has_unknown_legacy_default_heading(normalized: &str) -> bool {
+    normalized
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with("# ") || line.starts_with("## ") || line.starts_with("### ")
+        })
+        .any(|line| !is_known_legacy_default_heading(line))
+}
+
+fn is_known_legacy_default_heading(line: &str) -> bool {
+    line == "# AgentsCommander Context"
+        || line.starts_with("## GOLDEN RULE")
+        || matches!(
+            line,
+            "## Delegated Task Reporting"
+                | "## Skills"
+                | "### Available Skills"
+                | "### Skill Discovery Warnings"
+                | "## CLI executable"
+                | "## Self-discovery via --help"
+                | "## Session credentials"
+                | "## Inter-Agent Messaging"
+                | "### Send a message to another agent"
+                | "### List available peers"
         )
 }
 
@@ -3165,6 +3202,54 @@ mod tests {
         assert!(!content.contains(&canonical_display_path(&old_matrix)));
         assert_mandatory_sections_once(&content);
         assert_no_raw_template_placeholders(&content);
+    }
+
+    #[test]
+    fn edited_legacy_rendered_default_preserves_custom_template_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let new_matrix = workspace_dir.join("_agent_tech-lead");
+        let old_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&new_matrix).expect("create new matrix");
+        std::fs::create_dir_all(&old_replica).expect("create old replica");
+        std::fs::create_dir_all(&new_replica).expect("create new replica");
+        std::fs::write(
+            new_replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica),
+            Some(&path_string(&old_matrix)),
+            &no_skill_section(),
+        );
+        let edited =
+            format!("{legacy}\n\n## Project Rules\n\nKEEP_CUSTOM_PROJECT_RULES_IN_CONTEXT\n");
+        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
+            .expect("write edited rendered legacy template");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&new_replica),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert!(content.contains("KEEP_CUSTOM_PROJECT_RULES_IN_CONTEXT"));
+        assert_contains_canonical_path(&content, &new_replica);
+        assert_contains_canonical_path(&content, &new_matrix);
+        assert!(content.contains("## GOLDEN RULE"));
+        assert!(content.contains("## Inter-Agent Messaging"));
     }
 
     #[test]
