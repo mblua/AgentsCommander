@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentsCommander - B2C1a Config and Agent Selection</title>
+  <style>
+    :root {
+      --bg: #05070b;
+      --chrome: #070b12;
+      --panel: #0c111a;
+      --panel-2: #101827;
+      --line: rgba(148, 163, 184, 0.14);
+      --text: #d8e4f2;
+      --text-hot: #f1f7ff;
+      --muted: #8492a7;
+      --cyan: #00d4ff;
+      --green: #35f2a6;
+      --yellow: #f8c657;
+      --red: #ff5d73;
+      --violet: #9d7cff;
+      --font-ui: "Geist", "Outfit", "General Sans", "Segoe UI", sans-serif;
+      --font-mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      --radius-sm: 4px;
+      --radius-md: 7px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at 18% 14%, rgba(0, 212, 255, 0.08), transparent 25%),
+        radial-gradient(circle at 82% 18%, rgba(157, 124, 255, 0.08), transparent 23%),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      letter-spacing: 0;
+    }
+    body {
+      min-width: 1240px;
+      overflow: hidden;
+    }
+    button, input {
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+    }
+
+    .app-shell {
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 34px auto auto minmax(0, 1fr) 34px;
+      background:
+        linear-gradient(90deg, rgba(0, 212, 255, 0.035), transparent 28%),
+        linear-gradient(180deg, rgba(157, 124, 255, 0.045), transparent 260px),
+        var(--bg);
+    }
+
+    .titlebar, .header, .switcher, .footer {
+      background: rgba(7, 11, 18, 0.96);
+      border-color: var(--line);
+    }
+    .titlebar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+      padding: 0 10px 0 14px;
+      border-bottom: 1px solid var(--line);
+      user-select: none;
+    }
+    .brand, .top-meta, .actions, .tag-row, .color-row, .picker-row, .choice-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .brand {
+      color: var(--text-hot);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .brand-mark {
+      width: 18px;
+      height: 18px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid rgba(0, 212, 255, 0.48);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.09);
+      color: var(--cyan);
+      font-size: 10px;
+    }
+    .top-meta { overflow: hidden; white-space: nowrap; }
+
+    .icon-btn, .action-btn, .small-btn, .variant-btn, .profile-choice, .agent-choice {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+    }
+    .icon-btn {
+      width: 24px;
+      height: 24px;
+      display: inline-grid;
+      place-items: center;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .badge, .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 19px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.035);
+      color: #aebbd0;
+      font-family: var(--font-mono);
+      line-height: 1;
+    }
+    .badge {
+      gap: 5px;
+      padding: 2px 7px;
+      font-size: 10px;
+    }
+    .pill {
+      padding: 2px 6px;
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .cyan { color: var(--cyan); border-color: rgba(0, 212, 255, 0.28); background: rgba(0, 212, 255, 0.12); }
+    .green { color: var(--green); border-color: rgba(53, 242, 166, 0.28); background: rgba(53, 242, 166, 0.12); }
+    .yellow { color: var(--yellow); border-color: rgba(248, 198, 87, 0.28); background: rgba(248, 198, 87, 0.13); }
+    .red { color: var(--red); border-color: rgba(255, 93, 115, 0.28); background: rgba(255, 93, 115, 0.13); }
+    .violet { color: var(--violet); border-color: rgba(157, 124, 255, 0.28); background: rgba(157, 124, 255, 0.12); }
+
+    .header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: end;
+      padding: 17px 20px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      margin-bottom: 4px;
+      color: var(--cyan);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      color: var(--text-hot);
+      font-size: 22px;
+      line-height: 1.12;
+      font-weight: 750;
+    }
+    .subhead {
+      max-width: 1080px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .action-btn, .small-btn, .variant-btn, .profile-choice, .agent-choice {
+      min-height: 28px;
+      padding: 0 11px;
+      font-size: 11px;
+    }
+    .small-btn {
+      min-height: 24px;
+      padding: 0 8px;
+      font-size: 10px;
+    }
+    .primary {
+      border-color: rgba(0, 212, 255, 0.42);
+      background: rgba(0, 212, 255, 0.16);
+      color: #bdefff;
+      font-weight: 800;
+    }
+    .danger {
+      border-color: rgba(255, 93, 115, 0.28);
+      color: var(--red);
+      background: rgba(255, 93, 115, 0.08);
+    }
+
+    .switcher {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 16px;
+      border-bottom: 1px solid var(--line);
+      overflow: hidden;
+      flex-wrap: wrap;
+    }
+    .switcher-label {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .variant-btn.active {
+      color: var(--cyan);
+      border-color: rgba(0, 212, 255, 0.42);
+      background: rgba(0, 212, 255, 0.12);
+    }
+
+    .content {
+      min-height: 0;
+      overflow: hidden;
+    }
+    .screen {
+      display: none;
+      height: 100%;
+      min-height: 0;
+      padding: 14px 18px 16px;
+      overflow: hidden;
+    }
+    .screen.active {
+      display: grid;
+      grid-template-columns: 250px minmax(0, 1fr);
+      gap: 12px;
+    }
+    .screen.selection.active {
+      grid-template-columns: 240px 220px minmax(0, 1fr);
+    }
+
+    .panel, .rail, .preview {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(12, 17, 26, 0.92);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
+      overflow: hidden;
+    }
+    .panel-header, .rail-header, .preview-header {
+      min-height: 48px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.025);
+    }
+    .panel-title, .rail-title, .preview-title, .section-title {
+      min-width: 0;
+      color: var(--text-hot);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .panel-kicker, .rail-kicker, .preview-kicker, .mono-line, .support-line {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+    .mono-line {
+      margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .panel-body, .rail-body, .preview-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 12px;
+    }
+    .stack { display: grid; gap: 9px; }
+    .compare-zone, .selection-zone {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      gap: 10px;
+      overflow: hidden;
+    }
+    .compare-zone { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .selection-zone { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .agent-row, .profile-card, .section-block, .selection-card, .summary-card {
+      border: 1px solid rgba(148, 163, 184, 0.13);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .section-block, .summary-card {
+      padding: 10px;
+    }
+
+    .agent-row, .profile-head, .selection-head, .summary-head, .env-row, .choice-row {
+      display: grid;
+      align-items: center;
+      gap: 8px;
+    }
+    .agent-row {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      padding: 10px;
+    }
+    .agent-row.selected, .agent-choice.active, .profile-choice.active {
+      border-color: rgba(0, 212, 255, 0.32);
+      background: rgba(0, 212, 255, 0.08);
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--agent-color, var(--cyan));
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.03);
+    }
+    .agent-name { color: var(--text-hot); font-size: 12px; font-weight: 800; }
+    .color-swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      background: var(--agent-color, var(--cyan));
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.04);
+    }
+    .color-chip {
+      min-height: 19px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.05);
+      color: #cdd9e7;
+      font-family: var(--font-mono);
+      font-size: 9px;
+    }
+    .tag-row, .color-row, .picker-row, .choice-row { flex-wrap: wrap; }
+
+    .select, .input, .textarea {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-radius: var(--radius-sm);
+      background: rgba(7, 11, 18, 0.84);
+      color: var(--text);
+    }
+    .select, .input {
+      min-height: 26px;
+      padding: 0 8px;
+      font-size: 11px;
+    }
+    .textarea {
+      min-height: 62px;
+      padding: 7px 8px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      line-height: 1.45;
+      resize: none;
+    }
+    .field-label {
+      display: inline-flex;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .rail {
+      position: relative;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 34%),
+        rgba(12, 17, 26, 0.92);
+    }
+    .rail::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: var(--agent-color, var(--cyan));
+    }
+    .rail-body {
+      display: grid;
+      gap: 9px;
+    }
+    .profile-card {
+      overflow: hidden;
+      padding: 10px 10px 0;
+      background: rgba(10, 15, 23, 0.88);
+    }
+    .profile-card.expanded {
+      border-color: rgba(0, 212, 255, 0.28);
+      background: rgba(14, 21, 33, 0.98);
+    }
+    .profile-head {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      padding-bottom: 10px;
+    }
+    .profile-letter {
+      width: 28px;
+      height: 28px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-hot);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .name-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .chevron {
+      width: 24px;
+      height: 24px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      font-family: var(--font-mono);
+    }
+    .expand-config {
+      display: grid;
+      gap: 8px;
+      padding: 0 0 10px 38px;
+    }
+    .profile-card:not(.expanded) .expand-config {
+      display: none;
+    }
+    .env-table {
+      display: grid;
+      gap: 7px;
+    }
+    .env-row {
+      grid-template-columns: 1fr minmax(0, 1.2fr) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .env-key {
+      color: var(--text-hot);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 800;
+    }
+    .status-strip {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 9px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.13);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .flag-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .diff-line {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      padding: 7px 8px;
+      border-radius: var(--radius-sm);
+      background: rgba(4, 8, 14, 0.58);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .choice-list {
+      display: grid;
+      gap: 8px;
+    }
+    .profile-choice, .agent-choice {
+      width: 100%;
+      text-align: left;
+    }
+    .profile-choice.selected, .agent-choice.selected {
+      border-color: rgba(0, 212, 255, 0.32);
+      background: rgba(0, 212, 255, 0.08);
+    }
+
+    .summary-grid {
+      display: grid;
+      gap: 8px;
+    }
+    .summary-row {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 7px 8px;
+      border-radius: var(--radius-sm);
+      background: rgba(4, 8, 14, 0.48);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+    .summary-label {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .summary-value {
+      color: var(--text-hot);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .preview {
+      min-height: 0;
+    }
+    .preview-body {
+      display: grid;
+      gap: 10px;
+    }
+    .preview-pair {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .footer {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 0 18px;
+      border-top: 1px solid var(--line);
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 1320px) {
+      body { min-width: 1320px; }
+      .screen.selection.active { grid-template-columns: 228px 210px minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="titlebar">
+      <div class="brand"><span class="brand-mark">AC</span><span>AgentsCommander</span></div>
+      <div class="top-meta">
+        <span class="badge cyan">B2C1a corrections</span>
+        <span class="badge">profile selection</span>
+        <span class="badge yellow">Issue 384</span>
+      </div>
+      <div class="window-actions" aria-hidden="true">
+        <span class="icon-btn">-</span>
+        <span class="icon-btn">[]</span>
+        <span class="icon-btn">x</span>
+      </div>
+    </header>
+
+    <section class="header">
+      <div>
+        <div class="eyebrow">Settings / Coding Agents</div>
+        <h1>B2C1a Config and Agent Profile Selection</h1>
+        <div class="subhead">
+          Screen 1 fixes the B2C1a configuration view. Screen 2 shows the selection flow for an AC agent choosing a coding tool,
+          then a profile, with the projected command string and env vars for the effective result.
+        </div>
+      </div>
+      <div class="actions">
+        <button class="action-btn primary" data-screen-target="config">Config Screen</button>
+        <button class="action-btn" data-screen-target="selection">Selection Screen</button>
+      </div>
+    </section>
+
+    <nav class="switcher" aria-label="Prototype screen switcher">
+      <span class="switcher-label">Screen</span>
+      <button class="variant-btn active" type="button" data-screen-target="config">B2C1a corrected</button>
+      <button class="variant-btn" type="button" data-screen-target="selection">Agent profile selection</button>
+      <span class="badge green" id="selectionStatus">Selected: Codex A / Local Codex A</span>
+    </nav>
+
+    <main class="content">
+      <section class="screen active" data-screen-panel="config" aria-label="B2C1a corrected configuration screen">
+        <aside class="panel">
+          <div class="panel-header">
+            <div><div class="panel-title">Coding Agents</div><div class="panel-kicker">Colors and selected comparison pair</div></div>
+            <button class="small-btn primary">Add Agent</button>
+          </div>
+          <div class="panel-body stack">
+            <div class="agent-row selected" style="--agent-color: #00d4ff;">
+              <span class="dot"></span>
+              <div>
+                <div class="agent-name">Codex</div>
+                <div class="mono-line">codex</div>
+                <div class="color-row"><span class="color-swatch"></span><button class="color-chip">#00d4ff</button><span class="pill cyan">left</span></div>
+              </div>
+              <button class="small-btn">Use</button>
+            </div>
+            <div class="agent-row selected" style="--agent-color: #35f2a6;">
+              <span class="dot"></span>
+              <div>
+                <div class="agent-name">Local Codex CLI</div>
+                <div class="mono-line">C:\Program Files\OpenAI Codex\codex.exe</div>
+                <div class="color-row"><span class="color-swatch"></span><button class="color-chip">#35f2a6</button><span class="pill green">right</span></div>
+              </div>
+              <button class="small-btn danger">Remove</button>
+            </div>
+            <div class="agent-row" style="--agent-color: #9d7cff;">
+              <span class="dot"></span>
+              <div>
+                <div class="agent-name">Claude</div>
+                <div class="mono-line">claude</div>
+                <div class="color-row"><span class="color-swatch"></span><button class="color-chip">#9d7cff</button><span class="pill">available</span></div>
+              </div>
+              <button class="small-btn">Use</button>
+            </div>
+            <div class="section-block">
+              <div class="section-title">Actions</div>
+              <div class="tag-row">
+                <button class="small-btn primary">Add Agent</button>
+                <button class="small-btn">Swap Rails</button>
+                <button class="small-btn danger">Delete Agent</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <div class="compare-zone">
+          <section class="rail" data-profile-rail="left" style="--agent-color: #00d4ff;">
+            <div class="rail-header">
+              <div><div class="rail-title">Codex rail</div><div class="rail-kicker">Compact inline command</div></div>
+              <select class="select"><option>Codex</option><option>Claude</option><option>Local Codex CLI</option></select>
+            </div>
+            <div class="rail-body stack">
+              <div class="section-block">
+                <div class="agent-select-row"><span class="color-swatch"></span><button class="color-chip">Rail #00d4ff</button><button class="small-btn">Color</button></div>
+              </div>
+              <article class="profile-card expanded selected" data-profile-letter="A">
+                <div class="profile-head">
+                  <span class="profile-letter">A</span>
+                  <div><div class="name-line"><input class="input" value="Baseline"><span class="pill green">match</span></div><div class="mono-line">Configured fallback profile</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <label class="field-label">Command</label>
+                  <input class="input" value="codex --sandbox workspace-write --model gpt-5-codex">
+                  <div class="env-table">
+                    <div class="env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="%AC_ROOT%\.codex\agents\codex"><span class="pill green">system</span><button class="small-btn danger">Del</button></div>
+                    <div class="env-row"><span class="env-key">OPENAI_ORG</span><input class="input" value="ac-prod"><span class="pill">profile</span><button class="small-btn danger">Del</button></div>
+                  </div>
+                  <div class="tag-row"><button class="small-btn primary">+ Env</button><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button></div>
+                </div>
+              </article>
+              <article class="profile-card" data-profile-letter="B">
+                <div class="profile-head">
+                  <span class="profile-letter">B</span>
+                  <div><div class="name-line"><input class="input" value="Balanced"><span class="pill yellow">configured</span></div><div class="mono-line">fallback a A</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <label class="field-label">Command</label>
+                  <input class="input" value="codex --model gpt-5-codex --effort medium">
+                  <div class="env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="%AC_ROOT%\.codex\agents\codex-balanced"><span class="pill green">isolated</span><button class="small-btn danger">Del</button></div>
+                  <button class="small-btn primary">+ Env</button>
+                </div>
+              </article>
+              <article class="profile-card error" data-profile-letter="C">
+                <div class="profile-head">
+                  <span class="profile-letter">C</span>
+                  <div><div class="name-line"><input class="input" value="Review"><span class="pill red">invalid</span></div><div class="mono-line">Command string has an unclosed quote</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <label class="field-label">Command</label>
+                  <input class="input error" value="codex --review --prompt &quot;missing close">
+                  <div class="status-strip red">Validation: close the quoted prompt.</div>
+                </div>
+              </article>
+              <article class="profile-card warning" data-profile-letter="D">
+                <div class="profile-head">
+                  <span class="profile-letter">D</span>
+                  <div><div class="name-line"><input class="input" value="Full Auto"><span class="pill red">MISSING</span></div><div class="mono-line">Configured elsewhere, empty here</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <label class="field-label">Command</label>
+                  <input class="input" value="codex --dangerously-auto-run --effort high">
+                  <button class="small-btn danger">Delete Profile</button>
+                </div>
+              </article>
+              <button class="small-btn primary">Add Profile</button>
+            </div>
+          </section>
+
+          <section class="rail" data-profile-rail="right" style="--agent-color: #35f2a6;">
+            <div class="rail-header">
+              <div><div class="rail-title">Local Codex CLI rail</div><div class="rail-kicker">Compact inline command</div></div>
+              <select class="select"><option>Local Codex CLI</option><option>Codex</option><option>Claude</option></select>
+            </div>
+            <div class="rail-body stack">
+              <div class="section-block">
+                <div class="agent-select-row"><span class="color-swatch"></span><button class="color-chip">Rail #35f2a6</button><button class="small-btn">Color</button></div>
+              </div>
+              <article class="profile-card expanded" data-profile-letter="A">
+                <div class="profile-head">
+                  <span class="profile-letter">A</span>
+                  <div><div class="name-line"><input class="input" value="Baseline"><span class="pill green">match</span></div><div class="mono-line">Path with spaces is kept in one field</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <label class="field-label">Command</label>
+                  <input class="input" value="C:\Program Files\OpenAI Codex\codex.exe --sandbox workspace-write --model gpt-5-codex">
+                  <div class="env-table">
+                    <div class="env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="D:\manual\codex"><span class="pill green">accepted</span><button class="small-btn danger">Del</button></div>
+                  </div>
+                  <div class="tag-row"><button class="small-btn primary">+ Env</button><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button></div>
+                </div>
+              </article>
+              <article class="profile-card warning" data-profile-letter="B">
+                <div class="profile-head">
+                  <span class="profile-letter">B</span>
+                  <div><div class="name-line"><input class="input" value="Balanced"><span class="pill yellow">fallback</span></div><div class="mono-line">fallback a A</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <label class="field-label">Command</label>
+                  <input class="input" value="C:\Program Files\OpenAI Codex\codex.exe --sandbox workspace-write --effort medium">
+                  <button class="small-btn primary">+ Env</button>
+                </div>
+              </article>
+              <article class="profile-card" data-profile-letter="C">
+                <div class="profile-head">
+                  <span class="profile-letter">C</span>
+                  <div><div class="name-line"><input class="input" value="Review"><span class="pill yellow">diff</span></div><div class="mono-line">Uses long-context review</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <label class="field-label">Command</label>
+                  <input class="input" value="C:\Program Files\OpenAI Codex\codex.exe --profile review --long-context">
+                  <div class="env-row"><span class="env-key">AC_TRACE</span><input class="input" value="profile-c"><span class="pill">profile</span><button class="small-btn danger">Del</button></div>
+                </div>
+              </article>
+              <article class="profile-card warning" data-profile-letter="D">
+                <div class="profile-head">
+                  <span class="profile-letter">D</span>
+                  <div><div class="name-line"><input class="input" value="Full Auto"><span class="pill red">MISSING</span></div><div class="mono-line">Configured elsewhere, empty here</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <button class="small-btn primary">Add D Cell</button>
+                  <button class="small-btn danger">Delete Profile</button>
+                </div>
+              </article>
+              <button class="small-btn primary">Add Profile</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="screen selection" data-screen-panel="selection" aria-label="Agent profile selection screen">
+        <aside class="panel">
+          <div class="panel-header">
+            <div><div class="panel-title">Coding Agent</div><div class="panel-kicker">Choose the tool first</div></div>
+            <span class="badge cyan">step 1</span>
+          </div>
+          <div class="panel-body">
+            <div class="choice-list" data-agent-list>
+              <button class="agent-choice selected" type="button" data-agent-choice="codex" style="--agent-color: #00d4ff;">
+                <div class="choice-row" style="grid-template-columns:auto minmax(0,1fr) auto;">
+                  <span class="dot"></span>
+                  <div>
+                    <div class="agent-name">Codex</div>
+                    <div class="mono-line">gpt-5-codex / workspace-write</div>
+                  </div>
+                  <span class="pill green">selected</span>
+                </div>
+              </button>
+              <button class="agent-choice" type="button" data-agent-choice="claude" style="--agent-color: #9d7cff;">
+                <div class="choice-row" style="grid-template-columns:auto minmax(0,1fr) auto;">
+                  <span class="dot"></span>
+                  <div>
+                    <div class="agent-name">Claude</div>
+                    <div class="mono-line">sonnet / accept edits</div>
+                  </div>
+                  <span class="pill">available</span>
+                </div>
+              </button>
+              <button class="agent-choice" type="button" data-agent-choice="local" style="--agent-color: #35f2a6;">
+                <div class="choice-row" style="grid-template-columns:auto minmax(0,1fr) auto;">
+                  <span class="dot"></span>
+                  <div>
+                    <div class="agent-name">Local Codex CLI</div>
+                    <div class="mono-line">C:\Program Files\OpenAI Codex\codex.exe</div>
+                  </div>
+                  <span class="pill green">selected</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div><div class="panel-title">Profile</div><div class="panel-kicker">Choose the profile letter second</div></div>
+            <span class="badge yellow">step 2</span>
+          </div>
+          <div class="panel-body">
+            <div class="choice-list" data-profile-list>
+              <button class="profile-choice selected" type="button" data-profile-choice="A">
+                <div class="choice-row" style="grid-template-columns:auto minmax(0,1fr) auto;">
+                  <span class="profile-letter">A</span>
+                  <div>
+                    <div class="agent-name">Baseline</div>
+                    <div class="mono-line">match / configured</div>
+                  </div>
+                  <span class="pill green">match</span>
+                </div>
+              </button>
+              <button class="profile-choice" type="button" data-profile-choice="B">
+                <div class="choice-row" style="grid-template-columns:auto minmax(0,1fr) auto;">
+                  <span class="profile-letter">B</span>
+                  <div>
+                    <div class="agent-name">Balanced</div>
+                    <div class="mono-line">fallback a A</div>
+                  </div>
+                  <span class="pill yellow">fallback</span>
+                </div>
+              </button>
+              <button class="profile-choice" type="button" data-profile-choice="C">
+                <div class="choice-row" style="grid-template-columns:auto minmax(0,1fr) auto;">
+                  <span class="profile-letter">C</span>
+                  <div>
+                    <div class="agent-name">Review</div>
+                    <div class="mono-line">valid / configured</div>
+                  </div>
+                  <span class="pill green">configured</span>
+                </div>
+              </button>
+              <button class="profile-choice" type="button" data-profile-choice="D">
+                <div class="choice-row" style="grid-template-columns:auto minmax(0,1fr) auto;">
+                  <span class="profile-letter">D</span>
+                  <div>
+                    <div class="agent-name">Full Auto</div>
+                    <div class="mono-line">MISSING on this agent</div>
+                  </div>
+                  <span class="pill red">MISSING</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="preview">
+          <div class="preview-header">
+            <div><div class="preview-title">Effective Projection</div><div class="preview-kicker">Projected command and env for the chosen pair</div></div>
+            <span class="badge green" id="projectionBadge">match</span>
+          </div>
+          <div class="preview-body">
+            <div class="summary-card">
+              <div class="summary-head">
+                <div class="section-title">Chosen pair</div>
+                <span class="pill cyan">agent then profile</span>
+              </div>
+              <div class="summary-grid">
+                <div class="summary-row"><span class="summary-label">Coding agent</span><span class="summary-value" id="agentValue">Codex</span><span class="pill green" id="agentBadge">selected</span></div>
+                <div class="summary-row"><span class="summary-label">Profile letter</span><span class="summary-value" id="profileValue">A</span><span class="pill green" id="profileBadge">match</span></div>
+                <div class="summary-row"><span class="summary-label">Resolution</span><span class="summary-value" id="resolutionValue">Direct match</span><span class="pill green" id="resolutionBadge">match</span></div>
+              </div>
+            </div>
+
+            <div class="preview-pair">
+              <div class="summary-card">
+                <div class="summary-head"><div class="section-title">Command</div><span class="pill cyan">resolved</span></div>
+                <div class="diff-line"><span>Invocation</span><span id="commandValue">codex --sandbox workspace-write --model gpt-5-codex</span></div>
+              </div>
+              <div class="summary-card">
+                <div class="summary-head"><div class="section-title">Env</div><span class="pill cyan">effective</span></div>
+                <div class="summary-grid" id="envList">
+                  <div class="summary-row"><span class="summary-label">CODEX_HOME</span><span class="summary-value">%AC_ROOT%\.codex\agents\codex</span><span class="pill green">system</span></div>
+                  <div class="summary-row"><span class="summary-label">OPENAI_ORG</span><span class="summary-value">ac-prod</span><span class="pill">profile</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="status-strip" id="selectionNote">
+              Select an agent, then a profile. The preview reflects the chosen coding tool and the effective projection for that pair.
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="tag-row">
+        <span>Standalone prototype: `_prototypes/coding-agent-profiles-b2c1a-config-and-agent-selection.html`</span>
+        <span class="pill cyan">single command field</span>
+        <span class="pill green">A/B/C/D order</span>
+        <span class="pill yellow">fallback semantics</span>
+        <span class="pill red">MISSING / invalid</span>
+      </div>
+      <div class="actions">
+        <button class="action-btn primary" data-screen-target="config">Config Screen</button>
+        <button class="action-btn" data-screen-target="selection">Selection Screen</button>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    const screens = Array.from(document.querySelectorAll("[data-screen-panel]"));
+    const screenButtons = Array.from(document.querySelectorAll("[data-screen-target]"));
+    const selectionStatus = document.getElementById("selectionStatus");
+    const projectionBadge = document.getElementById("projectionBadge");
+    const agentValue = document.getElementById("agentValue");
+    const profileValue = document.getElementById("profileValue");
+    const resolutionValue = document.getElementById("resolutionValue");
+    const commandValue = document.getElementById("commandValue");
+    const envList = document.getElementById("envList");
+    const selectionNote = document.getElementById("selectionNote");
+    const agentButtons = Array.from(document.querySelectorAll("[data-agent-choice]"));
+    const profileButtons = Array.from(document.querySelectorAll("[data-profile-choice]"));
+
+    const projectionMap = {
+      codex: {
+        A: {
+          badge: "green",
+          resolution: "Direct match",
+          command: "codex --sandbox workspace-write --model gpt-5-codex",
+          env: [
+            ["CODEX_HOME", "%AC_ROOT%\\.codex\\agents\\codex", "system"],
+            ["OPENAI_ORG", "ac-prod", "profile"],
+          ],
+        },
+        B: {
+          badge: "yellow",
+          resolution: "fallback a A",
+          command: "codex --model gpt-5-codex --effort medium",
+          env: [
+            ["CODEX_HOME", "%AC_ROOT%\\.codex\\agents\\codex-balanced", "isolated"],
+          ],
+        },
+        C: {
+          badge: "red",
+          resolution: "Invalid command syntax",
+          command: "codex --review --prompt \"missing close",
+          env: [
+            ["OPENAI_ORG", "ac-prod", "profile"],
+          ],
+        },
+        D: {
+          badge: "red",
+          resolution: "MISSING on this agent",
+          command: "codex --dangerously-auto-run --effort high",
+          env: [],
+        },
+      },
+      local: {
+        A: {
+          badge: "green",
+          resolution: "Direct match",
+          command: "C:\\Program Files\\OpenAI Codex\\codex.exe --sandbox workspace-write --model gpt-5-codex",
+          env: [
+            ["CODEX_HOME", "D:\\manual\\codex", "accepted"],
+          ],
+        },
+        B: {
+          badge: "yellow",
+          resolution: "fallback a A",
+          command: "C:\\Program Files\\OpenAI Codex\\codex.exe --sandbox workspace-write --effort medium",
+          env: [],
+        },
+        C: {
+          badge: "yellow",
+          resolution: "Diff from A, still valid",
+          command: "C:\\Program Files\\OpenAI Codex\\codex.exe --profile review --long-context",
+          env: [
+            ["AC_TRACE", "profile-c", "profile"],
+          ],
+        },
+        D: {
+          badge: "red",
+          resolution: "MISSING on this agent",
+          command: "C:\\Program Files\\OpenAI Codex\\codex.exe --dangerously-auto-run --effort high",
+          env: [],
+        },
+      },
+      claude: {
+        A: {
+          badge: "green",
+          resolution: "Direct match",
+          command: "claude --permission-mode acceptEdits",
+          env: [
+            ["ANTHROPIC_MODEL", "sonnet", "agent"],
+          ],
+        },
+        B: {
+          badge: "yellow",
+          resolution: "fallback a A",
+          command: "claude --model sonnet --permission-mode acceptEdits",
+          env: [],
+        },
+        C: {
+          badge: "green",
+          resolution: "Configured",
+          command: "claude --review --verify --strict",
+          env: [],
+        },
+        D: {
+          badge: "red",
+          resolution: "MISSING on this agent",
+          command: "claude --dangerously-auto-run",
+          env: [],
+        },
+      },
+    };
+
+    function setScreen(name) {
+      screens.forEach((screen) => {
+        screen.classList.toggle("active", screen.getAttribute("data-screen-panel") === name);
+      });
+      screenButtons.forEach((button) => {
+        button.classList.toggle("active", button.getAttribute("data-screen-target") === name);
+      });
+    }
+
+    function setProjection(agent, profile) {
+      const data = projectionMap[agent][profile];
+      const agentLabel = agent === "local" ? "Local Codex CLI" : agent === "claude" ? "Claude" : "Codex";
+
+      agentButtons.forEach((button) => {
+        button.classList.toggle("selected", button.getAttribute("data-agent-choice") === agent);
+      });
+      profileButtons.forEach((button) => {
+        button.classList.toggle("selected", button.getAttribute("data-profile-choice") === profile);
+      });
+
+      agentValue.textContent = agentLabel;
+      profileValue.textContent = profile;
+      resolutionValue.textContent = data.resolution;
+      commandValue.textContent = data.command;
+
+      envList.innerHTML = "";
+      if (data.env.length) {
+        data.env.forEach(([key, value, badge]) => {
+          const row = document.createElement("div");
+          row.className = "summary-row";
+          row.innerHTML = `<span class="summary-label">${key}</span><span class="summary-value">${value}</span><span class="pill ${badge === "accepted" || badge === "system" || badge === "agent" || badge === "profile" ? "green" : "yellow"}">${badge}</span>`;
+          envList.appendChild(row);
+        });
+      } else {
+        const row = document.createElement("div");
+        row.className = "summary-row";
+        row.innerHTML = `<span class="summary-label">env</span><span class="summary-value">No additional env vars</span><span class="pill">none</span>`;
+        envList.appendChild(row);
+      }
+
+      const badgeClass = data.badge;
+      projectionBadge.className = `badge ${badgeClass}`;
+      projectionBadge.textContent = badgeClass === "green" ? "match" : badgeClass === "yellow" ? "fallback" : profile === "C" && agent === "codex" ? "invalid" : "MISSING";
+      selectionStatus.className = `badge ${badgeClass}`;
+      selectionStatus.textContent = `Selected: ${agentLabel} ${profile} / ${badgeClass === "green" ? "match" : badgeClass === "yellow" ? "fallback" : profile === "C" && agent === "codex" ? "invalid" : "MISSING"}`;
+      selectionNote.textContent = `${agentLabel} + profile ${profile} resolves to ${data.resolution.toLowerCase()}.`;
+    }
+
+    screenButtons.forEach((button) => {
+      button.addEventListener("click", () => setScreen(button.getAttribute("data-screen-target")));
+    });
+    agentButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const activeProfile = document.querySelector("[data-profile-choice].selected")?.getAttribute("data-profile-choice") || "A";
+        setProjection(button.getAttribute("data-agent-choice"), activeProfile);
+      });
+    });
+    profileButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const activeAgent = document.querySelector("[data-agent-choice].selected")?.getAttribute("data-agent-choice") || "codex";
+        setProjection(activeAgent, button.getAttribute("data-profile-choice"));
+      });
+    });
+
+    document.addEventListener("click", (event) => {
+      const toggle = event.target.closest("[data-toggle-profile]");
+      if (!toggle) return;
+      const card = toggle.closest(".profile-card");
+      if (card) card.classList.toggle("expanded");
+    });
+
+    setScreen("config");
+    setProjection("codex", "A");
+  </script>
+</body>
+</html>
