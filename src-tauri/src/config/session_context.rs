@@ -2476,7 +2476,8 @@ fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<Strin
         None
     };
     let skills_section = extract_legacy_skills_section(normalized)?;
-    if !is_generated_legacy_skills_section(&skills_section) {
+    let skill_owner_root = resolve_skill_owner_root(&agent_root, matrix_root.as_deref());
+    if !is_provably_generated_legacy_skills_section(&skills_section, skill_owner_root.as_deref()) {
         return None;
     }
 
@@ -2504,200 +2505,12 @@ fn extract_legacy_skills_section(value: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn is_generated_legacy_skills_section(section: &str) -> bool {
-    let normalized = normalize_context_for_compat(section);
-    let Some(mut rest) = normalized.strip_prefix(GENERATED_SKILLS_SECTION_INTRO) else {
-        return false;
-    };
-
-    if let Some(next) = consume_exact_generated_line(
-        rest,
-        "No canonical Agent Matrix root was resolved for this session, so no runtime skills were discovered.",
-    ) {
-        rest = next;
-    } else if let Some(next) = consume_backticked_generated_line(rest, "Canonical skills root: ") {
-        rest = next;
-        let Some(next) = rest.strip_prefix('\n') else {
-            return false;
-        };
-        rest = next;
-        let Some(next) = consume_exact_generated_line(
-            rest,
-            "When running from a workgroup replica, resolve skills/... against the origin Agent Matrix path above, not against the replica CWD.",
-        ) else {
-            return false;
-        };
-        rest = next;
-        if let Some(after_blank) = rest.strip_prefix('\n') {
-            if let Some(next) = consume_exact_generated_line(
-                after_blank,
-                "No valid skills with parseable SKILL.md frontmatter were discovered.",
-            ) {
-                rest = next;
-            }
-        }
-    } else if let Some(next) =
-        consume_backticked_generated_line(rest, "Canonical Agent Matrix root: ")
-    {
-        rest = next;
-    } else {
-        return false;
-    }
-
-    if let Some(after_heading) = rest.strip_prefix("\n### Available Skills\n\n") {
-        let Some((next, count)) = consume_generated_skill_entries(after_heading) else {
-            return false;
-        };
-        if count == 0 {
-            return false;
-        }
-        rest = next;
-    }
-
-    if let Some(after_heading) = rest.strip_prefix("\n### Skill Discovery Warnings\n\n") {
-        let Some((next, count)) = consume_generated_skill_warning_lines(after_heading) else {
-            return false;
-        };
-        if count == 0 {
-            return false;
-        }
-        rest = next;
-    }
-
-    if let Some(next) = consume_generated_skill_budget_summary(rest) {
-        rest = next;
-    }
-
-    rest.is_empty()
-}
-
-fn consume_exact_generated_line<'a>(value: &'a str, line: &str) -> Option<&'a str> {
-    if value == line {
-        return Some("");
-    }
-    value.strip_prefix(line)?.strip_prefix('\n')
-}
-
-fn consume_backticked_generated_line<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
-    let after_prefix = value.strip_prefix(prefix)?.strip_prefix('`')?;
-    let end = after_prefix.find('`')?;
-    let body = &after_prefix[..end];
-    if body.is_empty() || body.contains('\n') {
-        return None;
-    }
-    let after_body = &after_prefix[end + 1..];
-    if after_body.is_empty() {
-        return Some("");
-    }
-    after_body.strip_prefix('\n')
-}
-
-fn take_generated_line(value: &str) -> Option<(&str, &str)> {
-    if value.is_empty() {
-        return None;
-    }
-    if let Some(pos) = value.find('\n') {
-        return Some((&value[..pos], &value[pos + 1..]));
-    }
-    Some((value, ""))
-}
-
-fn take_generated_line_with_newline(value: &str) -> Option<(&str, &str)> {
-    let pos = value.find('\n')?;
-    Some((&value[..pos], &value[pos + 1..]))
-}
-
-fn consume_generated_skill_entries(mut rest: &str) -> Option<(&str, usize)> {
-    let mut count = 0;
-
-    while rest.starts_with("- `") {
-        let (entry_line, next) = take_generated_line_with_newline(rest)?;
-        let after_name_prefix = entry_line.strip_prefix("- `")?;
-        let separator = after_name_prefix.find("` - ")?;
-        let name = &after_name_prefix[..separator];
-        let trigger = &after_name_prefix[separator + 4..];
-        if !is_valid_skill_name(name) || trigger.trim().is_empty() {
-            return None;
-        }
-
-        let (scope_line, next) = take_generated_line_with_newline(next)?;
-        let scope = scope_line.strip_prefix("  Scope: ")?;
-        if scope != "canonical Agent Matrix" && scope != "Root Agent durable skills" {
-            return None;
-        }
-
-        let (entrypoint_line, next) = take_generated_line(next)?;
-        let entrypoint = entrypoint_line
-            .strip_prefix("  Entrypoint: `")
-            .and_then(|line| line.strip_suffix('`'))?;
-        if entrypoint.is_empty() || entrypoint.contains('`') {
-            return None;
-        }
-
-        rest = next;
-        count += 1;
-    }
-
-    Some((rest, count))
-}
-
-fn consume_generated_skill_warning_lines(mut rest: &str) -> Option<(&str, usize)> {
-    let mut count = 0;
-
-    while rest.starts_with("- ") {
-        let (line, next) = take_generated_line(rest)?;
-        if !is_generated_skill_warning_line(line) {
-            return None;
-        }
-        rest = next;
-        count += 1;
-    }
-
-    Some((rest, count))
-}
-
-fn is_generated_skill_warning_line(line: &str) -> bool {
-    let Some(body) = line.strip_prefix("- ") else {
-        return false;
-    };
-
-    body.starts_with("`skills` ")
-        || body.starts_with("Skipped a skills directory entry: ")
-        || body.starts_with("Skipped linked skill directory `")
-        || body.starts_with("Skipped skill directory `")
-        || body.starts_with("Skipped skill `")
-        || (body.starts_with('`')
-            && body.contains(" (`")
-            && (body.contains("description metadata is missing; inspect SKILL.md before use.")
-                || body.contains("description must be a string; inspect SKILL.md before use.")
-                || body.contains("when_to_use must be a string; omitted when_to_use metadata.")))
-}
-
-fn consume_generated_skill_budget_summary(value: &str) -> Option<&str> {
-    let prefix = "Skill index startup-context budget reached; omitted ";
-    let rest = value.strip_prefix(prefix)?;
-    let rest = consume_ascii_digits(rest)?;
-    let rest = rest.strip_prefix(" skills and ")?;
-    let rest = consume_ascii_digits(rest)?;
-    rest.strip_prefix(" warnings. Inspect SKILL.md files if needed.")
-        .and_then(|rest| {
-            if rest.is_empty() {
-                Some("")
-            } else {
-                rest.strip_prefix('\n')
-            }
-        })
-}
-
-fn consume_ascii_digits(value: &str) -> Option<&str> {
-    let digit_count = value
-        .bytes()
-        .take_while(|byte| byte.is_ascii_digit())
-        .count();
-    if digit_count == 0 {
-        return None;
-    }
-    Some(&value[digit_count..])
+fn is_provably_generated_legacy_skills_section(
+    section: &str,
+    skill_owner_root: Option<&str>,
+) -> bool {
+    let expected = render_skills_section(&discover_skill_index(skill_owner_root));
+    normalize_context_for_compat(section) == normalize_context_for_compat(&expected)
 }
 
 fn has_legacy_default_tail(normalized: &str) -> bool {
@@ -3422,10 +3235,12 @@ mod tests {
         )
         .expect("write replica config");
 
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
         let legacy = legacy_rendered_default_context_for_compat(
             &path_string(&old_replica),
             Some(&path_string(&old_matrix)),
-            &no_skill_section(),
+            &old_skills_section,
         );
         std::fs::write(
             workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
@@ -3567,6 +3382,69 @@ mod tests {
     }
 
     #[test]
+    fn generated_shaped_manual_legacy_skills_content_is_preserved() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let new_matrix = workspace_dir.join("_agent_tech-lead");
+        let old_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&new_matrix).expect("create new matrix");
+        std::fs::create_dir_all(&old_replica).expect("create old replica");
+        std::fs::create_dir_all(&new_replica).expect("create new replica");
+        std::fs::write(
+            new_replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica),
+            Some(&path_string(&old_matrix)),
+            &old_skills_section,
+        );
+        let manual_skills = format!(
+            "{}Canonical skills root: `{}`\n\nWhen running from a workgroup replica, resolve skills/... against the origin Agent Matrix path above, not against the replica CWD.\n\n### Available Skills\n\n- `manual-ops-rule` - KEEP_MANUAL_SKILLS_RULE_IN_CONTEXT\n  Scope: canonical Agent Matrix\n  Entrypoint: `C:/notes/manual-rule/SKILL.md`\n\n### Skill Discovery Warnings\n\n- Skipped skill `manual-warning`: KEEP_MANUAL_WARNING_IN_CONTEXT",
+            GENERATED_SKILLS_SECTION_INTRO,
+            canonical_display_path(&old_matrix.join(SKILLS_DIR_NAME))
+        );
+        let edited = legacy.replace(&old_skills_section, &manual_skills);
+        assert_ne!(edited, legacy);
+        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
+            .expect("write edited rendered legacy template");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&new_replica),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_eq!(
+            count_context_occurrences(&content, "KEEP_MANUAL_SKILLS_RULE_IN_CONTEXT"),
+            1
+        );
+        assert_eq!(
+            count_context_occurrences(&content, "KEEP_MANUAL_WARNING_IN_CONTEXT"),
+            1
+        );
+        assert_contains_canonical_path(&content, &new_replica);
+        assert_contains_canonical_path(&content, &new_matrix);
+        assert!(content.contains("## GOLDEN RULE"));
+        assert!(content.contains("## Skills"));
+        assert!(content.contains("## Inter-Agent Messaging"));
+    }
+
+    #[test]
     fn edited_legacy_rendered_default_preserves_custom_template_content() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = temp.path().join(".ac");
@@ -3674,10 +3552,12 @@ mod tests {
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&target_matrix).expect("create target matrix");
 
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
         let legacy = legacy_rendered_default_context_for_compat(
             &path_string(&old_matrix),
             None,
-            &no_skill_section(),
+            &old_skills_section,
         );
         std::fs::write(
             workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
