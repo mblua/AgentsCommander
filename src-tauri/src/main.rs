@@ -38,6 +38,8 @@ fn main() {
                                 | agentscommander_lib::cli::Commands::UiClick(_)
                                 | agentscommander_lib::cli::Commands::UiContextClick(_)
                                 | agentscommander_lib::cli::Commands::UiSet(_)
+                                | agentscommander_lib::cli::Commands::UiType(_)
+                                | agentscommander_lib::cli::Commands::UiBackend(_)
                                 | agentscommander_lib::cli::Commands::UiWait(_)
                         ) {
                             std::env::set_var("AC_MACHINE_OUTPUT", "1");

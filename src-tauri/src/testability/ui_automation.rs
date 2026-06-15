@@ -19,6 +19,8 @@ pub const SESSION_FILE: &str = "session.json";
 pub const REQUESTS_DIR: &str = "requests";
 pub const RESPONSES_DIR: &str = "responses";
 pub const ENV_ENABLE: &str = "AC_UI_AUTOMATION";
+pub const BACKEND_AUTOMATION_WINDOW: &str = "__backend";
+pub const RESOURCE_WATCHDOG_BACKEND_SELECTOR: &str = "resourceMonitor.watchdog";
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const POLL_MS: u64 = 50;
@@ -72,6 +74,28 @@ pub struct UiSetArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct UiTypeArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    #[arg(long)]
+    pub selector: String,
+    #[arg(long)]
+    pub value: String,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct UiBackendArgs {
+    #[arg(long)]
+    pub selector: String,
+    #[arg(long)]
+    pub value: Option<String>,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
 pub struct UiWaitArgs {
     #[arg(long, default_value = "main")]
     pub window: String,
@@ -114,6 +138,8 @@ pub enum UiAutomationAction {
     Click,
     ContextClick,
     SetValue,
+    TypeText,
+    Backend,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -489,6 +515,11 @@ impl UiAutomationState {
             return;
         }
 
+        if is_backend_automation_window(&request.window) {
+            self.process_backend_request_file(app, &request_file, &request);
+            return;
+        }
+
         let available_windows = available_window_labels(app);
         if !available_windows
             .iter()
@@ -561,6 +592,16 @@ impl UiAutomationState {
                 let _ = retry_remove_file(&pending.inflight_path);
             }
         }
+    }
+
+    fn process_backend_request_file(
+        &self,
+        app: &AppHandle,
+        request_file: &RequestFile,
+        request: &UiAutomationRequest,
+    ) {
+        let response = handle_backend_request(app, request);
+        let _ = self.write_direct_response(request_file, &response);
     }
 
     fn is_pending(&self, request_id: &str) -> bool {
@@ -706,6 +747,26 @@ pub fn execute_set(args: UiSetArgs) -> i32 {
     })
 }
 
+pub fn execute_type(args: UiTypeArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::TypeText,
+        value: Some(args.value),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_backend(args: UiBackendArgs) -> i32 {
+    execute_cli(CliRequest {
+        window: BACKEND_AUTOMATION_WINDOW.to_string(),
+        selector: args.selector,
+        action: UiAutomationAction::Backend,
+        value: args.value,
+        timeout_ms: args.timeout_ms,
+    })
+}
+
 pub fn execute_wait(args: UiWaitArgs) -> i32 {
     let deadline = Instant::now() + Duration::from_millis(args.timeout_ms);
     let mut last_response: Option<UiAutomationResponse> = None;
@@ -777,6 +838,192 @@ fn execute_cli(input: CliRequest) -> i32 {
             print_stdout_json(&error);
             1
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendWatchdogMode {
+    Sample,
+    Warn,
+    KillGroup,
+    Tick,
+}
+
+impl BackendWatchdogMode {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.unwrap_or("sample") {
+            "sample" => Ok(Self::Sample),
+            "warn" => Ok(Self::Warn),
+            "killGroup" | "kill-group" => Ok(Self::KillGroup),
+            "tick" => Ok(Self::Tick),
+            other => Err(format!(
+                "Unsupported resource monitor watchdog mode '{other}'. Expected sample, warn, killGroup, or tick."
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Sample => "sample",
+            Self::Warn => "warn",
+            Self::KillGroup => "killGroup",
+            Self::Tick => "tick",
+        }
+    }
+}
+
+fn handle_backend_request(app: &AppHandle, request: &UiAutomationRequest) -> UiAutomationResponse {
+    if request.action != UiAutomationAction::Backend {
+        return UiAutomationResponse::error_for_request(
+            request,
+            "unsupported_action",
+            "Backend automation window only supports backend requests.",
+        );
+    }
+
+    match request.selector.as_str() {
+        RESOURCE_WATCHDOG_BACKEND_SELECTOR => {
+            handle_resource_watchdog_backend_request(app, request)
+        }
+        _ => UiAutomationResponse::error_for_request(
+            request,
+            "unsupported_selector",
+            "Backend automation selector is not supported.",
+        ),
+    }
+}
+
+fn handle_resource_watchdog_backend_request(
+    app: &AppHandle,
+    request: &UiAutomationRequest,
+) -> UiAutomationResponse {
+    let mode = match BackendWatchdogMode::parse(request.value.as_deref()) {
+        Ok(mode) => mode,
+        Err(message) => {
+            return UiAutomationResponse::error_for_request(request, "invalid_value", &message);
+        }
+    };
+
+    let Some(monitor) = app.try_state::<Arc<crate::resource_monitor::ResourceMonitorState>>()
+    else {
+        return UiAutomationResponse::error_for_request(
+            request,
+            "backend_state_missing",
+            "Resource monitor state is not registered.",
+        );
+    };
+
+    let cfg = crate::config::settings::load_settings();
+    let limits = crate::resource_monitor::ResourceLimits::from(&cfg);
+    let snapshot = monitor.snapshot(limits);
+    let groups = snapshot
+        .groups
+        .iter()
+        .filter_map(|group| {
+            Uuid::parse_str(&group.session_id)
+                .ok()
+                .map(|session_id| (session_id, group.clone()))
+        })
+        .collect::<Vec<_>>();
+    let decisions = crate::resource_monitor::watchdog::evaluate_watchdog_groups(&groups, limits);
+    let warn_matches = decisions
+        .iter()
+        .filter(|decision| decision.warn_required)
+        .count();
+    let kill_matches = decisions
+        .iter()
+        .filter(|decision| decision.kill_required)
+        .count();
+
+    let kill_enabled = cfg.resource_monitor_enabled
+        && matches!(mode, BackendWatchdogMode::KillGroup)
+        || (cfg.resource_monitor_enabled
+            && matches!(mode, BackendWatchdogMode::Tick)
+            && cfg.resource_watchdog_action
+                == crate::config::settings::ResourceWatchdogAction::KillGroup);
+
+    let mut kill_results = Vec::new();
+    if kill_enabled {
+        for decision in decisions.iter().filter(|decision| decision.kill_required) {
+            match monitor.kill_group(
+                decision.session_id,
+                crate::resource_monitor::ResourceKillReason::Watchdog,
+            ) {
+                Ok(result) => kill_results.push(json!({
+                    "ok": true,
+                    "result": result,
+                })),
+                Err(message) => kill_results.push(json!({
+                    "ok": false,
+                    "sessionId": decision.session_id,
+                    "message": message,
+                })),
+            }
+        }
+    }
+
+    let state = if !cfg.resource_monitor_enabled {
+        "disabled"
+    } else if !kill_results.is_empty() {
+        "enforcing"
+    } else if kill_matches > 0 {
+        "critical"
+    } else if warn_matches > 0 {
+        "warn"
+    } else {
+        "ok"
+    };
+
+    UiAutomationResponse {
+        ok: true,
+        request_id: request.request_id.clone(),
+        window: request.window.clone(),
+        action: request.action,
+        selector: request.selector.clone(),
+        target: Some(json!({
+            "testId": request.selector,
+            "role": "backend",
+            "state": state,
+            "tag": "backend",
+            "text": format!(
+                "resource monitor watchdog {}: {} group(s), {} warn match(es), {} kill match(es)",
+                mode.as_str(),
+                groups.len(),
+                warn_matches,
+                kill_matches
+            ),
+            "visible": true,
+            "disabled": false,
+        })),
+        error: None,
+        message: None,
+        available: None,
+        diagnostics: Some(json!({
+            "mode": mode.as_str(),
+            "configuredAction": cfg.resource_watchdog_action,
+            "resourceMonitorEnabled": cfg.resource_monitor_enabled,
+            "killApplied": kill_enabled,
+            "limits": {
+                "maxConcurrentAgentGroups": limits.max_concurrent_agent_processes,
+                "groupWarnPrivateBytes": limits.group_warn_private_bytes,
+                "groupKillPrivateBytes": limits.group_kill_private_bytes,
+                "processKillPrivateBytes": limits.process_kill_private_bytes,
+            },
+            "snapshot": {
+                "capturedAt": snapshot.captured_at,
+                "overallState": snapshot.overall_state,
+                "activeAgentGroups": snapshot.active_agent_groups,
+                "appPrivateBytes": snapshot.app_private_bytes,
+                "networkState": snapshot.network_state,
+                "networkSummary": snapshot.network_summary,
+                "warnings": snapshot.warnings,
+            },
+            "decisions": decisions,
+            "killResults": kill_results,
+        })),
+        available_windows: None,
+        timeout_ms: None,
+        phase: None,
     }
 }
 
@@ -991,10 +1238,11 @@ fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomat
         }
         return Err(e);
     }
-    if !session
-        .window_labels
-        .iter()
-        .any(|label| label == requested_window)
+    if !is_backend_automation_window(requested_window)
+        && !session
+            .window_labels
+            .iter()
+            .any(|label| label == requested_window)
     {
         let mut value = preflight_error(
             "window_unavailable",
@@ -1210,6 +1458,9 @@ fn timeout_phase(
         return "awaiting_gui_poller".to_string();
     }
     if inflight_path.exists() {
+        if is_backend_automation_window(window) {
+            return "awaiting_backend_response".to_string();
+        }
         if session_ready_for_window(session_path, window) {
             "awaiting_frontend_response".to_string()
         } else {
@@ -1221,6 +1472,9 @@ fn timeout_phase(
 }
 
 fn session_ready_for_window(path: &Path, window: &str) -> bool {
+    if is_backend_automation_window(window) {
+        return true;
+    }
     read_session_file_with_retry(path)
         .ok()
         .and_then(|raw| serde_json::from_str::<UiAutomationSession>(&raw).ok())
@@ -1230,6 +1484,10 @@ fn session_ready_for_window(path: &Path, window: &str) -> bool {
                 .iter()
                 .any(|label| label == window)
         })
+}
+
+fn is_backend_automation_window(window: &str) -> bool {
+    window == BACKEND_AUTOMATION_WINDOW
 }
 
 fn write_json_atomic_new<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
@@ -1514,6 +1772,14 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&UiAutomationAction::SetValue).unwrap(),
             "\"setValue\""
+        );
+        assert_eq!(
+            serde_json::to_string(&UiAutomationAction::TypeText).unwrap(),
+            "\"typeText\""
+        );
+        assert_eq!(
+            serde_json::to_string(&UiAutomationAction::Backend).unwrap(),
+            "\"backend\""
         );
     }
 
