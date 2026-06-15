@@ -235,7 +235,15 @@
       gap: 12px;
     }
     .screen.selection.active {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) auto;
+      gap: 12px;
+    }
+    .selection-top {
+      min-height: 0;
+      display: grid;
       grid-template-columns: 240px 220px minmax(0, 1fr);
+      gap: 12px;
     }
 
     .panel, .rail, .preview {
@@ -541,8 +549,310 @@
 
     @media (max-width: 1320px) {
       body { min-width: 1320px; }
-      .screen.selection.active { grid-template-columns: 228px 210px minmax(0, 1fr); }
+      .selection-top { grid-template-columns: 228px 210px minmax(0, 1fr); }
     }
+
+    /* ---- Selection botonera (3 variants) ---- */
+    .botonera-area {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 11px 13px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(10, 15, 23, 0.94);
+    }
+    .botonera-area [hidden] { display: none !important; }
+    .botonera-switcher {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .muted-hint {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+    .botonera-variant { display: none; }
+    .botonera-variant.active {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .botonera-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .bar-spacer { flex: 1 1 auto; min-width: 16px; }
+    .scope-count {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    /* segmented + pill toggles (restart modifier) */
+    .seg, .pill-toggle, .scope-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .seg-label {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+      margin-right: 2px;
+    }
+    .seg {
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(4, 8, 14, 0.55);
+      gap: 3px;
+    }
+    .seg-btn, .pill-opt {
+      min-height: 24px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .seg-btn.active {
+      color: var(--text-hot);
+      background: rgba(255, 255, 255, 0.07);
+      border-color: rgba(148, 163, 184, 0.18);
+    }
+    .seg-btn.active[data-restart="restart"], .pill-opt.active[data-restart="yes"] {
+      color: var(--yellow);
+      border-color: rgba(248, 198, 87, 0.4);
+      background: rgba(248, 198, 87, 0.12);
+    }
+    .pill-opt {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(4, 8, 14, 0.55);
+    }
+    .pill-opt.active { color: var(--text-hot); border-color: rgba(148, 163, 184, 0.28); background: rgba(255, 255, 255, 0.06); }
+
+    /* switch (V2 restart) */
+    .switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .switch input { display: none; }
+    .switch-track {
+      position: relative;
+      width: 30px;
+      height: 16px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.2);
+      transition: background 150ms ease-out;
+    }
+    .switch-track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: var(--text);
+      transition: transform 150ms ease-out;
+    }
+    .switch input:checked + .switch-track { background: rgba(248, 198, 87, 0.55); }
+    .switch input:checked + .switch-track::after { transform: translateX(14px); }
+
+    /* V1 disclosure + inline confirm */
+    .disclosure {
+      align-self: flex-start;
+      padding: 4px 2px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-decoration: underline dotted rgba(148, 163, 184, 0.4);
+      text-underline-offset: 3px;
+    }
+    .disclosure.open { color: var(--red); }
+    .broad-tier {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      padding: 10px;
+      border: 1px solid rgba(255, 93, 115, 0.34);
+      border-radius: var(--radius-md);
+      background: rgba(255, 93, 115, 0.06);
+    }
+    .broad-note {
+      color: var(--red);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+    .broad-actions { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .danger-slot { min-width: 0; }
+    .danger-slot .action-btn { width: 100%; justify-content: center; }
+    .confirm-inline {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 7px 9px;
+      border: 1px solid rgba(255, 93, 115, 0.4);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 93, 115, 0.1);
+      color: var(--text-hot);
+      font-size: 10px;
+    }
+
+    /* V2 scope picker */
+    .scope-opt {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: rgba(4, 8, 14, 0.5);
+      color: var(--text);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .scope-opt input { accent-color: var(--cyan); }
+    .scope-opt.active { border-color: rgba(0, 212, 255, 0.4); background: rgba(0, 212, 255, 0.1); color: var(--text-hot); }
+    .scope-opt.active.dangerous { border-color: rgba(255, 93, 115, 0.5); background: rgba(255, 93, 115, 0.12); }
+    .arm-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 4px 9px;
+      border: 1px solid rgba(255, 93, 115, 0.4);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 93, 115, 0.08);
+      color: var(--text-hot);
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .arm-check input { accent-color: var(--red); }
+    .scope-warn {
+      padding: 7px 9px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 93, 115, 0.1);
+      color: var(--red);
+      font-size: 10px;
+    }
+    .action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* V3 danger zone + type-to-confirm */
+    .danger-zone {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      padding: 11px;
+      border: 1px solid rgba(255, 93, 115, 0.45);
+      border-radius: var(--radius-md);
+      background:
+        repeating-linear-gradient(135deg, rgba(255, 93, 115, 0.05) 0 9px, transparent 9px 18px),
+        rgba(255, 93, 115, 0.05);
+    }
+    .danger-zone-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-hot);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .danger-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 160px auto;
+      gap: 9px;
+      align-items: center;
+      padding: 8px 9px;
+      border-radius: var(--radius-sm);
+      background: rgba(4, 8, 14, 0.46);
+    }
+    .danger-title { color: var(--text-hot); font-size: 11px; font-weight: 700; }
+    .confirm-input {
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+    .confirm-input:focus { outline: 1px solid rgba(255, 93, 115, 0.5); }
+
+    /* ---- Storage shape screen ---- */
+    .screen.storage.active {
+      grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+      gap: 12px;
+      align-items: stretch;
+    }
+    .storage-col { min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+    .json-card {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(12, 17, 26, 0.92);
+      overflow: hidden;
+    }
+    .json-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 9px 11px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.025);
+    }
+    .json-path {
+      color: var(--text-hot);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .json-pre {
+      margin: 0;
+      padding: 11px 12px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      line-height: 1.55;
+      white-space: pre;
+      overflow: auto;
+    }
+    .json-pre .k { color: var(--cyan); }
+    .json-pre .s { color: var(--green); }
+    .json-pre .n { color: var(--yellow); }
+    .json-pre .c { color: var(--muted); }
+    .json-pre .flag { color: var(--red); }
+    .rename-table { display: flex; flex-direction: column; gap: 7px; }
+    .rename-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      padding: 8px 9px;
+      border-radius: var(--radius-sm);
+      background: rgba(4, 8, 14, 0.5);
+    }
+    .rename-from { color: var(--red); font-family: var(--font-mono); font-size: 10px; }
+    .rename-to { color: var(--green); font-family: var(--font-mono); font-size: 10px; }
+    .rename-why { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.4; }
   </style>
 </head>
 <body>
@@ -566,21 +876,24 @@
         <div class="eyebrow">Settings / Coding Agents</div>
         <h1>B2C1a Config and Agent Profile Selection</h1>
         <div class="subhead">
-          Screen 1 fixes the B2C1a configuration view. Screen 2 shows the selection flow for an AC agent choosing a coding tool,
-          then a profile, with the projected command string and env vars for the effective result.
+          Config fixes the B2C1a view (per-rail color control removed — color comes from the coding agent). Selection shows single
+          coding-agent choice + profile, with three botonera variants (scope ladder / scope picker / danger zone) for the safe and
+          broad-scope assign actions and the restart-sessions modifier. Storage shape previews the editable settings.json + per-replica JSON.
         </div>
       </div>
       <div class="actions">
         <button class="action-btn primary" data-screen-target="config">Config Screen</button>
         <button class="action-btn" data-screen-target="selection">Selection Screen</button>
+        <button class="action-btn" data-screen-target="storage">Storage shape</button>
       </div>
     </section>
 
     <nav class="switcher" aria-label="Prototype screen switcher">
       <span class="switcher-label">Screen</span>
-      <button class="variant-btn active" type="button" data-screen-target="config">B2C1a corrected</button>
-      <button class="variant-btn" type="button" data-screen-target="selection">Agent profile selection</button>
-      <span class="badge green" id="selectionStatus">Selected: Codex A / Local Codex A</span>
+      <button class="variant-btn active" type="button" data-screen-target="config">Config (corrected)</button>
+      <button class="variant-btn" type="button" data-screen-target="selection">Selection + botonera ×3</button>
+      <button class="variant-btn" type="button" data-screen-target="storage">Storage shape</button>
+      <span class="badge green" id="selectionStatus">Selected: Codex / Baseline (A)</span>
     </nav>
 
     <main class="content">
@@ -636,9 +949,6 @@
               <select class="select"><option>Codex</option><option>Claude</option><option>Local Codex CLI</option></select>
             </div>
             <div class="rail-body stack">
-              <div class="section-block">
-                <div class="agent-select-row"><span class="color-swatch"></span><button class="color-chip">Rail #00d4ff</button><button class="small-btn">Color</button></div>
-              </div>
               <article class="profile-card expanded selected" data-profile-letter="A">
                 <div class="profile-head">
                   <span class="profile-letter">A</span>
@@ -702,9 +1012,6 @@
               <select class="select"><option>Local Codex CLI</option><option>Codex</option><option>Claude</option></select>
             </div>
             <div class="rail-body stack">
-              <div class="section-block">
-                <div class="agent-select-row"><span class="color-swatch"></span><button class="color-chip">Rail #35f2a6</button><button class="small-btn">Color</button></div>
-              </div>
               <article class="profile-card expanded" data-profile-letter="A">
                 <div class="profile-head">
                   <span class="profile-letter">A</span>
@@ -762,6 +1069,7 @@
       </section>
 
       <section class="screen selection" data-screen-panel="selection" aria-label="Agent profile selection screen">
+        <div class="selection-top">
         <aside class="panel">
           <div class="panel-header">
             <div><div class="panel-title">Coding Agent</div><div class="panel-kicker">Choose the tool first</div></div>
@@ -796,7 +1104,7 @@
                     <div class="agent-name">Local Codex CLI</div>
                     <div class="mono-line">C:\Program Files\OpenAI Codex\codex.exe</div>
                   </div>
-                  <span class="pill green">selected</span>
+                  <span class="pill">available</span>
                 </div>
               </button>
             </div>
@@ -891,6 +1199,219 @@
             </div>
           </div>
         </section>
+        </div><!-- /.selection-top -->
+
+        <div class="botonera-area" aria-label="Selection action botonera">
+          <div class="botonera-switcher">
+            <span class="switcher-label">Botonera variant</span>
+            <button class="variant-btn active" type="button" data-botonera-target="v1">V1 · Scope ladder</button>
+            <button class="variant-btn" type="button" data-botonera-target="v2">V2 · Scope picker</button>
+            <button class="variant-btn" type="button" data-botonera-target="v3">V3 · Danger zone</button>
+            <span class="muted-hint">Same screen — each variant resolves hierarchy, the restart toggle, and danger confirmation differently.</span>
+          </div>
+
+          <!-- ===== V1: Scope ladder — safe-first, broad scope hidden behind disclosure + inline 2-click confirm ===== -->
+          <div class="botonera-variant active" data-botonera="v1">
+            <div class="botonera-bar">
+              <div class="seg" data-restart-group="v1">
+                <span class="seg-label">On apply</span>
+                <button class="seg-btn active" type="button" data-restart="keep">Keep sessions running</button>
+                <button class="seg-btn" type="button" data-restart="restart">Restart sessions</button>
+              </div>
+              <div class="bar-spacer"></div>
+              <button class="action-btn" type="button">Cancel</button>
+              <button class="action-btn primary" type="button" data-assign-replica>Assign to this replica</button>
+            </div>
+            <button class="disclosure" type="button" data-disclosure="v1-broad">Broaden scope — apply to more than this replica ▾</button>
+            <div class="broad-tier" data-broad="v1-broad" hidden>
+              <div class="broad-note">⚠ Broad-scope actions overwrite the coding-agent + profile on <strong>other</strong> agents. Each needs a second confirm.</div>
+              <div class="broad-actions">
+                <div class="danger-slot" data-confirm-slot>
+                  <button class="action-btn danger" type="button" data-arm>Apply to all replicas of this kind <span class="scope-count">· 4 replicas</span></button>
+                  <div class="confirm-inline" hidden>
+                    <span>Overwrite 4 “dev-webpage-ui” replicas?</span>
+                    <button class="small-btn danger" type="button" data-commit>Confirm</button>
+                    <button class="small-btn" type="button" data-cancel-confirm>Back</button>
+                  </div>
+                </div>
+                <div class="danger-slot" data-confirm-slot>
+                  <button class="action-btn danger" type="button" data-arm>Apply across the entire workgroup <span class="scope-count">· 9 agents</span></button>
+                  <div class="confirm-inline" hidden>
+                    <span>Overwrite all 9 agents in wg-7?</span>
+                    <button class="small-btn danger" type="button" data-commit>Confirm</button>
+                    <button class="small-btn" type="button" data-cancel-confirm>Back</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ===== V2: Scope picker — one action whose scope is chosen; button morphs red + arming checkbox gate ===== -->
+          <div class="botonera-variant" data-botonera="v2">
+            <div class="scope-picker" data-scope-group="v2">
+              <span class="seg-label">Apply to</span>
+              <label class="scope-opt active"><input type="radio" name="scope-v2" value="replica" checked> This replica <span class="scope-count">1 session</span></label>
+              <label class="scope-opt"><input type="radio" name="scope-v2" value="kind"> All replicas of this kind <span class="scope-count">4</span></label>
+              <label class="scope-opt"><input type="radio" name="scope-v2" value="wg"> Entire workgroup <span class="scope-count">9</span></label>
+            </div>
+            <div class="botonera-bar">
+              <label class="switch"><input type="checkbox" data-restart-toggle="v2"><span class="switch-track"></span> Restart sessions after apply</label>
+              <div class="bar-spacer"></div>
+              <label class="arm-check" data-arm-check hidden><input type="checkbox" data-arm-toggle> I understand this affects <span data-affect-count>4</span> sessions</label>
+              <button class="action-btn" type="button">Cancel</button>
+              <button class="action-btn primary" type="button" data-apply>Assign to this replica</button>
+            </div>
+            <div class="scope-warn" data-scope-warn hidden>⚠ Broad scope selected — this overwrites other agents’ assignment. Confirm with the checkbox to enable Apply.</div>
+          </div>
+
+          <!-- ===== V3: Danger zone — safe bar on top; broad scope quarantined in a red panel with type-to-confirm ===== -->
+          <div class="botonera-variant" data-botonera="v3">
+            <div class="botonera-bar">
+              <div class="pill-toggle" data-restart-group="v3">
+                <span class="seg-label">Restart</span>
+                <button class="pill-opt active" type="button" data-restart="no">No restart</button>
+                <button class="pill-opt" type="button" data-restart="yes">Restart sessions</button>
+              </div>
+              <div class="bar-spacer"></div>
+              <button class="action-btn" type="button">Cancel</button>
+              <button class="action-btn primary" type="button" data-assign-replica>Assign to this replica</button>
+            </div>
+            <div class="danger-zone">
+              <div class="danger-zone-head"><span class="pill red">danger zone</span> Broad-scope assignment — affects other agents, type to confirm</div>
+              <div class="danger-row">
+                <div class="danger-info"><div class="danger-title">Apply to all replicas of this kind</div><div class="mono-line">4 “dev-webpage-ui” replicas</div></div>
+                <input class="input confirm-input" placeholder="type: of-this-kind" data-confirm-text="of-this-kind">
+                <button class="action-btn danger" type="button" disabled data-confirm-btn>Apply</button>
+              </div>
+              <div class="danger-row">
+                <div class="danger-info"><div class="danger-title">Apply across the entire workgroup</div><div class="mono-line">9 agents in wg-7</div></div>
+                <input class="input confirm-input" placeholder="type: wg-7" data-confirm-text="wg-7">
+                <button class="action-btn danger" type="button" disabled data-confirm-btn>Apply</button>
+              </div>
+            </div>
+          </div>
+        </div><!-- /.botonera-area -->
+      </section>
+
+      <section class="screen storage" data-screen-panel="storage" aria-label="Editable storage shape preview">
+        <div class="storage-col">
+          <div class="json-card">
+            <div class="json-head">
+              <span class="json-path">settings.json → agents[ ]</span>
+              <span class="badge cyan">coding agent definition</span>
+              <span class="badge">global, hand-editable</span>
+            </div>
+<pre class="json-pre"><span class="c">// %APPDATA%\AgentsCommander\settings.json  →  "agents": [ … ]</span>
+{
+  <span class="k">"id"</span>: <span class="s">"codex"</span>,
+  <span class="k">"label"</span>: <span class="s">"Codex"</span>,
+  <span class="k">"command"</span>: <span class="s">"codex --sandbox workspace-write --model gpt-5-codex"</span>,
+  <span class="k">"color"</span>: <span class="s">"#00d4ff"</span>,
+  <span class="k">"gitPullBefore"</span>: <span class="n">false</span>,
+  <span class="k">"excludeGlobalClaudeMd"</span>: <span class="n">true</span>,
+  <span class="k">"isolateCodexHome"</span>: <span class="n">true</span>,        <span class="flag">⚑ codex-only flag living on a generic agent</span>
+  <span class="k">"envs"</span>: [
+    { <span class="k">"key"</span>: <span class="s">"CODEX_HOME"</span>, <span class="k">"value"</span>: <span class="s">"%AC_ROOT%\\.codex\\agents\\codex"</span>, <span class="k">"source"</span>: <span class="s">"agentsCommander"</span>, <span class="k">"enabled"</span>: <span class="n">true</span> },
+    { <span class="k">"key"</span>: <span class="s">"OPENAI_ORG"</span>,  <span class="k">"value"</span>: <span class="s">"ac-prod"</span>, <span class="k">"source"</span>: <span class="s">"user"</span>,          <span class="k">"enabled"</span>: <span class="n">true</span> }
+  ]
+}</pre>
+          </div>
+
+          <div class="json-card">
+            <div class="json-head">
+              <span class="json-path">settings.json → codingAgentProfiles</span>
+              <span class="badge cyan">profiles A/B/C/D</span>
+              <span class="badge">global, hand-editable</span>
+            </div>
+<pre class="json-pre"><span class="c">// settings.json  →  "codingAgentProfiles"  (sparse: only configured cells are stored)</span>
+{
+  <span class="k">"schemaVersion"</span>: <span class="n">1</span>,
+  <span class="k">"letters"</span>: {                          <span class="flag">⚑ rename → "profileSlots"</span>
+    <span class="k">"A"</span>: { <span class="k">"name"</span>: <span class="s">"Baseline"</span> },      <span class="flag">⚑ name → label</span>
+    <span class="k">"B"</span>: { <span class="k">"name"</span>: <span class="s">"Balanced"</span> },
+    <span class="k">"C"</span>: { <span class="k">"name"</span>: <span class="s">"Review"</span> },
+    <span class="k">"D"</span>: { <span class="k">"name"</span>: <span class="s">"Full Auto"</span> }
+  },
+  <span class="k">"agentDefaults"</span>: { <span class="k">"codex"</span>: <span class="s">"A"</span>, <span class="k">"claude"</span>: <span class="s">"A"</span> },     <span class="flag">⚑ rename → "defaultProfileByAgent"</span>
+  <span class="k">"matrix"</span>: {                            <span class="flag">⚑ rename → "profilesByAgent"</span>
+    <span class="k">"codex"</span>: {
+      <span class="k">"A"</span>: { <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"argv"</span>: [<span class="s">"--sandbox"</span>,<span class="s">"workspace-write"</span>,<span class="s">"--model"</span>,<span class="s">"gpt-5-codex"</span>], <span class="k">"env"</span>: { <span class="k">"OPENAI_ORG"</span>: <span class="s">"ac-prod"</span> }, <span class="k">"notes"</span>: <span class="s">""</span> },
+      <span class="k">"B"</span>: { <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"argv"</span>: [<span class="s">"--model"</span>,<span class="s">"gpt-5-codex"</span>,<span class="s">"--effort"</span>,<span class="s">"medium"</span>],   <span class="k">"env"</span>: {}, <span class="k">"notes"</span>: <span class="s">"fallback to A"</span> }
+    }
+  }                                          <span class="c">// argv ⚑ rename → "args"</span>
+}</pre>
+          </div>
+
+          <div class="json-card">
+            <div class="json-head">
+              <span class="json-path">&lt;replica&gt;\config.json → tooling</span>
+              <span class="badge green">written by “Assign to this replica”</span>
+            </div>
+<pre class="json-pre"><span class="c">// One small file per agent replica — what the Selection Screen writes</span>
+{
+  <span class="k">"tooling"</span>: {
+    <span class="k">"codingAgent"</span>: <span class="s">"codex"</span>,                 <span class="flag">⚑ proposed field: which agent id this replica runs</span>
+    <span class="k">"instanceProfileOverride"</span>: <span class="s">"A"</span>      <span class="flag">⚑ rename → "profile"</span>
+  },
+  <span class="k">"context"</span>: [<span class="s">"$AGENTSCOMMANDER_CONTEXT"</span>, <span class="s">"Role.md"</span>]
+}</pre>
+          </div>
+        </div>
+
+        <div class="storage-col">
+          <div class="json-card">
+            <div class="json-head">
+              <span class="json-path">Naming suggestions</span>
+              <span class="badge yellow">for hand-editing</span>
+            </div>
+            <div class="rename-table" style="padding:11px 12px;">
+              <div class="rename-row">
+                <div class="rename-from">letters</div><div class="rename-to">profileSlots</div>
+                <div class="rename-why">“letters” doesn’t say what it holds — these are the profile slots keyed A/B/C/D.</div>
+              </div>
+              <div class="rename-row">
+                <div class="rename-from">letters.*.name</div><div class="rename-to">label</div>
+                <div class="rename-why">“name” reads like an id; it’s the human display label of the profile.</div>
+              </div>
+              <div class="rename-row">
+                <div class="rename-from">matrix</div><div class="rename-to">profilesByAgent</div>
+                <div class="rename-why">“matrix” is abstract. The data is per-agent profile definitions: agentId → letter → cell.</div>
+              </div>
+              <div class="rename-row">
+                <div class="rename-from">matrix.*.*.argv</div><div class="rename-to">args</div>
+                <div class="rename-why">“argv” is C/Unix jargon. “args” is plainer for a human editing a list of flags.</div>
+              </div>
+              <div class="rename-row">
+                <div class="rename-from">agentDefaults</div><div class="rename-to">defaultProfileByAgent</div>
+                <div class="rename-why">Clarifies the map: agentId → its default profile letter.</div>
+              </div>
+              <div class="rename-row">
+                <div class="rename-from">tooling.instanceProfileOverride</div><div class="rename-to">tooling.profile</div>
+                <div class="rename-why">Under per-replica tooling, “profile” is enough; “instance…override” is internal jargon.</div>
+              </div>
+              <div class="rename-row">
+                <div class="rename-from">isolateCodexHome</div><div class="rename-to">isolatedHome</div>
+                <div class="rename-why">Drop the codex-specific name so the flag reads on any coding agent.</div>
+              </div>
+              <div class="rename-row">
+                <div class="rename-from">envs[].source: "agentsCommander"</div><div class="rename-to">source: "system"</div>
+                <div class="rename-why">Shorter, and a clearer opposite of “user”.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="json-card">
+            <div class="json-head"><span class="json-path">Why this shape</span><span class="badge">design note</span></div>
+            <div style="padding:11px 12px; color:var(--muted); font-size:11px; line-height:1.5;">
+              <div class="stack" style="gap:7px;">
+                <div>• <strong style="color:var(--text)">One global store</strong> — <span class="mono-line" style="display:inline">settings.json</span> holds agent definitions + the profile table. Plain JSON, pretty-printed, safe to edit by hand.</div>
+                <div>• <strong style="color:var(--text)">Sparse table</strong> — only configured cells exist; a missing letter falls back per <span class="mono-line" style="display:inline">agentDefaults</span>, so the file stays small.</div>
+                <div>• <strong style="color:var(--text)">Tiny per-replica override</strong> — “Assign to this replica” only writes a 2-line <span class="mono-line" style="display:inline">tooling</span> block; broad-scope actions repeat that write across many replicas.</div>
+                <div>• <strong style="color:var(--text)">schemaVersion</strong> stays — it lets future migrations rename fields safely (renames above would bump it).</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -905,6 +1426,7 @@
       <div class="actions">
         <button class="action-btn primary" data-screen-target="config">Config Screen</button>
         <button class="action-btn" data-screen-target="selection">Selection Screen</button>
+        <button class="action-btn" data-screen-target="storage">Storage shape</button>
       </div>
     </footer>
   </div>
@@ -1031,7 +1553,13 @@
       const agentLabel = agent === "local" ? "Local Codex CLI" : agent === "claude" ? "Claude" : "Codex";
 
       agentButtons.forEach((button) => {
-        button.classList.toggle("selected", button.getAttribute("data-agent-choice") === agent);
+        const isSelected = button.getAttribute("data-agent-choice") === agent;
+        button.classList.toggle("selected", isSelected);
+        const pill = button.querySelector(".pill");
+        if (pill) {
+          pill.className = isSelected ? "pill green" : "pill";
+          pill.textContent = isSelected ? "selected" : "available";
+        }
       });
       profileButtons.forEach((button) => {
         button.classList.toggle("selected", button.getAttribute("data-profile-choice") === profile);
@@ -1086,6 +1614,113 @@
       if (!toggle) return;
       const card = toggle.closest(".profile-card");
       if (card) card.classList.toggle("expanded");
+    });
+
+    // ---- Botonera (selection action bar) ----
+    function flash(message, tone) {
+      selectionStatus.className = `badge ${tone || "cyan"}`;
+      selectionStatus.textContent = message;
+    }
+
+    // sub-switcher between the 3 botonera variants
+    const botoneraButtons = Array.from(document.querySelectorAll("[data-botonera-target]"));
+    const botoneraPanels = Array.from(document.querySelectorAll("[data-botonera]"));
+    botoneraButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = button.getAttribute("data-botonera-target");
+        botoneraButtons.forEach((b) => b.classList.toggle("active", b === button));
+        botoneraPanels.forEach((p) => p.classList.toggle("active", p.getAttribute("data-botonera") === target));
+      });
+    });
+
+    // safe primary "Assign to this replica" (V1 + V3)
+    document.querySelectorAll("[data-assign-replica]").forEach((button) => {
+      button.addEventListener("click", () => flash("Assigned to this replica (mock)", "green"));
+    });
+
+    // restart modifier groups (segmented in V1, pill pair in V3)
+    document.querySelectorAll("[data-restart-group]").forEach((group) => {
+      group.querySelectorAll("[data-restart]").forEach((option) => {
+        option.addEventListener("click", () => {
+          group.querySelectorAll("[data-restart]").forEach((o) => o.classList.toggle("active", o === option));
+        });
+      });
+    });
+
+    // V1: disclosure to reveal broad-scope tier
+    document.querySelectorAll("[data-disclosure]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const tier = document.querySelector(`[data-broad="${button.getAttribute("data-disclosure")}"]`);
+        if (!tier) return;
+        const opening = tier.hasAttribute("hidden");
+        tier.toggleAttribute("hidden", !opening);
+        button.classList.toggle("open", opening);
+      });
+    });
+
+    // V1: inline 2-click confirm for each broad-scope action
+    document.querySelectorAll("[data-confirm-slot]").forEach((slot) => {
+      const arm = slot.querySelector("[data-arm]");
+      const confirm = slot.querySelector(".confirm-inline");
+      const commit = slot.querySelector("[data-commit]");
+      const cancel = slot.querySelector("[data-cancel-confirm]");
+      arm?.addEventListener("click", () => { arm.setAttribute("hidden", ""); confirm.removeAttribute("hidden"); });
+      cancel?.addEventListener("click", () => { confirm.setAttribute("hidden", ""); arm.removeAttribute("hidden"); });
+      commit?.addEventListener("click", () => {
+        confirm.setAttribute("hidden", "");
+        arm.removeAttribute("hidden");
+        flash("Broad-scope assignment applied (mock)", "red");
+      });
+    });
+
+    // V2: scope picker — one action that morphs by scope, gated by an arming checkbox
+    const v2 = document.querySelector('[data-botonera="v2"]');
+    if (v2) {
+      const apply = v2.querySelector("[data-apply]");
+      const armCheck = v2.querySelector("[data-arm-check]");
+      const armToggle = v2.querySelector("[data-arm-toggle]");
+      const warn = v2.querySelector("[data-scope-warn]");
+      const affect = v2.querySelector("[data-affect-count]");
+      const labels = { replica: "Assign to this replica", kind: "Apply to all replicas of this kind", wg: "Apply across the entire workgroup" };
+      const counts = { replica: "1", kind: "4", wg: "9" };
+      const refreshV2 = () => {
+        const scope = v2.querySelector('input[name="scope-v2"]:checked').value;
+        const dangerous = scope !== "replica";
+        v2.querySelectorAll(".scope-opt").forEach((opt) => {
+          const checked = opt.querySelector("input").checked;
+          opt.classList.toggle("active", checked);
+          opt.classList.toggle("dangerous", checked && dangerous);
+        });
+        apply.textContent = dangerous ? `${labels[scope]} · ${counts[scope]}` : labels[scope];
+        apply.classList.toggle("primary", !dangerous);
+        apply.classList.toggle("danger", dangerous);
+        armCheck.toggleAttribute("hidden", !dangerous);
+        warn.toggleAttribute("hidden", !dangerous);
+        if (dangerous) { affect.textContent = counts[scope]; } else { armToggle.checked = false; }
+        apply.disabled = dangerous && !armToggle.checked;
+      };
+      v2.querySelectorAll('input[name="scope-v2"]').forEach((radio) => radio.addEventListener("change", refreshV2));
+      armToggle.addEventListener("change", refreshV2);
+      apply.addEventListener("click", () => {
+        if (apply.disabled) return;
+        const scope = v2.querySelector('input[name="scope-v2"]:checked').value;
+        flash(scope === "replica" ? "Assigned to this replica (mock)" : "Broad-scope assignment applied (mock)", scope === "replica" ? "green" : "red");
+      });
+      refreshV2();
+    }
+
+    // V3: type-to-confirm enables each danger Apply button
+    document.querySelectorAll('[data-botonera="v3"] .danger-row').forEach((row) => {
+      const input = row.querySelector("[data-confirm-text]");
+      const button = row.querySelector("[data-confirm-btn]");
+      const required = input.getAttribute("data-confirm-text");
+      input.addEventListener("input", () => { button.disabled = input.value.trim() !== required; });
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        flash("Broad-scope assignment applied (mock)", "red");
+        input.value = "";
+        button.disabled = true;
+      });
     });
 
     setScreen("config");
