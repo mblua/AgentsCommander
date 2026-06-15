@@ -383,12 +383,21 @@ fn discover_skill_index(matrix_root: Option<&str>) -> SkillIndex {
     };
 
     let matrix_path = Path::new(matrix_root);
+    // The rendered section labels these "Canonical ...", so the displayed
+    // strings must actually be canonical and independent of the caller's path
+    // form (raw vs canonical) and of whether `skills/` exists yet. Otherwise the
+    // same matrix can render two different strings depending on how it was
+    // reached, which breaks the legacy-default self-consistency check and the
+    // canonical-path assertions on non-canonical base dirs. Keep `skills_path`
+    // raw for filesystem traversal below; only the display strings are normalized.
+    let canonical_matrix = canonical_or_original(matrix_path);
+    let matrix_root_display = display_path(&canonical_matrix);
     let skills_path = matrix_path.join(SKILLS_DIR_NAME);
     let skills_root_display = std::fs::canonicalize(&skills_path)
         .map(|p| display_path(&p))
-        .unwrap_or_else(|_| display_path(&skills_path));
+        .unwrap_or_else(|_| display_path(&canonical_matrix.join(SKILLS_DIR_NAME)));
     let mut index = SkillIndex {
-        matrix_root: Some(sanitize_skill_metadata_for_context(matrix_root)),
+        matrix_root: Some(sanitize_skill_metadata_for_context(&matrix_root_display)),
         skills_root: Some(sanitize_skill_metadata_for_context(&skills_root_display)),
         skills: Vec::new(),
         warnings: Vec::new(),
@@ -796,7 +805,12 @@ fn resolve_replica_matrix_root(replica_root: &str) -> Result<Option<String>, Str
         replica_path,
         crate::config::replica_identity::WG_REPLICA_REQUIRED_CONTEXT,
     )
-    .map(|(_, identity)| Some(display_path(&identity.matrix_dir)))
+    // Canonicalize so the embedded matrix path matches the canonicalized
+    // replica root (`canonical_root` in `ensure_session_context_with_config`)
+    // and the skills roots. Without this, a non-canonical base dir (e.g. CI
+    // runner 8.3 short names or differing case) makes the matrix path diverge
+    // from every other rendered path and from `assert_contains_canonical_path`.
+    .map(|(_, identity)| Some(display_path(&canonical_or_original(&identity.matrix_dir))))
     .map_err(|e| {
         format!(
             "Invalid WG replica identity for '{}': {}",
