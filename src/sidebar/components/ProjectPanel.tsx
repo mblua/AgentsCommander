@@ -217,6 +217,40 @@ const ProjectPanel: Component = () => {
 
   return (
     <>
+    {/* Empty-tree status: visible to the user (deferred Round-1 G11 chip) and
+        to UI-automation. `data-ac-state` + `data-ac-detail` make a swallowed
+        boot/load failure observable without devtools — loading (stuck) vs
+        error (with message) vs empty (did initFromSettings run? how many paths?). */}
+    <Show when={projectStore.projects.length === 0}>
+      <div
+        class="project-load-status"
+        data-ac-testid="project.loadStatus"
+        data-ac-role="status"
+        data-ac-state={
+          projectStore.isLoading ? "loading" : projectStore.lastLoadError ? "error" : "empty"
+        }
+        data-ac-detail={
+          `init:${projectStore.initState.attempted ? projectStore.initState.pathCount : "no"}` +
+          ` err:${projectStore.lastLoadError ?? "none"}`
+        }
+      >
+        <Show
+          when={projectStore.isLoading}
+          fallback={
+            <Show
+              when={projectStore.lastLoadError}
+              fallback={<span class="ac-empty-hint">No projects loaded</span>}
+            >
+              <span class="ac-empty-hint">
+                Failed to load project: {projectStore.lastLoadError}
+              </span>
+            </Show>
+          }
+        >
+          <span class="ac-empty-hint">Loading projects…</span>
+        </Show>
+      </div>
+    </Show>
     <For each={projectStore.projects}>
       {(proj) => {
         const [collapsed, setCollapsed] = createSignal(false);

@@ -3356,6 +3356,16 @@ html.light-theme .ac-discovery-badge.running-peer {
   font-style: italic;
 }
 
+/* Empty-tree status chip (no project loaded / loading / load error). */
+.project-load-status {
+  padding: 8px 0;
+}
+.project-load-status[data-ac-state="error"] .ac-empty-hint {
+  color: var(--status-error, #e06c75);
+  font-style: normal;
+  word-break: break-word;
+}
+
 .ac-wg-header {
   display: flex;
   flex-direction: column;

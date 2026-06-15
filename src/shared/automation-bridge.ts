@@ -25,6 +25,9 @@ const SAFE_METADATA_ATTRIBUTES = [
   ["data-ac-effective-profile", "effectiveProfile"],
   ["data-ac-configured", "configured"],
   ["data-ac-env-source", "envSource"],
+  // Generic, sanitized diagnostic detail surfaced on a target (e.g. the
+  // project.loadStatus chip exposes boot/load failure info here).
+  ["data-ac-detail", "detail"],
 ] as const;
 
 type UiAutomationErrorCode = Extract<UiAutomationResponse, { ok: false }>["error"];
