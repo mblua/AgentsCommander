@@ -7,23 +7,22 @@
   <style>
     :root {
       --bg: #05070b;
-      --bg-2: #080b12;
-      --surface: #0c111a;
-      --surface-2: #111827;
-      --surface-3: #151d2c;
-      --surface-hot: #182235;
-      --line: rgba(148, 163, 184, 0.13);
-      --line-strong: rgba(0, 212, 255, 0.32);
+      --chrome: #070b12;
+      --panel: #0c111a;
+      --panel-2: #101827;
+      --panel-3: #151f30;
+      --line: rgba(148, 163, 184, 0.14);
+      --line-hot: rgba(0, 212, 255, 0.36);
       --text: #d8e4f2;
-      --text-strong: #f1f7ff;
-      --muted: #8290a6;
-      --dim: #536175;
+      --text-hot: #f1f7ff;
+      --muted: #8492a7;
+      --dim: #546276;
       --cyan: #00d4ff;
-      --cyan-soft: rgba(0, 212, 255, 0.11);
+      --cyan-soft: rgba(0, 212, 255, 0.12);
       --green: #35f2a6;
-      --green-soft: rgba(53, 242, 166, 0.11);
+      --green-soft: rgba(53, 242, 166, 0.12);
       --yellow: #f8c657;
-      --yellow-soft: rgba(248, 198, 87, 0.12);
+      --yellow-soft: rgba(248, 198, 87, 0.13);
       --orange: #ff9f43;
       --orange-soft: rgba(255, 159, 67, 0.12);
       --red: #ff5d73;
@@ -64,7 +63,7 @@
     }
 
     button {
-      border: 0;
+      cursor: pointer;
     }
 
     .app-shell {
@@ -94,11 +93,11 @@
       align-items: center;
       gap: 8px;
       min-width: 0;
+      color: var(--text-hot);
       font-family: var(--font-mono);
       font-size: 11px;
       font-weight: 800;
       text-transform: uppercase;
-      color: var(--text-strong);
     }
 
     .brand-mark {
@@ -113,52 +112,18 @@
       font-size: 10px;
     }
 
-    .top-meta {
-      min-width: 0;
+    .top-meta,
+    .actions,
+    .tag-row {
       display: flex;
       align-items: center;
       gap: 6px;
+      min-width: 0;
+    }
+
+    .top-meta {
       overflow: hidden;
       white-space: nowrap;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      min-height: 20px;
-      padding: 2px 7px;
-      border: 1px solid rgba(148, 163, 184, 0.14);
-      border-radius: var(--radius-sm);
-      background: rgba(255, 255, 255, 0.035);
-      color: #aab6c7;
-      font-family: var(--font-mono);
-      font-size: 10px;
-      line-height: 1;
-    }
-
-    .badge.cyan {
-      color: var(--cyan);
-      border-color: rgba(0, 212, 255, 0.26);
-      background: var(--cyan-soft);
-    }
-
-    .badge.green {
-      color: var(--green);
-      border-color: rgba(53, 242, 166, 0.26);
-      background: var(--green-soft);
-    }
-
-    .badge.yellow {
-      color: var(--yellow);
-      border-color: rgba(248, 198, 87, 0.26);
-      background: var(--yellow-soft);
-    }
-
-    .badge.red {
-      color: var(--red);
-      border-color: rgba(255, 93, 115, 0.28);
-      background: var(--red-soft);
     }
 
     .window-actions {
@@ -171,6 +136,7 @@
       height: 24px;
       display: inline-grid;
       place-items: center;
+      border: 0;
       border-radius: var(--radius-sm);
       background: transparent;
       color: var(--muted);
@@ -178,13 +144,68 @@
       font-size: 12px;
     }
 
+    .badge,
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 19px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.035);
+      color: #aebbd0;
+      font-family: var(--font-mono);
+      line-height: 1;
+    }
+
+    .badge {
+      gap: 5px;
+      padding: 2px 7px;
+      font-size: 10px;
+    }
+
+    .pill {
+      padding: 2px 6px;
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .cyan {
+      color: var(--cyan);
+      border-color: rgba(0, 212, 255, 0.28);
+      background: var(--cyan-soft);
+    }
+
+    .green {
+      color: var(--green);
+      border-color: rgba(53, 242, 166, 0.26);
+      background: var(--green-soft);
+    }
+
+    .yellow {
+      color: var(--yellow);
+      border-color: rgba(248, 198, 87, 0.28);
+      background: var(--yellow-soft);
+    }
+
+    .red {
+      color: var(--red);
+      border-color: rgba(255, 93, 115, 0.28);
+      background: var(--red-soft);
+    }
+
+    .violet {
+      color: var(--violet);
+      border-color: rgba(157, 124, 255, 0.28);
+      background: var(--violet-soft);
+    }
+
     .header {
-      min-height: 72px;
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 18px;
       align-items: end;
-      padding: 18px 20px 14px;
+      padding: 17px 20px 14px;
       border-bottom: 1px solid var(--line);
       background: rgba(8, 12, 19, 0.84);
     }
@@ -194,49 +215,52 @@
       color: var(--cyan);
       font-family: var(--font-mono);
       font-size: 10px;
-      font-weight: 700;
+      font-weight: 800;
       text-transform: uppercase;
     }
 
     h1 {
       margin: 0;
-      color: var(--text-strong);
+      color: var(--text-hot);
       font-size: 22px;
       line-height: 1.12;
       font-weight: 750;
     }
 
     .subhead {
-      max-width: 980px;
+      max-width: 1040px;
       margin-top: 8px;
       color: var(--muted);
       font-size: 12px;
       line-height: 1.45;
     }
 
-    .header-actions {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding-bottom: 2px;
+    .action-btn,
+    .small-btn {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
     }
 
     .action-btn {
       min-height: 30px;
       padding: 0 10px;
-      border-radius: var(--radius-sm);
-      border: 1px solid rgba(148, 163, 184, 0.16);
-      background: rgba(255, 255, 255, 0.04);
-      color: var(--text);
       font-size: 11px;
-      cursor: pointer;
     }
 
-    .action-btn.primary {
+    .small-btn {
+      min-height: 24px;
+      padding: 0 8px;
+      font-size: 10px;
+    }
+
+    .action-btn.primary,
+    .small-btn.primary {
       border-color: rgba(0, 212, 255, 0.42);
       background: rgba(0, 212, 255, 0.16);
       color: #bdefff;
-      font-weight: 700;
+      font-weight: 800;
     }
 
     .action-btn.warn {
@@ -245,13 +269,19 @@
       background: var(--yellow-soft);
     }
 
+    .small-btn.danger {
+      border-color: rgba(255, 93, 115, 0.28);
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
     .switcher {
       display: flex;
       align-items: center;
       gap: 8px;
       min-height: 42px;
       padding: 7px 20px;
-      background: #070b12;
+      background: var(--chrome);
       border-bottom: 1px solid var(--line);
     }
 
@@ -271,7 +301,6 @@
       background: rgba(255, 255, 255, 0.035);
       color: #b4c1d4;
       font-size: 11px;
-      cursor: pointer;
       transition: background var(--transition), color var(--transition), border-color var(--transition);
     }
 
@@ -296,20 +325,7 @@
 
     .variant.active {
       display: grid;
-    }
-
-    .builder-grid {
-      grid-template-columns: 292px minmax(520px, 1fr) 380px;
-      gap: 12px;
-    }
-
-    .inspector-grid {
-      grid-template-columns: 310px minmax(540px, 1fr) 388px;
-      gap: 12px;
-    }
-
-    .matrix-grid {
-      grid-template-columns: minmax(760px, 1fr) 376px;
+      grid-template-columns: 304px minmax(520px, 1fr) 392px;
       gap: 12px;
     }
 
@@ -319,24 +335,24 @@
       flex-direction: column;
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      background: rgba(12, 17, 26, 0.88);
+      background: rgba(12, 17, 26, 0.9);
       box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
       overflow: hidden;
     }
 
     .panel-header {
-      min-height: 46px;
+      min-height: 48px;
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
-      align-items: center;
       gap: 10px;
+      align-items: center;
       padding: 10px 12px;
       border-bottom: 1px solid var(--line);
       background: rgba(255, 255, 255, 0.025);
     }
 
     .panel-title {
-      color: var(--text-strong);
+      color: var(--text-hot);
       font-size: 12px;
       font-weight: 800;
     }
@@ -354,9 +370,18 @@
       padding: 12px;
     }
 
-    .list {
+    .stack {
       display: grid;
-      gap: 8px;
+      gap: 9px;
+    }
+
+    .agent-row,
+    .profile-card,
+    .profile-cell,
+    .section-block {
+      border: 1px solid rgba(148, 163, 184, 0.1);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.026);
     }
 
     .agent-row {
@@ -364,19 +389,15 @@
       grid-template-columns: 11px minmax(0, 1fr) auto;
       gap: 9px;
       align-items: start;
-      min-height: 70px;
+      min-height: 74px;
       padding: 10px;
-      border-radius: var(--radius-md);
-      border: 1px solid rgba(148, 163, 184, 0.09);
-      background: rgba(255, 255, 255, 0.028);
-      cursor: pointer;
     }
 
-    .agent-row.active,
     .agent-row.selected,
-    .profile-card.active,
-    .matrix-cell.selected {
-      border-color: var(--line-strong);
+    .profile-card.selected,
+    .profile-cell.selected,
+    .rail-item.selected {
+      border-color: var(--line-hot);
       background: rgba(0, 212, 255, 0.08);
       box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.05) inset;
     }
@@ -390,33 +411,25 @@
       box-shadow: 0 0 10px rgba(0, 212, 255, 0.36);
     }
 
-    .dot.violet {
+    .dot.violet-dot {
       background: var(--violet);
       box-shadow: 0 0 10px rgba(157, 124, 255, 0.36);
     }
 
-    .dot.green {
+    .dot.green-dot {
       background: var(--green);
       box-shadow: 0 0 10px rgba(53, 242, 166, 0.26);
     }
 
-    .dot.orange {
-      background: var(--orange);
-      box-shadow: 0 0 10px rgba(255, 159, 67, 0.26);
-    }
-
     .agent-name,
-    .profile-name {
+    .profile-name,
+    .section-title {
       min-width: 0;
-      color: var(--text-strong);
+      color: var(--text-hot);
       font-size: 12px;
       font-weight: 800;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
 
-    .agent-command,
     .mono-line {
       min-width: 0;
       margin-top: 4px;
@@ -428,93 +441,63 @@
       text-overflow: ellipsis;
     }
 
-    .agent-meta {
+    .section-block {
+      padding: 10px;
+    }
+
+    .section-title {
       display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
-      margin-top: 7px;
-    }
-
-    .pill {
-      display: inline-flex;
       align-items: center;
-      min-height: 18px;
-      padding: 1px 6px;
-      border-radius: var(--radius-sm);
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      color: var(--muted);
-      background: rgba(255, 255, 255, 0.032);
-      font-family: var(--font-mono);
-      font-size: 9px;
-      font-weight: 700;
-      text-transform: uppercase;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
     }
 
-    .pill.cyan {
-      color: var(--cyan);
-      border-color: rgba(0, 212, 255, 0.25);
-      background: var(--cyan-soft);
-    }
-
-    .pill.green {
-      color: var(--green);
-      border-color: rgba(53, 242, 166, 0.24);
-      background: var(--green-soft);
-    }
-
-    .pill.yellow {
-      color: var(--yellow);
-      border-color: rgba(248, 198, 87, 0.24);
-      background: var(--yellow-soft);
-    }
-
-    .pill.red {
-      color: var(--red);
-      border-color: rgba(255, 93, 115, 0.24);
-      background: var(--red-soft);
-    }
-
-    .small-btn {
-      min-height: 24px;
-      padding: 0 8px;
-      border-radius: var(--radius-sm);
-      border: 1px solid rgba(148, 163, 184, 0.15);
-      background: rgba(255, 255, 255, 0.035);
-      color: #b7c5d9;
-      font-size: 10px;
-      cursor: pointer;
-    }
-
-    .small-btn.cyan {
-      border-color: rgba(0, 212, 255, 0.28);
-      color: var(--cyan);
-      background: var(--cyan-soft);
-    }
-
-    .small-btn.danger {
-      border-color: rgba(255, 93, 115, 0.25);
-      color: var(--red);
-      background: var(--red-soft);
-    }
-
-    .field-grid {
+    .profile-grid {
       display: grid;
-      grid-template-columns: 126px minmax(0, 1fr);
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 9px;
+    }
+
+    .profile-grid.four {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .profile-card,
+    .profile-cell {
+      min-height: 108px;
+      padding: 10px;
+    }
+
+    .profile-card.missing,
+    .profile-cell.missing {
+      background: rgba(248, 198, 87, 0.055);
+    }
+
+    .profile-card.error,
+    .profile-cell.error {
+      background: rgba(255, 93, 115, 0.065);
+    }
+
+    .profile-head {
+      display: grid;
+      grid-template-columns: 31px minmax(0, 1fr);
       gap: 8px;
       align-items: center;
     }
 
-    .field-grid + .field-grid,
-    .section-block + .section-block {
-      margin-top: 10px;
-    }
-
-    .field-label {
-      color: var(--muted);
+    .profile-letter {
+      width: 31px;
+      height: 31px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid rgba(0, 212, 255, 0.3);
+      border-radius: var(--radius-sm);
+      background: var(--cyan-soft);
+      color: var(--cyan);
       font-family: var(--font-mono);
-      font-size: 10px;
-      font-weight: 800;
-      text-transform: uppercase;
+      font-size: 13px;
+      font-weight: 900;
     }
 
     .input,
@@ -544,135 +527,57 @@
       background: rgba(255, 93, 115, 0.055);
     }
 
-    .section-block {
-      padding: 10px;
-      border: 1px solid rgba(148, 163, 184, 0.1);
-      border-radius: var(--radius-md);
-      background: rgba(255, 255, 255, 0.024);
-    }
-
-    .section-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 8px;
-      color: var(--text-strong);
-      font-size: 11px;
-      font-weight: 800;
-    }
-
-    .help {
-      color: var(--muted);
-      font-size: 11px;
-      line-height: 1.42;
-    }
-
-    .profile-tabs {
+    .field-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: 118px minmax(0, 1fr);
       gap: 8px;
-      margin-bottom: 10px;
-    }
-
-    .profile-card {
-      min-height: 82px;
-      padding: 10px;
-      border: 1px solid rgba(148, 163, 184, 0.1);
-      border-radius: var(--radius-md);
-      background: rgba(255, 255, 255, 0.026);
-      cursor: pointer;
-    }
-
-    .profile-letter {
-      width: 28px;
-      height: 28px;
-      display: inline-grid;
-      place-items: center;
-      border-radius: var(--radius-sm);
-      border: 1px solid rgba(0, 212, 255, 0.26);
-      color: var(--cyan);
-      background: var(--cyan-soft);
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 900;
-    }
-
-    .profile-head {
-      display: flex;
       align-items: center;
-      gap: 8px;
     }
 
-    .matrix {
-      display: grid;
-      grid-template-columns: 112px repeat(3, minmax(160px, 1fr));
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      background: rgba(4, 8, 14, 0.72);
+    .field-grid + .field-grid,
+    .section-block + .section-block {
+      margin-top: 10px;
     }
 
-    .matrix.dense {
-      grid-template-columns: 104px repeat(4, minmax(150px, 1fr));
-    }
-
-    .matrix-head,
-    .matrix-row-head,
-    .matrix-cell {
-      min-height: 74px;
-      padding: 9px;
-      border-right: 1px solid rgba(148, 163, 184, 0.1);
-      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
-    }
-
-    .matrix-head {
-      min-height: 52px;
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      color: var(--text-strong);
-      background: rgba(255, 255, 255, 0.035);
-      font-size: 11px;
-      font-weight: 800;
-    }
-
-    .matrix-row-head {
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      background: rgba(255, 255, 255, 0.022);
-    }
-
-    .matrix-cell {
-      background: rgba(255, 255, 255, 0.015);
-      cursor: pointer;
-    }
-
-    .matrix-cell.missing {
-      background: rgba(248, 198, 87, 0.055);
-    }
-
-    .matrix-cell.error {
-      background: rgba(255, 93, 115, 0.065);
-    }
-
-    .cell-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      color: var(--text);
-      font-size: 11px;
-      font-weight: 800;
-    }
-
-    .cell-detail {
-      margin-top: 6px;
+    .field-label {
       color: var(--muted);
       font-family: var(--font-mono);
       font-size: 10px;
-      line-height: 1.35;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .rail-layout {
+      display: grid;
+      grid-template-columns: 144px minmax(0, 1fr);
+      gap: 10px;
+      min-height: 0;
+    }
+
+    .rail {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+
+    .rail-item {
+      min-height: 72px;
+      padding: 9px;
+      border: 1px solid rgba(148, 163, 184, 0.1);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.026);
+    }
+
+    .cell-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+    }
+
+    .profile-cell {
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      gap: 7px;
     }
 
     .env-table {
@@ -682,7 +587,7 @@
 
     .env-row {
       display: grid;
-      grid-template-columns: 64px minmax(0, 1fr) 66px 62px;
+      grid-template-columns: 78px minmax(0, 1fr) 66px 62px;
       gap: 7px;
       align-items: center;
       min-height: 30px;
@@ -695,23 +600,35 @@
       opacity: 0.62;
     }
 
-    .env-key {
-      color: var(--text-strong);
+    .env-key,
+    .env-value,
+    .command-chip,
+    .preview-value {
       font-family: var(--font-mono);
       font-size: 10px;
+      overflow-wrap: anywhere;
+    }
+
+    .env-key {
+      color: var(--text-hot);
       font-weight: 800;
+    }
+
+    .env-value {
+      color: #aab8ca;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
-    .env-value {
-      color: #aab8ca;
-      font-family: var(--font-mono);
-      font-size: 10px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    .command-chip {
+      display: block;
+      max-width: 100%;
+      padding: 7px 8px;
+      border-radius: var(--radius-sm);
+      background: rgba(4, 8, 14, 0.72);
+      color: #b9c7da;
+      line-height: 1.45;
     }
 
     .toggle-row {
@@ -728,9 +645,9 @@
       width: 36px;
       height: 20px;
       position: relative;
+      border: 1px solid rgba(148, 163, 184, 0.16);
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.16);
-      border: 1px solid rgba(148, 163, 184, 0.16);
     }
 
     .toggle::after {
@@ -754,17 +671,24 @@
       background: var(--green);
     }
 
-    .preview-stack {
-      display: grid;
-      gap: 9px;
+    .status-strip {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 9px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.13);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
     }
 
     .preview-line {
       display: grid;
-      grid-template-columns: 118px minmax(0, 1fr);
+      grid-template-columns: 112px minmax(0, 1fr);
       gap: 10px;
-      align-items: start;
-      padding: 8px 0;
+      padding: 7px 0;
       border-bottom: 1px solid rgba(148, 163, 184, 0.08);
     }
 
@@ -780,67 +704,10 @@
       text-transform: uppercase;
     }
 
-    .preview-value {
-      min-width: 0;
-      color: var(--text);
-      font-family: var(--font-mono);
-      font-size: 10px;
-      line-height: 1.42;
-      overflow-wrap: anywhere;
-    }
-
-    .status-strip {
-      display: flex;
-      gap: 8px;
-      align-items: flex-start;
-      padding: 9px 10px;
-      border-radius: var(--radius-md);
-      border: 1px solid rgba(148, 163, 184, 0.13);
-      background: rgba(255, 255, 255, 0.03);
-      color: var(--muted);
-      font-size: 11px;
-      line-height: 1.4;
-    }
-
-    .status-strip.warn {
-      color: #f7d890;
-      border-color: rgba(248, 198, 87, 0.25);
-      background: var(--yellow-soft);
-    }
-
-    .status-strip.error {
-      color: #ffb2bf;
-      border-color: rgba(255, 93, 115, 0.28);
-      background: var(--red-soft);
-    }
-
-    .status-strip.ok {
-      color: #a8f6d0;
-      border-color: rgba(53, 242, 166, 0.25);
-      background: var(--green-soft);
-    }
-
-    .drawer-tabs {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 10px;
-    }
-
-    .drawer-tab {
-      min-height: 26px;
-      padding: 0 8px;
-      border-radius: var(--radius-sm);
-      border: 1px solid rgba(148, 163, 184, 0.13);
-      background: rgba(255, 255, 255, 0.03);
-      color: var(--muted);
-      font-size: 10px;
-      cursor: pointer;
-    }
-
-    .drawer-tab.active {
-      color: var(--cyan);
-      border-color: rgba(0, 212, 255, 0.32);
-      background: var(--cyan-soft);
+    .split-two {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
     }
 
     .footer {
@@ -850,56 +717,9 @@
       align-items: center;
       padding: 0 18px;
       border-top: 1px solid var(--line);
-      background: #070b12;
+      background: var(--chrome);
       color: var(--muted);
       font-size: 11px;
-    }
-
-    .footer-actions {
-      display: inline-flex;
-      gap: 8px;
-    }
-
-    .legend {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      align-items: center;
-    }
-
-    .split-two {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 9px;
-    }
-
-    .profile-stack {
-      display: grid;
-      gap: 9px;
-    }
-
-    .command-chip {
-      display: block;
-      max-width: 100%;
-      padding: 7px 8px;
-      border-radius: var(--radius-sm);
-      background: rgba(4, 8, 14, 0.72);
-      color: #b9c7da;
-      font-family: var(--font-mono);
-      font-size: 10px;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
-    }
-
-    .wide-body {
-      display: grid;
-      gap: 10px;
-    }
-
-    .compact-note {
-      color: var(--dim);
-      font-size: 10px;
-      line-height: 1.35;
     }
   </style>
 </head>
@@ -909,12 +729,12 @@
       <div class="brand"><span class="brand-mark">AC</span><span>AgentsCommander</span></div>
       <div class="top-meta">
         <span class="badge cyan">Settings prototype</span>
-        <span class="badge">Coding Agents + Profiles</span>
+        <span class="badge">B-family variants</span>
         <span class="badge yellow">Issue 384</span>
       </div>
       <div class="window-actions" aria-hidden="true">
         <span class="icon-btn">-</span>
-        <span class="icon-btn">□</span>
+        <span class="icon-btn">[]</span>
         <span class="icon-btn">x</span>
       </div>
     </header>
@@ -922,13 +742,13 @@
     <section class="header">
       <div>
         <div class="eyebrow">Settings / Coding Agents</div>
-        <h1>Integrated Coding Agent and Profile Management</h1>
+        <h1>Three-column Coding Agent Profile Settings</h1>
         <div class="subhead">
-          Three one-page prototype variants for configuring agents, profile letters, fallback behavior,
-          per-agent commands, per-profile argv/env, and Codex CODEX_HOME isolation in the same settings flow.
+          Each variant keeps the same base structure: left agent management, middle profile selection with local name editing,
+          and right details for command, argv, env, CODEX_HOME, validation, and effective launch preview.
         </div>
       </div>
-      <div class="header-actions">
+      <div class="actions">
         <button class="action-btn">Cancel</button>
         <button class="action-btn warn">Revert</button>
         <button class="action-btn primary">Save Settings</button>
@@ -937,74 +757,54 @@
 
     <nav class="switcher" aria-label="Prototype variant switcher">
       <span class="switcher-label">Variant</span>
-      <button class="variant-btn active" type="button" data-variant-target="builder">A - Three-column builder</button>
-      <button class="variant-btn" type="button" data-variant-target="inspector">B - Agent-centric inspector</button>
-      <button class="variant-btn" type="button" data-variant-target="matrix">C - Matrix-first admin</button>
-      <span class="badge green" id="selectionStatus">Selected: Codex / Profile B</span>
+      <button class="variant-btn active" type="button" data-variant-target="b1">B1 - Inline profile cards</button>
+      <button class="variant-btn" type="button" data-variant-target="b2">B2 - Profile rail editor</button>
+      <button class="variant-btn" type="button" data-variant-target="b3">B3 - Compact profile cells</button>
+      <span class="badge green" id="selectionStatus">Selected: codex / B - Balanced</span>
     </nav>
 
     <main class="content">
-      <section class="variant builder-grid active" data-variant-panel="builder" aria-label="Three-column builder variant">
+      <section class="variant active" data-variant-panel="b1" aria-label="B1 inline profile cards">
         <aside class="panel">
           <div class="panel-header">
             <div>
               <div class="panel-title">Coding Agents</div>
-              <div class="panel-kicker">Pick an agent, then edit nearby profiles</div>
+              <div class="panel-kicker">List, add, remove, and select</div>
             </div>
-            <button class="small-btn cyan">+ Agent</button>
+            <button class="small-btn primary">+ Agent</button>
           </div>
-          <div class="panel-body list">
-            <div class="agent-row active selected" data-selectable="Codex / Profile B">
+          <div class="panel-body stack">
+            <div class="agent-row selected" data-selectable="codex / B - Balanced">
               <span class="dot"></span>
               <div>
                 <div class="agent-name">codex</div>
-                <div class="agent-command">codex</div>
-                <div class="agent-meta">
-                  <span class="pill cyan">default B</span>
-                  <span class="pill green">CODEX_HOME isolated</span>
-                  <span class="pill">3 profiles</span>
-                </div>
+                <div class="mono-line">codex</div>
+                <div class="tag-row"><span class="pill cyan">default B</span><span class="pill green">isolated</span></div>
               </div>
               <button class="small-btn">Edit</button>
             </div>
-            <div class="agent-row" data-selectable="Claude / Profile C">
-              <span class="dot violet"></span>
+            <div class="agent-row" data-selectable="claude / C - Review">
+              <span class="dot violet-dot"></span>
               <div>
                 <div class="agent-name">claude</div>
-                <div class="agent-command">claude</div>
-                <div class="agent-meta">
-                  <span class="pill">default A</span>
-                  <span class="pill yellow">C review profile</span>
-                </div>
+                <div class="mono-line">claude</div>
+                <div class="tag-row"><span class="pill">default A</span><span class="pill violet">review C</span></div>
               </div>
               <button class="small-btn">Edit</button>
             </div>
-            <div class="agent-row" data-selectable="Local Codex Nightly / Profile B fallback">
-              <span class="dot green"></span>
+            <div class="agent-row" data-selectable="local-codex-nightly / B fallback">
+              <span class="dot green-dot"></span>
               <div>
                 <div class="agent-name">local-codex-nightly</div>
-                <div class="agent-command">"C:\Program Files\OpenAI Codex\codex.exe"</div>
-                <div class="agent-meta">
-                  <span class="pill yellow">B missing</span>
-                  <span class="pill green">basename codex.exe</span>
-                </div>
+                <div class="mono-line">"C:\Program Files\OpenAI Codex\codex.exe"</div>
+                <div class="tag-row"><span class="pill green">codex-like</span><span class="pill yellow">B missing</span></div>
               </div>
-              <button class="small-btn">Edit</button>
+              <button class="small-btn danger">Remove</button>
             </div>
             <div class="section-block">
               <div class="section-title">Agent command</div>
-              <div class="field-grid">
-                <div class="field-label">Executable</div>
-                <input class="input" value="C:\Program Files\OpenAI Codex\codex.exe">
-              </div>
-              <div class="field-grid">
-                <div class="field-label">Default profile</div>
-                <select class="select">
-                  <option>B - balanced</option>
-                  <option>A - baseline</option>
-                  <option>C - review</option>
-                </select>
-              </div>
+              <div class="field-grid"><div class="field-label">Executable</div><input class="input" value="codex"></div>
+              <div class="field-grid"><div class="field-label">Default</div><select class="select"><option>B - Balanced</option><option>A - Baseline</option><option>C - Review</option></select></div>
             </div>
           </div>
         </aside>
@@ -1012,60 +812,46 @@
         <section class="panel">
           <div class="panel-header">
             <div>
-              <div class="panel-title">Profiles for selected agent</div>
-              <div class="panel-kicker">Letter semantics and per-agent profile cells stay together</div>
+              <div class="panel-title">Profiles for codex</div>
+              <div class="panel-kicker">Profile names are edited directly on their cards</div>
             </div>
-            <button class="small-btn cyan">+ Profile</button>
+            <button class="small-btn primary">+ Profile D</button>
           </div>
-          <div class="panel-body wide-body">
-            <div class="profile-tabs">
-              <div class="profile-card" data-selectable="Codex / Profile A">
-                <div class="profile-head"><span class="profile-letter">A</span><div><div class="profile-name">Baseline</div><div class="mono-line">final fallback</div></div></div>
-                <div class="agent-meta"><span class="pill green">enabled</span><span class="pill">immutable fallback</span></div>
+          <div class="panel-body stack">
+            <div class="profile-grid">
+              <div class="profile-card" data-selectable="codex / A - Baseline">
+                <div class="profile-head"><span class="profile-letter">A</span><input class="input" value="Baseline" aria-label="Profile A name"></div>
+                <div class="mono-line">Final fallback, cannot delete</div>
+                <div class="tag-row"><span class="pill green">enabled</span><span class="pill">immutable</span></div>
               </div>
-              <div class="profile-card active selected" data-selectable="Codex / Profile B">
-                <div class="profile-head"><span class="profile-letter">B</span><div><div class="profile-name">Balanced</div><div class="mono-line">team default</div></div></div>
-                <div class="agent-meta"><span class="pill cyan">default</span><span class="pill green">valid</span></div>
+              <div class="profile-card selected" data-selectable="codex / B - Balanced">
+                <div class="profile-head"><span class="profile-letter">B</span><input class="input" value="Balanced" aria-label="Profile B name"></div>
+                <div class="mono-line">Agent default for codex</div>
+                <div class="tag-row"><span class="pill cyan">selected</span><span class="pill green">valid</span><button class="small-btn danger">Delete</button></div>
               </div>
-              <div class="profile-card" data-selectable="Codex / Profile C">
-                <div class="profile-head"><span class="profile-letter">C</span><div><div class="profile-name">Review</div><div class="mono-line">strict verification</div></div></div>
-                <div class="agent-meta"><span class="pill red">argv error</span><span class="pill">env override</span></div>
+              <div class="profile-card error" data-selectable="codex / C - Review error">
+                <div class="profile-head"><span class="profile-letter">C</span><input class="input" value="Review" aria-label="Profile C name"></div>
+                <div class="mono-line">Argv needs repair</div>
+                <div class="tag-row"><span class="pill red">invalid</span><button class="small-btn danger">Delete</button></div>
               </div>
             </div>
-
-            <div class="matrix" aria-label="Selected agent profile matrix">
-              <div class="matrix-head">Profile</div>
-              <div class="matrix-head"><span class="dot"></span>codex</div>
-              <div class="matrix-head"><span class="dot violet"></span>claude</div>
-              <div class="matrix-head"><span class="dot green"></span>local-codex-nightly</div>
-
-              <div class="matrix-row-head"><span class="profile-name">A</span><span class="mono-line">Baseline</span></div>
-              <div class="matrix-cell" data-selectable="Codex / Profile A"><div class="cell-title">enabled <span class="pill green">valid</span></div><div class="cell-detail">--sandbox workspace-write</div></div>
-              <div class="matrix-cell" data-selectable="Claude / Profile A"><div class="cell-title">enabled</div><div class="cell-detail">--permission-mode acceptEdits</div></div>
-              <div class="matrix-cell" data-selectable="Local Codex / Profile A"><div class="cell-title">enabled</div><div class="cell-detail">--profile baseline</div></div>
-
-              <div class="matrix-row-head"><span class="profile-name">B</span><span class="mono-line">Balanced</span></div>
-              <div class="matrix-cell selected" data-selectable="Codex / Profile B"><div class="cell-title">default <span class="pill cyan">active</span></div><div class="cell-detail">--model gpt-5-codex --effort medium</div></div>
-              <div class="matrix-cell" data-selectable="Claude / Profile B"><div class="cell-title">enabled</div><div class="cell-detail">--model sonnet --dangerously-skip-permissions</div></div>
-              <div class="matrix-cell missing" data-selectable="Local Codex / Profile B fallback"><div class="cell-title">missing <span class="pill yellow">fallback</span></div><div class="cell-detail">requests B -> resolves A</div></div>
-
-              <div class="matrix-row-head"><span class="profile-name">C</span><span class="mono-line">Review</span></div>
-              <div class="matrix-cell error" data-selectable="Codex / Profile C error"><div class="cell-title">enabled <span class="pill red">invalid</span></div><div class="cell-detail">unterminated quote in argv</div></div>
-              <div class="matrix-cell" data-selectable="Claude / Profile C"><div class="cell-title">enabled</div><div class="cell-detail">--review --verify</div></div>
-              <div class="matrix-cell" data-selectable="Local Codex / Profile C"><div class="cell-title">enabled</div><div class="cell-detail">--profile review --long-context</div></div>
-            </div>
-
-            <div class="split-two">
-              <div class="section-block">
-                <div class="section-title">Profile B argv</div>
-                <textarea class="textarea">--model gpt-5-codex
+            <div class="section-block">
+              <div class="section-title">Selected profile argv</div>
+              <textarea class="textarea">--model gpt-5-codex
 --sandbox workspace-write
 --effort medium</textarea>
+            </div>
+            <div class="split-two">
+              <div class="section-block">
+                <div class="section-title">Fallback behavior</div>
+                <div class="preview-line"><span class="preview-key">Requested</span><span class="preview-value">B - Balanced</span></div>
+                <div class="preview-line"><span class="preview-key">Effective</span><span class="preview-value">B - Balanced</span></div>
+                <div class="preview-line"><span class="preview-key">Missing cell</span><span class="preview-value">local-codex-nightly B resolves to A</span></div>
               </div>
               <div class="section-block">
                 <div class="section-title">Profile C validation</div>
                 <textarea class="textarea error">--review --prompt "missing close</textarea>
-                <div class="status-strip error">Argv parse error: quoted value is not closed. Save remains available only after this cell is corrected or disabled.</div>
+                <div class="status-strip red">Argv parse error: quoted value is not closed.</div>
               </div>
             </div>
           </div>
@@ -1074,13 +860,13 @@
         <aside class="panel">
           <div class="panel-header">
             <div>
-              <div class="panel-title">Effective preview</div>
-              <div class="panel-kicker">Resolved command, env, isolation, and warnings</div>
+              <div class="panel-title">Details and effective preview</div>
+              <div class="panel-kicker">Selected agent/profile cell</div>
             </div>
             <span class="badge green">ready</span>
           </div>
-          <div class="panel-body preview-stack">
-            <div class="status-strip ok">Current selection launches Codex with Profile B directly. No fallback is applied.</div>
+          <div class="panel-body stack">
+            <div class="status-strip green">Codex launches with Profile B directly. No fallback is applied.</div>
             <div class="section-block">
               <div class="section-title">Command preview</div>
               <span class="command-chip">codex --model gpt-5-codex --sandbox workspace-write --effort medium</span>
@@ -1088,101 +874,78 @@
             <div class="section-block">
               <div class="section-title">Environment</div>
               <div class="env-table">
-                <div class="env-row"><span class="env-key">CODEX_HOME</span><span class="env-value">%AC_ROOT%\.codex\agents\codex</span><span class="pill green">enabled</span><span class="pill">system</span></div>
-                <div class="env-row"><span class="env-key">OPENAI_BASE_URL</span><span class="env-value">https://api.openai.com/v1</span><span class="pill green">enabled</span><span class="pill">user</span></div>
-                <div class="env-row disabled"><span class="env-key">DEBUG</span><span class="env-value">1</span><span class="pill">disabled</span><span class="pill">profile</span></div>
+                <div class="env-row"><span class="env-key">CODEX_HOME</span><span class="env-value">%AC_ROOT%\.codex\agents\codex</span><span class="pill green">on</span><span class="pill">system</span></div>
+                <div class="env-row"><span class="env-key">OPENAI_BASE_URL</span><span class="env-value">https://api.openai.com/v1</span><span class="pill green">on</span><span class="pill">user</span></div>
+                <div class="env-row disabled"><span class="env-key">DEBUG</span><span class="env-value">1</span><span class="pill">off</span><span class="pill">profile</span></div>
               </div>
+              <div class="tag-row"><button class="small-btn primary">+ Env Row</button><button class="small-btn danger">Delete Row</button></div>
             </div>
             <div class="section-block">
-              <div class="section-title">Codex home handling</div>
-              <div class="toggle-row">
-                <span class="toggle on"></span>
-                <div>
-                  <div class="agent-name">Isolate CODEX_HOME</div>
-                  <div class="mono-line">%AC_ROOT%\.codex\agents\codex</div>
-                </div>
-                <span class="pill green">active</span>
-              </div>
-              <div class="status-strip warn">Custom command basename `codex.exe` receives the same isolation controls, even when the executable path contains spaces.</div>
-            </div>
-            <div class="section-block">
-              <div class="section-title">Fallback chain</div>
-              <div class="preview-line"><span class="preview-key">Requested</span><span class="preview-value">B - Balanced</span></div>
-              <div class="preview-line"><span class="preview-key">Effective</span><span class="preview-value">B - Balanced</span></div>
-              <div class="preview-line"><span class="preview-key">If missing</span><span class="preview-value">B -> A, with inline warning on the cell and launch preview</span></div>
+              <div class="section-title">CODEX_HOME</div>
+              <div class="toggle-row"><span class="toggle on"></span><div><div class="agent-name">Isolate for Codex</div><div class="mono-line">%AC_ROOT%\.codex\agents\codex</div></div><span class="pill green">active</span></div>
             </div>
           </div>
         </aside>
       </section>
 
-      <section class="variant inspector-grid" data-variant-panel="inspector" aria-label="Agent-centric inspector variant">
+      <section class="variant" data-variant-panel="b2" aria-label="B2 profile rail editor">
         <aside class="panel">
           <div class="panel-header">
             <div>
-              <div class="panel-title">Agent registry</div>
-              <div class="panel-kicker">Manage commands before profile details</div>
+              <div class="panel-title">Coding Agents</div>
+              <div class="panel-kicker">Agent list remains first column</div>
             </div>
-            <button class="small-btn cyan">+ Agent</button>
+            <button class="small-btn primary">+ Agent</button>
           </div>
-          <div class="panel-body list">
-            <div class="agent-row selected" data-selectable="Codex Nightly / Profile A">
-              <span class="dot green"></span>
+          <div class="panel-body stack">
+            <div class="agent-row selected" data-selectable="local-codex-nightly / A - Baseline">
+              <span class="dot green-dot"></span>
               <div>
                 <div class="agent-name">local-codex-nightly</div>
-                <div class="agent-command">"C:\Program Files\OpenAI Codex\codex.exe"</div>
-                <div class="agent-meta"><span class="pill green">codex-like</span><span class="pill yellow">B missing</span></div>
+                <div class="mono-line">"C:\Program Files\OpenAI Codex\codex.exe"</div>
+                <div class="tag-row"><span class="pill green">codex-like</span><span class="pill red">home conflict</span></div>
               </div>
-              <button class="small-btn danger">Remove</button>
-            </div>
-            <div class="agent-row" data-selectable="Codex / Profile B">
-              <span class="dot"></span>
-              <div><div class="agent-name">codex</div><div class="agent-command">codex</div><div class="agent-meta"><span class="pill cyan">default B</span><span class="pill green">isolated</span></div></div>
               <button class="small-btn">Edit</button>
             </div>
-            <div class="agent-row" data-selectable="Claude / Profile C">
-              <span class="dot violet"></span>
-              <div><div class="agent-name">claude</div><div class="agent-command">claude</div><div class="agent-meta"><span class="pill">default A</span><span class="pill">review C</span></div></div>
-              <button class="small-btn">Edit</button>
-            </div>
-            <div class="section-block">
-              <div class="section-title">Quick validation</div>
-              <div class="status-strip error">CODEX_HOME override conflicts with isolation: disable user row or turn isolation off.</div>
-              <div class="status-strip warn">Command path includes spaces. Preview quotes executable separately from argv.</div>
-            </div>
+            <div class="agent-row" data-selectable="codex / B - Balanced"><span class="dot"></span><div><div class="agent-name">codex</div><div class="mono-line">codex</div><div class="tag-row"><span class="pill cyan">default B</span></div></div><button class="small-btn">Edit</button></div>
+            <div class="agent-row" data-selectable="claude / C - Review"><span class="dot violet-dot"></span><div><div class="agent-name">claude</div><div class="mono-line">claude</div><div class="tag-row"><span class="pill">default A</span></div></div><button class="small-btn">Edit</button></div>
           </div>
         </aside>
 
         <section class="panel">
           <div class="panel-header">
             <div>
-              <div class="panel-title">Profile cards for local-codex-nightly</div>
-              <div class="panel-kicker">Tabs keep per-agent profile editing obvious</div>
+              <div class="panel-title">Profile rail</div>
+              <div class="panel-kicker">Selected profile name edits in the local header</div>
             </div>
-            <button class="small-btn cyan">+ Profile</button>
+            <button class="small-btn primary">+ Profile D</button>
           </div>
-          <div class="panel-body profile-stack">
-            <div class="profile-card active selected" data-selectable="Local Codex / Profile A">
-              <div class="profile-head"><span class="profile-letter">A</span><div><div class="profile-name">Baseline</div><div class="mono-line">enabled, effective fallback target</div></div></div>
-              <div class="split-two" style="margin-top: 10px;">
-                <div class="field-grid"><div class="field-label">Args</div><input class="input" value="--sandbox workspace-write"></div>
-                <div class="field-grid"><div class="field-label">Default</div><select class="select"><option>Use as fallback only</option></select></div>
+          <div class="panel-body">
+            <div class="rail-layout">
+              <div class="rail">
+                <div class="rail-item selected" data-selectable="local-codex-nightly / A - Baseline"><div class="profile-letter">A</div><div class="mono-line">Baseline</div><span class="pill green">effective</span></div>
+                <div class="rail-item missing" data-selectable="local-codex-nightly / B fallback"><div class="profile-letter">B</div><div class="mono-line">Balanced</div><span class="pill yellow">B -> A</span></div>
+                <div class="rail-item" data-selectable="local-codex-nightly / C - Review"><div class="profile-letter">C</div><div class="mono-line">Review</div><span class="pill green">enabled</span></div>
+                <div class="rail-item" data-selectable="local-codex-nightly / D - Draft"><div class="profile-letter">D</div><div class="mono-line">Add profile</div><button class="small-btn primary">Create</button></div>
               </div>
-            </div>
-            <div class="profile-card missing" data-selectable="Local Codex / Profile B fallback">
-              <div class="profile-head"><span class="profile-letter">B</span><div><div class="profile-name">Balanced</div><div class="mono-line">missing cell, requests resolve to A</div></div></div>
-              <div class="agent-meta"><span class="pill yellow">fallback B -> A</span><button class="small-btn cyan">Add B cell</button></div>
-            </div>
-            <div class="profile-card" data-selectable="Local Codex / Profile C">
-              <div class="profile-head"><span class="profile-letter">C</span><div><div class="profile-name">Review</div><div class="mono-line">enabled with profile env overlay</div></div></div>
-              <div class="agent-meta"><span class="pill green">enabled</span><span class="pill">profile env</span><button class="small-btn danger">Delete cell</button></div>
-            </div>
-
-            <div class="section-block">
-              <div class="section-title">Profile letter management</div>
-              <div class="field-grid"><div class="field-label">A name</div><input class="input" value="Baseline"></div>
-              <div class="field-grid"><div class="field-label">B name</div><input class="input" value="Balanced"></div>
-              <div class="field-grid"><div class="field-label">C name</div><input class="input" value="Review"></div>
-              <div class="agent-meta"><button class="small-btn cyan">+ Add Profile D</button><button class="small-btn danger">Delete Profile C</button></div>
+              <div class="stack">
+                <div class="section-block">
+                  <div class="section-title">Selected profile</div>
+                  <div class="field-grid"><div class="field-label">Letter</div><input class="input" value="A" disabled></div>
+                  <div class="field-grid"><div class="field-label">Name</div><input class="input" value="Baseline"></div>
+                  <div class="tag-row"><span class="pill green">enabled</span><span class="pill">final fallback</span><button class="small-btn danger">Delete Profile</button></div>
+                </div>
+                <div class="section-block">
+                  <div class="section-title">Args for local-codex-nightly / A</div>
+                  <textarea class="textarea">--sandbox workspace-write
+--profile baseline</textarea>
+                </div>
+                <div class="section-block">
+                  <div class="section-title">Missing B cell</div>
+                  <div class="status-strip yellow">Profile B exists, but this agent has no B cell. Requests for B resolve to A until the B cell is added.</div>
+                  <div class="tag-row"><button class="small-btn primary">Add B Cell</button><button class="small-btn">Keep fallback</button></div>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -1190,102 +953,91 @@
         <aside class="panel">
           <div class="panel-header">
             <div>
-              <div class="panel-title">Advanced drawer</div>
-              <div class="panel-kicker">Command, env, CODEX_HOME, and resolution</div>
+              <div class="panel-title">Advanced details</div>
+              <div class="panel-kicker">Command path, env, isolation, validation</div>
             </div>
             <span class="badge red">2 issues</span>
           </div>
-          <div class="panel-body">
-            <div class="drawer-tabs">
-              <button class="drawer-tab active">Command</button>
-              <button class="drawer-tab">Env</button>
-              <button class="drawer-tab">CODEX_HOME</button>
-              <button class="drawer-tab">Preview</button>
-            </div>
+          <div class="panel-body stack">
             <div class="section-block">
               <div class="section-title">Command with spaces</div>
-              <div class="field-grid"><div class="field-label">Exe</div><input class="input" value="C:\Program Files\OpenAI Codex\codex.exe"></div>
-              <div class="field-grid"><div class="field-label">Profile argv</div><input class="input" value="--sandbox workspace-write"></div>
-              <div class="command-chip" style="margin-top: 8px;">"C:\Program Files\OpenAI Codex\codex.exe" --sandbox workspace-write</div>
+              <div class="field-grid"><div class="field-label">Executable</div><input class="input" value="C:\Program Files\OpenAI Codex\codex.exe"></div>
+              <div class="command-chip">"C:\Program Files\OpenAI Codex\codex.exe" --sandbox workspace-write --profile baseline</div>
+            </div>
+            <div class="section-block">
+              <div class="section-title">CODEX_HOME handling</div>
+              <div class="toggle-row"><span class="toggle on"></span><div><div class="agent-name">Treat as Codex executable</div><div class="mono-line">basename: codex.exe</div></div><span class="pill green">detected</span></div>
+              <div class="toggle-row" style="margin-top: 8px;"><span class="toggle on"></span><div><div class="agent-name">Isolate CODEX_HOME</div><div class="mono-line">%AC_ROOT%\.codex\agents\local-codex-nightly</div></div><span class="pill red">conflict</span></div>
             </div>
             <div class="section-block">
               <div class="section-title">Env rows</div>
               <div class="env-table">
-                <div class="env-row"><span class="env-key">CODEX_HOME</span><span class="env-value">D:\manual\codex</span><span class="pill green">enabled</span><span class="pill red">user</span></div>
-                <div class="env-row"><span class="env-key">AC_TRACE</span><span class="env-value">profile-c</span><span class="pill green">enabled</span><span class="pill">profile</span></div>
+                <div class="env-row"><span class="env-key">CODEX_HOME</span><span class="env-value">D:\manual\codex</span><span class="pill green">on</span><span class="pill red">user</span></div>
+                <div class="env-row"><span class="env-key">AC_TRACE</span><span class="env-value">profile-a</span><span class="pill green">on</span><span class="pill">profile</span></div>
                 <div class="env-row disabled"><span class="env-key">HTTP_PROXY</span><span class="env-value">http://localhost:8080</span><span class="pill">off</span><span class="pill">agent</span></div>
               </div>
-              <div class="agent-meta"><button class="small-btn cyan">+ Env Row</button><button class="small-btn danger">Delete selected</button></div>
-            </div>
-            <div class="section-block">
-              <div class="section-title">Codex-specific isolation</div>
-              <div class="toggle-row">
-                <span class="toggle on"></span>
-                <div><div class="agent-name">Treat as Codex executable</div><div class="mono-line">basename: codex.exe</div></div>
-                <span class="pill green">detected</span>
-              </div>
-              <div class="toggle-row" style="margin-top: 8px;">
-                <span class="toggle on"></span>
-                <div><div class="agent-name">Isolate CODEX_HOME</div><div class="mono-line">%AC_ROOT%\.codex\agents\local-codex-nightly</div></div>
-                <span class="pill red">conflict</span>
-              </div>
-              <div class="status-strip error">Enabled user CODEX_HOME row conflicts with generated isolation path.</div>
+              <div class="status-strip red">Enabled user CODEX_HOME conflicts with generated isolation path.</div>
             </div>
           </div>
         </aside>
       </section>
 
-      <section class="variant matrix-grid" data-variant-panel="matrix" aria-label="Matrix-first admin variant">
+      <section class="variant" data-variant-panel="b3" aria-label="B3 compact profile cells">
+        <aside class="panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-title">Coding Agents</div>
+              <div class="panel-kicker">Same three-column base</div>
+            </div>
+            <button class="small-btn primary">+ Agent</button>
+          </div>
+          <div class="panel-body stack">
+            <div class="agent-row selected" data-selectable="codex / C - Review error"><span class="dot"></span><div><div class="agent-name">codex</div><div class="mono-line">codex</div><div class="tag-row"><span class="pill cyan">default B</span><span class="pill red">C invalid</span></div></div><button class="small-btn">Edit</button></div>
+            <div class="agent-row" data-selectable="claude / C - Review"><span class="dot violet-dot"></span><div><div class="agent-name">claude</div><div class="mono-line">claude</div><div class="tag-row"><span class="pill green">valid</span></div></div><button class="small-btn">Edit</button></div>
+            <div class="agent-row" data-selectable="local-codex-nightly / B fallback"><span class="dot green-dot"></span><div><div class="agent-name">local-codex-nightly</div><div class="mono-line">"C:\Program Files\OpenAI Codex\codex.exe"</div><div class="tag-row"><span class="pill yellow">fallback B</span></div></div><button class="small-btn">Edit</button></div>
+          </div>
+        </aside>
+
         <section class="panel">
           <div class="panel-header">
             <div>
-              <div class="panel-title">Profile matrix admin</div>
-              <div class="panel-kicker">Dense inventory for power users and acceptance checks</div>
+              <div class="panel-title">Compact profile cells</div>
+              <div class="panel-kicker">Inline names on each selectable cell</div>
             </div>
-            <div class="header-actions">
-              <button class="small-btn cyan">+ Agent</button>
-              <button class="small-btn cyan">+ Profile</button>
-            </div>
+            <button class="small-btn primary">+ Profile D</button>
           </div>
-          <div class="panel-body wide-body">
-            <div class="matrix dense" aria-label="Admin profile matrix">
-              <div class="matrix-head">Profile</div>
-              <div class="matrix-head"><span class="dot"></span>codex</div>
-              <div class="matrix-head"><span class="dot violet"></span>claude</div>
-              <div class="matrix-head"><span class="dot green"></span>local-codex</div>
-              <div class="matrix-head"><span class="dot orange"></span>shell-helper</div>
-
-              <div class="matrix-row-head"><span class="profile-name">A Baseline</span><span class="mono-line">cannot delete</span></div>
-              <div class="matrix-cell" data-selectable="Matrix codex A"><div class="cell-title">enabled <span class="pill green">valid</span></div><div class="cell-detail">base argv, 1 env</div></div>
-              <div class="matrix-cell" data-selectable="Matrix claude A"><div class="cell-title">enabled</div><div class="cell-detail">acceptEdits</div></div>
-              <div class="matrix-cell" data-selectable="Matrix local codex A"><div class="cell-title">enabled</div><div class="cell-detail">workspace-write</div></div>
-              <div class="matrix-cell" data-selectable="Matrix shell A"><div class="cell-title">enabled</div><div class="cell-detail">custom command</div></div>
-
-              <div class="matrix-row-head"><span class="profile-name">B Balanced</span><span class="mono-line">team default</span></div>
-              <div class="matrix-cell selected" data-selectable="Matrix codex B"><div class="cell-title">agent default <span class="pill cyan">selected</span></div><div class="cell-detail">gpt-5-codex medium</div></div>
-              <div class="matrix-cell" data-selectable="Matrix claude B"><div class="cell-title">enabled</div><div class="cell-detail">sonnet balanced</div></div>
-              <div class="matrix-cell missing" data-selectable="Matrix local codex B fallback"><div class="cell-title">missing <span class="pill yellow">B -> A</span></div><div class="cell-detail">add cell or accept fallback</div></div>
-              <div class="matrix-cell error" data-selectable="Matrix shell B error"><div class="cell-title">invalid <span class="pill red">env key</span></div><div class="cell-detail">BAD-KEY contains dash</div></div>
-
-              <div class="matrix-row-head"><span class="profile-name">C Review</span><span class="mono-line">strict checks</span></div>
-              <div class="matrix-cell error" data-selectable="Matrix codex C error"><div class="cell-title">invalid <span class="pill red">argv</span></div><div class="cell-detail">unterminated quote</div></div>
-              <div class="matrix-cell" data-selectable="Matrix claude C"><div class="cell-title">enabled</div><div class="cell-detail">--review --verify</div></div>
-              <div class="matrix-cell" data-selectable="Matrix local codex C"><div class="cell-title">enabled</div><div class="cell-detail">isolated home</div></div>
-              <div class="matrix-cell missing" data-selectable="Matrix shell C fallback"><div class="cell-title">missing <span class="pill yellow">C -> A</span></div><div class="cell-detail">no review profile</div></div>
+          <div class="panel-body stack">
+            <div class="cell-grid">
+              <div class="profile-cell" data-selectable="codex / A - Baseline">
+                <div class="profile-head"><span class="profile-letter">A</span><input class="input" value="Baseline"></div>
+                <div class="tag-row"><span class="pill green">enabled</span><span class="pill">fallback</span></div>
+                <div class="mono-line">--sandbox workspace-write</div>
+                <button class="small-btn" disabled>Cannot delete A</button>
+              </div>
+              <div class="profile-cell" data-selectable="codex / B - Balanced">
+                <div class="profile-head"><span class="profile-letter">B</span><input class="input" value="Balanced"></div>
+                <div class="tag-row"><span class="pill cyan">agent default</span><span class="pill green">valid</span></div>
+                <div class="mono-line">--model gpt-5-codex --effort medium</div>
+                <button class="small-btn danger">Delete Profile</button>
+              </div>
+              <div class="profile-cell selected error" data-selectable="codex / C - Review error">
+                <div class="profile-head"><span class="profile-letter">C</span><input class="input" value="Review"></div>
+                <div class="tag-row"><span class="pill red">argv error</span><span class="pill">env override</span></div>
+                <div class="mono-line">--review --prompt "missing close</div>
+                <button class="small-btn danger">Delete Profile</button>
+              </div>
+              <div class="profile-cell missing" data-selectable="codex / D - Add profile">
+                <div class="profile-head"><span class="profile-letter">D</span><input class="input" value="New profile"></div>
+                <div class="tag-row"><span class="pill yellow">draft</span><span class="pill">not saved</span></div>
+                <div class="mono-line">Create D for all agents or just codex</div>
+                <button class="small-btn primary">Add Profile D</button>
+              </div>
             </div>
-
-            <div class="split-two">
-              <div class="section-block">
-                <div class="section-title">Defaults and inheritance</div>
-                <div class="preview-line"><span class="preview-key">Global default</span><span class="preview-value">A - Baseline</span></div>
-                <div class="preview-line"><span class="preview-key">Codex default</span><span class="preview-value">B - Balanced</span></div>
-                <div class="preview-line"><span class="preview-key">Instance override</span><span class="preview-value">Allowed from picker; Settings previews effective result</span></div>
-              </div>
-              <div class="section-block">
-                <div class="section-title">Validation summary</div>
-                <div class="status-strip error">2 blocking errors: codex/C argv quote, shell-helper/B invalid env key.</div>
-                <div class="status-strip warn">2 fallback cells are intentional but visible in launch previews.</div>
-              </div>
+            <div class="section-block">
+              <div class="section-title">Selected C args</div>
+              <textarea class="textarea error">--review --prompt "missing close
+--long-context</textarea>
+              <div class="status-strip red">Save is blocked until the quoted prompt value is closed or the C cell is disabled.</div>
             </div>
           </div>
         </section>
@@ -1293,45 +1045,35 @@
         <aside class="panel">
           <div class="panel-header">
             <div>
-              <div class="panel-title">Selected cell inspector</div>
-              <div class="panel-kicker">codex / B - Balanced</div>
+              <div class="panel-title">Right inspector</div>
+              <div class="panel-kicker">Edits selected profile cell</div>
             </div>
-            <button class="small-btn danger">Delete cell</button>
+            <span class="badge red">invalid</span>
           </div>
-          <div class="panel-body preview-stack">
+          <div class="panel-body stack">
             <div class="section-block">
-              <div class="section-title">Identity</div>
+              <div class="section-title">Cell identity</div>
               <div class="preview-line"><span class="preview-key">Agent</span><span class="preview-value">codex</span></div>
-              <div class="preview-line"><span class="preview-key">Profile</span><span class="preview-value">B - Balanced</span></div>
-              <div class="preview-line"><span class="preview-key">Source</span><span class="preview-value">Agent default, editable in Settings</span></div>
+              <div class="preview-line"><span class="preview-key">Profile</span><span class="preview-value">C - Review</span></div>
+              <div class="preview-line"><span class="preview-key">Fallback</span><span class="preview-value">If disabled, C requests resolve to A</span></div>
             </div>
             <div class="section-block">
-              <div class="section-title">Args</div>
-              <textarea class="textarea">--model gpt-5-codex
---effort medium
---sandbox workspace-write</textarea>
+              <div class="section-title">Effective preview</div>
+              <span class="command-chip">codex --review --prompt [invalid] --long-context</span>
+              <div class="status-strip red" style="margin-top: 8px;">Preview cannot produce final argv because Profile C has a parse error.</div>
             </div>
             <div class="section-block">
-              <div class="section-title">Env editor</div>
+              <div class="section-title">Env rows</div>
               <div class="env-table">
-                <div class="env-row"><span class="env-key">OPENAI_ORG</span><span class="env-value">ac-prod</span><span class="pill green">enabled</span><span class="pill">profile</span></div>
+                <div class="env-row"><span class="env-key">OPENAI_ORG</span><span class="env-value">ac-prod</span><span class="pill green">on</span><span class="pill">profile</span></div>
+                <div class="env-row error"><span class="env-key">BAD-KEY</span><span class="env-value">x</span><span class="pill red">bad</span><span class="pill">profile</span></div>
                 <div class="env-row disabled"><span class="env-key">TRACE</span><span class="env-value">true</span><span class="pill">off</span><span class="pill">profile</span></div>
               </div>
-              <div class="agent-meta"><button class="small-btn cyan">+ Env Row</button></div>
-            </div>
-            <div class="section-block">
-              <div class="section-title">Effective launch preview</div>
-              <span class="command-chip">codex --model gpt-5-codex --effort medium --sandbox workspace-write</span>
-              <div class="status-strip ok" style="margin-top: 8px;">Profile B is configured and selected, so no fallback applies.</div>
+              <div class="status-strip red">Invalid env key: use letters, digits, and underscore only.</div>
             </div>
             <div class="section-block">
               <div class="section-title">CODEX_HOME policy</div>
-              <div class="toggle-row">
-                <span class="toggle on"></span>
-                <div><div class="agent-name">Isolated for Codex family</div><div class="mono-line">%AC_ROOT%\.codex\agents\codex</div></div>
-                <span class="pill green">generated</span>
-              </div>
-              <div class="compact-note" style="margin-top: 8px;">Custom commands with basename `codex` or `codex.exe` show this same policy block.</div>
+              <div class="toggle-row"><span class="toggle on"></span><div><div class="agent-name">Isolated for Codex family</div><div class="mono-line">%AC_ROOT%\.codex\agents\codex</div></div><span class="pill green">generated</span></div>
             </div>
           </div>
         </aside>
@@ -1339,14 +1081,14 @@
     </main>
 
     <footer class="footer">
-      <div class="legend">
-        <span>Prototype artifact: `_prototypes/coding-agent-settings-profiles-prototypes.html`</span>
-        <span class="pill cyan">standalone</span>
-        <span class="pill green">3 variants</span>
+      <div class="tag-row">
+        <span>Standalone prototype: `_prototypes/coding-agent-settings-profiles-prototypes.html`</span>
+        <span class="pill cyan">three columns</span>
+        <span class="pill green">inline profile names</span>
         <span class="pill yellow">fallback states</span>
         <span class="pill red">validation states</span>
       </div>
-      <div class="footer-actions">
+      <div class="actions">
         <button class="action-btn">Cancel</button>
         <button class="action-btn warn">Revert</button>
         <button class="action-btn primary">Save Settings</button>
