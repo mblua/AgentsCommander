@@ -452,7 +452,7 @@ impl ResourceMonitorState {
                         session_id
                     );
                 }
-                Ok(Some(current)) if current != identity => {
+                Ok(Some(current)) if !is_placeholder_identity(identity) && current != identity => {
                     log::debug!(
                         "[resource-monitor] ignored cleanup identity error for reused pid={} session={}",
                         identity.pid,
@@ -613,6 +613,10 @@ fn identity_unavailable_pid(error: &str) -> Option<u32> {
         .strip_prefix("identity unavailable for pid ")?
         .parse()
         .ok()
+}
+
+fn is_placeholder_identity(identity: ProcessIdentity) -> bool {
+    identity.creation_time_100ns == 0
 }
 
 fn push_pending_identity_error(
@@ -1230,6 +1234,39 @@ mod tests {
         assert_eq!(result.killed_processes, vec![root]);
         assert_eq!(state.active_agent_groups(), 0);
         assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    #[test]
+    fn cleanup_sample_placeholder_identity_error_quarantines_when_child_still_alive() {
+        let (state, backend) = state_with_fake();
+        let root = identity(45, 45);
+        let child_pid = 46;
+        let concrete_child = identity(child_pid, 46);
+        backend.add_tree(root, vec![observed(45, 45, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        backend.replace_tree(
+            root,
+            vec![
+                observed(45, 45, None, 0),
+                observed_unverifiable(child_pid, Some(root.pid), 1),
+            ],
+            vec![format!("identity unavailable for pid {child_pid}")],
+        );
+        backend.mark_present(concrete_child);
+
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+
+        assert!(result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Quarantined);
+        assert!(result.message.contains("identity unavailable"));
+        assert_eq!(backend.terminated(), vec![root]);
+        assert_eq!(state.active_agent_groups(), 1);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_err());
     }
 
     #[test]
