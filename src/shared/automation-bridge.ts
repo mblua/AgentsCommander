@@ -385,8 +385,14 @@ function snapshotText(element: HTMLElement): string {
     role === "agent-preset" ||
     role === "button" ||
     role === "checkbox" ||
+    role === "cell" ||
+    role === "group" ||
+    role === "metric" ||
     role === "menuitem" ||
+    role === "row" ||
+    role === "status" ||
     role === "tab" ||
+    role === "text" ||
     element instanceof HTMLButtonElement;
 
   if (!allowText) return "";

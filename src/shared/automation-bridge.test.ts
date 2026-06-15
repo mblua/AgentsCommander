@@ -489,6 +489,31 @@ describe("automation bridge", () => {
     expect(root.contains(menuItem)).toBe(false);
   });
 
+  it("includes text for telemetry roles used by automation assertions", async () => {
+    const metric = addTarget("div", "resourceMonitor.summary.network", "Network Unknown");
+    metric.setAttribute("data-ac-role", "metric");
+    const group = addTarget("div", "resourceMonitor.group.session-1", "cap-one running");
+    group.setAttribute("data-ac-role", "group");
+
+    const response = await executeAutomationRequest(
+      "resource-monitor",
+      request("query", "resourceMonitor.summary.network"),
+    );
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) throw new Error(response.message);
+    expect(response.target.text).toBe("Network Unknown");
+
+    const groupResponse = await executeAutomationRequest(
+      "resource-monitor",
+      request("query", "resourceMonitor.group.session-1"),
+    );
+
+    expect(groupResponse.ok).toBe(true);
+    if (!groupResponse.ok) throw new Error(groupResponse.message);
+    expect(groupResponse.target.text).toBe("cap-one running");
+  });
+
   it("traverses open shadow roots and redacts input text", async () => {
     const host = document.createElement("div");
     document.body.append(host);

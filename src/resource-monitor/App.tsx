@@ -222,12 +222,6 @@ const ResourceMonitorApp: Component = () => {
   const statusText = createMemo(() =>
     overallLabel(snapshot()?.overallState ?? "unknown")
   );
-  const activeLimitText = createMemo(() => {
-    const s = snapshot();
-    if (!s) return "Unknown";
-    return `${s.activeAgentGroups} / ${s.maxConcurrentAgentGroups}`;
-  });
-
   const toggleGroup = (sessionId: string) => {
     setExpandedGroupId((current) => (current === sessionId ? null : sessionId));
   };
@@ -292,20 +286,64 @@ const ResourceMonitorApp: Component = () => {
           </div>
         </header>
 
-        <section class="rm-status-strip" aria-label="Resource summary">
-          <div class={`rm-status-tile state-${statusClass()}`}>
+        <section
+          class="rm-status-strip"
+          aria-label="Resource summary"
+          data-ac-testid="resourceMonitor.summary"
+          data-ac-role="status"
+        >
+          <div
+            class={`rm-status-tile state-${statusClass()}`}
+            data-ac-testid="resourceMonitor.summary.state"
+            data-ac-role="metric"
+            data-ac-state={statusClass()}
+          >
             <span class="rm-tile-label">State</span>
             <strong>{statusText()}</strong>
           </div>
-          <div class="rm-status-tile">
+          <div
+            class="rm-status-tile"
+            data-ac-testid="resourceMonitor.summary.activeGroups"
+            data-ac-role="metric"
+          >
             <span class="rm-tile-label">Active Groups</span>
-            <strong>{activeLimitText()}</strong>
+            <strong>
+              <span
+                data-ac-testid="resourceMonitor.summary.activeGroups.count"
+                data-ac-role="metric"
+              >
+                {snapshot()?.activeAgentGroups ?? "Unknown"}
+              </span>
+              {" / "}
+              <span
+                data-ac-testid="resourceMonitor.summary.activeGroups.limit"
+                data-ac-role="metric"
+              >
+                {snapshot()?.maxConcurrentAgentGroups ?? "Unknown"}
+              </span>
+            </strong>
           </div>
-          <div class="rm-status-tile">
+          <div
+            class="rm-status-tile"
+            data-ac-testid="resourceMonitor.summary.appPrivateBytes"
+            data-ac-role="metric"
+          >
             <span class="rm-tile-label">App Private</span>
             <strong>{formatBytes(snapshot()?.appPrivateBytes)}</strong>
+            <span
+              class="rm-automation-metric"
+              data-ac-testid="resourceMonitor.summary.appWorkingSetBytes"
+              data-ac-role="metric"
+            >
+              {formatBytes(snapshot()?.appWorkingSetBytes)}
+            </span>
           </div>
-          <div class={`rm-status-tile network-${snapshot()?.networkState ?? "unknown"}`}>
+          <div
+            class={`rm-status-tile network-${snapshot()?.networkState ?? "unknown"}`}
+            data-ac-testid="resourceMonitor.summary.network"
+            data-ac-role="metric"
+            data-ac-state={snapshot()?.networkState ?? "unknown"}
+          >
             <span class="rm-tile-label">Network</span>
             <strong>{snapshot()?.networkSummary ?? "Unknown"}</strong>
           </div>
@@ -330,13 +368,23 @@ const ResourceMonitorApp: Component = () => {
         <section class="rm-groups">
           <div class="rm-section-header">
             <h2>Agent Groups</h2>
-            <span>Last update {formatTimestamp(snapshot()?.capturedAt)}</span>
+            <span
+              data-ac-testid="resourceMonitor.summary.timestamp"
+              data-ac-role="text"
+            >
+              Last update {formatTimestamp(snapshot()?.capturedAt)}
+            </span>
           </div>
 
           <Show
             when={groups().length > 0}
             fallback={
-              <div class="rm-empty">
+              <div
+                class="rm-empty"
+                data-ac-testid="resourceMonitor.empty"
+                data-ac-role="status"
+                data-ac-state={resourceMonitorStore.loading ? "loading" : "empty"}
+              >
                 {resourceMonitorStore.loading ? "Loading snapshot..." : "No active agent groups"}
               </div>
             }
@@ -348,21 +396,64 @@ const ResourceMonitorApp: Component = () => {
                     class={`rm-group-row state-${groupSeverity(group)}`}
                     data-ac-testid={`resourceMonitor.group.${group.sessionId}`}
                     data-ac-role="group"
+                    data-ac-state={groupSeverity(group)}
                   >
                     <button
                       class="rm-group-main"
                       onClick={() => toggleGroup(group.sessionId)}
                       aria-expanded={expandedGroupId() === group.sessionId}
+                      data-ac-testid={`resourceMonitor.group.${group.sessionId}.toggle`}
+                      data-ac-role="button"
                     >
                       <span class="rm-expander">
                         {expandedGroupId() === group.sessionId ? "v" : ">"}
                       </span>
-                      <span class="rm-group-name">{group.name}</span>
-                      <span class="rm-group-state">{group.state}</span>
-                      <span>{group.processCount} proc</span>
-                      <span>{formatBytes(group.privateBytes)}</span>
-                      <span>{formatCpu(group.cpuPercent)}</span>
-                      <span class={`rm-network-pill network-${group.networkState}`}>
+                      <span
+                        class="rm-group-name"
+                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.name`}
+                        data-ac-role="cell"
+                      >
+                        {group.name}
+                      </span>
+                      <span
+                        class="rm-group-state"
+                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.state`}
+                        data-ac-role="cell"
+                        data-ac-state={group.state}
+                      >
+                        {group.state}
+                      </span>
+                      <span
+                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.processCount`}
+                        data-ac-role="cell"
+                      >
+                        {group.processCount} proc
+                      </span>
+                      <span
+                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.privateBytes`}
+                        data-ac-role="cell"
+                      >
+                        {formatBytes(group.privateBytes)}
+                      </span>
+                      <span
+                        class="rm-automation-metric"
+                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.workingSetBytes`}
+                        data-ac-role="cell"
+                      >
+                        {formatBytes(group.workingSetBytes)}
+                      </span>
+                      <span
+                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.cpu`}
+                        data-ac-role="cell"
+                      >
+                        {formatCpu(group.cpuPercent)}
+                      </span>
+                      <span
+                        class={`rm-network-pill network-${group.networkState}`}
+                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.network`}
+                        data-ac-role="cell"
+                        data-ac-state={group.networkState}
+                      >
                         {group.networkSummary || group.networkState}
                       </span>
                     </button>
@@ -381,7 +472,12 @@ const ResourceMonitorApp: Component = () => {
                     </button>
 
                     <Show when={expandedGroupId() === group.sessionId}>
-                      <div class="rm-process-list">
+                      <div
+                        class="rm-process-list"
+                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.processList`}
+                        data-ac-role="row"
+                        data-ac-state={`${group.processes.length}`}
+                      >
                         <div class="rm-process-header">
                           <span>Process</span>
                           <span>PID</span>
@@ -392,21 +488,70 @@ const ResourceMonitorApp: Component = () => {
                         </div>
                         <For
                           each={group.processes}
-                          fallback={<div class="rm-process-empty">No processes observed</div>}
+                          fallback={
+                            <div
+                              class="rm-process-empty"
+                              data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.empty`}
+                              data-ac-role="status"
+                            >
+                              No processes observed
+                            </div>
+                          }
                         >
                           {(process) => (
-                            <div class="rm-process-row">
-                              <span>{processName(process)}</span>
-                              <span>{process.pid}</span>
-                              <span>{formatBytes(process.privateBytes)}</span>
-                              <span>{formatBytes(process.workingSetBytes)}</span>
-                              <span>{formatCpu(process.cpuPercent)}</span>
-                              <span>{process.killAllowed ? "Allowed" : "Blocked"}</span>
+                            <div
+                              class="rm-process-row"
+                              data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}`}
+                              data-ac-role="row"
+                            >
+                              <span
+                                data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}.name`}
+                                data-ac-role="cell"
+                              >
+                                {processName(process)}
+                              </span>
+                              <span
+                                data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}.pid`}
+                                data-ac-role="cell"
+                              >
+                                {process.pid}
+                              </span>
+                              <span
+                                data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}.privateBytes`}
+                                data-ac-role="cell"
+                              >
+                                {formatBytes(process.privateBytes)}
+                              </span>
+                              <span
+                                data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}.workingSetBytes`}
+                                data-ac-role="cell"
+                              >
+                                {formatBytes(process.workingSetBytes)}
+                              </span>
+                              <span
+                                data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}.cpu`}
+                                data-ac-role="cell"
+                              >
+                                {formatCpu(process.cpuPercent)}
+                              </span>
+                              <span
+                                data-ac-testid={`resourceMonitor.group.${group.sessionId}.process.${process.pid}.killAllowed`}
+                                data-ac-role="cell"
+                                data-ac-state={process.killAllowed ? "allowed" : "blocked"}
+                              >
+                                {process.killAllowed ? "Allowed" : "Blocked"}
+                              </span>
                             </div>
                           )}
                         </For>
                         <Show when={group.lastError}>
-                          <div class="rm-process-error">{group.lastError}</div>
+                          <div
+                            class="rm-process-error"
+                            data-ac-testid={`resourceMonitor.group.${group.sessionId}.lastError`}
+                            data-ac-role="status"
+                          >
+                            {group.lastError}
+                          </div>
                         </Show>
                       </div>
                     </Show>
@@ -423,7 +568,15 @@ const ResourceMonitorApp: Component = () => {
               <h2>Warnings</h2>
             </div>
             <For each={snapshot()?.warnings ?? []}>
-              {(warning) => <div class="rm-warning-line">{warning}</div>}
+              {(warning, index) => (
+                <div
+                  class="rm-warning-line"
+                  data-ac-testid={`resourceMonitor.warning.${index()}`}
+                  data-ac-role="status"
+                >
+                  {warning}
+                </div>
+              )}
             </For>
           </section>
         </Show>
@@ -446,6 +599,8 @@ const ResourceMonitorApp: Component = () => {
                   class="rm-action-btn"
                   disabled={killInFlight()}
                   onClick={() => setKillTarget(null)}
+                  data-ac-testid="resourceMonitor.killConfirm.cancel"
+                  data-ac-role="button"
                 >
                   Cancel
                 </button>

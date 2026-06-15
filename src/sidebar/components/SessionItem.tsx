@@ -275,6 +275,9 @@ const SessionItem: Component<{
       class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
       onClick={isInactive() ? undefined : handleClick}
       onContextMenu={isInactive() ? undefined : handleContextMenu}
+      data-ac-testid={`session.${props.session.id}`}
+      data-ac-role="button"
+      data-ac-state={props.isActive ? "active" : isInactive() ? "inactive" : "idle"}
     >
       <div
         class={`session-item-status ${isInactive() ? "offline" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
@@ -400,6 +403,9 @@ const SessionItem: Component<{
           onClick={handleDetachToggle}
           title={isDetached() ? "Re-attach to main window" : "Open in new window"}
           innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
+          data-ac-testid={`session.${props.session.id}.detachToggle`}
+          data-ac-role="button"
+          data-ac-state={isDetached() ? "detached" : "attached"}
         />
 
         <Show when={bridge()}>
@@ -430,7 +436,13 @@ const SessionItem: Component<{
             </For>
           </div>
         </Show>
-        <button class="session-item-close" onClick={handleClose} title="Close session">
+        <button
+          class="session-item-close"
+          onClick={handleClose}
+          title="Close session"
+          data-ac-testid={`session.${props.session.id}.destroy`}
+          data-ac-role="button"
+        >
           &#x2715;
         </button>
       </Show>
@@ -461,10 +473,14 @@ const SessionItem: Component<{
             ref={contextMenuEl}
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
+            data-ac-testid={`session.${props.session.id}.menu`}
+            data-ac-role="menu"
           >
             <button
               class="session-context-option context-option-danger"
               onClick={handleRestart}
+              data-ac-testid={`session.${props.session.id}.restart`}
+              data-ac-role="menuitem"
             >
               Restart Session
             </button>
@@ -478,6 +494,9 @@ const SessionItem: Component<{
             <button
               class="session-context-option"
               onClick={handleContextDetachToggle}
+              data-ac-testid={`session.${props.session.id}.menu.detachToggle`}
+              data-ac-role="menuitem"
+              data-ac-state={isDetached() ? "detached" : "attached"}
             >
               {isDetached() ? "Re-attach to main" : "Open in new window"}
             </button>

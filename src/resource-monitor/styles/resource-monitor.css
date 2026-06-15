@@ -215,6 +215,15 @@ button {
   white-space: nowrap;
 }
 
+.rm-automation-metric {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0.01;
+  pointer-events: none;
+}
+
 .rm-status-tile.state-ok {
   box-shadow: inset 3px 0 0 var(--status-waiting), inset 0 0 0 1px var(--sidebar-border);
 }
