@@ -50,15 +50,23 @@ pub fn normalize_legacy_agent_command(command: &str) -> Result<NormalizedAgentCo
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
         match (quote, ch) {
-            (Some('"'), '\\') => {
-                if let Some(next) = chars.peek().copied() {
-                    if next == '"' || next == '\\' {
-                        current.push(chars.next().expect("peeked char exists"));
+            (Some(q), '\\') => {
+                let mut slash_count = 1;
+                while matches!(chars.peek(), Some('\\')) {
+                    slash_count += 1;
+                    chars.next();
+                }
+                if chars.peek().copied() == Some(q) {
+                    current.extend(std::iter::repeat_n('\\', slash_count / 2));
+                    if slash_count % 2 == 1 {
+                        current.push(q);
+                        chars.next();
                     } else {
-                        current.push('\\');
+                        quote = None;
+                        chars.next();
                     }
                 } else {
-                    current.push('\\');
+                    current.extend(std::iter::repeat_n('\\', slash_count));
                 }
                 token_started = true;
             }
@@ -125,18 +133,29 @@ fn stringify_agent_command_token(token: &str) -> String {
     }
     if !token
         .chars()
-        .any(|ch| ch.is_ascii_whitespace() || ch == '"' || ch == '\\')
+        .any(|ch| ch.is_ascii_whitespace() || ch == '"' || ch == '\'')
     {
         return token.to_string();
     }
     let mut out = String::with_capacity(token.len() + 2);
     out.push('"');
+    let mut slash_count = 0;
     for ch in token.chars() {
-        if ch == '"' || ch == '\\' {
-            out.push('\\');
+        if ch == '\\' {
+            slash_count += 1;
+            continue;
         }
+        if ch == '"' {
+            out.extend(std::iter::repeat_n('\\', slash_count * 2 + 1));
+            out.push(ch);
+            slash_count = 0;
+            continue;
+        }
+        out.extend(std::iter::repeat_n('\\', slash_count));
+        slash_count = 0;
         out.push(ch);
     }
+    out.extend(std::iter::repeat_n('\\', slash_count * 2));
     out.push('"');
     out
 }
@@ -562,6 +581,54 @@ mod tests {
         let mut round_trip = vec![normalized.shell];
         round_trip.extend(normalized.shell_args);
         assert_eq!(round_trip, tokens);
+    }
+
+    #[test]
+    fn stringifies_tokens_with_frontend_msvc_quoting_cases() {
+        let cases = [
+            (vec!["codex", "--model", "gpt 5"], "codex --model \"gpt 5\""),
+            (
+                vec!["codex", "--model", "gpt\"5"],
+                "codex --model \"gpt\\\"5\"",
+            ),
+            (vec!["codex", "--model", "gpt'5"], "codex --model \"gpt'5\""),
+            (vec!["codex", "--config", ""], "codex --config \"\""),
+            (
+                vec!["codex", r#"C:\tmp\"quoted"#],
+                r##"codex "C:\tmp\\\"quoted""##,
+            ),
+            (
+                vec!["codex", r#"C:\Program Files\Codex\codex.exe"#],
+                r##"codex "C:\Program Files\Codex\codex.exe""##,
+            ),
+        ];
+
+        for (tokens, expected) in cases {
+            let tokens: Vec<String> = tokens.into_iter().map(str::to_string).collect();
+            let text = super::stringify_agent_command_tokens(&tokens);
+            assert_eq!(text, expected);
+
+            let normalized = normalize_legacy_agent_command(&text).unwrap();
+            assert_eq!(normalized.shell, tokens[0]);
+            assert_eq!(normalized.shell_args, tokens[1..]);
+        }
+    }
+
+    #[test]
+    fn parses_quoted_backslashes_like_frontend_argv_parser() {
+        let normalized = normalize_legacy_agent_command(
+            r##"codex "C:\Program Files\Codex\codex.exe" "C:\tmp\\\"quoted""##,
+        )
+        .unwrap();
+
+        assert_eq!(normalized.shell, "codex");
+        assert_eq!(
+            normalized.shell_args,
+            vec![
+                r#"C:\Program Files\Codex\codex.exe"#.to_string(),
+                r#"C:\tmp\"quoted"#.to_string(),
+            ]
+        );
     }
 
     #[test]

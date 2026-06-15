@@ -575,13 +575,17 @@ pub async fn apply_coding_agent_profile_selection(
                 {
                     Ok(_) => restarted_session_ids.push(session_id.clone()),
                     Err(e) => {
+                        let (code, destroyed_but_not_recreated) =
+                            classify_restart_failure(session_mgr.inner(), uuid).await;
                         errors.push(ProfileAssignmentError {
-                            code: "restartFailed".to_string(),
+                            code: code.to_string(),
                             message: e,
                             session_ids: vec![session_id.clone()],
                             replica_paths: vec![target.replica_path.clone()],
                         });
-                        destroyed_but_not_recreated_session_ids.push(session_id.clone());
+                        if destroyed_but_not_recreated {
+                            destroyed_but_not_recreated_session_ids.push(session_id.clone());
+                        }
                     }
                 }
             }
@@ -708,6 +712,21 @@ fn prevalidate_profile_assignment_restarts(
         )?;
     }
     Ok(())
+}
+
+async fn classify_restart_failure(
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    uuid: uuid::Uuid,
+) -> (&'static str, bool) {
+    let session_survived = {
+        let mgr = session_mgr.read().await;
+        mgr.get_session(uuid).await.is_some()
+    };
+    if session_survived {
+        ("restartFailed", false)
+    } else {
+        ("destroyedButNotRecreated", true)
+    }
 }
 
 fn enumerate_profile_assignment_targets(
@@ -1280,6 +1299,7 @@ mod tests {
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
         SettingsState,
     };
+    use crate::session::manager::SessionManager;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -1321,6 +1341,34 @@ mod tests {
         assert_ne!(ab_c, a_bc);
         assert_ne!(ab_c, restart);
         assert_ne!(ab_c, other_targets);
+    }
+
+    #[tokio::test]
+    async fn restart_failure_classification_depends_on_session_survival() {
+        let manager = SessionManager::new();
+        let session = manager
+            .create_session(
+                "codex".to_string(),
+                Vec::new(),
+                "C:/work/repo".to_string(),
+                Some("codex".to_string()),
+                Some("Codex".to_string()),
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        let session_mgr = Arc::new(RwLock::new(manager));
+
+        let (survived_code, survived_destroyed) =
+            super::classify_restart_failure(&session_mgr, session.id).await;
+        assert_eq!(survived_code, "restartFailed");
+        assert!(!survived_destroyed);
+
+        let (missing_code, missing_destroyed) =
+            super::classify_restart_failure(&session_mgr, uuid::Uuid::new_v4()).await;
+        assert_eq!(missing_code, "destroyedButNotRecreated");
+        assert!(missing_destroyed);
     }
 
     #[tokio::test]

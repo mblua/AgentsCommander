@@ -1159,13 +1159,17 @@ pub fn load_settings() -> AppSettings {
         }
     };
 
+    load_settings_from_path(&path)
+}
+
+fn load_settings_from_path(path: &Path) -> AppSettings {
     let mut profile_migrated_to_v2 = false;
     let mut pre_migration_contents: Option<String> = None;
     let mut settings = if !path.exists() {
         log::info!("No settings file found at {:?}, using defaults", path);
         AppSettings::default()
     } else {
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
                 Ok((s, migrated)) => {
                     log::info!("Loaded settings from {:?}", path);
@@ -1223,7 +1227,7 @@ pub fn load_settings() -> AppSettings {
     apply_issue_248_migration(&mut settings);
 
     // Auto-generate root token if missing.
-    let mut needs_save = issue_248_migrated;
+    let mut needs_save = issue_248_migrated || profile_migrated_to_v2;
     if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
         log::info!("[settings-migration] repaired codingAgentProfiles invariants");
         needs_save = true;
@@ -1236,7 +1240,7 @@ pub fn load_settings() -> AppSettings {
     if needs_save {
         let backup_ok = if profile_migrated_to_v2 {
             match pre_migration_contents.as_deref() {
-                Some(contents) => match write_pre_384_v1_backup(&path, contents) {
+                Some(contents) => match write_pre_384_v1_backup(path, contents) {
                     Ok(()) => true,
                     Err(e) => {
                         log::error!(
@@ -1252,9 +1256,9 @@ pub fn load_settings() -> AppSettings {
             true
         };
         if backup_ok {
-            if let Err(e) = save_settings(&settings) {
+            if let Err(e) = save_settings_to_path(&settings, path) {
                 log::error!(
-                    "Failed to persist settings (root_token gen and/or #248 migration): {}",
+                    "Failed to persist settings (root_token gen and/or settings migration): {}",
                     e
                 );
             }
@@ -1410,9 +1414,15 @@ pub fn read_log_level_only() -> Option<String> {
 pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join("settings.json");
+    save_settings_to_path(settings, &path)
+}
 
+fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("Settings path {} has no parent", path.display()))?;
     // Ensure directory exists
-    std::fs::create_dir_all(&dir)
+    std::fs::create_dir_all(dir)
         .map_err(|e| format!("Failed to create settings directory: {}", e))?;
 
     let json = serde_json::to_string_pretty(settings)
@@ -1421,7 +1431,7 @@ pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     let tmp_path = dir.join("settings.json.tmp");
     std::fs::write(&tmp_path, &json)
         .map_err(|e| format!("Failed to write temp settings file: {}", e))?;
-    std::fs::rename(&tmp_path, &path)
+    std::fs::rename(&tmp_path, path)
         .map_err(|e| format!("Failed to rename settings file: {}", e))?;
 
     log::info!("Saved settings to {:?}", path);
@@ -1528,6 +1538,58 @@ mod tests {
         assert!(!out.contains("\"letters\""));
         assert!(!out.contains("\"matrix\""));
         assert!(!out.contains("\"argv\""));
+    }
+
+    #[test]
+    fn load_settings_persists_v1_to_v2_migration_and_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let original = r##"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "rootToken": "existing-token",
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "codex",
+                "color": "#000000"
+            }],
+            "codingAgentProfiles": {
+                "schemaVersion": 1,
+                "letters": { "A": { "name": "Baseline" } },
+                "matrix": {
+                    "codex": {
+                        "A": {
+                            "enabled": true,
+                            "argv": ["--model", "gpt'5"],
+                            "env": {},
+                            "notes": "legacy"
+                        }
+                    }
+                }
+            }
+        }"##;
+        std::fs::write(&path, original).unwrap();
+
+        let settings = super::load_settings_from_path(&path);
+
+        assert_eq!(settings.root_token.as_deref(), Some("existing-token"));
+        assert_eq!(settings.coding_agent_profiles.schema_version, 2);
+        let cell = &settings.coding_agent_profiles.profiles_by_agent["codex"]["A"];
+        assert_eq!(cell.command, "codex --model \"gpt'5\"");
+
+        let backup_path = temp.path().join("settings.pre-384-v1.json");
+        assert_eq!(std::fs::read_to_string(backup_path).unwrap(), original);
+
+        let saved_raw = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
+        assert_eq!(saved["codingAgentProfiles"]["schemaVersion"], 2);
+        assert!(saved["codingAgentProfiles"].get("profileSlots").is_some());
+        assert!(saved["codingAgentProfiles"]
+            .get("profilesByAgent")
+            .is_some());
+        assert!(saved["codingAgentProfiles"].get("matrix").is_none());
+        assert!(saved["codingAgentProfiles"].get("letters").is_none());
     }
 
     #[test]

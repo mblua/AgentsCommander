@@ -147,6 +147,7 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::update_config_json_object;
+    use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -196,6 +197,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn direct_write_guard_detects_async_and_shorthand_writes() {
+        assert!(line_mentions_direct_write(
+            "tokio::fs::write(&path, body).await?;"
+        ));
+        assert!(line_mentions_direct_write("fs::write(&path, body)?;"));
+        assert!(!line_mentions_direct_write("safe_fs::write(&path, body)?;"));
+    }
+
+    #[test]
+    fn direct_write_guard_detects_multiline_config_target_binding() {
+        let source = r#"
+pub fn bad(agent_dir: &Path) -> Result<(), String> {
+    let target = agent_dir.join("config.json");
+    fs::write(&target, "{}")?;
+    Ok(())
+}
+"#;
+        let mut offenders = Vec::new();
+        scan_source(
+            Path::new("src/config/agent_config.rs"),
+            source,
+            &mut offenders,
+        );
+
+        assert_eq!(offenders.len(), 1);
+        assert!(offenders[0].contains("fs::write"), "{offenders:?}");
+    }
+
     fn scan_dir(root: &Path, offenders: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(root) else {
             return;
@@ -218,22 +248,53 @@ mod tests {
             return;
         };
         let stripped = strip_test_modules(&content);
-        for (idx, line) in stripped.lines().enumerate() {
+        scan_source(path, &stripped, offenders);
+    }
+
+    fn scan_source(path: &Path, content: &str, offenders: &mut Vec<String>) {
+        let mut config_target_vars = HashSet::new();
+        let mut depth = 0;
+        for (idx, line) in content.lines().enumerate() {
             let trimmed = line.trim();
-            if !line_mentions_direct_write(trimmed) || !line_mentions_local_config_target(trimmed) {
+            if depth == 0 {
+                config_target_vars.clear();
+            }
+            if let Some(var) = local_config_target_binding(trimmed) {
+                config_target_vars.insert(var);
+            }
+            let mentions_local_target = line_mentions_local_config_target(trimmed)
+                || line_mentions_tracked_config_target(trimmed, &config_target_vars);
+            if !line_mentions_direct_write(trimmed) || !mentions_local_target {
+                depth += brace_delta(line);
+                if depth <= 0 {
+                    depth = 0;
+                    config_target_vars.clear();
+                }
                 continue;
             }
             if is_allowed_line(path, trimmed) {
+                depth += brace_delta(line);
+                if depth <= 0 {
+                    depth = 0;
+                    config_target_vars.clear();
+                }
                 continue;
             }
             offenders.push(format!("{}:{}: {}", path.display(), idx + 1, trimmed));
+            depth += brace_delta(line);
+            if depth <= 0 {
+                depth = 0;
+                config_target_vars.clear();
+            }
         }
     }
 
     fn line_mentions_direct_write(line: &str) -> bool {
-        line.contains("std::fs::write")
-            || line.contains("File::create")
-            || line.contains("OpenOptions::new")
+        line_contains_call_path(line, "std::fs::write")
+            || line_contains_call_path(line, "tokio::fs::write")
+            || line_contains_call_path(line, "fs::write")
+            || line_contains_call_path(line, "File::create")
+            || line_contains_call_path(line, "OpenOptions::new")
             || line.contains(".write_all")
     }
 
@@ -241,6 +302,66 @@ mod tests {
         line.contains("config.json")
             || line.contains("join(\"config.json\")")
             || line.contains("config_path")
+    }
+
+    fn local_config_target_binding(line: &str) -> Option<String> {
+        if !line_mentions_local_config_target(line) {
+            return None;
+        }
+        let rest = line.strip_prefix("let ")?;
+        let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+        let name = rest.split('=').next()?.trim();
+        let name = name.split(':').next().unwrap_or(name).trim();
+        if !is_rust_identifier(name) {
+            return None;
+        }
+        Some(name.to_string())
+    }
+
+    fn line_mentions_tracked_config_target(line: &str, vars: &HashSet<String>) -> bool {
+        vars.iter().any(|var| line_mentions_identifier(line, var))
+    }
+
+    fn line_contains_call_path(line: &str, needle: &str) -> bool {
+        let mut rest = line;
+        while let Some(idx) = rest.find(needle) {
+            let before = rest[..idx].chars().next_back();
+            let after = &rest[idx + needle.len()..];
+            let before_ok = before.is_none_or(|ch| !is_rust_identifier_char(ch));
+            let after_ok = after.chars().find(|ch| !ch.is_ascii_whitespace()) == Some('(');
+            if before_ok && after_ok {
+                return true;
+            }
+            rest = &rest[idx + needle.len()..];
+        }
+        false
+    }
+
+    fn line_mentions_identifier(line: &str, ident: &str) -> bool {
+        let mut rest = line;
+        while let Some(idx) = rest.find(ident) {
+            let before = rest[..idx].chars().next_back();
+            let after = rest[idx + ident.len()..].chars().next();
+            let before_ok = before.is_none_or(|ch| !is_rust_identifier_char(ch));
+            let after_ok = after.is_none_or(|ch| !is_rust_identifier_char(ch));
+            if before_ok && after_ok {
+                return true;
+            }
+            rest = &rest[idx + ident.len()..];
+        }
+        false
+    }
+
+    fn is_rust_identifier(value: &str) -> bool {
+        let mut chars = value.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first == '_' || first.is_ascii_alphabetic()) && chars.all(is_rust_identifier_char)
+    }
+
+    fn is_rust_identifier_char(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphanumeric()
     }
 
     fn is_allowed_line(path: &Path, line: &str) -> bool {
