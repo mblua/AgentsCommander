@@ -685,6 +685,171 @@
       gap: 8px;
     }
 
+    .variant.b2c-family.active {
+      grid-template-columns: 250px minmax(0, 1fr);
+    }
+
+    .variant.b2c-family .compare-zone {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .color-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      margin-top: 7px;
+    }
+
+    .color-swatch {
+      width: 22px;
+      height: 22px;
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      border-radius: var(--radius-sm);
+      background: var(--agent-color, var(--cyan));
+      box-shadow: 0 0 16px color-mix(in srgb, var(--agent-color, var(--cyan)) 34%, transparent);
+    }
+
+    .color-chip {
+      min-height: 22px;
+      padding: 0 7px;
+      border: 1px solid color-mix(in srgb, var(--agent-color, var(--cyan)) 44%, transparent);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--agent-color, var(--cyan)) 14%, transparent);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .compare-pane {
+      --agent-color: var(--cyan);
+      border-color: color-mix(in srgb, var(--agent-color) 34%, var(--line));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--agent-color) 14%, transparent), transparent 190px),
+        rgba(12, 17, 26, 0.91);
+    }
+
+    .compare-pane .panel-header {
+      border-bottom-color: color-mix(in srgb, var(--agent-color) 38%, var(--line));
+      background:
+        linear-gradient(90deg, color-mix(in srgb, var(--agent-color) 16%, transparent), rgba(255, 255, 255, 0.025));
+    }
+
+    .agent-select-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .profile-accordion,
+    .profile-drawer-card,
+    .profile-pair {
+      border: 1px solid rgba(148, 163, 184, 0.1);
+      border-left: 3px solid var(--agent-color, var(--cyan));
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.028);
+      overflow: hidden;
+    }
+
+    .profile-accordion.warning,
+    .profile-drawer-card.warning,
+    .profile-pair.warning {
+      background: rgba(248, 198, 87, 0.055);
+    }
+
+    .profile-accordion.error,
+    .profile-drawer-card.error,
+    .profile-pair.error {
+      background: rgba(255, 93, 115, 0.065);
+    }
+
+    .profile-compact-head {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      padding: 9px;
+    }
+
+    .chevron {
+      width: 26px;
+      height: 26px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .profile-accordion.expanded .chevron,
+    .profile-drawer-card.expanded .chevron,
+    .profile-pair.expanded .chevron {
+      color: var(--cyan);
+      border-color: rgba(0, 212, 255, 0.32);
+      background: var(--cyan-soft);
+    }
+
+    .expand-config {
+      display: none;
+      padding: 0 9px 10px 46px;
+    }
+
+    .expanded > .expand-config {
+      display: grid;
+      gap: 8px;
+    }
+
+    .param-grid {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr);
+      gap: 7px;
+      align-items: center;
+    }
+
+    .inline-env {
+      display: grid;
+      gap: 5px;
+    }
+
+    .inline-env-row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr) 54px;
+      gap: 6px;
+      align-items: center;
+      min-height: 28px;
+      padding: 5px;
+      border-radius: var(--radius-sm);
+      background: rgba(4, 8, 14, 0.58);
+    }
+
+    .drawer-config {
+      margin: 0 9px 10px 46px;
+      padding: 10px;
+      border: 1px solid color-mix(in srgb, var(--agent-color, var(--cyan)) 34%, var(--line));
+      border-radius: var(--radius-md);
+      background: color-mix(in srgb, var(--agent-color, var(--cyan)) 9%, rgba(4, 8, 14, 0.75));
+    }
+
+    .pair-config {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      padding: 0 9px 10px 46px;
+    }
+
+    .side-config {
+      padding: 9px;
+      border: 1px solid rgba(148, 163, 184, 0.1);
+      border-radius: var(--radius-md);
+      background: rgba(4, 8, 14, 0.6);
+    }
+
     .footer {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -735,6 +900,9 @@
       <button class="variant-btn active" type="button" data-variant-target="b2a">B2a - Side-by-side rails</button>
       <button class="variant-btn" type="button" data-variant-target="b2b">B2b - Reference vs candidate</button>
       <button class="variant-btn" type="button" data-variant-target="b2c">B2c - Compare matrix rails</button>
+      <button class="variant-btn" type="button" data-variant-target="b2c-inline">B2C1 - Inline accordion</button>
+      <button class="variant-btn" type="button" data-variant-target="b2c-drawer">B2C2 - Rail-local drawer</button>
+      <button class="variant-btn" type="button" data-variant-target="b2c-paired">B2C3 - Paired expansion</button>
       <span class="badge green" id="selectionStatus">Selected: codex B vs local-codex B</span>
     </nav>
 
@@ -1044,6 +1212,247 @@
           </div>
         </aside>
       </section>
+
+      <section class="variant b2c-family" data-variant-panel="b2c-inline" aria-label="B2C1 inline accordion">
+        <aside class="panel">
+          <div class="panel-header">
+            <div><div class="panel-title">Coding Agents</div><div class="panel-kicker">Manage agents and colors</div></div>
+            <button class="small-btn primary">Add Agent</button>
+          </div>
+          <div class="panel-body stack">
+            <div class="agent-row selected" style="--agent-color: #00d4ff;">
+              <span class="dot"></span>
+              <div>
+                <div class="agent-name">Codex</div>
+                <div class="mono-line">codex</div>
+                <div class="color-row"><span class="color-swatch"></span><button class="color-chip">#00d4ff</button><span class="pill cyan">left rail</span></div>
+              </div>
+              <button class="small-btn">Edit</button>
+            </div>
+            <div class="agent-row selected" style="--agent-color: #35f2a6;">
+              <span class="dot green-dot"></span>
+              <div>
+                <div class="agent-name">Local Codex CLI</div>
+                <div class="mono-line">"C:\Program Files\OpenAI Codex\codex.exe"</div>
+                <div class="color-row"><span class="color-swatch"></span><button class="color-chip">#35f2a6</button><span class="pill green">right rail</span></div>
+              </div>
+              <button class="small-btn danger">Remove</button>
+            </div>
+            <div class="agent-row" style="--agent-color: #9d7cff;">
+              <span class="dot violet-dot"></span>
+              <div>
+                <div class="agent-name">Claude</div>
+                <div class="mono-line">claude</div>
+                <div class="color-row"><span class="color-swatch"></span><button class="color-chip">#9d7cff</button><span class="pill">available</span></div>
+              </div>
+              <button class="small-btn">Use</button>
+            </div>
+            <div class="section-block">
+              <div class="section-title">Actions</div>
+              <div class="tag-row"><button class="small-btn primary">Add Agent</button><button class="small-btn">Swap Rails</button><button class="small-btn danger">Delete Agent</button></div>
+            </div>
+          </div>
+        </aside>
+
+        <div class="compare-zone">
+          <section class="panel compare-pane" style="--agent-color: #00d4ff;">
+            <div class="panel-header">
+              <div><div class="panel-title">Left rail: Codex</div><div class="panel-kicker">Inline accordion profile config</div></div>
+              <span class="badge cyan">reference</span>
+            </div>
+            <div class="panel-body stack">
+              <div class="section-block">
+                <div class="section-title">Coding Agent</div>
+                <div class="agent-select-row">
+                  <select class="select"><option>Codex</option><option>Claude</option><option>Local Codex CLI</option></select>
+                  <span class="color-swatch"></span>
+                  <button class="small-btn">Color</button>
+                </div>
+              </div>
+              <div class="profile-accordion expanded" data-selectable="b2c-inline codex baseline">
+                <div class="profile-compact-head">
+                  <span class="profile-letter">A</span>
+                  <div><div class="name-line"><input class="input" value="Baseline"><span class="pill green">match</span></div><div class="mono-line">Default fallback, configured on both agents</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <div class="param-grid"><span class="field-label">Binary</span><input class="input" value="codex"></div>
+                  <div class="param-grid"><span class="field-label">Args</span><input class="input" value="--sandbox workspace-write --model gpt-5-codex"></div>
+                  <div class="inline-env">
+                    <div class="inline-env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="%AC_ROOT%\.codex\agents\codex"><span class="pill green">system</span></div>
+                    <div class="inline-env-row"><span class="env-key">OPENAI_ORG</span><input class="input" value="ac-prod"><span class="pill">profile</span></div>
+                  </div>
+                  <div class="tag-row"><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button><button class="small-btn">Revert</button></div>
+                </div>
+              </div>
+              <div class="profile-accordion" data-selectable="b2c-inline codex balanced">
+                <div class="profile-compact-head">
+                  <span class="profile-letter">B</span>
+                  <div><div class="name-line"><input class="input" value="Balanced"><span class="pill cyan">configured</span></div><div class="mono-line">--model gpt-5-codex --effort medium</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <div class="param-grid"><span class="field-label">Binary</span><input class="input" value="codex"></div>
+                  <div class="param-grid"><span class="field-label">Args</span><input class="input" value="--model gpt-5-codex --effort medium"></div>
+                  <div class="inline-env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="%AC_ROOT%\.codex\agents\codex-balanced"><span class="pill green">isolated</span></div>
+                </div>
+              </div>
+              <div class="profile-accordion error" data-selectable="b2c-inline codex review">
+                <div class="profile-compact-head">
+                  <span class="profile-letter">C</span>
+                  <div><div class="name-line"><input class="input" value="Review"><span class="pill red">argv error</span></div><div class="mono-line">Quoted prompt is not closed</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <div class="param-grid"><span class="field-label">Args</span><input class="input error" value="--review --prompt &quot;missing close"></div>
+                  <div class="status-strip red">Validation: close the quoted prompt before saving.</div>
+                </div>
+              </div>
+              <div class="profile-accordion warning">
+                <div class="profile-compact-head">
+                  <span class="profile-letter">D</span>
+                  <div><div class="name-line"><input class="input" value="Full Auto"><span class="pill yellow">diff</span></div><div class="mono-line">Reference has profile D; candidate falls back</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config"><button class="small-btn danger">Delete Profile</button></div>
+              </div>
+              <button class="small-btn primary">Add Profile</button>
+            </div>
+          </section>
+
+          <section class="panel compare-pane" style="--agent-color: #35f2a6;">
+            <div class="panel-header">
+              <div><div class="panel-title">Right rail: Local Codex CLI</div><div class="panel-kicker">Inline accordion profile config</div></div>
+              <span class="badge yellow">candidate</span>
+            </div>
+            <div class="panel-body stack">
+              <div class="section-block">
+                <div class="section-title">Coding Agent</div>
+                <div class="agent-select-row">
+                  <select class="select"><option>Local Codex CLI</option><option>Codex</option><option>Claude</option></select>
+                  <span class="color-swatch"></span>
+                  <button class="small-btn">Color</button>
+                </div>
+              </div>
+              <div class="profile-accordion expanded warning" data-selectable="b2c-inline local balanced fallback">
+                <div class="profile-compact-head">
+                  <span class="profile-letter">B</span>
+                  <div><div class="name-line"><input class="input" value="Balanced"><span class="pill yellow">missing</span></div><div class="mono-line">B missing; effective A fallback</div></div>
+                  <button class="chevron" type="button" data-toggle-profile>v</button>
+                </div>
+                <div class="expand-config">
+                  <div class="param-grid"><span class="field-label">Binary</span><input class="input" value="C:\Program Files\OpenAI Codex\codex.exe"></div>
+                  <div class="param-grid"><span class="field-label">Args</span><input class="input" value="--sandbox workspace-write"></div>
+                  <div class="inline-env">
+                    <div class="inline-env-row"><span class="env-key">CODEX_HOME</span><input class="input error" value="D:\manual\codex"><span class="pill red">conflict</span></div>
+                    <div class="inline-env-row"><span class="env-key">AC_TRACE</span><input class="input" value="profile-b"><span class="pill">profile</span></div>
+                  </div>
+                  <div class="status-strip red">CODEX_HOME conflicts with generated isolation for Codex-like commands.</div>
+                  <div class="tag-row"><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button><button class="small-btn">Revert</button></div>
+                </div>
+              </div>
+              <div class="profile-accordion">
+                <div class="profile-compact-head"><span class="profile-letter">A</span><div><div class="name-line"><input class="input" value="Baseline"><span class="pill green">match</span></div><div class="mono-line">Configured fallback target</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div>
+                <div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--sandbox workspace-write"></div></div>
+              </div>
+              <div class="profile-accordion">
+                <div class="profile-compact-head"><span class="profile-letter">C</span><div><div class="name-line"><input class="input" value="Review"><span class="pill yellow">diff</span></div><div class="mono-line">Uses --long-context instead of prompt review</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div>
+                <div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--profile review --long-context"></div></div>
+              </div>
+              <div class="profile-accordion warning">
+                <div class="profile-compact-head"><span class="profile-letter">D</span><div><div class="name-line"><input class="input" value="Full Auto"><span class="pill yellow">fallback</span></div><div class="mono-line">Not configured; effective A</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div>
+                <div class="expand-config"><button class="small-btn primary">Add D Cell</button><button class="small-btn danger">Delete Profile</button></div>
+              </div>
+              <button class="small-btn primary">Add Profile</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="variant b2c-family" data-variant-panel="b2c-drawer" aria-label="B2C2 rail-local drawer">
+        <aside class="panel">
+          <div class="panel-header"><div><div class="panel-title">Coding Agents</div><div class="panel-kicker">Color-managed comparison set</div></div><button class="small-btn primary">Add Agent</button></div>
+          <div class="panel-body stack">
+            <div class="agent-row selected" style="--agent-color: #9d7cff;"><span class="dot violet-dot"></span><div><div class="agent-name">Claude</div><div class="mono-line">claude</div><div class="color-row"><span class="color-swatch"></span><button class="color-chip">#9d7cff</button><span class="pill violet">left</span></div></div><button class="small-btn">Use</button></div>
+            <div class="agent-row selected" style="--agent-color: #35f2a6;"><span class="dot green-dot"></span><div><div class="agent-name">Local Codex CLI</div><div class="mono-line">"C:\Program Files\OpenAI Codex\codex.exe"</div><div class="color-row"><span class="color-swatch"></span><button class="color-chip">#35f2a6</button><span class="pill green">right</span></div></div><button class="small-btn danger">Remove</button></div>
+            <div class="agent-row" style="--agent-color: #00d4ff;"><span class="dot"></span><div><div class="agent-name">Codex</div><div class="mono-line">codex</div><div class="color-row"><span class="color-swatch"></span><button class="color-chip">#00d4ff</button></div></div><button class="small-btn">Use</button></div>
+          </div>
+        </aside>
+
+        <div class="compare-zone">
+          <section class="panel compare-pane" style="--agent-color: #9d7cff;">
+            <div class="panel-header"><div><div class="panel-title">Claude rail</div><div class="panel-kicker">Expanded drawer under selected card</div></div><span class="badge violet">reference</span></div>
+            <div class="panel-body stack">
+              <div class="section-block"><div class="section-title">Coding Agent</div><div class="agent-select-row"><select class="select"><option>Claude</option><option>Codex</option><option>Local Codex CLI</option></select><span class="color-swatch"></span><button class="small-btn">Color</button></div></div>
+              <div class="profile-drawer-card"><div class="profile-compact-head"><span class="profile-letter">A</span><div><div class="name-line"><input class="input" value="Baseline"><span class="pill green">match</span></div><div class="mono-line">Final fallback profile</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--permission-mode acceptEdits"></div></div></div>
+              <div class="profile-drawer-card expanded"><div class="profile-compact-head"><span class="profile-letter">B</span><div><div class="name-line"><input class="input" value="Balanced"><span class="pill yellow">diff</span></div><div class="mono-line">Drawer edits the full invocation contract</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="drawer-config"><div class="param-grid"><span class="field-label">Binary</span><input class="input" value="claude"></div><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--model sonnet --permission-mode acceptEdits"></div><div class="inline-env-row"><span class="env-key">ANTHROPIC_MODEL</span><input class="input" value="sonnet"><span class="pill">agent</span></div><div class="tag-row"><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button><button class="small-btn">Revert</button></div></div></div>
+              <div class="profile-drawer-card"><div class="profile-compact-head"><span class="profile-letter">C</span><div><div class="name-line"><input class="input" value="Review"><span class="pill green">configured</span></div><div class="mono-line">Strict review mode</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--review --verify --strict"></div></div></div>
+              <div class="profile-drawer-card warning"><div class="profile-compact-head"><span class="profile-letter">D</span><div><div class="name-line"><input class="input" value="Full Auto"><span class="pill yellow">missing peer</span></div><div class="mono-line">Reference configured; candidate falls back</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><button class="small-btn danger">Delete Profile</button></div></div>
+              <button class="small-btn primary">Add Profile</button>
+            </div>
+          </section>
+
+          <section class="panel compare-pane" style="--agent-color: #35f2a6;">
+            <div class="panel-header"><div><div class="panel-title">Local Codex CLI rail</div><div class="panel-kicker">Drawer highlights warning states</div></div><span class="badge yellow">candidate</span></div>
+            <div class="panel-body stack">
+              <div class="section-block"><div class="section-title">Coding Agent</div><div class="agent-select-row"><select class="select"><option>Local Codex CLI</option><option>Claude</option><option>Codex</option></select><span class="color-swatch"></span><button class="small-btn">Color</button></div></div>
+              <div class="profile-drawer-card"><div class="profile-compact-head"><span class="profile-letter">A</span><div><div class="name-line"><input class="input" value="Baseline"><span class="pill green">match</span></div><div class="mono-line">Configured fallback</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><div class="param-grid"><span class="field-label">Binary</span><input class="input" value="C:\Program Files\OpenAI Codex\codex.exe"></div></div></div>
+              <div class="profile-drawer-card expanded error"><div class="profile-compact-head"><span class="profile-letter">B</span><div><div class="name-line"><input class="input" value="Balanced"><span class="pill red">CODEX_HOME</span></div><div class="mono-line">Drawer exposes conflicting env config</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="drawer-config"><div class="param-grid"><span class="field-label">Binary</span><input class="input" value="C:\Program Files\OpenAI Codex\codex.exe"></div><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--sandbox workspace-write --effort medium"></div><div class="inline-env-row"><span class="env-key">CODEX_HOME</span><input class="input error" value="D:\manual\codex"><span class="pill red">conflict</span></div><div class="status-strip red">User CODEX_HOME conflicts with generated isolation for a Codex-like binary.</div><div class="tag-row"><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button><button class="small-btn">Revert</button></div></div></div>
+              <div class="profile-drawer-card warning"><div class="profile-compact-head"><span class="profile-letter">C</span><div><div class="name-line"><input class="input" value="Review"><span class="pill yellow">different</span></div><div class="mono-line">Long-context review args</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--profile review --long-context"></div></div></div>
+              <div class="profile-drawer-card warning"><div class="profile-compact-head"><span class="profile-letter">D</span><div><div class="name-line"><input class="input" value="Full Auto"><span class="pill yellow">fallback</span></div><div class="mono-line">Not configured; effective A</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><button class="small-btn primary">Add D Cell</button><button class="small-btn danger">Delete Profile</button></div></div>
+              <button class="small-btn primary">Add Profile</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="variant b2c-family" data-variant-panel="b2c-paired" aria-label="B2C3 paired expansion">
+        <aside class="panel">
+          <div class="panel-header"><div><div class="panel-title">Coding Agents</div><div class="panel-kicker">Paired profile comparison</div></div><button class="small-btn primary">Add Agent</button></div>
+          <div class="panel-body stack">
+            <div class="agent-row selected" style="--agent-color: #00d4ff;"><span class="dot"></span><div><div class="agent-name">Codex</div><div class="mono-line">codex</div><div class="color-row"><span class="color-swatch"></span><button class="color-chip">#00d4ff</button></div></div><button class="small-btn">Left</button></div>
+            <div class="agent-row selected" style="--agent-color: #9d7cff;"><span class="dot violet-dot"></span><div><div class="agent-name">Claude</div><div class="mono-line">claude</div><div class="color-row"><span class="color-swatch"></span><button class="color-chip">#9d7cff</button></div></div><button class="small-btn">Right</button></div>
+            <div class="agent-row" style="--agent-color: #35f2a6;"><span class="dot green-dot"></span><div><div class="agent-name">Local Codex CLI</div><div class="mono-line">"C:\Program Files\OpenAI Codex\codex.exe"</div><div class="color-row"><span class="color-swatch"></span><button class="color-chip">#35f2a6</button></div></div><button class="small-btn">Use</button></div>
+          </div>
+        </aside>
+
+        <div class="compare-zone">
+          <section class="panel compare-pane" style="--agent-color: #00d4ff;">
+            <div class="panel-header"><div><div class="panel-title">Left: Codex</div><div class="panel-kicker">Profile rail with pair expansion</div></div><select class="select"><option>Codex</option><option>Claude</option><option>Local Codex CLI</option></select></div>
+            <div class="panel-body stack">
+              <div class="section-block"><div class="agent-select-row"><span class="color-swatch"></span><button class="color-chip">Rail tint #00d4ff</button><button class="small-btn">Color</button></div></div>
+              <div class="profile-pair expanded">
+                <div class="profile-compact-head"><span class="profile-letter">B</span><div><div class="name-line"><input class="input" value="Balanced"><span class="pill yellow">diff</span></div><div class="mono-line">Expanded B opens matching config panels on both sides</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div>
+                <div class="pair-config">
+                  <div class="side-config"><div class="section-title">Codex B config</div><div class="param-grid"><span class="field-label">Binary</span><input class="input" value="codex"></div><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--model gpt-5-codex --effort medium"></div><div class="inline-env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="%AC_ROOT%\.codex\agents\codex"><span class="pill green">system</span></div></div>
+                  <div class="side-config"><div class="section-title">Claude B reference</div><div class="status-strip yellow">Right side uses Sonnet and a provider-specific env set.</div></div>
+                </div>
+              </div>
+              <div class="profile-pair"><div class="profile-compact-head"><span class="profile-letter">A</span><div><div class="name-line"><input class="input" value="Baseline"><span class="pill green">match</span></div><div class="mono-line">Both fallback profiles configured</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--sandbox workspace-write"></div></div></div>
+              <div class="profile-pair error"><div class="profile-compact-head"><span class="profile-letter">C</span><div><div class="name-line"><input class="input" value="Review"><span class="pill red">argv</span></div><div class="mono-line">Codex review has invalid quoted prompt</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input error" value="--review --prompt &quot;missing close"></div></div></div>
+              <div class="profile-pair warning"><div class="profile-compact-head"><span class="profile-letter">D</span><div><div class="name-line"><input class="input" value="Full Auto"><span class="pill yellow">left only</span></div><div class="mono-line">Candidate can add matching D config</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><button class="small-btn danger">Delete Profile</button></div></div>
+            </div>
+          </section>
+
+          <section class="panel compare-pane" style="--agent-color: #9d7cff;">
+            <div class="panel-header"><div><div class="panel-title">Right: Claude</div><div class="panel-kicker">Synchronized expansion peer</div></div><select class="select"><option>Claude</option><option>Codex</option><option>Local Codex CLI</option></select></div>
+            <div class="panel-body stack">
+              <div class="section-block"><div class="agent-select-row"><span class="color-swatch"></span><button class="color-chip">Rail tint #9d7cff</button><button class="small-btn">Color</button></div></div>
+              <div class="profile-pair expanded warning">
+                <div class="profile-compact-head"><span class="profile-letter">B</span><div><div class="name-line"><input class="input" value="Balanced"><span class="pill yellow">different</span></div><div class="mono-line">Provider-specific args differ from Codex</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div>
+                <div class="pair-config">
+                  <div class="side-config"><div class="section-title">Codex B reference</div><div class="status-strip yellow">Left side uses OpenAI model args and generated CODEX_HOME.</div></div>
+                  <div class="side-config"><div class="section-title">Claude B config</div><div class="param-grid"><span class="field-label">Binary</span><input class="input" value="claude"></div><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--model sonnet --permission-mode acceptEdits"></div><div class="inline-env-row"><span class="env-key">ANTHROPIC_MODEL</span><input class="input" value="sonnet"><span class="pill">agent</span></div><div class="tag-row"><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button><button class="small-btn">Revert</button></div></div>
+                </div>
+              </div>
+              <div class="profile-pair"><div class="profile-compact-head"><span class="profile-letter">A</span><div><div class="name-line"><input class="input" value="Baseline"><span class="pill green">match</span></div><div class="mono-line">Fallback profile configured</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--permission-mode acceptEdits"></div></div></div>
+              <div class="profile-pair"><div class="profile-compact-head"><span class="profile-letter">C</span><div><div class="name-line"><input class="input" value="Review"><span class="pill green">valid</span></div><div class="mono-line">Claude review profile is valid</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><div class="param-grid"><span class="field-label">Args</span><input class="input" value="--review --verify --strict"></div></div></div>
+              <div class="profile-pair warning"><div class="profile-compact-head"><span class="profile-letter">D</span><div><div class="name-line"><input class="input" value="Full Auto"><span class="pill yellow">missing</span></div><div class="mono-line">Effective fallback to A</div></div><button class="chevron" type="button" data-toggle-profile>v</button></div><div class="expand-config"><button class="small-btn primary">Add D Cell</button><button class="small-btn danger">Delete Profile</button></div></div>
+              <button class="small-btn primary">Add Profile</button>
+            </div>
+          </section>
+        </div>
+      </section>
     </main>
 
     <footer class="footer">
@@ -1081,6 +1490,15 @@
     });
 
     document.addEventListener("click", (event) => {
+      const toggle = event.target.closest("[data-toggle-profile]");
+      if (toggle) {
+        const card = toggle.closest(".profile-accordion, .profile-drawer-card, .profile-pair");
+        if (card) {
+          card.classList.toggle("expanded");
+        }
+        return;
+      }
+
       const target = event.target.closest("[data-selectable]");
       if (!target) return;
       const panel = target.closest("[data-variant-panel]");
