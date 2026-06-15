@@ -1,7 +1,7 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { AcWorkgroup, AcAgentReplica, AcTeam, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
+import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
@@ -15,6 +15,8 @@ import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
+import NewLoopModal from "./NewLoopModal";
+import EditLoopModal from "./EditLoopModal";
 import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
@@ -223,6 +225,8 @@ const ProjectPanel: Component = () => {
         const [showNewAgent, setShowNewAgent] = createSignal(false);
         const [showNewTeam, setShowNewTeam] = createSignal(false);
         const [showNewWorkgroup, setShowNewWorkgroup] = createSignal(false);
+        const [showNewLoop, setShowNewLoop] = createSignal(false);
+        const [editingLoop, setEditingLoop] = createSignal<AcLoopSummary | null>(null);
         const [teamCtxMenu, setTeamCtxMenu] = createSignal<{ team: AcTeam; x: number; y: number } | null>(null);
         const [editingTeam, setEditingTeam] = createSignal<AcTeam | null>(null);
         const [deletingTeam, setDeletingTeam] = createSignal<AcTeam | null>(null);
@@ -243,6 +247,15 @@ const ProjectPanel: Component = () => {
         const [agentCtxMenu, setAgentCtxMenu] = createSignal<{ agent: { name: string; path: string; preferredAgentId?: string }; x: number; y: number } | null>(null);
         const [agentsHeaderCtxMenu, setAgentsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [workgroupsHeaderCtxMenu, setWorkgroupsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
+        const [loopCtxMenu, setLoopCtxMenu] = createSignal<{ loop: AcLoopSummary; x: number; y: number } | null>(null);
+        const [loopsHeaderCtxMenu, setLoopsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
+        const [loopActionInProgress, setLoopActionInProgress] = createSignal<string | null>(null);
+        const [deletingLoop, setDeletingLoop] = createSignal<AcLoopSummary | null>(null);
+        const [loopDeleteError, setLoopDeleteError] = createSignal("");
+        const currentLoopDeleteInProgress = () => {
+          const loop = deletingLoop();
+          return !!loop && loopActionInProgress() === `${loop.id}:delete`;
+        };
         const [teamsHeaderCtxMenu, setTeamsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [deletingAgent, setDeletingAgent] = createSignal<{ name: string; path: string } | null>(null);
         const [agentDeleteError, setAgentDeleteError] = createSignal("");
@@ -268,8 +281,13 @@ const ProjectPanel: Component = () => {
           setDeleteInProgress(false);
           setDeletingTeam(null);
         };
+        const closeLoopDeleteModal = () => {
+          if (currentLoopDeleteInProgress()) return;
+          setLoopDeleteError("");
+          setDeletingLoop(null);
+        };
         createEffect(() => {
-          if (!deletingAgent() && !deletingWg() && !deletingTeam()) return;
+          if (!deletingAgent() && !deletingWg() && !deletingTeam() && !deletingLoop()) return;
           const handleDeleteModalKeyDown = (e: KeyboardEvent) => {
             if (e.key !== "Escape") return;
             if (deletingAgent()) {
@@ -278,6 +296,10 @@ const ProjectPanel: Component = () => {
             }
             if (deletingWg()) {
               closeWgDeleteModal();
+              return;
+            }
+            if (deletingLoop()) {
+              closeLoopDeleteModal();
               return;
             }
             closeTeamDeleteModal();
@@ -414,6 +436,8 @@ const ProjectPanel: Component = () => {
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
           setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu(null);
           setCtxMenuPos({ x: e.clientX, y: e.clientY });
@@ -432,6 +456,9 @@ const ProjectPanel: Component = () => {
         };
 
         const hasTeams = () => proj.teams.length > 0;
+        const projectAutomationId = () => automationIdPart(proj.path);
+        const hasLoopTargets = () =>
+          proj.workgroups.some((wg) => wg.agents.some((agent) => agent.isCoordinator));
         const naturalCoordinatorItems = createMemo(() => {
           const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
           for (const wg of proj.workgroups) {
@@ -484,6 +511,72 @@ const ProjectPanel: Component = () => {
             return proj.workgroups.find(w => w.name === prev.name) ?? null;
         });
 
+        const runLoopAction = async (
+          loop: AcLoopSummary,
+          action: "run" | "toggle" | "delete",
+          task: () => Promise<AcLoopSummary | null>
+        ) => {
+          const actionKey = `${loop.id}:${action}`;
+          if (loopActionInProgress()) return;
+          setLoopActionInProgress(actionKey);
+          try {
+            const updatedLoop = await task();
+            if (updatedLoop) {
+              projectStore.upsertLoop(proj.path, updatedLoop);
+            }
+            await projectStore.reloadProject(proj.path);
+          } catch (e) {
+            console.error(`Loop ${action} failed:`, e);
+          } finally {
+            setLoopActionInProgress(null);
+          }
+        };
+
+        const deleteLoop = async (loop: AcLoopSummary) => {
+          const actionKey = `${loop.id}:delete`;
+          if (loopActionInProgress()) return;
+          setLoopActionInProgress(actionKey);
+          setLoopDeleteError("");
+          try {
+            await LoopAPI.delete(proj.path, loop.id);
+            projectStore.removeLoop(proj.path, loop.id);
+            await projectStore.reloadProject(proj.path);
+            setDeletingLoop(null);
+          } catch (e: unknown) {
+            console.error("delete_loop failed:", e);
+            setLoopDeleteError(typeof e === "string" ? e : e instanceof Error ? e.message : "Failed to delete Loop");
+          } finally {
+            setLoopActionInProgress(null);
+          }
+        };
+
+        const handleLoopContextMenu = (e: MouseEvent, loop: AcLoopSummary) => {
+          e.preventDefault();
+          e.stopPropagation();
+          cleanupCtx();
+          setShowCtxMenu(false);
+          setTeamCtxMenu(null);
+          setWgCtxMenu(null);
+          setAgentCtxMenu(null);
+          setAgentsHeaderCtxMenu(null);
+          setWorkgroupsHeaderCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
+          setTeamsHeaderCtxMenu(null);
+          setReplicaCtxMenu(null);
+          setLoopCtxMenu({ loop, x: e.clientX, y: e.clientY });
+          const dismiss = (ev?: Event) => {
+            if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+            setLoopCtxMenu(null);
+            cleanupCtx();
+          };
+          dismissCtx = dismiss;
+          setTimeout(() => {
+            window.addEventListener("click", dismiss);
+            window.addEventListener("contextmenu", dismiss);
+            window.addEventListener("keydown", dismiss as any);
+          });
+        };
+
         const handleRemoveProject = () => {
           setShowCtxMenu(false);
           projectStore.removeProject(proj.path);
@@ -498,6 +591,8 @@ const ProjectPanel: Component = () => {
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
           setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu(null);
           setTeamCtxMenu({ team, x: e.clientX, y: e.clientY });
@@ -523,6 +618,8 @@ const ProjectPanel: Component = () => {
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
           setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu(null);
           setWgCtxMenu({ wg, x: e.clientX, y: e.clientY });
@@ -549,6 +646,8 @@ const ProjectPanel: Component = () => {
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
           setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu({
             sessionId: session.id,
@@ -850,6 +949,19 @@ const ProjectPanel: Component = () => {
                   >
                     New Workgroup
                   </button>
+                  <button
+                    class="session-context-option"
+                    classList={{ "context-option-disabled": !hasLoopTargets() }}
+                    disabled={!hasLoopTargets()}
+                    onClick={() => {
+                      if (!hasLoopTargets()) return;
+                      setShowCtxMenu(false);
+                      setShowNewLoop(true);
+                    }}
+                    data-ac-testid={`loop.action.new.${projectAutomationId()}.projectMenu`}
+                  >
+                    New Loop
+                  </button>
                   <div class="context-separator" />
                   <button
                     class="session-context-option context-option-danger"
@@ -884,6 +996,25 @@ const ProjectPanel: Component = () => {
                   projectPath={proj.path}
                   teams={proj.teams}
                   onClose={() => setShowNewWorkgroup(false)}
+                />
+              </Portal>
+            )}
+            {showNewLoop() && (
+              <Portal>
+                <NewLoopModal
+                  projectPath={proj.path}
+                  workgroups={proj.workgroups}
+                  onClose={() => setShowNewLoop(false)}
+                />
+              </Portal>
+            )}
+            {editingLoop() && (
+              <Portal>
+                <EditLoopModal
+                  projectPath={proj.path}
+                  workgroups={proj.workgroups}
+                  loop={editingLoop()!}
+                  onClose={() => setEditingLoop(null)}
                 />
               </Portal>
             )}
@@ -956,6 +1087,8 @@ const ProjectPanel: Component = () => {
                     setAgentsHeaderCtxMenu(null);
                     setTeamsHeaderCtxMenu(null);
                     setReplicaCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setLoopsHeaderCtxMenu(null);
                     setWorkgroupsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -1026,6 +1159,132 @@ const ProjectPanel: Component = () => {
                     </>
                   );
                 })()}
+                {/* Loops */}
+                {(() => {
+                  const [loopsCollapsed, setLoopsCollapsed] = createSignal(false);
+
+                  const handleLoopsHeaderContextMenu = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cleanupCtx();
+                    setShowCtxMenu(false);
+                    setTeamCtxMenu(null);
+                    setWgCtxMenu(null);
+                    setAgentCtxMenu(null);
+                    setAgentsHeaderCtxMenu(null);
+                    setWorkgroupsHeaderCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setTeamsHeaderCtxMenu(null);
+                    setReplicaCtxMenu(null);
+                    setLoopsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
+                    const dismiss = (ev?: Event) => {
+                      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+                      setLoopsHeaderCtxMenu(null);
+                      cleanupCtx();
+                    };
+                    dismissCtx = dismiss;
+                    setTimeout(() => {
+                      window.addEventListener("click", dismiss);
+                      window.addEventListener("contextmenu", dismiss);
+                      window.addEventListener("keydown", dismiss);
+                    });
+                  };
+
+                  const loopTestId = (loop: AcLoopSummary) =>
+                    `loop.row.${projectAutomationId()}.${automationIdPart(loop.id)}`;
+
+                  return (
+                    <>
+                    <Show when={sessionsStore.showCategories}>
+                    <div class="ac-wg-group ac-loop-group">
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        onClick={() => setLoopsCollapsed((c) => !c)}
+                        onContextMenu={handleLoopsHeaderContextMenu}
+                        data-ac-testid={`project.loops.header.${projectAutomationId()}`}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: loopsCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">Loops</span>
+                        </div>
+                        <span class="ac-team-count">{proj.loops.length}</span>
+                      </div>
+                      <Show when={!loopsCollapsed()}>
+                        <Show
+                          when={proj.loops.length > 0}
+                          fallback={<div class="ac-empty-hint">No loops</div>}
+                        >
+                          <For each={proj.loops}>
+                            {(loop) => (
+                              <div
+                                class="ac-loop-row"
+                                classList={{
+                                  "ac-loop-row-disabled": !loop.enabled,
+                                  "ac-loop-row-pending": !!loop.pendingDueAt,
+                                  "ac-loop-row-missed": loop.lastResult?.kind === "missedWhileClosed",
+                                }}
+                                onClick={() => setEditingLoop(loop)}
+                                onContextMenu={(e) => handleLoopContextMenu(e, loop)}
+                                title={loop.promptPreview}
+                                data-ac-testid={loopTestId(loop)}
+                                data-ac-state={[
+                                  loop.enabled ? "enabled" : "loop-disabled",
+                                  loop.pendingDueAt ? "pending" : "",
+                                ].filter(Boolean).join(" ")}
+                              >
+                                <div class="ac-loop-main">
+                                  <span class="ac-loop-name">{loop.name}</span>
+                                  <span class="ac-loop-target">{loop.workgroup}</span>
+                                </div>
+                                <div class="ac-loop-meta">
+                                  <span>{loop.expr}</span>
+                                  <Show when={loop.pendingDueAt}>
+                                    <span class="ac-discovery-badge pending">pending</span>
+                                  </Show>
+                                  <Show when={!loop.enabled}>
+                                    <span class="ac-discovery-badge disabled">disabled</span>
+                                  </Show>
+                                </div>
+                                <div class="ac-loop-status">
+                                  {loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet")}
+                                </div>
+                              </div>
+                            )}
+                          </For>
+                        </Show>
+                      </Show>
+                    </div>
+                    </Show>
+
+                    {/* Loops header context menu */}
+                    {loopsHeaderCtxMenu() && (
+                      <Portal>
+                        <div
+                          class="session-context-menu"
+                          style={{ left: `${loopsHeaderCtxMenu()!.x}px`, top: `${loopsHeaderCtxMenu()!.y}px` }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            class="session-context-option"
+                            classList={{ "context-option-disabled": !hasLoopTargets() }}
+                            disabled={!hasLoopTargets()}
+                            onClick={() => {
+                              if (!hasLoopTargets()) return;
+                              setLoopsHeaderCtxMenu(null);
+                              setShowNewLoop(true);
+                            }}
+                            data-ac-testid={`loop.action.new.${projectAutomationId()}`}
+                          >
+                            New Loop
+                          </button>
+                        </div>
+                      </Portal>
+                    )}
+                    </>
+                  );
+                })()}
                 {/* Agents */}
                 {(() => {
                   const [matrixCollapsed, setMatrixCollapsed] = createSignal(false);
@@ -1041,6 +1300,8 @@ const ProjectPanel: Component = () => {
                     setWorkgroupsHeaderCtxMenu(null);
                     setTeamsHeaderCtxMenu(null);
                     setReplicaCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setLoopsHeaderCtxMenu(null);
                     setAgentCtxMenu({ agent, x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -1066,6 +1327,8 @@ const ProjectPanel: Component = () => {
                     setWorkgroupsHeaderCtxMenu(null);
                     setTeamsHeaderCtxMenu(null);
                     setReplicaCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setLoopsHeaderCtxMenu(null);
                     setAgentsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -1257,6 +1520,8 @@ const ProjectPanel: Component = () => {
                     setAgentsHeaderCtxMenu(null);
                     setWorkgroupsHeaderCtxMenu(null);
                     setReplicaCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setLoopsHeaderCtxMenu(null);
                     setTeamsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -1420,6 +1685,128 @@ const ProjectPanel: Component = () => {
                     </svg>
                     Delete Workgroup
                   </button>
+                </div>
+              </Portal>
+            )}
+
+            {/* Loop context menu */}
+            {loopCtxMenu() && (
+              <Portal>
+                <div
+                  class="session-context-menu"
+                  style={{ left: `${loopCtxMenu()!.x}px`, top: `${loopCtxMenu()!.y}px` }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    class="session-context-option"
+                    disabled={loopActionInProgress() === `${loopCtxMenu()!.loop.id}:run`}
+                    onClick={async () => {
+                      const menu = loopCtxMenu();
+                      setLoopCtxMenu(null);
+                      cleanupCtx();
+                      if (!menu) return;
+                      await runLoopAction(menu.loop, "run", async () => {
+                        const details = await LoopAPI.runNow(proj.path, menu.loop.id);
+                        return details.summary;
+                      });
+                    }}
+                    data-ac-testid={`loop.action.runNow.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                  >
+                    Run Now
+                  </button>
+                  <button
+                    class="session-context-option"
+                    onClick={() => {
+                      const menu = loopCtxMenu();
+                      setLoopCtxMenu(null);
+                      cleanupCtx();
+                      if (menu) setEditingLoop(menu.loop);
+                    }}
+                    data-ac-testid={`loop.action.edit.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    class="session-context-option"
+                    disabled={loopActionInProgress() === `${loopCtxMenu()!.loop.id}:toggle`}
+                    onClick={async () => {
+                      const menu = loopCtxMenu();
+                      setLoopCtxMenu(null);
+                      cleanupCtx();
+                      if (!menu) return;
+                      await runLoopAction(menu.loop, "toggle", async () => {
+                        const details = await LoopAPI.setEnabled(proj.path, menu.loop.id, !menu.loop.enabled);
+                        return details.summary;
+                      });
+                    }}
+                    data-ac-testid={`loop.action.toggle.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                  >
+                    {loopCtxMenu()!.loop.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <div class="context-separator" />
+                  <button
+                    class="session-context-option context-option-danger"
+                    disabled={!!loopActionInProgress()}
+                    onClick={() => {
+                      const menu = loopCtxMenu();
+                      setLoopCtxMenu(null);
+                      cleanupCtx();
+                      if (!menu || loopActionInProgress()) return;
+                      setLoopDeleteError("");
+                      setDeletingLoop(menu.loop);
+                    }}
+                    data-ac-testid={`loop.action.delete.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                  >
+                    Delete Loop
+                  </button>
+                </div>
+              </Portal>
+            )}
+
+            {/* Delete Loop confirmation */}
+            {deletingLoop() && (
+              <Portal>
+                <div class="modal-overlay">
+                  <div
+                    class="agent-modal"
+                    style={{ "max-width": "360px" }}
+                    data-ac-testid={`loop.delete.dialog.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                  >
+                    <div class="agent-modal-header">
+                      <span class="agent-modal-title">Delete Loop</span>
+                    </div>
+                    <div class="new-agent-form">
+                      <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
+                        Delete Loop <strong>{deletingLoop()!.name}</strong>? This will remove the Loop configuration and scheduled delivery state. This action cannot be undone.
+                      </p>
+                      <Show when={loopDeleteError()}>
+                        <div class="new-agent-error">{loopDeleteError()}</div>
+                      </Show>
+                    </div>
+                    <div class="new-agent-footer">
+                      <button
+                        class="new-agent-cancel-btn"
+                        onClick={closeLoopDeleteModal}
+                        disabled={currentLoopDeleteInProgress()}
+                        data-ac-testid={`loop.delete.cancel.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        class="new-agent-create-btn"
+                        style={{ "background": "var(--danger, #c0392b)" }}
+                        disabled={!!loopActionInProgress()}
+                        onClick={() => {
+                          const loop = deletingLoop();
+                          if (!loop || loopActionInProgress()) return;
+                          void deleteLoop(loop);
+                        }}
+                        data-ac-testid={`loop.delete.confirm.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                      >
+                        {currentLoopDeleteInProgress() ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </Portal>
             )}

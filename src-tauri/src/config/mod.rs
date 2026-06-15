@@ -5,6 +5,7 @@ pub mod claude_settings;
 pub mod coding_agent_profiles;
 pub mod daemon_pid;
 pub mod local_config_io;
+pub mod loops;
 pub mod placeholders;
 pub mod profile;
 pub mod projects;

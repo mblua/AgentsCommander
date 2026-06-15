@@ -28,7 +28,7 @@ describe("projectStore", () => {
     vi.clearAllMocks();
     projectStore.clear();
     m.open.mockResolvedValue({ path: "C:\\Users\\Maria\\Project" });
-    m.discover.mockResolvedValue({ workgroups: [], agents: [], teams: [] });
+    m.discover.mockResolvedValue({ workgroups: [], agents: [], teams: [], loops: [] });
   });
 
   afterEach(() => {
@@ -46,5 +46,6 @@ describe("projectStore", () => {
     expect(m.discover).toHaveBeenCalledTimes(1);
     expect(projectStore.projects).toHaveLength(1);
     expect(projectStore.projects[0].path).toBe("C:\\Users\\Maria\\Project");
+    expect(projectStore.projects[0].loops).toEqual([]);
   });
 });

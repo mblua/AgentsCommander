@@ -5,6 +5,7 @@ pub mod create_agent_matrix;
 pub mod harness;
 pub mod list_peers;
 pub mod list_sessions;
+pub mod loop_cmd;
 pub mod new_project;
 pub mod open_project;
 pub mod role_experiment;
@@ -147,6 +148,8 @@ pub enum Commands {
     Workgroup(workgroup::WorkgroupArgs),
     /// Manage teams and scoped workgroup membership
     Team(team::TeamArgs),
+    /// Manage Project Loops
+    Loop(loop_cmd::LoopArgs),
     /// Execute commands through the policy harness
     Harness(harness::HarnessArgs),
     /// Delete only the disposable testable app state
@@ -157,6 +160,8 @@ pub enum Commands {
     UiQuery(crate::testability::ui_automation::UiQueryArgs),
     /// Click a WebView automation target by data-ac-testid
     UiClick(crate::testability::ui_automation::UiClickArgs),
+    /// Dispatch a WebView contextmenu event on an automation target by data-ac-testid
+    UiContextClick(crate::testability::ui_automation::UiContextClickArgs),
     /// Set an input/select WebView automation target by data-ac-testid
     UiSet(crate::testability::ui_automation::UiSetArgs),
     /// Wait until a WebView automation target is available by data-ac-testid
@@ -282,11 +287,15 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::TelegramSendImage(args) => telegram_send_image::execute(args),
         Commands::Workgroup(args) => workgroup::execute(args),
         Commands::Team(args) => team::execute(args),
+        Commands::Loop(args) => loop_cmd::execute(args),
         Commands::Harness(args) => harness::execute(args),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
         Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),
         Commands::UiClick(args) => crate::testability::ui_automation::execute_click(args),
+        Commands::UiContextClick(args) => {
+            crate::testability::ui_automation::execute_context_click(args)
+        }
         Commands::UiSet(args) => crate::testability::ui_automation::execute_set(args),
         Commands::UiWait(args) => crate::testability::ui_automation::execute_wait(args),
     };

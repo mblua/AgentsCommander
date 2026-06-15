@@ -1,6 +1,6 @@
 {
   "name": "agentscommander",
-  "version": "0.8.53",
+  "version": "0.9.1",
   "private": true,
   "type": "module",
   "scripts": {

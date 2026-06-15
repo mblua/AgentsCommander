@@ -137,6 +137,7 @@ pub struct AcDiscoveryResult {
     pub agents: Vec<AcAgentMatrix>,
     pub teams: Vec<AcTeam>,
     pub workgroups: Vec<AcWorkgroup>,
+    pub loops: Vec<crate::config::loops::AcLoopSummary>,
 }
 
 /// Extract the origin project name from a resolved identity path.
@@ -911,6 +912,7 @@ pub async fn discover_ac_agents(
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
     let mut teams: Vec<AcTeam> = Vec::new();
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
+    let mut loops: Vec<crate::config::loops::AcLoopSummary> = Vec::new();
     // Track the Project AC Root-containing dir each workgroup originated from. Keys are
     // `wg.name` values (unique within a discovery run; workgroup dir names include
     // the team name which collides only intentionally across projects). Populated as
@@ -949,6 +951,7 @@ pub async fn discover_ac_agents(
 
             // Opportunistic: ensure gitignore exists for existing projects
             let _ = ensure_workspace_gitignore(&workspace_dir);
+            loops.extend(crate::config::loops::discover_loops_in_project(&repo_dir));
 
             let project_folder = repo_dir
                 .file_name()
@@ -1173,6 +1176,7 @@ pub async fn discover_ac_agents(
     agents.sort_by_key(|a| a.name.to_lowercase());
     teams.sort_by_key(|a| a.name.to_lowercase());
     workgroups.sort_by_key(|a| a.name.to_lowercase());
+    loops.sort_by_key(|a| a.name.to_lowercase());
     drop(cfg);
 
     // Associate each workgroup with its team by matching replica membership.
@@ -1261,6 +1265,7 @@ pub async fn discover_ac_agents(
         agents,
         teams,
         workgroups,
+        loops,
     })
 }
 
@@ -1284,6 +1289,14 @@ pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), Str
         (
             ".deleting-*/",
             "# AgentsCommander: exclude temporary workgroup delete sentinels/orphans.",
+        ),
+        (
+            "_loop_*/state.json",
+            "# AgentsCommander: exclude Loop scheduler runtime state.",
+        ),
+        (
+            "_loop_*/audit.jsonl",
+            "# AgentsCommander: exclude Loop runtime audit logs with prompt snapshots.",
         ),
         (
             "**/__agent_*/last_ac_context.md",
@@ -1397,6 +1410,7 @@ pub async fn discover_project(
             agents: vec![],
             teams: vec![],
             workgroups: vec![],
+            loops: vec![],
         });
     };
 
@@ -1420,6 +1434,7 @@ pub async fn discover_project(
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
     let mut teams: Vec<AcTeam> = Vec::new();
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
+    let mut loops = crate::config::loops::discover_loops_in_project(base);
 
     let entries = match std::fs::read_dir(&workspace_dir) {
         Ok(e) => e,
@@ -1620,6 +1635,7 @@ pub async fn discover_project(
     agents.sort_by_key(|a| a.name.to_lowercase());
     teams.sort_by_key(|a| a.name.to_lowercase());
     workgroups.sort_by_key(|a| a.name.to_lowercase());
+    loops.sort_by_key(|a| a.name.to_lowercase());
 
     // Associate each workgroup with its team by matching replica membership.
     // Two-pass approach: exact match across ALL teams first, then suffix fallback.
@@ -1700,6 +1716,7 @@ pub async fn discover_project(
         agents,
         teams,
         workgroups,
+        loops,
     })
 }
 
@@ -1917,6 +1934,24 @@ mod tests {
         assert!(
             content.lines().any(|line| line.trim() == ".deleting-*/"),
             "workspace .gitignore must ignore workgroup delete sentinel directories"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_loop_*/state.json"),
+            "workspace .gitignore must ignore Loop state files"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_loop_*/audit.jsonl"),
+            "workspace .gitignore must ignore Loop audit files"
+        );
+        assert!(
+            !content
+                .lines()
+                .any(|line| line.trim() == "_loop_*/config.toml"),
+            "workspace .gitignore must not ignore Loop config files"
         );
     }
 

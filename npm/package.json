@@ -1,6 +1,6 @@
 {
   "name": "@mblua/agentscommander",
-  "version": "0.8.53",
+  "version": "0.9.1",
   "description": "Install and run AgentsCommander, the local terminal session manager for AI coding agent teams.",
   "bin": {
     "agentscommander": "run.js"
