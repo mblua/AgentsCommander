@@ -563,18 +563,44 @@
       background: rgba(10, 15, 23, 0.94);
     }
     .botonera-area [hidden] { display: none !important; }
-    .botonera-switcher {
+    /* live-count annotation (counts come from the workgroup at runtime) */
+    .live-note {
       display: flex;
       align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      padding-bottom: 10px;
-      border-bottom: 1px solid var(--line);
-    }
-    .muted-hint {
+      gap: 7px;
       color: var(--muted);
-      font-family: var(--font-mono);
       font-size: 10px;
+      line-height: 1.4;
+    }
+    .live-tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 7px 1px 5px;
+      border: 1px solid rgba(53, 242, 166, 0.4);
+      border-radius: 999px;
+      background: rgba(53, 242, 166, 0.12);
+      color: var(--green);
+      font-family: var(--font-mono);
+      font-size: 8px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      white-space: nowrap;
+    }
+    .live-tag::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      margin-right: 4px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 0 rgba(53, 242, 166, 0.5);
+      animation: live-pulse 2s ease-out infinite;
+    }
+    @keyframes live-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(53, 242, 166, 0.45); }
+      70% { box-shadow: 0 0 0 5px rgba(53, 242, 166, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(53, 242, 166, 0); }
     }
     .botonera-variant { display: none; }
     .botonera-variant.active {
@@ -596,8 +622,8 @@
       font-weight: 700;
     }
 
-    /* segmented + pill toggles (restart modifier) */
-    .seg, .pill-toggle, .scope-picker {
+    /* scope picker layout + label (V2) */
+    .scope-picker {
       display: inline-flex;
       align-items: center;
       gap: 6px;
@@ -611,39 +637,6 @@
       text-transform: uppercase;
       margin-right: 2px;
     }
-    .seg {
-      padding: 3px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      background: rgba(4, 8, 14, 0.55);
-      gap: 3px;
-    }
-    .seg-btn, .pill-opt {
-      min-height: 24px;
-      padding: 0 10px;
-      border: 1px solid transparent;
-      border-radius: var(--radius-sm);
-      background: transparent;
-      color: var(--muted);
-      font-size: 10px;
-      font-weight: 700;
-    }
-    .seg-btn.active {
-      color: var(--text-hot);
-      background: rgba(255, 255, 255, 0.07);
-      border-color: rgba(148, 163, 184, 0.18);
-    }
-    .seg-btn.active[data-restart="restart"], .pill-opt.active[data-restart="yes"] {
-      color: var(--yellow);
-      border-color: rgba(248, 198, 87, 0.4);
-      background: rgba(248, 198, 87, 0.12);
-    }
-    .pill-opt {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: rgba(4, 8, 14, 0.55);
-    }
-    .pill-opt.active { color: var(--text-hot); border-color: rgba(148, 163, 184, 0.28); background: rgba(255, 255, 255, 0.06); }
 
     /* switch (V2 restart) */
     .switch {
@@ -676,49 +669,6 @@
     }
     .switch input:checked + .switch-track { background: rgba(248, 198, 87, 0.55); }
     .switch input:checked + .switch-track::after { transform: translateX(14px); }
-
-    /* V1 disclosure + inline confirm */
-    .disclosure {
-      align-self: flex-start;
-      padding: 4px 2px;
-      border: 0;
-      background: transparent;
-      color: var(--muted);
-      font-family: var(--font-mono);
-      font-size: 10px;
-      text-decoration: underline dotted rgba(148, 163, 184, 0.4);
-      text-underline-offset: 3px;
-    }
-    .disclosure.open { color: var(--red); }
-    .broad-tier {
-      display: flex;
-      flex-direction: column;
-      gap: 9px;
-      padding: 10px;
-      border: 1px solid rgba(255, 93, 115, 0.34);
-      border-radius: var(--radius-md);
-      background: rgba(255, 93, 115, 0.06);
-    }
-    .broad-note {
-      color: var(--red);
-      font-size: 10px;
-      line-height: 1.4;
-    }
-    .broad-actions { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .danger-slot { min-width: 0; }
-    .danger-slot .action-btn { width: 100%; justify-content: center; }
-    .confirm-inline {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      padding: 7px 9px;
-      border: 1px solid rgba(255, 93, 115, 0.4);
-      border-radius: var(--radius-sm);
-      background: rgba(255, 93, 115, 0.1);
-      color: var(--text-hot);
-      font-size: 10px;
-    }
 
     /* V2 scope picker */
     .scope-opt {
@@ -758,42 +708,6 @@
       font-size: 10px;
     }
     .action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-
-    /* V3 danger zone + type-to-confirm */
-    .danger-zone {
-      display: flex;
-      flex-direction: column;
-      gap: 9px;
-      padding: 11px;
-      border: 1px solid rgba(255, 93, 115, 0.45);
-      border-radius: var(--radius-md);
-      background:
-        repeating-linear-gradient(135deg, rgba(255, 93, 115, 0.05) 0 9px, transparent 9px 18px),
-        rgba(255, 93, 115, 0.05);
-    }
-    .danger-zone-head {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--text-hot);
-      font-size: 11px;
-      font-weight: 800;
-    }
-    .danger-row {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 160px auto;
-      gap: 9px;
-      align-items: center;
-      padding: 8px 9px;
-      border-radius: var(--radius-sm);
-      background: rgba(4, 8, 14, 0.46);
-    }
-    .danger-title { color: var(--text-hot); font-size: 11px; font-weight: 700; }
-    .confirm-input {
-      font-family: var(--font-mono);
-      font-size: 10px;
-    }
-    .confirm-input:focus { outline: 1px solid rgba(255, 93, 115, 0.5); }
 
     /* ---- Storage shape screen ---- */
     .screen.storage.active {
@@ -876,9 +790,10 @@
         <div class="eyebrow">Settings / Coding Agents</div>
         <h1>B2C1a Config and Agent Profile Selection</h1>
         <div class="subhead">
-          Config fixes the B2C1a view (per-rail color control removed — color comes from the coding agent). Selection shows single
-          coding-agent choice + profile, with three botonera variants (scope ladder / scope picker / danger zone) for the safe and
-          broad-scope assign actions and the restart-sessions modifier. Storage shape previews the editable settings.json + per-replica JSON.
+          Config fixes the B2C1a view (per-rail color control removed — color comes from the coding agent). Selection shows the single
+          coding-agent choice + profile, with the consolidated scope-picker botonera for the safe and broad-scope assign actions and the
+          restart-sessions modifier — broad-scope counts ("N replicas", "N agents") are computed live from the current workgroup. Storage
+          shape previews the editable settings.json + per-replica JSON.
         </div>
       </div>
       <div class="actions">
@@ -1202,93 +1117,30 @@
         </div><!-- /.selection-top -->
 
         <div class="botonera-area" aria-label="Selection action botonera">
-          <div class="botonera-switcher">
-            <span class="switcher-label">Botonera variant</span>
-            <button class="variant-btn active" type="button" data-botonera-target="v1">V1 · Scope ladder</button>
-            <button class="variant-btn" type="button" data-botonera-target="v2">V2 · Scope picker</button>
-            <button class="variant-btn" type="button" data-botonera-target="v3">V3 · Danger zone</button>
-            <span class="muted-hint">Same screen — each variant resolves hierarchy, the restart toggle, and danger confirmation differently.</span>
-          </div>
+          <!--
+            BOTONERA = V2 (Scope picker) — consolidated as the SINGLE assign control for this screen.
+            V1 (Scope ladder) and V3 (Danger zone) were removed this round; both remain preserved in git/origin history.
 
-          <!-- ===== V1: Scope ladder — safe-first, broad scope hidden behind disclosure + inline 2-click confirm ===== -->
-          <div class="botonera-variant active" data-botonera="v1">
-            <div class="botonera-bar">
-              <div class="seg" data-restart-group="v1">
-                <span class="seg-label">On apply</span>
-                <button class="seg-btn active" type="button" data-restart="keep">Keep sessions running</button>
-                <button class="seg-btn" type="button" data-restart="restart">Restart sessions</button>
-              </div>
-              <div class="bar-spacer"></div>
-              <button class="action-btn" type="button">Cancel</button>
-              <button class="action-btn primary" type="button" data-assign-replica>Assign to this replica</button>
-            </div>
-            <button class="disclosure" type="button" data-disclosure="v1-broad">Broaden scope — apply to more than this replica ▾</button>
-            <div class="broad-tier" data-broad="v1-broad" hidden>
-              <div class="broad-note">⚠ Broad-scope actions overwrite the coding-agent + profile on <strong>other</strong> agents. Each needs a second confirm.</div>
-              <div class="broad-actions">
-                <div class="danger-slot" data-confirm-slot>
-                  <button class="action-btn danger" type="button" data-arm>Apply to all replicas of this kind <span class="scope-count">· 4 replicas</span></button>
-                  <div class="confirm-inline" hidden>
-                    <span>Overwrite 4 “dev-webpage-ui” replicas?</span>
-                    <button class="small-btn danger" type="button" data-commit>Confirm</button>
-                    <button class="small-btn" type="button" data-cancel-confirm>Back</button>
-                  </div>
-                </div>
-                <div class="danger-slot" data-confirm-slot>
-                  <button class="action-btn danger" type="button" data-arm>Apply across the entire workgroup <span class="scope-count">· 9 agents</span></button>
-                  <div class="confirm-inline" hidden>
-                    <span>Overwrite all 9 agents in wg-7?</span>
-                    <button class="small-btn danger" type="button" data-commit>Confirm</button>
-                    <button class="small-btn" type="button" data-cancel-confirm>Back</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- ===== V2: Scope picker — one action whose scope is chosen; button morphs red + arming checkbox gate ===== -->
-          <div class="botonera-variant" data-botonera="v2">
+            LIVE COUNTS: the scope counts below (1 session / 4 replicas / 9 agents) are SAMPLE data for this
+            prototype. In the real app they are computed LIVE from the CURRENT workgroup — the replica count for
+            "all of this kind" and the agent count for the "entire workgroup" — they are not hardcoded.
+          -->
+          <div class="botonera-variant active" data-botonera="v2">
             <div class="scope-picker" data-scope-group="v2">
               <span class="seg-label">Apply to</span>
               <label class="scope-opt active"><input type="radio" name="scope-v2" value="replica" checked> This replica <span class="scope-count">1 session</span></label>
-              <label class="scope-opt"><input type="radio" name="scope-v2" value="kind"> All replicas of this kind <span class="scope-count">4</span></label>
-              <label class="scope-opt"><input type="radio" name="scope-v2" value="wg"> Entire workgroup <span class="scope-count">9</span></label>
+              <label class="scope-opt"><input type="radio" name="scope-v2" value="kind"> All replicas of this kind <span class="scope-count">4 replicas</span></label>
+              <label class="scope-opt"><input type="radio" name="scope-v2" value="wg"> Entire workgroup <span class="scope-count">9 agents</span></label>
             </div>
+            <div class="live-note"><span class="live-tag">live</span> Scope counts are read live from the current workgroup at apply time — the numbers shown here are sample data for this prototype.</div>
             <div class="botonera-bar">
               <label class="switch"><input type="checkbox" data-restart-toggle="v2"><span class="switch-track"></span> Restart sessions after apply</label>
               <div class="bar-spacer"></div>
-              <label class="arm-check" data-arm-check hidden><input type="checkbox" data-arm-toggle> I understand this affects <span data-affect-count>4</span> sessions</label>
+              <label class="arm-check" data-arm-check hidden><input type="checkbox" data-arm-toggle> I understand this overwrites <span data-affect-count>4 replicas</span> <span class="live-tag">live count</span></label>
               <button class="action-btn" type="button">Cancel</button>
               <button class="action-btn primary" type="button" data-apply>Assign to this replica</button>
             </div>
-            <div class="scope-warn" data-scope-warn hidden>⚠ Broad scope selected — this overwrites other agents’ assignment. Confirm with the checkbox to enable Apply.</div>
-          </div>
-
-          <!-- ===== V3: Danger zone — safe bar on top; broad scope quarantined in a red panel with type-to-confirm ===== -->
-          <div class="botonera-variant" data-botonera="v3">
-            <div class="botonera-bar">
-              <div class="pill-toggle" data-restart-group="v3">
-                <span class="seg-label">Restart</span>
-                <button class="pill-opt active" type="button" data-restart="no">No restart</button>
-                <button class="pill-opt" type="button" data-restart="yes">Restart sessions</button>
-              </div>
-              <div class="bar-spacer"></div>
-              <button class="action-btn" type="button">Cancel</button>
-              <button class="action-btn primary" type="button" data-assign-replica>Assign to this replica</button>
-            </div>
-            <div class="danger-zone">
-              <div class="danger-zone-head"><span class="pill red">danger zone</span> Broad-scope assignment — affects other agents, type to confirm</div>
-              <div class="danger-row">
-                <div class="danger-info"><div class="danger-title">Apply to all replicas of this kind</div><div class="mono-line">4 “dev-webpage-ui” replicas</div></div>
-                <input class="input confirm-input" placeholder="type: of-this-kind" data-confirm-text="of-this-kind">
-                <button class="action-btn danger" type="button" disabled data-confirm-btn>Apply</button>
-              </div>
-              <div class="danger-row">
-                <div class="danger-info"><div class="danger-title">Apply across the entire workgroup</div><div class="mono-line">9 agents in wg-7</div></div>
-                <input class="input confirm-input" placeholder="type: wg-7" data-confirm-text="wg-7">
-                <button class="action-btn danger" type="button" disabled data-confirm-btn>Apply</button>
-              </div>
-            </div>
+            <div class="scope-warn" data-scope-warn hidden>⚠ Broad scope — this overwrites the coding-agent + profile on <strong data-warn-count>4 replicas</strong> (live count from this workgroup). Confirm with the checkbox to enable Apply.</div>
           </div>
         </div><!-- /.botonera-area -->
       </section>
@@ -1622,58 +1474,7 @@
       selectionStatus.textContent = message;
     }
 
-    // sub-switcher between the 3 botonera variants
-    const botoneraButtons = Array.from(document.querySelectorAll("[data-botonera-target]"));
-    const botoneraPanels = Array.from(document.querySelectorAll("[data-botonera]"));
-    botoneraButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        const target = button.getAttribute("data-botonera-target");
-        botoneraButtons.forEach((b) => b.classList.toggle("active", b === button));
-        botoneraPanels.forEach((p) => p.classList.toggle("active", p.getAttribute("data-botonera") === target));
-      });
-    });
-
-    // safe primary "Assign to this replica" (V1 + V3)
-    document.querySelectorAll("[data-assign-replica]").forEach((button) => {
-      button.addEventListener("click", () => flash("Assigned to this replica (mock)", "green"));
-    });
-
-    // restart modifier groups (segmented in V1, pill pair in V3)
-    document.querySelectorAll("[data-restart-group]").forEach((group) => {
-      group.querySelectorAll("[data-restart]").forEach((option) => {
-        option.addEventListener("click", () => {
-          group.querySelectorAll("[data-restart]").forEach((o) => o.classList.toggle("active", o === option));
-        });
-      });
-    });
-
-    // V1: disclosure to reveal broad-scope tier
-    document.querySelectorAll("[data-disclosure]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const tier = document.querySelector(`[data-broad="${button.getAttribute("data-disclosure")}"]`);
-        if (!tier) return;
-        const opening = tier.hasAttribute("hidden");
-        tier.toggleAttribute("hidden", !opening);
-        button.classList.toggle("open", opening);
-      });
-    });
-
-    // V1: inline 2-click confirm for each broad-scope action
-    document.querySelectorAll("[data-confirm-slot]").forEach((slot) => {
-      const arm = slot.querySelector("[data-arm]");
-      const confirm = slot.querySelector(".confirm-inline");
-      const commit = slot.querySelector("[data-commit]");
-      const cancel = slot.querySelector("[data-cancel-confirm]");
-      arm?.addEventListener("click", () => { arm.setAttribute("hidden", ""); confirm.removeAttribute("hidden"); });
-      cancel?.addEventListener("click", () => { confirm.setAttribute("hidden", ""); arm.removeAttribute("hidden"); });
-      commit?.addEventListener("click", () => {
-        confirm.setAttribute("hidden", "");
-        arm.removeAttribute("hidden");
-        flash("Broad-scope assignment applied (mock)", "red");
-      });
-    });
-
-    // V2: scope picker — one action that morphs by scope, gated by an arming checkbox
+    // V2 · Scope picker — the single botonera. One action that morphs by scope, gated by an arming checkbox.
     const v2 = document.querySelector('[data-botonera="v2"]');
     if (v2) {
       const apply = v2.querySelector("[data-apply]");
@@ -1681,8 +1482,12 @@
       const armToggle = v2.querySelector("[data-arm-toggle]");
       const warn = v2.querySelector("[data-scope-warn]");
       const affect = v2.querySelector("[data-affect-count]");
-      const labels = { replica: "Assign to this replica", kind: "Apply to all replicas of this kind", wg: "Apply across the entire workgroup" };
-      const counts = { replica: "1", kind: "4", wg: "9" };
+      const warnCount = v2.querySelector("[data-warn-count]");
+      // NOTE: these counts are sample data for the prototype — in the app they are computed
+      // live from the current workgroup (replicas of this kind / agents in the workgroup).
+      const countFull = { replica: "1 session", kind: "4 replicas", wg: "9 agents" };
+      const safeLabel = "Assign to this replica";
+      const dangerLabel = { kind: (n) => `Overwrite ${n} of this kind`, wg: (n) => `Overwrite ${n} in wg-7` };
       const refreshV2 = () => {
         const scope = v2.querySelector('input[name="scope-v2"]:checked').value;
         const dangerous = scope !== "replica";
@@ -1691,12 +1496,17 @@
           opt.classList.toggle("active", checked);
           opt.classList.toggle("dangerous", checked && dangerous);
         });
-        apply.textContent = dangerous ? `${labels[scope]} · ${counts[scope]}` : labels[scope];
+        apply.textContent = dangerous ? dangerLabel[scope](countFull[scope]) : safeLabel;
         apply.classList.toggle("primary", !dangerous);
         apply.classList.toggle("danger", dangerous);
         armCheck.toggleAttribute("hidden", !dangerous);
         warn.toggleAttribute("hidden", !dangerous);
-        if (dangerous) { affect.textContent = counts[scope]; } else { armToggle.checked = false; }
+        if (dangerous) {
+          affect.textContent = countFull[scope];
+          warnCount.textContent = countFull[scope];
+        } else {
+          armToggle.checked = false;
+        }
         apply.disabled = dangerous && !armToggle.checked;
       };
       v2.querySelectorAll('input[name="scope-v2"]').forEach((radio) => radio.addEventListener("change", refreshV2));
@@ -1708,20 +1518,6 @@
       });
       refreshV2();
     }
-
-    // V3: type-to-confirm enables each danger Apply button
-    document.querySelectorAll('[data-botonera="v3"] .danger-row').forEach((row) => {
-      const input = row.querySelector("[data-confirm-text]");
-      const button = row.querySelector("[data-confirm-btn]");
-      const required = input.getAttribute("data-confirm-text");
-      input.addEventListener("input", () => { button.disabled = input.value.trim() !== required; });
-      button.addEventListener("click", () => {
-        if (button.disabled) return;
-        flash("Broad-scope assignment applied (mock)", "red");
-        input.value = "";
-        button.disabled = true;
-      });
-    });
 
     setScreen("config");
     setProjection("codex", "A");
