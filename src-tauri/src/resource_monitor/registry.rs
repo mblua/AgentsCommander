@@ -385,16 +385,27 @@ impl ResourceMonitorState {
         });
 
         let mut killed = Vec::new();
+        let mut pending_identity_errors = Vec::new();
         for process in targets.iter() {
             if !process.kill_allowed {
                 if current_cleanup_identities.contains(&process.identity) {
-                    errors.push(unverifiable_process_error(process.identity.pid));
+                    pending_identity_errors.push((
+                        process.identity,
+                        unverifiable_process_error(process.identity.pid),
+                    ));
                     continue;
                 }
                 match self.backend.observe_identity(process.identity.pid) {
                     Ok(None) => {}
-                    Ok(Some(_)) => errors.push(unverifiable_process_error(process.identity.pid)),
-                    Err(err) => errors.push(format!("pid {}: {err}", process.identity.pid)),
+                    Ok(Some(identity)) if identity != process.identity => {}
+                    Ok(Some(_)) => pending_identity_errors.push((
+                        process.identity,
+                        unverifiable_process_error(process.identity.pid),
+                    )),
+                    Err(err) => pending_identity_errors.push((
+                        process.identity,
+                        format!("pid {}: {err}", process.identity.pid),
+                    )),
                 }
                 continue;
             }
@@ -409,7 +420,30 @@ impl ResourceMonitorState {
                     );
                 }
                 Ok(TerminateOutcome::AlreadyGone) => {}
-                Err(err) => errors.push(format!("pid {}: {err}", process.identity.pid)),
+                Err(err) => pending_identity_errors.push((
+                    process.identity,
+                    format!("pid {}: {err}", process.identity.pid),
+                )),
+            }
+        }
+
+        for (identity, error) in pending_identity_errors {
+            match self.backend.observe_identity(identity.pid) {
+                Ok(None) => {
+                    log::debug!(
+                        "[resource-monitor] ignored cleanup identity error for gone pid={} session={}",
+                        identity.pid,
+                        session_id
+                    );
+                }
+                Ok(Some(current)) if current != identity => {
+                    log::debug!(
+                        "[resource-monitor] ignored cleanup identity error for reused pid={} session={}",
+                        identity.pid,
+                        session_id
+                    );
+                }
+                Ok(Some(_)) | Err(_) => errors.push(error),
             }
         }
 
@@ -701,6 +735,7 @@ mod tests {
         stubborn: Mutex<BTreeSet<ProcessIdentity>>,
         unverifiable: Mutex<BTreeSet<u32>>,
         exit_during_terminate: Mutex<BTreeSet<ProcessIdentity>>,
+        remove_on_terminate: Mutex<HashMap<ProcessIdentity, Vec<ProcessIdentity>>>,
         terminated: Mutex<Vec<ProcessIdentity>>,
     }
 
@@ -761,6 +796,17 @@ mod tests {
             self.exit_during_terminate.lock().unwrap().insert(identity);
         }
 
+        fn mark_remove_on_terminate(
+            &self,
+            trigger: ProcessIdentity,
+            removed: Vec<ProcessIdentity>,
+        ) {
+            self.remove_on_terminate
+                .lock()
+                .unwrap()
+                .insert(trigger, removed);
+        }
+
         fn terminated(&self) -> Vec<ProcessIdentity> {
             self.terminated.lock().unwrap().clone()
         }
@@ -781,12 +827,16 @@ mod tests {
         }
 
         fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            let current = self.identities.lock().unwrap().get(&pid).copied();
+            if current.is_none() {
+                return Ok(None);
+            }
             if self.unverifiable.lock().unwrap().contains(&pid) {
                 return Err(ResourceError::Message(format!(
                     "identity unavailable for pid {pid}"
                 )));
             }
-            Ok(self.identities.lock().unwrap().get(&pid).copied())
+            Ok(current)
         }
 
         fn terminate_verified(
@@ -834,10 +884,20 @@ mod tests {
                 ));
             }
             self.terminated.lock().unwrap().push(process.identity);
-            self.identities
+            let removed_after_terminate = self
+                .remove_on_terminate
                 .lock()
                 .unwrap()
-                .remove(&process.identity.pid);
+                .get(&process.identity)
+                .cloned()
+                .unwrap_or_default();
+            {
+                let mut identities = self.identities.lock().unwrap();
+                identities.remove(&process.identity.pid);
+                for identity in removed_after_terminate {
+                    identities.remove(&identity.pid);
+                }
+            }
             Ok(TerminateOutcome::Terminated)
         }
 
@@ -1056,6 +1116,32 @@ mod tests {
         assert!(result.message.contains("identity unavailable"));
         assert_eq!(state.active_agent_groups(), 1);
         assert!(state.try_reserve_agent_slot(limits(1)).is_err());
+    }
+
+    #[test]
+    fn child_identity_error_clears_if_parent_termination_removes_child() {
+        let (state, backend) = state_with_fake();
+        let root = identity(41, 41);
+        let child = identity(42, 42);
+        backend.add_tree(
+            root,
+            vec![observed(41, 41, None, 0), observed(42, 42, Some(41), 1)],
+        );
+        backend.mark_unverifiable(child.pid);
+        backend.mark_remove_on_terminate(root, vec![child]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+
+        assert!(!result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert_eq!(result.killed_processes, vec![root]);
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
     }
 
     #[test]
