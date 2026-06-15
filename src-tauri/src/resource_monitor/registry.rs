@@ -357,13 +357,15 @@ impl ResourceMonitorState {
                         continue;
                     }
                     if let Some(pid) = identity_unavailable_pid(error) {
-                        if let Some(process) = current_processes
+                        let matching_identity = current_processes
                             .iter()
                             .find(|process| process.identity.pid == pid)
-                        {
+                            .or_else(|| targets.iter().find(|process| process.identity.pid == pid))
+                            .map(|process| process.identity);
+                        if let Some(identity) = matching_identity {
                             push_pending_identity_error(
                                 &mut pending_identity_errors,
-                                process.identity,
+                                identity,
                                 error.clone(),
                             );
                             continue;
@@ -1234,6 +1236,44 @@ mod tests {
         assert!(!result.quarantined);
         assert_eq!(result.state, ResourceGroupState::Terminated);
         assert_eq!(result.killed_processes, vec![root]);
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    #[test]
+    fn cleanup_sample_identity_error_for_prior_target_clears_if_kill_removes_all_pids() {
+        let (state, backend) = state_with_fake();
+        let root = identity(49, 49);
+        let node = identity(50, 50);
+        let codex = identity(51, 51);
+        backend.add_tree(
+            root,
+            vec![
+                observed(49, 49, None, 0),
+                observed(50, 50, Some(root.pid), 1),
+                observed(51, 51, Some(node.pid), 2),
+            ],
+        );
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, root)
+            .unwrap();
+
+        backend.replace_tree(
+            root,
+            vec![observed(49, 49, None, 0)],
+            vec![format!("identity unavailable for pid {}", node.pid)],
+        );
+
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+
+        assert!(!result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Terminated);
+        assert_eq!(backend.terminated(), vec![codex, node, root]);
+        assert!(state.observe_identity(root.pid).unwrap().is_none());
+        assert!(state.observe_identity(node.pid).unwrap().is_none());
+        assert!(state.observe_identity(codex.pid).unwrap().is_none());
         assert_eq!(state.active_agent_groups(), 0);
         assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
     }
