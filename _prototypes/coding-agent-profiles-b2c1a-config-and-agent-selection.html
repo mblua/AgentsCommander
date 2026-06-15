@@ -767,6 +767,53 @@
     .rename-from { color: var(--red); font-family: var(--font-mono); font-size: 10px; }
     .rename-to { color: var(--green); font-family: var(--font-mono); font-size: 10px; }
     .rename-why { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.4; }
+
+    /* ---- Supported placeholders + expand-then-use preview ---- */
+    .placeholder-hint {
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      flex-wrap: wrap;
+      padding: 7px 9px;
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.07);
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+    .placeholder-hint .ph-label {
+      flex: none;
+      color: var(--cyan);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .ph-token {
+      padding: 1px 5px;
+      border: 1px solid rgba(0, 212, 255, 0.28);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.12);
+      color: #bdefff;
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      font-weight: 700;
+    }
+    .expand-preview {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      line-height: 1.4;
+    }
+    .expand-preview .arrow { color: var(--green); font-weight: 800; }
+    .expand-preview .resolved { color: var(--green); word-break: break-all; }
+    .expand-preview.literal,
+    .expand-preview.literal .arrow { color: var(--muted); font-weight: 600; }
+    .json-pre .new { color: var(--green); }
   </style>
 </head>
 <body>
@@ -873,8 +920,13 @@
                 <div class="expand-config">
                   <label class="field-label">Command</label>
                   <input class="input" value="codex --sandbox workspace-write --model gpt-5-codex">
+                  <div class="placeholder-hint">
+                    <span class="ph-label">Placeholders</span>
+                    <span><span class="ph-token">%AC_ROOT%</span> is supported in command and env values — AC expands it to this replica's root, then validates the result is a real absolute path before launch.</span>
+                  </div>
                   <div class="env-table">
                     <div class="env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="%AC_ROOT%\.codex\agents\codex"><span class="pill green">system</span><button class="small-btn danger">Del</button></div>
+                    <div class="expand-preview"><span class="arrow">→</span><span>expands to <span class="resolved">C:\…\wg-7-dev-team\__agent_codex\.codex\agents\codex</span></span></div>
                     <div class="env-row"><span class="env-key">OPENAI_ORG</span><input class="input" value="ac-prod"><span class="pill">profile</span><button class="small-btn danger">Del</button></div>
                   </div>
                   <div class="tag-row"><button class="small-btn primary">+ Env</button><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button></div>
@@ -890,6 +942,7 @@
                   <label class="field-label">Command</label>
                   <input class="input" value="codex --model gpt-5-codex --effort medium">
                   <div class="env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="%AC_ROOT%\.codex\agents\codex-balanced"><span class="pill green">isolated</span><button class="small-btn danger">Del</button></div>
+                  <div class="expand-preview"><span class="arrow">→</span><span>expands to <span class="resolved">C:\…\wg-7-dev-team\__agent_codex\.codex\agents\codex-balanced</span></span></div>
                   <button class="small-btn primary">+ Env</button>
                 </div>
               </article>
@@ -936,8 +989,13 @@
                 <div class="expand-config">
                   <label class="field-label">Command</label>
                   <input class="input" value="C:\Program Files\OpenAI Codex\codex.exe --sandbox workspace-write --model gpt-5-codex">
+                  <div class="placeholder-hint">
+                    <span class="ph-label">Placeholders</span>
+                    <span><span class="ph-token">%AC_ROOT%</span> is supported in command and env values — AC expands it to this replica's root, then validates the result is a real absolute path before launch.</span>
+                  </div>
                   <div class="env-table">
                     <div class="env-row"><span class="env-key">CODEX_HOME</span><input class="input" value="D:\manual\codex"><span class="pill green">accepted</span><button class="small-btn danger">Del</button></div>
+                    <div class="expand-preview literal"><span class="arrow">→</span><span>literal absolute path — used as-is (nothing to expand)</span></div>
                   </div>
                   <div class="tag-row"><button class="small-btn primary">+ Env</button><button class="small-btn primary">Save</button><button class="small-btn">Cancel</button></div>
                 </div>
@@ -1163,7 +1221,7 @@
   <span class="k">"excludeGlobalClaudeMd"</span>: <span class="n">true</span>,
   <span class="k">"isolateCodexHome"</span>: <span class="n">true</span>,        <span class="flag">⚑ codex-only flag living on a generic agent</span>
   <span class="k">"envs"</span>: [
-    { <span class="k">"key"</span>: <span class="s">"CODEX_HOME"</span>, <span class="k">"value"</span>: <span class="s">"%AC_ROOT%\\.codex\\agents\\codex"</span>, <span class="k">"source"</span>: <span class="s">"agentsCommander"</span>, <span class="k">"enabled"</span>: <span class="n">true</span> },
+    { <span class="k">"key"</span>: <span class="s">"CODEX_HOME"</span>, <span class="k">"value"</span>: <span class="s">"%AC_ROOT%\\.codex\\agents\\codex"</span>, <span class="k">"source"</span>: <span class="s">"agentsCommander"</span>, <span class="k">"enabled"</span>: <span class="n">true</span> },  <span class="new">// %AC_ROOT% → supported placeholder; AC expands it, then validates a real absolute path</span>
     { <span class="k">"key"</span>: <span class="s">"OPENAI_ORG"</span>,  <span class="k">"value"</span>: <span class="s">"ac-prod"</span>, <span class="k">"source"</span>: <span class="s">"user"</span>,          <span class="k">"enabled"</span>: <span class="n">true</span> }
   ]
 }</pre>
@@ -1198,12 +1256,14 @@
             <div class="json-head">
               <span class="json-path">&lt;replica&gt;\config.json → tooling</span>
               <span class="badge green">written by “Assign to this replica”</span>
+              <span class="badge cyan">+ currentCodingAgent</span>
             </div>
-<pre class="json-pre"><span class="c">// One small file per agent replica — what the Selection Screen writes</span>
+<pre class="json-pre"><span class="c">// One small file per agent replica — the Selection Screen writes currentCodingAgent (+ profile)</span>
 {
   <span class="k">"tooling"</span>: {
-    <span class="k">"codingAgent"</span>: <span class="s">"codex"</span>,                 <span class="flag">⚑ proposed field: which agent id this replica runs</span>
-    <span class="k">"instanceProfileOverride"</span>: <span class="s">"A"</span>      <span class="flag">⚑ rename → "profile"</span>
+    <span class="k">"currentCodingAgent"</span>: <span class="s">"codex"</span>,   <span class="new">// new — stable per-replica selection, written by the Selection Screen</span>
+    <span class="k">"lastCodingAgent"</span>: <span class="s">"codex"</span>,      <span class="c">// last coding agent actually used (wake / spawn fallback) — history, not the selection</span>
+    <span class="k">"instanceProfileOverride"</span>: <span class="s">"A"</span>   <span class="flag">⚑ rename → "profile"</span>
   },
   <span class="k">"context"</span>: [<span class="s">"$AGENTSCOMMANDER_CONTEXT"</span>, <span class="s">"Role.md"</span>]
 }</pre>
@@ -1258,7 +1318,7 @@
               <div class="stack" style="gap:7px;">
                 <div>• <strong style="color:var(--text)">One global store</strong> — <span class="mono-line" style="display:inline">settings.json</span> holds agent definitions + the profile table. Plain JSON, pretty-printed, safe to edit by hand.</div>
                 <div>• <strong style="color:var(--text)">Sparse table</strong> — only configured cells exist; a missing letter falls back per <span class="mono-line" style="display:inline">agentDefaults</span>, so the file stays small.</div>
-                <div>• <strong style="color:var(--text)">Tiny per-replica override</strong> — “Assign to this replica” only writes a 2-line <span class="mono-line" style="display:inline">tooling</span> block; broad-scope actions repeat that write across many replicas.</div>
+                <div>• <strong style="color:var(--text)">Tiny per-replica override</strong> — “Assign to this replica” writes the <span class="mono-line" style="display:inline">currentCodingAgent</span> + profile keys; <span class="mono-line" style="display:inline">lastCodingAgent</span> is maintained separately by the session runtime (last-used history). Broad-scope actions repeat the assign write across many replicas.</div>
                 <div>• <strong style="color:var(--text)">schemaVersion</strong> stays — it lets future migrations rename fields safely (renames above would bump it).</div>
               </div>
             </div>
