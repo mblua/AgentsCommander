@@ -238,12 +238,12 @@ export const SettingsAPI = {
   updateCodingAgentEnvSettings: (
     agentId: string,
     envs: CodingAgentEnv[],
-    isolateCodexHome: boolean,
+    isolatedHome: boolean,
   ) =>
     transport.invoke<void>("update_coding_agent_env_settings", {
       agentId,
       envs,
-      isolateCodexHome,
+      isolatedHome,
     }),
   setAgentDefaultProfile: (agentPath: string, profile: string) =>
     transport.invoke<void>("set_agent_default_profile", { agentPath, profile }),
