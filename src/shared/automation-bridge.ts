@@ -159,7 +159,7 @@ async function executeAutomationRequestInner(
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
 
-  if (request.action === "setValue") {
+  if (request.action === "setValue" || request.action === "typeText") {
     return setElementValue(windowLabel, request, element, diagnostics);
   }
 

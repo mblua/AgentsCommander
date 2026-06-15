@@ -286,7 +286,13 @@ export interface ResourceKillResult {
   message: string;
 }
 
-export type UiAutomationAction = "query" | "click" | "contextClick" | "setValue";
+export type UiAutomationAction =
+  | "query"
+  | "click"
+  | "contextClick"
+  | "setValue"
+  | "typeText"
+  | "backend";
 
 export interface UiAutomationRequest {
   requestId: string;

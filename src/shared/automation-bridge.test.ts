@@ -306,6 +306,22 @@ describe("automation bridge", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
+  it("types text through textareas for terminal automation input", async () => {
+    const textarea = makeVisible(document.createElement("textarea"));
+    textarea.setAttribute("data-ac-testid", "terminal.input");
+    document.body.append(textarea);
+    topmostElement = textarea;
+
+    const response = await executeAutomationRequest(
+      "terminal",
+      request("typeText", "terminal.input", "status\n"),
+    );
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) throw new Error(response.message);
+    expect(textarea.value).toBe("status\n");
+  });
+
   it("does not click when the request expires before mutation", async () => {
     const button = addTarget("button", "expired.click", "Expired");
     topmostElement = button;
