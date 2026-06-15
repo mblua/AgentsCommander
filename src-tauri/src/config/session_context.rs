@@ -2476,11 +2476,6 @@ fn reconstruct_legacy_rendered_default_context(normalized: &str) -> Option<Strin
         None
     };
     let skills_section = extract_legacy_skills_section(normalized)?;
-    if normalize_context_for_compat(&skills_section)
-        != normalize_context_for_compat(&render_skills_section(&discover_skill_index(None)))
-    {
-        return None;
-    }
 
     Some(legacy_rendered_default_context_for_compat(
         &agent_root,
@@ -3252,6 +3247,65 @@ mod tests {
         assert_contains_canonical_path(&content, &new_matrix);
         assert!(!content.contains(&canonical_display_path(&old_replica)));
         assert!(!content.contains(&canonical_display_path(&old_matrix)));
+        assert_mandatory_sections_once(&content);
+        assert_no_raw_template_placeholders(&content);
+    }
+
+    #[test]
+    fn stale_generated_legacy_default_with_generated_skills_regenerates_current_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let new_matrix = workspace_dir.join("_agent_tech-lead");
+        let old_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&new_matrix).expect("create new matrix");
+        std::fs::create_dir_all(&old_replica).expect("create old replica");
+        std::fs::create_dir_all(&new_replica).expect("create new replica");
+        std::fs::write(
+            new_replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
+        )
+        .expect("write replica config");
+        write_skill(
+            &old_matrix,
+            "legacy-skill",
+            "---\nname: legacy-skill\ndescription: Legacy skill description.\nwhen_to_use: Use legacy contexts.\n---\nLegacy skill body.\n",
+        );
+
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica),
+            Some(&path_string(&old_matrix)),
+            &old_skills_section,
+        );
+        std::fs::write(
+            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            &legacy,
+        )
+        .expect("write stale generated default");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&new_replica),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+
+        assert_contains_canonical_path(&content, &new_replica);
+        assert_contains_canonical_path(&content, &new_matrix);
+        assert!(!content.contains(&canonical_display_path(&old_replica)));
+        assert!(!content.contains(&canonical_display_path(&old_matrix)));
+        assert!(!content.contains("Legacy skill description."));
+        assert!(!content.contains("legacy-skill"));
         assert_mandatory_sections_once(&content);
         assert_no_raw_template_placeholders(&content);
     }
