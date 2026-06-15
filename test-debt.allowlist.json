@@ -144,6 +144,14 @@
       "issue": 228,
       "reason": "The ignored test currently has an empty body.",
       "resolution": "Replace with executable CLI send to mailbox round-trip coverage."
+    },
+    {
+      "id": "rust:src-tauri/src/config/session_context.rs::tests::measure_default_context_size_for_workgroup_replica",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 519,
+      "reason": "Manual context-size snapshot for #519 context template optimization. It prints estimated byte savings via eprintln and has no pass/fail assertions, so it must stay out of the standard cargo test lane.",
+      "resolution": "Run manually with `cargo test --lib measure_default_context_size_for_workgroup_replica -- --ignored --nocapture` to read the savings snapshot."
     }
   ]
 }
