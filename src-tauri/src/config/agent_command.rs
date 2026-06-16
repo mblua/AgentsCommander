@@ -837,9 +837,23 @@ mod tests {
         let spawn = build_agent_spawn_command(&settings, "codex", Some(&replica), Some("A"))
             .expect("replica launch root should expand");
 
+        // build_agent_spawn_command canonicalizes the launch root before expanding
+        // %AC_ROOT% (see placeholders.rs). On Windows, canonicalization resolves an
+        // 8.3 short path component (e.g. a CI runner's RUNNER~1) back to its long
+        // form (runneradmin), whereas the temp dir may be reported in 8.3 short form
+        // when the username exceeds 8 chars. Normalize the expected value through the
+        // same canonicalize + verbatim-prefix strip so the comparison does not depend
+        // on which form the OS hands back.
+        let canonical_root = std::fs::canonicalize(&replica).unwrap();
+        let canonical_text = canonical_root.to_string_lossy();
+        let expected_root = canonical_text
+            .strip_prefix(r"\\?\")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(canonical_root);
+
         assert_eq!(
             spawn.shell,
-            replica.join("bin").join("codex.exe").to_string_lossy()
+            expected_root.join("bin").join("codex.exe").to_string_lossy()
         );
         assert_eq!(spawn.shell_args, vec!["--flag"]);
     }
