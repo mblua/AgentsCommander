@@ -135,6 +135,53 @@ export function resolveProfilePreview(
   };
 }
 
+/** The data-driven profile-cell badge states. `invalid` (a live command parse
+ *  error) is UI-local and layered on top by the caller; the rest are resolved
+ *  from the persisted profile data. (#526/#527) */
+export type ProfileBadgeKind = "match" | "configured" | "fallback" | "missing" | "invalid";
+
+/** True when `letter` has an enabled cell on some coding agent OTHER than
+ *  `agentId`. Distinguishes a MISSING slot (configured elsewhere, absent here)
+ *  from a plain positional fallback. Excludes the agent itself. (#526/#527) */
+export function profileConfiguredElsewhere(
+  profiles: CodingAgentProfilesConfig,
+  agentId: string,
+  letter: string,
+): boolean {
+  return Object.entries(profiles.profilesByAgent).some(
+    ([id, cells]) => id !== agentId && Boolean(cells[letter]?.enabled),
+  );
+}
+
+/**
+ * Profile-cell badge taxonomy shared 1:1 by the Config rails (SettingsModal) and
+ * the Selection profile cards (AgentPickerModal), so both screens read the same
+ * state for a given (agent, letter). Mirrors the B2C1a prototype:
+ *   - A / baseline               → "match"      (always configured)
+ *   - non-A with its own cell    → "configured" (direct match on a non-baseline slot)
+ *   - non-A, absent, but the slot is configured on another agent → "missing"
+ *   - non-A, absent, resolves through a lower letter             → "fallback"
+ * The `invalid` state is not produced here — a live parse error is decided by the
+ * caller and takes precedence.
+ */
+export function profileBadgeKind(
+  profiles: CodingAgentProfilesConfig,
+  agentId: string,
+  letter: string,
+): Exclude<ProfileBadgeKind, "invalid"> {
+  const cell = profiles.profilesByAgent[agentId]?.[letter];
+  const configuredHere = letter === "A" || Boolean(cell?.enabled);
+  if (configuredHere) {
+    // A is the baseline (MATCH); a non-A slot with its own enabled cell is a
+    // direct match on a non-baseline slot (CONFIGURED).
+    return letter === "A" ? "match" : "configured";
+  }
+  if (profileConfiguredElsewhere(profiles, agentId, letter)) return "missing";
+  return resolveProfilePreview(profiles, agentId, letter).fallbackApplied
+    ? "fallback"
+    : "missing";
+}
+
 export function parseArgvText(input: string): ArgvParseResult {
   const argv: string[] = [];
   let current = "";

@@ -10,7 +10,9 @@ import {
   isCodexAgent,
   isWgReplicaPath,
   parseArgvText,
+  profileBadgeKind,
   profileCellCommandText,
+  profileConfiguredElsewhere,
   profileDisplayLabel,
   profileEnvOrigin,
   resolveProfilePreview,
@@ -220,5 +222,60 @@ describe("effectiveEnvProjection (#527 Env / EFFECTIVE)", () => {
   it("returns an empty list when nothing is configured", () => {
     expect(effectiveEnvProjection([], {}, null)).toEqual([]);
     expect(effectiveEnvProjection(undefined, undefined, undefined)).toEqual([]);
+  });
+});
+
+describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => {
+  // profiles(): codex configures A (empty cmd) + C; B is unconfigured everywhere.
+  it("returns MATCH for the A baseline", () => {
+    expect(profileBadgeKind(profiles(), "codex", "A")).toBe("match");
+  });
+
+  it("returns CONFIGURED for a non-A slot with its own enabled cell", () => {
+    // codex C has its own enabled cell → direct match on a non-baseline slot.
+    expect(profileBadgeKind(profiles(), "codex", "C")).toBe("configured");
+  });
+
+  it("returns FALLBACK for a non-A slot that resolves through a lower letter", () => {
+    // codex B has no cell and is not configured on any other agent → falls back to A.
+    expect(profileBadgeKind(profiles(), "codex", "B")).toBe("fallback");
+  });
+
+  it("returns MISSING for a slot configured on another agent but absent here", () => {
+    const config: CodingAgentProfilesConfig = {
+      schemaVersion: 2,
+      profileSlots: { A: { label: "" }, B: { label: "fast" } },
+      defaultProfileByAgent: {},
+      profilesByAgent: {
+        codex: { A: { enabled: true, command: "codex", env: {}, notes: "" } },
+        claude: {
+          A: { enabled: true, command: "claude", env: {}, notes: "" },
+          B: { enabled: true, command: "claude --model opus", env: {}, notes: "" },
+        },
+      },
+    };
+    // B exists on claude but not on codex → codex B is MISSING (red), not fallback.
+    expect(profileBadgeKind(config, "codex", "B")).toBe("missing");
+    // And it IS configured elsewhere from codex's perspective.
+    expect(profileConfiguredElsewhere(config, "codex", "B")).toBe(true);
+    // From claude's perspective, B is its own cell → CONFIGURED.
+    expect(profileBadgeKind(config, "claude", "B")).toBe("configured");
+    expect(profileConfiguredElsewhere(config, "claude", "B")).toBe(false);
+  });
+
+  it("treats a disabled non-A cell as not configured (falls back, not configured)", () => {
+    const config: CodingAgentProfilesConfig = {
+      schemaVersion: 2,
+      profileSlots: { A: { label: "" }, B: { label: "fast" } },
+      defaultProfileByAgent: {},
+      profilesByAgent: {
+        codex: {
+          A: { enabled: true, command: "codex", env: {}, notes: "" },
+          B: { enabled: false, command: "codex --profile fast", env: {}, notes: "" },
+        },
+      },
+    };
+    // A disabled cell is not a live config → B resolves back to A.
+    expect(profileBadgeKind(config, "codex", "B")).toBe("fallback");
   });
 });

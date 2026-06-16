@@ -1352,6 +1352,7 @@ html.light-theme .root-agent-avatar {
 }
 
 .settings-profile-card.match { border-left-color: var(--status-active, #35f2a6); }
+.settings-profile-card.configured { border-left-color: var(--sidebar-accent, #00d4ff); }
 .settings-profile-card.fallback { border-left-color: #e3b341; }
 .settings-profile-card.missing,
 .settings-profile-card.invalid { border-left-color: var(--status-exited, #ff5d5d); }
@@ -1380,6 +1381,13 @@ html.light-theme .root-agent-avatar {
 }
 
 .settings-profile-badge.match { color: var(--status-active, #35f2a6); border-color: rgba(53, 242, 166, 0.4); }
+/* CONFIGURED = a non-A slot with its own cell. Cyan filled chip: a "positive"
+   state like MATCH, deliberately out of the amber fallback family (#526). */
+.settings-profile-badge.configured {
+  color: var(--sidebar-accent, #00d4ff);
+  border-color: rgba(0, 212, 255, 0.4);
+  background: rgba(0, 212, 255, 0.1);
+}
 .settings-profile-badge.fallback { color: #e3b341; border-color: rgba(227, 179, 65, 0.4); }
 .settings-profile-badge.missing,
 .settings-profile-badge.invalid { color: var(--status-exited, #ff5d5d); border-color: rgba(255, 93, 93, 0.4); }
@@ -1441,6 +1449,26 @@ html.light-theme .root-agent-avatar {
   align-self: flex-start;
 }
 
+/* Footer holding the per-agent "Delete cell" + slot-level "Delete Profile". */
+.settings-profile-card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  align-self: flex-start;
+}
+
+/* Slot-level delete is destructive (drops the letter from every agent) — give it
+   a muted-red affordance that intensifies on hover, distinct from "Delete cell". */
+.settings-profile-delete-profile {
+  color: var(--status-exited, #ff5d5d);
+  border-color: rgba(255, 93, 93, 0.4);
+}
+
+.settings-profile-delete-profile:hover:not(:disabled) {
+  color: var(--status-exited, #ff5d5d);
+  border-color: var(--status-exited, #ff5d5d);
+}
+
 .settings-profile-missing {
   display: flex;
   align-items: center;
@@ -1449,6 +1477,12 @@ html.light-theme .root-agent-avatar {
   justify-content: space-between;
   color: var(--sidebar-fg-dim);
   font-size: var(--font-size-sm);
+}
+
+.settings-profile-missing-actions {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex: 0 0 auto;
 }
 
 .settings-profile-cell-btn {
@@ -2816,6 +2850,38 @@ html.light-theme .root-agent-avatar {
 .agent-profile-card.missing {
   border-style: dashed;
 }
+
+/* #527: per-card status pill on the Selection profile cards. Same taxonomy and
+   colors as the Config rails so a given (agent, letter) reads identically on
+   both screens. */
+.agent-profile-card-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.agent-profile-card-pill {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.agent-profile-card-pill.match { color: var(--status-active, #35f2a6); border-color: rgba(53, 242, 166, 0.4); }
+.agent-profile-card-pill.configured {
+  color: var(--sidebar-accent, #00d4ff);
+  border-color: rgba(0, 212, 255, 0.4);
+  background: rgba(0, 212, 255, 0.1);
+}
+/* Match the Config rail's literal fallback amber (#e3b341) exactly so the same
+   state reads identically on both screens, independent of theme. */
+.agent-profile-card-pill.fallback { color: #e3b341; border-color: rgba(227, 179, 65, 0.4); }
+.agent-profile-card-pill.missing { color: var(--status-exited, #ff5d5d); border-color: rgba(255, 93, 93, 0.4); }
 
 .agent-profile-card-head {
   display: flex;

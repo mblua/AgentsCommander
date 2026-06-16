@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createStore, produce } from "solid-js/store";
 import { isTauri } from "../../shared/platform";
 import type {
   AppSettings,
@@ -22,6 +22,7 @@ import {
   isCodexAgent,
   nextAvailableProfileLetter,
   parseArgvText,
+  profileBadgeKind,
   profileEnvOrigin,
   resolveProfilePreview,
   sortedProfileLetters,
@@ -140,6 +141,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const swapRails = () => {
     const left = leftRailAgent()?.id ?? null;
     const right = rightRailAgent()?.id ?? null;
+    // #527: no-op when the right rail is empty. Swapping a null right into the
+    // left would drop the left's explicit pin to the positional fallback
+    // (agents[0]) — a surprising jump to a different agent. Keep the left pinned.
+    if (right === null) return;
     setLeftRailId(right);
     setRightRailId(left);
   };
@@ -256,37 +261,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const profileCell = (agentId: string, letter: string): ProfileCellConfig | null =>
     settings.data?.codingAgentProfiles.profilesByAgent[agentId]?.[letter] ?? null;
 
-  // True when this letter has an enabled cell on some OTHER coding agent — used
-  // to distinguish a red MISSING badge (slot exists elsewhere) from a plain
-  // fallback. Excludes the agent itself.
-  const profileConfiguredElsewhere = (agentId: string, letter: string): boolean => {
-    const byAgent = settings.data?.codingAgentProfiles.profilesByAgent ?? {};
-    return Object.entries(byAgent).some(
-      ([id, cells]) => id !== agentId && Boolean(cells[letter]?.enabled),
-    );
-  };
+  type ProfileBadge = "match" | "configured" | "fallback" | "missing" | "invalid";
 
-  type ProfileBadge = "match" | "fallback" | "missing" | "invalid";
-
+  // #526: the data-driven taxonomy lives in profileBadgeKind() (shared 1:1 with
+  // the Selection screen so both read the same state). A live command parse error
+  // is UI-local and takes precedence here as the red "invalid" badge.
   const profileCellBadge = (agentId: string, letter: string): ProfileBadge => {
     if (profileCellErrors[profileCellKey(agentId, letter)]) return "invalid";
-    const cell = profileCell(agentId, letter);
-    const configuredHere = letter === "A" || Boolean(cell?.enabled);
-    if (configuredHere) {
-      const preview = resolveProfilePreview(
-        settings.data!.codingAgentProfiles,
-        agentId,
-        letter,
-      );
-      return preview.fallbackApplied ? "fallback" : "match";
-    }
-    if (profileConfiguredElsewhere(agentId, letter)) return "missing";
-    const preview = resolveProfilePreview(
-      settings.data!.codingAgentProfiles,
-      agentId,
-      letter,
-    );
-    return preview.fallbackApplied ? "fallback" : "missing";
+    return profileBadgeKind(settings.data!.codingAgentProfiles, agentId, letter);
   };
 
   const setProfileCell = (
@@ -361,20 +343,35 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
+  // #526: slot-level delete — drop the letter from profileSlots and from every
+  // coding agent's cells. produce() so the keys are actually removed; assigning a
+  // fresh object to a store path merges (keeps absent keys), which would leave the
+  // slot behind and the card would re-render as MISSING instead of vanishing.
   const removeProfileLetter = (letter: string) => {
     if (!settings.data || letter === "A") return;
     setDraftDirty(true);
-    const slots = { ...settings.data.codingAgentProfiles.profileSlots };
-    delete slots[letter];
-    const byAgent = Object.fromEntries(
-      Object.entries(settings.data.codingAgentProfiles.profilesByAgent).map(([agentId, cells]) => {
-        const nextCells = { ...cells };
-        delete nextCells[letter];
-        return [agentId, nextCells];
-      })
+    setSettings(
+      "data",
+      "codingAgentProfiles",
+      produce((profiles) => {
+        delete profiles.profileSlots[letter];
+        for (const cells of Object.values(profiles.profilesByAgent)) {
+          delete cells[letter];
+        }
+      }),
     );
-    setSettings("data", "codingAgentProfiles", "profileSlots", slots);
-    setSettings("data", "codingAgentProfiles", "profilesByAgent", byAgent);
+    // Drop any in-progress per-cell drafts for this letter so a stale parse error
+    // can't block Save and stale env rows don't resurface.
+    const suffix = `:${letter}`;
+    setProfileCellText(produce((draft) => {
+      for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
+    }));
+    setProfileCellErrors(produce((draft) => {
+      for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
+    }));
+    setProfileCellEnvRows(produce((draft) => {
+      for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
+    }));
   };
 
   // ── Profile cell command string (one full invocation per cell) ──
@@ -1262,6 +1259,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const BADGE_LABEL: Record<ProfileBadge, string> = {
     match: "MATCH",
+    configured: "CONFIGURED",
     fallback: "FALLBACK",
     missing: "MISSING",
     invalid: "invalid",
@@ -1290,6 +1288,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         class="settings-profile-card"
         classList={{
           match: badge() === "match",
+          configured: badge() === "configured",
           fallback: badge() === "fallback",
           missing: badge() === "missing",
           invalid: badge() === "invalid",
@@ -1348,14 +1347,28 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               <span>
                 {letter} &rarr; {preview().effectiveProfile} (fallback)
               </span>
-              <button
-                class="settings-profile-cell-btn"
-                onClick={() => addProfileCell(agent.id, letter)}
-                data-ac-testid={`${cardId}.add`}
-                data-ac-role="button"
-              >
-                Add cell
-              </button>
+              <div class="settings-profile-missing-actions">
+                <button
+                  class="settings-profile-cell-btn"
+                  onClick={() => addProfileCell(agent.id, letter)}
+                  data-ac-testid={`${cardId}.add`}
+                  data-ac-role="button"
+                >
+                  Add cell
+                </button>
+                {/* #526: slot-level delete — drops the whole letter from every
+                    coding agent (draft-reversible). Distinct from per-agent
+                    "Delete cell". */}
+                <button
+                  class="settings-profile-cell-btn settings-profile-delete-profile"
+                  onClick={() => removeProfileLetter(letter)}
+                  title={`Delete the entire ${letter} profile slot from all coding agents`}
+                  data-ac-testid={`${cardId}.deleteProfile`}
+                  data-ac-role="button"
+                >
+                  Delete Profile
+                </button>
+              </div>
             </div>
           }
         >
@@ -1471,14 +1484,28 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </div>
 
           <Show when={letter !== "A"}>
-            <button
-              class="settings-profile-cell-btn settings-profile-delete-cell"
-              onClick={() => removeProfileCell(agent.id, letter)}
-              data-ac-testid={`${cardId}.delete`}
-              data-ac-role="button"
-            >
-              Delete cell
-            </button>
+            <div class="settings-profile-card-footer">
+              {/* "Delete cell" clears only this agent's cell for the letter;
+                  "Delete Profile" removes the whole slot across all agents (#526). */}
+              <button
+                class="settings-profile-cell-btn settings-profile-delete-cell"
+                onClick={() => removeProfileCell(agent.id, letter)}
+                title={`Remove ${agent.label || agent.id}'s ${letter} cell (keeps the slot)`}
+                data-ac-testid={`${cardId}.delete`}
+                data-ac-role="button"
+              >
+                Delete cell
+              </button>
+              <button
+                class="settings-profile-cell-btn settings-profile-delete-profile"
+                onClick={() => removeProfileLetter(letter)}
+                title={`Delete the entire ${letter} profile slot from all coding agents`}
+                data-ac-testid={`${cardId}.deleteProfile`}
+                data-ac-role="button"
+              >
+                Delete Profile
+              </button>
+            </div>
           </Show>
           </Show>
         </Show>

@@ -753,4 +753,28 @@ describe("AgentPickerModal", () => {
 
     dispose();
   });
+
+  it("renders a per-card status pill (match / configured / fallback / MISSING)", async () => {
+    // Default fixture: codex configures A + B; claude configures A only.
+    const { dispose } = renderPicker({ agentPath: REPO_PATH, currentAgentId: "codex" });
+    await settle();
+
+    // Selected agent = codex. A baseline → MATCH; B has its own cell → CONFIGURED;
+    // C has no cell anywhere → resolves through B → FALLBACK.
+    expect(target("agentPicker.profile.A.pill").getAttribute("data-ac-state")).toBe("match");
+    expect(text("agentPicker.profile.A.pill")).toContain("MATCH");
+    expect(target("agentPicker.profile.B.pill").getAttribute("data-ac-state")).toBe("configured");
+    expect(text("agentPicker.profile.B.pill")).toContain("CONFIGURED");
+    expect(target("agentPicker.profile.C.pill").getAttribute("data-ac-state")).toBe("fallback");
+    expect(text("agentPicker.profile.C.pill")).toContain("FALLBACK");
+
+    // Switch to claude: B has no cell here but is configured on codex → MISSING.
+    target<HTMLButtonElement>("agentPicker.provider.claude").click();
+    await settle();
+    expect(target("agentPicker.profile.A.pill").getAttribute("data-ac-state")).toBe("match");
+    expect(target("agentPicker.profile.B.pill").getAttribute("data-ac-state")).toBe("missing");
+    expect(text("agentPicker.profile.B.pill")).toContain("MISSING");
+
+    dispose();
+  });
 });

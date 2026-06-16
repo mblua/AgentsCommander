@@ -395,8 +395,13 @@ describe("SettingsModal automation hooks", () => {
     expect(byTestId("settings.profileCard.0.B.badge").textContent).toContain("MISSING");
     expect(byTestId("settings.profileCard.0.B.missing")).toBeTruthy();
     expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.add")).toBeTruthy();
-    // Claude rail: B is configured → MATCH.
-    expect(byTestId("settings.profileCard.1.B").getAttribute("data-ac-state")).toBe("match");
+    // Claude rail: B has its own enabled cell (non-A, direct match) → CONFIGURED,
+    // NOT MATCH. MATCH is reserved for the A baseline (#526).
+    expect(byTestId("settings.profileCard.1.B").getAttribute("data-ac-state")).toBe("configured");
+    expect(byTestId("settings.profileCard.1.B.badge").textContent).toContain("CONFIGURED");
+    // Claude A is the baseline → MATCH.
+    expect(byTestId("settings.profileCard.1.A").getAttribute("data-ac-state")).toBe("match");
+    expect(byTestId("settings.profileCard.1.A.badge").textContent).toContain("MATCH");
     expect(byTestId<HTMLButtonElement>("settings.profiles.add").disabled).toBe(false);
 
     dispose();
@@ -632,6 +637,204 @@ describe("SettingsModal automation hooks", () => {
     expect(SettingsAPI.sweepRtkHook).toHaveBeenCalledWith(true);
 
     resolveLoadedSettings(settings());
+    dispose();
+  });
+
+  it("distinguishes MATCH (A), CONFIGURED (own non-A cell), FALLBACK, and MISSING", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "codex",
+          label: "Codex",
+          command: "codex",
+          color: "#10b981",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: true,
+          envs: [],
+          isolatedHome: false,
+        },
+        {
+          id: "claude",
+          label: "Claude Code",
+          command: "claude",
+          color: "#d97706",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+        },
+      ],
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: {
+          A: { label: "" },
+          B: { label: "balanced" },
+          C: { label: "review" },
+          D: { label: "full-auto" },
+        },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
+          codex: {
+            A: { enabled: true, command: "codex --sandbox workspace-write", env: {}, notes: "" },
+            // Own enabled non-A cell → CONFIGURED (direct match on a non-baseline slot).
+            B: { enabled: true, command: "codex --model gpt-5-codex --effort medium", env: {}, notes: "" },
+          },
+          // D is configured on claude but not on codex → codex D is MISSING.
+          claude: {
+            A: { enabled: true, command: "claude", env: {}, notes: "" },
+            D: { enabled: true, command: "claude --dangerously-skip-permissions", env: {}, notes: "" },
+          },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    // A baseline → MATCH (green).
+    expect(byTestId("settings.profileCard.0.A").getAttribute("data-ac-state")).toBe("match");
+    expect(byTestId("settings.profileCard.0.A.badge").textContent).toContain("MATCH");
+    // B has its own cell on codex → CONFIGURED (cyan), NOT MATCH.
+    expect(byTestId("settings.profileCard.0.B").getAttribute("data-ac-state")).toBe("configured");
+    expect(byTestId("settings.profileCard.0.B.badge").textContent).toContain("CONFIGURED");
+    // C has no cell anywhere → resolves through the configured B → FALLBACK.
+    expect(byTestId("settings.profileCard.0.C").getAttribute("data-ac-state")).toBe("fallback");
+    expect(byTestId("settings.profileCard.0.C.badge").textContent).toContain("FALLBACK");
+    // D is configured on claude but absent on codex → MISSING.
+    expect(byTestId("settings.profileCard.0.D").getAttribute("data-ac-state")).toBe("missing");
+    expect(byTestId("settings.profileCard.0.D.badge").textContent).toContain("MISSING");
+
+    dispose();
+  });
+
+  it("deletes a whole profile slot from every agent via Delete Profile", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "codex",
+          label: "Codex",
+          command: "codex",
+          color: "#10b981",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: true,
+          envs: [],
+          isolatedHome: false,
+        },
+        {
+          id: "claude",
+          label: "Claude Code",
+          command: "claude",
+          color: "#d97706",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+        },
+      ],
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: { A: { label: "" }, B: { label: "fast" } },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
+          codex: {
+            A: { enabled: true, command: "codex", env: {}, notes: "" },
+            B: { enabled: true, command: "codex --profile fast", env: {}, notes: "" },
+          },
+          claude: {
+            A: { enabled: true, command: "claude", env: {}, notes: "" },
+            B: { enabled: true, command: "claude --model opus", env: {}, notes: "" },
+          },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    // The B card renders on both rails before deletion.
+    expect(byTestId("settings.profileCard.0.B")).toBeTruthy();
+    expect(byTestId("settings.profileCard.1.B")).toBeTruthy();
+
+    // Expand codex's B card to reach the slot-level "Delete Profile" affordance.
+    byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
+    await settle();
+    byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile").click();
+    await settle();
+
+    // Slot B is gone from BOTH rails (it was a whole-slot delete, not per-agent).
+    expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B"]')).toBeNull();
+    expect(document.querySelector('[data-ac-testid="settings.profileCard.1.B"]')).toBeNull();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.codingAgentProfiles.profileSlots.B).toBeUndefined();
+    expect(saved?.codingAgentProfiles.profilesByAgent.codex?.B).toBeUndefined();
+    expect(saved?.codingAgentProfiles.profilesByAgent.claude?.B).toBeUndefined();
+    // The A baseline is untouched.
+    expect(saved?.codingAgentProfiles.profileSlots.A).toBeTruthy();
+
+    dispose();
+  });
+
+  it("keeps the left rail pinned when swapping with an empty right rail", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "codex",
+          label: "Codex",
+          command: "codex",
+          color: "#10b981",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: true,
+          envs: [],
+          isolatedHome: false,
+        },
+        {
+          id: "claude",
+          label: "Claude Code",
+          command: "claude",
+          color: "#d97706",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+        },
+      ],
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    // Pin the LEFT rail to claude (a non-first agent). The right rail was showing
+    // claude, so it empties out — left=claude (pinned), right=empty.
+    const leftSelect = byTestId<HTMLSelectElement>("settings.profileRail.0.agentSelect");
+    leftSelect.value = "claude";
+    leftSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(byTestId("settings.profileRail.0").getAttribute("data-ac-agent-id")).toBe("claude");
+    expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
+
+    // Swap with an empty right rail must be a no-op — NOT drop the left pin to the
+    // positional fallback (codex). The left stays claude; the right stays empty.
+    byTestId<HTMLButtonElement>("settings.agents.swapRails").click();
+    await settle();
+    expect(byTestId("settings.profileRail.0").getAttribute("data-ac-agent-id")).toBe("claude");
+    expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
+
     dispose();
   });
 });

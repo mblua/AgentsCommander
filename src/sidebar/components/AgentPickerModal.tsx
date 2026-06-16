@@ -19,6 +19,8 @@ import {
   isCodexAgent,
   isWgReplicaPath,
   normalizeProfileLetter,
+  profileBadgeKind,
+  type ProfileBadgeKind,
   profileCellCommandText,
   profileDisplayLabel,
   resolveProfilePreview,
@@ -53,6 +55,17 @@ const EMPTY_DISPLAY_CELL: ProfileCellConfig = {
   command: "",
   env: {},
   notes: "",
+};
+
+// #527: per-card status pill labels for the Selection profile cards. Same
+// taxonomy/colors as the Config rails (profileBadgeKind), so a given (agent,
+// letter) reads identically on both screens. `invalid` is Config-only (live
+// command edits), so it never surfaces here.
+const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string> = {
+  match: "MATCH",
+  configured: "CONFIGURED",
+  fallback: "FALLBACK",
+  missing: "MISSING",
 };
 
 const AgentPickerModal: Component<{
@@ -590,6 +603,13 @@ const AgentPickerModal: Component<{
                             fallbackApplied: false,
                           };
                     const cell = () => enabledLaunchCellFor(selectedAgent(), preview().effectiveProfile);
+                    // #527: per-card status pill — shared taxonomy with the Config rails.
+                    const pillKind = (): Exclude<ProfileBadgeKind, "invalid"> => {
+                      const current = settings();
+                      const agent = selectedAgent();
+                      if (!current || !agent) return letter === "A" ? "match" : "fallback";
+                      return profileBadgeKind(current.codingAgentProfiles, agent.id, letter);
+                    };
                     return (
                       <button
                         type="button"
@@ -627,9 +647,19 @@ const AgentPickerModal: Component<{
                                 : `missing; launches ${profileLabel(preview().effectiveProfile)}`}
                             </span>
                           </span>
-                          <Show when={configuredDefault() === letter}>
-                            <span class="agent-profile-default-marker">Default</span>
-                          </Show>
+                          <span class="agent-profile-card-tags">
+                            <span
+                              class={`agent-profile-card-pill ${pillKind()}`}
+                              data-ac-role="status"
+                              data-ac-state={pillKind()}
+                              data-ac-testid={`agentPicker.profile.${letter}.pill`}
+                            >
+                              {SELECTION_PILL_LABEL[pillKind()]}
+                            </span>
+                            <Show when={configuredDefault() === letter}>
+                              <span class="agent-profile-default-marker">Default</span>
+                            </Show>
+                          </span>
                         </span>
                         <span class="agent-profile-param-list">
                           <span class="agent-profile-param">
