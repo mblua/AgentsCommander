@@ -1582,8 +1582,24 @@ html.light-theme .root-agent-avatar {
   color: var(--sidebar-fg-dim);
 }
 
+/* #526: the panel-header "Add Agent" is the primary creation action here, so it
+   gets a clearly visible accent treatment (the dim shared .settings-add-btn was
+   nearly invisible). Mirrors the cyan accent-tint of .settings-rail-pill.left so
+   it reads as an actionable button without being loud. */
 .settings-agents-add {
   flex: 0 0 auto;
+  border: 1px solid rgba(0, 212, 255, 0.45);
+  background: rgba(0, 212, 255, 0.12);
+  color: var(--sidebar-accent);
+  font-weight: 600;
+  transition: border-color var(--transition-fast), color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.settings-agents-add:hover {
+  border-color: var(--sidebar-accent);
+  background: rgba(0, 212, 255, 0.2);
+  color: var(--sidebar-accent);
 }
 
 .settings-agents-panel-body {

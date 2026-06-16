@@ -1083,10 +1083,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
           </div>
           <div class="settings-agent-row-actions">
-            <Show
-              when={pill() !== "left"}
-              fallback={<span class="settings-rail-pill left">left</span>}
-            >
+            {/* #526: the rail indicator is shown once, on the color line. The
+                left/primary agent has no Use/Remove action here, so render
+                nothing (previously a duplicate "left" pill lived here). */}
+            <Show when={pill() !== "left"}>
               <Show
                 when={pill() === "right"}
                 fallback={
