@@ -756,6 +756,7 @@ mod tests {
             exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
+            instructions_filename: None,
         }];
         settings
     }
