@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
   commandExecutableBasename,
+  defaultInstructionsFilename,
   effectiveEnvProjection,
   executableBasename,
   expandAcRootPreview,
@@ -161,6 +162,29 @@ describe("profile utils", () => {
     expect(isAcAgentPath("C:/repo/.ac/_agent_architect")).toBe(true);
     expect(isAcAgentPath("C:/repo/.ac/wg-7-dev-team/__agent_dev-webpage-ui")).toBe(true);
     expect(isAcAgentPath("C:/repo/worktree")).toBe(false);
+  });
+
+  it("derives the default instructions filename with parity to the Rust resolver (#529, G2)", () => {
+    // Claude family → CLAUDE.md, including wrapped/suffixed/absolute shapes and
+    // — critically — commands carrying trailing flags (the all-token scan, not
+    // first/last token, is what gives parity with the Rust detector here).
+    expect(defaultInstructionsFilename("claude")).toBe("CLAUDE.md");
+    expect(defaultInstructionsFilename("claude --model sonnet")).toBe("CLAUDE.md");
+    expect(defaultInstructionsFilename("cmd.exe /c claude")).toBe("CLAUDE.md");
+    expect(defaultInstructionsFilename("cmd.exe /c claude --continue")).toBe("CLAUDE.md");
+    expect(defaultInstructionsFilename("claude-mb")).toBe("CLAUDE.md");
+    expect(defaultInstructionsFilename("C:\\tools\\claude.exe")).toBe("CLAUDE.md");
+    // Gemini → GEMINI.md, with and without flags.
+    expect(defaultInstructionsFilename("gemini")).toBe("GEMINI.md");
+    expect(defaultInstructionsFilename("gemini --yolo")).toBe("GEMINI.md");
+    // Codex, OpenCode, custom, and empty all fall to AGENTS.md.
+    expect(defaultInstructionsFilename("codex")).toBe("AGENTS.md");
+    expect(defaultInstructionsFilename("codex --sandbox workspace-write")).toBe("AGENTS.md");
+    expect(defaultInstructionsFilename("opencode")).toBe("AGENTS.md");
+    expect(defaultInstructionsFilename("my-agent-cli --flag")).toBe("AGENTS.md");
+    expect(defaultInstructionsFilename("")).toBe("AGENTS.md");
+    // Codex precedence over a later gemini token (mirrors Rust claude>codex>gemini).
+    expect(defaultInstructionsFilename("codex --base gemini")).toBe("AGENTS.md");
   });
 
   it("formats session profile badges with fallback when applied", () => {

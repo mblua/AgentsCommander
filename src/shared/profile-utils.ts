@@ -392,6 +392,36 @@ export function isCodexAgent(agent: AgentConfig): boolean {
   return agent.id.toLowerCase() === "codex" || executableBasename(agent.command) === "codex";
 }
 
+/**
+ * #529 — display-only default instructions filename derived from a coding
+ * agent's launch command. Used solely as the Config Screen placeholder so a
+ * blank field shows the default the backend will write at launch.
+ *
+ * Best-effort parity (G2) with the Rust resolver
+ * (`default_instructions_filename_for_command` → `CodingAgentKind::detect`):
+ * reduce EVERY whitespace token to its lowercased file-stem basename and match
+ * by prefix in precedence **claude > codex > gemini**, scanning all tokens —
+ * exactly what the Rust detector does. Scanning every token (not just the
+ * first/last) is what gives parity on the common shapes including trailing
+ * flags: `claude`, `claude --model sonnet`, `cmd.exe /c claude`, `claude-mb`,
+ * an absolute-path `claude.exe`, `codex --yolo`, `opencode`, custom. The codex
+ * branch returns `AGENTS.md` (same as the default) but is kept explicit so the
+ * precedence is faithful — e.g. `codex ... gemini` resolves to `AGENTS.md`, not
+ * `GEMINI.md`, matching Rust.
+ *
+ * This deliberately does NOT reproduce the full Rust shell-quote tokenizer, so
+ * an exotic quoted path containing spaces may still diverge — acceptable for a
+ * cosmetic placeholder, since the backend resolves the value authoritatively at
+ * launch.
+ */
+export function defaultInstructionsFilename(command: string): string {
+  const stems = command.trim().split(/\s+/).filter(Boolean).map(executableTokenBasename);
+  if (stems.some((s) => s.startsWith("claude"))) return "CLAUDE.md";
+  if (stems.some((s) => s.startsWith("codex"))) return "AGENTS.md";
+  if (stems.some((s) => s.startsWith("gemini"))) return "GEMINI.md";
+  return "AGENTS.md";
+}
+
 export function agentNameFromPathOrSession(
   path: string | null | undefined,
   sessionName: string,

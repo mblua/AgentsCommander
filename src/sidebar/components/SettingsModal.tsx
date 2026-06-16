@@ -16,6 +16,7 @@ import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
   commandExecutableBasename,
+  defaultInstructionsFilename,
   executableTokenBasename,
   hasAcRootPlaceholder,
   hasEnabledEnvKey,
@@ -464,6 +465,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           excludeGlobalClaudeMd: true,
           envs: [],
           isolatedHome: false,
+          instructionsFilename: "AGENTS.md",
         };
     setSettings("data", "agents", (prev) => [...prev, agent]);
     // A freshly added agent expands its inline editor so it is immediately
@@ -1161,6 +1163,23 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               />
             </label>
             <label class="settings-field">
+              <span class="settings-label">Instructions file</span>
+              <input
+                class="settings-input"
+                value={agent.instructionsFilename ?? ""}
+                onInput={(e) =>
+                  updateAgent(i(), "instructionsFilename", e.currentTarget.value)
+                }
+                placeholder={defaultInstructionsFilename(agent.command)}
+                data-ac-testid={`settings.agentRow.${i()}.instructionsFilename`}
+                data-ac-role="textbox"
+              />
+            </label>
+            <div class="settings-hint">
+              Filename AC writes into the agent root at launch (its AC context +
+              Role.md). Leave blank to use the default shown.
+            </div>
+            <label class="settings-field">
               <span class="settings-label">Color</span>
               <div class="settings-color-row">
                 <input
@@ -1245,6 +1264,20 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       >
         <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.gemini.color }} />
         + Gemini CLI
+      </button>
+      <button
+        class="settings-preset-btn"
+        onClick={() => addAgent(AGENT_PRESET_MAP.opencode)}
+        disabled={hasAgentByCommand("opencode")}
+        data-ac-testid="settings.agentPreset.opencode"
+        data-ac-role="button"
+        data-ac-state={hasAgentByCommand("opencode") ? "disabled" : "available"}
+      >
+        <span
+          class="settings-color-dot"
+          style={{ background: AGENT_PRESET_MAP.opencode.color }}
+        />
+        + OpenCode
       </button>
       <button
         class="settings-add-btn"
