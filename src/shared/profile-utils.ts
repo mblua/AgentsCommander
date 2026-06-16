@@ -249,6 +249,77 @@ export function hasEnabledEnvKey(rows: CodingAgentEnv[], key: string): boolean {
   return rows.some((row) => row.enabled && envKeyCompare(row.key) === target);
 }
 
+/** Origin badge for an env value shown in the Config/Selection projections (#526/#527).
+ *  - `system`   — AgentsCommander-managed home path (%AC_ROOT% placeholder on a known home key)
+ *  - `accepted` — a user literal absolute path kept as-is (nothing to expand)
+ *  - `profile`  — a value defined by the profile cell (the common case) */
+export type EnvOrigin = "system" | "profile" | "accepted";
+
+/** Env keys AgentsCommander manages per replica (isolated home directories). */
+const MANAGED_HOME_ENV_KEYS = new Set([
+  "CODEX_HOME",
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_HOME",
+  "GEMINI_HOME",
+]);
+
+function isLiteralAbsolutePath(value: string): boolean {
+  const v = value.trim();
+  // Windows drive (C:\ or C:/), POSIX root, or UNC share.
+  return /^[A-Za-z]:[\\/]/.test(v) || v.startsWith("/") || v.startsWith("\\\\");
+}
+
+/** Classify a profile-cell env value's origin for its badge. A managed home key
+ *  using %AC_ROOT% is AC-managed (`system`); a managed home key with a literal
+ *  absolute path is a user-accepted override (`accepted`); everything else is a
+ *  plain profile-defined value (`profile`). */
+export function profileEnvOrigin(key: string, value: string): EnvOrigin {
+  if (MANAGED_HOME_ENV_KEYS.has(envKeyCompare(key))) {
+    if (hasAcRootPlaceholder(value)) return "system";
+    if (isLiteralAbsolutePath(value)) return "accepted";
+  }
+  return "profile";
+}
+
+export interface EffectiveEnvEntry {
+  key: string;
+  value: string;
+  origin: EnvOrigin;
+}
+
+/** Merge a coding agent's enabled env rows with the selected profile cell's env
+ *  into the effective env that is actually set at launch (#527 Env / EFFECTIVE).
+ *  Agent rows form the base (source `system` → system badge, user → accepted);
+ *  profile env overrides on key collision and carries the `profile` origin.
+ *  `%AC_ROOT%` is expanded for display when a replica root is known. */
+export function effectiveEnvProjection(
+  agentEnvs: CodingAgentEnv[] | undefined,
+  profileEnv: Record<string, string> | undefined,
+  acRoot: string | null | undefined,
+): EffectiveEnvEntry[] {
+  const byKey = new Map<string, EffectiveEnvEntry>();
+  for (const row of agentEnvs ?? []) {
+    if (!row.enabled) continue;
+    const key = row.key.trim();
+    if (!key) continue;
+    byKey.set(envKeyCompare(key), {
+      key,
+      value: expandAcRootPreview(row.value, acRoot),
+      origin: row.source === "system" ? "system" : "accepted",
+    });
+  }
+  for (const [rawKey, rawValue] of Object.entries(profileEnv ?? {})) {
+    const key = rawKey.trim();
+    if (!key) continue;
+    byKey.set(envKeyCompare(key), {
+      key,
+      value: expandAcRootPreview(rawValue, acRoot),
+      origin: profileEnvOrigin(key, rawValue),
+    });
+  }
+  return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
 export function executableTokenBasename(token: string): string {
   const normalized = token.replace(/\\/g, "/");
   const leaf = normalized.split("/").pop() || normalized;

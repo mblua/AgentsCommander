@@ -406,7 +406,8 @@ describe("AgentPickerModal", () => {
     await settle();
 
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
-    expect(text("agentPicker.projected")).toContain("Selected coding agent: Claude Code");
+    // Effective Projection chosen-pair shows the selected coding agent + resolved command.
+    expect(text("agentPicker.projected")).toContain("Claude Code");
     expect(text("agentPicker.projected")).toContain("claude --dangerously-skip-permissions");
 
     dispose();
@@ -423,7 +424,8 @@ describe("AgentPickerModal", () => {
     expect(text("agentPicker.profile.C")).toContain("Fallback C->B");
     expect(text("agentPicker.fallback")).toContain("C-REVIEW is not configured");
     expect(text("agentPicker.fallback")).toContain("A remains the final fallback");
-    expect(text("agentPicker.projected")).toContain("C-REVIEW resolves to B-FAST via fallback");
+    // Effective Projection chosen-pair Resolution row reports the fallback hop.
+    expect(text("agentPicker.projected")).toContain("C-REVIEW → B-FAST (fallback)");
 
     dispose();
   });
@@ -747,7 +749,7 @@ describe("AgentPickerModal", () => {
     );
     await settle();
     expect(text("agentPicker.fallback")).not.toContain("old warning");
-    expect(text("agentPicker.projected")).toContain("Selected coding agent: Claude Code");
+    expect(text("agentPicker.projected")).toContain("Claude Code");
 
     dispose();
   });

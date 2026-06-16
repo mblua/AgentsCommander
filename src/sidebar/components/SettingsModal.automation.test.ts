@@ -127,6 +127,17 @@ function byTestId<T extends Element = Element>(testId: string): T {
   return element;
 }
 
+// #526: the unified Coding Agents screen keeps each agent's config editor
+// collapsed by default (the resting screen reads as the prototype). Clicking the
+// row head expands the inline editor that holds label/command/env/isolation.
+function expandAgentRow(index = 0): void {
+  const toggle = document.querySelector<HTMLElement>(
+    `[data-ac-testid="settings.agentRow.${index}.toggle"]`,
+  );
+  if (!toggle) throw new Error(`missing agent row toggle ${index}`);
+  toggle.click();
+}
+
 describe("SettingsModal automation hooks", () => {
   afterEach(() => {
     document.body.innerHTML = "";
@@ -140,6 +151,8 @@ describe("SettingsModal automation hooks", () => {
       () => SettingsModal({ onClose: () => {}, section: "agents" }),
       root,
     );
+    await settle();
+    expandAgentRow(0);
     await settle();
 
     const row = document.querySelector('[data-ac-testid="settings.agentRow.0"]');
@@ -171,6 +184,8 @@ describe("SettingsModal automation hooks", () => {
     );
     agentsTab?.click();
     await settle();
+    expandAgentRow(0);
+    await settle();
 
     expect(agentsTab?.getAttribute("data-ac-state")).toBe("active");
     expect(document.querySelector('[data-ac-testid="settings.agentRow.0"]')).toBeTruthy();
@@ -188,6 +203,8 @@ describe("SettingsModal automation hooks", () => {
       () => SettingsModal({ onClose: () => {}, section: "agents" }),
       root,
     );
+    await settle();
+    expandAgentRow(0);
     await settle();
 
     expect(byTestId("settings.agentRow.0.env")).toBeTruthy();
@@ -265,6 +282,8 @@ describe("SettingsModal automation hooks", () => {
       () => SettingsModal({ onClose: () => {}, section: "agents" }),
       root,
     );
+    await settle();
+    expandAgentRow(0);
     await settle();
 
     const addEnv = document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.agentRow.0.env.add"]');
@@ -379,6 +398,97 @@ describe("SettingsModal automation hooks", () => {
     // Claude rail: B is configured → MATCH.
     expect(byTestId("settings.profileCard.1.B").getAttribute("data-ac-state")).toBe("match");
     expect(byTestId<HTMLButtonElement>("settings.profiles.add").disabled).toBe(false);
+
+    dispose();
+  });
+
+  it("collapses non-A profile cards by default and expands them on toggle", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "claude",
+          label: "Claude Code",
+          command: "claude",
+          color: "#d97706",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+        },
+      ],
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: { A: { label: "" }, B: { label: "fast" } },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
+          claude: {
+            A: { enabled: true, command: "claude", env: {}, notes: "" },
+            B: { enabled: true, command: "claude --model opus", env: {}, notes: "" },
+          },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    // The "A" slot is expanded by default → its command input is present.
+    expect(byTestId("settings.profileCard.0.A.command")).toBeTruthy();
+    // A non-A configured slot is collapsed → command hidden until expanded.
+    expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B.command"]')).toBeNull();
+
+    byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
+    await settle();
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.B.command").value).toBe("claude --model opus");
+
+    dispose();
+  });
+
+  it("clears the right comparison rail when the right agent's Remove is clicked", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "codex",
+          label: "Codex",
+          command: "codex",
+          color: "#10b981",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: true,
+          envs: [],
+          isolatedHome: false,
+        },
+        {
+          id: "claude",
+          label: "Claude Code",
+          command: "claude",
+          color: "#d97706",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+        },
+      ],
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    // The comparison pair seeds left=codex, right=claude (second agent).
+    expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBe("claude");
+    // Removing the right-rail agent actually empties the rail (no positional re-fill).
+    byTestId<HTMLButtonElement>("settings.agentRow.1.unuse").click();
+    await settle();
+    expect(byTestId("settings.profileRail.1").getAttribute("data-ac-agent-id")).toBeNull();
+    // Claude is now available again and offers "Use" to re-add it.
+    expect(document.querySelector('[data-ac-testid="settings.agentRow.1.use"]')).toBeTruthy();
 
     dispose();
   });

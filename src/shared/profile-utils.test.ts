@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
   commandExecutableBasename,
+  effectiveEnvProjection,
   executableBasename,
   expandAcRootPreview,
   hasAcRootPlaceholder,
@@ -11,6 +12,7 @@ import {
   parseArgvText,
   profileCellCommandText,
   profileDisplayLabel,
+  profileEnvOrigin,
   resolveProfilePreview,
   sessionProfileBadge,
   stringifyArgv,
@@ -174,5 +176,49 @@ describe("profile utils", () => {
         profileFallbackApplied: false,
       }),
     ).toBe("C");
+  });
+});
+
+describe("profileEnvOrigin (#526/#527 env origin badges)", () => {
+  it("classifies an AgentsCommander-managed home path as system", () => {
+    expect(profileEnvOrigin("CODEX_HOME", "%AC_ROOT%\\.codex\\agents\\codex")).toBe("system");
+    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_ROOT%/.claude")).toBe("system");
+  });
+
+  it("classifies a literal absolute path on a managed home key as accepted", () => {
+    expect(profileEnvOrigin("CODEX_HOME", "D:\\manual\\codex")).toBe("accepted");
+    expect(profileEnvOrigin("CODEX_HOME", "/opt/codex")).toBe("accepted");
+  });
+
+  it("classifies plain profile values (and non-home keys) as profile", () => {
+    expect(profileEnvOrigin("OPENAI_ORG", "ac-prod")).toBe("profile");
+    expect(profileEnvOrigin("AC_TRACE", "profile-c")).toBe("profile");
+    // A non-home key keeps the profile origin even with an absolute-looking value.
+    expect(profileEnvOrigin("SOME_PATH", "C:\\x")).toBe("profile");
+  });
+});
+
+describe("effectiveEnvProjection (#527 Env / EFFECTIVE)", () => {
+  it("merges agent env (system/accepted) with profile env (profile), profile wins", () => {
+    const merged = effectiveEnvProjection(
+      [
+        { key: "CODEX_HOME", value: "%AC_ROOT%\\.codex", source: "system", enabled: true },
+        { key: "OPENAI_API_KEY", value: "redacted", source: "user", enabled: true },
+        { key: "DISABLED", value: "x", source: "user", enabled: false },
+      ],
+      { OPENAI_ORG: "ac-prod", OPENAI_API_KEY: "from-profile" },
+      "C:\\root",
+    );
+    // Disabled agent rows are dropped; profile overrides the agent value on key collision.
+    expect(merged).toEqual([
+      { key: "CODEX_HOME", value: "C:\\root\\.codex", origin: "system" },
+      { key: "OPENAI_API_KEY", value: "from-profile", origin: "profile" },
+      { key: "OPENAI_ORG", value: "ac-prod", origin: "profile" },
+    ]);
+  });
+
+  it("returns an empty list when nothing is configured", () => {
+    expect(effectiveEnvProjection([], {}, null)).toEqual([]);
+    expect(effectiveEnvProjection(undefined, undefined, undefined)).toEqual([]);
   });
 });
