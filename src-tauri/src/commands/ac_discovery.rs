@@ -1681,19 +1681,32 @@ pub async fn discover_project(
     // Update the branch watcher for THIS project only.
     branch_watcher.update_replicas_for_project(&path, &workgroups);
 
-    // Recompute coordinator flags on every live session against the hoisted team snapshot.
-    let changes = {
-        let mgr = session_mgr.read().await;
-        mgr.refresh_coordinator_flags(&teams_snapshot).await
-    };
-    for (id, is_coord) in changes {
-        let _ = app.emit(
-            "session_coordinator_changed",
-            crate::pty::git_watcher::CoordinatorChangedPayload {
-                session_id: id.to_string(),
-                is_coordinator: is_coord,
-            },
-        );
+    // Recompute coordinator flags on every live session against the hoisted team
+    // snapshot. Spawned (not awaited) so populating the project tree NEVER blocks on
+    // `session_mgr` / inner `sessions` lock contention during the boot-concurrent
+    // session restore (#384 empty-tree hang fix). This refresh only emits
+    // `session_coordinator_changed` for live sessions; it is not needed to build the
+    // returned tree (each replica's `is_coordinator` is computed inline above), so
+    // moving it off the return path is behavior-preserving for the tree while keeping
+    // the coordinator-flag events flowing.
+    {
+        let coordinator_app = app.clone();
+        let coordinator_session_mgr = Arc::clone(session_mgr.inner());
+        tokio::spawn(async move {
+            let changes = {
+                let mgr = coordinator_session_mgr.read().await;
+                mgr.refresh_coordinator_flags(&teams_snapshot).await
+            };
+            for (id, is_coord) in changes {
+                let _ = coordinator_app.emit(
+                    "session_coordinator_changed",
+                    crate::pty::git_watcher::CoordinatorChangedPayload {
+                        session_id: id.to_string(),
+                        is_coordinator: is_coord,
+                    },
+                );
+            }
+        });
     }
 
     let total_replicas: usize = workgroups.iter().map(|wg| wg.agents.len()).sum();
