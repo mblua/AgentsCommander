@@ -524,4 +524,122 @@ describe("SettingsModal automation hooks", () => {
     resolveLoadedSettings(settings());
     dispose();
   });
+
+  it("exposes the OpenCode quick-add preset and the instructions-file input (#529)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    // Quick-add OpenCode button is present and enabled (seeded agent is codex).
+    const opencodePreset = byTestId<HTMLButtonElement>("settings.agentPreset.opencode");
+    expect(opencodePreset).toBeTruthy();
+    expect(opencodePreset.disabled).toBe(false);
+    expect(opencodePreset.getAttribute("data-ac-state")).toBe("available");
+
+    // Per-agent instructions-file input shows the command-derived default as its
+    // placeholder (seeded command `codex` → AGENTS.md).
+    const input = byTestId<HTMLInputElement>("settings.agentRow.0.instructionsFilename");
+    expect(input).toBeTruthy();
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("AGENTS.md");
+
+    dispose();
+  });
+
+  it("disables the OpenCode preset when an opencode agent already exists (#529)", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "opencode",
+          label: "OpenCode",
+          command: "opencode",
+          color: "#64748b",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+          instructionsFilename: "AGENTS.md",
+        },
+      ],
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    const opencodePreset = byTestId<HTMLButtonElement>("settings.agentPreset.opencode");
+    expect(opencodePreset.disabled).toBe(true);
+    expect(opencodePreset.getAttribute("data-ac-state")).toBe("disabled");
+
+    dispose();
+  });
+
+  it("round-trips a typed instructions filename through save (#529)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    const input = byTestId<HTMLInputElement>("settings.agentRow.0.instructionsFilename");
+    input.value = "TEAM.md";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agents[0]?.instructionsFilename).toBe("TEAM.md");
+
+    dispose();
+  });
+
+  it("omits a cleared instructions filename from the saved draft (#529 G3)", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "claude",
+          label: "Claude Code",
+          command: "claude",
+          color: "#d97706",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+          instructionsFilename: "CLAUDE.md",
+        },
+      ],
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    const input = byTestId<HTMLInputElement>("settings.agentRow.0.instructionsFilename");
+    expect(input.value).toBe("CLAUDE.md");
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agents[0]).not.toHaveProperty("instructionsFilename");
+
+    dispose();
+  });
 });
