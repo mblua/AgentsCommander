@@ -1317,6 +1317,9 @@ html.light-theme .root-agent-avatar {
 }
 
 .settings-profile-rail-heading {
+  /* Claim the header's free space and stay shrinkable so the title truncates
+     instead of pushing into / overlapping the agent selector. */
+  flex: 1;
   min-width: 0;
 }
 
@@ -1324,6 +1327,9 @@ html.light-theme .root-agent-avatar {
   font-weight: 700;
   font-size: var(--font-size-md);
   color: var(--sidebar-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-profile-rail-subtitle {
@@ -1516,9 +1522,17 @@ html.light-theme .root-agent-avatar {
 }
 
 /* ── #526 Config Screen: unified dual-rail comparison (agent list + 2 rails) ── */
-.modal-container-config {
-  max-width: 1180px;
-  width: 96%;
+/* The dual-rail compare-zone needs width — the user asked explicitly for the
+   Settings modal to span 90% of the screen. The two-class selector is
+   deliberate: the shared `.modal-container-lg` rule (max-width: 520px) is
+   declared LATER in this file, so at equal specificity it would win the cascade
+   and cap the config modal at 520px — that is what left the rails cramped.
+   Bumping specificity here (.modal-container.modal-container-config) lets the
+   90vw floor/ceiling override that cap regardless of source order. */
+.modal-container.modal-container-config {
+  width: 90vw;
+  min-width: 90vw;
+  max-width: 90vw;
   height: 90vh;
 }
 
@@ -1787,9 +1801,13 @@ html.light-theme .root-agent-avatar {
 }
 
 .settings-rail-select {
-  flex: 0 0 auto;
+  /* Shrinkable (0 1 auto) with a small floor: the old `0 0 auto` + 110px floor
+     could not shrink, so in a narrow rail it forced an internal horizontal
+     scrollbar and rode over the title. At comfortable widths it still sizes to
+     its content up to 160px. */
+  flex: 0 1 auto;
   width: auto;
-  min-width: 110px;
+  min-width: 72px;
   max-width: 160px;
 }
 
