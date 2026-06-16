@@ -26,6 +26,12 @@ pub struct AgentConfig {
     /// When true for Codex, AC provides an isolated CODEX_HOME at spawn time.
     #[serde(default, alias = "isolateCodexHome")]
     pub isolated_home: bool,
+    /// #529 - filename AC writes into the agent root at launch (content = AC
+    /// context + Role.md). `None`/empty falls back to the command-derived default
+    /// (Claude -> CLAUDE.md, Gemini -> GEMINI.md, else AGENTS.md). Serialized as
+    /// `instructionsFilename`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_filename: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1069,6 +1075,19 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
             &agent.envs,
             &format!("Agent \"{}\" env settings", agent.label),
         )?;
+
+        // #529 (G8): reject a bad instructions filename here so the user gets a
+        // clear IPC error at save, not a silent fallback at launch. Empty/absent
+        // is allowed (means "use the command-derived default").
+        if let Some(f) = agent.instructions_filename.as_deref() {
+            let f = f.trim();
+            if !f.is_empty() && !crate::config::agent_command::is_safe_instructions_filename(f) {
+                return Err(format!(
+                    "Agent \"{}\" instructions filename is invalid: must be a bare .md filename with no path separators",
+                    agent.label
+                ));
+            }
+        }
     }
 
     for (agent_id, cells) in &settings.coding_agent_profiles.profiles_by_agent {
@@ -1478,6 +1497,7 @@ mod tests {
                     exclude_global_claude_md: false,
                     envs: Vec::new(),
                     isolated_home: false,
+                    instructions_filename: None,
                 })
                 .collect(),
             ..AppSettings::default()
@@ -1793,6 +1813,64 @@ mod tests {
         let settings =
             settings_with_agents(&[("Codex", "codex -c instruction=\"resume later\" --search")]);
         assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    // #529 - instructions filename validation surfaces at settings save (G8/Q6).
+
+    #[test]
+    fn validate_agent_commands_rejects_unsafe_instructions_filename() {
+        for bad in [
+            "../x.md",
+            "a/b.md",
+            "a\\b.md",
+            "C:x.md",
+            "CON.md",
+            "last_ac_context.md",
+        ] {
+            let mut settings = settings_with_agents(&[("Codex", "codex")]);
+            settings.agents[0].instructions_filename = Some(bad.to_string());
+            let err = validate_agent_commands(&settings).unwrap_err();
+            assert!(
+                err.contains("instructions filename is invalid"),
+                "{bad:?} should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_safe_or_empty_instructions_filename() {
+        // Valid names plus empty/whitespace (which means "use the default").
+        for ok in ["AGENTS.md", "CLAUDE.md", "MyTeam.md", "  ", ""] {
+            let mut settings = settings_with_agents(&[("Codex", "codex")]);
+            settings.agents[0].instructions_filename = Some(ok.to_string());
+            assert!(
+                validate_agent_commands(&settings).is_ok(),
+                "{ok:?} should be allowed"
+            );
+        }
+        // Absent (None) is allowed too.
+        let settings = settings_with_agents(&[("Codex", "codex")]);
+        assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    #[test]
+    fn instructions_filename_serde_round_trips_and_omits_when_absent() {
+        // Absent -> omitted (skip_serializing_if) and deserializes back to None.
+        let mut settings = settings_with_agents(&[("Codex", "codex")]);
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("instructionsFilename"));
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.agents[0].instructions_filename, None);
+
+        // Present -> serialized under the camelCase key and round-trips.
+        settings.agents[0].instructions_filename = Some("Squad.md".to_string());
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("\"instructionsFilename\":\"Squad.md\""));
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.agents[0].instructions_filename.as_deref(),
+            Some("Squad.md")
+        );
     }
 
     #[test]

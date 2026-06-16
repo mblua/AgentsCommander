@@ -859,10 +859,28 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         }
     }
 
-    let materialized_context_path = if let Some(target) = context_target {
-        match crate::config::session_context::materialize_agent_context_file(
+    // #529 - resolve the instructions filename from the configured coding agent
+    // (falling back to detection for ad-hoc launches), plus the union of every
+    // configured agent's filename for cleanup. Computed under a single settings
+    // read guard that is dropped before any filesystem I/O (no guard across the
+    // materialize call).
+    let (target_filename, managed_filenames): (Option<String>, Vec<String>) = {
+        let settings_state = app.state::<SettingsState>();
+        let cfg = settings_state.read().await;
+        let managed = crate::config::agent_command::managed_instructions_filenames(&cfg);
+        let target = crate::config::agent_command::resolve_target_filename(
+            agent_id.as_deref(),
+            &cfg,
+            context_target,
+        );
+        (target, managed)
+    };
+
+    let materialized_context_path = if let Some(ref target_filename) = target_filename {
+        match crate::config::session_context::materialize_agent_context_file_with_filename(
             &cwd,
-            target,
+            target_filename,
+            &managed_filenames,
             is_coordinator,
         ) {
             Ok(context) => context,
@@ -2307,6 +2325,7 @@ mod tests {
                     exclude_global_claude_md: false,
                     envs: Vec::new(),
                     isolated_home: false,
+                    instructions_filename: None,
                 },
                 AgentConfig {
                     id: "codex".to_string(),
@@ -2317,6 +2336,7 @@ mod tests {
                     exclude_global_claude_md: false,
                     envs: Vec::new(),
                     isolated_home: false,
+                    instructions_filename: None,
                 },
             ],
             ..AppSettings::default()
@@ -2787,6 +2807,7 @@ mod tests {
             exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
+            instructions_filename: None,
         });
 
         let resolved = resolve_actual_agent(
@@ -2864,6 +2885,7 @@ mod tests {
             exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
+            instructions_filename: None,
         }];
 
         let resolved = resolve_agent_from_shell("codex", &[], &settings);

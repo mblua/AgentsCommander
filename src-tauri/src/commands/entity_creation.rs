@@ -2690,6 +2690,7 @@ mod tests {
                 exclude_global_claude_md: false,
                 envs: Vec::new(),
                 isolated_home: false,
+                instructions_filename: None,
             },
             crate::config::settings::AgentConfig {
                 id: "claude".to_string(),
@@ -2700,6 +2701,7 @@ mod tests {
                 exclude_global_claude_md: true,
                 envs: Vec::new(),
                 isolated_home: false,
+                instructions_filename: None,
             },
         ];
 

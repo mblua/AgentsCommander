@@ -9,6 +9,7 @@ use crate::config::placeholders::{
     placeholder_context_for_launch_root, reject_unexpanded_markers, value_contains_ac_root,
     PlaceholderContext,
 };
+use crate::config::session_context::ManagedContextTarget;
 use crate::config::settings::{
     is_codex_home_key, normalize_env_key_for_platform, validate_expanded_codex_home_value,
     validate_user_env_key, AgentConfig, AppSettings,
@@ -117,6 +118,141 @@ pub fn normalize_legacy_agent_command(command: &str) -> Result<NormalizedAgentCo
         shell: shell.clone(),
         shell_args: args.to_vec(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// #529 - per-coding-agent instructions filename (written to the agent root at
+// launch; content is the same AC context + Role.md AC already generates).
+// ---------------------------------------------------------------------------
+
+/// Per-command default when no explicit filename is configured. Derives the
+/// filename from the command via the same `CodingAgentKind::detect` the launch
+/// path uses, so a configured agent's default matches what detection would pick.
+pub fn default_instructions_filename_for_command(command: &str) -> &'static str {
+    match normalize_legacy_agent_command(command) {
+        Ok(n) => match CodingAgentKind::detect(&n.shell, &n.shell_args) {
+            Some(CodingAgentKind::Claude) => "CLAUDE.md",
+            Some(CodingAgentKind::Gemini) => "GEMINI.md",
+            // Codex, OpenCode, custom, and unknown all use AGENTS.md.
+            _ => "AGENTS.md",
+        },
+        Err(_) => "AGENTS.md",
+    }
+}
+
+/// Resolved instructions filename for a configured coding agent: the explicit
+/// (trimmed, validated) value when set, else the command-derived default. An
+/// empty/whitespace/unsafe stored value silently falls back to the default, so
+/// a hand-edited `settings.json` with a bad value never reaches the writer.
+pub fn resolve_instructions_filename(agent: &AgentConfig) -> String {
+    match agent.instructions_filename.as_deref().map(str::trim) {
+        Some(f) if !f.is_empty() && is_safe_instructions_filename(f) => f.to_string(),
+        _ => default_instructions_filename_for_command(&agent.command).to_string(),
+    }
+}
+
+/// Union of every configured agent's resolved filename, used as the writer's
+/// extra-cleanup set so launching one agent removes another's stale file. The
+/// built-in managed names are always added by the writer itself; this only
+/// contributes the configured + custom names.
+pub fn managed_instructions_filenames(settings: &AppSettings) -> Vec<String> {
+    let mut set: Vec<String> = Vec::new();
+    for agent in &settings.agents {
+        let f = resolve_instructions_filename(agent);
+        if !set.contains(&f) {
+            set.push(f);
+        }
+    }
+    set
+}
+
+/// Pure launch-time resolver (R1.9): pick the instructions filename for a
+/// launch given the post-resolution `agent_id`, the settings, and the
+/// detection-derived target. Four branches:
+///   1. configured agent with explicit valid filename -> that filename;
+///   2. configured agent without one -> command-derived default;
+///   3. no configured agent but a detected kind -> the detected filename;
+///   4. neither -> `None` (no instructions file is materialized).
+pub fn resolve_target_filename(
+    agent_id: Option<&str>,
+    settings: &AppSettings,
+    detected: Option<ManagedContextTarget>,
+) -> Option<String> {
+    agent_id
+        .and_then(|aid| settings.agents.iter().find(|a| a.id == aid))
+        .map(resolve_instructions_filename)
+        .or_else(|| detected.map(|t| t.filename().to_string()))
+}
+
+/// True only for a bare, safe `*.md` filename that can be `cwd.join`ed and
+/// written without escaping the agent root (R1.5 + G9). This is a strict
+/// predicate: callers trim before calling, so any surrounding whitespace here
+/// is a genuine rejection (Windows silently strips trailing space/dot, which
+/// would desync the validated, written, and cleanup names).
+pub fn is_safe_instructions_filename(filename: &str) -> bool {
+    if filename.is_empty() {
+        return false;
+    }
+    // Length cap so `root + filename` stays well under MAX_PATH.
+    if filename.chars().count() > 128 {
+        return false;
+    }
+    // No path separators or parent-dir traversal.
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return false;
+    }
+    // No colon: rejects a drive prefix (`C:x.md`) AND an NTFS Alternate Data
+    // Stream (`AGENTS.md:evil`).
+    if filename.contains(':') {
+        return false;
+    }
+    // No control chars.
+    if filename.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    // No leading/trailing whitespace and no trailing dot (Windows strips them).
+    if filename.starts_with(char::is_whitespace)
+        || filename.ends_with(char::is_whitespace)
+        || filename.ends_with('.')
+    {
+        return false;
+    }
+    // Require a `.md` extension, matched case-insensitively (accept `AGENTS.MD`);
+    // the caller keeps the user's original spelling.
+    let lower = filename.to_ascii_lowercase();
+    let Some(stem) = lower.strip_suffix(".md") else {
+        return false;
+    };
+    // Non-empty stem (reject bare `.md`) and no space immediately before `.md`.
+    if stem.is_empty() || stem.ends_with(char::is_whitespace) {
+        return false;
+    }
+    // G9: reject the exact AC-internal sentinel (case-insensitive). The
+    // user-facing built-ins CLAUDE.md / GEMINI.md / AGENTS.md stay allowed.
+    if filename.eq_ignore_ascii_case("last_ac_context.md") {
+        return false;
+    }
+    // Windows reserved device names, checked case-insensitively on the segment
+    // BEFORE THE FIRST DOT: Windows resolves a device by that base segment and
+    // ignores the extension, so `CON.md` AND `CON.foo.md` both hit the CON
+    // device. CON, PRN, AUX, NUL, COM1..COM9, LPT1..LPT9.
+    let device_segment = stem.split('.').next().unwrap_or(stem);
+    if is_reserved_device_segment(device_segment) {
+        return false;
+    }
+    true
+}
+
+/// True iff `segment` (already lowercased) is a Windows reserved device name.
+/// COM/LPT match digits 1-9 only (COM0/LPT0 are not devices).
+fn is_reserved_device_segment(segment: &str) -> bool {
+    if matches!(segment, "con" | "prn" | "aux" | "nul") {
+        return true;
+    }
+    let bytes = segment.as_bytes();
+    bytes.len() == 4
+        && (segment.starts_with("com") || segment.starts_with("lpt"))
+        && matches!(bytes[3], b'1'..=b'9')
 }
 
 pub fn stringify_agent_command_tokens(tokens: &[String]) -> String {
@@ -533,7 +669,11 @@ pub fn build_agent_spawn_command(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_agent_spawn_command, normalize_legacy_agent_command};
+    use super::{
+        build_agent_spawn_command, default_instructions_filename_for_command,
+        is_safe_instructions_filename, managed_instructions_filenames,
+        normalize_legacy_agent_command, resolve_instructions_filename, resolve_target_filename,
+    };
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
     };
@@ -653,6 +793,7 @@ mod tests {
             exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
+            instructions_filename: None,
         }
     }
 
@@ -958,5 +1099,188 @@ mod tests {
 
         let err = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap_err();
         assert!(err.contains("unknown placeholder"), "{err}");
+    }
+
+    // #529 - instructions filename resolver + safety validation.
+
+    #[test]
+    fn default_instructions_filename_maps_by_detected_kind() {
+        assert_eq!(
+            default_instructions_filename_for_command("claude"),
+            "CLAUDE.md"
+        );
+        assert_eq!(
+            default_instructions_filename_for_command("claude-mb --effort max"),
+            "CLAUDE.md"
+        );
+        assert_eq!(
+            default_instructions_filename_for_command("cmd.exe /c claude"),
+            "CLAUDE.md"
+        );
+        assert_eq!(
+            default_instructions_filename_for_command("gemini -m gpt-5"),
+            "GEMINI.md"
+        );
+        assert_eq!(default_instructions_filename_for_command("codex"), "AGENTS.md");
+        assert_eq!(
+            default_instructions_filename_for_command("opencode"),
+            "AGENTS.md"
+        );
+        assert_eq!(
+            default_instructions_filename_for_command("my-custom-agent"),
+            "AGENTS.md"
+        );
+        // Unparseable (unclosed quote) and empty both fall back to AGENTS.md.
+        assert_eq!(
+            default_instructions_filename_for_command("codex \"unterminated"),
+            "AGENTS.md"
+        );
+        assert_eq!(default_instructions_filename_for_command(""), "AGENTS.md");
+    }
+
+    #[test]
+    fn resolve_instructions_filename_prefers_valid_explicit() {
+        let mut a = agent("x", "codex");
+        // No explicit value -> command-derived default.
+        assert_eq!(resolve_instructions_filename(&a), "AGENTS.md");
+        // Valid explicit value wins.
+        a.instructions_filename = Some("Squad.md".to_string());
+        assert_eq!(resolve_instructions_filename(&a), "Squad.md");
+        // Surrounding whitespace is trimmed.
+        a.instructions_filename = Some("  Squad.md  ".to_string());
+        assert_eq!(resolve_instructions_filename(&a), "Squad.md");
+        // Whitespace-only -> command default.
+        a.instructions_filename = Some("   ".to_string());
+        assert_eq!(resolve_instructions_filename(&a), "AGENTS.md");
+        // Unsafe value (path escape) silently falls back to the default; it never
+        // reaches the writer.
+        a.instructions_filename = Some("../escape.md".to_string());
+        assert_eq!(resolve_instructions_filename(&a), "AGENTS.md");
+        // Claude command default is CLAUDE.md when no explicit value is set.
+        let claude = agent("c", "claude");
+        assert_eq!(resolve_instructions_filename(&claude), "CLAUDE.md");
+    }
+
+    #[test]
+    fn managed_instructions_filenames_dedupes_across_agents() {
+        let settings = AppSettings {
+            agents: vec![
+                agent("claude", "claude"),     // CLAUDE.md
+                agent("codex", "codex"),       // AGENTS.md
+                agent("gemini", "gemini"),     // GEMINI.md
+                agent("opencode", "opencode"), // AGENTS.md (dup of codex)
+            ],
+            ..AppSettings::default()
+        };
+        let mut got = managed_instructions_filenames(&settings);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "AGENTS.md".to_string(),
+                "CLAUDE.md".to_string(),
+                "GEMINI.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_target_filename_covers_all_four_branches() {
+        use crate::config::session_context::ManagedContextTarget;
+        let mut configured = agent("opencode", "opencode");
+        configured.instructions_filename = Some("Team.md".to_string());
+        let settings = AppSettings {
+            agents: vec![configured, agent("codex", "codex")],
+            ..AppSettings::default()
+        };
+
+        // 1. configured agent with explicit valid filename wins.
+        assert_eq!(
+            resolve_target_filename(Some("opencode"), &settings, None).as_deref(),
+            Some("Team.md")
+        );
+        // 2. configured agent without explicit -> command default (overrides detection).
+        assert_eq!(
+            resolve_target_filename(Some("codex"), &settings, Some(ManagedContextTarget::Claude))
+                .as_deref(),
+            Some("AGENTS.md")
+        );
+        // 3. unknown id -> detection fallback.
+        assert_eq!(
+            resolve_target_filename(Some("ghost"), &settings, Some(ManagedContextTarget::Gemini))
+                .as_deref(),
+            Some("GEMINI.md")
+        );
+        // 3b. no id -> detection fallback.
+        assert_eq!(
+            resolve_target_filename(None, &settings, Some(ManagedContextTarget::Codex)).as_deref(),
+            Some("AGENTS.md")
+        );
+        // 4. neither configured agent nor detection -> None.
+        assert_eq!(resolve_target_filename(None, &settings, None), None);
+        assert_eq!(resolve_target_filename(Some("ghost"), &settings, None), None);
+    }
+
+    #[test]
+    fn is_safe_instructions_filename_accepts_bare_md_names() {
+        for ok in [
+            "AGENTS.md",
+            "CLAUDE.md",
+            "GEMINI.md",
+            "MyTeam.md",
+            "AGENTS.MD",
+            "a.md",
+            "my-notes.md",
+            // COM0/LPT0 are NOT reserved devices.
+            "COM0.md",
+            "LPT0.md",
+        ] {
+            assert!(is_safe_instructions_filename(ok), "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn is_safe_instructions_filename_rejects_unsafe_names() {
+        let bad = [
+            "",                 // empty
+            "   ",              // whitespace only
+            ".md",              // empty stem
+            "AGENTS.txt",       // wrong extension
+            "AGENTS",           // no extension
+            "a/b.md",           // forward separator
+            "a\\b.md",          // backslash separator
+            "..\\x.md",         // traversal + separator
+            "../x.md",          // traversal
+            "a..md",            // contains ..
+            "C:x.md",           // drive prefix (colon)
+            "AGENTS.md:evil",   // NTFS Alternate Data Stream (colon)
+            "AGENTS.md ",       // trailing space
+            "AGENTS.md.",       // trailing dot
+            "AGENTS .md",       // space immediately before extension
+            "a\nb.md",          // control char
+            "CON.md",           // reserved device
+            "con.md",           // reserved device (case-insensitive)
+            "PRN.md",
+            "aux.md",
+            "NUL.md",
+            "nul.md",
+            "COM1.md",
+            "com9.md",
+            "LPT1.md",
+            "lpt9.md",
+            "CON.foo.md", // device name resolved by the segment before the first dot
+            "nul.x.md",   // device name (case-insensitive) with extra dot segment
+            "last_ac_context.md", // G9 internal sentinel
+            "LAST_AC_CONTEXT.md", // G9 (case-insensitive)
+        ];
+        for name in bad {
+            assert!(!is_safe_instructions_filename(name), "should reject {name:?}");
+        }
+        // Length cap (> 128 chars).
+        let long = format!("{}.md", "a".repeat(130));
+        assert!(
+            !is_safe_instructions_filename(&long),
+            "should reject an over-long name"
+        );
     }
 }

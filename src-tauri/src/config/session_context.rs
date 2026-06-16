@@ -82,7 +82,10 @@ pub enum ManagedContextTarget {
 }
 
 impl ManagedContextTarget {
-    fn filename(self) -> &'static str {
+    /// `pub` since #529: the launch-time resolver in `agent_command.rs` and the
+    /// detection fallback in `commands/session.rs` map a detected target to its
+    /// filename.
+    pub fn filename(self) -> &'static str {
         match self {
             Self::Claude => "CLAUDE.md",
             Self::Gemini => "GEMINI.md",
@@ -1621,11 +1624,23 @@ fn resolve_session_context_content(
 }
 
 /// Delete stale agent-specific context files from a replica cwd and rewrite the
-/// current resolved context into the single provider-specific filename required
-/// by the coding agent being launched.
-pub fn materialize_agent_context_file(
+/// current resolved context into the single configured filename required by the
+/// coding agent being launched. `extra_managed_filenames` are additional names
+/// to clean up (the union of every configured agent's resolved filename), so
+/// switching a replica between agents removes the previous file before writing
+/// the new one. Returns `Ok(None)` when `cwd` is not an AC-managed agent root.
+///
+/// G1 (symlink/junction-safe): cleanup uses `symlink_metadata` (not `exists`)
+/// so a link/reparse point is detected and the link ENTRY removed, never its
+/// target; and the writer refuses to write THROUGH a surviving link. #529
+/// broadens the cleanup/write set from 3 fixed names to N configured + custom
+/// names, which is why this writer is hardened against a stray link at one of
+/// those names (an arbitrary-overwrite primitive, and a junction would brick
+/// every launch via remove_file -> Err -> rollback).
+pub fn materialize_agent_context_file_with_filename(
     cwd: &str,
-    target: ManagedContextTarget,
+    target_filename: &str,
+    extra_managed_filenames: &[String],
     is_coordinator: bool,
 ) -> Result<Option<String>, String> {
     let content = match resolve_session_context_content(cwd, is_coordinator)? {
@@ -1633,10 +1648,64 @@ pub fn materialize_agent_context_file(
         None => return Ok(None),
     };
 
+    // String-level guard (path escape): never write outside the root, even if a
+    // direct `pub` caller bypassed settings validation. The on-disk link checks
+    // below guard against state no string validation can detect.
+    if target_filename.contains('/') || target_filename.contains('\\') {
+        return Err(format!(
+            "Refusing to write context to a path with separators: {}",
+            target_filename
+        ));
+    }
+
     let cwd_path = std::path::Path::new(cwd);
-    for filename in MANAGED_CONTEXT_FILENAMES {
+
+    // Cleanup set: built-ins ∪ all configured filenames ∪ target, deduped so the
+    // target (usually already present via managed_instructions_filenames) is not
+    // stat'd twice.
+    let mut cleanup: Vec<&str> = MANAGED_CONTEXT_FILENAMES.to_vec();
+    for f in extra_managed_filenames {
+        if !cleanup.contains(&f.as_str()) {
+            cleanup.push(f.as_str());
+        }
+    }
+    if !cleanup.contains(&target_filename) {
+        cleanup.push(target_filename);
+    }
+
+    for filename in cleanup {
         let path = cwd_path.join(filename);
-        if path.exists() {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Failed to stat context file {}: {}",
+                    path.display(),
+                    e
+                ))
+            }
+        };
+        if is_link_or_reparse(&meta) {
+            // Remove the link/junction ENTRY itself (never its target): try file
+            // (file symlink) first, then dir (dir symlink / junction).
+            std::fs::remove_file(&path)
+                .or_else(|_| std::fs::remove_dir(&path))
+                .map_err(|e| {
+                    format!(
+                        "Failed to remove link at context path {}: {}",
+                        path.display(),
+                        e
+                    )
+                })?;
+        } else if meta.is_dir() {
+            // A real directory named like a managed file is a genuine problem;
+            // refuse rather than delete a directory tree.
+            return Err(format!(
+                "Refusing to launch: managed context path {} is a real directory, not a file",
+                path.display()
+            ));
+        } else {
             std::fs::remove_file(&path).map_err(|e| {
                 format!(
                     "Failed to remove stale context file {}: {}",
@@ -1647,7 +1716,17 @@ pub fn materialize_agent_context_file(
         }
     }
 
-    let target_path = cwd_path.join(target.filename());
+    let target_path = cwd_path.join(target_filename);
+    // Defensive: the target is always in `cleanup`, so a surviving link here is
+    // unexpected; never write THROUGH one (belt-and-suspenders for direct callers).
+    if let Ok(meta) = std::fs::symlink_metadata(&target_path) {
+        if is_link_or_reparse(&meta) {
+            return Err(format!(
+                "Refusing to write context through a link at {}",
+                target_path.display()
+            ));
+        }
+    }
     std::fs::write(&target_path, &content)
         .map_err(|e| format!("Failed to write {}: {}", target_path.display(), e))?;
 
@@ -1658,6 +1737,37 @@ pub fn materialize_agent_context_file(
     );
 
     Ok(Some(target_path.to_string_lossy().to_string()))
+}
+
+/// True iff `meta` is a symlink or (Windows) any reparse point (junction).
+/// Local copy of the gate at `cli/agency_templates.rs:867-880`; kept private to
+/// this module to avoid widening another module's API (the codebase already
+/// inlines this same check in `claude_settings.rs` and `coding_agent_profiles.rs`;
+/// do NOT refactor those into one helper here).
+fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Enum-based entry point preserved as a thin wrapper so the existing test call
+/// sites (`materialize_agent_context_file(cwd, ManagedContextTarget::X, bool)`)
+/// keep compiling unchanged.
+pub fn materialize_agent_context_file(
+    cwd: &str,
+    target: ManagedContextTarget,
+    is_coordinator: bool,
+) -> Result<Option<String>, String> {
+    materialize_agent_context_file_with_filename(cwd, target.filename(), &[], is_coordinator)
 }
 
 /// Simple deterministic hash for a string (for temp file naming).
@@ -4118,6 +4228,188 @@ mod tests {
 
         assert!(err.contains("not valid UTF-8"));
         assert!(err.contains(GLOBAL_CONTEXT_TEMPLATE_FILENAME));
+    }
+
+    // #529 - filename-based writer (materialize_agent_context_file_with_filename).
+
+    #[test]
+    fn materialize_with_filename_writes_custom_and_cleans_builtins_and_extra() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        // Pre-existing managed files that must be removed before the new write.
+        std::fs::write(matrix_root.join("CLAUDE.md"), "stale claude").expect("write CLAUDE.md");
+        std::fs::write(matrix_root.join("AGENTS.md"), "stale agents").expect("write AGENTS.md");
+        std::fs::write(matrix_root.join("MyTeam.md"), "stale custom").expect("write MyTeam.md");
+
+        let materialized = materialize_agent_context_file_with_filename(
+            &path_string(&matrix_root),
+            "Squad.md",
+            &["MyTeam.md".to_string()],
+            false,
+        )
+        .expect("materialize")
+        .expect("context path");
+
+        assert!(materialized.ends_with("Squad.md"));
+        assert!(matrix_root.join("Squad.md").is_file());
+        assert!(!matrix_root.join("CLAUDE.md").exists());
+        assert!(!matrix_root.join("AGENTS.md").exists());
+        assert!(
+            !matrix_root.join("MyTeam.md").exists(),
+            "a configured custom name in the cleanup set must be removed"
+        );
+        let content = std::fs::read_to_string(matrix_root.join("Squad.md")).expect("read Squad.md");
+        assert!(!content.is_empty());
+        assert_ne!(content, "stale custom");
+    }
+
+    #[test]
+    fn materialize_with_filename_orphans_unlisted_custom_name() {
+        // R1.6 documented limitation: a custom name NOT in the cleanup set is not
+        // removed (a *.md sweep would be too aggressive). This locks the behavior.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::write(matrix_root.join("MyTeam.md"), "stale custom").expect("write MyTeam.md");
+
+        materialize_agent_context_file_with_filename(
+            &path_string(&matrix_root),
+            "Squad.md",
+            &[], // MyTeam.md intentionally not listed -> it survives.
+            false,
+        )
+        .expect("materialize")
+        .expect("context path");
+
+        assert!(
+            matrix_root.join("MyTeam.md").is_file(),
+            "an unlisted custom name is intentionally orphaned, not swept"
+        );
+        assert_eq!(
+            std::fs::read_to_string(matrix_root.join("MyTeam.md")).expect("read MyTeam.md"),
+            "stale custom"
+        );
+        assert!(matrix_root.join("Squad.md").is_file());
+    }
+
+    #[test]
+    fn materialize_with_filename_rejects_path_separators() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+
+        let err = materialize_agent_context_file_with_filename(
+            &path_string(&matrix_root),
+            "sub/evil.md",
+            &[],
+            false,
+        )
+        .expect_err("a filename with separators must be rejected by the writer");
+        assert!(err.contains("separators"), "{err}");
+    }
+
+    #[test]
+    fn materialize_with_filename_refuses_to_write_through_file_symlink() {
+        // G1: AGENTS.md is a FILE symlink to an out-of-root target. The writer
+        // must remove the link entry and write a fresh regular file, never write
+        // THROUGH the link to its target.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        let outside = temp.path().join("outside-secret.txt");
+        std::fs::write(&outside, "SENTINEL").expect("write outside target");
+        let link = matrix_root.join("AGENTS.md");
+
+        #[cfg(unix)]
+        {
+            if std::os::unix::fs::symlink(&outside, &link).is_err() {
+                return;
+            }
+        }
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+                return; // symlink creation can need privilege; skip where unsupported.
+            }
+        }
+
+        let materialized = materialize_agent_context_file_with_filename(
+            &path_string(&matrix_root),
+            "AGENTS.md",
+            &[],
+            false,
+        )
+        .expect("materialize should succeed by replacing the link")
+        .expect("context path");
+
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("read outside target"),
+            "SENTINEL",
+            "the writer must NOT write through the symlink to its out-of-root target"
+        );
+        let meta = std::fs::symlink_metadata(&link).expect("stat AGENTS.md");
+        assert!(
+            !is_link_or_reparse(&meta),
+            "AGENTS.md must be a regular file after materialize, not a link"
+        );
+        let content = std::fs::read_to_string(&materialized).expect("read materialized");
+        assert_ne!(content, "SENTINEL");
+        assert!(!content.is_empty());
+    }
+
+    #[test]
+    fn materialize_with_filename_replaces_dir_link_without_touching_target() {
+        // G1: AGENTS.md is a DIRECTORY symlink/junction (a reparse point). The
+        // writer must remove the link entry (not the target tree) and write a
+        // regular file. Pre-#529 this bricked the launch (remove_file on a dir
+        // failed -> Err -> "context files missing" + rollback).
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        let outside_dir = temp.path().join("outside-dir");
+        std::fs::create_dir_all(&outside_dir).expect("create outside dir");
+        std::fs::write(outside_dir.join("keep.txt"), "KEEP").expect("write inside outside dir");
+        let link = matrix_root.join("AGENTS.md");
+
+        #[cfg(unix)]
+        {
+            if std::os::unix::fs::symlink(&outside_dir, &link).is_err() {
+                return;
+            }
+        }
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(&outside_dir, &link).is_err() {
+                return; // dir symlink/junction creation can need privilege.
+            }
+        }
+
+        materialize_agent_context_file_with_filename(
+            &path_string(&matrix_root),
+            "AGENTS.md",
+            &[],
+            false,
+        )
+        .expect("materialize should replace the dir link, not brick the launch")
+        .expect("context path");
+
+        assert!(
+            outside_dir.join("keep.txt").is_file(),
+            "the out-of-root directory and contents must survive (link entry removed, not target)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside_dir.join("keep.txt")).expect("read keep"),
+            "KEEP"
+        );
+        let meta = std::fs::symlink_metadata(&link).expect("stat AGENTS.md");
+        assert!(!is_link_or_reparse(&meta));
+        assert!(meta.is_file());
     }
 
     #[test]
