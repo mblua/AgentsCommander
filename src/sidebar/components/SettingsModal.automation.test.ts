@@ -9,6 +9,9 @@ vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
     get: vi.fn(() => Promise.resolve(settings())),
     update: vi.fn(() => Promise.resolve()),
+    saveDraft: vi.fn(() => Promise.resolve()),
+    updateCodingAgentProfiles: vi.fn(() => Promise.resolve()),
+    updateCodingAgentEnvSettings: vi.fn(() => Promise.resolve()),
     getWebServerStatus: vi.fn(() => Promise.resolve(false)),
     openWebRemote: vi.fn(() => Promise.resolve()),
     startWebServer: vi.fn(() => Promise.resolve(false)),
@@ -91,8 +94,16 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
         color: "#10b981",
         gitPullBefore: false,
         excludeGlobalClaudeMd: true,
+        envs: [],
+        isolatedHome: false,
       },
     ],
+    codingAgentProfiles: {
+      schemaVersion: 2,
+      profileSlots: { A: { label: "" } },
+      defaultProfileByAgent: {},
+      profilesByAgent: {},
+    },
     telegramBots: [],
     onboardingDismissed: true,
     projectPaths: [],
@@ -108,6 +119,12 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
 async function settle(): Promise<void> {
   await Promise.resolve();
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+function byTestId<T extends Element = Element>(testId: string): T {
+  const element = document.querySelector<T>(`[data-ac-testid="${testId}"]`);
+  if (!element) throw new Error(`missing selector ${testId}`);
+  return element;
 }
 
 describe("SettingsModal automation hooks", () => {
@@ -164,6 +181,42 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("exposes environment and Codex isolation controls for automation", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    expect(byTestId("settings.agentRow.0.env")).toBeTruthy();
+    expect(byTestId("settings.agentRow.0.env.empty")).toBeTruthy();
+    const addEnv = byTestId<HTMLButtonElement>("settings.agentRow.0.env.add");
+    addEnv.click();
+    await settle();
+
+    expect(byTestId("settings.agentRow.0.envRow.0").getAttribute("data-ac-state")).toBe("enabled");
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.key")).toBeTruthy();
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.value")).toBeTruthy();
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.enabled")).toBeTruthy();
+    expect(byTestId("settings.agentRow.0.envRow.0.source").textContent).toContain("user");
+    expect(byTestId("settings.agentRow.0.envRow.0.source").getAttribute("data-ac-env-source")).toBe("user");
+    expect(byTestId<HTMLButtonElement>("settings.agentRow.0.envRow.0.delete").disabled).toBe(false);
+
+    const isolation = byTestId<HTMLInputElement>("settings.agentRow.0.codexHomeIsolation");
+    expect(isolation.checked).toBe(false);
+    expect(isolation.getAttribute("data-ac-state")).toBe("unchecked");
+    isolation.checked = true;
+    isolation.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.codexHomeIsolation").checked).toBe(true);
+    expect(byTestId("settings.agentRow.0.codexHomeIsolation.preview").getAttribute("data-ac-state")).toBe("isolated");
+
+    dispose();
+  });
+
   it("keeps an early custom agent draft when the fresh load resolves late", async () => {
     let resolveLoadedSettings: (value: AppSettings) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(
@@ -198,6 +251,240 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("keeps early environment edits when the fresh load resolves late", async () => {
+    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    vi.mocked(SettingsAPI.get).mockReturnValueOnce(
+      new Promise<AppSettings>((resolve) => {
+        resolveLoadedSettings = resolve;
+      }),
+    );
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+
+    const addEnv = document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.agentRow.0.env.add"]');
+    if (!addEnv) throw new Error("missing environment add button");
+    addEnv.click();
+    await settle();
+
+    const keyInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.agentRow.0.envRow.0.key"]');
+    const valueInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.agentRow.0.envRow.0.value"]');
+    if (!keyInput || !valueInput) throw new Error("missing environment inputs");
+    keyInput.value = "USER_TOKEN";
+    keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+    valueInput.value = "secret";
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    resolveLoadedSettings(settings());
+    await settle();
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agents[0]?.envs).toEqual([
+      {
+        key: "USER_TOKEN",
+        value: "secret",
+        source: "user",
+        enabled: true,
+      },
+    ]);
+
+    dispose();
+  });
+
+  it("renders coding-agent rails, profile cards, command inputs, env rows, and badges", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "codex",
+          label: "Codex",
+          command: "codex",
+          color: "#10b981",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: true,
+          envs: [],
+          isolatedHome: false,
+        },
+        {
+          id: "claude",
+          label: "Claude Code",
+          command: "claude",
+          color: "#d97706",
+          gitPullBefore: false,
+          excludeGlobalClaudeMd: false,
+          envs: [],
+          isolatedHome: false,
+        },
+      ],
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: {
+          A: { label: "" },
+          B: { label: "fast" },
+        },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
+          codex: {
+            A: {
+              enabled: true,
+              command: "codex --model gpt-5-codex",
+              env: { OPENAI_ORG: "ac-prod" },
+              notes: "",
+            },
+          },
+          // Claude configures B; codex does not → codex B renders as MISSING.
+          claude: {
+            A: { enabled: true, command: "claude", env: {}, notes: "" },
+            B: { enabled: true, command: "claude --model opus", env: {}, notes: "" },
+          },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    // Rail per coding agent, subtitle = binary basename (not model/sandbox).
+    expect(byTestId("settings.profiles.section")).toBeTruthy();
+    expect(byTestId("settings.profiles.rails")).toBeTruthy();
+    expect(byTestId("settings.profileRail.0").getAttribute("data-ac-agent-id")).toBe("codex");
+    expect(byTestId("settings.profileRail.0.subtitle").textContent).toContain("codex");
+
+    // Profile A card: configured → MATCH, one command input, an env row.
+    expect(byTestId("settings.profileCard.0.A").getAttribute("data-ac-state")).toBe("match");
+    expect(byTestId("settings.profileCard.0.A.badge").textContent).toContain("MATCH");
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.command").value).toBe("codex --model gpt-5-codex");
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.label")).toBeTruthy();
+    expect(byTestId("settings.profileCard.0.A.env")).toBeTruthy();
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.key").value).toBe("OPENAI_ORG");
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.value").value).toBe("ac-prod");
+
+    // Profile B slot is configured on Claude but not on codex → MISSING with Add.
+    expect(byTestId("settings.profileCard.0.B").getAttribute("data-ac-state")).toBe("missing");
+    expect(byTestId("settings.profileCard.0.B.badge").textContent).toContain("MISSING");
+    expect(byTestId("settings.profileCard.0.B.missing")).toBeTruthy();
+    expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.add")).toBeTruthy();
+    // Claude rail: B is configured → MATCH.
+    expect(byTestId("settings.profileCard.1.B").getAttribute("data-ac-state")).toBe("match");
+    expect(byTestId<HTMLButtonElement>("settings.profiles.add").disabled).toBe(false);
+
+    dispose();
+  });
+
+  it("shows the red invalid badge for a bad command string and blocks save", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: { A: { label: "" } },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
+          codex: { A: { enabled: true, command: "codex", env: {}, notes: "" } },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    const command = byTestId<HTMLInputElement>("settings.profileCard.0.A.command");
+    command.value = 'codex --review --prompt "missing close';
+    command.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    expect(byTestId("settings.profileCard.0.A").getAttribute("data-ac-state")).toBe("invalid");
+    expect(byTestId("settings.profileCard.0.A.command.error")).toBeTruthy();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    // Save is blocked by the parse error; no draft is persisted.
+    expect(SettingsAPI.saveDraft).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-ac-testid="settings.modal"] .modal-save-error')).toBeTruthy();
+
+    dispose();
+  });
+
+  it("renders the %AC_ROOT% template preview for env rows", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: { A: { label: "" } },
+        defaultProfileByAgent: {},
+        profilesByAgent: {
+          codex: {
+            A: {
+              enabled: true,
+              command: "codex",
+              env: { CODEX_HOME: "%AC_ROOT%\\.codex\\agents\\codex" },
+              notes: "",
+            },
+          },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    expect(byTestId("settings.profileCard.0.A.envRow.0.placeholder")).toBeTruthy();
+
+    dispose();
+  });
+
+  it("keeps early profile cell edits when the fresh load resolves late", async () => {
+    let resolveLoadedSettings: (value: AppSettings) => void = () => {};
+    vi.mocked(SettingsAPI.get).mockReturnValueOnce(
+      new Promise<AppSettings>((resolve) => {
+        resolveLoadedSettings = resolve;
+      }),
+    );
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    const commandInput = document.querySelector<HTMLInputElement>('[data-ac-testid="settings.profileCard.0.A.command"]');
+    if (!commandInput) throw new Error("missing profile command input");
+    commandInput.value = "codex --fast";
+    commandInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    resolveLoadedSettings(settings());
+    await settle();
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.codingAgentProfiles.profilesByAgent.codex?.A?.command).toBe("codex --fast");
+
+    dispose();
+  });
+
   it("uses the seeded RTK baseline when saving before the fresh load resolves", async () => {
     let resolveLoadedSettings: (value: AppSettings) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(
@@ -226,9 +513,12 @@ describe("SettingsModal automation hooks", () => {
     document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
     await settle();
 
-    expect(SettingsAPI.update).toHaveBeenCalledWith(
+    expect(SettingsAPI.saveDraft).toHaveBeenCalledWith(
       expect.objectContaining({ injectRtkHook: true }),
     );
+    expect(SettingsAPI.update).not.toHaveBeenCalled();
+    expect(SettingsAPI.updateCodingAgentProfiles).not.toHaveBeenCalled();
+    expect(SettingsAPI.updateCodingAgentEnvSettings).not.toHaveBeenCalled();
     expect(SettingsAPI.sweepRtkHook).toHaveBeenCalledWith(true);
 
     resolveLoadedSettings(settings());

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use serde_json::{Map, Value};
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -18,6 +20,76 @@ pub struct AgentConfig {
     /// If true, auto-generate .claude/settings.local.json with claudeMdExcludes on agent creation
     #[serde(default)]
     pub exclude_global_claude_md: bool,
+    /// Base environment rows applied to every launch of this coding agent.
+    #[serde(default)]
+    pub envs: Vec<CodingAgentEnv>,
+    /// When true for Codex, AC provides an isolated CODEX_HOME at spawn time.
+    #[serde(default, alias = "isolateCodexHome")]
+    pub isolated_home: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingAgentEnv {
+    pub key: String,
+    pub value: String,
+    #[serde(default)]
+    pub source: CodingAgentEnvSource,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum CodingAgentEnvSource {
+    #[default]
+    User,
+    #[serde(alias = "agentsCommander")]
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingAgentProfilesConfig {
+    #[serde(default = "default_profiles_schema_version")]
+    pub schema_version: u32,
+    #[serde(default = "default_profile_slots", alias = "letters")]
+    pub profile_slots: BTreeMap<String, ProfileSlotConfig>,
+    #[serde(default, alias = "agentDefaults")]
+    pub default_profile_by_agent: BTreeMap<String, String>,
+    #[serde(default, alias = "matrix")]
+    pub profiles_by_agent: BTreeMap<String, BTreeMap<String, ProfileCellConfig>>,
+}
+
+impl Default for CodingAgentProfilesConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: default_profiles_schema_version(),
+            profile_slots: default_profile_slots(),
+            default_profile_by_agent: BTreeMap::new(),
+            profiles_by_agent: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSlotConfig {
+    #[serde(default, alias = "name")]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileCellConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub notes: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +184,9 @@ pub struct AppSettings {
     pub default_shell_args: Vec<String>,
     /// Available coding agents
     pub agents: Vec<AgentConfig>,
+    /// Reusable coding-agent profile letters, defaults, and per-agent cells.
+    #[serde(default)]
+    pub coding_agent_profiles: CodingAgentProfilesConfig,
     /// Configured Telegram bots for bridge
     #[serde(default)]
     pub telegram_bots: Vec<TelegramBotConfig>,
@@ -289,6 +364,19 @@ fn default_true() -> bool {
     true
 }
 
+fn default_profiles_schema_version() -> u32 {
+    2
+}
+
+fn default_profile_slots() -> BTreeMap<String, ProfileSlotConfig> {
+    BTreeMap::from([(
+        "A".to_string(),
+        ProfileSlotConfig {
+            label: String::new(),
+        },
+    )])
+}
+
 fn default_telegram_network_first_failure_level() -> TelegramPollFailureLogLevel {
     TelegramPollFailureLogLevel::Warn
 }
@@ -353,6 +441,7 @@ impl Default for AppSettings {
             default_shell,
             default_shell_args,
             agents: vec![],
+            coding_agent_profiles: CodingAgentProfilesConfig::default(),
             telegram_bots: vec![],
             telegram_network_poll_error_logging: TelegramNetworkPollErrorLogging::default(),
             restore_coordinator_wake_state: false,
@@ -512,37 +601,543 @@ fn codex_has_manual_resume(tokens: &[&str], codex_idx: usize) -> bool {
     false
 }
 
+pub fn is_valid_profile_letter(letter: &str) -> bool {
+    letter.len() == 1 && letter.as_bytes()[0].is_ascii_uppercase()
+}
+
+pub fn normalize_profile_letter(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.len() == 1 {
+        let upper = trimmed.to_ascii_uppercase();
+        if is_valid_profile_letter(&upper) {
+            return Some(upper);
+        }
+    }
+    None
+}
+
+fn parse_settings_json(contents: &str, source: &str) -> Result<(AppSettings, bool), String> {
+    let mut value: Value = serde_json::from_str(contents)
+        .map_err(|e| format!("Failed to parse settings file: {}", e))?;
+    let migrated = migrate_settings_value_to_v2(&mut value);
+    let settings: AppSettings = serde_json::from_value(value)
+        .map_err(|e| format!("Failed to deserialize settings from {source}: {e}"))?;
+    Ok((settings, migrated))
+}
+
+fn migrate_settings_value_to_v2(value: &mut Value) -> bool {
+    let Some(root) = value.as_object_mut() else {
+        return false;
+    };
+    let agent_commands = agent_command_map_from_value(root.get("agents"));
+    let Some(profiles_value) = root.get_mut("codingAgentProfiles") else {
+        return false;
+    };
+    let Some(profiles_obj) = profiles_value.as_object() else {
+        return false;
+    };
+    let migrated_profiles = migrate_profiles_object_to_v2(profiles_obj, &agent_commands);
+    let changed = *profiles_value != migrated_profiles;
+    if changed {
+        *profiles_value = migrated_profiles;
+    }
+    changed
+}
+
+fn agent_command_map_from_value(value: Option<&Value>) -> BTreeMap<String, String> {
+    value
+        .and_then(Value::as_array)
+        .map(|agents| {
+            agents
+                .iter()
+                .filter_map(|agent| {
+                    let obj = agent.as_object()?;
+                    let id = obj.get("id")?.as_str()?;
+                    let command = obj.get("command")?.as_str()?;
+                    Some((id.to_string(), command.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn migrate_profiles_object_to_v2(
+    obj: &Map<String, Value>,
+    agent_commands: &BTreeMap<String, String>,
+) -> Value {
+    let mut out = Map::new();
+    out.insert("schemaVersion".to_string(), Value::Number(2.into()));
+    out.insert(
+        "profileSlots".to_string(),
+        migrate_profile_slots(obj.get("profileSlots").or_else(|| obj.get("letters"))),
+    );
+    out.insert(
+        "defaultProfileByAgent".to_string(),
+        obj.get("defaultProfileByAgent")
+            .or_else(|| obj.get("agentDefaults"))
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new())),
+    );
+    out.insert(
+        "profilesByAgent".to_string(),
+        migrate_profiles_by_agent(
+            obj.get("profilesByAgent").or_else(|| obj.get("matrix")),
+            agent_commands,
+        ),
+    );
+    Value::Object(out)
+}
+
+fn migrate_profile_slots(value: Option<&Value>) -> Value {
+    let mut out = Map::new();
+    if let Some(slots) = value.and_then(Value::as_object) {
+        for (letter, slot) in slots {
+            let label = slot
+                .get("label")
+                .or_else(|| slot.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            out.insert(
+                letter.clone(),
+                serde_json::json!({
+                    "label": label,
+                }),
+            );
+        }
+    }
+    if !out.contains_key("A") {
+        out.insert("A".to_string(), serde_json::json!({ "label": "" }));
+    }
+    Value::Object(out)
+}
+
+fn migrate_profiles_by_agent(
+    value: Option<&Value>,
+    agent_commands: &BTreeMap<String, String>,
+) -> Value {
+    let mut out = Map::new();
+    if let Some(by_agent) = value.and_then(Value::as_object) {
+        for (agent_id, cells_value) in by_agent {
+            let mut cells_out = Map::new();
+            if let Some(cells) = cells_value.as_object() {
+                for (letter, cell_value) in cells {
+                    cells_out.insert(
+                        letter.clone(),
+                        migrate_profile_cell(agent_id, letter, cell_value, agent_commands),
+                    );
+                }
+            }
+            out.insert(agent_id.clone(), Value::Object(cells_out));
+        }
+    }
+    Value::Object(out)
+}
+
+fn migrate_profile_cell(
+    agent_id: &str,
+    letter: &str,
+    value: &Value,
+    agent_commands: &BTreeMap<String, String>,
+) -> Value {
+    let Some(obj) = value.as_object() else {
+        return serde_json::json!({
+            "enabled": false,
+            "command": "",
+            "env": {},
+            "notes": "",
+        });
+    };
+
+    let mut enabled = obj.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    let command = obj
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let legacy_argv = legacy_string_array(obj.get("argv"));
+    let legacy_args = legacy_string_array(obj.get("args"));
+    if legacy_argv.is_some() && legacy_args.is_some() {
+        log::warn!(
+            "[settings-migration] profile {}:{} has both legacy argv and args; args ignored",
+            agent_id,
+            letter
+        );
+    }
+    let legacy_tokens = legacy_argv.or(legacy_args);
+    let command = command.unwrap_or_else(|| {
+        let Some(legacy_tokens) = legacy_tokens else {
+            return String::new();
+        };
+        match agent_commands.get(agent_id) {
+            Some(agent_command) => {
+                match crate::config::agent_command::normalize_legacy_agent_command(agent_command) {
+                    Ok(normalized) => {
+                        let mut tokens = Vec::with_capacity(1 + normalized.shell_args.len() + legacy_tokens.len());
+                        tokens.push(normalized.shell);
+                        tokens.extend(normalized.shell_args);
+                        tokens.extend(legacy_tokens);
+                        crate::config::agent_command::stringify_agent_command_tokens(&tokens)
+                    }
+                    Err(e) => {
+                        enabled = false;
+                        log::error!(
+                            "[settings-migration] profile {}:{} could not parse owning agent command {:?}: {}; preserving legacy args disabled",
+                            agent_id,
+                            letter,
+                            agent_command,
+                            e
+                        );
+                        crate::config::agent_command::stringify_agent_command_tokens(&legacy_tokens)
+                    }
+                }
+            }
+            None => {
+                enabled = false;
+                log::warn!(
+                    "[settings-migration] profile {}:{} has legacy args but no owning agent command; preserving disabled",
+                    agent_id,
+                    letter
+                );
+                crate::config::agent_command::stringify_agent_command_tokens(&legacy_tokens)
+            }
+        }
+    });
+
+    serde_json::json!({
+        "enabled": enabled,
+        "command": command,
+        "env": string_map_value(obj.get("env")),
+        "notes": obj.get("notes").and_then(Value::as_str).unwrap_or(""),
+    })
+}
+
+fn legacy_string_array(value: Option<&Value>) -> Option<Vec<String>> {
+    value.and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
+fn string_map_value(value: Option<&Value>) -> Value {
+    let mut out = Map::new();
+    if let Some(map) = value.and_then(Value::as_object) {
+        for (key, value) in map {
+            if let Some(value) = value.as_str() {
+                out.insert(key.clone(), Value::String(value.to_string()));
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+pub fn empty_profile_cell() -> ProfileCellConfig {
+    ProfileCellConfig {
+        enabled: true,
+        command: String::new(),
+        env: BTreeMap::new(),
+        notes: String::new(),
+    }
+}
+
+pub fn repair_coding_agent_profiles_config(
+    profiles: &mut CodingAgentProfilesConfig,
+    agents: &[AgentConfig],
+) -> bool {
+    let mut changed = false;
+
+    if profiles.schema_version < 2 {
+        profiles.schema_version = default_profiles_schema_version();
+        changed = true;
+    }
+
+    let original_letters_len = profiles.profile_slots.len();
+    profiles
+        .profile_slots
+        .retain(|letter, _| is_valid_profile_letter(letter));
+    changed |= profiles.profile_slots.len() != original_letters_len;
+
+    if !profiles.profile_slots.contains_key("A") {
+        profiles.profile_slots.insert(
+            "A".to_string(),
+            ProfileSlotConfig {
+                label: String::new(),
+            },
+        );
+        changed = true;
+    }
+
+    let original_defaults_len = profiles.default_profile_by_agent.len();
+    profiles
+        .default_profile_by_agent
+        .retain(|_, letter| is_valid_profile_letter(letter));
+    changed |= profiles.default_profile_by_agent.len() != original_defaults_len;
+
+    for (_agent_id, cells) in profiles.profiles_by_agent.iter_mut() {
+        let original_cells_len = cells.len();
+        cells.retain(|letter, _| is_valid_profile_letter(letter));
+        changed |= cells.len() != original_cells_len;
+    }
+
+    for agent in agents {
+        let cells = profiles
+            .profiles_by_agent
+            .entry(agent.id.clone())
+            .or_default();
+        if !cells.contains_key("A") {
+            cells.insert("A".to_string(), empty_profile_cell());
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+pub fn normalize_env_key_for_platform(key: &str) -> String {
+    if cfg!(windows) {
+        key.to_ascii_uppercase()
+    } else {
+        key.to_string()
+    }
+}
+
+pub fn is_codex_home_key(key: &str) -> bool {
+    normalize_env_key_for_platform(key) == normalize_env_key_for_platform("CODEX_HOME")
+}
+
+pub fn is_reserved_env_key(key: &str) -> bool {
+    let normalized = normalize_env_key_for_platform(key);
+    let ac_prefix = normalize_env_key_for_platform("AGENTSCOMMANDER_");
+    normalized.starts_with(&ac_prefix)
+        || normalized == normalize_env_key_for_platform("AC_REAL_GIT")
+        || normalized == normalize_env_key_for_platform("TERM")
+        || normalized == normalize_env_key_for_platform("GIT_CEILING_DIRECTORIES")
+        || normalized == normalize_env_key_for_platform("PATH")
+        || normalized == normalize_env_key_for_platform("PATHEXT")
+}
+
+pub fn validate_user_env_key(key: &str, context: &str) -> Result<(), String> {
+    if key.trim() != key {
+        return Err(format!(
+            "{context}: env key must not have leading or trailing whitespace"
+        ));
+    }
+    if key.is_empty() {
+        return Err(format!("{context}: env key must not be empty"));
+    }
+    if key.contains('=') {
+        return Err(format!("{context}: env key '{key}' must not contain '='"));
+    }
+    if key.contains('\0') || key.contains('\n') || key.contains('\r') {
+        return Err(format!(
+            "{context}: env key '{key}' must not contain NUL or newline characters"
+        ));
+    }
+    if is_reserved_env_key(key) {
+        return Err(format!(
+            "{context}: env key '{key}' is reserved by AgentsCommander"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_codex_home_basic<'a>(value: &'a str, context: &str) -> Result<&'a str, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{context}: CODEX_HOME must not be empty"));
+    }
+    if trimmed.contains('\0') || trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(format!(
+            "{context}: CODEX_HOME must not contain NUL or newline characters"
+        ));
+    }
+    Ok(trimmed)
+}
+
+pub fn validate_codex_home_template_value(value: &str, context: &str) -> Result<(), String> {
+    let trimmed = validate_codex_home_basic(value, context)?;
+    if trimmed.contains("%AC_ROOT%") {
+        if !(trimmed == "%AC_ROOT%"
+            || trimmed.starts_with("%AC_ROOT%/")
+            || trimmed.starts_with("%AC_ROOT%\\"))
+        {
+            return Err(format!(
+                "{context}: CODEX_HOME template must start with %AC_ROOT% as a complete path segment"
+            ));
+        }
+        reject_unknown_codex_home_template_markers(trimmed, context)?;
+        return Ok(());
+    }
+    reject_unknown_codex_home_template_markers(trimmed, context)?;
+    validate_expanded_codex_home_value(trimmed, context).map(|_| ())
+}
+
+pub fn validate_expanded_codex_home_value(value: &str, context: &str) -> Result<PathBuf, String> {
+    let trimmed = validate_codex_home_basic(value, context)?;
+    crate::config::placeholders::reject_unexpanded_markers(trimmed, context, true)?;
+    if trimmed.contains('$') || trimmed.contains('%') {
+        return Err(format!(
+            "{context}: CODEX_HOME must be an absolute literal path without variable markers"
+        ));
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err(format!("{context}: CODEX_HOME must be an absolute path"));
+    }
+    Ok(path)
+}
+
+pub fn validate_codex_home_value(value: &str, context: &str) -> Result<PathBuf, String> {
+    validate_expanded_codex_home_value(value, context)
+}
+
+fn reject_unknown_codex_home_template_markers(value: &str, context: &str) -> Result<(), String> {
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        rest = &rest[start..];
+        if rest.starts_with("%AC_ROOT%") {
+            rest = &rest["%AC_ROOT%".len()..];
+            continue;
+        }
+        if let Some(end) = rest[1..].find('%') {
+            let marker = &rest[..end + 2];
+            return Err(format!(
+                "{context}: CODEX_HOME contains unknown placeholder {marker}"
+            ));
+        }
+        break;
+    }
+    Ok(())
+}
+
+fn validate_env_map(env: &BTreeMap<String, String>, context: &str) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    for (key, value) in env {
+        validate_user_env_key(key, context)?;
+        let normalized = normalize_env_key_for_platform(key);
+        if !seen.insert(normalized) {
+            return Err(format!("{context}: duplicate env key '{key}'"));
+        }
+        if is_codex_home_key(key) {
+            validate_codex_home_template_value(value, context)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_env_rows(rows: &[CodingAgentEnv], context: &str) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    for row in rows.iter().filter(|row| row.enabled) {
+        validate_user_env_key(&row.key, context)?;
+        let normalized = normalize_env_key_for_platform(&row.key);
+        if !seen.insert(normalized) {
+            return Err(format!("{context}: duplicate env key '{}'", row.key));
+        }
+        if is_codex_home_key(&row.key) {
+            validate_codex_home_template_value(&row.value, context)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), String> {
+    repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
+    validate_agent_commands(settings)
+}
+
+pub fn merge_protected_coding_agent_settings(
+    current: &AppSettings,
+    mut incoming: AppSettings,
+) -> AppSettings {
+    incoming.coding_agent_profiles = current.coding_agent_profiles.clone();
+
+    for incoming_agent in &mut incoming.agents {
+        if let Some(current_agent) = current.agents.iter().find(|a| a.id == incoming_agent.id) {
+            incoming_agent.envs = current_agent.envs.clone();
+            incoming_agent.isolated_home = current_agent.isolated_home;
+        }
+    }
+
+    incoming
+}
+
 pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
     for agent in &settings.agents {
-        let tokens: Vec<&str> = agent.command.split_whitespace().collect();
+        validate_agent_command_text(&format!("Agent \"{}\"", agent.label), &agent.command)?;
 
-        if let Some(claude_idx) = find_provider_token(&tokens, "claude") {
-            if tokens[claude_idx + 1..].iter().any(|token| {
-                token.eq_ignore_ascii_case("--continue") || token.eq_ignore_ascii_case("-c")
-            }) {
+        validate_env_rows(
+            &agent.envs,
+            &format!("Agent \"{}\" env settings", agent.label),
+        )?;
+    }
+
+    for (agent_id, cells) in &settings.coding_agent_profiles.profiles_by_agent {
+        for (letter, cell) in cells {
+            if !is_valid_profile_letter(letter) {
                 return Err(format!(
-                    "Agent \"{}\": Claude commands must not include --continue or -c",
-                    agent.label
+                    "Coding agent profile cell '{}:{}' uses an invalid profile letter",
+                    agent_id, letter
                 ));
+            }
+            validate_env_map(
+                &cell.env,
+                &format!(
+                    "Coding agent profile '{}:{}' env settings",
+                    agent_id, letter
+                ),
+            )?;
+            if cell.enabled && !cell.command.trim().is_empty() {
+                validate_agent_command_text(
+                    &format!("Coding agent profile '{}:{}'", agent_id, letter),
+                    &cell.command,
+                )?;
             }
         }
+    }
 
-        if let Some(codex_idx) = find_provider_token(&tokens, "codex") {
-            if codex_has_manual_resume(&tokens, codex_idx) {
-                return Err(format!(
-                    "Agent \"{}\": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically",
-                    agent.label
-                ));
-            }
+    for (agent_name, letter) in &settings.coding_agent_profiles.default_profile_by_agent {
+        if !is_valid_profile_letter(letter) {
+            return Err(format!(
+                "Coding agent default profile for '{}' must be A through Z",
+                agent_name
+            ));
         }
+    }
 
-        if let Some(gemini_idx) = find_provider_token(&tokens, "gemini") {
-            if gemini_has_manual_resume(&tokens, gemini_idx) {
-                return Err(format!(
-                    "Agent \"{}\": Gemini commands must not include --resume; AgentsCommander injects gemini --resume latest automatically",
-                    agent.label
-                ));
-            }
+    Ok(())
+}
+
+fn validate_agent_command_text(context: &str, command: &str) -> Result<(), String> {
+    let normalized = crate::config::agent_command::normalize_legacy_agent_command(command)
+        .map_err(|e| format!("{context}: invalid command: {e}. command={command:?}"))?;
+    let mut token_strings = Vec::with_capacity(normalized.shell_args.len() + 1);
+    token_strings.push(normalized.shell);
+    token_strings.extend(normalized.shell_args);
+    let tokens: Vec<&str> = token_strings.iter().map(String::as_str).collect();
+
+    if let Some(claude_idx) = find_provider_token(&tokens, "claude") {
+        if tokens[claude_idx + 1..].iter().any(|token| {
+            token.eq_ignore_ascii_case("--continue") || token.eq_ignore_ascii_case("-c")
+        }) {
+            return Err(format!(
+                "{context}: Claude commands must not include --continue or -c"
+            ));
+        }
+    }
+
+    if let Some(codex_idx) = find_provider_token(&tokens, "codex") {
+        if codex_has_manual_resume(&tokens, codex_idx) {
+            return Err(format!(
+                "{context}: Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically"
+            ));
+        }
+    }
+
+    if let Some(gemini_idx) = find_provider_token(&tokens, "gemini") {
+        if gemini_has_manual_resume(&tokens, gemini_idx) {
+            return Err(format!(
+                "{context}: Gemini commands must not include --resume; AgentsCommander injects gemini --resume latest automatically"
+            ));
         }
     }
 
@@ -564,18 +1159,28 @@ pub fn load_settings() -> AppSettings {
         }
     };
 
+    load_settings_from_path(&path)
+}
+
+fn load_settings_from_path(path: &Path) -> AppSettings {
+    let mut profile_migrated_to_v2 = false;
+    let mut pre_migration_contents: Option<String> = None;
     let mut settings = if !path.exists() {
         log::info!("No settings file found at {:?}, using defaults", path);
         AppSettings::default()
     } else {
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<AppSettings>(&contents) {
-                Ok(s) => {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
+                Ok((s, migrated)) => {
                     log::info!("Loaded settings from {:?}", path);
+                    if migrated {
+                        profile_migrated_to_v2 = true;
+                        pre_migration_contents = Some(contents);
+                    }
                     s
                 }
                 Err(e) => {
-                    log::error!("Failed to parse settings file: {}", e);
+                    log::error!("{}", e);
                     AppSettings::default()
                 }
             },
@@ -622,22 +1227,59 @@ pub fn load_settings() -> AppSettings {
     apply_issue_248_migration(&mut settings);
 
     // Auto-generate root token if missing.
-    let mut needs_save = issue_248_migrated;
+    let mut needs_save = issue_248_migrated || profile_migrated_to_v2;
+    if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
+        log::info!("[settings-migration] repaired codingAgentProfiles invariants");
+        needs_save = true;
+    }
     if settings.root_token.is_none() {
         settings.root_token = Some(uuid::Uuid::new_v4().to_string());
         log::info!("Generated new root token");
         needs_save = true;
     }
     if needs_save {
-        if let Err(e) = save_settings(&settings) {
-            log::error!(
-                "Failed to persist settings (root_token gen and/or #248 migration): {}",
-                e
-            );
+        let backup_ok = if profile_migrated_to_v2 {
+            match pre_migration_contents.as_deref() {
+                Some(contents) => match write_pre_384_v1_backup(path, contents) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::error!(
+                            "Failed to persist settings v2 migration backup; leaving settings.json untouched: {}",
+                            e
+                        );
+                        false
+                    }
+                },
+                None => true,
+            }
+        } else {
+            true
+        };
+        if backup_ok {
+            if let Err(e) = save_settings_to_path(&settings, path) {
+                log::error!(
+                    "Failed to persist settings (root_token gen and/or settings migration): {}",
+                    e
+                );
+            }
         }
     }
 
     settings
+}
+
+fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), String> {
+    let backup_path = settings_path.with_file_name("settings.pre-384-v1.json");
+    if backup_path.exists() {
+        return Ok(());
+    }
+    std::fs::write(&backup_path, contents)
+        .map_err(|e| format!("Failed to write {}: {}", backup_path.display(), e))?;
+    log::info!(
+        "[settings-migration] wrote pre-384 v1 settings backup to {:?}",
+        backup_path
+    );
+    Ok(())
 }
 
 /// CLI-only variant of `load_settings`. Reads disk and applies the same
@@ -671,13 +1313,13 @@ pub fn load_settings_for_cli() -> AppSettings {
         AppSettings::default()
     } else {
         match std::fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<AppSettings>(&contents) {
-                Ok(s) => {
+            Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
+                Ok((s, _migrated)) => {
                     log::info!("[cli] Loaded settings from {:?}", path);
                     s
                 }
                 Err(e) => {
-                    log::error!("[cli] Failed to parse settings file: {}", e);
+                    log::error!("[cli] {}", e);
                     AppSettings::default()
                 }
             },
@@ -710,6 +1352,7 @@ pub fn load_settings_for_cli() -> AppSettings {
     // `new-project`; it must not race with the GUI's settings writes). The
     // next GUI launch finalizes the migration to disk via load_settings.
     apply_issue_248_migration(&mut settings);
+    repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
 
     // NO root_token auto-gen, NO save_settings call.
     settings
@@ -771,9 +1414,15 @@ pub fn read_log_level_only() -> Option<String> {
 pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join("settings.json");
+    save_settings_to_path(settings, &path)
+}
 
+fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("Settings path {} has no parent", path.display()))?;
     // Ensure directory exists
-    std::fs::create_dir_all(&dir)
+    std::fs::create_dir_all(dir)
         .map_err(|e| format!("Failed to create settings directory: {}", e))?;
 
     let json = serde_json::to_string_pretty(settings)
@@ -782,7 +1431,7 @@ pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     let tmp_path = dir.join("settings.json.tmp");
     std::fs::write(&tmp_path, &json)
         .map_err(|e| format!("Failed to write temp settings file: {}", e))?;
-    std::fs::rename(&tmp_path, &path)
+    std::fs::rename(&tmp_path, path)
         .map_err(|e| format!("Failed to rename settings file: {}", e))?;
 
     log::info!("Saved settings to {:?}", path);
@@ -808,9 +1457,12 @@ mod tests {
     }
 
     use super::{
-        validate_agent_commands, AgentConfig, AppSettings, MainSidebarSide,
-        TelegramNetworkPollErrorLogging, TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
+        merge_protected_coding_agent_settings, repair_coding_agent_profiles_config,
+        validate_agent_commands, AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource,
+        MainSidebarSide, ProfileCellConfig, ProfileSlotConfig, TelegramNetworkPollErrorLogging,
+        TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
     };
+    use std::collections::BTreeMap;
 
     fn settings_with_agents(commands: &[(&str, &str)]) -> AppSettings {
         AppSettings {
@@ -824,6 +1476,8 @@ mod tests {
                     color: "#000000".to_string(),
                     git_pull_before: false,
                     exclude_global_claude_md: false,
+                    envs: Vec::new(),
+                    isolated_home: false,
                 })
                 .collect(),
             ..AppSettings::default()
@@ -831,9 +1485,268 @@ mod tests {
     }
 
     #[test]
+    fn v1_profiles_migrate_to_v2_command_cells() {
+        let json = r##"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "codex --base",
+                "color": "#000000"
+            }],
+            "codingAgentProfiles": {
+                "schemaVersion": 1,
+                "letters": { "A": { "name": "Baseline" } },
+                "agentDefaults": { "dev-rust": "B" },
+                "matrix": {
+                    "codex": {
+                        "B": {
+                            "enabled": true,
+                            "argv": ["--model", "gpt 5"],
+                            "env": { "OPENAI_API_BASE": "https://example.test" },
+                            "notes": "legacy"
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let (settings, migrated) = super::parse_settings_json(json, "test").unwrap();
+
+        assert!(migrated);
+        assert_eq!(settings.coding_agent_profiles.schema_version, 2);
+        assert_eq!(
+            settings.coding_agent_profiles.profile_slots["A"].label,
+            "Baseline"
+        );
+        assert_eq!(
+            settings
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .get("dev-rust")
+                .map(String::as_str),
+            Some("B")
+        );
+        let cell = &settings.coding_agent_profiles.profiles_by_agent["codex"]["B"];
+        assert!(cell.enabled);
+        assert_eq!(cell.command, "codex --base --model \"gpt 5\"");
+        let out = serde_json::to_string(&settings).unwrap();
+        assert!(out.contains("profileSlots"));
+        assert!(out.contains("profilesByAgent"));
+        assert!(out.contains("defaultProfileByAgent"));
+        assert!(!out.contains("\"letters\""));
+        assert!(!out.contains("\"matrix\""));
+        assert!(!out.contains("\"argv\""));
+    }
+
+    #[test]
+    fn load_settings_persists_v1_to_v2_migration_and_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let original = r##"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "rootToken": "existing-token",
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "codex",
+                "color": "#000000"
+            }],
+            "codingAgentProfiles": {
+                "schemaVersion": 1,
+                "letters": { "A": { "name": "Baseline" } },
+                "matrix": {
+                    "codex": {
+                        "A": {
+                            "enabled": true,
+                            "argv": ["--model", "gpt'5"],
+                            "env": {},
+                            "notes": "legacy"
+                        }
+                    }
+                }
+            }
+        }"##;
+        std::fs::write(&path, original).unwrap();
+
+        let settings = super::load_settings_from_path(&path);
+
+        assert_eq!(settings.root_token.as_deref(), Some("existing-token"));
+        assert_eq!(settings.coding_agent_profiles.schema_version, 2);
+        let cell = &settings.coding_agent_profiles.profiles_by_agent["codex"]["A"];
+        assert_eq!(cell.command, "codex --model \"gpt'5\"");
+
+        let backup_path = temp.path().join("settings.pre-384-v1.json");
+        assert_eq!(std::fs::read_to_string(backup_path).unwrap(), original);
+
+        let saved_raw = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
+        assert_eq!(saved["codingAgentProfiles"]["schemaVersion"], 2);
+        assert!(saved["codingAgentProfiles"].get("profileSlots").is_some());
+        assert!(saved["codingAgentProfiles"]
+            .get("profilesByAgent")
+            .is_some());
+        assert!(saved["codingAgentProfiles"].get("matrix").is_none());
+        assert!(saved["codingAgentProfiles"].get("letters").is_none());
+    }
+
+    #[test]
+    fn v1_profile_migration_prefers_argv_over_args_and_preserves_disabled_on_parse_error() {
+        let json = r##"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "\"unterminated",
+                "color": "#000000"
+            }],
+            "codingAgentProfiles": {
+                "schemaVersion": 1,
+                "matrix": {
+                    "codex": {
+                        "A": {
+                            "argv": ["--from-argv"],
+                            "args": ["--from-args"],
+                            "env": {},
+                            "notes": "repair me"
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let (settings, migrated) = super::parse_settings_json(json, "test").unwrap();
+        let cell = &settings.coding_agent_profiles.profiles_by_agent["codex"]["A"];
+
+        assert!(migrated);
+        assert!(!cell.enabled);
+        assert_eq!(cell.command, "--from-argv");
+        assert_eq!(cell.notes, "repair me");
+    }
+
+    #[test]
+    fn legacy_env_source_and_isolated_home_alias_serialize_as_v2_names() {
+        let json = r##"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [{
+                "id": "codex",
+                "label": "Codex",
+                "command": "codex",
+                "color": "#000000",
+                "isolateCodexHome": true,
+                "envs": [{
+                    "key": "OPENAI_API_BASE",
+                    "value": "https://example.test",
+                    "source": "agentsCommander",
+                    "enabled": true
+                }]
+            }]
+        }"##;
+
+        let (settings, _migrated) = super::parse_settings_json(json, "test").unwrap();
+        let out = serde_json::to_string(&settings).unwrap();
+
+        assert!(settings.agents[0].isolated_home);
+        assert_eq!(
+            settings.agents[0].envs[0].source,
+            CodingAgentEnvSource::System
+        );
+        assert!(out.contains("\"isolatedHome\":true"));
+        assert!(out.contains("\"source\":\"system\""));
+        assert!(!out.contains("isolateCodexHome"));
+        assert!(!out.contains("agentsCommander"));
+    }
+
+    #[test]
     fn validate_agent_commands_allows_plain_claude() {
         let settings = settings_with_agents(&[("Claude", "claude")]);
         assert!(validate_agent_commands(&settings).is_ok());
+    }
+
+    #[test]
+    fn repair_profiles_adds_a_letter_and_a_cells_for_agents() {
+        let mut settings = settings_with_agents(&[("Codex", "codex")]);
+        settings.coding_agent_profiles.profile_slots.clear();
+        settings.coding_agent_profiles.profile_slots.insert(
+            "AA".to_string(),
+            ProfileSlotConfig {
+                label: "bad".into(),
+            },
+        );
+
+        let changed = repair_coding_agent_profiles_config(
+            &mut settings.coding_agent_profiles,
+            &settings.agents,
+        );
+
+        assert!(changed);
+        assert!(settings
+            .coding_agent_profiles
+            .profile_slots
+            .contains_key("A"));
+        assert!(!settings
+            .coding_agent_profiles
+            .profile_slots
+            .contains_key("AA"));
+        assert!(settings.coding_agent_profiles.profiles_by_agent["agent-0"].contains_key("A"));
+    }
+
+    #[test]
+    fn stale_full_settings_update_preserves_profiles_envs_and_isolation() {
+        let mut current = settings_with_agents(&[("Codex", "codex")]);
+        current.agents[0].envs = vec![CodingAgentEnv {
+            key: "OPENAI_API_BASE".to_string(),
+            value: "current".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+        current.agents[0].isolated_home = true;
+        current
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "B".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "codex --current".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+
+        let mut stale = current.clone();
+        stale.agents[0].envs.clear();
+        stale.agents[0].isolated_home = false;
+        stale.coding_agent_profiles.profiles_by_agent.clear();
+        stale.sidebar_style = "command-center".to_string();
+
+        let merged = merge_protected_coding_agent_settings(&current, stale);
+
+        assert_eq!(merged.sidebar_style, "command-center");
+        assert_eq!(merged.agents[0].envs[0].value, "current");
+        assert!(merged.agents[0].isolated_home);
+        assert!(merged.coding_agent_profiles.profiles_by_agent["agent-0"].contains_key("B"));
+    }
+
+    #[test]
+    fn validate_agent_commands_rejects_relative_codex_home_env() {
+        let mut settings = settings_with_agents(&[("Codex", "codex")]);
+        settings.agents[0].envs = vec![CodingAgentEnv {
+            key: "CODEX_HOME".to_string(),
+            value: "relative/path".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+
+        let err = validate_agent_commands(&settings).unwrap_err();
+
+        assert!(err.contains("CODEX_HOME must be an absolute path"), "{err}");
     }
 
     #[test]

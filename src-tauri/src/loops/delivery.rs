@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
+use crate::config::agent_command::{build_agent_spawn_command, AgentSpawnCommand};
 use crate::config::agent_config::AgentLocalConfig;
 use crate::config::loops::{
     loop_dir, resolve_loop_target, revalidate_loop_current, BusyCoordinatorPolicy, LoopAuditKind,
@@ -33,6 +34,7 @@ struct ResolvedLoopAgentCommand {
     shell_args: Vec<String>,
     agent_id: Option<String>,
     agent_label: Option<String>,
+    resolved_spawn: Option<AgentSpawnCommand>,
 }
 
 pub async fn deliver_loop_prompt(
@@ -344,6 +346,7 @@ async fn spawn_coordinator_session(
         false,
         Vec::<SessionRepo>::new(),
         loop_spawn_skip_auto_resume(had_existing_match),
+        command.resolved_spawn,
     )
     .await?;
     let session_id = Uuid::parse_str(&info.id)
@@ -420,7 +423,7 @@ async fn resolve_loop_agent_command(
 
     let local_last = read_last_coding_agent(replica_dir);
     if let Some(agent_id) = local_last.as_deref() {
-        if let Some(command) = command_for_agent(&settings, agent_id)? {
+        if let Some(command) = command_for_agent(&settings, agent_id, replica_dir)? {
             return Ok(command);
         }
         log::warn!(
@@ -430,46 +433,33 @@ async fn resolve_loop_agent_command(
     }
 
     if let Some(agent) = settings.agents.first() {
-        let normalized = crate::config::agent_command::normalize_legacy_agent_command(
-            &agent.command,
-        )
-        .map_err(|e| {
-            format!(
-                "Invalid agent command for configured agent '{}': {}",
-                agent.id, e
-            )
-        })?;
-        return Ok(ResolvedLoopAgentCommand {
-            shell: normalized.shell,
-            shell_args: normalized.shell_args,
-            agent_id: Some(agent.id.clone()),
-            agent_label: Some(agent.label.clone()),
-        });
+        let spawn = build_agent_spawn_command(&settings, &agent.id, Some(replica_dir), None)?;
+        return Ok(resolved_loop_command_from_spawn(spawn));
     }
 
     Err("No coding agent is configured for Loop coordinator wake".to_string())
 }
 
+fn resolved_loop_command_from_spawn(spawn: AgentSpawnCommand) -> ResolvedLoopAgentCommand {
+    ResolvedLoopAgentCommand {
+        shell: spawn.shell.clone(),
+        shell_args: spawn.shell_args.clone(),
+        agent_id: Some(spawn.trusted_agent_id.clone()),
+        agent_label: Some(spawn.trusted_agent_label.clone()),
+        resolved_spawn: Some(spawn),
+    }
+}
+
 fn command_for_agent(
     settings: &AppSettings,
     agent_id: &str,
+    replica_dir: &Path,
 ) -> Result<Option<ResolvedLoopAgentCommand>, String> {
     let Some(agent) = settings.agents.iter().find(|agent| agent.id == agent_id) else {
         return Ok(None);
     };
-    let normalized = crate::config::agent_command::normalize_legacy_agent_command(&agent.command)
-        .map_err(|e| {
-        format!(
-            "Invalid agent command for configured agent '{}': {}",
-            agent.id, e
-        )
-    })?;
-    Ok(Some(ResolvedLoopAgentCommand {
-        shell: normalized.shell,
-        shell_args: normalized.shell_args,
-        agent_id: Some(agent.id.clone()),
-        agent_label: Some(agent.label.clone()),
-    }))
+    let spawn = build_agent_spawn_command(settings, &agent.id, Some(replica_dir), None)?;
+    Ok(Some(resolved_loop_command_from_spawn(spawn)))
 }
 
 fn read_last_coding_agent(replica_dir: &Path) -> Option<String> {

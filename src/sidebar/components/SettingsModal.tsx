@@ -4,7 +4,9 @@ import { isTauri } from "../../shared/platform";
 import type {
   AppSettings,
   AgentConfig,
+  CodingAgentEnv,
   TelegramBotConfig,
+  ProfileCellConfig,
 } from "../../shared/types";
 import { SettingsAPI, TelegramAPI, ReposAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
@@ -12,6 +14,20 @@ import { setSoundsEnabled } from "../../shared/sound";
 import { sessionsStore } from "../stores/sessions";
 import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
+import {
+  commandExecutableBasename,
+  executableTokenBasename,
+  hasAcRootPlaceholder,
+  hasEnabledEnvKey,
+  isCodexAgent,
+  nextAvailableProfileLetter,
+  parseArgvText,
+  resolveProfilePreview,
+  sortedProfileLetters,
+  validateEnvRows,
+} from "../../shared/profile-utils";
+
+type ProfileCellEnvRow = { key: string; value: string };
 
 const GEMINI_MODELS = [
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (recommended)" },
@@ -22,11 +38,12 @@ const GEMINI_MODELS = [
 ];
 
 
-type SettingsTab = "general" | "agents" | "integrations";
+type SettingsTab = "general" | "agents" | "profiles" | "integrations";
 
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: "general", label: "General" },
   { key: "agents", label: "Coding Agents" },
+  { key: "profiles", label: "Profiles" },
   { key: "integrations", label: "Integrations" },
 ];
 
@@ -66,6 +83,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const [webServerRunning, setWebServerRunning] = createSignal(false);
   const [saveError, setSaveError] = createSignal("");
+  const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
+  const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
+  // Per-cell env editing draft (ordered rows). Mirrors profileCellText: keeps
+  // in-progress key/value edits stable while the underlying Record<string,string>
+  // is rebuilt on every keystroke. Keyed by `${agentId}:${letter}`.
+  const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
   // Snapshot of injectRtkHook captured at modal open. handleSave compares it
   // against the live form value to decide whether to fire sweepRtkHook.
   // updateField is local-only (mutates the form draft), so the sweep only
@@ -106,12 +129,255 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const updateAgent = (
     index: number,
     field: keyof AgentConfig,
-    value: string | boolean | string[]
+    value: string | boolean | string[] | CodingAgentEnv[]
   ) => {
     if (!settings.data) return;
     setDraftDirty(true);
     setSettings("data", "agents", index, field as any, value as any);
   };
+
+  const updateAgentEnv = (
+    agentIndex: number,
+    rowIndex: number,
+    field: keyof CodingAgentEnv,
+    value: string | boolean
+  ) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    setSettings("data", "agents", agentIndex, "envs", rowIndex, field as any, value as any);
+  };
+
+  const addAgentEnv = (agentIndex: number) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    const row: CodingAgentEnv = {
+      key: "",
+      value: "",
+      source: "user",
+      enabled: true,
+    };
+    setSettings("data", "agents", agentIndex, "envs", (prev) => [...(prev ?? []), row]);
+  };
+
+  const removeAgentEnv = (agentIndex: number, rowIndex: number) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    setSettings("data", "agents", agentIndex, "envs", (prev) =>
+      (prev ?? []).filter((_, i) => i !== rowIndex)
+    );
+  };
+
+  const emptyProfileCell = (): ProfileCellConfig => ({
+    enabled: true,
+    command: "",
+    env: {},
+    notes: "",
+  });
+
+  const profileLetters = () =>
+    settings.data ? sortedProfileLetters(settings.data.codingAgentProfiles) : ["A"];
+
+  const profileCellKey = (agentId: string, letter: string) => `${agentId}:${letter}`;
+
+  const profileCell = (agentId: string, letter: string): ProfileCellConfig | null =>
+    settings.data?.codingAgentProfiles.profilesByAgent[agentId]?.[letter] ?? null;
+
+  // True when this letter has an enabled cell on some OTHER coding agent — used
+  // to distinguish a red MISSING badge (slot exists elsewhere) from a plain
+  // fallback. Excludes the agent itself.
+  const profileConfiguredElsewhere = (agentId: string, letter: string): boolean => {
+    const byAgent = settings.data?.codingAgentProfiles.profilesByAgent ?? {};
+    return Object.entries(byAgent).some(
+      ([id, cells]) => id !== agentId && Boolean(cells[letter]?.enabled),
+    );
+  };
+
+  type ProfileBadge = "match" | "fallback" | "missing" | "invalid";
+
+  const profileCellBadge = (agentId: string, letter: string): ProfileBadge => {
+    if (profileCellErrors[profileCellKey(agentId, letter)]) return "invalid";
+    const cell = profileCell(agentId, letter);
+    const configuredHere = letter === "A" || Boolean(cell?.enabled);
+    if (configuredHere) {
+      const preview = resolveProfilePreview(
+        settings.data!.codingAgentProfiles,
+        agentId,
+        letter,
+      );
+      return preview.fallbackApplied ? "fallback" : "match";
+    }
+    if (profileConfiguredElsewhere(agentId, letter)) return "missing";
+    const preview = resolveProfilePreview(
+      settings.data!.codingAgentProfiles,
+      agentId,
+      letter,
+    );
+    return preview.fallbackApplied ? "fallback" : "missing";
+  };
+
+  const setProfileCell = (
+    agentId: string,
+    letter: string,
+    cell: ProfileCellConfig
+  ) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    setSettings("data", "codingAgentProfiles", "profilesByAgent", (byAgent) => ({
+      ...byAgent,
+      [agentId]: {
+        ...(byAgent[agentId] ?? {}),
+        [letter]: cell,
+      },
+    }));
+  };
+
+  const addProfileCell = (agentId: string, letter: string) => {
+    setProfileCell(agentId, letter, emptyProfileCell());
+    const key = profileCellKey(agentId, letter);
+    setProfileCellText(key, "");
+    setProfileCellErrors(key, "");
+    setProfileCellEnvRows(key, []);
+  };
+
+  const removeProfileCell = (agentId: string, letter: string) => {
+    if (!settings.data || letter === "A") return;
+    setDraftDirty(true);
+    const cells = settings.data.codingAgentProfiles.profilesByAgent[agentId] ?? {};
+    const nextCells = { ...cells };
+    delete nextCells[letter];
+    setSettings("data", "codingAgentProfiles", "profilesByAgent", (byAgent) => ({
+      ...byAgent,
+      [agentId]: nextCells,
+    }));
+    const key = profileCellKey(agentId, letter);
+    setProfileCellText((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setProfileCellErrors((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setProfileCellEnvRows((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const updateProfileLabel = (letter: string, label: string) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    setSettings("data", "codingAgentProfiles", "profileSlots", (slots) => ({
+      ...slots,
+      [letter]: { label },
+    }));
+  };
+
+  const addProfileLetter = () => {
+    if (!settings.data) return;
+    const letter = nextAvailableProfileLetter(settings.data.codingAgentProfiles);
+    if (!letter) return;
+    setDraftDirty(true);
+    setSettings("data", "codingAgentProfiles", "profileSlots", (slots) => ({
+      ...slots,
+      [letter]: { label: "" },
+    }));
+  };
+
+  const removeProfileLetter = (letter: string) => {
+    if (!settings.data || letter === "A") return;
+    setDraftDirty(true);
+    const slots = { ...settings.data.codingAgentProfiles.profileSlots };
+    delete slots[letter];
+    const byAgent = Object.fromEntries(
+      Object.entries(settings.data.codingAgentProfiles.profilesByAgent).map(([agentId, cells]) => {
+        const nextCells = { ...cells };
+        delete nextCells[letter];
+        return [agentId, nextCells];
+      })
+    );
+    setSettings("data", "codingAgentProfiles", "profileSlots", slots);
+    setSettings("data", "codingAgentProfiles", "profilesByAgent", byAgent);
+  };
+
+  // ── Profile cell command string (one full invocation per cell) ──
+  const updateProfileCellCommand = (agentId: string, letter: string, text: string) => {
+    const key = profileCellKey(agentId, letter);
+    setDraftDirty(true);
+    setProfileCellText(key, text);
+    const parsed = parseArgvText(text);
+    setProfileCellErrors(key, parsed.error ?? "");
+    const existing = profileCell(agentId, letter) ?? emptyProfileCell();
+    setProfileCell(agentId, letter, { ...existing, command: text });
+  };
+
+  const displayedProfileCellCommand = (agentId: string, letter: string): string => {
+    const key = profileCellKey(agentId, letter);
+    if (Object.prototype.hasOwnProperty.call(profileCellText, key)) {
+      return profileCellText[key] ?? "";
+    }
+    return profileCell(agentId, letter)?.command ?? "";
+  };
+
+  // ── Profile cell env rows ──
+  const cellEnvRows = (agentId: string, letter: string): ProfileCellEnvRow[] => {
+    const key = profileCellKey(agentId, letter);
+    if (Object.prototype.hasOwnProperty.call(profileCellEnvRows, key)) {
+      return profileCellEnvRows[key] ?? [];
+    }
+    const env = profileCell(agentId, letter)?.env ?? {};
+    return Object.entries(env).map(([k, v]) => ({ key: k, value: v }));
+  };
+
+  const syncCellEnv = (agentId: string, letter: string, rows: ProfileCellEnvRow[]) => {
+    const env: Record<string, string> = {};
+    for (const row of rows) {
+      const k = row.key.trim();
+      if (k) env[k] = row.value;
+    }
+    const existing = profileCell(agentId, letter) ?? emptyProfileCell();
+    setProfileCell(agentId, letter, { ...existing, env });
+  };
+
+  const setCellEnvRows = (agentId: string, letter: string, rows: ProfileCellEnvRow[]) => {
+    const key = profileCellKey(agentId, letter);
+    setDraftDirty(true);
+    setProfileCellEnvRows(key, rows);
+    syncCellEnv(agentId, letter, rows);
+  };
+
+  const addCellEnvRow = (agentId: string, letter: string) =>
+    setCellEnvRows(agentId, letter, [...cellEnvRows(agentId, letter), { key: "", value: "" }]);
+
+  const updateCellEnvRow = (
+    agentId: string,
+    letter: string,
+    rowIndex: number,
+    field: keyof ProfileCellEnvRow,
+    value: string,
+  ) => {
+    const rows = cellEnvRows(agentId, letter).map((row, i) =>
+      i === rowIndex ? { ...row, [field]: value } : row,
+    );
+    setCellEnvRows(agentId, letter, rows);
+  };
+
+  const removeCellEnvRow = (agentId: string, letter: string, rowIndex: number) =>
+    setCellEnvRows(agentId, letter, cellEnvRows(agentId, letter).filter((_, i) => i !== rowIndex));
+
+  // Display-only env-row validation reusing the agent-env validator.
+  const cellEnvError = (agentId: string, letter: string): string | null =>
+    validateEnvRows(
+      cellEnvRows(agentId, letter).map((row) => ({
+        key: row.key,
+        value: row.value,
+        source: "user" as const,
+        enabled: true,
+      })),
+    );
 
   const addAgent = (preset?: Omit<AgentConfig, "id">) => {
     if (!settings.data) return;
@@ -125,6 +391,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           color: "#6366f1",
           gitPullBefore: false,
           excludeGlobalClaudeMd: true,
+          envs: [],
+          isolatedHome: false,
         };
     setSettings("data", "agents", (prev) => [...prev, agent]);
   };
@@ -183,12 +451,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return settings.data.agents.some((a) => a.command.startsWith(command));
   };
 
-  const executableBasename = (token: string): string => {
-    const normalized = token.replace(/\\/g, "/");
-    const leaf = normalized.split("/").pop() || normalized;
-    return leaf.replace(/\.[^.]+$/, "").toLowerCase();
-  };
-
   const tokenHasUnclosedQuote = (token: string, quote: string): boolean =>
     (token.split(quote).length - 1) % 2 === 1;
 
@@ -222,23 +484,58 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   // ── Validation ──
+  // Provider resume-flag rules, shared by agent commands and profile-cell
+  // commands (#384 §2: enabled cell commands reject the same manual resume flags).
+  const commandFlagError = (label: string, tokens: string[]): string | null => {
+    const claudeIndex = tokens.findIndex((token) => executableTokenBasename(token) === "claude");
+    if (
+      claudeIndex >= 0 &&
+      tokens
+        .slice(claudeIndex + 1)
+        .some((token) => token === "--continue" || token === "-c")
+    ) {
+      return `${label}: Claude commands must not include --continue or -c`;
+    }
+    const codexIndex = tokens.findIndex((token) => executableTokenBasename(token) === "codex");
+    if (codexIndex >= 0 && codexHasManualResume(tokens, codexIndex)) {
+      return `${label}: Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically`;
+    }
+    return null;
+  };
+
   const validateAgents = (): string | null => {
     if (!settings.data) return null;
     for (const agent of settings.data.agents) {
-      const tokens = agent.command.trim().split(/\s+/).filter(Boolean);
-      const claudeIndex = tokens.findIndex((token) => executableBasename(token) === "claude");
-      if (
-        claudeIndex >= 0 &&
-        tokens
-          .slice(claudeIndex + 1)
-          .some((token) => token === "--continue" || token === "-c")
-      ) {
-        return `Agent "${agent.label || "Unnamed"}": Claude commands must not include --continue or -c`;
+      const envError = validateEnvRows(agent.envs ?? []);
+      if (envError) {
+        return `Agent "${agent.label || "Unnamed"}": ${envError}`;
       }
-
-      const codexIndex = tokens.findIndex((token) => executableBasename(token) === "codex");
-      if (codexIndex >= 0 && codexHasManualResume(tokens, codexIndex)) {
-        return `Agent "${agent.label || "Unnamed"}": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically`;
+      const parsedCommand = parseArgvText(agent.command);
+      if (parsedCommand.error) {
+        return `Agent "${agent.label || "Unnamed"}": ${parsedCommand.error}`;
+      }
+      const flagError = commandFlagError(`Agent "${agent.label || "Unnamed"}"`, parsedCommand.argv);
+      if (flagError) return flagError;
+    }
+    // Live profile-cell command parse errors (red "invalid" badge) block save.
+    for (const [key, error] of Object.entries(profileCellErrors)) {
+      if (error) return `Profile cell ${key}: ${error}`;
+    }
+    // Enabled profile-cell command + env validation (#384 §2/§3).
+    const byAgent = settings.data.codingAgentProfiles.profilesByAgent;
+    for (const [agentId, cells] of Object.entries(byAgent)) {
+      for (const [letter, cell] of Object.entries(cells)) {
+        if (!cell.enabled) continue;
+        const cellLabel = `Profile ${agentId}:${letter}`;
+        const command = displayedProfileCellCommand(agentId, letter);
+        if (command.trim()) {
+          const parsed = parseArgvText(command);
+          if (parsed.error) return `${cellLabel}: ${parsed.error}`;
+          const flagError = commandFlagError(cellLabel, parsed.argv);
+          if (flagError) return flagError;
+        }
+        const envError = cellEnvError(agentId, letter);
+        if (envError) return `${cellLabel}: ${envError}`;
       }
     }
     return null;
@@ -254,53 +551,58 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }
     setSaveError("");
     setSaving(true);
-    const nextSettings = mergeSettingsForSavePreservingProjects(
-      settings.data,
-      await SettingsAPI.get()
-    );
-    await SettingsAPI.update(nextSettings);
-    setSettings("data", nextSettings);
-    // #158 — push soundsEnabled into sound.ts synchronously so the gate
-    // updates before the settingsStore.refresh() roundtrip below resolves.
-    // Without this, a beep emitted between this point and the next load()
-    // would see the stale gate value.
-    setSoundsEnabled(nextSettings.soundsEnabled ?? true);
-    if (isTauri) {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
-    }
-    // RTK sweep — only when the toggle value changed during this modal session.
-    // Fired AFTER update_settings persists, so a sweep failure cannot leave
-    // the persisted setting in disagreement with the on-disk replica state
-    // worse than the pre-save baseline.
-    const initial = initialInjectRtk();
-    const next = nextSettings.injectRtkHook;
-    if (initial !== null && initial !== next) {
-      setRtkSweepInFlight(true);
-      try {
-        const result = await SettingsAPI.sweepRtkHook(next);
-        if (result.errors.length > 0) {
-          console.error(
-            `[rtk] sweep partial failure: ${result.errors.length}/${result.total} dirs failed`,
-            result.errors,
-          );
-        }
-        setInitialInjectRtk(next);
-      } catch (err) {
-        console.error("[rtk] sweep failed:", err);
-      } finally {
-        setRtkSweepInFlight(false);
-      }
-    }
-    // Refresh settings store so mic button visibility updates
-    settingsStore.refresh();
-    // Refresh repos (project_paths may have changed)
     try {
-      const allRepos = await ReposAPI.search("");
-      sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
-    } catch {}
-    setSaving(false);
-    props.onClose();
+      const nextSettings = mergeSettingsForSavePreservingProjects(
+        settings.data,
+        await SettingsAPI.get()
+      );
+      await SettingsAPI.saveDraft(nextSettings);
+      setSettings("data", nextSettings);
+      // #158 — push soundsEnabled into sound.ts synchronously so the gate
+      // updates before the settingsStore.refresh() roundtrip below resolves.
+      // Without this, a beep emitted between this point and the next load()
+      // would see the stale gate value.
+      setSoundsEnabled(nextSettings.soundsEnabled ?? true);
+      if (isTauri) {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
+      }
+      // RTK sweep — only when the toggle value changed during this modal session.
+      // Fired AFTER save_settings_draft persists, so a sweep failure cannot leave
+      // the persisted setting in disagreement with the on-disk replica state
+      // worse than the pre-save baseline.
+      const initial = initialInjectRtk();
+      const next = nextSettings.injectRtkHook;
+      if (initial !== null && initial !== next) {
+        setRtkSweepInFlight(true);
+        try {
+          const result = await SettingsAPI.sweepRtkHook(next);
+          if (result.errors.length > 0) {
+            console.error(
+              `[rtk] sweep partial failure: ${result.errors.length}/${result.total} dirs failed`,
+              result.errors,
+            );
+          }
+          setInitialInjectRtk(next);
+        } catch (err) {
+          console.error("[rtk] sweep failed:", err);
+        } finally {
+          setRtkSweepInFlight(false);
+        }
+      }
+      // Refresh settings store so mic button visibility updates
+      settingsStore.refresh();
+      // Refresh repos (project_paths may have changed)
+      try {
+        const allRepos = await ReposAPI.search("");
+        sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
+      } catch {}
+      setSaving(false);
+      props.onClose();
+    } catch (err: unknown) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+      setSaving(false);
+    }
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -509,6 +811,148 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     </>
   );
 
+  const renderAgentEnvEditor = (agent: AgentConfig, agentIndex: number) => {
+    const codex = () => isCodexAgent(agent);
+    const hasUserCodexHome = () => hasEnabledEnvKey(agent.envs ?? [], "CODEX_HOME");
+    return (
+      <div
+        class="settings-env-editor"
+        data-ac-testid={`settings.agentRow.${agentIndex}.env`}
+        data-ac-role="surface"
+      >
+        <div class="settings-subsection-title">Environment</div>
+        <Show when={(agent.envs ?? []).length > 0} fallback={
+          <div
+            class="settings-empty-note"
+            data-ac-testid={`settings.agentRow.${agentIndex}.env.empty`}
+            data-ac-role="status"
+          >
+            No environment rows configured.
+          </div>
+        }>
+          <For each={agent.envs ?? []}>
+            {(row, rowIndex) => {
+              const readOnly = () => row.source === "system";
+              return (
+                <div
+                  class="settings-env-row"
+                  data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}`}
+                  data-ac-role="row"
+                  data-ac-state={readOnly() ? "managed" : row.enabled ? "enabled" : "disabled"}
+                  data-ac-env-source={row.source}
+                >
+                  <input
+                    class="settings-input settings-env-key"
+                    value={row.key}
+                    disabled={readOnly()}
+                    onInput={(e) => updateAgentEnv(agentIndex, rowIndex(), "key", e.currentTarget.value)}
+                    placeholder="KEY"
+                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.key`}
+                    data-ac-role="textbox"
+                    data-ac-state={readOnly() ? "disabled" : "editable"}
+                  />
+                  <input
+                    class="settings-input settings-env-value"
+                    type="password"
+                    value={row.value}
+                    disabled={readOnly()}
+                    onInput={(e) => updateAgentEnv(agentIndex, rowIndex(), "value", e.currentTarget.value)}
+                    placeholder="value"
+                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.value`}
+                    data-ac-role="textbox"
+                    data-ac-state={readOnly() ? "disabled" : "editable"}
+                  />
+                  <label class="settings-env-toggle" title="Enable row">
+                    <input
+                      type="checkbox"
+                      class="settings-checkbox"
+                      checked={row.enabled}
+                      disabled={readOnly()}
+                      onChange={(e) => updateAgentEnv(agentIndex, rowIndex(), "enabled", e.currentTarget.checked)}
+                      data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.enabled`}
+                      data-ac-role="checkbox"
+                      data-ac-state={readOnly() ? "disabled" : row.enabled ? "checked" : "unchecked"}
+                    />
+                  </label>
+                  <span
+                    class={`settings-env-source ${row.source === "system" ? "generated" : ""}`}
+                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.source`}
+                    data-ac-role="status"
+                    data-ac-env-source={row.source}
+                  >
+                    {row.source}
+                  </span>
+                  <button
+                    class="settings-env-delete"
+                    disabled={readOnly()}
+                    onClick={() => removeAgentEnv(agentIndex, rowIndex())}
+                    title={readOnly() ? "Managed by AgentsCommander" : "Delete environment row"}
+                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.delete`}
+                    data-ac-role="button"
+                    data-ac-state={readOnly() ? "disabled" : "enabled"}
+                  >
+                    &#x2715;
+                  </button>
+                </div>
+              );
+            }}
+          </For>
+        </Show>
+        <button
+          class="settings-add-btn settings-env-add"
+          onClick={() => addAgentEnv(agentIndex)}
+          data-ac-testid={`settings.agentRow.${agentIndex}.env.add`}
+          data-ac-role="button"
+        >
+          + Environment Row
+        </button>
+        <Show when={codex()}>
+          <label class="settings-checkbox-field">
+            <input
+              type="checkbox"
+              class="settings-checkbox"
+              checked={agent.isolatedHome}
+              onChange={(e) =>
+                updateAgent(agentIndex, "isolatedHome", e.currentTarget.checked)
+              }
+              data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation`}
+              data-ac-role="checkbox"
+              data-ac-state={agent.isolatedHome ? "checked" : "unchecked"}
+            />
+            <span>Isolate CODEX_HOME for this Codex agent</span>
+          </label>
+          <Show when={agent.isolatedHome}>
+            <div
+              class="settings-codex-home-preview warning"
+              data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation.preview`}
+              data-ac-role="status"
+              data-ac-state="isolated"
+            >
+              <span class="settings-env-source generated">system</span>
+              Generated CODEX_HOME will be used for launches from this agent.
+              <Show when={hasUserCodexHome()}>
+                <span> Saved CODEX_HOME rows are kept but overridden while isolation is on.</span>
+              </Show>
+            </div>
+          </Show>
+          <Show when={!agent.isolatedHome && hasUserCodexHome()}>
+            <div
+              class="settings-codex-home-preview"
+              data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation.preview`}
+              data-ac-role="status"
+              data-ac-state="user"
+            >
+              User CODEX_HOME is active for this Codex agent. Values remain masked in Settings.
+            </div>
+          </Show>
+        </Show>
+        <div class="settings-hint">
+          Env values are stored as plaintext local settings and are masked here by default.
+        </div>
+      </div>
+    );
+  };
+
   const renderAgentsTab = () => (
     <div class="settings-section">
       <div class="settings-section-title">Coding Agents</div>
@@ -594,6 +1038,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 onChange={(e) =>
                   updateAgent(i(), "gitPullBefore", e.currentTarget.checked)
                 }
+                data-ac-testid={`settings.agentRow.${i()}.gitPullBefore`}
+                data-ac-role="checkbox"
+                data-ac-state={agent.gitPullBefore ? "checked" : "unchecked"}
               />
               <span>Run git pull before launch</span>
             </label>
@@ -605,9 +1052,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 onChange={(e) =>
                   updateAgent(i(), "excludeGlobalClaudeMd", e.currentTarget.checked)
                 }
+                data-ac-testid={`settings.agentRow.${i()}.excludeGlobalClaudeMd`}
+                data-ac-role="checkbox"
+                data-ac-state={agent.excludeGlobalClaudeMd ? "checked" : "unchecked"}
               />
               <span>Exclude global CLAUDE.md on agent creation</span>
             </label>
+            {renderAgentEnvEditor(agent, i())}
           </div>
         )}
       </For>
@@ -664,6 +1115,261 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           + Custom Agent
         </button>
       </div>
+    </div>
+  );
+
+  const BADGE_LABEL: Record<ProfileBadge, string> = {
+    match: "MATCH",
+    fallback: "FALLBACK",
+    missing: "MISSING",
+    invalid: "invalid",
+  };
+
+  // One full invocation string per profile cell — model/effort/sandbox are NOT
+  // split into separate fields (#384). Each coding agent gets its own rail; rails
+  // wrap into side-by-side columns when the viewport permits (CSS auto-fit).
+  const renderProfileCard = (agent: AgentConfig, agentIndex: number, letter: string) => {
+    const cell = () => profileCell(agent.id, letter);
+    const configured = () => letter === "A" || Boolean(cell()?.enabled);
+    const badge = () => profileCellBadge(agent.id, letter);
+    const preview = () =>
+      resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
+    const command = () => displayedProfileCellCommand(agent.id, letter);
+    const cellError = () => profileCellErrors[profileCellKey(agent.id, letter)];
+    const cardId = `settings.profileCard.${agentIndex}.${letter}`;
+    return (
+      <article
+        class="settings-profile-card"
+        classList={{
+          match: badge() === "match",
+          fallback: badge() === "fallback",
+          missing: badge() === "missing",
+          invalid: badge() === "invalid",
+        }}
+        data-ac-testid={cardId}
+        data-ac-role="row"
+        data-ac-state={badge()}
+        data-ac-agent-id={agent.id}
+        data-ac-profile-letter={letter}
+      >
+        <div class="settings-profile-card-head">
+          <span class="settings-profile-letter-badge">{letter}</span>
+          <input
+            class="settings-input settings-profile-label"
+            value={settings.data!.codingAgentProfiles.profileSlots[letter]?.label ?? ""}
+            onInput={(e) => updateProfileLabel(letter, e.currentTarget.value)}
+            placeholder={letter === "A" ? "Baseline" : "Profile label"}
+            data-ac-testid={`${cardId}.label`}
+            data-ac-role="textbox"
+          />
+          <span
+            class={`settings-profile-badge ${badge()}`}
+            data-ac-testid={`${cardId}.badge`}
+            data-ac-role="status"
+            data-ac-state={badge()}
+          >
+            {BADGE_LABEL[badge()]}
+          </span>
+        </div>
+
+        <Show
+          when={configured()}
+          fallback={
+            <div
+              class="settings-profile-missing"
+              data-ac-testid={`${cardId}.missing`}
+              data-ac-role="status"
+            >
+              <span>
+                {letter} &rarr; {preview().effectiveProfile} (fallback)
+              </span>
+              <button
+                class="settings-profile-cell-btn"
+                onClick={() => addProfileCell(agent.id, letter)}
+                data-ac-testid={`${cardId}.add`}
+                data-ac-role="button"
+              >
+                Add cell
+              </button>
+            </div>
+          }
+        >
+          <label class="settings-profile-field-label">Command</label>
+          <input
+            class="settings-input settings-profile-command"
+            classList={{ invalid: Boolean(cellError()) }}
+            value={command()}
+            onInput={(e) => updateProfileCellCommand(agent.id, letter, e.currentTarget.value)}
+            placeholder="codex --sandbox workspace-write --model gpt-5-codex"
+            data-ac-testid={`${cardId}.command`}
+            data-ac-role="textbox"
+            data-ac-state={cellError() ? "invalid" : "valid"}
+          />
+          <Show when={cellError()}>
+            <div
+              class="settings-profile-cell-error"
+              data-ac-testid={`${cardId}.command.error`}
+              data-ac-role="status"
+            >
+              {cellError()}
+            </div>
+          </Show>
+          <Show when={hasAcRootPlaceholder(command())}>
+            <div class="settings-profile-ph-hint" data-ac-testid={`${cardId}.command.placeholder`}>
+              <span class="settings-profile-ph-token">%AC_ROOT%</span> expands to this
+              replica&rsquo;s root at launch; the backend validates the result.
+            </div>
+          </Show>
+
+          <div
+            class="settings-profile-env"
+            data-ac-testid={`${cardId}.env`}
+            data-ac-role="surface"
+          >
+            <For each={cellEnvRows(agent.id, letter)}>
+              {(row, rowIndex) => (
+                <div
+                  class="settings-profile-env-row"
+                  data-ac-testid={`${cardId}.envRow.${rowIndex()}`}
+                  data-ac-role="row"
+                >
+                  <input
+                    class="settings-input settings-env-key"
+                    value={row.key}
+                    onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex(), "key", e.currentTarget.value)}
+                    placeholder="KEY"
+                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.key`}
+                    data-ac-role="textbox"
+                  />
+                  <input
+                    class="settings-input settings-env-value"
+                    value={row.value}
+                    onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex(), "value", e.currentTarget.value)}
+                    placeholder="value"
+                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.value`}
+                    data-ac-role="textbox"
+                  />
+                  <button
+                    class="settings-env-delete"
+                    onClick={() => removeCellEnvRow(agent.id, letter, rowIndex())}
+                    title="Delete environment row"
+                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.delete`}
+                    data-ac-role="button"
+                  >
+                    &#x2715;
+                  </button>
+                  <Show when={hasAcRootPlaceholder(row.value)}>
+                    <div
+                      class="settings-profile-ph-preview"
+                      data-ac-testid={`${cardId}.envRow.${rowIndex()}.placeholder`}
+                      data-ac-role="status"
+                    >
+                      <span class="arrow">&rarr;</span>
+                      <span>expands to this replica&rsquo;s root at launch</span>
+                    </div>
+                  </Show>
+                </div>
+              )}
+            </For>
+            <Show when={cellEnvError(agent.id, letter)}>
+              <div
+                class="settings-profile-cell-error"
+                data-ac-testid={`${cardId}.env.error`}
+                data-ac-role="status"
+              >
+                {cellEnvError(agent.id, letter)}
+              </div>
+            </Show>
+            <button
+              class="settings-profile-cell-btn"
+              onClick={() => addCellEnvRow(agent.id, letter)}
+              data-ac-testid={`${cardId}.env.add`}
+              data-ac-role="button"
+            >
+              + Env
+            </button>
+          </div>
+
+          <Show when={letter !== "A"}>
+            <button
+              class="settings-profile-cell-btn settings-profile-delete-cell"
+              onClick={() => removeProfileCell(agent.id, letter)}
+              data-ac-testid={`${cardId}.delete`}
+              data-ac-role="button"
+            >
+              Delete cell
+            </button>
+          </Show>
+        </Show>
+      </article>
+    );
+  };
+
+  const renderProfilesTab = () => (
+    <div class="settings-section settings-profiles-section" data-ac-testid="settings.profiles.section">
+      <div class="settings-section-title">Profiles</div>
+      <div class="settings-hint">
+        One full command string per profile, plus optional env rows. Each coding
+        agent has its own rail. <span class="settings-profile-ph-token">%AC_ROOT%</span>{" "}
+        is supported in commands and env values; the backend expands and validates it at launch.
+      </div>
+
+      <div
+        class="settings-profile-rails"
+        data-ac-testid="settings.profiles.rails"
+        data-ac-role="list"
+      >
+        <Show
+          when={settings.data!.agents.length > 0}
+          fallback={
+            <div class="settings-empty-note" data-ac-testid="settings.profiles.empty" data-ac-role="status">
+              No coding agents configured. Add one in the Coding Agents tab.
+            </div>
+          }
+        >
+          <For each={settings.data!.agents}>
+            {(agent, agentIndex) => (
+              <section
+                class="settings-profile-rail"
+                style={{ "--agent-color": agent.color }}
+                data-ac-testid={`settings.profileRail.${agentIndex()}`}
+                data-ac-role="surface"
+                data-ac-agent-id={agent.id}
+              >
+                <div class="settings-profile-rail-header">
+                  <span class="settings-profile-rail-dot" style={{ background: agent.color }} />
+                  <div class="settings-profile-rail-heading">
+                    <div class="settings-profile-rail-title">{agent.label || agent.id}</div>
+                    <div
+                      class="settings-profile-rail-subtitle"
+                      data-ac-testid={`settings.profileRail.${agentIndex()}.subtitle`}
+                      data-ac-role="status"
+                    >
+                      {commandExecutableBasename(agent.command) || agent.command || "—"}
+                    </div>
+                  </div>
+                </div>
+                <div class="settings-profile-rail-body">
+                  <For each={profileLetters()}>
+                    {(letter) => renderProfileCard(agent, agentIndex(), letter)}
+                  </For>
+                </div>
+              </section>
+            )}
+          </For>
+        </Show>
+      </div>
+
+      <button
+        class="settings-add-btn settings-profile-add"
+        onClick={addProfileLetter}
+        disabled={!nextAvailableProfileLetter(settings.data!.codingAgentProfiles)}
+        data-ac-testid="settings.profiles.add"
+        data-ac-role="button"
+        data-ac-state={nextAvailableProfileLetter(settings.data!.codingAgentProfiles) ? "enabled" : "disabled"}
+      >
+        + Profile
+      </button>
     </div>
   );
 
@@ -889,6 +1595,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <div class="modal-body">
             <Show when={activeTab() === "general"}>{renderGeneralTab()}</Show>
             <Show when={activeTab() === "agents"}>{renderAgentsTab()}</Show>
+            <Show when={activeTab() === "profiles"}>{renderProfilesTab()}</Show>
             <Show when={activeTab() === "integrations"}>
               {renderIntegrationsTab()}
             </Show>

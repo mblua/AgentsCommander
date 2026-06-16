@@ -14,7 +14,8 @@ import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
-import AgentPickerModal from "./AgentPickerModal";
+import { sessionProfileBadge } from "../../shared/profile-utils";
+import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import { rootAgentCodingAgentAction } from "./root-agent-action";
 import { TelegramIcon } from "./TelegramIcon";
 
@@ -65,6 +66,10 @@ const RootAgentBanner: Component = () => {
     if (!r) return "Root Agent";
     if (typeof r.status !== "string") return "Exited — click to wake";
     return "Root Agent";
+  });
+  const profileBadge = createMemo(() => {
+    const r = rootSession();
+    return r ? sessionProfileBadge(r) : null;
   });
 
   const bridge = () => {
@@ -211,16 +216,20 @@ const RootAgentBanner: Component = () => {
     setShowAgentPicker(true);
   };
 
-  const handleAgentSelected = async (agentId: string) => {
+  const handleAgentSelected = async (selection: AgentPickerSelection) => {
     setShowAgentPicker(false);
     if (busy()) return;
     setBusy(true);
     try {
-      const action = rootAgentCodingAgentAction(rootSession(), agentId);
+      const action = rootAgentCodingAgentAction(rootSession(), selection.agent.id);
       const session = action.kind === "create"
-        ? await SessionAPI.createRootAgent({ agentId: action.agentId })
+        ? await SessionAPI.createRootAgent({
+            agentId: action.agentId,
+            requestedProfile: selection.requestedProfile,
+          })
         : await SessionAPI.restart(action.id, {
             agentId: action.agentId,
+            requestedProfile: selection.requestedProfile,
             skipAutoResume: action.skipAutoResume,
           });
       sessionsStore.addSession(session);
@@ -403,7 +412,12 @@ const RootAgentBanner: Component = () => {
         <div class="root-agent-text">
           <span class="root-agent-title">Agent's Commander</span>
           <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
-            <span class="root-agent-subtitle">{subtitle()}</span>
+            <span class="root-agent-subtitle">
+              {subtitle()}
+              <Show when={profileBadge()}>
+                {(badge) => <span class="profile-badge root-profile-badge">{badge()}</span>}
+              </Show>
+            </span>
           </Show>
 
           <Show when={isRecording()}>
@@ -533,7 +547,10 @@ const RootAgentBanner: Component = () => {
         <Portal>
           <AgentPickerModal
             sessionName={rootSession()?.name ?? "Root Agent"}
-            onSelect={(agent) => handleAgentSelected(agent.id)}
+            agentPath={rootSession()?.workingDirectory}
+            currentAgentId={rootSession()?.agentId}
+            currentRequestedProfile={rootSession()?.requestedProfile}
+            onSelect={handleAgentSelected}
             onClose={() => setShowAgentPicker(false)}
           />
         </Portal>

@@ -60,6 +60,12 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     mainSidebarSide: "right",
     mainAlwaysOnTop: false,
     agents: [],
+    codingAgentProfiles: {
+      schemaVersion: 2,
+      profileSlots: { A: { label: "" } },
+      defaultProfileByAgent: {},
+      profilesByAgent: {},
+    },
     telegramBots: [],
     onboardingDismissed: false,
     projectPaths: [],

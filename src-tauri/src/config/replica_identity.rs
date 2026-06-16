@@ -370,24 +370,50 @@ pub fn repair_wg_replica_config_value(
     Ok(identity)
 }
 
+pub fn read_wg_replica_config_read_only(
+    replica_dir: &Path,
+) -> Result<(Value, WgReplicaIdentity), String> {
+    let config_path = replica_dir.join("config.json");
+    let original = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+    let config: Value = serde_json::from_str(&original)
+        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+    if !config.is_object() {
+        return Err(format!(
+            "WG replica config {} must be a JSON object",
+            config_path.display()
+        ));
+    }
+    let identity = validate_or_repair_wg_replica_identity(
+        replica_dir,
+        config.get("identity").and_then(|value| value.as_str()),
+    )?;
+    Ok((config, identity))
+}
+
 pub fn read_and_repair_wg_replica_config(
     replica_dir: &Path,
     required_context_prefix: &[&str],
 ) -> Result<(Value, WgReplicaIdentity), String> {
     let config_path = replica_dir.join("config.json");
-    let original = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-    let mut config: Value = serde_json::from_str(&original)
-        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
-    let original_config = config.clone();
-    let identity =
-        repair_wg_replica_config_value(replica_dir, &mut config, required_context_prefix)?;
-    if config != original_config {
-        let repaired = serde_json::to_string_pretty(&config)
-            .map_err(|e| format!("Failed to serialize {}: {}", config_path.display(), e))?;
-        std::fs::write(&config_path, repaired)
-            .map_err(|e| format!("Failed to repair {}: {}", config_path.display(), e))?;
-    }
+    let mut repaired_identity: Option<WgReplicaIdentity> = None;
+    let config =
+        crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
+            let mut value = Value::Object(std::mem::take(obj));
+            let identity =
+                repair_wg_replica_config_value(replica_dir, &mut value, required_context_prefix)?;
+            let final_obj = value.as_object_mut().ok_or_else(|| {
+                format!(
+                    "WG replica config {} must be a JSON object",
+                    config_path.display()
+                )
+            })?;
+            *obj = std::mem::take(final_obj);
+            repaired_identity = Some(identity);
+            Ok(())
+        })?;
+    let identity = repaired_identity
+        .ok_or_else(|| format!("Failed to repair identity for {}", replica_dir.display()))?;
     Ok((config, identity))
 }
 

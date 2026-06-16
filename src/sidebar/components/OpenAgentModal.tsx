@@ -1,15 +1,12 @@
-import { Component, createSignal, createEffect, createMemo, For, Show, onMount, onCleanup } from "solid-js";
-import type { AgentConfig, RepoMatch } from "../../shared/types";
-import { ReposAPI, SessionAPI, SettingsAPI } from "../../shared/ipc";
+import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
+import type { RepoMatch } from "../../shared/types";
+import { ReposAPI, SessionAPI } from "../../shared/ipc";
 import { homeStore } from "../../main/stores/home";
+import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 
 const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }> = (props) => {
   const [query, setQuery] = createSignal("");
   const [repos, setRepos] = createSignal<RepoMatch[]>([]);
-  const [agents, setAgents] = createSignal<AgentConfig[]>([]);
-  const sortedAgents = createMemo(() =>
-    [...agents()].sort((a, b) => a.label.localeCompare(b.label, "en", { sensitivity: "base", numeric: true }))
-  );
   const [selectedRepo, setSelectedRepo] = createSignal<RepoMatch | null>(props.initialRepo ?? null);
   const [highlightIndex, setHighlightIndex] = createSignal(0);
   const [loading, setLoading] = createSignal(false);
@@ -17,8 +14,6 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   let debounceTimer: number | undefined;
 
   onMount(async () => {
-    const settings = await SettingsAPI.get();
-    setAgents(settings.agents);
     if (!props.initialRepo) {
       // Load initial list (empty query = show all)
       const results = await ReposAPI.search("");
@@ -75,18 +70,7 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
         setHighlightIndex(0);
       }
     } else {
-      // Agent selection navigation
-      const agentList = sortedAgents();
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHighlightIndex((i) => Math.min(i + 1, agentList.length - 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHighlightIndex((i) => Math.max(i - 1, 0));
-      } else if (e.key === "Enter" && agentList.length > 0) {
-        e.preventDefault();
-        launchAgent(repo, agentList[highlightIndex()]);
-      }
+      return;
     }
   };
 
@@ -97,69 +81,33 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   document.addEventListener("keydown", handleDocumentKeyDown);
   onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
-  const launchAgent = (repo: RepoMatch, agent: AgentConfig) => {
-    // Build the command: parse command string into executable + args
-    const parts = agent.command.trim().split(/\s+/);
-    const executable = parts[0];
-    const cmdArgs = parts.slice(1);
-
-    let shell: string;
-    let shellArgs: string[];
-
-    if (agent.gitPullBefore) {
-      // Use cmd.exe /K to keep the session alive after command runs
-      shell = "cmd.exe";
-      shellArgs = ["/K", `git pull && ${agent.command}`];
-    } else {
-      shell = executable;
-      shellArgs = cmdArgs;
-    }
-
+  const launchAgent = async (repo: RepoMatch, selection: AgentPickerSelection) => {
     homeStore.hide();
-    SessionAPI.create({
-      shell,
-      shellArgs,
+    await SessionAPI.create({
       cwd: repo.path,
       sessionName: repo.name,
-      agentId: agent.id,
+      agentId: selection.agent.id,
+      requestedProfile: selection.requestedProfile,
     });
 
     props.onClose();
   };
 
+  if (selectedRepo()) {
+    return (
+      <AgentPickerModal
+        sessionName={selectedRepo()!.name}
+        agentPath={selectedRepo()!.path}
+        onSelect={(selection) => launchAgent(selectedRepo()!, selection)}
+        onClose={handleEscape}
+      />
+    );
+  }
+
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal">
         {/* Header */}
-        <Show
-          when={!selectedRepo()}
-          fallback={
-            <div class="agent-modal-header">
-              <Show when={!props.initialRepo}>
-                <button
-                  class="agent-back-btn"
-                  onClick={() => {
-                    setSelectedRepo(null);
-                    setHighlightIndex(0);
-                    requestAnimationFrame(() => inputRef?.focus());
-                  }}
-                >
-                  &#x2190;
-                </button>
-              </Show>
-              <span class="agent-modal-title">
-                Select agent for <strong>
-                  {selectedRepo()!.name.includes("/") ? (
-                    <>
-                      <span class="name-prefix">{selectedRepo()!.name.slice(0, selectedRepo()!.name.lastIndexOf("/") + 1)}</span>
-                      {selectedRepo()!.name.slice(selectedRepo()!.name.lastIndexOf("/") + 1)}
-                    </>
-                  ) : selectedRepo()!.name}
-                </strong>
-              </span>
-            </div>
-          }
-        >
           <div class="agent-search-container">
             <input
               ref={inputRef!}
@@ -170,35 +118,9 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
             />
             {loading() && <div class="agent-search-spinner" />}
           </div>
-        </Show>
 
         {/* Content */}
         <div class="agent-modal-list">
-          <Show
-            when={!selectedRepo()}
-            fallback={
-              <For each={sortedAgents()}>
-                {(agent, i) => (
-                  <div
-                    class={`agent-modal-item agent-choice ${i() === highlightIndex() ? "highlighted" : ""}`}
-                    onClick={() => launchAgent(selectedRepo()!, agent)}
-                    onMouseEnter={() => setHighlightIndex(i())}
-                  >
-                    <div
-                      class="agent-color-badge"
-                      style={{ background: agent.color }}
-                    />
-                    <div class="agent-modal-item-info">
-                      <div class="agent-modal-item-name">{agent.label}</div>
-                      <div class="agent-modal-item-detail">
-                        {agent.command}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </For>
-            }
-          >
             <Show
               when={repos().length > 0}
               fallback={
@@ -244,7 +166,6 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
                 )}
               </For>
             </Show>
-          </Show>
         </div>
 
         {/* Footer hint */}

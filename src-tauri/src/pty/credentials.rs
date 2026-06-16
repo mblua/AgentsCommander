@@ -225,5 +225,4 @@ mod tests {
             assert!(explicit_env_is_removed(tokio_cmd.as_std(), key));
         }
     }
-
 }

@@ -288,7 +288,9 @@ mod tests {
     fn test_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
         let ts_str = v.get("timestamp")?.as_str()?;
-        let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
+        let ts = DateTime::parse_from_rfc3339(ts_str)
+            .ok()?
+            .with_timezone(&Utc);
         let body = v.get("content")?.as_str()?.to_string();
         Some((ts, None, body))
     }

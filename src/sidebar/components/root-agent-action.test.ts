@@ -23,6 +23,10 @@ function mkRoot(status: SessionStatus): Session {
     isRootAgent: true,
     token: "",
     agentKind: null,
+    requestedProfile: null,
+    effectiveProfile: null,
+    profileFallbackChain: [],
+    profileFallbackApplied: false,
   };
 }
 
