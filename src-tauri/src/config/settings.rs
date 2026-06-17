@@ -463,7 +463,7 @@ fn default_resource_monitor_enabled() -> bool {
 }
 
 fn default_max_concurrent_agent_processes() -> u32 {
-    3
+    16
 }
 
 fn default_resource_watchdog_action() -> ResourceWatchdogAction {
@@ -2232,7 +2232,7 @@ mod tests {
     fn resource_monitor_settings_round_trip_through_serde() {
         let mut s = AppSettings::default();
         assert!(s.resource_monitor_enabled);
-        assert_eq!(s.max_concurrent_agent_processes, 3);
+        assert_eq!(s.max_concurrent_agent_processes, 16);
         assert_eq!(s.resource_watchdog_action, ResourceWatchdogAction::Warn);
         assert_eq!(s.agent_group_warn_private_bytes, 8 * 1024 * 1024 * 1024);
         assert_eq!(s.agent_group_kill_private_bytes, 12 * 1024 * 1024 * 1024);
@@ -2737,7 +2737,7 @@ mod tests {
 
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(s.resource_monitor_enabled);
-        assert_eq!(s.max_concurrent_agent_processes, 3);
+        assert_eq!(s.max_concurrent_agent_processes, 16);
         assert_eq!(s.resource_watchdog_action, ResourceWatchdogAction::Warn);
         assert!(validate_resource_settings(&s).is_ok());
     }
