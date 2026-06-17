@@ -448,7 +448,15 @@ const ProjectPanel: Component = () => {
           }
           window.setTimeout(focus, 0);
         };
-        const openFilter = () => {
+        const toggleFilter = () => {
+          // Magnifier acts as a toggle. Closing also drops any in-flight
+          // pattern so we never leave an active-but-hidden filter applied
+          // (the input is the only surface that reveals one is running).
+          if (filterOpen()) {
+            setFilterOpen(false);
+            setFilterPattern("");
+            return;
+          }
           setFilterOpen(true);
           focusFilterInput();
         };
@@ -567,6 +575,25 @@ const ProjectPanel: Component = () => {
         const selectedWorkgroupVisible = () => {
           const wg = selectedWorkgroup();
           return !filterActive() || matchesFilterText("Selected Workgroup") || (wg ? workgroupMatches(wg, "Selected Workgroup") : false);
+        };
+        // Status line shown on each loop row — shared with the filter search
+        // text so what the regex matches always equals what the user sees.
+        const loopStatusText = (loop: AcLoopSummary) =>
+          loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet");
+        const loopSearchText = (loop: AcLoopSummary) =>
+          joinSearchText(
+            loop.name,
+            loop.workgroup,
+            loop.expr,
+            loop.promptPreview,
+            loopStatusText(loop),
+            loop.enabled ? null : "disabled",
+            loop.pendingDueAt ? "pending" : null
+          );
+        const loopMatches = (loop: AcLoopSummary) => matchesFilterText(loopSearchText(loop));
+        const filteredLoops = () => {
+          if (!filterActive() || matchesFilterText("Loops")) return proj.loops;
+          return proj.loops.filter((loop) => loopMatches(loop));
         };
 
         let replicaCtxMenuEl: HTMLDivElement | undefined;
@@ -1160,11 +1187,11 @@ const ProjectPanel: Component = () => {
               <button
                 type="button"
                 class="project-filter-toggle"
-                title="Open regex filter"
-                aria-label="Open regex filter"
+                title={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
+                aria-label={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
                 aria-expanded={filterOpen()}
                 data-ac-testid="project.regexFilter.toggle"
-                onClick={openFilter}
+                onClick={toggleFilter}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <circle cx="11" cy="11" r="7" />
@@ -1174,7 +1201,7 @@ const ProjectPanel: Component = () => {
             </div>
             <Show when={filterError()}>
               {(error) => (
-                <div class="project-filter-error" data-ac-testid="project.regexFilter.error">
+                <div class="project-filter-error" role="alert" data-ac-testid="project.regexFilter.error">
                   {error()}
                 </div>
               )}
@@ -1454,7 +1481,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Loops") || filteredLoops().length > 0)}>
                     <div class="ac-wg-group ac-loop-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -1468,14 +1495,14 @@ const ProjectPanel: Component = () => {
                         <div class="ac-wg-header-text">
                           <span class="ac-wg-name">Loops</span>
                         </div>
-                        <span class="ac-team-count">{proj.loops.length}</span>
+                        <span class="ac-team-count">{filteredLoops().length}</span>
                       </div>
                       <Show when={!loopsCollapsed()}>
                         <Show
-                          when={proj.loops.length > 0}
+                          when={filteredLoops().length > 0}
                           fallback={<div class="ac-empty-hint">No loops</div>}
                         >
-                          <For each={proj.loops}>
+                          <For each={filteredLoops()}>
                             {(loop) => (
                               <div
                                 class="ac-loop-row"
@@ -1507,7 +1534,7 @@ const ProjectPanel: Component = () => {
                                   </Show>
                                 </div>
                                 <div class="ac-loop-status">
-                                  {loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet")}
+                                  {loopStatusText(loop)}
                                 </div>
                               </div>
                             )}
