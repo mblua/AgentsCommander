@@ -567,15 +567,25 @@ const ProjectPanel: Component = () => {
         const agentMatches = (agent: { name: string; path: string; preferredAgentId?: string }) => {
           const session = sessionsStore.findSessionByName(agent.name);
           const repoText = sessionRepoSearchText(session);
+          // The coding-agent badge shows the RESOLVED label (session.agentLabel,
+          // else the agentId→settings lookup). sessionSearchText only carries the
+          // raw agentLabel, so a session with a null agentLabel but a resolvable
+          // agentId would render the badge yet stay unmatchable. Include the
+          // resolved label here so the coding-agent badge is matchable wherever it
+          // renders — the headline #515 ask (filter agents by their coding agent).
+          // It is null exactly when no label resolves, i.e. when the badge is also
+          // hidden, so this never matches a badge that isn't shown.
+          const codingAgentLabel = liveAgentLabel(session);
           // On an agent SessionItem the profile badge lives inside the meta block,
           // which renders only when an agent label resolves OR a coordinator's
           // repos show (SessionItem outer <Show>). Mirror that gate so the filter
           // never surfaces an agent by a profile badge it isn't showing (#515 bug
           // 1) — unlike replica rows, which render it unconditionally.
-          const metaVisible = !!liveAgentLabel(session) || repoText !== "";
+          const metaVisible = !!codingAgentLabel || repoText !== "";
           return matchesFilterText(
             agentDisplayName(agent.name),
             sessionSearchText(session),
+            codingAgentLabel,
             repoText,
             metaVisible && session ? sessionProfileBadge(session) : null
           );

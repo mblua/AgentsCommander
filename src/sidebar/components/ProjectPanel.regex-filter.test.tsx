@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ProjectPanel from "./ProjectPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
+  baseSettings,
   click,
   discovery,
   input,
@@ -14,7 +15,8 @@ import {
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import type { AcLoopSummary } from "../../shared/types";
+import { settingsStore } from "../../shared/stores/settings";
+import type { AcLoopSummary, AgentConfig } from "../../shared/types";
 
 const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
@@ -125,6 +127,21 @@ function findByTestId<T extends Element>(root: ParentNode, testId: string): T {
     throw new Error(`Element not found: ${testId}`);
   }
   return element as T;
+}
+
+/** Minimal valid coding-agent config so a session's `agentId` resolves to a
+ *  badge label via settings (the `agent_label: None` runtime path). */
+function agentConfig(
+  fields: Pick<AgentConfig, "id" | "label" | "command">
+): AgentConfig {
+  return {
+    color: "#888888",
+    gitPullBefore: false,
+    excludeGlobalClaudeMd: false,
+    envs: [],
+    isolatedHome: false,
+    ...fields,
+  };
 }
 
 describe("ProjectPanel regex filter", () => {
@@ -696,6 +713,193 @@ describe("ProjectPanel regex filter", () => {
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
       );
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("false"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("matches an agent row by its coding-agent badge resolved from agentId, per row (#515)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve(
+      "discover_project",
+      discovery({
+        agents: [
+          { name: "AgentsCommander_ac/__agent_alpha", path: `${projectPath}\\.ac\\_agent_alpha`, roleExists: true },
+          { name: "AgentsCommander_ac/__agent_bravo", path: `${projectPath}\\.ac\\_agent_bravo`, roleExists: true },
+        ],
+      })
+    );
+    // The badge label is resolved from agentId via settings (agent_label: None).
+    fake.resolve(
+      "get_settings",
+      baseSettings({
+        agents: [
+          agentConfig({ id: "claude", label: "Claude Code", command: "claude" }),
+          agentConfig({ id: "opencode", label: "opencode", command: "opencode" }),
+        ],
+      })
+    );
+
+    sessionsStore.setSessions([
+      session({
+        id: "alpha-session",
+        name: "AgentsCommander_ac/__agent_alpha",
+        workingDirectory: `${projectPath}\\.ac\\_agent_alpha`,
+        status: "running",
+        agentId: "claude",
+        agentLabel: null,
+      }),
+      session({
+        id: "bravo-session",
+        name: "AgentsCommander_ac/__agent_bravo",
+        workingDirectory: `${projectPath}\\.ac\\_agent_bravo`,
+        status: "running",
+        agentId: "opencode",
+        agentLabel: null,
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await settingsStore.load();
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("alpha"));
+      // Each row renders its resolved coding-agent badge.
+      expect(rendered.root.textContent).toContain("Claude Code");
+      expect(rendered.root.textContent).toContain("opencode");
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // The coding-agent badge is now matchable — and only on the row that shows
+      // it (the name "alpha" never contains "Claude Code", so the match is the badge).
+      input(filterInput, "Claude Code");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("alpha");
+        expect(rendered.root.textContent).not.toContain("bravo");
+      });
+
+      input(filterInput, "opencode");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("bravo");
+        expect(rendered.root.textContent).not.toContain("alpha");
+      });
+
+      // Both still match by their visible names.
+      input(filterInput, "a"); // matches alpha and bravo
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("alpha");
+        expect(rendered.root.textContent).toContain("bravo");
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("matches an agent row by its visible profile letter when the meta badge is shown (#515)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve(
+      "discover_project",
+      discovery({
+        agents: [
+          { name: "AgentsCommander_ac/__agent_charlie", path: `${projectPath}\\.ac\\_agent_charlie`, roleExists: true },
+        ],
+      })
+    );
+    fake.resolve(
+      "get_settings",
+      baseSettings({ agents: [agentConfig({ id: "claude", label: "Claude Code", command: "claude" })] })
+    );
+
+    sessionsStore.setSessions([
+      // A resolvable agentId renders the meta block, so the profile letter inside
+      // it is shown — and therefore must be matchable (the bug-2 gate, verified
+      // here for the resolved-label path the user hit).
+      session({
+        id: "charlie-session",
+        name: "AgentsCommander_ac/__agent_charlie",
+        workingDirectory: `${projectPath}\\.ac\\_agent_charlie`,
+        status: "running",
+        agentId: "claude",
+        agentLabel: null,
+        requestedProfile: "Z",
+        effectiveProfile: "Z",
+        profileFallbackApplied: false,
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await settingsStore.load();
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("charlie"));
+      expect(rendered.root.textContent).toContain("Z"); // profile badge shown
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // The shown profile letter matches the row.
+      input(filterInput, "Z");
+      await waitFor(() => expect(rendered.root.textContent).toContain("charlie"));
+
+      // A profile letter that is NOT shown hides the row — confirms the match was
+      // the profile badge, not the name or the coding-agent label.
+      input(filterInput, "Q");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("charlie"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("matches a coordinator quick-access row by its visible task title (#515)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve(
+      "discover_project",
+      discovery({
+        workgroups: [
+          {
+            name: "wg-2-dev-team",
+            path: workgroupPath,
+            task: null,
+            taskTitle: "Quasar telemetry rollout",
+            agents: [
+              {
+                name: "dev-webpage-ui",
+                path: `${workgroupPath}\\__agent_dev-webpage-ui`,
+                repoPaths: [],
+                isCoordinator: true,
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("Quasar telemetry rollout"));
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // "telemetry" appears only in the task title, yet the coordinator row that
+      // displays it stays visible — the task title is matchable.
+      input(filterInput, "telemetry");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("dev-webpage-ui");
+        expect(rendered.root.textContent).toContain("Quasar telemetry rollout");
+      });
+
+      // A token shown nowhere hides the row.
+      input(filterInput, "nonsensetoken");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("dev-webpage-ui"));
     } finally {
       rendered.cleanup();
     }
