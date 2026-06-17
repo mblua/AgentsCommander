@@ -365,4 +365,339 @@ describe("ProjectPanel regex filter", () => {
       rendered.cleanup();
     }
   });
+
+  it("is presentation-only — an active filter never mutates project/session data", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve(
+      "discover_project",
+      discoveryWithLoops([loop({ id: "loop-standup", name: "Weekday standup" })])
+    );
+
+    sessionsStore.setSessions([
+      session({
+        id: "coord-session",
+        name: "wg-2-dev-team/dev-webpage-ui",
+        workingDirectory: `${workgroupPath}\\__agent_dev-webpage-ui`,
+        status: "running",
+        isCoordinator: true,
+      }),
+      session({
+        id: "peer-session",
+        name: "wg-2-dev-team/dev-rust",
+        workingDirectory: `${workgroupPath}\\__agent_dev-rust`,
+        // Exited (not a running peer) so the matched coordinator does not render
+        // a legitimate "dev-rust RUNNING" peer badge — keeps the hide assertion
+        // about the dev-rust *row*, not data integrity.
+        status: { exited: 0 },
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
+
+      const wgAgents = () => projectStore.projects[0].workgroups[0].agents.map((a) => a.name);
+      const sessionIds = () => sessionsStore.sessions.map((s) => s.id).sort();
+      const beforeAgents = wgAgents();
+      const beforeSessions = sessionIds();
+      const beforeLoops = projectStore.projects[0].loops.map((l) => l.id);
+      const beforeTeams = projectStore.projects[0].teams.map((t) => t.name);
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // A filter that hides the non-matching rows.
+      input(filterInput, "webpage");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("dev-webpage-ui");
+        expect(rendered.root.textContent).not.toContain("dev-rust");
+      });
+
+      // The store-backed source data is untouched — only DOM visibility changed.
+      expect(wgAgents()).toEqual(beforeAgents);
+      expect(sessionIds()).toEqual(beforeSessions);
+      expect(projectStore.projects[0].loops.map((l) => l.id)).toEqual(beforeLoops);
+      expect(projectStore.projects[0].teams.map((t) => t.name)).toEqual(beforeTeams);
+
+      // Clearing the filter restores the hidden row from the same untouched data.
+      input(filterInput, "");
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
+      expect(wgAgents()).toEqual(beforeAgents);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("does not surface a non-coordinator row by its hidden branch, yet a coordinator's shown branch still matches (bug 1)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", projectDiscovery());
+
+    sessionsStore.setSessions([
+      session({
+        id: "coord-session",
+        name: "wg-2-dev-team/dev-webpage-ui",
+        workingDirectory: `${workgroupPath}\\__agent_dev-webpage-ui`,
+        status: "running",
+        isCoordinator: true,
+        gitRepos: [{ label: "uirepo", sourcePath: "C:\\repo-ui", branch: "coordbranch" }],
+      }),
+      session({
+        id: "peer-session",
+        name: "wg-2-dev-team/dev-rust",
+        workingDirectory: `${workgroupPath}\\__agent_dev-rust`,
+        status: "running",
+        isCoordinator: false,
+        gitRepos: [{ label: "rustrepo", sourcePath: "C:\\repo-rust", branch: "peerbranch" }],
+      }),
+    ]);
+    sessionsStore.setActiveId("coord-session");
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // The non-coordinator's branch badge is never rendered, so its branch is
+      // not matchable — dev-rust must NOT be surfaced (the bug).
+      input(filterInput, "peerbranch");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("dev-rust"));
+
+      // dev-rust still matches by a field that IS visible (its name).
+      input(filterInput, "dev-rust");
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
+
+      // The coordinator's branch badge IS rendered, so its branch stays matchable.
+      input(filterInput, "coordbranch");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("dev-webpage-ui");
+        expect(rendered.root.textContent).toContain("uirepo/coordbranch");
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("does not match a session's hidden shell string (bug 1)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", projectDiscovery());
+
+    sessionsStore.setSessions([
+      session({
+        id: "coord-session",
+        name: "wg-2-dev-team/dev-webpage-ui",
+        workingDirectory: `${workgroupPath}\\__agent_dev-webpage-ui`,
+        status: "running",
+        isCoordinator: true,
+        shell: "bash",
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // `shell` is never rendered on a row, so filtering by it surfaces nothing.
+      input(filterInput, "bash");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("dev-webpage-ui"));
+
+      // The same row still matches by its visible name.
+      input(filterInput, "webpage");
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("does not match a loop's promptPreview (hover-only), but the loop name still matches (bug 1)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve(
+      "discover_project",
+      discoveryWithLoops([
+        loop({ id: "loop-standup", name: "Weekday standup", promptPreview: "secretpreviewtoken" }),
+      ])
+    );
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("Weekday standup"));
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // promptPreview renders only as the row's hover title, so it is not matchable.
+      input(filterInput, "secretpreviewtoken");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("Weekday standup"));
+
+      // The loop's visible name still matches.
+      input(filterInput, "standup");
+      await waitFor(() => expect(rendered.root.textContent).toContain("Weekday standup"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("matches a row by its visible profile badge token (bug 2)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", projectDiscovery());
+
+    sessionsStore.setSessions([
+      session({
+        id: "coord-session",
+        name: "wg-2-dev-team/dev-webpage-ui",
+        workingDirectory: `${workgroupPath}\\__agent_dev-webpage-ui`,
+        status: "running",
+        isCoordinator: true,
+        requestedProfile: "A",
+        effectiveProfile: "B",
+        profileFallbackApplied: true,
+      }),
+    ]);
+    sessionsStore.setActiveId("coord-session");
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      // The A->B badge is rendered on the coordinator row.
+      await waitFor(() => expect(rendered.root.textContent).toContain("A->B"));
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // Filtering by the shown badge keeps the row visible (no "false hide").
+      input(filterInput, "A->B");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("dev-webpage-ui");
+        expect(rendered.root.textContent).toContain("A->B");
+      });
+
+      // A profile token that is NOT shown hides the row (confirms the match was
+      // the badge, not something else).
+      input(filterInput, "C->D");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("dev-webpage-ui"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("only matches an agent SessionItem's profile badge when that badge is actually shown (bug 1)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve(
+      "discover_project",
+      discovery({
+        agents: [
+          { name: "AgentsCommander_ac/__agent_solohidden", path: `${projectPath}\\.ac\\_agent_solohidden`, roleExists: true },
+          { name: "AgentsCommander_ac/__agent_soloshown", path: `${projectPath}\\.ac\\_agent_soloshown`, roleExists: true },
+        ],
+      })
+    );
+
+    sessionsStore.setSessions([
+      // No agent label resolves and not a coordinator-with-repos → SessionItem's
+      // meta block (and thus its profile badge) is NOT rendered.
+      session({
+        id: "solohidden-session",
+        name: "AgentsCommander_ac/__agent_solohidden",
+        workingDirectory: `${projectPath}\\.ac\\_agent_solohidden`,
+        status: "running",
+        isCoordinator: false,
+        agentId: null,
+        agentLabel: null,
+        gitRepos: [],
+        requestedProfile: "A",
+        effectiveProfile: "B",
+        profileFallbackApplied: true,
+      }),
+      // Coordinator with repos → meta block renders, so its profile badge shows.
+      session({
+        id: "soloshown-session",
+        name: "AgentsCommander_ac/__agent_soloshown",
+        workingDirectory: `${projectPath}\\.ac\\_agent_soloshown`,
+        status: "running",
+        isCoordinator: true,
+        agentId: null,
+        agentLabel: null,
+        gitRepos: [{ label: "shownrepo", sourcePath: "C:\\repo-shown", branch: "x" }],
+        requestedProfile: "C",
+        effectiveProfile: "D",
+        profileFallbackApplied: true,
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("solohidden"));
+      // The hidden agent's badge is genuinely absent; the shown agent's is present.
+      expect(rendered.root.textContent).not.toContain("A->B");
+      expect(rendered.root.textContent).toContain("C->D");
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // Hidden badge → not matchable (must not surface the row).
+      input(filterInput, "A->B");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("solohidden"));
+
+      // Shown badge → matchable (surfaces only the row that displays it).
+      input(filterInput, "C->D");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("soloshown");
+        expect(rendered.root.textContent).not.toContain("solohidden");
+      });
+
+      // Both still match by their visible names.
+      input(filterInput, "solohidden");
+      await waitFor(() => expect(rendered.root.textContent).toContain("solohidden"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("closes the filter when Escape is pressed on an empty field", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", projectDiscovery());
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+      await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
+      expect(filterInput.value).toBe("");
+
+      // Escape on an already-empty field closes the filter outright — the
+      // previously untested empty branch of handleFilterKeyDown.
+      filterInput.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+      await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("false"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

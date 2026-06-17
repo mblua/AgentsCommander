@@ -479,17 +479,32 @@ const ProjectPanel: Component = () => {
           if (!regex) return true;
           return regex.test(joinSearchText(...parts));
         };
+        // Search text for the session fields visible on EVERY row that shows this
+        // session (shared by replica rows and agent SessionItems): name, agent
+        // label, and the status dot's state. Conditionally-rendered badges are
+        // contributed by the per-row callers under the gate that matches their
+        // render — repo/branch (replicaSearchText / sessionRepoSearchText) and the
+        // profile badge — so "what you match == what you see" (#515 bug 1).
+        // `shell` is dropped: it is never shown on any row. status/waiting/pending
+        // stay — they are the visible status dot's state, so dropping them would
+        // hide a row whose dot the user can see.
         const sessionSearchText = (session: Session | undefined) => {
           if (!session) return "";
           return joinSearchText(
             session.name,
             session.agentLabel,
-            session.shell,
             sessionStatusSearchText(session.status),
             session.waitingForInput ? "waiting" : null,
-            session.pendingReview ? "pending" : null,
-            session.gitRepos.map((repo) => `${repo.label}${repo.branch ? `/${repo.branch}` : ""}`).join(" ")
+            session.pendingReview ? "pending" : null
           );
+        };
+        // Repo/branch chips on an agent SessionItem render only for a coordinator
+        // session with repos (SessionItem gate `isCoordinator && !inactive &&
+        // gitRepos.length`). Gate the search text identically so a non-coordinator
+        // agent row is never surfaced by a branch it isn't showing (#515 bug 1).
+        const sessionRepoSearchText = (session: Session | undefined) => {
+          if (!session || !session.isCoordinator || session.id.startsWith("inactive-")) return "";
+          return session.gitRepos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ");
         };
         const liveAgentLabel = (session: Session | undefined) => {
           if (!session) return null;
@@ -511,8 +526,17 @@ const ProjectPanel: Component = () => {
             taskTitle,
             stripFrontmatter(taskTitle ?? ""),
             replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name,
-            repos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" "),
+            // Repo/branch badges render only for coordinators (renderReplicaItem
+            // gate `isCoord() && repoBadges().length>0`). Match the same gate so a
+            // non-coordinator row is never surfaced by a badge it isn't showing
+            // (#515 bug 1).
+            replica.isCoordinator
+              ? repos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ")
+              : null,
             liveAgentLabel(session),
+            // A replica row renders the profile badge unconditionally whenever the
+            // session has one (renderReplicaItem) → always matchable here (#515 bug 2).
+            session ? sessionProfileBadge(session) : null,
             replica.isCoordinator ? "coordinator" : null,
             extraBadge,
             sessionSearchText(session)
@@ -540,8 +564,22 @@ const ProjectPanel: Component = () => {
           }
           return wg.agents.filter((replica) => replicaMatches(replica, wg));
         };
-        const agentMatches = (agent: { name: string; path: string; preferredAgentId?: string }) =>
-          matchesFilterText(agentDisplayName(agent.name), sessionSearchText(sessionsStore.findSessionByName(agent.name)));
+        const agentMatches = (agent: { name: string; path: string; preferredAgentId?: string }) => {
+          const session = sessionsStore.findSessionByName(agent.name);
+          const repoText = sessionRepoSearchText(session);
+          // On an agent SessionItem the profile badge lives inside the meta block,
+          // which renders only when an agent label resolves OR a coordinator's
+          // repos show (SessionItem outer <Show>). Mirror that gate so the filter
+          // never surfaces an agent by a profile badge it isn't showing (#515 bug
+          // 1) — unlike replica rows, which render it unconditionally.
+          const metaVisible = !!liveAgentLabel(session) || repoText !== "";
+          return matchesFilterText(
+            agentDisplayName(agent.name),
+            sessionSearchText(session),
+            repoText,
+            metaVisible && session ? sessionProfileBadge(session) : null
+          );
+        };
         const teamMemberMatches = (team: AcTeam, agentName: string) =>
           matchesFilterText(teamMemberDisplayLabel(agentName), agentName === team.coordinator ? "coordinator" : null);
         const teamOwnMatches = (team: AcTeam) => matchesFilterText(team.name);
@@ -551,27 +589,26 @@ const ProjectPanel: Component = () => {
           if (!filterActive() || matchesFilterText("Teams") || teamOwnMatches(team)) return team.agents;
           return team.agents.filter((agentName) => teamMemberMatches(team, agentName));
         };
-        const filteredCoordinatorItems = () => {
-          const items = coordinatorItems();
-          if (!filterActive()) return items;
-          return items.filter((item) =>
-            workgroupOwnMatches(item.wg) ||
-            replicaMatches(item.replica, item.wg, item.wg.name, item.wg.taskTitle) ||
-            matchesFilterText(runningCoordinatorPeers(item.wg, item.replica).map((peer) => `${peer.name} RUNNING`).join(" "))
-          );
-        };
-        const filteredWorkgroups = () => {
+        // Memoized so each section reads one cached pass per (filter, store)
+        // change instead of rebuilding search text + re-running regex.test on
+        // every access (these are read 3-4× per render). Dependencies are all
+        // reactive (filterPattern signal, sessionsStore, projectStore via proj),
+        // so sections still update live as the user types (#515 bug 3).
+        // NOTE: filteredCoordinatorItems is defined further down, right after the
+        // coordinatorItems memo it reads — createMemo runs eagerly, so it must
+        // follow that declaration (not lead it) to avoid a temporal dead zone.
+        const filteredWorkgroups = createMemo(() => {
           if (!filterActive() || matchesFilterText("Workgroups")) return proj.workgroups;
           return proj.workgroups.filter((wg) => workgroupMatches(wg, "Workgroups"));
-        };
-        const filteredAgents = () => {
+        });
+        const filteredAgents = createMemo(() => {
           if (!filterActive() || matchesFilterText("Agents")) return proj.agents;
           return proj.agents.filter((agent) => agentMatches(agent));
-        };
-        const filteredTeams = () => {
+        });
+        const filteredTeams = createMemo(() => {
           if (!filterActive() || matchesFilterText("Teams")) return proj.teams;
           return proj.teams.filter((team) => teamMatches(team));
-        };
+        });
         const selectedWorkgroupVisible = () => {
           const wg = selectedWorkgroup();
           return !filterActive() || matchesFilterText("Selected Workgroup") || (wg ? workgroupMatches(wg, "Selected Workgroup") : false);
@@ -581,20 +618,23 @@ const ProjectPanel: Component = () => {
         const loopStatusText = (loop: AcLoopSummary) =>
           loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet");
         const loopSearchText = (loop: AcLoopSummary) =>
+          // promptPreview is intentionally NOT matched: it renders only as the
+          // row's hover `title` (not visible text), so matching it would surface a
+          // loop with no on-screen reason — the case the comment above warned
+          // about (#515 bug 1).
           joinSearchText(
             loop.name,
             loop.workgroup,
             loop.expr,
-            loop.promptPreview,
             loopStatusText(loop),
             loop.enabled ? null : "disabled",
             loop.pendingDueAt ? "pending" : null
           );
         const loopMatches = (loop: AcLoopSummary) => matchesFilterText(loopSearchText(loop));
-        const filteredLoops = () => {
+        const filteredLoops = createMemo(() => {
           if (!filterActive() || matchesFilterText("Loops")) return proj.loops;
           return proj.loops.filter((loop) => loopMatches(loop));
-        };
+        });
 
         let replicaCtxMenuEl: HTMLDivElement | undefined;
         let dismissCtx: (() => void) | null = null;
@@ -747,6 +787,19 @@ const ProjectPanel: Component = () => {
           }
           if (!prev) return null;
             return proj.workgroups.find(w => w.name === prev.name) ?? null;
+        });
+
+        // Memoized like the other filtered collections (#515 bug 3); placed here
+        // because createMemo is eager and this reads the coordinatorItems memo
+        // defined just above.
+        const filteredCoordinatorItems = createMemo(() => {
+          const items = coordinatorItems();
+          if (!filterActive()) return items;
+          return items.filter((item) =>
+            workgroupOwnMatches(item.wg) ||
+            replicaMatches(item.replica, item.wg, item.wg.name, item.wg.taskTitle) ||
+            matchesFilterText(runningCoordinatorPeers(item.wg, item.replica).map((peer) => `${peer.name} RUNNING`).join(" "))
+          );
         });
 
         const runLoopAction = async (
