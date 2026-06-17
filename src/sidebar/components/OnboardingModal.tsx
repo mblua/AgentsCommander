@@ -16,6 +16,8 @@ const CUSTOM_PRESET: AgentPreset = {
     color: "#6366f1",
     gitPullBefore: false,
     excludeGlobalClaudeMd: true,
+    envs: [],
+    isolatedHome: false,
   },
 };
 
@@ -71,6 +73,8 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
           color: preset.config.color,
           gitPullBefore: false,
           excludeGlobalClaudeMd: true,
+          envs: [],
+          isolatedHome: false,
         };
       } else {
         agent = { id: newAgentId(), ...preset.config };

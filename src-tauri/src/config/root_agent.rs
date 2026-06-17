@@ -1,6 +1,6 @@
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, OnceLock};
 
@@ -14,12 +14,26 @@ const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &[
     "Role.md",
 ];
 const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT", "Role.md"];
+const ROOT_AGENT_SKILLS_DIR: &str = "skills";
+const SKILL_MD_FILENAME: &str = "SKILL.md";
 static ROOT_ROLE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static FAIL_ROOT_ROLE_WRITE_ONCE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 #[cfg(test)]
 const FAIL_ROOT_ROLE_WRITE_MARKER: &str = "FAIL_ROOT_ROLE_WRITE_ONCE";
+
+struct DefaultRootSkill {
+    dir_name: &'static str,
+    file_name: &'static str,
+    content: &'static str,
+}
+
+const DEFAULT_ROOT_SKILLS: &[DefaultRootSkill] = &[DefaultRootSkill {
+    dir_name: "role-skill-boundary-audit",
+    file_name: SKILL_MD_FILENAME,
+    content: include_str!("root_agent_defaults/role-skill-boundary-audit/SKILL.md"),
+}];
 
 /// Returns `true` iff `target` is the canonical Root Agent reply name.
 ///
@@ -116,8 +130,7 @@ Use the AgentsCommander CLI only for commands that are valid from this root-agen
     )
 });
 
-static ROOT_ROLE_MD: LazyLock<String> = LazyLock::new(|| {
-    r#"---
+const ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD: &str = r#"---
 name: 'agents-commander'
 description: 'Static supplemental root context for AgentsCommander.'
 type: agent
@@ -167,6 +180,67 @@ You may offer to download tested role templates from Agency Agents when the user
 ```
 
 Use only IDs returned by `agency-templates list` when creating agents with `create-agent-matrix --role-template <id>`. Do not invent Agency template IDs.
+"#;
+
+static ROOT_ROLE_MD: LazyLock<String> = LazyLock::new(|| {
+    r#"---
+name: 'agents-commander'
+description: 'Static supplemental root context for AgentsCommander.'
+type: agent
+---
+
+# Agents Commander
+
+You are the AgentsCommander Root Agent. You are the top-level coordinator for this AgentsCommander binary.
+
+## Responsibility
+
+Act as the top-level planning and oversight agent for sessions, workgroups, and agents available to this AgentsCommander instance. Help the user inspect available work, plan delegation, track status, and synthesize results.
+
+## State
+
+Your own durable state lives in the canonical `ac-root-agent` directory:
+
+- `memory/`
+- `plans/`
+- `skills/`
+- `Role.md`
+
+You are not a workgroup replica and you do not have an origin Agent Matrix. Use the canonical root directory for your own durable state.
+
+## Coordination
+
+Coordinate across workgroups at a high level. Delegate specialized implementation work to the appropriate team coordinators and synthesize their results for the user.
+
+## Team and workgroup setup
+
+When asked to set up a new team for automation, use this order:
+
+1. Create any missing agents with `create-agent-matrix`.
+2. Create the team with `team create`, choosing one coordinator and the worker agents.
+3. Activate a task workspace with `workgroup add` using only `--project`, `--team`, and `--title`.
+
+Agents must exist before team creation. Team creation defines membership and repo access; workgroup activation uses the existing team definition.
+
+## Governance Boundary Audits
+
+Before finalizing any work that creates, modifies, approves, or audits agents, `Role.md` files, skills, role templates, workflow instructions, or Agent Matrix structure, load and apply `skills/role-skill-boundary-audit/SKILL.md`.
+
+Also apply that skill when a role grows unusually large, a role contains repeatable operational procedure, a skill contains authority or ownership language, similar instructions appear in multiple roles, someone proposes another agent for a bounded capability, or periodic matrix hygiene is requested.
+
+The audit is a review lens. It should produce a structured recommendation before any refactor, not silently rewrite roles, skills, or agent boundaries.
+
+## Agency Agents Roles
+
+You may offer to download tested role templates from Agency Agents when the user wants a new specialist role. Ask before downloading or updating. If the user accepts, use the AgentsCommander CLI from `AGENTSCOMMANDER_BINARY_PATH`:
+
+```text
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates update --ref main
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates status --pretty
+"<AGENTSCOMMANDER_BINARY_PATH>" agency-templates list --pretty
+```
+
+Use only IDs returned by `agency-templates list` when creating agents with `create-agent-matrix --role-template <id>`. Do not invent Agency template IDs.
 "#
     .to_string()
 });
@@ -204,6 +278,45 @@ pub fn is_root_agent_path(cwd: &str) -> bool {
     paths_equivalent(Path::new(cwd), Path::new(&root_dir))
 }
 
+fn validate_root_agent_root_path(root_dir: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(root_dir) {
+        Ok(metadata) => {
+            if is_link_or_reparse(&metadata) || !metadata.is_dir() {
+                return Err(format!(
+                    "Root agent directory {} exists but is not a regular directory",
+                    root_dir.display()
+                ));
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "Failed to inspect root agent directory {}: {}",
+            root_dir.display(),
+            e
+        )),
+    }
+}
+
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 pub fn ensure_root_agent_dir() -> Result<String, String> {
     let root_dir = root_agent_dir()?;
     ensure_root_agent_dir_at(Path::new(&root_dir))?;
@@ -211,6 +324,7 @@ pub fn ensure_root_agent_dir() -> Result<String, String> {
 }
 
 pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
+    validate_root_agent_root_path(root_dir)?;
     crate::commands::entity_creation::create_agent_matrix_layout(root_dir).map_err(
         |(sub, e)| {
             format!(
@@ -221,6 +335,8 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
             )
         },
     )?;
+    validate_root_agent_root_path(root_dir)?;
+    ensure_default_root_agent_skills_at(root_dir)?;
 
     let messaging_dir = root_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME);
     std::fs::create_dir_all(&messaging_dir).map_err(|e| {
@@ -235,6 +351,120 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
     migrate_root_role(&role_path)?;
 
     merge_root_agent_config(&root_dir.join("config.json"))
+}
+
+pub(crate) fn ensure_default_root_agent_skills_at(root_dir: &Path) -> Result<(), String> {
+    validate_root_agent_root_path(root_dir)?;
+    let skills_root = root_dir.join(ROOT_AGENT_SKILLS_DIR);
+    std::fs::create_dir_all(&skills_root).map_err(|e| {
+        format!(
+            "Failed to create root agent skills directory at {}: {}",
+            skills_root.display(),
+            e
+        )
+    })?;
+    validate_root_agent_root_path(root_dir)?;
+
+    validate_root_agent_skills_root(&skills_root)?;
+
+    for skill in DEFAULT_ROOT_SKILLS {
+        ensure_default_root_skill_file(root_dir, &skills_root, skill)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_default_root_skill_file(
+    root_dir: &Path,
+    skills_root: &Path,
+    skill: &DefaultRootSkill,
+) -> Result<(), String> {
+    validate_root_agent_root_path(root_dir)?;
+    validate_root_agent_skills_root(skills_root)?;
+    let skill_dir = skills_root.join(skill.dir_name);
+    match std::fs::symlink_metadata(&skill_dir) {
+        Ok(metadata) => {
+            if is_link_or_reparse(&metadata) || !metadata.is_dir() {
+                return Err(format!(
+                    "Root agent default skill path {} exists but is not a regular directory",
+                    skill_dir.display()
+                ));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::create_dir(&skill_dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    return Err(format!(
+                        "Failed to create root agent default skill directory {}: {}",
+                        skill_dir.display(),
+                        e
+                    ));
+                }
+            }
+        }
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect root agent default skill directory {}: {}",
+                skill_dir.display(),
+                e
+            ));
+        }
+    }
+
+    validate_root_agent_root_path(root_dir)?;
+    validate_root_agent_skills_root(skills_root)?;
+    let metadata = std::fs::symlink_metadata(&skill_dir).map_err(|e| {
+        format!(
+            "Failed to inspect root agent default skill directory {} after create: {}",
+            skill_dir.display(),
+            e
+        )
+    })?;
+    if is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(format!(
+            "Root agent default skill path {} exists but is not a regular directory",
+            skill_dir.display()
+        ));
+    }
+
+    let skill_path = skill_dir.join(skill.file_name);
+    create_missing_default_skill_file(root_dir, skills_root, &skill_path, skill.content)
+}
+
+fn validate_root_agent_skills_root(skills_root: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(skills_root).map_err(|e| {
+        format!(
+            "Failed to inspect root agent skills directory {}: {}",
+            skills_root.display(),
+            e
+        )
+    })?;
+    if is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(format!(
+            "Root agent skills path {} exists but is not a regular directory",
+            skills_root.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_default_skill_directory(skill_dir: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(skill_dir).map_err(|e| {
+        format!(
+            "Failed to inspect root agent default skill directory {}: {}",
+            skill_dir.display(),
+            e
+        )
+    })?;
+    if is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(format!(
+            "Root agent default skill path {} exists but is not a regular directory",
+            skill_dir.display()
+        ));
+    }
+    Ok(())
 }
 
 fn migrate_root_role(role_path: &Path) -> Result<(), String> {
@@ -264,6 +494,7 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to read {}: {}", role_path.display(), e))?;
     let existing_normalized = normalize_role_text(&existing);
     let migrated = if existing_normalized == normalize_role_text(OLD_ROOT_ROLE_MD)
+        || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD)
         || existing_normalized == normalize_role_text(&ROOT_ROLE_MD)
     {
         if existing_normalized != normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
@@ -310,6 +541,7 @@ fn migrate_root_context_template(context_template_path: &Path) -> Result<(), Str
     let old_generated = [
         normalize_role_text(OLD_ROOT_ROLE_MD),
         normalize_role_text(&OLD_ROOT_CONTEXT_WITH_COORDINATION_MD),
+        normalize_role_text(ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD),
     ];
     if old_generated.contains(&existing_normalized) {
         std::fs::write(context_template_path, ROOT_ROLE_MD.as_str()).map_err(|e| {
@@ -467,6 +699,71 @@ fn create_missing_role(role_path: &Path, content: &str) -> Result<CreateMissingR
     }
 }
 
+fn create_missing_default_skill_file(
+    root_dir: &Path,
+    skills_root: &Path,
+    path: &Path,
+    content: &str,
+) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            validate_default_skill_file(path, &metadata)?;
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "Failed to inspect root agent default skill file {}: {}",
+                path.display(),
+                e
+            ));
+        }
+    }
+
+    validate_root_agent_root_path(root_dir)?;
+    validate_root_agent_skills_root(skills_root)?;
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "Could not resolve parent directory for root agent default skill {}",
+            path.display()
+        )
+    })?;
+    validate_default_skill_directory(parent)?;
+    let (temp_path, mut file) = create_default_skill_temp_file(path)?;
+
+    let write_result = (|| -> Result<(), String> {
+        file.write_all(content.as_bytes())
+            .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+        file.flush()
+            .map_err(|e| format!("Failed to flush {}: {}", path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync {}: {}", path.display(), e))
+    })();
+    if let Err(e) = write_result {
+        drop(file);
+        cleanup_temp_role(&temp_path);
+        return Err(e);
+    }
+    drop(file);
+
+    validate_root_agent_root_path(root_dir)?;
+    validate_root_agent_skills_root(skills_root)?;
+    validate_default_skill_directory(parent)?;
+    let published = match publish_missing_default_skill_file(&temp_path, path) {
+        Ok(published) => published,
+        Err(e) => {
+            cleanup_temp_role(&temp_path);
+            return Err(e);
+        }
+    };
+
+    cleanup_temp_role(&temp_path);
+    if published {
+        sync_role_dir(parent);
+    }
+    Ok(())
+}
+
 fn write_role_file(
     file: &mut std::fs::File,
     role_path: &Path,
@@ -496,6 +793,59 @@ fn unique_role_temp_path(role_path: &Path) -> std::path::PathBuf {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Role.md");
+    let counter = ROOT_ROLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        counter
+    ))
+}
+
+fn create_default_skill_temp_file(path: &Path) -> Result<(PathBuf, std::fs::File), String> {
+    create_default_skill_temp_file_with(path, unique_default_skill_temp_path)
+}
+
+fn create_default_skill_temp_file_with<F>(
+    path: &Path,
+    mut next_temp_path: F,
+) -> Result<(PathBuf, std::fs::File), String>
+where
+    F: FnMut(&Path) -> PathBuf,
+{
+    const TEMP_CREATE_ATTEMPTS: usize = 16;
+
+    for _ in 0..TEMP_CREATE_ATTEMPTS {
+        let temp_path = next_temp_path(path);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Failed to create temporary root agent skill file {}: {}",
+                    temp_path.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to create temporary root agent skill file for {} after {} attempts",
+        path.display(),
+        TEMP_CREATE_ATTEMPTS
+    ))
+}
+
+fn unique_default_skill_temp_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(SKILL_MD_FILENAME);
     let counter = ROOT_ROLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(
         ".{file_name}.{}.{}.tmp",
@@ -535,6 +885,52 @@ fn publish_missing_role_file(temp_path: &Path, role_path: &Path) -> Result<bool,
         Err(e) => Err(format!(
             "Failed to publish missing role file {} from {}: {}",
             role_path.display(),
+            temp_path.display(),
+            e
+        )),
+    }
+}
+
+fn validate_default_skill_file(path: &Path, metadata: &std::fs::Metadata) -> Result<(), String> {
+    if is_link_or_reparse(metadata) || !metadata.is_file() {
+        return Err(format!(
+            "Root agent default skill file {} exists but is not a regular file",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn publish_missing_default_skill_file(temp_path: &Path, path: &Path) -> Result<bool, String> {
+    publish_missing_default_skill_file_with(temp_path, path, |temp_path, path| {
+        std::fs::hard_link(temp_path, path)
+    })
+}
+
+fn publish_missing_default_skill_file_with<F>(
+    temp_path: &Path,
+    path: &Path,
+    publish: F,
+) -> Result<bool, String>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    match publish(temp_path, path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(path).map_err(|inspect_err| {
+                format!(
+                    "Root agent default skill file {} appeared during publish but could not be inspected: {}",
+                    path.display(),
+                    inspect_err
+                )
+            })?;
+            validate_default_skill_file(path, &metadata)?;
+            Ok(false)
+        }
+        Err(e) => Err(format!(
+            "Failed to publish root agent default skill file {} from {}: {}",
+            path.display(),
             temp_path.display(),
             e
         )),
@@ -610,46 +1006,21 @@ fn normalize_role_text(text: &str) -> String {
 }
 
 pub(crate) fn merge_root_agent_config(config_path: &Path) -> Result<(), String> {
-    let mut root = if config_path.exists() {
-        let content = std::fs::read_to_string(config_path)
-            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-        let parsed: Value = serde_json::from_str(&content).map_err(|e| {
-            format!(
-                "Failed to parse root agent config {}: {}",
-                config_path.display(),
-                e
-            )
-        })?;
-        if !parsed.is_object() {
-            return Err(format!(
-                "Root agent config {} must be a JSON object",
-                config_path.display()
-            ));
+    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+        obj.entry("tooling".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+
+        let context = obj.get("context").and_then(|v| v.as_array());
+        let context_is_old_default =
+            context.is_some_and(|arr| context_array_matches(arr, ROOT_AGENT_OLD_DEFAULT_CONTEXT));
+        if context.is_none_or(|arr| arr.is_empty()) || context_is_old_default {
+            obj.insert(
+                "context".to_string(),
+                serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT),
+            );
         }
-        parsed
-    } else {
-        Value::Object(Map::new())
-    };
-
-    let obj = root.as_object_mut().expect("checked object above");
-    obj.entry("tooling".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-
-    let context = obj.get("context").and_then(|v| v.as_array());
-    let context_is_old_default =
-        context.is_some_and(|arr| context_array_matches(arr, ROOT_AGENT_OLD_DEFAULT_CONTEXT));
-    if context.is_none_or(|arr| arr.is_empty()) || context_is_old_default {
-        obj.insert(
-            "context".to_string(),
-            serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT),
-        );
-    }
-
-    let json = serde_json::to_string_pretty(&root)
-        .map_err(|e| format!("Failed to serialize root agent config: {}", e))?;
-    std::fs::write(config_path, json)
-        .map_err(|e| format!("Failed to write {}: {}", config_path.display(), e))?;
-
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -711,6 +1082,16 @@ mod tests {
         std::os::windows::fs::symlink_file(target, link)
     }
 
+    #[cfg(unix)]
+    fn try_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn try_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
     #[test]
     fn ensure_root_agent_dir_at_creates_layout_role_and_config() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -733,6 +1114,19 @@ mod tests {
         assert!(ROOT_ROLE_MD.contains("workgroup add"));
         assert!(ROOT_ROLE_MD.contains("Agents must exist before team creation"));
         assert!(!ROOT_ROLE_MD.contains("workgroup add --coordinator"));
+        assert!(ROOT_ROLE_MD.contains("role-skill-boundary-audit"));
+        assert!(ROOT_ROLE_MD.contains("`Role.md` files"));
+        assert!(ROOT_ROLE_MD.contains("skills"));
+        assert!(ROOT_ROLE_MD.contains("Agent Matrix structure"));
+        let skill_path = root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("role-skill-boundary-audit")
+            .join(SKILL_MD_FILENAME);
+        assert!(skill_path.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&skill_path).expect("read default skill"),
+            DEFAULT_ROOT_SKILLS[0].content
+        );
         let template_path = temp
             .path()
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
@@ -810,6 +1204,7 @@ mod tests {
         for old_default in [
             OLD_ROOT_ROLE_MD.to_string(),
             OLD_ROOT_CONTEXT_WITH_COORDINATION_MD.to_string(),
+            ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD.to_string(),
         ] {
             let temp = tempfile::tempdir().expect("tempdir");
             let root = temp.path().join(ROOT_AGENT_DIR_NAME);
@@ -852,6 +1247,41 @@ mod tests {
     }
 
     #[test]
+    fn ensure_root_agent_dir_at_migrates_pre_boundary_audit_generated_root_template() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let template_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD)
+            .expect("write old generated template");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        let migrated = std::fs::read_to_string(template_path).expect("read template");
+        assert_eq!(migrated, ROOT_ROLE_MD.as_str());
+        assert!(migrated.contains("role-skill-boundary-audit"));
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_preserves_custom_root_template_with_boundary_audit_text() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let template_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let custom = "# Custom Root Template\n\nrole-skill-boundary-audit stays custom.\n";
+        std::fs::write(&template_path, custom).expect("write custom template");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(template_path).expect("read template"),
+            custom
+        );
+    }
+
+    #[test]
     fn ensure_root_agent_dir_at_is_idempotent_and_preserves_custom_role() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join(ROOT_AGENT_DIR_NAME);
@@ -870,6 +1300,177 @@ mod tests {
             std::fs::read_to_string(root.join("Role.md")).expect("read role"),
             "custom role"
         );
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_preserves_existing_boundary_audit_skill() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill = root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("role-skill-boundary-audit")
+            .join(SKILL_MD_FILENAME);
+        std::fs::create_dir_all(skill.parent().expect("skill parent")).expect("create skill dir");
+        std::fs::write(&skill, "custom boundary skill").expect("write custom skill");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        ensure_root_agent_dir_at(&root).expect("ensure root again");
+
+        assert_eq!(
+            std::fs::read_to_string(&skill).expect("read skill"),
+            "custom boundary skill"
+        );
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_recreates_missing_boundary_audit_skill() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        let skill = root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("role-skill-boundary-audit")
+            .join(SKILL_MD_FILENAME);
+        std::fs::remove_file(&skill).expect("remove skill");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root again");
+
+        assert_eq!(
+            std::fs::read_to_string(&skill).expect("read skill"),
+            DEFAULT_ROOT_SKILLS[0].content
+        );
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_reduces_pre_boundary_audit_generated_role_to_minimal_role() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(root.join("Role.md"), ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD)
+            .expect("write generated role");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("Role.md")).expect("read role"),
+            MINIMAL_ROOT_ROLE_MD
+        );
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_rejects_default_skill_dir_as_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill_path = root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("role-skill-boundary-audit");
+        std::fs::create_dir_all(skill_path.parent().expect("skill parent"))
+            .expect("create skills root");
+        std::fs::write(&skill_path, "not a directory").expect("write skill dir file");
+
+        let err = ensure_root_agent_dir_at(&root).expect_err("skill dir file must fail");
+
+        assert!(err.contains("not a regular directory"), "{err}");
+        assert!(!skill_path.join(SKILL_MD_FILENAME).exists());
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_rejects_default_skill_entrypoint_as_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill_file = root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("role-skill-boundary-audit")
+            .join(SKILL_MD_FILENAME);
+        std::fs::create_dir_all(&skill_file).expect("create directory entrypoint");
+
+        let err = ensure_root_agent_dir_at(&root).expect_err("skill file dir must fail");
+
+        assert!(err.contains("not a regular file"), "{err}");
+        assert!(skill_file.is_dir());
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_rejects_root_symlink_where_supported() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target-root");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&target).expect("create target root");
+        if try_symlink_dir(&target, &root).is_err() {
+            return;
+        }
+
+        let err = ensure_root_agent_dir_at(&root).expect_err("root symlink must fail");
+
+        assert!(err.contains("not a regular directory"), "{err}");
+        assert!(!target.join("Role.md").exists());
+    }
+
+    #[test]
+    fn ensure_root_agent_dir_at_rejects_default_skill_file_symlink_where_supported() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill_file = root
+            .join(ROOT_AGENT_SKILLS_DIR)
+            .join("role-skill-boundary-audit")
+            .join(SKILL_MD_FILENAME);
+        let target = temp.path().join("target-skill.md");
+        std::fs::create_dir_all(skill_file.parent().expect("skill parent"))
+            .expect("create skill dir");
+        std::fs::write(&target, "target skill").expect("write target");
+        if try_symlink_file(&target, &skill_file).is_err() {
+            return;
+        }
+
+        let err = ensure_root_agent_dir_at(&root).expect_err("skill symlink must fail");
+
+        assert!(err.contains("not a regular file"), "{err}");
+    }
+
+    #[test]
+    fn publish_missing_default_skill_file_revalidates_raced_existing_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(SKILL_MD_FILENAME);
+        let temp_path = temp.path().join(".tmp-skill");
+        std::fs::write(&temp_path, "default skill").expect("write temp");
+        std::fs::create_dir(&path).expect("create invalid raced target");
+
+        let err = publish_missing_default_skill_file_with(&temp_path, &path, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "raced target",
+            ))
+        })
+        .expect_err("invalid raced target must fail");
+
+        assert!(err.contains("not a regular file"), "{err}");
+    }
+
+    #[test]
+    fn create_default_skill_temp_file_retries_stale_temp_collision() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(SKILL_MD_FILENAME);
+        let first = temp.path().join(".first.tmp");
+        let second = temp.path().join(".second.tmp");
+        std::fs::write(&first, "stale").expect("write stale temp");
+        let mut calls = 0;
+
+        let (created_path, file) = create_default_skill_temp_file_with(&path, |_| {
+            calls += 1;
+            if calls == 1 {
+                first.clone()
+            } else {
+                second.clone()
+            }
+        })
+        .expect("create temp after collision");
+        drop(file);
+
+        assert_eq!(created_path, second);
+        assert_eq!(calls, 2);
+        assert!(first.exists());
+        assert!(second.exists());
     }
 
     #[test]
@@ -1118,7 +1719,7 @@ mod tests {
 
         let err = merge_root_agent_config(&config_path).expect_err("must fail");
 
-        assert!(err.contains("Failed to parse root agent config"));
+        assert!(err.contains("Failed to parse"));
         assert_eq!(
             std::fs::read_to_string(&config_path).expect("read config"),
             "{not json"

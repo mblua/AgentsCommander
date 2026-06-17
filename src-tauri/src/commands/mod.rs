@@ -4,6 +4,7 @@ pub mod codex_resolver;
 pub mod config;
 pub mod entity_creation;
 pub mod gemini_resolver;
+pub mod loops;
 pub mod phone;
 pub mod pty;
 pub mod repos;

@@ -131,6 +131,65 @@ describe("automation bridge", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it("dispatches contextmenu on a visible enabled target", async () => {
+    const rect = domRect(40, 60, 200, 80);
+    const header = addTarget("div", "project.loops.header.test", "Loops");
+    makeVisible(header, rect);
+    topmostElement = header;
+    const onContextMenu = vi.fn((event: MouseEvent) => {
+      event.preventDefault();
+      addTarget("button", "loop.action.new.test", "New loop");
+    });
+    header.addEventListener("contextmenu", onContextMenu);
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("contextClick", "project.loops.header.test"),
+    );
+    const menuResponse = await executeAutomationRequest(
+      "main",
+      request("query", "loop.action.new.test"),
+    );
+
+    if (!response.ok) throw new Error(response.message);
+    expect(response.ok).toBe(true);
+    expect(onContextMenu).toHaveBeenCalledTimes(1);
+    const event = onContextMenu.mock.calls[0]?.[0];
+    if (!event) throw new Error("expected contextmenu event");
+    expect(event).toBeInstanceOf(MouseEvent);
+    expect(event.button).toBe(2);
+    expect(event.buttons).toBe(2);
+    expect(event.clientX).toBe(140);
+    expect(event.clientY).toBe(100);
+    expect(event.defaultPrevented).toBe(true);
+    expect(menuResponse.ok).toBe(true);
+  });
+
+  it("dispatches contextmenu on a disabled loop row domain state", async () => {
+    const row = addTarget("div", "loop.row.test.weekday-standup", "Weekday standup");
+    row.setAttribute("data-ac-state", "loop-disabled");
+    topmostElement = row;
+    const onContextMenu = vi.fn((event: MouseEvent) => {
+      event.preventDefault();
+      addTarget("button", "loop.action.toggle.test.weekday-standup", "Enable");
+    });
+    row.addEventListener("contextmenu", onContextMenu);
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("contextClick", "loop.row.test.weekday-standup"),
+    );
+    const menuResponse = await executeAutomationRequest(
+      "main",
+      request("query", "loop.action.toggle.test.weekday-standup"),
+    );
+
+    if (!response.ok) throw new Error(response.message);
+    expect(response.ok).toBe(true);
+    expect(onContextMenu).toHaveBeenCalledTimes(1);
+    expect(menuResponse.ok).toBe(true);
+  });
+
   it("waits for click-driven dynamic targets before completing", async () => {
     const button = addTarget("button", "settings.agent.addCustom", "+ Custom Agent");
     topmostElement = button;
@@ -190,6 +249,42 @@ describe("automation bridge", () => {
       disabled: true,
       state: "disabled",
     });
+  });
+
+  it("returns allow-listed data-ac metadata without value-like attributes", async () => {
+    const source = addTarget("span", "settings.agentRow.0.envRow.0.source", "user");
+    source.setAttribute("data-ac-role", "status");
+    source.setAttribute("data-ac-env-source", "user");
+    source.setAttribute("data-ac-agent-id", "codex");
+    source.setAttribute("data-ac-agent-index", "0");
+    source.setAttribute("data-ac-agent-command", "codex");
+    source.setAttribute("data-ac-profile-letter", "B");
+    source.setAttribute("data-ac-requested-profile", "B");
+    source.setAttribute("data-ac-effective-profile", "A");
+    source.setAttribute("data-ac-configured", "false");
+    source.setAttribute("data-ac-value", "AIza123456789012345678901234567890");
+    source.setAttribute("data-ac-token", "abcdefghijklmnopqrstuvwxyz1234567890");
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("query", "settings.agentRow.0.envRow.0.source"),
+    );
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) throw new Error(response.message);
+    expect(response.target.text).toBe("");
+    expect(response.target.metadata).toEqual({
+      agentId: "codex",
+      agentIndex: "0",
+      agentCommand: "codex",
+      profileLetter: "B",
+      requestedProfile: "B",
+      effectiveProfile: "A",
+      configured: "false",
+      envSource: "user",
+    });
+    expect(response.target.metadata).not.toHaveProperty("value");
+    expect(response.target.metadata).not.toHaveProperty("token");
   });
 
   it("briefly retries queries for asynchronously rendered targets", async () => {
@@ -265,6 +360,29 @@ describe("automation bridge", () => {
     expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
     expect(response.available?.map((target) => target.testId)).toContain("expired.click");
     expect(onClick).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it("does not context-click when the request expires before mutation", async () => {
+    const target = addTarget("div", "expired.context", "Expired");
+    topmostElement = target;
+    const onContextMenu = vi.fn();
+    const focus = vi.spyOn(target, "focus");
+    target.addEventListener("contextmenu", onContextMenu);
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("contextClick", "expired.context", undefined, Date.now() - 1),
+    );
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected timeout");
+    expect(response.error).toBe("timeout");
+    expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
+    expect(response.available?.map((availableTarget) => availableTarget.testId)).toContain(
+      "expired.context",
+    );
+    expect(onContextMenu).not.toHaveBeenCalled();
     expect(focus).not.toHaveBeenCalled();
   });
 
@@ -351,6 +469,21 @@ describe("automation bridge", () => {
     const response = await executeAutomationRequest(
       "main",
       request("click", "disabled.target"),
+    );
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected target_disabled");
+    expect(response.error).toBe("target_disabled");
+  });
+
+  it("reports data-ac-state disabled action targets", async () => {
+    const button = addTarget("button", "state.disabled.target", "Disabled");
+    button.setAttribute("data-ac-state", "disabled");
+    topmostElement = button;
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("click", "state.disabled.target"),
     );
 
     expect(response.ok).toBe(false);

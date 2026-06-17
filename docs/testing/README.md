@@ -108,6 +108,7 @@ It refuses files, symlinks, junctions, mount points, Windows reparse-point direc
 Use a three-letter functional prefix followed by a zero-padded number:
 
 - `PRJ-###`: Project lifecycle.
+- `OCA-###`: Onboarding and coding-agent configuration.
 - `AGT-###`: Agent lifecycle.
 - `TPL-###`: Agent templates and agency setup.
 - `TRM-###`: Terminal sessions.
@@ -129,6 +130,35 @@ Evidence should be enough for another tester to verify the observed state withou
 - For persistence checks, capture both the pre-restart and post-restart state.
 - Record any fallback used, such as HWND capture, virtual desktop capture, keyboard navigation, or relative coordinates.
 - Do not delete user data to clean up after tests. Use `test-reset --confirm-testeable` only for the disposable testable app identity. If a test creates data outside that identity, document the residual test project.
+
+## Result Values
+
+Use these result values consistently in every suite execution log:
+
+- `PASS`: The expected result was fully observed and required evidence was captured.
+- `FAIL`: The expected result was not observed, or a regression was confirmed.
+- `PARTIAL`: The main behavior was observed but evidence, capture quality, or a secondary assertion was incomplete.
+- `BLOCKED`: The case could not be completed because setup, tooling, environment, or an earlier dependency prevented execution.
+- `NOT RUN`: The case is documented but has not been executed in the current run.
+
+Every non-`PASS` result must include a short note explaining the reason and must reference any available evidence.
+
+## Suite Document Conventions
+
+Each suite file must follow the project lifecycle structure:
+
+1. Title and scope paragraph.
+2. Disposable test data and cleanup guidance.
+3. Visual preconditions reference to `README.md#visual-test-environment`.
+4. Deterministic testable app and reset guidance.
+5. `## Execution Log` with run metadata and a case result table.
+6. `Residual test data:` section.
+7. `Automation gaps observed:` section.
+8. Cases in ascending ID order using `Purpose`, `Preconditions`, `Steps`, `Expected Result`, `Evidence Required`, and `Pass/Fail Criteria`.
+
+New suite documents that have not been executed yet should use `NOT RUN` for each case and `TBD` only in execution metadata fields that the tester fills during a real run.
+
+The final case definitions must not contain `TBD`. Each case must have numbered `Steps` and concrete artifact names or artifact categories under `Evidence Required`.
 
 ## Current Baseline Seed
 

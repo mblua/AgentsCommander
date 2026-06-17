@@ -15,6 +15,21 @@ const MISSING_SELECTOR_RETRY_MS = 250;
 const MISSING_SELECTOR_RETRY_INTERVAL_MS = 25;
 const REDACTED_TEXT = "[redacted]";
 
+const SAFE_METADATA_ATTRIBUTES = [
+  ["data-ac-agent-id", "agentId"],
+  ["data-ac-agent-index", "agentIndex"],
+  ["data-ac-agent-command", "agentCommand"],
+  ["data-ac-command", "command"],
+  ["data-ac-profile-letter", "profileLetter"],
+  ["data-ac-requested-profile", "requestedProfile"],
+  ["data-ac-effective-profile", "effectiveProfile"],
+  ["data-ac-configured", "configured"],
+  ["data-ac-env-source", "envSource"],
+  // Generic, sanitized diagnostic detail surfaced on a target (e.g. the
+  // project.loadStatus chip exposes boot/load failure info here).
+  ["data-ac-detail", "detail"],
+] as const;
+
 type UiAutomationErrorCode = Extract<UiAutomationResponse, { ok: false }>["error"];
 
 let started = false;
@@ -146,6 +161,15 @@ async function executeAutomationRequestInner(
     if (expired) return expired;
     element.focus();
     element.click();
+    await settleAfterDomMutation();
+    return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
+  }
+
+  if (request.action === "contextClick") {
+    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+    if (expired) return expired;
+    element.focus();
+    element.dispatchEvent(createContextMenuEvent(element, elementCenterPoint(element)));
     await settleAfterDomMutation();
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
@@ -354,6 +378,7 @@ function snapshotTarget(element: HTMLElement): UiAutomationTarget {
     testId: element.getAttribute("data-ac-testid") ?? "",
     role: element.getAttribute("data-ac-role") ?? element.getAttribute("role"),
     state: element.getAttribute("data-ac-state"),
+    metadata: snapshotMetadata(element),
     tag: element.tagName.toLowerCase(),
     text: snapshotText(element),
     visible: isElementVisible(element),
@@ -364,6 +389,25 @@ function snapshotTarget(element: HTMLElement): UiAutomationTarget {
     expanded: ariaBool(element, "aria-expanded"),
     rect: targetRect(element),
   };
+}
+
+function snapshotMetadata(element: HTMLElement): Record<string, string> {
+  const metadata: Record<string, string> = {};
+  for (const [attribute, key] of SAFE_METADATA_ATTRIBUTES) {
+    const raw = element.getAttribute(attribute);
+    const value = sanitizeMetadataValue(raw);
+    if (value !== null) {
+      metadata[key] = value;
+    }
+  }
+  return metadata;
+}
+
+function sanitizeMetadataValue(value: string | null): string | null {
+  if (value === null) return null;
+  const normalized = redactSnapshotText(value.replace(/\s+/g, " ").trim());
+  if (!normalized) return null;
+  return normalized.slice(0, MAX_SNAPSHOT_TEXT);
 }
 
 function snapshotText(element: HTMLElement): string {
@@ -467,13 +511,46 @@ function parentElementOrHost(element: HTMLElement): HTMLElement | null {
   return null;
 }
 
+function elementCenterPoint(element: HTMLElement): { clientX: number; clientY: number } {
+  const rect = element.getBoundingClientRect();
+  return {
+    clientX: rect.x + rect.width / 2,
+    clientY: rect.y + rect.height / 2,
+  };
+}
+
+function createContextMenuEvent(
+  element: HTMLElement,
+  point: { clientX: number; clientY: number },
+): MouseEvent {
+  const eventView = element.ownerDocument.defaultView ?? window;
+  const eventInit: MouseEventInit = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    button: 2,
+    buttons: 2,
+    clientX: point.clientX,
+    clientY: point.clientY,
+    screenX: Math.round(point.clientX),
+    screenY: Math.round(point.clientY),
+  };
+
+  try {
+    return new eventView.MouseEvent("contextmenu", { ...eventInit, view: eventView });
+  } catch (error) {
+    if (!String(error).includes("member view is not of type Window")) throw error;
+    return new eventView.MouseEvent("contextmenu", eventInit);
+  }
+}
+
 function topmostElementAtCenter(element: HTMLElement): { ok: true } | { ok: false; element: HTMLElement | null } {
   if (typeof document.elementFromPoint !== "function") {
     return { ok: true };
   }
 
-  const rect = element.getBoundingClientRect();
-  const top = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  const { clientX, clientY } = elementCenterPoint(element);
+  const top = document.elementFromPoint(clientX, clientY);
   if (!top) {
     return { ok: false, element: null };
   }

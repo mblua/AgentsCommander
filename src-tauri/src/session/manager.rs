@@ -71,6 +71,11 @@ impl SessionManager {
             git_repos_gen: 0,
             token: Uuid::new_v4(),
             agent_kind: None,
+            requested_profile: None,
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
@@ -338,6 +343,25 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
             s.agent_kind = kind;
+        }
+    }
+
+    pub async fn set_profile_metadata(
+        &self,
+        id: Uuid,
+        requested_profile: Option<String>,
+        effective_profile: Option<String>,
+        profile_fallback_chain: Vec<String>,
+        profile_fallback_applied: bool,
+        effective_codex_home: Option<String>,
+    ) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.requested_profile = requested_profile;
+            s.effective_profile = effective_profile;
+            s.profile_fallback_chain = profile_fallback_chain;
+            s.profile_fallback_applied = profile_fallback_applied;
+            s.effective_codex_home = effective_codex_home;
         }
     }
 

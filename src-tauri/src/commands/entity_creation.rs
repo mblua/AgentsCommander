@@ -15,7 +15,7 @@ use crate::config::settings::{AppSettings, SettingsState};
 use crate::config::workspace::existing_workspace_dir;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
-use crate::session::session::SessionRepo;
+use crate::session::session::{SessionRepo, SessionStatus};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -489,11 +489,10 @@ pub(crate) fn create_agent_matrix_on_disk(
         }
     }
 
-    let mut config_str = serde_json::to_string_pretty(&default_agent_matrix_config())
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    config_str.push('\n');
-    std::fs::write(agent_dir.join("config.json"), config_str)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    write_local_config_value(
+        &agent_dir.join("config.json"),
+        default_agent_matrix_config(),
+    )?;
 
     let display_name = agent_matrix_display_name(project, &safe_name);
     Ok(CreatedAgentMatrixOnDisk {
@@ -538,11 +537,10 @@ pub(crate) fn create_agent_matrix_from_role(
     std::fs::write(&role_path, args.role_bytes)
         .map_err(|e| format!("Failed to write Role.md: {}", e))?;
 
-    let mut config_str = serde_json::to_string_pretty(&default_agent_matrix_config())
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    config_str.push('\n');
-    std::fs::write(agent_dir.join("config.json"), config_str)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    write_local_config_value(
+        &agent_dir.join("config.json"),
+        default_agent_matrix_config(),
+    )?;
 
     let project_path = args
         .workspace_dir
@@ -594,6 +592,17 @@ fn default_agent_matrix_config() -> serde_json::Value {
         "tooling": {},
         "context": ["$AGENTSCOMMANDER_CONTEXT", "Role.md"],
     })
+}
+
+fn write_local_config_value(config_path: &Path, value: serde_json::Value) -> Result<(), String> {
+    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+        let map = value
+            .as_object()
+            .ok_or_else(|| "Local config value must be a JSON object".to_string())?;
+        *obj = map.clone();
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn selected_workspace_dir(project: &Path) -> Result<PathBuf, String> {
@@ -912,10 +921,7 @@ pub(crate) fn create_or_update_replica_on_disk(
         "repos": assigned_repos,
         "context": context_entries,
     });
-    let config_str = serde_json::to_string_pretty(&replica_config)
-        .map_err(|e| format!("Failed to serialize replica config: {}", e))?;
-    std::fs::write(replica_dir.join("config.json"), config_str)
-        .map_err(|e| format!("Failed to write replica config: {}", e))?;
+    write_local_config_value(&replica_dir.join("config.json"), replica_config)?;
     Ok(replica_dir)
 }
 
@@ -1344,10 +1350,7 @@ pub async fn create_workgroup(
             "context": context_entries,
         });
 
-        let config_str = serde_json::to_string_pretty(&replica_config)
-            .map_err(|e| format!("Failed to serialize replica config: {}", e))?;
-        std::fs::write(replica_dir.join("config.json"), &config_str)
-            .map_err(|e| format!("Failed to write replica config: {}", e))?;
+        write_local_config_value(&replica_dir.join("config.json"), replica_config)?;
     }
 
     // Clone repos (async, partial failures logged but don't rollback)
@@ -1468,9 +1471,9 @@ pub async fn delete_workgroup(
     let base = selected_workspace_dir(Path::new(&project_path))?;
 
     let wg_dir = base.join(&workgroup_name);
-    if !wg_dir.exists() {
-        return Err(format!("Workgroup '{}' not found", workgroup_name));
-    }
+    validate_delete_root_not_link_or_reparse(&wg_dir)?;
+
+    ensure_no_live_sessions_under_manager(&wg_dir, session_mgr.inner()).await?;
 
     // Safety check: detect dirty repos before deleting (skip if force)
     if !force.unwrap_or(false) {
@@ -1496,7 +1499,37 @@ pub async fn delete_workgroup(
     // memory-mapped TASK.md), the rename fails atomically — no files touched —
     // and we run the diagnostic on the still-intact tree. On success the dir is
     // re-parented to a sentinel name and removed; the user-visible WG is gone.
-    match try_atomic_delete_wg(&wg_dir) {
+    delete_workgroup_dir_backend(&wg_dir, &workgroup_name, session_mgr.inner()).await?;
+    log::info!(
+        "[entity_creation] Deleted workgroup: {} (force={})",
+        workgroup_name,
+        force.unwrap_or(false)
+    );
+    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+    Ok(())
+}
+
+pub(crate) async fn delete_workgroup_dir_backend(
+    wg_dir: &Path,
+    workgroup_name: &str,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> Result<(), String> {
+    delete_workgroup_dir_backend_with_outcome(
+        wg_dir,
+        workgroup_name,
+        session_mgr,
+        try_atomic_delete_wg(wg_dir),
+    )
+    .await
+}
+
+pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
+    wg_dir: &Path,
+    workgroup_name: &str,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    outcome: WgDeleteOutcome,
+) -> Result<(), String> {
+    match outcome {
         WgDeleteOutcome::Deleted => {
             // fall through to success path
         }
@@ -1507,10 +1540,10 @@ pub async fn delete_workgroup(
                 workgroup_name
             );
             let report = crate::commands::wg_delete_diagnostic::diagnose_blockers(
-                &wg_dir,
-                &workgroup_name,
+                wg_dir,
+                workgroup_name,
                 &raw, // raw OS error verbatim — see plan §C.1
-                session_mgr.inner(),
+                session_mgr,
             )
             .await;
             let json = serde_json::to_string(&report).map_err(|se| {
@@ -1521,16 +1554,18 @@ pub async fn delete_workgroup(
             })?;
             return Err(format!("BLOCKERS:{}", json));
         }
+        WgDeleteOutcome::Partial { orphan_path, error } => {
+            return Err(format!(
+                "Partial workgroup delete: renamed '{}' to orphan '{}', but failed to remove orphan: {}",
+                wg_dir.display(),
+                orphan_path.display(),
+                error
+            ));
+        }
         WgDeleteOutcome::Other(e) => {
             return Err(format!("Failed to delete workgroup directory: {}", e));
         }
     }
-    log::info!(
-        "[entity_creation] Deleted workgroup: {} (force={})",
-        workgroup_name,
-        force.unwrap_or(false)
-    );
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
     Ok(())
 }
 
@@ -1713,32 +1748,56 @@ async fn sync_workgroup_repos_inner(
 
             // Read existing config, preserving identity/tooling/other runtime fields
             let config_path = replica_dir.join("config.json");
-            let mut config: serde_json::Value = match std::fs::read_to_string(&config_path) {
-                Ok(content) => match serde_json::from_str(&content) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        result.errors.push(SyncError {
-                            replica: dir_name.to_string(),
-                            error: format!("Failed to parse config.json: {}", e),
-                        });
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    result.errors.push(SyncError {
-                        replica: dir_name.to_string(),
-                        error: format!("Failed to read config.json: {}", e),
-                    });
-                    continue;
-                }
-            };
+            let mut repaired_identity = None;
+            let write_result = crate::config::local_config_io::update_config_json_object(
+                &config_path,
+                false,
+                |obj| {
+                    let mut config = serde_json::Value::Object(std::mem::take(obj));
+                    let identity = repair_wg_replica_config_value(
+                        replica_dir,
+                        &mut config,
+                        WG_REPLICA_REQUIRED_CONTEXT,
+                    )?;
 
-            let identity = match repair_wg_replica_config_value(
-                replica_dir,
-                &mut config,
-                WG_REPLICA_REQUIRED_CONTEXT,
-            ) {
-                Ok(identity) => identity,
+                    // Update repos
+                    config["repos"] = serde_json::json!(assigned_repos);
+
+                    // Context merge: prepend required tokens to maintain consistent ordering
+                    // with create_workgroup() (which writes [$AC_CONTEXT, $REPOS_INFO] first).
+                    // Preserve custom non-Role entries while replacing identity-derived Role.md
+                    // entries with the repaired same-workspace identity.
+                    let existing_context: Vec<String> = config
+                        .get("context")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
+                        &existing_context,
+                        &["$AGENTSCOMMANDER_CONTEXT"],
+                        &identity.identity,
+                        identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+                    ));
+
+                    let final_obj = config.as_object_mut().ok_or_else(|| {
+                        format!(
+                            "Replica config {} must be a JSON object",
+                            config_path.display()
+                        )
+                    })?;
+                    *obj = std::mem::take(final_obj);
+                    repaired_identity = Some(identity);
+                    Ok(())
+                },
+            );
+
+            let _identity = match write_result {
+                Ok(_) => repaired_identity.expect("identity repaired before successful write"),
                 Err(e) => {
                     result.errors.push(SyncError {
                         replica: dir_name.to_string(),
@@ -1747,50 +1806,6 @@ async fn sync_workgroup_repos_inner(
                     continue;
                 }
             };
-
-            // Update repos
-            config["repos"] = serde_json::json!(assigned_repos);
-
-            // Context merge: prepend required tokens to maintain consistent ordering
-            // with create_workgroup() (which writes [$AC_CONTEXT, $REPOS_INFO] first).
-            // Preserve custom non-Role entries while replacing identity-derived Role.md
-            // entries with the repaired same-workspace identity.
-            let existing_context: Vec<String> = config
-                .get("context")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
-                &existing_context,
-                &["$AGENTSCOMMANDER_CONTEXT"],
-                &identity.identity,
-                identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
-            ));
-
-            // Write back
-            match serde_json::to_string_pretty(&config) {
-                Ok(serialized) => {
-                    if let Err(e) = std::fs::write(&config_path, &serialized) {
-                        result.errors.push(SyncError {
-                            replica: dir_name.to_string(),
-                            error: format!("Failed to write config.json: {}", e),
-                        });
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    result.errors.push(SyncError {
-                        replica: dir_name.to_string(),
-                        error: format!("Failed to serialize config.json: {}", e),
-                    });
-                    continue;
-                }
-            }
 
             // Write succeeded — record for in-memory refresh. Canonicalize each repo
             // path so source_path matches DiscoveryBranchWatcher's shape. Order of
@@ -2016,10 +2031,15 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
 ///
 /// `pub(crate)` so the unit tests can pattern-match on the variants.
 pub(crate) enum WgDeleteOutcome {
-    /// Rename succeeded and the renamed dir was removed (or, in the rare race
-    /// where remove failed after a successful rename, an orphan remains and a
-    /// `log::warn!` was emitted — from the user's perspective the WG is gone).
+    /// Rename succeeded and the renamed dir was removed.
     Deleted,
+    /// Rename succeeded, but deleting the renamed orphan failed. The
+    /// user-visible workgroup name is gone, but callers must report this as a
+    /// partial failure and skip refresh.
+    Partial {
+        orphan_path: PathBuf,
+        error: std::io::Error,
+    },
     /// Rename failed with a Windows file-in-use error. Tree is intact; caller
     /// should run the blocker diagnostic and return `BLOCKERS:` to the frontend.
     Blocked(std::io::Error),
@@ -2044,6 +2064,13 @@ pub(crate) enum WgDeleteOutcome {
 ///
 /// `pub(crate)` so unit tests can drive it directly.
 pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
+    try_atomic_delete_wg_with_remove(wg_dir, |path| std::fs::remove_dir_all(path))
+}
+
+pub(crate) fn try_atomic_delete_wg_with_remove(
+    wg_dir: &Path,
+    remove_dir_all: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> WgDeleteOutcome {
     let parent = match wg_dir.parent() {
         Some(p) => p,
         None => {
@@ -2067,10 +2094,7 @@ pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
 
     match std::fs::rename(wg_dir, &temp_path) {
         Ok(()) => {
-            if let Err(e) = std::fs::remove_dir_all(&temp_path) {
-                // Rare race: a new handle opened between rename and remove. The
-                // user-visible WG is gone (renamed away); leave the orphan on
-                // disk for future cleanup tooling.
+            if let Err(e) = remove_dir_all(&temp_path) {
                 log::warn!(
                     "[entity_creation] Renamed workgroup '{}' to '{}' but remove_dir_all failed: {}. \
                      User-visible WG is gone; orphan remains on disk.",
@@ -2078,6 +2102,10 @@ pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
                     temp_path.display(),
                     e
                 );
+                return WgDeleteOutcome::Partial {
+                    orphan_path: temp_path,
+                    error: e,
+                };
             }
             WgDeleteOutcome::Deleted
         }
@@ -2089,6 +2117,86 @@ pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
             }
         }
     }
+}
+
+pub(crate) fn validate_delete_root_not_link_or_reparse(path: &Path) -> Result<(), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("delete_root_not_directory".to_string());
+        }
+        Err(e) => return Err(format!("delete_root_metadata_failed: {e}")),
+    };
+
+    if delete_root_has_windows_reparse_point(&metadata) {
+        return Err("delete_root_is_reparse_point".to_string());
+    }
+    if metadata.file_type().is_symlink() {
+        return Err("delete_root_is_symlink".to_string());
+    }
+    if !metadata.is_dir() {
+        return Err("delete_root_not_directory".to_string());
+    }
+    Ok(())
+}
+
+async fn ensure_no_live_sessions_under_manager(
+    root: &Path,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> Result<(), String> {
+    let root_key = path_key_for_delete(root);
+    let sessions = { session_mgr.read().await.list_sessions().await };
+    let blockers: Vec<_> = sessions
+        .into_iter()
+        .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+        .filter(|session| {
+            let working_dir = Path::new(&session.working_directory);
+            let working_key = path_key_for_delete(working_dir);
+            working_key == root_key || working_key.starts_with(&(root_key.clone() + "/"))
+        })
+        .collect();
+
+    if blockers.is_empty() {
+        return Ok(());
+    }
+
+    let details = blockers
+        .iter()
+        .map(|session| {
+            format!(
+                "  - {} at {} ({:?})",
+                session.name, session.working_directory, session.status
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "Cannot delete while live sessions exist under {}:\n{}",
+        root.display(),
+        details
+    ))
+}
+
+fn path_key_for_delete(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = resolved.to_string_lossy();
+    text.strip_prefix(r"\\?\")
+        .unwrap_or(&text)
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+#[cfg(target_os = "windows")]
+fn delete_root_has_windows_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(target_os = "windows"))]
+fn delete_root_has_windows_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// True iff the rename-probe error indicates a blocker holds an open handle.
@@ -2580,6 +2688,9 @@ mod tests {
                 color: "#000000".to_string(),
                 git_pull_before: false,
                 exclude_global_claude_md: false,
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
             },
             crate::config::settings::AgentConfig {
                 id: "claude".to_string(),
@@ -2588,6 +2699,9 @@ mod tests {
                 color: "#ffffff".to_string(),
                 git_pull_before: false,
                 exclude_global_claude_md: true,
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
             },
         ];
 
@@ -2957,6 +3071,198 @@ mod tests {
                 panic!("missing dir must NOT classify as Blocked")
             }
             WgDeleteOutcome::Deleted => panic!("missing dir cannot be Deleted"),
+            WgDeleteOutcome::Partial { .. } => panic!("missing dir cannot be Partial"),
+        }
+    }
+
+    #[test]
+    fn try_atomic_delete_wg_reports_partial_orphan_when_remove_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wg_dir = tmp.path().join("wg-1-test");
+        std::fs::create_dir(&wg_dir).expect("create wg_dir");
+        std::fs::write(wg_dir.join("TASK.md"), "# test\n").expect("write TASK.md");
+
+        let outcome = try_atomic_delete_wg_with_remove(&wg_dir, |_path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "forced remove failure",
+            ))
+        });
+        match outcome {
+            WgDeleteOutcome::Partial { orphan_path, error } => {
+                assert!(!wg_dir.exists(), "original workgroup path should be gone");
+                assert!(orphan_path.is_dir(), "orphan should remain on disk");
+                assert!(orphan_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("orphan filename")
+                    .starts_with(".deleting-wg-1-test-"));
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(error.to_string().contains("forced remove failure"));
+            }
+            WgDeleteOutcome::Deleted => panic!("remove failure cannot be Deleted"),
+            WgDeleteOutcome::Blocked(e) => panic!("remove failure cannot be Blocked: {}", e),
+            WgDeleteOutcome::Other(e) => panic!("remove failure cannot be Other: {}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn gui_partial_delete_outcome_returns_error_before_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wg_dir = tmp.path().join("wg-1-test");
+        let orphan = tmp.path().join(".deleting-wg-1-test-forced");
+        std::fs::create_dir(&wg_dir).expect("create wg_dir");
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+
+        let err = delete_workgroup_dir_backend_with_outcome(
+            &wg_dir,
+            "wg-1-test",
+            &manager,
+            WgDeleteOutcome::Partial {
+                orphan_path: orphan.clone(),
+                error: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "forced remove failure",
+                ),
+            },
+        )
+        .await
+        .expect_err("partial delete must error before caller can refresh");
+
+        assert!(err.contains("Partial workgroup delete"));
+        assert!(err.contains(&orphan.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn validate_delete_root_rejects_non_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("wg-1-test");
+        std::fs::write(&file, "not a dir").expect("write file");
+
+        assert_eq!(
+            validate_delete_root_not_link_or_reparse(&file).unwrap_err(),
+            "delete_root_not_directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_delete_root_rejects_symlink_root() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real");
+        let link = tmp.path().join("wg-1-test");
+        std::fs::create_dir(&real).expect("create real");
+        symlink(&real, &link).expect("create symlink");
+
+        assert_eq!(
+            validate_delete_root_not_link_or_reparse(&link).unwrap_err(),
+            "delete_root_is_symlink"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_delete_root_rejects_reparse_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real");
+        let junction = tmp.path().join("wg-1-test");
+        std::fs::create_dir(&real).expect("create real");
+        let output = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                junction.to_str().expect("junction path"),
+                real.to_str().expect("real path"),
+            ])
+            .output()
+            .expect("run mklink");
+        if !output.status.success() {
+            println!(
+                "skipping validate_delete_root reparse check; see docs/testing/destructive-filesystem-regression.md#helper-reparse-root-check: stdout: {} stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        assert_eq!(
+            validate_delete_root_not_link_or_reparse(&junction).unwrap_err(),
+            "delete_root_is_reparse_point"
+        );
+    }
+
+    #[tokio::test]
+    async fn gui_live_session_refusal_precedes_delete() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wg_dir = tmp.path().join("wg-1-test");
+        std::fs::create_dir(&wg_dir).expect("create wg_dir");
+        let work_dir = wg_dir.join("__agent_dev-rust");
+        std::fs::create_dir_all(&work_dir).expect("create work_dir");
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        {
+            let guard = manager.read().await;
+            guard
+                .create_session(
+                    "shell".to_string(),
+                    Vec::new(),
+                    work_dir.to_string_lossy().to_string(),
+                    None,
+                    None,
+                    Vec::new(),
+                    false,
+                )
+                .await
+                .expect("create live session");
+        }
+
+        let err = ensure_no_live_sessions_under_manager(&wg_dir, &manager)
+            .await
+            .expect_err("live session should block delete");
+        assert!(err.contains("Cannot delete while live sessions exist"));
+        assert!(err.contains("Session 1"));
+        assert!(err.contains("Active"));
+    }
+
+    #[tokio::test]
+    async fn delete_workgroup_dir_backend_returns_blockers_json() {
+        #[cfg(not(windows))]
+        {
+            return;
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 0x00000001;
+
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let wg_dir = tmp.path().join("wg-1-test");
+            std::fs::create_dir(&wg_dir).expect("create wg_dir");
+            let inside = wg_dir.join("locked.bin");
+            std::fs::write(&inside, b"hold me").expect("write inside file");
+            let _handle = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(&inside)
+                .expect("open with restricted share mode");
+            let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+
+            let err = delete_workgroup_dir_backend(&wg_dir, "wg-1-test", &manager)
+                .await
+                .expect_err("blocked delete should return blockers json");
+            let json = err
+                .strip_prefix("BLOCKERS:")
+                .unwrap_or_else(|| panic!("expected BLOCKERS prefix, got {}", err));
+            let report: serde_json::Value = serde_json::from_str(json).expect("blockers json");
+            assert_eq!(report["workgroup"], "wg-1-test");
+            assert!(!report["rawDeleteError"]
+                .as_str()
+                .expect("rawDeleteError")
+                .is_empty());
+            assert!(wg_dir.is_dir(), "blocked tree should remain intact");
         }
     }
 
@@ -3001,6 +3307,9 @@ mod tests {
             }
             WgDeleteOutcome::Other(e) => {
                 panic!("expected Blocked, got Other({:?}={})", e.kind(), e);
+            }
+            WgDeleteOutcome::Partial { .. } => {
+                panic!("blocked rename cannot report Partial");
             }
         }
     }

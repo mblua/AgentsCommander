@@ -7,12 +7,19 @@ import type {
   SessionRepo,
   PtyOutputEvent,
   AppSettings,
+  CodingAgentEnv,
+  CodingAgentProfilesConfig,
   RepoMatch,
   BridgeInfo,
   PhoneMessage,
   AgentInfo,
   AcDiscoveryResult,
   AcProjectRefreshRequestedPayload,
+  LoopConfigDetails,
+  LoopCreateInput,
+  LoopCronPreview,
+  LoopEventPayload,
+  LoopUpdateInput,
   TeamConfigResult,
   WindowGeometry,
   TaskUpdateResult,
@@ -22,6 +29,13 @@ import type {
   AgencyTemplatesStatus,
   AgencyTemplatesUpdateResult,
   RoleTemplateMeta,
+  CodingAgentProfileResolution,
+  ProfileAssignmentScope,
+  ProfileAssignmentError,
+  PreviewCodingAgentProfileSelectionRequest,
+  PreviewCodingAgentProfileSelectionResult,
+  ApplyCodingAgentProfileSelectionRequest,
+  ApplyCodingAgentProfileSelectionResult,
   SpecBoardDocument,
   SpecBoardSnapshot,
   SpecBoardChangedEvent,
@@ -46,8 +60,39 @@ export interface RtkSweepResult {
   errors: { path: string; error: string }[];
 }
 
-// Select transport based on runtime environment
-const transport: Transport = isTauri ? new TauriTransport() : new WsTransport();
+function createDefaultTransport(): Transport {
+  return isTauri ? new TauriTransport() : new WsTransport();
+}
+
+let defaultTransport: Transport | null = null;
+let testTransport: Transport | null = null;
+
+function currentTransport(): Transport {
+  if (testTransport) return testTransport;
+  defaultTransport ??= createDefaultTransport();
+  return defaultTransport;
+}
+
+export function __setTransportForTests(next: Transport): () => void {
+  if (import.meta.env.MODE !== "test") {
+    throw new Error("__setTransportForTests is test-only");
+  }
+
+  const previous = testTransport;
+  testTransport = next;
+  return () => {
+    testTransport = previous;
+  };
+}
+
+const transport: Pick<Transport, "invoke" | "listen" | "emit"> = {
+  invoke: <T>(cmd: string, args?: Record<string, unknown>) =>
+    currentTransport().invoke<T>(cmd, args),
+  listen: <T>(event: string, callback: (payload: T) => void) =>
+    currentTransport().listen<T>(event, callback),
+  emit: <T>(event: string, payload: T) =>
+    currentTransport().emit<T>(event, payload),
+};
 
 export interface CreateSessionOptions {
   shell?: string;
@@ -55,11 +100,13 @@ export interface CreateSessionOptions {
   cwd?: string;
   sessionName?: string;
   agentId?: string;
+  requestedProfile?: string | null;
   gitRepos?: SessionRepoInput[];
 }
 
 export interface RestartSessionOptions {
   agentId?: string;
+  requestedProfile?: string | null;
   /**
    * Forwarded to the backend `restart_session` command. Omit (or pass `true`)
    * for a true user-intent restart that starts a fresh conversation. Pass
@@ -74,6 +121,30 @@ export interface RestartSessionOptions {
 
 export interface CreateRootAgentOptions {
   agentId?: string;
+  requestedProfile?: string | null;
+}
+
+/** @deprecated Issue #384 v1 compatibility: the legacy per-agent default/instance
+ *  scope. Superseded by {@link ProfileAssignmentScope}. */
+export type ProfileSelectionScope = "default" | "instance";
+
+/**
+ * Single stable payload for `coding_agent_profile_selection_updated`, emitted by
+ * both the legacy `set_agent_default_profile`/`set_instance_profile_override`
+ * commands and the new broad-scope apply (#384 §7). All fields beyond `scope`
+ * are optional because broad-scope applies touch many replicas (no single
+ * `agentPath`). `scope` is a plain string to tolerate both the legacy
+ * default/instance emitters and the v2 replica/kind/workgroup apply.
+ */
+export interface CodingAgentProfileSelectionUpdatedPayload {
+  scope: ProfileAssignmentScope | ProfileSelectionScope | string;
+  agentPath?: string;
+  codingAgentId?: string;
+  profile?: string | null;
+  updatedCount?: number;
+  restartedCount?: number;
+  targetFingerprint?: string;
+  errors?: ProfileAssignmentError[];
 }
 
 export const SessionAPI = {
@@ -84,6 +155,7 @@ export const SessionAPI = {
       cwd: opts?.cwd ?? null,
       sessionName: opts?.sessionName ?? null,
       agentId: opts?.agentId ?? null,
+      requestedProfile: opts?.requestedProfile ?? null,
       gitRepos: opts?.gitRepos ?? null,
     }),
 
@@ -93,6 +165,7 @@ export const SessionAPI = {
     transport.invoke<Session>("restart_session", {
       id,
       agentId: opts?.agentId ?? null,
+      requestedProfile: opts?.requestedProfile ?? null,
       skipAutoResume: opts?.skipAutoResume ?? null,
     }),
 
@@ -111,11 +184,13 @@ export const SessionAPI = {
   createRootAgent: (opts?: CreateRootAgentOptions) =>
     transport.invoke<Session>("create_root_agent_session", {
       agentId: opts?.agentId ?? null,
+      requestedProfile: opts?.requestedProfile ?? null,
     }),
 };
 
 export const PtyAPI = {
   write: (sessionId: string, data: Uint8Array) => {
+    const transport = currentTransport();
     // Use efficient binary transport if available (WS mode)
     if (transport.writePtyBinary) {
       transport.writePtyBinary(sessionId, data);
@@ -145,6 +220,8 @@ export const SettingsAPI = {
   get: () => transport.invoke<AppSettings>("get_settings"),
   update: (settings: AppSettings) =>
     transport.invoke<void>("update_settings", { newSettings: settings }),
+  saveDraft: (settings: AppSettings) =>
+    transport.invoke<void>("save_settings_draft", { draft: settings }),
   openWebRemote: () => transport.invoke<void>("open_web_remote"),
   startWebServer: () => transport.invoke<boolean>("start_web_server"),
   stopWebServer: () => transport.invoke<boolean>("stop_web_server"),
@@ -161,6 +238,50 @@ export const SettingsAPI = {
     transport.invoke<void>("set_sounds_enabled", { value }),
   setThemeLight: (value: boolean) =>
     transport.invoke<void>("set_theme_light", { value }),
+  updateCodingAgentProfiles: (profiles: CodingAgentProfilesConfig) =>
+    transport.invoke<void>("update_coding_agent_profiles", { profiles }),
+  updateCodingAgentEnvSettings: (
+    agentId: string,
+    envs: CodingAgentEnv[],
+    isolatedHome: boolean,
+  ) =>
+    transport.invoke<void>("update_coding_agent_env_settings", {
+      agentId,
+      envs,
+      isolatedHome,
+    }),
+  setAgentDefaultProfile: (agentPath: string, profile: string) =>
+    transport.invoke<void>("set_agent_default_profile", { agentPath, profile }),
+  setInstanceProfileOverride: (agentPath: string, profile: string | null) =>
+    transport.invoke<void>("set_instance_profile_override", { agentPath, profile }),
+  // #384 §7 — broad-scope assignment. Preview enumerates targets + live sessions
+  // and returns a fingerprint; apply re-enumerates on the backend and rejects a
+  // stale `confirmedTargetFingerprint`. The frontend target list is display-only;
+  // the backend is authoritative for enumeration, writes, and restarts.
+  previewCodingAgentProfileSelection: (
+    request: PreviewCodingAgentProfileSelectionRequest,
+  ) =>
+    transport.invoke<PreviewCodingAgentProfileSelectionResult>(
+      "preview_coding_agent_profile_selection",
+      { request },
+    ),
+  applyCodingAgentProfileSelection: (
+    request: ApplyCodingAgentProfileSelectionRequest,
+  ) =>
+    transport.invoke<ApplyCodingAgentProfileSelectionResult>(
+      "apply_coding_agent_profile_selection",
+      { request },
+    ),
+  resolveCodingAgentProfile: (
+    agentPath: string | null,
+    agentId: string,
+    requestedProfile?: string | null,
+  ) =>
+    transport.invoke<CodingAgentProfileResolution>("resolve_coding_agent_profile", {
+      agentPath,
+      agentId,
+      requestedProfile: requestedProfile ?? null,
+    }),
   sweepRtkHook: (enabled: boolean) =>
     transport.invoke<RtkSweepResult>("sweep_rtk_hook", { enabled }),
   getRtkStartupStatus: () =>
@@ -395,6 +516,12 @@ export function onAcProjectRefreshRequested(
   );
 }
 
+export function onLoopEvent(
+  callback: (data: LoopEventPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<LoopEventPayload>("loop_event", callback);
+}
+
 export function onSessionIdle(
   callback: (data: { id: string }) => void
 ): Promise<UnlistenFn> {
@@ -475,6 +602,56 @@ export const ProjectAPI = {
    */
   new: (path: string) =>
     transport.invoke<ProjectRegistration>("new_project", { path }),
+};
+
+// Project Loops API
+export const LoopAPI = {
+  create: (projectPath: string, input: LoopCreateInput) =>
+    transport.invoke<LoopConfigDetails>("create_loop", {
+      request: {
+        projectPath,
+        id: input.id ?? null,
+        name: input.name,
+        expr: input.expr,
+        workgroup: input.workgroup,
+        promptBody: input.promptBody,
+        busyCoordinator: input.busyCoordinator ?? null,
+        enabled: input.enabled ?? null,
+      },
+    }),
+
+  update: (projectPath: string, id: string, input: LoopUpdateInput) =>
+    transport.invoke<LoopConfigDetails>("update_loop", {
+      request: {
+        projectPath,
+        id,
+        name: input.name ?? null,
+        expr: input.expr ?? null,
+        workgroup: input.workgroup ?? null,
+        promptBody: input.promptBody ?? null,
+        busyCoordinator: input.busyCoordinator ?? null,
+        enabled: input.enabled ?? null,
+      },
+    }),
+
+  delete: (projectPath: string, id: string) =>
+    transport.invoke<void>("delete_loop", { projectPath, id }),
+
+  setEnabled: (projectPath: string, id: string, enabled: boolean) =>
+    transport.invoke<LoopConfigDetails>("toggle_loop", {
+      projectPath,
+      id,
+      enabled,
+    }),
+
+  runNow: (projectPath: string, id: string) =>
+    transport.invoke<LoopConfigDetails>("run_loop_now", { projectPath, id }),
+
+  getConfig: (projectPath: string, id: string) =>
+    transport.invoke<LoopConfigDetails>("get_loop_config", { projectPath, id }),
+
+  previewCron: (expr: string) =>
+    transport.invoke<LoopCronPreview>("preview_loop_cron", { expr }),
 };
 
 // Role template picker (#271)
@@ -607,6 +784,30 @@ export function onRtkStartupStatus(
   return transport.listen<{ mode: RtkStartupMode }>(
     "rtk_startup_status",
     (data) => callback(data.mode)
+  );
+}
+
+export function onCodingAgentProfilesUpdated(
+  callback: () => void
+): Promise<UnlistenFn> {
+  return transport.listen<unknown>("coding_agent_profiles_updated", () => callback());
+}
+
+export function onCodingAgentEnvSettingsUpdated(
+  callback: (data: { agentId: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ agentId: string }>(
+    "coding_agent_env_settings_updated",
+    callback
+  );
+}
+
+export function onCodingAgentProfileSelectionUpdated(
+  callback: (data: CodingAgentProfileSelectionUpdatedPayload) => void
+): Promise<UnlistenFn> {
+  return transport.listen<CodingAgentProfileSelectionUpdatedPayload>(
+    "coding_agent_profile_selection_updated",
+    callback
   );
 }
 

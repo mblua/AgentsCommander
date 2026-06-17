@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
+use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
@@ -701,17 +702,25 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     skip_tooling_save: bool,
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
+    resolved_spawn: Option<AgentSpawnCommand>,
 ) -> Result<SessionInfo, String> {
     let (agent_id, agent_label) = {
-        let settings_state = app.state::<SettingsState>();
-        let cfg = settings_state.read().await;
-        resolve_actual_agent(
-            &shell,
-            &shell_args,
-            agent_id.as_deref(),
-            agent_label.as_deref(),
-            &cfg,
-        )
+        if let Some(spawn) = resolved_spawn.as_ref() {
+            (
+                Some(spawn.trusted_agent_id.clone()),
+                Some(spawn.trusted_agent_label.clone()),
+            )
+        } else {
+            let settings_state = app.state::<SettingsState>();
+            let cfg = settings_state.read().await;
+            resolve_actual_agent(
+                &shell,
+                &shell_args,
+                agent_id.as_deref(),
+                agent_label.as_deref(),
+                &cfg,
+            )
+        }
     };
 
     // Recompute is_coordinator from the current team snapshot. One source of truth —
@@ -752,6 +761,26 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     }
 
     let id = session.id;
+    if let Some(spawn) = resolved_spawn.as_ref() {
+        let effective_codex_home = spawn
+            .effective_codex_home
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string());
+        mgr.set_profile_metadata(
+            id,
+            Some(spawn.profile_resolution.requested_profile.clone()),
+            Some(spawn.profile_resolution.effective_profile.clone()),
+            spawn.profile_resolution.fallback_chain.clone(),
+            spawn.profile_resolution.fallback_applied,
+            effective_codex_home.clone(),
+        )
+        .await;
+        session.requested_profile = Some(spawn.profile_resolution.requested_profile.clone());
+        session.effective_profile = Some(spawn.profile_resolution.effective_profile.clone());
+        session.profile_fallback_chain = spawn.profile_resolution.fallback_chain.clone();
+        session.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
+        session.effective_codex_home = effective_codex_home;
+    }
 
     let mut shell_args = shell_args;
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
@@ -830,10 +859,28 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         }
     }
 
-    let materialized_context_path = if let Some(target) = context_target {
-        match crate::config::session_context::materialize_agent_context_file(
+    // #529 - resolve the instructions filename from the configured coding agent
+    // (falling back to detection for ad-hoc launches), plus the union of every
+    // configured agent's filename for cleanup. Computed under a single settings
+    // read guard that is dropped before any filesystem I/O (no guard across the
+    // materialize call).
+    let (target_filename, managed_filenames): (Option<String>, Vec<String>) = {
+        let settings_state = app.state::<SettingsState>();
+        let cfg = settings_state.read().await;
+        let managed = crate::config::agent_command::managed_instructions_filenames(&cfg);
+        let target = crate::config::agent_command::resolve_target_filename(
+            agent_id.as_deref(),
+            &cfg,
+            context_target,
+        );
+        (target, managed)
+    };
+
+    let materialized_context_path = if let Some(ref target_filename) = target_filename {
+        match crate::config::session_context::materialize_agent_context_file_with_filename(
             &cwd,
-            target,
+            target_filename,
+            &managed_filenames,
             is_coordinator,
         ) {
             Ok(context) => context,
@@ -890,6 +937,14 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     } else {
         Vec::new()
     };
+    let configured_env: Vec<(String, String)> = resolved_spawn
+        .as_ref()
+        .map(|spawn| spawn.child_env.clone())
+        .unwrap_or_default();
+    let env_remove_keys: Vec<String> = resolved_spawn
+        .as_ref()
+        .map(|spawn| spawn.env_remove_keys.clone())
+        .unwrap_or_default();
 
     let spawn_result = {
         pty_mgr.lock().unwrap().spawn(
@@ -899,6 +954,8 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             &cwd,
             120,
             30,
+            &configured_env,
+            &env_remove_keys,
             &extra_env,
             crate::session::profile::idle_tuning_for(agent_kind),
             app.clone(),
@@ -1053,6 +1110,24 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     Ok(info)
 }
 
+pub(crate) fn build_configured_agent_spawn_for_cwd(
+    settings: &AppSettings,
+    agent_id: &str,
+    cwd: &str,
+    requested_profile: Option<&str>,
+) -> Result<Option<AgentSpawnCommand>, String> {
+    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    crate::config::agent_command::build_agent_spawn_command(
+        settings,
+        agent_id,
+        Some(std::path::Path::new(cwd)),
+        requested_profile,
+    )
+    .map(Some)
+}
+
 /// Create a new session. Optionally override shell/args/cwd/name (for action buttons).
 /// Falls back to settings defaults when not provided.
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
@@ -1069,6 +1144,7 @@ pub async fn create_session(
     cwd: Option<String>,
     session_name: Option<String>,
     agent_id: Option<String>,
+    requested_profile: Option<String>,
     git_repos: Option<Vec<SessionRepo>>,
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
@@ -1079,20 +1155,28 @@ pub async fn create_session(
             .unwrap_or_else(|| "C:\\".to_string())
     });
 
-    // If agentId provided and shell not explicitly set, use that agent's command
-    let (shell, shell_args, agent_label) = match (&shell, &agent_id) {
-        (None, Some(aid)) => resolve_agent_command(aid, &cfg)?,
-        _ => {
-            let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
-            let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
-            let al = agent_id.as_ref().and_then(|aid| {
-                cfg.agents
-                    .iter()
-                    .find(|a| a.id == *aid)
-                    .map(|a| a.label.clone())
-            });
-            (s, sa, al)
-        }
+    let resolved_spawn = if let Some(aid) = agent_id.as_deref() {
+        build_configured_agent_spawn_for_cwd(&cfg, aid, &cwd, requested_profile.as_deref())?
+    } else {
+        None
+    };
+
+    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+        (
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            Some(spawn.trusted_agent_label.clone()),
+        )
+    } else {
+        let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
+        let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
+        let al = agent_id.as_ref().and_then(|aid| {
+            cfg.agents
+                .iter()
+                .find(|a| a.id == *aid)
+                .map(|a| a.label.clone())
+        });
+        (s, sa, al)
     };
 
     log::info!(
@@ -1117,6 +1201,7 @@ pub async fn create_session(
         false, // persist tooling
         git_repos.unwrap_or_default(),
         true, // skip_auto_resume = true → fresh create, no `--continue` injection
+        resolved_spawn,
     )
     .await?;
 
@@ -1483,6 +1568,13 @@ fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
     requested.unwrap_or(true)
 }
 
+fn effective_restart_requested_profile(
+    requested: Option<String>,
+    stored: Option<String>,
+) -> Option<String> {
+    requested.or(stored)
+}
+
 /// Restart a session: destroy the existing one and recreate it with the same
 /// configuration but a fresh PTY. By default suppresses provider auto-resume
 /// (true user-intent restart — fresh conversation).
@@ -1514,7 +1606,34 @@ pub async fn restart_session_inner<R: tauri::Runtime>(
     settings: &SettingsState,
     uuid: Uuid,
     agent_id: Option<String>,
+    requested_profile: Option<String>,
     skip_auto_resume: Option<bool>,
+) -> Result<SessionInfo, String> {
+    restart_session_inner_with_activation(
+        app,
+        session_mgr,
+        pty_mgr,
+        settings,
+        uuid,
+        agent_id,
+        requested_profile,
+        skip_auto_resume,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    settings: &SettingsState,
+    uuid: Uuid,
+    agent_id: Option<String>,
+    requested_profile: Option<String>,
+    skip_auto_resume: Option<bool>,
+    activate_after: bool,
 ) -> Result<SessionInfo, String> {
     // 1. Read config from existing session BEFORE destroying it
     let (
@@ -1527,6 +1646,7 @@ pub async fn restart_session_inner<R: tauri::Runtime>(
         git_repos,
         is_root_agent,
         telegram_bot_id,
+        stored_requested_profile,
     ) = {
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
@@ -1541,6 +1661,7 @@ pub async fn restart_session_inner<R: tauri::Runtime>(
             session.is_root_agent
                 || crate::config::root_agent::is_root_agent_path(&session.working_directory),
             session.telegram_bot_id.clone(),
+            session.requested_profile.clone(),
         )
     };
 
@@ -1560,11 +1681,28 @@ pub async fn restart_session_inner<R: tauri::Runtime>(
         crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
 
     let requested_agent_id = agent_id;
-    let (shell, shell_args, agent_label) = if let Some(ref aid) = requested_agent_id {
+    let selected_agent_id = requested_agent_id.clone().or(stored_agent_id.clone());
+    let selected_requested_profile =
+        effective_restart_requested_profile(requested_profile, stored_requested_profile);
+    let resolved_spawn = if let Some(ref aid) = selected_agent_id {
         let cfg = settings.read().await;
-        let resolved = resolve_agent_command(aid, &cfg)?;
+        let resolved = build_configured_agent_spawn_for_cwd(
+            &cfg,
+            aid,
+            &cwd,
+            selected_requested_profile.as_deref(),
+        )?;
         drop(cfg);
         resolved
+    } else {
+        None
+    };
+    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+        (
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            Some(spawn.trusted_agent_label.clone()),
+        )
     } else {
         (shell, clean_args, stored_agent_label)
     };
@@ -1585,27 +1723,30 @@ pub async fn restart_session_inner<R: tauri::Runtime>(
         shell_args,
         cwd.clone(),
         Some(name),
-        requested_agent_id.or(stored_agent_id),
+        selected_agent_id,
         agent_label,
         false, // skip_tooling_save
         git_repos,
         effective_restart_skip_auto_resume(skip_auto_resume),
+        resolved_spawn,
     )
     .await?;
 
-    // 5. Explicitly activate the new session.
-    //    destroy_session_inner may have auto-activated a sibling.
-    //    create_session_inner only auto-activates if active.is_none().
-    //    With multiple sessions, the new session would NOT be active without this.
     let new_uuid = Uuid::parse_str(&session_info.id).map_err(|e| e.to_string())?;
-    {
-        let mgr = session_mgr.read().await;
-        let _ = mgr.switch_session(new_uuid).await;
+    if activate_after {
+        // 5. Explicitly activate the new session.
+        //    destroy_session_inner may have auto-activated a sibling.
+        //    create_session_inner only auto-activates if active.is_none().
+        //    With multiple sessions, the new session would NOT be active without this.
+        {
+            let mgr = session_mgr.read().await;
+            let _ = mgr.switch_session(new_uuid).await;
+        }
+        let _ = app.emit(
+            "session_switched",
+            serde_json::json!({ "id": session_info.id, "userInitiated": true }),
+        );
     }
-    let _ = app.emit(
-        "session_switched",
-        serde_json::json!({ "id": session_info.id, "userInitiated": true }),
-    );
 
     // 6. Re-attach Telegram bridge from live persisted intent, or fall back to repo config.
     if telegram_bot_id.is_some() {
@@ -1634,6 +1775,7 @@ pub async fn restart_session(
     settings: State<'_, SettingsState>,
     id: String,
     agent_id: Option<String>,
+    requested_profile: Option<String>,
     skip_auto_resume: Option<bool>,
 ) -> Result<SessionInfo, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
@@ -1644,6 +1786,7 @@ pub async fn restart_session(
         settings.inner(),
         uuid,
         agent_id,
+        requested_profile,
         skip_auto_resume,
     )
     .await
@@ -1749,6 +1892,7 @@ pub(crate) fn executable_basename(s: &str) -> String {
 
 type ResolvedRootAgentCommand = (String, Vec<String>, Option<String>, Option<String>);
 
+#[cfg(test)]
 fn resolve_agent_command(
     agent_id: &str,
     settings: &AppSettings,
@@ -1988,6 +2132,7 @@ pub(crate) async fn create_root_agent_inner(
     _tg_mgr: &TelegramBridgeState,
     settings: &SettingsState,
     requested_agent_id: Option<String>,
+    requested_profile: Option<String>,
     skip_auto_resume_for_new_session: bool,
 ) -> Result<SessionInfo, String> {
     let _guard = root_agent_session_lock().lock().await;
@@ -2074,6 +2219,26 @@ pub(crate) async fn create_root_agent_inner(
                 last_coding_agent.as_deref(),
             )?
         };
+    let resolved_spawn = if let Some(aid) = agent_id.as_deref() {
+        let cfg = settings.read().await;
+        build_configured_agent_spawn_for_cwd(
+            &cfg,
+            aid,
+            &root_agent_path,
+            requested_profile.as_deref(),
+        )?
+    } else {
+        None
+    };
+    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+        (
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            Some(spawn.trusted_agent_label.clone()),
+        )
+    } else {
+        (shell, shell_args, agent_label)
+    };
 
     let info = create_session_inner(
         app,
@@ -2092,6 +2257,7 @@ pub(crate) async fn create_root_agent_inner(
         } else {
             skip_auto_resume_for_new_session
         },
+        resolved_spawn,
     )
     .await?;
 
@@ -2119,6 +2285,7 @@ pub async fn create_root_agent_session(
     tg_mgr: State<'_, TelegramBridgeState>,
     settings: State<'_, SettingsState>,
     agent_id: Option<String>,
+    requested_profile: Option<String>,
 ) -> Result<SessionInfo, String> {
     create_root_agent_inner(
         &app,
@@ -2127,6 +2294,7 @@ pub async fn create_root_agent_session(
         tg_mgr.inner(),
         settings.inner(),
         agent_id,
+        requested_profile,
         true, // skip_auto_resume = true → fresh create, no `--continue` injection
     )
     .await
@@ -2135,13 +2303,14 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_existing_root, inject_codex_resume, resolve_actual_agent, resolve_agent_command,
-        resolve_agent_from_shell, resolve_root_agent_command, should_inject_continue,
-        ExistingRootAction,
+        classify_existing_root, effective_restart_requested_profile, inject_codex_resume,
+        resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
+        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
     };
-    use crate::config::settings::{AgentConfig, AppSettings};
+    use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::session::manager::SessionManager;
     use crate::session::session::SessionStatus;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn test_settings() -> AppSettings {
@@ -2154,6 +2323,9 @@ mod tests {
                     color: "#d97706".to_string(),
                     git_pull_before: false,
                     exclude_global_claude_md: false,
+                    envs: Vec::new(),
+                    isolated_home: false,
+                    instructions_filename: None,
                 },
                 AgentConfig {
                     id: "codex".to_string(),
@@ -2162,6 +2334,9 @@ mod tests {
                     color: "#10b981".to_string(),
                     git_pull_before: false,
                     exclude_global_claude_md: false,
+                    envs: Vec::new(),
+                    isolated_home: false,
+                    instructions_filename: None,
                 },
             ],
             ..AppSettings::default()
@@ -2218,6 +2393,49 @@ mod tests {
             resolve_root_agent_command(&settings, Some("stale"), Some("also-stale")).unwrap_err();
 
         assert!(err.contains("No resolvable coding agent"));
+    }
+
+    #[test]
+    fn restart_requested_profile_prefers_explicit_then_stored() {
+        assert_eq!(
+            effective_restart_requested_profile(Some("C".to_string()), Some("B".to_string())),
+            Some("C".to_string())
+        );
+        assert_eq!(
+            effective_restart_requested_profile(None, Some("B".to_string())),
+            Some("B".to_string())
+        );
+        assert_eq!(effective_restart_requested_profile(None, None), None);
+    }
+
+    #[test]
+    fn build_configured_agent_spawn_for_cwd_honors_requested_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = test_settings();
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("codex".to_string())
+            .or_default()
+            .insert(
+                "C".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "codex --profile-c".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+
+        let cwd = temp.path().to_string_lossy().to_string();
+        let spawn =
+            super::build_configured_agent_spawn_for_cwd(&settings, "codex", &cwd, Some("C"))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(spawn.profile_resolution.requested_profile, "C");
+        assert_eq!(spawn.profile_resolution.effective_profile, "C");
+        assert_eq!(spawn.shell_args, vec!["--profile-c".to_string()]);
     }
 
     #[test]
@@ -2587,6 +2805,9 @@ mod tests {
             color: "#10b981".to_string(),
             git_pull_before: false,
             exclude_global_claude_md: false,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
         });
 
         let resolved = resolve_actual_agent(
@@ -2662,6 +2883,9 @@ mod tests {
             color: "#10b981".to_string(),
             git_pull_before: false,
             exclude_global_claude_md: false,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
         }];
 
         let resolved = resolve_agent_from_shell("codex", &[], &settings);

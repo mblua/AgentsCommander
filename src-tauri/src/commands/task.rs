@@ -156,7 +156,11 @@ pub async fn task_set_title(
         task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
     };
     let trimmed = content.trim();
-    let task = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+    let task = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
     let result = TaskUpdateResult {
         workgroup_root: strip_unc(&wg_root),
         task: task.clone(),
@@ -175,20 +179,19 @@ pub async fn task_clean(
     session_id: String,
 ) -> Result<TaskUpdateResult, String> {
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
-    let outcome =
-        task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
-    log::info!(
-        "[task] clean for session {} -> {:?}",
-        session_id,
-        outcome
-    );
+    let outcome = task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
+    log::info!("[task] clean for session {} -> {:?}", session_id, outcome);
 
     let (content, task_title) = match &outcome {
         task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
         task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
     };
     let trimmed = content.trim();
-    let task = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+    let task = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
     let result = TaskUpdateResult {
         workgroup_root: strip_unc(&wg_root),
         task: task.clone(),
@@ -251,11 +254,13 @@ mod tests {
         // read_task_fields_at(). Validates that the path the Tauri command
         // takes ends up with a non-empty taskTitle in the payload.
         let dir = tempfile::tempdir().unwrap();
-        perform(dir.path(), TaskOp::SetTitle("Hello World".to_string()))
-            .expect("set title");
+        perform(dir.path(), TaskOp::SetTitle("Hello World".to_string())).expect("set title");
         let (task, title) = read_task_fields_at(dir.path());
         assert_eq!(title.as_deref(), Some("Hello World"));
-        assert!(task.is_some(), "task body should not be empty after set-title");
+        assert!(
+            task.is_some(),
+            "task body should not be empty after set-title"
+        );
     }
 
     #[test]
@@ -264,8 +269,7 @@ mod tests {
         // docs). The important thing for issue #301 is the payload carries
         // the title at all (no None → no undefined → no spread-clobber).
         let dir = tempfile::tempdir().unwrap();
-        perform(dir.path(), TaskOp::SetTitle("Old Title".to_string()))
-            .expect("set initial title");
+        perform(dir.path(), TaskOp::SetTitle("Old Title".to_string())).expect("set initial title");
         perform(dir.path(), TaskOp::Clean).expect("clean");
         let (_task, title) = read_task_fields_at(dir.path());
         assert_eq!(title.as_deref(), Some("Clean"));

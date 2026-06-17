@@ -8,8 +8,8 @@ use crate::cli::create_agent_matrix::{write_project_refresh_request, ProjectRefr
 use crate::commands::entity_creation::{
     check_workgroup_repos_dirty, clone_missing_repos_for_workgroup, create_workgroup_on_disk,
     list_workgroup_dirs, read_team_config, resolve_agent_ref, sanitize_name,
-    validate_existing_name, AgentMatrixSettingsFlags, RepoAssignment, TeamConfigResult,
-    WgDeleteOutcome, WorkgroupDiskCreateArgs,
+    validate_delete_root_not_link_or_reparse, validate_existing_name, AgentMatrixSettingsFlags,
+    RepoAssignment, TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
 use crate::config::workspace::existing_workspace_dir;
@@ -248,9 +248,7 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
     let workspace_dir = resolve_cli_workspace(&project_path)?;
     let wg_dir = workspace_dir.join(&args.workgroup);
-    if !wg_dir.is_dir() {
-        return Err(format!("Workgroup '{}' not found", args.workgroup));
-    }
+    validate_delete_root_not_link_or_reparse(&wg_dir)?;
     crate::cli::session_safety::ensure_no_live_sessions_under(&wg_dir)?;
     if !args.force_dirty {
         let dirty = check_workgroup_repos_dirty(std::slice::from_ref(&wg_dir));
@@ -266,14 +264,10 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
             ));
         }
     }
-    match crate::commands::entity_creation::try_atomic_delete_wg(&wg_dir) {
-        WgDeleteOutcome::Deleted => {}
-        WgDeleteOutcome::Blocked(e) => {
-            return Err(format!("Failed to delete workgroup, file in use: {}", e));
-        }
-        WgDeleteOutcome::Other(e) => {
-            return Err(format!("Failed to delete workgroup directory: {}", e));
-        }
+    match cli_remove_refresh_decision(crate::commands::entity_creation::try_atomic_delete_wg(
+        &wg_dir,
+    ))? {
+        RemoveRefreshDecision::EmitWorkgroupRemoved => {}
     }
     write_refresh(&project_path, &wg_dir, &args.workgroup, "workgroupRemoved");
     if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
@@ -286,6 +280,33 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
         crate::cli_println!("Removed workgroup {}", args.workgroup);
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoveRefreshDecision {
+    EmitWorkgroupRemoved,
+}
+
+pub(crate) fn cli_remove_refresh_decision(
+    outcome: WgDeleteOutcome,
+) -> Result<RemoveRefreshDecision, String> {
+    match outcome {
+        WgDeleteOutcome::Deleted => {}
+        WgDeleteOutcome::Blocked(e) => {
+            return Err(format!("Failed to delete workgroup, file in use: {}", e));
+        }
+        WgDeleteOutcome::Partial { orphan_path, error } => {
+            return Err(format!(
+                "Failed to fully delete workgroup directory; renamed workgroup to orphan '{}', but failed to remove orphan: {}",
+                orphan_path.display(),
+                error
+            ));
+        }
+        WgDeleteOutcome::Other(e) => {
+            return Err(format!("Failed to delete workgroup directory: {}", e));
+        }
+    }
+    Ok(RemoveRefreshDecision::EmitWorkgroupRemoved)
 }
 
 pub(crate) fn build_new_team_config(
@@ -457,4 +478,34 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
         .map_err(|e| format!("Failed to serialize JSON output: {}", e))?;
     crate::cli_println!("{}", json);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_delete_outcome_does_not_authorize_removed_refresh() {
+        let outcome = WgDeleteOutcome::Partial {
+            orphan_path: PathBuf::from(".deleting-wg-1-test-orphan"),
+            error: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "forced remove failure",
+            ),
+        };
+
+        let err = cli_remove_refresh_decision(outcome)
+            .expect_err("partial delete must not authorize workgroupRemoved refresh");
+        assert!(err.contains("Failed to fully delete workgroup directory"));
+        assert!(err.contains(".deleting-wg-1-test-orphan"));
+    }
+
+    #[test]
+    fn clean_delete_outcome_authorizes_removed_refresh() {
+        assert_eq!(
+            cli_remove_refresh_decision(WgDeleteOutcome::Deleted)
+                .expect("deleted outcome should refresh"),
+            RemoveRefreshDecision::EmitWorkgroupRemoved
+        );
+    }
 }
