@@ -10,7 +10,7 @@ import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
-import { isWgReplicaPath, sessionProfileBadge } from "../../shared/profile-utils";
+import { isWgReplicaPath, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
@@ -18,6 +18,7 @@ import NewWorkgroupModal from "./NewWorkgroupModal";
 import NewLoopModal from "./NewLoopModal";
 import EditLoopModal from "./EditLoopModal";
 import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerModal";
+import RestartPromptModal from "./RestartPromptModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
@@ -269,6 +270,15 @@ const ProjectPanel: Component = () => {
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
         const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; sessionName: string; x: number; y: number } | null>(null);
         const [replicaCodingAgentTarget, setReplicaCodingAgentTarget] = createSignal<{ sessionId: string; sessionName: string } | null>(null);
+        // #537: post-assign "Restart now?" prompt for a replica-scope assign onto a
+        // live WG replica session. Holds the restart payload until the user decides.
+        const [restartPrompt, setRestartPrompt] = createSignal<{
+          sessionId: string;
+          replicaName: string;
+          agentId: string;
+          agentLabel: string;
+          requestedProfile: string | null;
+        } | null>(null);
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -1906,26 +1916,58 @@ const ProjectPanel: Component = () => {
                     replicaCodingAgentTarget()!.sessionName,
                   )}
                   onSelect={async (selection) => {
-                    // The picker already applied the selection through the backend
-                    // (config write + restart when the toggle is on) for WG replicas.
-                    // Only fall back to a manual restart when there was no broad-scope
-                    // apply path (non-WG agent session) but the user changed the agent.
+                    // The picker already persisted the selection through the backend
+                    // (config write) for WG replicas. For a non-WG agent session there
+                    // is no backend persist path, so apply the change by restarting with
+                    // the chosen agent/profile.
                     const target = replicaCodingAgentTarget();
                     setReplicaCodingAgentTarget(null);
-                    if (
-                      target &&
-                      !isWgReplicaPath(
-                        sessionsStore.sessions.find((s) => s.id === target.sessionId)?.workingDirectory,
-                      )
-                    ) {
+                    if (!target) return;
+                    const session = sessionsStore.sessions.find((s) => s.id === target.sessionId);
+                    if (!isWgReplicaPath(session?.workingDirectory)) {
                       await restartReplicaSession(
                         target.sessionId,
                         selection.agent.id,
                         selection.requestedProfile,
                       );
+                      return;
+                    }
+                    // #537: WG replica was persisted but the live session still runs the
+                    // old agent. Offer an immediate restart when there is a live session.
+                    if (shouldOfferRestartAfterAssign(selection, session)) {
+                      const slash = target.sessionName.lastIndexOf("/");
+                      setRestartPrompt({
+                        sessionId: target.sessionId,
+                        replicaName: slash >= 0 ? target.sessionName.slice(slash + 1) : target.sessionName,
+                        agentId: selection.agent.id,
+                        agentLabel: selection.agent.label,
+                        requestedProfile: selection.requestedProfile,
+                      });
                     }
                   }}
                   onClose={() => setReplicaCodingAgentTarget(null)}
+                />
+              </Portal>
+            )}
+
+            {/* #537: post-assign "Restart now?" prompt (replica scope, live session) */}
+            {restartPrompt() && (
+              <Portal>
+                <RestartPromptModal
+                  agentLabel={restartPrompt()!.agentLabel}
+                  replicaName={restartPrompt()!.replicaName}
+                  onRestart={() => {
+                    const prompt = restartPrompt();
+                    setRestartPrompt(null);
+                    if (prompt) {
+                      void restartReplicaSession(
+                        prompt.sessionId,
+                        prompt.agentId,
+                        prompt.requestedProfile,
+                      );
+                    }
+                  }}
+                  onLater={() => setRestartPrompt(null)}
                 />
               </Portal>
             )}

@@ -583,7 +583,9 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  it("includes the restart toggle in both preview and apply requests", async () => {
+  it("hides the restart toggle for replica scope and applies without a backend restart (#537)", async () => {
+    // #537: replica scope is restarted via the post-assign "Restart now?" modal, so
+    // the in-modal toggle is gone and apply never asks the backend to restart.
     const { dispose } = renderPicker({
       agentPath: WG_REPLICA_PATH,
       scopeContext: WG_SCOPE_CONTEXT,
@@ -591,6 +593,29 @@ describe("AgentPickerModal", () => {
     });
     await settle();
 
+    expect(maybe("agentPicker.restartToggle")).toBeNull();
+
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+    expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "replica", restartSessions: false }),
+    );
+
+    dispose();
+  });
+
+  it("keeps the restart toggle for workgroup scope and carries it into preview and apply", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.workgroup");
+    await settle();
+
+    // Toggle is available again for the multi-target scope.
     target<HTMLInputElement>("agentPicker.restartToggle").click();
     await settle();
 
@@ -599,10 +624,13 @@ describe("AgentPickerModal", () => {
       expect.objectContaining({ restartSessions: true }),
     );
 
+    // Arm the danger gate, then apply.
+    target<HTMLInputElement>("agentPicker.armToggle").click();
+    await settle();
     target<HTMLButtonElement>("agentPicker.apply").click();
     await settle();
     expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: "replica", restartSessions: true }),
+      expect.objectContaining({ scope: "workgroup", restartSessions: true }),
     );
 
     dispose();

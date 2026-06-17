@@ -432,6 +432,10 @@ const AgentPickerModal: Component<{
     const scope = selectedScope();
     const requested = requestedProfileForSelection();
     const effective = effectivePreview().effectiveProfile;
+    // #537: replica scope no longer uses the pre-apply restart toggle; the post-assign
+    // "Restart now?" modal (ProjectPanel) owns the restart. Force it off so a toggle
+    // value carried over from kind/workgroup scope cannot trigger a backend restart.
+    const restart = scope === "replica" ? false : restartSessions();
     try {
       let updatedCount: number | undefined;
       let restartedCount: number | undefined;
@@ -443,7 +447,7 @@ const AgentPickerModal: Component<{
           codingAgentId: agent.id,
           profile: selectedProfile(),
           scope,
-          restartSessions: restartSessions(),
+          restartSessions: restart,
           confirmedTargetFingerprint:
             scope === "replica" ? null : scopePreview()?.targetFingerprint ?? null,
           typedConfirmation: scope === "kind" ? kindConfirmationText().trim() : null,
@@ -471,7 +475,7 @@ const AgentPickerModal: Component<{
         requestedProfile: requested,
         effectiveProfile: effective,
         scope,
-        restartSessions: restartSessions(),
+        restartSessions: restart,
         updatedCount,
         restartedCount,
       });
@@ -985,7 +989,10 @@ const AgentPickerModal: Component<{
           </Show>
 
           <div class="agent-picker-bar">
-            <Show when={isWgReplica()}>
+            {/* #537: replica scope is restarted via the post-assign "Restart now?"
+                modal, not this toggle. The toggle stays for kind/workgroup scope
+                (no per-replica prompt makes sense for a multi-target apply). */}
+            <Show when={isWgReplica() && selectedScope() !== "replica"}>
               <label class="agent-scope-switch" title="Restart matching sessions after writing the selection">
                 <input
                   type="checkbox"
