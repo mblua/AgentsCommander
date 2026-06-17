@@ -19,26 +19,91 @@ function findPasteEnd(data: string, fromIndex: number) {
     : { index: end8, marker: PASTE_END_8BIT };
 }
 
-function skipControlSequence(data: string, index: number) {
-  const next = data[index + 1];
-  if (data[index] === "\x1b" && next === "[") {
-    for (let i = index + 2; i < data.length; i += 1) {
-      const code = data.charCodeAt(i);
-      if (code >= 0x40 && code <= 0x7e) {
-        return i + 1;
-      }
+// 8-bit C1 OSC introducer. OSC (7-bit `ESC ]`) is handled apart from the other
+// string controls because it alone accepts BEL as a terminator (see below).
+const OSC_INTRO_8BIT = "\x9d";
+
+// The remaining ECMA-48 "string" controls, which terminate ONLY at ST: DCS, SOS,
+// PM, APC. 7-bit finals after ESC: P (DCS), X (SOS), ^ (PM), _ (APC).
+const STRING_SEQ_INTRO_7BIT = new Set(["P", "X", "^", "_"]);
+// 8-bit C1 equivalents: \x90 (DCS), \x98 (SOS), \x9e (PM), \x9f (APC).
+const STRING_SEQ_INTRO_8BIT = new Set(["\x90", "\x98", "\x9e", "\x9f"]);
+
+// Bytes that begin a control sequence we must skip rather than capture as prompt
+// text: ESC (every 7-bit sequence), 8-bit CSI (\x9b, also the bracketed-paste
+// prefix handled before this check), and the 8-bit string introducers (OSC + the
+// ST-only family).
+function isControlIntroducer(char: string): boolean {
+  return (
+    char === "\x1b" ||
+    char === "\x9b" ||
+    char === OSC_INTRO_8BIT ||
+    STRING_SEQ_INTRO_8BIT.has(char)
+  );
+}
+
+// CSI: consume up to and including the final byte (0x40–0x7e).
+function skipCsi(data: string, bodyStart: number): number {
+  for (let i = bodyStart; i < data.length; i += 1) {
+    const code = data.charCodeAt(i);
+    if (code >= 0x40 && code <= 0x7e) {
+      return i + 1;
     }
-    return data.length;
+  }
+  return data.length;
+}
+
+// OSC/DCS/SOS/PM/APC: consume the whole "string" sequence up to its terminator.
+// All end at ST (`ESC \` or 8-bit \x9c); OSC additionally accepts BEL (\x07) —
+// the xterm convention OpenCode uses for its OSC-4 colour-palette reply (#533).
+// For DCS/SOS/PM/APC, `belTerminates` is false, so a stray BEL inside the payload
+// is consumed rather than mistaken for a terminator.
+function skipStringSequence(
+  data: string,
+  bodyStart: number,
+  belTerminates: boolean,
+): number {
+  for (let i = bodyStart; i < data.length; i += 1) {
+    const code = data.charCodeAt(i);
+    if (code === 0x9c || (belTerminates && code === 0x07)) {
+      return i + 1; // 8-bit ST, or BEL for OSC
+    }
+    if (code === 0x1b && data[i + 1] === "\\") {
+      return i + 2; // 7-bit ST: ESC \
+    }
+  }
+  return data.length;
+}
+
+function skipControlSequence(data: string, index: number): number {
+  const char = data[index];
+
+  if (char === "\x1b") {
+    const next = data[index + 1];
+    if (next === "[") {
+      return skipCsi(data, index + 2); // CSI: ESC [
+    }
+    if (next === "]") {
+      return skipStringSequence(data, index + 2, true); // OSC: ST or BEL
+    }
+    if (next !== undefined && STRING_SEQ_INTRO_7BIT.has(next)) {
+      return skipStringSequence(data, index + 2, false); // DCS/SOS/PM/APC: ST only
+    }
+    // Lone trailing ESC or a short escape this helper does not model — drop just
+    // the ESC, preserving prior behaviour for those cases.
+    return index + 1;
   }
 
-  if (data[index] === "\x9b") {
-    for (let i = index + 1; i < data.length; i += 1) {
-      const code = data.charCodeAt(i);
-      if (code >= 0x40 && code <= 0x7e) {
-        return i + 1;
-      }
-    }
-    return data.length;
+  if (char === "\x9b") {
+    return skipCsi(data, index + 1); // 8-bit CSI
+  }
+
+  if (char === OSC_INTRO_8BIT) {
+    return skipStringSequence(data, index + 1, true); // 8-bit OSC: ST or BEL
+  }
+
+  if (STRING_SEQ_INTRO_8BIT.has(char)) {
+    return skipStringSequence(data, index + 1, false); // 8-bit DCS/SOS/PM/APC: ST only
   }
 
   return index + 1;
@@ -67,7 +132,7 @@ function promptTextFromInputChunk(data: string) {
     }
 
     const char = data[index];
-    if (char === "\x1b" || char === "\x9b") {
+    if (isControlIntroducer(char)) {
       index = skipControlSequence(data, index);
       continue;
     }
