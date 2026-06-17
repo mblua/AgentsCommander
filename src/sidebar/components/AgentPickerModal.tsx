@@ -9,6 +9,7 @@ import type {
   PreviewCodingAgentProfileSelectionResult,
 } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
+import { launchErrorMessage } from "../../shared/launch-errors";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
@@ -452,7 +453,10 @@ const AgentPickerModal: Component<{
         restartedCount,
       });
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
+      // #516 — surface the failure in the modal (keep it open) rather than
+      // letting the rejection escape as a swallowed unhandled rejection. The
+      // Resource Monitor cap gets a friendly, actionable message.
+      setError(launchErrorMessage(err));
       setBusy(false);
     }
   };

@@ -364,16 +364,20 @@ const AcDiscoveryPanel: Component = () => {
             sessionName={pendingLaunch()!.sessionName}
             agentPath={pendingLaunch()!.path}
             currentAgentId={pendingLaunch()!.currentAgentId}
-            onSelect={(selection) => {
+            onSelect={async (selection) => {
               const pending = pendingLaunch()!;
-              homeStore.hide();
-              SessionAPI.create({
+              // #516 — await create so a rejection (e.g. the Resource Monitor
+              // cap) reaches AgentPickerModal.apply()'s catch instead of being
+              // a swallowed unhandled rejection. Hide Home / clear the picker
+              // only after the session is created.
+              await SessionAPI.create({
                 cwd: pending.path,
                 sessionName: pending.sessionName,
                 agentId: selection.agent.id,
                 requestedProfile: selection.requestedProfile,
                 gitRepos: pending.gitRepos,
               });
+              homeStore.hide();
               setPendingLaunch(null);
             }}
             onClose={() => setPendingLaunch(null)}
