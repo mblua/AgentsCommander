@@ -887,10 +887,16 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             Err(e) => {
                 log::error!("Replica context validation failed: {}", e);
                 use tauri_plugin_dialog::DialogExt;
-                let dialog_msg = format!("Cannot launch session — context files missing:\n\n{}", e);
+                // #537 facet (b) - the old copy blamed "context files missing",
+                // but the real cause is usually a transient config.json lock
+                // during replica identity repair. State what actually failed;
+                // the interpolated error carries the precise, retry-suggesting
+                // detail from format_publish_error.
+                let dialog_msg =
+                    format!("Cannot launch session - failed to update replica config:\n\n{}", e);
                 app.dialog()
                     .message(&dialog_msg)
-                    .title("Context File Error")
+                    .title("Session Launch Error")
                     .show(|_| {});
                 drop(mgr);
                 rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
