@@ -658,8 +658,13 @@ describe("AgentPickerModal", () => {
     target<HTMLButtonElement>("agentPicker.apply").click();
     await settle();
 
+    // #537: the failure banner leads with the human-readable backend message
+    // (not the internal code) and is surfaced loudly via a toast as well.
     expect(target("agentPicker.errors")).toBeTruthy();
-    expect(text("agentPicker.errors")).toContain("staleFingerprint");
+    expect(text("agentPicker.errors")).toContain("Assignment failed");
+    expect(text("agentPicker.errors")).toContain("Targets changed; rerun preview.");
+    expect(maybe("agentPicker.toast")).toBeTruthy();
+    expect(text("agentPicker.toast")).toContain("Targets changed; rerun preview.");
     // Modal stays open; selection is not committed; typed confirmation is reset.
     expect(onSelect).not.toHaveBeenCalled();
     expect(maybe("agentPicker.modal")).toBeTruthy();

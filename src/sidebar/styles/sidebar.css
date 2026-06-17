@@ -3060,10 +3060,67 @@ html.light-theme .root-agent-avatar {
   border: 1px solid rgba(0, 212, 255, 0.4);
 }
 
-.agent-scope-error,
-.agent-scope-errors {
+.agent-scope-error {
   font-size: var(--font-size-sm);
   color: var(--status-exited);
+}
+
+/* #537: prominent persistent failure banner for a failed Coding Agent assign.
+   Separation by color/fill plus a left accent bar (industrial-dark: minimal
+   full borders). The toast handles the loud transient alert; this keeps the
+   human-readable backend message and retry on screen. */
+.agent-scope-error-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--status-exited, #ff5d5d);
+  background: rgba(220, 50, 50, 0.14);
+  color: var(--status-exited, #ff5d5d);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  animation: agent-scope-error-in 180ms ease-out;
+}
+
+.agent-scope-error-banner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.agent-scope-error-banner-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.agent-scope-error-retry {
+  flex: 0 0 auto;
+  padding: 2px 12px;
+  border-radius: var(--radius-sm);
+  border: none;
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  color: #fff;
+  background: rgba(220, 50, 50, 0.85);
+  cursor: pointer;
+}
+
+.agent-scope-error-retry:hover:not(:disabled) {
+  background: rgba(220, 50, 50, 1);
+}
+
+.agent-scope-error-retry:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@keyframes agent-scope-error-in {
+  0% { opacity: 0; transform: translateY(-4px); }
+  100% { opacity: 1; transform: translateY(0); }
 }
 
 .agent-scope-warnings {
