@@ -183,8 +183,7 @@ impl IdleDetector {
                 let activity = detector.activity.lock().unwrap();
                 let mut idle_set = detector.idle_set.lock().unwrap();
 
-                let crossing =
-                    sessions_crossing_idle_threshold(now, &activity, &idle_set, &tuning);
+                let crossing = sessions_crossing_idle_threshold(now, &activity, &idle_set, &tuning);
                 for (session_id, elapsed) in crossing {
                     idle_set.insert(session_id);
                     log::info!(
@@ -264,7 +263,10 @@ mod tests {
             &idle_set,
             &tuning_map,
         );
-        assert!(early.is_empty(), "must not transition before idle_threshold");
+        assert!(
+            early.is_empty(),
+            "must not transition before idle_threshold"
+        );
 
         // After idle_threshold of pure silence: transition fires even though
         // record_activity_with_bytes was NEVER called for this session.

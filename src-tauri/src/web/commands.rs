@@ -62,8 +62,6 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
 
         "create_session" => {
             let cfg = state.settings.read().await;
-            let shell = str_or(args, "shell", &cfg.default_shell);
-            let shell_args = str_vec_or(args, "shellArgs", &cfg.default_shell_args);
             let cwd = str_or(
                 args,
                 "cwd",
@@ -79,6 +77,33 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 .get("agentId")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let requested_profile = args
+                .get("requestedProfile")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let resolved_spawn = if let Some(aid) = agent_id.as_deref() {
+                crate::commands::session::build_configured_agent_spawn_for_cwd(
+                    &cfg,
+                    aid,
+                    &cwd,
+                    requested_profile.as_deref(),
+                )?
+            } else {
+                None
+            };
+            let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+                (
+                    spawn.shell.clone(),
+                    spawn.shell_args.clone(),
+                    Some(spawn.trusted_agent_label.clone()),
+                )
+            } else {
+                (
+                    str_or(args, "shell", &cfg.default_shell),
+                    str_vec_or(args, "shellArgs", &cfg.default_shell_args),
+                    None,
+                )
+            };
             drop(cfg);
 
             let info = crate::commands::session::create_session_inner(
@@ -90,10 +115,11 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 cwd,
                 session_name,
                 agent_id,
-                None,       // agent_label (auto-detected)
-                false,      // skip_tooling_save
-                Vec::new(), // git_repos
-                true,       // skip_auto_resume = true → fresh create, no `--continue` injection
+                agent_label, // agent_label (auto-detected for legacy custom shell)
+                false,       // skip_tooling_save
+                Vec::new(),  // git_repos
+                true,        // skip_auto_resume = true → fresh create, no `--continue` injection
+                resolved_spawn,
             )
             .await?;
 
@@ -262,11 +288,41 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 serde_json::from_value(args.get("newSettings").cloned().unwrap_or(args.clone()))
                     .map_err(|e| e.to_string())?;
 
-            crate::config::settings::validate_agent_commands(&new_settings)?;
-            let mut cfg = state.settings.write().await;
-            *cfg = new_settings.clone();
-            drop(cfg);
-            crate::config::settings::save_settings(&new_settings).map_err(|e| e.to_string())?;
+            let saved = crate::commands::config::persist_protected_settings_update(
+                &state.settings,
+                new_settings,
+            )
+            .await?;
+            crate::commands::config::purge_sessions_after_settings_update(&saved);
+
+            Ok(json!(null))
+        }
+
+        "save_settings_draft" => {
+            let draft: crate::config::settings::AppSettings =
+                serde_json::from_value(args.get("draft").cloned().unwrap_or(args.clone()))
+                    .map_err(|e| e.to_string())?;
+
+            let (saved, events) =
+                crate::commands::config::persist_settings_draft_update(&state.settings, draft)
+                    .await?;
+            crate::commands::config::purge_sessions_after_settings_update(&saved);
+            if events.profiles_changed {
+                broadcast_all(
+                    &state.app_handle,
+                    &state.broadcaster,
+                    "coding_agent_profiles_updated",
+                    &json!({}),
+                );
+            }
+            for agent_id in events.env_agent_ids {
+                broadcast_all(
+                    &state.app_handle,
+                    &state.broadcaster,
+                    "coding_agent_env_settings_updated",
+                    &json!({ "agentId": agent_id }),
+                );
+            }
 
             Ok(json!(null))
         }
@@ -276,10 +332,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let snapshot = state.settings.read().await.clone();
             match crate::config::config_dir() {
                 Some(config_dir) => serde_json::to_value(
-                    crate::commands::role_templates::collect_role_templates(
-                        &snapshot,
-                        &config_dir,
-                    ),
+                    crate::commands::role_templates::collect_role_templates(&snapshot, &config_dir),
                 )
                 .map_err(|e| e.to_string()),
                 None => {

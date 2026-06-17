@@ -78,6 +78,7 @@ describe("session workflow automation hooks", () => {
         expect(fake.lastCall("restart_session")?.args).toEqual({
           id: "session-1",
           agentId: null,
+          requestedProfile: null,
           skipAutoResume: null,
         })
       );
@@ -132,6 +133,7 @@ describe("session workflow automation hooks", () => {
         expect(fake.lastCall("restart_session")?.args).toEqual({
           id: "root-1",
           agentId: null,
+          requestedProfile: null,
           skipAutoResume: null,
         })
       );

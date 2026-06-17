@@ -1,7 +1,7 @@
-import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
-import type { AgentConfig } from "../../shared/types";
-import { AgentCreatorAPI, SessionAPI, SettingsAPI } from "../../shared/ipc";
+import { Component, createSignal, createMemo, Show, onCleanup } from "solid-js";
+import { AgentCreatorAPI, SessionAPI } from "../../shared/ipc";
 import { homeStore } from "../../main/stores/home";
+import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 
 type Stage = "form" | "launch";
 
@@ -13,13 +13,7 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
   const [isPicking, setIsPicking] = createSignal(false);
-  const [agents, setAgents] = createSignal<AgentConfig[]>([]);
-  const [highlightIndex, setHighlightIndex] = createSignal(0);
   let nameInputRef!: HTMLInputElement;
-
-  const sortedAgents = createMemo(() =>
-    [...agents()].sort((a, b) => a.label.localeCompare(b.label, "en", { sensitivity: "base", numeric: true }))
-  );
 
   // Derive display prefix: last folder component of parentPath + "/"
   const parentDisplay = createMemo(() => {
@@ -33,11 +27,6 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
   const canCreate = createMemo(() => {
     const name = agentName().trim();
     return parentPath() !== "" && name !== "" && !name.includes("/") && !name.includes("\\");
-  });
-
-  onMount(async () => {
-    const settings = await SettingsAPI.get();
-    setAgents(settings.agents);
   });
 
   const handleBrowse = async () => {
@@ -62,7 +51,6 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
     try {
       const path = await AgentCreatorAPI.createFolder(parentPath(), agentName().trim());
       setCreatedPath(path);
-      setHighlightIndex(0);
       setStage("launch");
     } catch (e: any) {
       setError(typeof e === "string" ? e : e.message || "Failed to create agent folder");
@@ -71,7 +59,14 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
     }
   };
 
-  const handleLaunch = async (agent: AgentConfig) => {
+  const launchSessionName = () => {
+    const normalized = parentPath().replace(/\\/g, "/").replace(/\/+$/, "");
+    const parentName = normalized.split("/").pop() || normalized;
+    return `${parentName}/${agentName().trim()}`;
+  };
+
+  const handleLaunch = async (selection: AgentPickerSelection) => {
+    const agent = selection.agent;
     // Auto-generate .claude/settings.local.json if the agent has the flag
     if (agent.excludeGlobalClaudeMd && createdPath()) {
       try {
@@ -81,33 +76,12 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
       }
     }
 
-    const parts = agent.command.trim().split(/\s+/);
-    const executable = parts[0];
-    const cmdArgs = parts.slice(1);
-
-    let shell: string;
-    let shellArgs: string[];
-
-    if (agent.gitPullBefore) {
-      shell = "cmd.exe";
-      shellArgs = ["/K", `git pull && ${agent.command}`];
-    } else {
-      shell = executable;
-      shellArgs = cmdArgs;
-    }
-
-    // Session name: parentFolder/agentName
-    const normalized = parentPath().replace(/\\/g, "/").replace(/\/+$/, "");
-    const parentName = normalized.split("/").pop() || normalized;
-    const sessionName = `${parentName}/${agentName().trim()}`;
-
     homeStore.hide();
-    SessionAPI.create({
-      shell,
-      shellArgs,
+    await SessionAPI.create({
       cwd: createdPath(),
-      sessionName,
+      sessionName: launchSessionName(),
       agentId: agent.id,
+      requestedProfile: selection.requestedProfile,
     });
 
     props.onClose();
@@ -120,19 +94,6 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
       return;
     }
 
-    if (stage() === "launch") {
-      const list = sortedAgents();
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHighlightIndex((i) => Math.min(i + 1, list.length - 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHighlightIndex((i) => Math.max(i - 1, 0));
-      } else if (e.key === "Enter" && list.length > 0) {
-        e.preventDefault();
-        handleLaunch(list[highlightIndex()]);
-      }
-    }
   };
 
   const handleDocumentKeyDown = (e: KeyboardEvent) => {
@@ -142,47 +103,20 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
   document.addEventListener("keydown", handleDocumentKeyDown);
   onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
+  if (stage() === "launch") {
+    return (
+      <AgentPickerModal
+        sessionName={launchSessionName()}
+        agentPath={createdPath()}
+        onSelect={handleLaunch}
+        onClose={props.onClose}
+      />
+    );
+  }
+
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal new-agent-modal">
-        <Show
-          when={stage() === "form"}
-          fallback={
-            <>
-              {/* Stage 2: Launch agent selection */}
-              <div class="agent-modal-header">
-                <span class="agent-modal-title">
-                  Launch <strong>{parentDisplay()}{agentName().trim()}</strong>
-                </span>
-              </div>
-              <div class="agent-modal-list">
-                <For each={sortedAgents()}>
-                  {(agent, i) => (
-                    <div
-                      class={`agent-modal-item agent-choice ${i() === highlightIndex() ? "highlighted" : ""}`}
-                      onClick={() => handleLaunch(agent)}
-                      onMouseEnter={() => setHighlightIndex(i())}
-                    >
-                      <div
-                        class="agent-color-badge"
-                        style={{ background: agent.color }}
-                      />
-                      <div class="agent-modal-item-info">
-                        <div class="agent-modal-item-name">{agent.label}</div>
-                        <div class="agent-modal-item-detail">{agent.command}</div>
-                      </div>
-                    </div>
-                  )}
-                </For>
-              </div>
-              <div class="agent-modal-footer">
-                <span>&#x2191;&#x2193; navigate</span>
-                <span>&#x23CE; launch</span>
-                <span>esc close</span>
-              </div>
-            </>
-          }
-        >
           {/* Stage 1: Form */}
           <div class="agent-modal-header">
             <span class="agent-modal-title">New Agent</span>
@@ -248,7 +182,6 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
               {creating() ? "Creating..." : "Create Agent"}
             </button>
           </div>
-        </Show>
       </div>
     </div>
   );

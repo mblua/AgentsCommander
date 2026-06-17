@@ -10,13 +10,14 @@ import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
+import { isWgReplicaPath, sessionProfileBadge } from "../../shared/profile-utils";
 import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
 import NewLoopModal from "./NewLoopModal";
 import EditLoopModal from "./EditLoopModal";
-import AgentPickerModal from "./AgentPickerModal";
+import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
@@ -31,6 +32,9 @@ interface PendingLaunch {
   path: string;
   sessionName: string;
   gitRepos: SessionRepoInput[];
+  currentAgentId?: string;
+  currentRequestedProfile?: string | null;
+  scopeContext?: AgentPickerScopeContext;
 }
 
 /** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
@@ -38,6 +42,53 @@ function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   return (replica.repoPaths ?? []).map((p) => {
     return { label: repoLabelFromPath(p), sourcePath: p };
   });
+}
+
+/**
+ * Build the AgentPicker scope context for a launching WG replica (#384 Frontend §5).
+ * Broad-scope assignment is only offered when the launch resolves to a real WG
+ * replica; the backend re-enumerates and is authoritative either way.
+ */
+function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPickerScopeContext {
+  return {
+    workgroupPath: wg.path,
+    workgroupName: wg.name,
+    targetReplicaPath: replica.path,
+    targetReplicaName: replica.name,
+    currentCodingAgentId: replica.currentCodingAgentId ?? null,
+    currentProfile: replica.currentProfile ?? null,
+  };
+}
+
+/** Derive scope context from a live replica session for the right-click "Coding
+ *  Agent" action. Falls back to a single-path (no broad scope) context when the
+ *  session is not a WG replica. */
+function deriveScopeContextFromSession(
+  session: Session | undefined,
+  sessionName: string,
+): AgentPickerScopeContext | undefined {
+  if (!session) return undefined;
+  const replicaPath = session.workingDirectory;
+  if (!isWgReplicaPath(replicaPath)) {
+    return {
+      targetReplicaPath: replicaPath,
+      currentCodingAgentId: session.agentId,
+      currentProfile: session.requestedProfile,
+    };
+  }
+  // Workgroup dir = parent of the replica dir, preserving the original separators.
+  const dirMatch = replicaPath.match(/^(.*)[\\/][^\\/]+[\\/]?$/);
+  const slash = sessionName.indexOf("/");
+  const wgName = slash >= 0 ? sessionName.slice(0, slash) : "";
+  const replicaName = slash >= 0 ? sessionName.slice(slash + 1) : sessionName;
+  return {
+    workgroupPath: dirMatch?.[1] ?? "",
+    workgroupName: wgName,
+    targetReplicaPath: replicaPath,
+    targetReplicaName: replicaName,
+    currentCodingAgentId: session.agentId,
+    currentProfile: session.requestedProfile,
+  };
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
@@ -131,30 +182,14 @@ const ProjectPanel: Component = () => {
     // Not instantiated — create session in-place
     const gitRepos = buildGitRepos(replica);
 
-    if (!replica.preferredAgentId) {
-      setPendingLaunch({
-        path: replica.path,
-        sessionName: replicaSessionName(wg, replica),
-        gitRepos,
-      });
-      return;
-    }
-
-    const newSession = await SessionAPI.create({
-      cwd: replica.path,
+    setPendingLaunch({
+      path: replica.path,
       sessionName: replicaSessionName(wg, replica),
-      agentId: replica.preferredAgentId,
       gitRepos,
+      currentAgentId: replica.currentCodingAgentId ?? replica.preferredAgentId,
+      currentRequestedProfile: replica.currentProfile ?? null,
+      scopeContext: replicaScopeContext(wg, replica),
     });
-    await SessionAPI.switch(newSession.id);
-    if (isTauri) {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const detachedLabel = `terminal-${newSession.id.replace(/-/g, "")}`;
-      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-      if (!detachedWin) {
-        await WindowAPI.ensureTerminal();
-      }
-    }
   };
 
   const handleAgentClick = async (agent: { name: string; path: string; preferredAgentId?: string }) => {
@@ -172,29 +207,50 @@ const ProjectPanel: Component = () => {
       return;
     }
 
-    if (!agent.preferredAgentId) {
-      setPendingLaunch({ path: agent.path, sessionName: agent.name, gitRepos: [] });
-      return;
-    }
-
-    const newSession = await SessionAPI.create({
-      cwd: agent.path,
+    setPendingLaunch({
+      path: agent.path,
       sessionName: agent.name,
-      agentId: agent.preferredAgentId,
+      gitRepos: [],
+      currentAgentId: agent.preferredAgentId,
     });
-    await SessionAPI.switch(newSession.id);
-    if (isTauri) {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const detachedLabel = `terminal-${newSession.id.replace(/-/g, "")}`;
-      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-      if (!detachedWin) {
-        await WindowAPI.ensureTerminal();
-      }
-    }
   };
 
   return (
     <>
+    {/* Empty-tree status: visible to the user (deferred Round-1 G11 chip) and
+        to UI-automation. `data-ac-state` + `data-ac-detail` make a swallowed
+        boot/load failure observable without devtools — loading (stuck) vs
+        error (with message) vs empty (did initFromSettings run? how many paths?). */}
+    <Show when={projectStore.projects.length === 0}>
+      <div
+        class="project-load-status"
+        data-ac-testid="project.loadStatus"
+        data-ac-role="status"
+        data-ac-state={
+          projectStore.isLoading ? "loading" : projectStore.lastLoadError ? "error" : "empty"
+        }
+        data-ac-detail={
+          `init:${projectStore.initState.attempted ? projectStore.initState.pathCount : "no"}` +
+          ` err:${projectStore.lastLoadError ?? "none"}`
+        }
+      >
+        <Show
+          when={projectStore.isLoading}
+          fallback={
+            <Show
+              when={projectStore.lastLoadError}
+              fallback={<span class="ac-empty-hint">No projects loaded</span>}
+            >
+              <span class="ac-empty-hint">
+                Failed to load project: {projectStore.lastLoadError}
+              </span>
+            </Show>
+          }
+        >
+          <span class="ac-empty-hint">Loading projects…</span>
+        </Show>
+      </div>
+    </Show>
     <For each={projectStore.projects}>
       {(proj) => {
         const [collapsed, setCollapsed] = createSignal(false);
@@ -374,11 +430,18 @@ const ProjectPanel: Component = () => {
           );
         };
 
-        const restartReplicaSession = async (sessionId: string, agentId?: string) => {
+        const restartReplicaSession = async (
+          sessionId: string,
+          agentId?: string,
+          requestedProfile?: string | null,
+        ) => {
           setReplicaCtxMenu(null);
           cleanupCtx();
           try {
-            await SessionAPI.restart(sessionId, agentId ? { agentId } : undefined);
+            await SessionAPI.restart(
+              sessionId,
+              agentId ? { agentId, requestedProfile } : undefined,
+            );
           } catch (e) {
             console.error("Failed to restart session:", e);
           }
@@ -670,6 +733,10 @@ const ProjectPanel: Component = () => {
             if (!s.agentId) return null;
             return settingsStore.current?.agents?.find((a) => a.id === s.agentId)?.label ?? null;
           };
+          const profileBadge = () => {
+            const s = session();
+            return s ? sessionProfileBadge(s) : null;
+          };
           const isLive = () => isSessionLive(session());
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
           const isDetached = () => { const s = session(); return s ? sessionsStore.isDetached(s.id) : false; };
@@ -785,6 +852,9 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <Show when={liveAgentLabel()}>
                     <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
+                  </Show>
+                  <Show when={profileBadge()}>
+                    {(badge) => <span class="profile-badge">{badge()}</span>}
                   </Show>
                   <Show when={isCoord()}>
                     <span class="ac-discovery-badge coord">coordinator</span>
@@ -1828,11 +1898,31 @@ const ProjectPanel: Component = () => {
               <Portal>
                 <AgentPickerModal
                   sessionName={replicaCodingAgentTarget()!.sessionName}
-                  onSelect={async (agent) => {
+                  agentPath={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.workingDirectory}
+                  currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
+                  currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
+                  scopeContext={deriveScopeContextFromSession(
+                    sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
+                    replicaCodingAgentTarget()!.sessionName,
+                  )}
+                  onSelect={async (selection) => {
+                    // The picker already applied the selection through the backend
+                    // (config write + restart when the toggle is on) for WG replicas.
+                    // Only fall back to a manual restart when there was no broad-scope
+                    // apply path (non-WG agent session) but the user changed the agent.
                     const target = replicaCodingAgentTarget();
                     setReplicaCodingAgentTarget(null);
-                    if (target) {
-                      await restartReplicaSession(target.sessionId, agent.id);
+                    if (
+                      target &&
+                      !isWgReplicaPath(
+                        sessionsStore.sessions.find((s) => s.id === target.sessionId)?.workingDirectory,
+                      )
+                    ) {
+                      await restartReplicaSession(
+                        target.sessionId,
+                        selection.agent.id,
+                        selection.requestedProfile,
+                      );
                     }
                   }}
                   onClose={() => setReplicaCodingAgentTarget(null)}
@@ -2134,12 +2224,17 @@ const ProjectPanel: Component = () => {
       <Portal>
         <AgentPickerModal
           sessionName={pendingLaunch()!.sessionName}
-          onSelect={async (agent) => {
+          agentPath={pendingLaunch()!.path}
+          currentAgentId={pendingLaunch()!.currentAgentId}
+          currentRequestedProfile={pendingLaunch()!.currentRequestedProfile}
+          scopeContext={pendingLaunch()!.scopeContext}
+          onSelect={async (selection) => {
             const pending = pendingLaunch()!;
             const newSession = await SessionAPI.create({
               cwd: pending.path,
               sessionName: pending.sessionName,
-              agentId: agent.id,
+              agentId: selection.agent.id,
+              requestedProfile: selection.requestedProfile,
               gitRepos: pending.gitRepos,
             });
             await SessionAPI.switch(newSession.id);

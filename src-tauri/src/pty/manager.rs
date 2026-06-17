@@ -288,6 +288,8 @@ impl PtyManager {
         cwd: &str,
         cols: u16,
         rows: u16,
+        configured_env: &[(String, String)],
+        env_remove_keys: &[String],
         extra_env: &[(String, String)],
         idle_tuning: IdleTuning,
         app_handle: AppHandle<R>,
@@ -330,8 +332,22 @@ impl PtyManager {
             c
         };
         command.cwd(cwd);
-        command.env("TERM", "xterm-256color");
+        for key in env_remove_keys {
+            command.env_remove(key);
+        }
+        for (key, value) in configured_env {
+            command.env(key, value);
+        }
+        if !configured_env.is_empty() || !env_remove_keys.is_empty() {
+            log::info!(
+                "[pty] Applied {} configured env vars and removed {} inherited env vars for session {}",
+                configured_env.len(),
+                env_remove_keys.len(),
+                id
+            );
+        }
         crate::pty::credentials::apply_credential_env_to_pty_command(&mut command, extra_env);
+        command.env("TERM", "xterm-256color");
 
         if !extra_env.is_empty() {
             log::info!(

@@ -23,6 +23,9 @@ import {
   onTerminalAttached,
   onWorkgroupTaskUpdated,
   onAcProjectRefreshRequested,
+  onCodingAgentProfilesUpdated,
+  onCodingAgentEnvSettingsUpdated,
+  onCodingAgentProfileSelectionUpdated,
   onLoopEvent,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
@@ -113,6 +116,31 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentProfilesUpdated(() => {
+        settingsStore.refresh();
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentEnvSettingsUpdated(() => {
+        settingsStore.refresh();
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentProfileSelectionUpdated((data) => {
+        settingsStore.refresh();
+        if (data.agentPath) {
+          void projectStore.reloadProjectIfLoaded(data.agentPath);
+        } else {
+          // Broad-scope apply (#384) touched many replicas with no single
+          // agentPath — reload every loaded project so discovery refreshes
+          // currentCodingAgentId/currentProfile everywhere.
+          for (const proj of projectStore.projects) {
+            void projectStore.reloadProject(proj.path);
+          }
+        }
       })
     );
     unlisteners.push(

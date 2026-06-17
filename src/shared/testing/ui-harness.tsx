@@ -5,6 +5,7 @@ import type {
   AcDiscoveryResult,
   AppSettings,
   BridgeInfo,
+  CodingAgentProfilesConfig,
   Session,
 } from "../types";
 import { FakeTransport } from "./fake-transport";
@@ -81,6 +82,17 @@ export async function waitFor(
   throw new Error(`Timed out after ${timeoutMs}ms`);
 }
 
+function defaultCodingAgentProfiles(): CodingAgentProfilesConfig {
+  return {
+    schemaVersion: 2,
+    profileSlots: {
+      A: { label: "" },
+    },
+    defaultProfileByAgent: {},
+    profilesByAgent: {},
+  };
+}
+
 export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
     defaultShell: "pwsh",
@@ -140,6 +152,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     resourceKeepLastSnapshot: true,
     resourceBackoffPolling: true,
     ...overrides,
+    codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
   };
 }
 
@@ -165,6 +178,10 @@ export function session(overrides: Partial<Session> = {}): Session {
     token: "",
     agentKind: "codex",
     ...overrides,
+    requestedProfile: overrides.requestedProfile ?? null,
+    effectiveProfile: overrides.effectiveProfile ?? null,
+    profileFallbackChain: overrides.profileFallbackChain ?? [],
+    profileFallbackApplied: overrides.profileFallbackApplied ?? false,
   };
 }
 

@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1006,46 +1006,21 @@ fn normalize_role_text(text: &str) -> String {
 }
 
 pub(crate) fn merge_root_agent_config(config_path: &Path) -> Result<(), String> {
-    let mut root = if config_path.exists() {
-        let content = std::fs::read_to_string(config_path)
-            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-        let parsed: Value = serde_json::from_str(&content).map_err(|e| {
-            format!(
-                "Failed to parse root agent config {}: {}",
-                config_path.display(),
-                e
-            )
-        })?;
-        if !parsed.is_object() {
-            return Err(format!(
-                "Root agent config {} must be a JSON object",
-                config_path.display()
-            ));
+    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+        obj.entry("tooling".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+
+        let context = obj.get("context").and_then(|v| v.as_array());
+        let context_is_old_default =
+            context.is_some_and(|arr| context_array_matches(arr, ROOT_AGENT_OLD_DEFAULT_CONTEXT));
+        if context.is_none_or(|arr| arr.is_empty()) || context_is_old_default {
+            obj.insert(
+                "context".to_string(),
+                serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT),
+            );
         }
-        parsed
-    } else {
-        Value::Object(Map::new())
-    };
-
-    let obj = root.as_object_mut().expect("checked object above");
-    obj.entry("tooling".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-
-    let context = obj.get("context").and_then(|v| v.as_array());
-    let context_is_old_default =
-        context.is_some_and(|arr| context_array_matches(arr, ROOT_AGENT_OLD_DEFAULT_CONTEXT));
-    if context.is_none_or(|arr| arr.is_empty()) || context_is_old_default {
-        obj.insert(
-            "context".to_string(),
-            serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT),
-        );
-    }
-
-    let json = serde_json::to_string_pretty(&root)
-        .map_err(|e| format!("Failed to serialize root agent config: {}", e))?;
-    std::fs::write(config_path, json)
-        .map_err(|e| format!("Failed to write {}: {}", config_path.display(), e))?;
-
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -1744,7 +1719,7 @@ mod tests {
 
         let err = merge_root_agent_config(&config_path).expect_err("must fail");
 
-        assert!(err.contains("Failed to parse root agent config"));
+        assert!(err.contains("Failed to parse"));
         assert_eq!(
             std::fs::read_to_string(&config_path).expect("read config"),
             "{not json"

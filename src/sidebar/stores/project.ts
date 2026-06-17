@@ -17,6 +17,11 @@ export interface ProjectState {
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
 const [loading, setLoading] = createSignal(false);
+const [lastLoadError, setLastLoadError] = createSignal<string | null>(null);
+const [initState, setInitState] = createSignal<{ attempted: boolean; pathCount: number }>({
+  attempted: false,
+  pathCount: 0,
+});
 const inFlightLoads = new Map<string, Promise<void>>();
 const inFlightReloads = new Map<string, Promise<void>>();
 const queuedReloads = new Set<string>();
@@ -24,6 +29,17 @@ let loadingCount = 0;
 
 function normalizePath(p: string): string {
   return normalizeProjectPathForCompare(p);
+}
+
+/** Stringify whatever a rejected Tauri command throws (usually the Err string). */
+function formatLoadError(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
 }
 
 export const projectStore = {
@@ -39,6 +55,21 @@ export const projectStore = {
 
   get isLoading() {
     return loading();
+  },
+
+  /** Last error from a failed loadProject(). Surfaced as a sidebar status chip
+   *  (deferred Round-1 G11) and, critically, to the UI-automation surface so a
+   *  swallowed backend open_project/discover_project failure is observable
+   *  without devtools (#384 empty-tree triage). */
+  get lastLoadError() {
+    return lastLoadError();
+  },
+
+  /** Whether initFromSettings() ran, and how many paths it received. Lets the
+   *  empty-tree diagnostic distinguish "onMount never reached initFromSettings"
+   *  (attempted=false) from "ran but projectPaths was empty" (pathCount=0). */
+  get initState() {
+    return initState();
   },
 
   /** Register a project path in settings (via shared backend) and load its discovery data. */
@@ -80,12 +111,15 @@ export const projectStore = {
             },
           ];
         });
+        setLastLoadError(null);
       } catch (e) {
-        // Round-1 G11 deferred: surface this to the user via toast/sidebar
-        // chip in a follow-up. For now, preserve the existing swallow-and-log
-        // so behaviour is no worse than today (initFromSettings silently drops
-        // a project whose Project AC Root was deleted between sessions.
+        // Round-1 G11: surface the failure instead of only logging it. The
+        // sidebar status chip + UI-automation `project.loadStatus` target now
+        // expose this so a swallowed open_project/discover_project error is
+        // diagnosable without devtools (previously it silently dropped a
+        // project whose Project AC Root was deleted between sessions).
         console.error("Failed to load project:", e);
+        setLastLoadError(formatLoadError(e));
       } finally {
         loadingCount--;
         if (loadingCount === 0) setLoading(false);
@@ -103,6 +137,9 @@ export const projectStore = {
     if (legacyPath && !paths.some((p) => normalizePath(p) === normalizePath(legacyPath))) {
       paths.push(legacyPath);
     }
+    // Record that boot-time load ran and with how many paths, so an empty tree
+    // can be triaged (onMount never got here vs. ran with zero paths).
+    setInitState({ attempted: true, pathCount: paths.length });
     for (const path of paths) {
       await projectStore.loadProject(path);
     }
@@ -275,6 +312,8 @@ export const projectStore = {
     setProjects([]);
     loadingCount = 0;
     setLoading(false);
+    setLastLoadError(null);
+    setInitState({ attempted: false, pathCount: 0 });
     inFlightLoads.clear();
     inFlightReloads.clear();
     queuedReloads.clear();
