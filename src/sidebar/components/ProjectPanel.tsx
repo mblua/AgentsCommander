@@ -147,6 +147,33 @@ const ProjectPanel: Component = () => {
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
 
+  // #537: post-assign "Restart now?" prompt. Hoisted to the stable ProjectPanel
+  // scope (NOT inside the projects <For>) so a background replica-list refresh,
+  // which replaces project object references and so re-creates each <For> row
+  // (disposing its local signals), cannot tear the modal down before the user
+  // answers. Mirrors the pendingLaunch picker below, hoisted for the same reason.
+  // The prompt closes only on Later / Restart now / overlay click.
+  const [restartPrompt, setRestartPrompt] = createSignal<{
+    sessionId: string;
+    replicaName: string;
+    agentId: string;
+    agentLabel: string;
+    requestedProfile: string | null;
+  } | null>(null);
+
+  // Restart the live session on the newly-assigned agent (same SessionAPI.restart
+  // the Restart button uses; honors currentCodingAgent, 0b03ad7). Consume-and-clear
+  // so a single click cannot fire twice.
+  const applyRestartPrompt = () => {
+    const prompt = restartPrompt();
+    setRestartPrompt(null);
+    if (!prompt) return;
+    void SessionAPI.restart(prompt.sessionId, {
+      agentId: prompt.agentId,
+      requestedProfile: prompt.requestedProfile,
+    }).catch((e) => console.error("Failed to restart session:", e));
+  };
+
   const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const existing = replicaSession(wg, replica);
     if (existing) {
@@ -270,15 +297,6 @@ const ProjectPanel: Component = () => {
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
         const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; sessionName: string; x: number; y: number } | null>(null);
         const [replicaCodingAgentTarget, setReplicaCodingAgentTarget] = createSignal<{ sessionId: string; sessionName: string } | null>(null);
-        // #537: post-assign "Restart now?" prompt for a replica-scope assign onto a
-        // live WG replica session. Holds the restart payload until the user decides.
-        const [restartPrompt, setRestartPrompt] = createSignal<{
-          sessionId: string;
-          replicaName: string;
-          agentId: string;
-          agentLabel: string;
-          requestedProfile: string | null;
-        } | null>(null);
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -1950,28 +1968,6 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
-            {/* #537: post-assign "Restart now?" prompt (replica scope, live session) */}
-            {restartPrompt() && (
-              <Portal>
-                <RestartPromptModal
-                  agentLabel={restartPrompt()!.agentLabel}
-                  replicaName={restartPrompt()!.replicaName}
-                  onRestart={() => {
-                    const prompt = restartPrompt();
-                    setRestartPrompt(null);
-                    if (prompt) {
-                      void restartReplicaSession(
-                        prompt.sessionId,
-                        prompt.agentId,
-                        prompt.requestedProfile,
-                      );
-                    }
-                  }}
-                  onLater={() => setRestartPrompt(null)}
-                />
-              </Portal>
-            )}
-
             {/* Delete WG confirmation */}
             {deletingWg() && (
               <Portal>
@@ -2291,6 +2287,22 @@ const ProjectPanel: Component = () => {
             setPendingLaunch(null);
           }}
           onClose={() => setPendingLaunch(null)}
+        />
+      </Portal>
+    )}
+
+    {/* #537: post-assign "Restart now?" prompt, rendered here at the stable
+        ProjectPanel root (outside the projects <For>) so a background discovery
+        refresh that replaces project references, re-creating each <For> row,
+        cannot unmount it mid-decision. It closes only on Later / Restart now /
+        overlay click. */}
+    {restartPrompt() && (
+      <Portal>
+        <RestartPromptModal
+          agentLabel={restartPrompt()!.agentLabel}
+          replicaName={restartPrompt()!.replicaName}
+          onRestart={applyRestartPrompt}
+          onLater={() => setRestartPrompt(null)}
         />
       </Portal>
     )}
