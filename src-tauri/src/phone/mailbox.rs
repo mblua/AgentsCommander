@@ -190,6 +190,7 @@ fn normalize_agent_for_wake(
 fn resolve_wake_agent_command_from_sources(
     agents: &[AgentConfig],
     preferred_agent: &str,
+    destination_current_agent: Option<&str>,
     destination_last_agent: Option<&str>,
     destination_config_path: Option<&Path>,
     sender_agent: Option<&str>,
@@ -205,6 +206,22 @@ fn resolve_wake_agent_command_from_sources(
         log::warn!(
             "[mailbox] wake: preferredAgent '{}' did not match a configured agent id; falling back to auto resolution",
             preferred_agent
+        );
+    }
+
+    // The Selection UI assignment (currentCodingAgent) is an explicit user choice
+    // and is what the "Entire Workgroup" coding-agent assignment writes to each
+    // replica. Honor it before launch history (lastCodingAgent) so the assignment
+    // propagates to freshly-spawned members that have never recorded a
+    // lastCodingAgent, and so a new selection overrides a stale launch history.
+    if let Some(agent_id) = destination_current_agent {
+        if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
+            return normalize_agent_for_wake(agent, format!("currentCodingAgent '{}'", agent_id))
+                .map(Some);
+        }
+        log::debug!(
+            "[mailbox] wake: currentCodingAgent '{}' did not match a configured agent id; falling back",
+            agent_id
         );
     }
 
@@ -2956,11 +2973,20 @@ impl MailboxPoller {
             cfg.agents.clone()
         };
 
+        let mut destination_current_agent: Option<String> = None;
         let mut destination_last_agent: Option<String> = None;
         let mut destination_config_path: Option<PathBuf> = None;
 
         if let Some(dest_path) = self.resolve_repo_path(&msg.to, app).await {
-            let config_path = Path::new(&dest_path)
+            let dest = Path::new(&dest_path);
+            // The Selection UI assignment (currentCodingAgent), including the
+            // "Entire Workgroup" path, is written to the replica's top-level
+            // config.json by set_replica_coding_agent_selection, not to the
+            // per-instance agent_local_dir config that holds lastCodingAgent.
+            destination_current_agent =
+                crate::config::coding_agent_profiles::read_replica_current_coding_agent(dest);
+
+            let config_path = dest
                 .join(crate::config::agent_local_dir_name())
                 .join("config.json");
             destination_config_path = Some(config_path.clone());
@@ -2975,6 +3001,7 @@ impl MailboxPoller {
         resolve_wake_agent_command_from_sources(
             &agents,
             &msg.preferred_agent,
+            destination_current_agent.as_deref(),
             destination_last_agent.as_deref(),
             destination_config_path.as_deref(),
             msg.sender_agent.as_deref(),
@@ -3682,9 +3709,16 @@ mod tests {
         let agents = wake_agents();
 
         let resolved =
-            resolve_wake_agent_command_from_sources(&agents, "codex", Some("claude"), None, None)
-                .unwrap()
-                .unwrap();
+            resolve_wake_agent_command_from_sources(
+                &agents,
+                "codex",
+                None,
+                Some("claude"),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);
@@ -3700,6 +3734,7 @@ mod tests {
         let resolved = resolve_wake_agent_command_from_sources(
             &agents,
             "missing",
+            None,
             Some("codex"),
             Some(config_path),
             Some("claude"),
@@ -3717,9 +3752,16 @@ mod tests {
         let agents = wake_agents();
 
         let resolved =
-            resolve_wake_agent_command_from_sources(&agents, "auto", Some("codex"), None, None)
-                .unwrap()
-                .unwrap();
+            resolve_wake_agent_command_from_sources(
+                &agents,
+                "auto",
+                None,
+                Some("codex"),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);
@@ -3733,6 +3775,7 @@ mod tests {
         let resolved = resolve_wake_agent_command_from_sources(
             &agents,
             "auto",
+            None,
             Some("missing"),
             None,
             Some("claude"),
@@ -3753,6 +3796,7 @@ mod tests {
         let resolved = resolve_wake_agent_command_from_sources(
             &agents,
             "auto",
+            None,
             Some("missing"),
             None,
             Some("also-missing"),
@@ -3767,10 +3811,53 @@ mod tests {
     }
 
     #[test]
+    fn wake_agent_command_prefers_current_coding_agent_over_last() {
+        let agents = wake_agents();
+
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "auto",
+            Some("claude"),
+            Some("codex"),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.shell, "claude");
+        assert_eq!(resolved.agent_id.as_deref(), Some("claude"));
+        assert!(resolved.source.contains("currentCodingAgent 'claude'"));
+    }
+
+    #[test]
+    fn wake_agent_command_uses_current_coding_agent_when_last_missing() {
+        // The "Entire Workgroup" assignment writes currentCodingAgent to a
+        // freshly-spawned member that has no lastCodingAgent yet. Without it the
+        // resolver would fall through to senderAgent / first configured agent.
+        let agents = wake_agents();
+
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "auto",
+            Some("codex"),
+            None,
+            None,
+            Some("claude"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.shell, "codex");
+        assert_eq!(resolved.agent_id.as_deref(), Some("codex"));
+        assert!(resolved.source.contains("currentCodingAgent 'codex'"));
+    }
+
+    #[test]
     fn wake_agent_command_rejects_invalid_quoted_command_with_source() {
         let agents = vec![wake_agent("codex", "Codex", "codex \"unterminated")];
 
-        let err = resolve_wake_agent_command_from_sources(&agents, "codex", None, None, None)
+        let err = resolve_wake_agent_command_from_sources(&agents, "codex", None, None, None, None)
             .unwrap_err();
 
         assert!(err.contains("preferredAgent 'codex'"));
@@ -3785,9 +3872,16 @@ mod tests {
         let agents = wake_agents();
 
         let resolved =
-            resolve_wake_agent_command_from_sources(&agents, "codex", None, None, Some("claude"))
-                .unwrap()
-                .unwrap();
+            resolve_wake_agent_command_from_sources(
+                &agents,
+                "codex",
+                None,
+                None,
+                None,
+                Some("claude"),
+            )
+            .unwrap()
+            .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);
