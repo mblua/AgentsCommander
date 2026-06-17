@@ -1581,6 +1581,34 @@ fn effective_restart_requested_profile(
     requested.or(stored)
 }
 
+/// #537 read-side: pick which coding agent a restart should launch.
+///
+/// Ranks an explicit request first, then the replica's Selection-UI assignment
+/// (`tooling.currentCodingAgent` in `cwd/config.json`, validated against the
+/// configured agents), then the agent the live session was launched with. This
+/// mirrors the wake path (#534): a fresh user selection must override stale
+/// launch history. The `currentCodingAgent` is validated so an unconfigured id
+/// is never passed downstream (which would make `build_configured_agent_spawn_for_cwd`
+/// return `Ok(None)` and silently keep the old recipe). Root agents and plain
+/// terminals have no `currentCodingAgent`, so they fall straight through to
+/// `stored_agent_id` and their behavior is unchanged.
+fn resolve_restart_selected_agent_id(
+    settings: &AppSettings,
+    cwd: &str,
+    requested_agent_id: Option<&str>,
+    stored_agent_id: Option<&str>,
+) -> Option<String> {
+    if let Some(requested) = requested_agent_id {
+        return Some(requested.to_string());
+    }
+    let current_selection =
+        crate::config::coding_agent_profiles::read_replica_current_coding_agent(
+            std::path::Path::new(cwd),
+        )
+        .filter(|id| settings.agents.iter().any(|agent| agent.id == *id));
+    current_selection.or_else(|| stored_agent_id.map(str::to_string))
+}
+
 /// Restart a session: destroy the existing one and recreate it with the same
 /// configuration but a fresh PTY. By default suppresses provider auto-resume
 /// (true user-intent restart — fresh conversation).
@@ -1687,21 +1715,30 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
 
     let requested_agent_id = agent_id;
-    let selected_agent_id = requested_agent_id.clone().or(stored_agent_id.clone());
     let selected_requested_profile =
         effective_restart_requested_profile(requested_profile, stored_requested_profile);
-    let resolved_spawn = if let Some(ref aid) = selected_agent_id {
+    // #537 read-side: resolve the launch agent (honoring currentCodingAgent) and
+    // build its spawn under a single settings read guard. No await is held across
+    // the guard; it is dropped at the end of this block.
+    let (selected_agent_id, resolved_spawn) = {
         let cfg = settings.read().await;
-        let resolved = build_configured_agent_spawn_for_cwd(
+        let selected_agent_id = resolve_restart_selected_agent_id(
             &cfg,
-            aid,
             &cwd,
-            selected_requested_profile.as_deref(),
-        )?;
-        drop(cfg);
-        resolved
-    } else {
-        None
+            requested_agent_id.as_deref(),
+            stored_agent_id.as_deref(),
+        );
+        let resolved_spawn = if let Some(ref aid) = selected_agent_id {
+            build_configured_agent_spawn_for_cwd(
+                &cfg,
+                aid,
+                &cwd,
+                selected_requested_profile.as_deref(),
+            )?
+        } else {
+            None
+        };
+        (selected_agent_id, resolved_spawn)
     };
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
@@ -2311,7 +2348,8 @@ mod tests {
     use super::{
         classify_existing_root, effective_restart_requested_profile, inject_codex_resume,
         resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
-        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
+        resolve_restart_selected_agent_id, resolve_root_agent_command, should_inject_continue,
+        ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::session::manager::SessionManager;
@@ -2399,6 +2437,82 @@ mod tests {
             resolve_root_agent_command(&settings, Some("stale"), Some("also-stale")).unwrap_err();
 
         assert!(err.contains("No resolvable coding agent"));
+    }
+
+    fn write_current_coding_agent(dir: &std::path::Path, agent_id: &str) {
+        std::fs::write(
+            dir.join("config.json"),
+            format!(r#"{{"tooling":{{"currentCodingAgent":"{}"}}}}"#, agent_id),
+        )
+        .unwrap();
+    }
+
+    // #537 read-side: a freshly assigned currentCodingAgent must win over the
+    // agent the live session was launched with (stored_agent_id) when the restart
+    // carries no explicit agent (the plain restart button passes None).
+    #[test]
+    fn restart_honors_current_coding_agent_when_no_explicit_request() {
+        let settings = test_settings();
+        let tmp = tempfile::tempdir().unwrap();
+        write_current_coding_agent(tmp.path(), "codex");
+
+        let selected = resolve_restart_selected_agent_id(
+            &settings,
+            &tmp.path().to_string_lossy(),
+            None,
+            Some("claude"),
+        );
+
+        assert_eq!(selected.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn restart_explicit_agent_overrides_current_coding_agent() {
+        let settings = test_settings();
+        let tmp = tempfile::tempdir().unwrap();
+        write_current_coding_agent(tmp.path(), "codex");
+
+        let selected = resolve_restart_selected_agent_id(
+            &settings,
+            &tmp.path().to_string_lossy(),
+            Some("claude"),
+            Some("codex"),
+        );
+
+        assert_eq!(selected.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn restart_ignores_unconfigured_current_coding_agent_and_keeps_stored() {
+        let settings = test_settings();
+        let tmp = tempfile::tempdir().unwrap();
+        write_current_coding_agent(tmp.path(), "ghost");
+
+        let selected = resolve_restart_selected_agent_id(
+            &settings,
+            &tmp.path().to_string_lossy(),
+            None,
+            Some("claude"),
+        );
+
+        assert_eq!(selected.as_deref(), Some("claude"));
+    }
+
+    // Root agents and plain terminals have no currentCodingAgent → behavior
+    // unchanged: fall straight through to the stored launch agent.
+    #[test]
+    fn restart_falls_back_to_stored_when_no_current_coding_agent() {
+        let settings = test_settings();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let selected = resolve_restart_selected_agent_id(
+            &settings,
+            &tmp.path().to_string_lossy(),
+            None,
+            Some("claude"),
+        );
+
+        assert_eq!(selected.as_deref(), Some("claude"));
     }
 
     #[test]
