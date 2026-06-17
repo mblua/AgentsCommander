@@ -102,6 +102,13 @@ export interface AgentConfig {
    * providers, only Codex consumes this flag. Serialized as `isolatedHome`.
    */
   isolatedHome: boolean;
+  /**
+   * #529 — instructions filename written to the agent root at launch (content =
+   * AC context + Role.md). Empty/undefined falls back to the command-derived
+   * default (Claude → CLAUDE.md, Gemini → GEMINI.md, else AGENTS.md). The empty
+   * string is normalized to omitted before save, so it is never persisted.
+   */
+  instructionsFilename?: string;
 }
 
 /**

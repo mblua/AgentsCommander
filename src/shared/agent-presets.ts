@@ -22,6 +22,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
       excludeGlobalClaudeMd: true,
       envs: [],
       isolatedHome: false,
+      instructionsFilename: "CLAUDE.md",
     },
   },
   {
@@ -37,6 +38,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
       excludeGlobalClaudeMd: false,
       envs: [],
       isolatedHome: false,
+      instructionsFilename: "AGENTS.md",
     },
   },
   {
@@ -52,6 +54,23 @@ export const AGENT_PRESETS: AgentPreset[] = [
       excludeGlobalClaudeMd: false,
       envs: [],
       isolatedHome: false,
+      instructionsFilename: "GEMINI.md",
+    },
+  },
+  {
+    key: "opencode",
+    label: "OpenCode",
+    description: "Open-source terminal coding agent by SST",
+    color: "#64748b",
+    config: {
+      label: "OpenCode",
+      command: "opencode",
+      color: "#64748b",
+      gitPullBefore: false,
+      excludeGlobalClaudeMd: false,
+      envs: [],
+      isolatedHome: false,
+      instructionsFilename: "AGENTS.md",
     },
   },
 ];

@@ -12,12 +12,15 @@ import { SettingsAPI } from "../../shared/ipc";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
+  effectiveEnvProjection,
   expandAcRootPreview,
   hasAcRootPlaceholder,
   isAcAgentPath,
   isCodexAgent,
   isWgReplicaPath,
   normalizeProfileLetter,
+  profileBadgeKind,
+  type ProfileBadgeKind,
   profileCellCommandText,
   profileDisplayLabel,
   resolveProfilePreview,
@@ -52,6 +55,17 @@ const EMPTY_DISPLAY_CELL: ProfileCellConfig = {
   command: "",
   env: {},
   notes: "",
+};
+
+// #527: per-card status pill labels for the Selection profile cards. Same
+// taxonomy/colors as the Config rails (profileBadgeKind), so a given (agent,
+// letter) reads identically on both screens. `invalid` is Config-only (live
+// command edits), so it never surfaces here.
+const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string> = {
+  match: "MATCH",
+  configured: "CONFIGURED",
+  fallback: "FALLBACK",
+  missing: "MISSING",
 };
 
 const AgentPickerModal: Component<{
@@ -183,18 +197,23 @@ const AgentPickerModal: Component<{
     const cmd = profileCellCommandText(projectedCell()) || selectedAgent()?.command || "";
     return expandAcRootPreview(cmd, acRoot());
   });
-  const formattedEnv = (env: Record<string, string>) => {
-    const enabled = Object.keys(env).sort((a, b) => a.localeCompare(b));
-    return enabled.length ? enabled.join(", ") : "none";
-  };
-  const formattedAgentEnv = (agent: AgentConfig | null) => {
-    const keys = (agent?.envs ?? [])
-      .filter((row) => row.enabled)
-      .map((row) => row.key.trim())
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b));
-    return keys.length ? keys.join(", ") : "none";
-  };
+  // #527 Effective Projection: merged effective env (agent env + profile env) with
+  // per-value origin badges, plus the chosen-pair resolution descriptors.
+  const effectiveEnv = createMemo(() =>
+    effectiveEnvProjection(selectedAgent()?.envs, projectedCell().env, acRoot()),
+  );
+  const projectionFallback = createMemo(() => effectivePreview().fallbackApplied);
+  const projectionBadgeKind = createMemo<"match" | "fallback">(() =>
+    projectionFallback() ? "fallback" : "match",
+  );
+  const resolutionText = createMemo(() =>
+    projectionFallback()
+      ? `${profileLabel(effectivePreview().requestedProfile)} → ${profileLabel(effectivePreview().effectiveProfile)} (fallback)`
+      : "Direct match",
+  );
+  const commandUsesAcRoot = createMemo(() =>
+    hasAcRootPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || ""),
+  );
   const providerDefaultPreview = (agent: AgentConfig) => {
     const current = settings();
     if (!current) {
@@ -502,7 +521,13 @@ const AgentPickerModal: Component<{
 
         <div class="agent-profile-assignment-body" data-component="Coding Agent profile modal variant C layout">
           <aside class="agent-profile-panel agent-profile-provider-panel" data-component="Coding Agents selector panel">
-            <div class="agent-profile-panel-title">Coding Agents</div>
+            <div class="agent-profile-panel-head">
+              <div class="agent-profile-panel-heading">
+                <div class="agent-profile-panel-title">Coding Agent</div>
+                <div class="agent-profile-panel-kicker">Choose the tool first</div>
+              </div>
+              <span class="agent-profile-step cyan" data-ac-role="status">step 1</span>
+            </div>
             <div
               class="agent-profile-provider-list"
               aria-label="Coding agent choices"
@@ -552,9 +577,12 @@ const AgentPickerModal: Component<{
 
           <div class="agent-profile-assignment-scroll" data-component="Coding Agent profile selector independent scroll area">
             <section class="agent-profile-panel" data-component="Coding Agent profile selector panel">
-              <div>
-                <div class="agent-profile-panel-title">Profiles</div>
-                <div class="agent-profile-panel-kicker">Profiles resolve for the selected coding agent only.</div>
+              <div class="agent-profile-panel-head">
+                <div class="agent-profile-panel-heading">
+                  <div class="agent-profile-panel-title">Profile</div>
+                  <div class="agent-profile-panel-kicker">Choose the profile letter second</div>
+                </div>
+                <span class="agent-profile-step yellow" data-ac-role="status">step 2</span>
               </div>
               <div
                 class="agent-profile-card-list"
@@ -575,6 +603,13 @@ const AgentPickerModal: Component<{
                             fallbackApplied: false,
                           };
                     const cell = () => enabledLaunchCellFor(selectedAgent(), preview().effectiveProfile);
+                    // #527: per-card status pill — shared taxonomy with the Config rails.
+                    const pillKind = (): Exclude<ProfileBadgeKind, "invalid"> => {
+                      const current = settings();
+                      const agent = selectedAgent();
+                      if (!current || !agent) return letter === "A" ? "match" : "fallback";
+                      return profileBadgeKind(current.codingAgentProfiles, agent.id, letter);
+                    };
                     return (
                       <button
                         type="button"
@@ -612,9 +647,19 @@ const AgentPickerModal: Component<{
                                 : `missing; launches ${profileLabel(preview().effectiveProfile)}`}
                             </span>
                           </span>
-                          <Show when={configuredDefault() === letter}>
-                            <span class="agent-profile-default-marker">Default</span>
-                          </Show>
+                          <span class="agent-profile-card-tags">
+                            <span
+                              class={`agent-profile-card-pill ${pillKind()}`}
+                              data-ac-role="status"
+                              data-ac-state={pillKind()}
+                              data-ac-testid={`agentPicker.profile.${letter}.pill`}
+                            >
+                              {SELECTION_PILL_LABEL[pillKind()]}
+                            </span>
+                            <Show when={configuredDefault() === letter}>
+                              <span class="agent-profile-default-marker">Default</span>
+                            </Show>
+                          </span>
                         </span>
                         <span class="agent-profile-param-list">
                           <span class="agent-profile-param">
@@ -635,46 +680,118 @@ const AgentPickerModal: Component<{
             </section>
 
             <section
-              class="agent-profile-panel"
-              data-component="Selected profile projected parameters panel"
+              class="agent-profile-panel agent-projection-panel"
+              data-component="Effective projection panel"
               {...automationAttrs("agentPicker.projected", "status")}
             >
-              <div class="agent-profile-panel-title">Projected parameters</div>
-              <div
-                class="agent-profile-resolution-status"
-                data-component="Coding Agent profile requested and resolved status"
-              >
-                <strong>Default: {profileLabel(configuredDefault())}</strong>
-                <span>Selected coding agent: {selectedAgent()?.label ?? "none"}</span>
-                <span>
-                  Requested {profileLabel(effectivePreview().requestedProfile)} resolves to{" "}
-                  {profileLabel(effectivePreview().effectiveProfile)}
-                  {effectivePreview().fallbackApplied ? " via fallback" : " as configured"}.
+              <div class="agent-projection-head">
+                <div class="agent-projection-heading">
+                  <div class="agent-profile-panel-title">Effective Projection</div>
+                  <div class="agent-profile-panel-kicker">Projected command and env for the chosen pair</div>
+                </div>
+                <span
+                  class={`agent-projection-badge ${projectionBadgeKind()}`}
+                  data-ac-role="status"
+                  data-ac-state={projectionBadgeKind()}
+                >
+                  {projectionBadgeKind()}
                 </span>
               </div>
-              <div class="agent-profile-active-summary" data-component="Selected profile launch parameter summary">
-                <div class="agent-profile-active-title">
-                  {selectedAgent()?.label ?? "Coding Agent"} / {profileLabel(selectedProfile())}
+
+              {/* Chosen pair — AGENT THEN PROFILE */}
+              <div class="agent-projection-card">
+                <div class="agent-projection-card-head">
+                  <span class="agent-projection-card-title">Chosen pair</span>
+                  <span class="agent-projection-tag cyan">agent then profile</span>
                 </div>
-                <div class="agent-profile-param-list">
-                  <div class="agent-profile-param"><span>Command </span><span>{projectedCommand() || "none"}</span></div>
-                  <Show when={hasAcRootPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || "")}>
-                    <div class="agent-profile-param"><span>Placeholder </span><span>%AC_ROOT% expands at launch; backend validates the path.</span></div>
-                  </Show>
-                  <div class="agent-profile-param"><span>Agent env </span><span>{formattedAgentEnv(selectedAgent())}</span></div>
-                  <Show when={selectedIsCodex() || selectedAgent()?.isolatedHome}>
-                    <div class="agent-profile-param"><span>Home isolation </span><span>{selectedAgent()?.isolatedHome ? "enabled" : "disabled"}</span></div>
-                  </Show>
-                  <div class="agent-profile-param"><span>Effective profile </span><span>{profileLabel(effectivePreview().effectiveProfile)}</span></div>
-                  <div class="agent-profile-param"><span>Fallback chain </span><span>{effectivePreview().fallbackChain.join(" -> ") || "none"}</span></div>
-                  <div class="agent-profile-param"><span>Profile env </span><span>{formattedEnv(projectedCell().env)}</span></div>
-                  <Show when={projectedCell().notes}>
-                    <div class="agent-profile-param"><span>Notes </span><span>{projectedCell().notes}</span></div>
-                  </Show>
+                <div class="agent-projection-grid">
+                  <div class="agent-projection-row" data-ac-role="row">
+                    <span class="agent-projection-label">Coding agent</span>
+                    <span class="agent-projection-value" data-component="Selected coding agent">
+                      {selectedAgent()?.label ?? "none"}
+                    </span>
+                    <span class="agent-projection-pill green">selected</span>
+                  </div>
+                  <div class="agent-projection-row" data-ac-role="row">
+                    <span class="agent-projection-label">Profile letter</span>
+                    <span class="agent-projection-value">{effectivePreview().requestedProfile}</span>
+                    <span class={`agent-projection-pill ${projectionBadgeKind() === "fallback" ? "yellow" : "green"}`}>
+                      {projectionBadgeKind()}
+                    </span>
+                  </div>
+                  <div class="agent-projection-row" data-ac-role="row">
+                    <span class="agent-projection-label">Resolution</span>
+                    <span class="agent-projection-value" data-component="Profile resolution">{resolutionText()}</span>
+                    <span class={`agent-projection-pill ${projectionBadgeKind() === "fallback" ? "yellow" : "green"}`}>
+                      {projectionBadgeKind()}
+                    </span>
+                  </div>
                 </div>
               </div>
+
+              {/* Command (RESOLVED) + Env (EFFECTIVE) */}
+              <div class="agent-projection-pair">
+                <div class="agent-projection-card">
+                  <div class="agent-projection-card-head">
+                    <span class="agent-projection-card-title">Command</span>
+                    <span class="agent-projection-tag cyan">resolved</span>
+                  </div>
+                  <div class="agent-projection-command" data-component="Resolved invocation">
+                    <span class="agent-projection-command-label">Invocation</span>
+                    <span class="agent-projection-command-value">{projectedCommand() || "none"}</span>
+                  </div>
+                  <Show when={commandUsesAcRoot()}>
+                    <div class="agent-projection-ph">
+                      <span class="arrow">→</span>
+                      <span>%AC_ROOT% expands at launch; the backend validates the path.</span>
+                    </div>
+                  </Show>
+                  <Show when={selectedIsCodex() || selectedAgent()?.isolatedHome}>
+                    <div class="agent-projection-note">
+                      Home isolation {selectedAgent()?.isolatedHome ? "enabled" : "disabled"}
+                    </div>
+                  </Show>
+                  <Show when={projectedCell().notes}>
+                    <div class="agent-projection-note">Note: {projectedCell().notes}</div>
+                  </Show>
+                </div>
+
+                <div class="agent-projection-card">
+                  <div class="agent-projection-card-head">
+                    <span class="agent-projection-card-title">Env</span>
+                    <span class="agent-projection-tag cyan">effective</span>
+                  </div>
+                  <div class="agent-projection-grid" data-ac-testid="agentPicker.projectedEnv" data-ac-role="list">
+                    <Show
+                      when={effectiveEnv().length > 0}
+                      fallback={
+                        <div class="agent-projection-row">
+                          <span class="agent-projection-label">env</span>
+                          <span class="agent-projection-value">No additional env vars</span>
+                          <span class="agent-projection-pill">none</span>
+                        </div>
+                      }
+                    >
+                      <For each={effectiveEnv()}>
+                        {(entry) => (
+                          <div class="agent-projection-row" data-ac-role="row" data-ac-env-origin={entry.origin}>
+                            <span class="agent-projection-label">{entry.key}</span>
+                            <span class="agent-projection-value">{entry.value}</span>
+                            <span
+                              class={`agent-projection-pill ${entry.origin === "profile" ? "" : "green"}`}
+                            >
+                              {entry.origin}
+                            </span>
+                          </div>
+                        )}
+                      </For>
+                    </Show>
+                  </div>
+                </div>
+              </div>
+
               <div
-                class="agent-profile-warning-strip"
+                class="agent-profile-warning-strip agent-projection-status"
                 classList={{ visible: effectivePreview().fallbackApplied || hasBackendWarnings() }}
                 data-component="Coding Agent profile fallback explanation"
                 {...automationAttrs(

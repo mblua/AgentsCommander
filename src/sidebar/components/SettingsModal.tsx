@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createStore, produce } from "solid-js/store";
 import { isTauri } from "../../shared/platform";
 import type {
   AppSettings,
@@ -16,18 +16,27 @@ import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
   commandExecutableBasename,
+  defaultInstructionsFilename,
   executableTokenBasename,
   hasAcRootPlaceholder,
   hasEnabledEnvKey,
   isCodexAgent,
   nextAvailableProfileLetter,
   parseArgvText,
+  profileBadgeKind,
+  profileEnvOrigin,
   resolveProfilePreview,
   sortedProfileLetters,
   validateEnvRows,
 } from "../../shared/profile-utils";
 
 type ProfileCellEnvRow = { key: string; value: string };
+
+const ENV_ORIGIN_LABEL: Record<string, string> = {
+  system: "SYSTEM",
+  profile: "PROFILE",
+  accepted: "ACCEPTED",
+};
 
 const GEMINI_MODELS = [
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (recommended)" },
@@ -38,17 +47,24 @@ const GEMINI_MODELS = [
 ];
 
 
-type SettingsTab = "general" | "agents" | "profiles" | "integrations";
+// #526: the former "agents" + "profiles" tabs are merged into one unified
+// "Coding Agents" screen (agent list + dual comparison rails). The "profiles"
+// section name is kept as an alias so existing callers still land on the
+// unified screen.
+type SettingsTab = "general" | "agents" | "integrations";
 
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: "general", label: "General" },
   { key: "agents", label: "Coding Agents" },
-  { key: "profiles", label: "Profiles" },
   { key: "integrations", label: "Integrations" },
 ];
 
-const isValidSettingsTab = (s: string): s is SettingsTab =>
-  TABS.some((t) => t.key === s);
+const resolveSettingsSection = (s: string | undefined): SettingsTab =>
+  s === "agents" || s === "profiles"
+    ? "agents"
+    : s === "integrations"
+      ? "integrations"
+      : "general";
 
 const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   if (!value) return null;
@@ -73,12 +89,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // tab. Invalid or absent → fall back to "general" default. The effect below
   // also snaps to the requested section when props.section changes while the
   // modal is already mounted (double-click on disabled mic re-targets).
-  const initialTab: SettingsTab =
-    props.section && isValidSettingsTab(props.section) ? props.section : "general";
+  const initialTab: SettingsTab = resolveSettingsSection(props.section);
   const [activeTab, setActiveTab] = createSignal<SettingsTab>(initialTab);
   createEffect(() => {
     const s = props.section;
-    if (s && isValidSettingsTab(s)) setActiveTab(s);
+    if (s) setActiveTab(resolveSettingsSection(s));
   });
 
   const [webServerRunning, setWebServerRunning] = createSignal(false);
@@ -103,6 +118,67 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const s = () => settings.data;
 
+  // ── #526 Config Screen: comparison pair (two rails side by side) + the agent
+  // whose inline config editor is expanded. The LEFT rail is the primary and is
+  // always filled (positional fallback to the first agent). The RIGHT rail is an
+  // explicit comparison slot: it shows exactly the agent in `rightRailId`, and is
+  // empty when that is null — so "Remove" actually clears it. Seeded once on load
+  // (onMount) rather than via an effect, so clearing it does not get re-filled.
+  // The editor is collapsed by default — the resting screen reads as the
+  // prototype (compact agent list + the two comparison rails as the protagonist).
+  const [leftRailId, setLeftRailId] = createSignal<string | null>(null);
+  const [rightRailId, setRightRailId] = createSignal<string | null>(null);
+  const [activeAgentId, setActiveAgentId] = createSignal<string | null>(null);
+
+  const agentList = () => settings.data?.agents ?? [];
+  const agentById = (id: string | null) =>
+    id ? agentList().find((a) => a.id === id) ?? null : null;
+  const leftRailAgent = () => agentById(leftRailId()) ?? agentList()[0] ?? null;
+  const rightRailAgent = () => {
+    const explicit = agentById(rightRailId());
+    return explicit && explicit.id !== leftRailAgent()?.id ? explicit : null;
+  };
+
+  const swapRails = () => {
+    const left = leftRailAgent()?.id ?? null;
+    const right = rightRailAgent()?.id ?? null;
+    // #527: no-op when the right rail is empty. Swapping a null right into the
+    // left would drop the left's explicit pin to the positional fallback
+    // (agents[0]) — a surprising jump to a different agent. Keep the left pinned.
+    if (right === null) return;
+    setLeftRailId(right);
+    setRightRailId(left);
+  };
+
+  const useAgentInComparison = (agentId: string) => {
+    if (leftRailAgent()?.id === agentId) return;
+    setRightRailId(agentId);
+  };
+
+  type RailPill = "left" | "right" | "available";
+  const railPillFor = (agentId: string): RailPill => {
+    if (leftRailAgent()?.id === agentId) return "left";
+    if (rightRailAgent()?.id === agentId) return "right";
+    return "available";
+  };
+
+  const toggleAgentEditor = (agentId: string) =>
+    setActiveAgentId((prev) => (prev === agentId ? null : agentId));
+
+  // Per profile-cell expand state on the Config rails. Cells collapse to a summary
+  // row (letter + label + status badge); the "A" slot is expanded by default,
+  // matching the prototype. Keyed by `${agentId}:${letter}`.
+  const [expandedCells, setExpandedCells] = createStore<Record<string, boolean | undefined>>({});
+  const isCellExpanded = (agentId: string, letter: string): boolean => {
+    // Read the key directly so the store tracks it even while still unset — a
+    // hasOwnProperty short-circuit would skip the subscription and the card
+    // would never react to a later toggle. `undefined` → default (A expanded).
+    const value = expandedCells[`${agentId}:${letter}`];
+    return value === undefined ? letter === "A" : value;
+  };
+  const toggleCell = (agentId: string, letter: string) =>
+    setExpandedCells(`${agentId}:${letter}`, !isCellExpanded(agentId, letter));
+
   onMount(async () => {
     const [loaded, wsRunning] = await Promise.all([
       SettingsAPI.get(),
@@ -112,6 +188,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (!draftDirty()) {
       setSettings("data", cloneSettings(loaded));
       setInitialInjectRtk(loaded.injectRtkHook);
+      // Seed the comparison pair from the loaded agents (left primary + right
+      // comparison slot). Only when still unset, so a user's pick isn't clobbered.
+      if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
+      if (rightRailId() === null && loaded.agents[1]) setRightRailId(loaded.agents[1].id);
     }
   });
 
@@ -182,37 +262,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const profileCell = (agentId: string, letter: string): ProfileCellConfig | null =>
     settings.data?.codingAgentProfiles.profilesByAgent[agentId]?.[letter] ?? null;
 
-  // True when this letter has an enabled cell on some OTHER coding agent — used
-  // to distinguish a red MISSING badge (slot exists elsewhere) from a plain
-  // fallback. Excludes the agent itself.
-  const profileConfiguredElsewhere = (agentId: string, letter: string): boolean => {
-    const byAgent = settings.data?.codingAgentProfiles.profilesByAgent ?? {};
-    return Object.entries(byAgent).some(
-      ([id, cells]) => id !== agentId && Boolean(cells[letter]?.enabled),
-    );
-  };
+  type ProfileBadge = "match" | "configured" | "fallback" | "missing" | "invalid";
 
-  type ProfileBadge = "match" | "fallback" | "missing" | "invalid";
-
+  // #526: the data-driven taxonomy lives in profileBadgeKind() (shared 1:1 with
+  // the Selection screen so both read the same state). A live command parse error
+  // is UI-local and takes precedence here as the red "invalid" badge.
   const profileCellBadge = (agentId: string, letter: string): ProfileBadge => {
     if (profileCellErrors[profileCellKey(agentId, letter)]) return "invalid";
-    const cell = profileCell(agentId, letter);
-    const configuredHere = letter === "A" || Boolean(cell?.enabled);
-    if (configuredHere) {
-      const preview = resolveProfilePreview(
-        settings.data!.codingAgentProfiles,
-        agentId,
-        letter,
-      );
-      return preview.fallbackApplied ? "fallback" : "match";
-    }
-    if (profileConfiguredElsewhere(agentId, letter)) return "missing";
-    const preview = resolveProfilePreview(
-      settings.data!.codingAgentProfiles,
-      agentId,
-      letter,
-    );
-    return preview.fallbackApplied ? "fallback" : "missing";
+    return profileBadgeKind(settings.data!.codingAgentProfiles, agentId, letter);
   };
 
   const setProfileCell = (
@@ -287,20 +344,35 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
+  // #526: slot-level delete — drop the letter from profileSlots and from every
+  // coding agent's cells. produce() so the keys are actually removed; assigning a
+  // fresh object to a store path merges (keeps absent keys), which would leave the
+  // slot behind and the card would re-render as MISSING instead of vanishing.
   const removeProfileLetter = (letter: string) => {
     if (!settings.data || letter === "A") return;
     setDraftDirty(true);
-    const slots = { ...settings.data.codingAgentProfiles.profileSlots };
-    delete slots[letter];
-    const byAgent = Object.fromEntries(
-      Object.entries(settings.data.codingAgentProfiles.profilesByAgent).map(([agentId, cells]) => {
-        const nextCells = { ...cells };
-        delete nextCells[letter];
-        return [agentId, nextCells];
-      })
+    setSettings(
+      "data",
+      "codingAgentProfiles",
+      produce((profiles) => {
+        delete profiles.profileSlots[letter];
+        for (const cells of Object.values(profiles.profilesByAgent)) {
+          delete cells[letter];
+        }
+      }),
     );
-    setSettings("data", "codingAgentProfiles", "profileSlots", slots);
-    setSettings("data", "codingAgentProfiles", "profilesByAgent", byAgent);
+    // Drop any in-progress per-cell drafts for this letter so a stale parse error
+    // can't block Save and stale env rows don't resurface.
+    const suffix = `:${letter}`;
+    setProfileCellText(produce((draft) => {
+      for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
+    }));
+    setProfileCellErrors(produce((draft) => {
+      for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
+    }));
+    setProfileCellEnvRows(produce((draft) => {
+      for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
+    }));
   };
 
   // ── Profile cell command string (one full invocation per cell) ──
@@ -393,14 +465,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           excludeGlobalClaudeMd: true,
           envs: [],
           isolatedHome: false,
+          instructionsFilename: "AGENTS.md",
         };
     setSettings("data", "agents", (prev) => [...prev, agent]);
+    // A freshly added agent expands its inline editor so it is immediately
+    // editable (the resting list stays collapsed for existing agents).
+    setActiveAgentId(agent.id);
   };
 
   const removeAgent = (index: number) => {
     if (!settings.data) return;
     setDraftDirty(true);
+    const removed = settings.data.agents[index];
     setSettings("data", "agents", (prev) => prev.filter((_, i) => i !== index));
+    if (removed) {
+      if (activeAgentId() === removed.id) setActiveAgentId(null);
+      if (leftRailId() === removed.id) setLeftRailId(null);
+      if (rightRailId() === removed.id) setRightRailId(null);
+    }
   };
 
   // ── Telegram Bots ──
@@ -953,41 +1035,117 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     );
   };
 
-  const renderAgentsTab = () => (
-    <div class="settings-section">
-      <div class="settings-section-title">Coding Agents</div>
-
-      <For each={settings.data!.agents}>
-        {(agent, i) => (
-          <div class="settings-button-card">
-            <div
-              class="settings-button-card-header"
-              data-ac-testid={`settings.agentRow.${i()}`}
-              data-ac-role="group"
-            >
-              <div
-                class="settings-color-dot"
-                style={{ background: agent.color }}
-              />
-              <span>{agent.label || "New Agent"}</span>
-              <button
-                class="settings-agent-remove"
-                onClick={() => removeAgent(i())}
-                title="Remove agent"
-                data-ac-testid={`settings.agentRow.${i()}.remove`}
-                data-ac-role="button"
-              >
-                &#x2715;
-              </button>
+  // Left-panel agent row: compact prototype-style header (dot, name, command
+  // basename, color swatch+hex, rail pill, Use/Remove) with the full agent
+  // config editor (#384: label/command/color/flags/env/CODEX_HOME isolation)
+  // collapsed behind the head. Collapsed by default — the resting screen reads
+  // as the prototype; the editor is secondary, behind the expand.
+  const renderAgentRow = (agent: AgentConfig, index: () => number) => {
+    const i = () => index();
+    const expanded = () => activeAgentId() === agent.id;
+    const pill = () => railPillFor(agent.id);
+    return (
+      <div
+        class="settings-agent-row"
+        classList={{ expanded: expanded() }}
+        style={{ "--agent-color": agent.color }}
+        data-ac-testid={`settings.agentRow.${i()}`}
+        data-ac-role="group"
+        data-ac-agent-id={agent.id}
+        data-ac-rail={pill()}
+      >
+        <div
+          class="settings-agent-row-head"
+          role="button"
+          tabindex={0}
+          aria-expanded={expanded()}
+          onClick={() => toggleAgentEditor(agent.id)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              toggleAgentEditor(agent.id);
+            }
+          }}
+          data-ac-testid={`settings.agentRow.${i()}.toggle`}
+          data-ac-role="button"
+          data-ac-state={expanded() ? "expanded" : "collapsed"}
+        >
+          <span class="settings-agent-dot" style={{ background: agent.color }} />
+          <div class="settings-agent-row-meta">
+            <div class="settings-agent-row-name">{agent.label || "New Agent"}</div>
+            <div class="settings-agent-row-cmd">
+              {commandExecutableBasename(agent.command) || agent.command || "—"}
             </div>
+            <div class="settings-agent-row-colorline">
+              <span class="settings-agent-swatch" style={{ background: agent.color }} />
+              <span class="settings-agent-color-hex">{agent.color}</span>
+              <span class={`settings-rail-pill ${pill()}`} data-ac-rail={pill()}>
+                {pill()}
+              </span>
+            </div>
+          </div>
+          <div class="settings-agent-row-actions">
+            {/* #526: the rail indicator is shown once, on the color line. The
+                left/primary agent has no Use/Remove action here, so render
+                nothing (previously a duplicate "left" pill lived here). */}
+            <Show when={pill() !== "left"}>
+              <Show
+                when={pill() === "right"}
+                fallback={
+                  <button
+                    class="settings-row-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      useAgentInComparison(agent.id);
+                    }}
+                    title="Show this agent in the right comparison rail"
+                    data-ac-testid={`settings.agentRow.${i()}.use`}
+                    data-ac-role="button"
+                  >
+                    Use
+                  </button>
+                }
+              >
+                <button
+                  class="settings-row-btn danger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRightRailId(null);
+                  }}
+                  title="Remove this agent from the comparison"
+                  data-ac-testid={`settings.agentRow.${i()}.unuse`}
+                  data-ac-role="button"
+                >
+                  Remove
+                </button>
+              </Show>
+            </Show>
+            <button
+              class="settings-agent-remove"
+              onClick={(e) => {
+                e.stopPropagation();
+                removeAgent(i());
+              }}
+              title="Delete agent"
+              data-ac-testid={`settings.agentRow.${i()}.remove`}
+              data-ac-role="button"
+            >
+              &#x2715;
+            </button>
+            <span class="settings-agent-chevron" aria-hidden="true">
+              {expanded() ? "▾" : "▸"}
+            </span>
+          </div>
+        </div>
+
+        <Show when={expanded()}>
+          <div class="settings-agent-editor" data-ac-testid={`settings.agentRow.${i()}.editor`}>
             <label class="settings-field">
               <span class="settings-label">Label</span>
               <input
                 class="settings-input"
                 value={agent.label}
-                onInput={(e) =>
-                  updateAgent(i(), "label", e.currentTarget.value)
-                }
+                onInput={(e) => updateAgent(i(), "label", e.currentTarget.value)}
                 placeholder="My Agent"
                 data-ac-testid={`settings.agentRow.${i()}.label`}
                 data-ac-role="textbox"
@@ -998,14 +1156,29 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               <input
                 class="settings-input"
                 value={agent.command}
-                onInput={(e) =>
-                  updateAgent(i(), "command", e.currentTarget.value)
-                }
+                onInput={(e) => updateAgent(i(), "command", e.currentTarget.value)}
                 placeholder="agent-cli"
                 data-ac-testid={`settings.agentRow.${i()}.command`}
                 data-ac-role="textbox"
               />
             </label>
+            <label class="settings-field">
+              <span class="settings-label">Instructions file</span>
+              <input
+                class="settings-input"
+                value={agent.instructionsFilename ?? ""}
+                onInput={(e) =>
+                  updateAgent(i(), "instructionsFilename", e.currentTarget.value)
+                }
+                placeholder={defaultInstructionsFilename(agent.command)}
+                data-ac-testid={`settings.agentRow.${i()}.instructionsFilename`}
+                data-ac-role="textbox"
+              />
+            </label>
+            <div class="settings-hint">
+              Filename AC writes into the agent root at launch (its AC context +
+              Role.md). Leave blank to use the default shown.
+            </div>
             <label class="settings-field">
               <span class="settings-label">Color</span>
               <div class="settings-color-row">
@@ -1013,18 +1186,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   type="color"
                   class="settings-color-picker"
                   value={agent.color}
-                  onInput={(e) =>
-                    updateAgent(i(), "color", e.currentTarget.value)
-                  }
+                  onInput={(e) => updateAgent(i(), "color", e.currentTarget.value)}
                   data-ac-testid={`settings.agentRow.${i()}.colorPicker`}
                   data-ac-role="input"
                 />
                 <input
                   class="settings-input settings-input-sm"
                   value={agent.color}
-                  onInput={(e) =>
-                    updateAgent(i(), "color", e.currentTarget.value)
-                  }
+                  onInput={(e) => updateAgent(i(), "color", e.currentTarget.value)}
                   data-ac-testid={`settings.agentRow.${i()}.color`}
                   data-ac-role="textbox"
                 />
@@ -1035,9 +1204,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 type="checkbox"
                 class="settings-checkbox"
                 checked={agent.gitPullBefore}
-                onChange={(e) =>
-                  updateAgent(i(), "gitPullBefore", e.currentTarget.checked)
-                }
+                onChange={(e) => updateAgent(i(), "gitPullBefore", e.currentTarget.checked)}
                 data-ac-testid={`settings.agentRow.${i()}.gitPullBefore`}
                 data-ac-role="checkbox"
                 data-ac-state={agent.gitPullBefore ? "checked" : "unchecked"}
@@ -1049,9 +1216,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 type="checkbox"
                 class="settings-checkbox"
                 checked={agent.excludeGlobalClaudeMd}
-                onChange={(e) =>
-                  updateAgent(i(), "excludeGlobalClaudeMd", e.currentTarget.checked)
-                }
+                onChange={(e) => updateAgent(i(), "excludeGlobalClaudeMd", e.currentTarget.checked)}
                 data-ac-testid={`settings.agentRow.${i()}.excludeGlobalClaudeMd`}
                 data-ac-role="checkbox"
                 data-ac-state={agent.excludeGlobalClaudeMd ? "checked" : "unchecked"}
@@ -1060,75 +1225,83 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </label>
             {renderAgentEnvEditor(agent, i())}
           </div>
-        )}
-      </For>
-
-      <div class="settings-agent-actions">
-        <button
-          class="settings-preset-btn"
-          onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
-          disabled={hasAgentByCommand("claude")}
-          data-ac-testid="settings.agentPreset.claude"
-          data-ac-role="button"
-          data-ac-state={hasAgentByCommand("claude") ? "disabled" : "available"}
-        >
-          <span
-            class="settings-color-dot"
-            style={{ background: AGENT_PRESET_MAP.claude.color }}
-          />
-          + Claude Code
-        </button>
-        <button
-          class="settings-preset-btn"
-          onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
-          disabled={hasAgentByCommand("codex")}
-          data-ac-testid="settings.agentPreset.codex"
-          data-ac-role="button"
-          data-ac-state={hasAgentByCommand("codex") ? "disabled" : "available"}
-        >
-          <span
-            class="settings-color-dot"
-            style={{ background: AGENT_PRESET_MAP.codex.color }}
-          />
-          + Codex
-        </button>
-        <button
-          class="settings-preset-btn"
-          onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
-          disabled={hasAgentByCommand("gemini")}
-          data-ac-testid="settings.agentPreset.gemini"
-          data-ac-role="button"
-          data-ac-state={hasAgentByCommand("gemini") ? "disabled" : "available"}
-        >
-          <span
-            class="settings-color-dot"
-            style={{ background: AGENT_PRESET_MAP.gemini.color }}
-          />
-          + Gemini CLI
-        </button>
-        <button
-          class="settings-add-btn"
-          onClick={() => addAgent()}
-          data-ac-testid="settings.agent.addCustom"
-          data-ac-role="button"
-        >
-          + Custom Agent
-        </button>
+        </Show>
       </div>
+    );
+  };
+
+  const renderAgentPresets = () => (
+    <div class="settings-agent-actions">
+      <button
+        class="settings-preset-btn"
+        onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
+        disabled={hasAgentByCommand("claude")}
+        data-ac-testid="settings.agentPreset.claude"
+        data-ac-role="button"
+        data-ac-state={hasAgentByCommand("claude") ? "disabled" : "available"}
+      >
+        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.claude.color }} />
+        + Claude Code
+      </button>
+      <button
+        class="settings-preset-btn"
+        onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
+        disabled={hasAgentByCommand("codex")}
+        data-ac-testid="settings.agentPreset.codex"
+        data-ac-role="button"
+        data-ac-state={hasAgentByCommand("codex") ? "disabled" : "available"}
+      >
+        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.codex.color }} />
+        + Codex
+      </button>
+      <button
+        class="settings-preset-btn"
+        onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
+        disabled={hasAgentByCommand("gemini")}
+        data-ac-testid="settings.agentPreset.gemini"
+        data-ac-role="button"
+        data-ac-state={hasAgentByCommand("gemini") ? "disabled" : "available"}
+      >
+        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.gemini.color }} />
+        + Gemini CLI
+      </button>
+      <button
+        class="settings-preset-btn"
+        onClick={() => addAgent(AGENT_PRESET_MAP.opencode)}
+        disabled={hasAgentByCommand("opencode")}
+        data-ac-testid="settings.agentPreset.opencode"
+        data-ac-role="button"
+        data-ac-state={hasAgentByCommand("opencode") ? "disabled" : "available"}
+      >
+        <span
+          class="settings-color-dot"
+          style={{ background: AGENT_PRESET_MAP.opencode.color }}
+        />
+        + OpenCode
+      </button>
+      <button
+        class="settings-add-btn"
+        onClick={() => addAgent()}
+        data-ac-testid="settings.agent.addCustom"
+        data-ac-role="button"
+      >
+        + Custom Agent
+      </button>
     </div>
   );
 
   const BADGE_LABEL: Record<ProfileBadge, string> = {
     match: "MATCH",
+    configured: "CONFIGURED",
     fallback: "FALLBACK",
     missing: "MISSING",
     invalid: "invalid",
   };
 
   // One full invocation string per profile cell — model/effort/sandbox are NOT
-  // split into separate fields (#384). Each coding agent gets its own rail; rails
-  // wrap into side-by-side columns when the viewport permits (CSS auto-fit).
-  const renderProfileCard = (agent: AgentConfig, agentIndex: number, letter: string) => {
+  // split into separate fields (#384). The two comparison rails render the slots
+  // A..Z of two coding agents side by side; cards are addressed by rail index.
+  const renderProfileCard = (agent: AgentConfig, railIndex: number, letter: string) => {
     const cell = () => profileCell(agent.id, letter);
     const configured = () => letter === "A" || Boolean(cell()?.enabled);
     const badge = () => profileCellBadge(agent.id, letter);
@@ -1136,12 +1309,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
     const command = () => displayedProfileCellCommand(agent.id, letter);
     const cellError = () => profileCellErrors[profileCellKey(agent.id, letter)];
-    const cardId = `settings.profileCard.${agentIndex}.${letter}`;
+    const cardId = `settings.profileCard.${railIndex}.${letter}`;
+    const expanded = () => isCellExpanded(agent.id, letter);
+    const subLine = () => {
+      if (!configured()) return `Configured elsewhere; launches ${preview().effectiveProfile}`;
+      if (cellError()) return "Command syntax error";
+      return commandExecutableBasename(command()) || "Configured";
+    };
     return (
       <article
         class="settings-profile-card"
         classList={{
           match: badge() === "match",
+          configured: badge() === "configured",
           fallback: badge() === "fallback",
           missing: badge() === "missing",
           invalid: badge() === "invalid",
@@ -1154,22 +1334,39 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       >
         <div class="settings-profile-card-head">
           <span class="settings-profile-letter-badge">{letter}</span>
-          <input
-            class="settings-input settings-profile-label"
-            value={settings.data!.codingAgentProfiles.profileSlots[letter]?.label ?? ""}
-            onInput={(e) => updateProfileLabel(letter, e.currentTarget.value)}
-            placeholder={letter === "A" ? "Baseline" : "Profile label"}
-            data-ac-testid={`${cardId}.label`}
-            data-ac-role="textbox"
-          />
-          <span
-            class={`settings-profile-badge ${badge()}`}
-            data-ac-testid={`${cardId}.badge`}
-            data-ac-role="status"
-            data-ac-state={badge()}
-          >
-            {BADGE_LABEL[badge()]}
-          </span>
+          <div class="settings-profile-card-heading">
+            <div class="settings-profile-name-line">
+              <input
+                class="settings-input settings-profile-label"
+                value={settings.data!.codingAgentProfiles.profileSlots[letter]?.label ?? ""}
+                onInput={(e) => updateProfileLabel(letter, e.currentTarget.value)}
+                placeholder={letter === "A" ? "Baseline" : "Profile label"}
+                data-ac-testid={`${cardId}.label`}
+                data-ac-role="textbox"
+              />
+              <span
+                class={`settings-profile-badge ${badge()}`}
+                data-ac-testid={`${cardId}.badge`}
+                data-ac-role="status"
+                data-ac-state={badge()}
+              >
+                {BADGE_LABEL[badge()]}
+              </span>
+            </div>
+            <div class="settings-profile-card-sub">{subLine()}</div>
+          </div>
+          <Show when={configured()}>
+            <button
+              class="settings-profile-chevron"
+              onClick={() => toggleCell(agent.id, letter)}
+              title={expanded() ? "Collapse" : "Expand"}
+              aria-expanded={expanded()}
+              data-ac-testid={`${cardId}.toggle`}
+              data-ac-role="button"
+            >
+              {expanded() ? "▾" : "▸"}
+            </button>
+          </Show>
         </div>
 
         <Show
@@ -1183,17 +1380,32 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               <span>
                 {letter} &rarr; {preview().effectiveProfile} (fallback)
               </span>
-              <button
-                class="settings-profile-cell-btn"
-                onClick={() => addProfileCell(agent.id, letter)}
-                data-ac-testid={`${cardId}.add`}
-                data-ac-role="button"
-              >
-                Add cell
-              </button>
+              <div class="settings-profile-missing-actions">
+                <button
+                  class="settings-profile-cell-btn"
+                  onClick={() => addProfileCell(agent.id, letter)}
+                  data-ac-testid={`${cardId}.add`}
+                  data-ac-role="button"
+                >
+                  Add cell
+                </button>
+                {/* #526: slot-level delete — drops the whole letter from every
+                    coding agent (draft-reversible). Distinct from per-agent
+                    "Delete cell". */}
+                <button
+                  class="settings-profile-cell-btn settings-profile-delete-profile"
+                  onClick={() => removeProfileLetter(letter)}
+                  title={`Delete the entire ${letter} profile slot from all coding agents`}
+                  data-ac-testid={`${cardId}.deleteProfile`}
+                  data-ac-role="button"
+                >
+                  Delete Profile
+                </button>
+              </div>
             </div>
           }
         >
+          <Show when={expanded()}>
           <label class="settings-profile-field-label">Command</label>
           <input
             class="settings-input settings-profile-command"
@@ -1249,6 +1461,20 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     data-ac-testid={`${cardId}.envRow.${rowIndex()}.value`}
                     data-ac-role="textbox"
                   />
+                  {(() => {
+                    const origin = profileEnvOrigin(row.key, row.value);
+                    return (
+                      <span
+                        class={`settings-env-origin ${origin}`}
+                        data-ac-testid={`${cardId}.envRow.${rowIndex()}.origin`}
+                        data-ac-role="status"
+                        data-ac-env-origin={origin}
+                        title={`Env value origin: ${ENV_ORIGIN_LABEL[origin]}`}
+                      >
+                        {ENV_ORIGIN_LABEL[origin]}
+                      </span>
+                    );
+                  })()}
                   <button
                     class="settings-env-delete"
                     onClick={() => removeCellEnvRow(agent.id, letter, rowIndex())}
@@ -1291,87 +1517,196 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </div>
 
           <Show when={letter !== "A"}>
-            <button
-              class="settings-profile-cell-btn settings-profile-delete-cell"
-              onClick={() => removeProfileCell(agent.id, letter)}
-              data-ac-testid={`${cardId}.delete`}
-              data-ac-role="button"
-            >
-              Delete cell
-            </button>
+            <div class="settings-profile-card-footer">
+              {/* "Delete cell" clears only this agent's cell for the letter;
+                  "Delete Profile" removes the whole slot across all agents (#526). */}
+              <button
+                class="settings-profile-cell-btn settings-profile-delete-cell"
+                onClick={() => removeProfileCell(agent.id, letter)}
+                title={`Remove ${agent.label || agent.id}'s ${letter} cell (keeps the slot)`}
+                data-ac-testid={`${cardId}.delete`}
+                data-ac-role="button"
+              >
+                Delete cell
+              </button>
+              <button
+                class="settings-profile-cell-btn settings-profile-delete-profile"
+                onClick={() => removeProfileLetter(letter)}
+                title={`Delete the entire ${letter} profile slot from all coding agents`}
+                data-ac-testid={`${cardId}.deleteProfile`}
+                data-ac-role="button"
+              >
+                Delete Profile
+              </button>
+            </div>
+          </Show>
           </Show>
         </Show>
       </article>
     );
   };
 
-  const renderProfilesTab = () => (
-    <div class="settings-section settings-profiles-section" data-ac-testid="settings.profiles.section">
-      <div class="settings-section-title">Profiles</div>
-      <div class="settings-hint">
-        One full command string per profile, plus optional env rows. Each coding
-        agent has its own rail. <span class="settings-profile-ph-token">%AC_ROOT%</span>{" "}
-        is supported in commands and env values; the backend expands and validates it at launch.
-      </div>
-
-      <div
-        class="settings-profile-rails"
-        data-ac-testid="settings.profiles.rails"
-        data-ac-role="list"
-      >
-        <Show
-          when={settings.data!.agents.length > 0}
-          fallback={
-            <div class="settings-empty-note" data-ac-testid="settings.profiles.empty" data-ac-role="status">
-              No coding agents configured. Add one in the Coding Agents tab.
-            </div>
-          }
+  // One comparison rail = the A..Z profile slots of one coding agent. The two
+  // rails sit side by side (the comparison pair); each rail's agent is swappable
+  // via its header select or the panel-level "Swap Rails".
+  const renderRail = (agent: AgentConfig | null, railIndex: number, side: "left" | "right") => {
+    if (!agent) {
+      return (
+        <section
+          class="settings-profile-rail settings-rail-empty"
+          data-ac-testid={`settings.profileRail.${railIndex}`}
+          data-ac-role="surface"
+          data-ac-rail-side={side}
         >
-          <For each={settings.data!.agents}>
-            {(agent, agentIndex) => (
-              <section
-                class="settings-profile-rail"
-                style={{ "--agent-color": agent.color }}
-                data-ac-testid={`settings.profileRail.${agentIndex()}`}
-                data-ac-role="surface"
-                data-ac-agent-id={agent.id}
-              >
-                <div class="settings-profile-rail-header">
-                  <span class="settings-profile-rail-dot" style={{ background: agent.color }} />
-                  <div class="settings-profile-rail-heading">
-                    <div class="settings-profile-rail-title">{agent.label || agent.id}</div>
-                    <div
-                      class="settings-profile-rail-subtitle"
-                      data-ac-testid={`settings.profileRail.${agentIndex()}.subtitle`}
-                      data-ac-role="status"
-                    >
-                      {commandExecutableBasename(agent.command) || agent.command || "—"}
-                    </div>
-                  </div>
-                </div>
-                <div class="settings-profile-rail-body">
-                  <For each={profileLetters()}>
-                    {(letter) => renderProfileCard(agent, agentIndex(), letter)}
-                  </For>
-                </div>
-              </section>
-            )}
-          </For>
-        </Show>
-      </div>
-
-      <button
-        class="settings-add-btn settings-profile-add"
-        onClick={addProfileLetter}
-        disabled={!nextAvailableProfileLetter(settings.data!.codingAgentProfiles)}
-        data-ac-testid="settings.profiles.add"
-        data-ac-role="button"
-        data-ac-state={nextAvailableProfileLetter(settings.data!.codingAgentProfiles) ? "enabled" : "disabled"}
+          <div class="settings-rail-empty-note">
+            {side === "right"
+              ? "Pick a second coding agent (Use, or the rail selector) to compare side by side."
+              : "Add a coding agent to begin."}
+          </div>
+        </section>
+      );
+    }
+    const setRailAgent = (id: string) =>
+      side === "left" ? setLeftRailId(id) : setRightRailId(id);
+    return (
+      <section
+        class="settings-profile-rail"
+        style={{ "--agent-color": agent.color }}
+        data-ac-testid={`settings.profileRail.${railIndex}`}
+        data-ac-role="surface"
+        data-ac-agent-id={agent.id}
+        data-ac-rail-side={side}
       >
-        + Profile
-      </button>
-    </div>
-  );
+        <div class="settings-profile-rail-header">
+          <div class="settings-profile-rail-heading">
+            <div class="settings-profile-rail-title">{(agent.label || agent.id)} rail</div>
+            <div
+              class="settings-profile-rail-subtitle"
+              data-ac-testid={`settings.profileRail.${railIndex}.subtitle`}
+              data-ac-role="status"
+            >
+              {commandExecutableBasename(agent.command) || agent.command || "—"}
+            </div>
+          </div>
+          <select
+            class="settings-input settings-rail-select"
+            value={agent.id}
+            onChange={(e) => setRailAgent(e.currentTarget.value)}
+            data-ac-testid={`settings.profileRail.${railIndex}.agentSelect`}
+            data-ac-role="combobox"
+          >
+            <For each={agentList()}>
+              {(a) => <option value={a.id}>{a.label || a.id}</option>}
+            </For>
+          </select>
+        </div>
+        <div class="settings-profile-rail-body">
+          <For each={profileLetters()}>
+            {(letter) => renderProfileCard(agent, railIndex, letter)}
+          </For>
+          <button
+            class="settings-add-btn settings-profile-add"
+            onClick={addProfileLetter}
+            disabled={!nextAvailableProfileLetter(settings.data!.codingAgentProfiles)}
+            data-ac-testid={railIndex === 0 ? "settings.profiles.add" : `settings.profileRail.${railIndex}.addProfile`}
+            data-ac-role="button"
+            data-ac-state={nextAvailableProfileLetter(settings.data!.codingAgentProfiles) ? "enabled" : "disabled"}
+          >
+            Add Profile
+          </button>
+        </div>
+      </section>
+    );
+  };
+
+  // #526 — the unified Coding Agents screen: compact agent list (left) + the two
+  // comparison rails (right). Replaces the former split "Coding Agents" /
+  // "Profiles" tabs. The `settings.profiles.*` test ids are kept so callers and
+  // automation that opened the old "profiles" view still resolve here.
+  const renderCodingAgentsScreen = () => {
+    const activeIndex = () => agentList().findIndex((a) => a.id === activeAgentId());
+    const canSwap = () => agentList().length > 1;
+    return (
+      <div
+        class="settings-config-screen"
+        data-ac-testid="settings.profiles.section"
+        data-ac-role="region"
+      >
+        <aside class="settings-agents-panel">
+          <div class="settings-agents-panel-header">
+            <div class="settings-agents-panel-heading">
+              <div class="settings-agents-panel-title">Coding Agents</div>
+              <div class="settings-agents-panel-kicker">Colors and selected comparison pair</div>
+            </div>
+            <button
+              class="settings-add-btn settings-agents-add"
+              onClick={() => addAgent()}
+              data-ac-testid="settings.agents.add"
+              data-ac-role="button"
+            >
+              Add Agent
+            </button>
+          </div>
+          <div class="settings-agents-panel-body">
+            <Show
+              when={agentList().length > 0}
+              fallback={
+                <div class="settings-empty-note" data-ac-testid="settings.profiles.empty" data-ac-role="status">
+                  No coding agents configured. Add one below.
+                </div>
+              }
+            >
+              <For each={settings.data!.agents}>
+                {(agent, i) => renderAgentRow(agent, i)}
+              </For>
+            </Show>
+
+            <div class="settings-agents-actions-block">
+              <div class="settings-agents-actions-title">Actions</div>
+              <div class="settings-agents-actions-row">
+                <button
+                  class="settings-row-btn"
+                  onClick={swapRails}
+                  disabled={!canSwap()}
+                  title="Swap the left and right comparison rails"
+                  data-ac-testid="settings.agents.swapRails"
+                  data-ac-role="button"
+                  data-ac-state={canSwap() ? "enabled" : "disabled"}
+                >
+                  Swap Rails
+                </button>
+                <button
+                  class="settings-row-btn danger"
+                  onClick={() => {
+                    const idx = activeIndex();
+                    if (idx >= 0) removeAgent(idx);
+                  }}
+                  disabled={activeIndex() < 0}
+                  title="Delete the expanded coding agent"
+                  data-ac-testid="settings.agents.deleteActive"
+                  data-ac-role="button"
+                  data-ac-state={activeIndex() >= 0 ? "enabled" : "disabled"}
+                >
+                  Delete Agent
+                </button>
+              </div>
+            </div>
+
+            {renderAgentPresets()}
+          </div>
+        </aside>
+
+        <div
+          class="settings-compare-zone"
+          data-ac-testid="settings.profiles.rails"
+          data-ac-role="list"
+        >
+          {renderRail(leftRailAgent(), 0, "left")}
+          {renderRail(rightRailAgent(), 1, "right")}
+        </div>
+      </div>
+    );
+  };
 
   const renderIntegrationsTab = () => (
     <>
@@ -1555,6 +1890,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     >
       <div
         class="modal-container modal-container-lg"
+        classList={{ "modal-container-config": activeTab() === "agents" }}
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
@@ -1592,10 +1928,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
           }
         >
-          <div class="modal-body">
+          <div
+            class="modal-body"
+            classList={{ "modal-body-config": activeTab() === "agents" }}
+          >
             <Show when={activeTab() === "general"}>{renderGeneralTab()}</Show>
-            <Show when={activeTab() === "agents"}>{renderAgentsTab()}</Show>
-            <Show when={activeTab() === "profiles"}>{renderProfilesTab()}</Show>
+            <Show when={activeTab() === "agents"}>{renderCodingAgentsScreen()}</Show>
             <Show when={activeTab() === "integrations"}>
               {renderIntegrationsTab()}
             </Show>
