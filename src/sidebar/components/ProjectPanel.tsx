@@ -37,6 +37,30 @@ interface PendingLaunch {
   scopeContext?: AgentPickerScopeContext;
 }
 
+function joinSearchText(...parts: Array<string | null | undefined | false>): string {
+  return parts
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .join(" ");
+}
+
+function agentDisplayName(name: string): string {
+  const normalized = name.replace(/\\/g, "/");
+  return normalized
+    .slice(normalized.lastIndexOf("/") + 1)
+    .replace(/^__?agent_/, "");
+}
+
+function teamMemberDisplayLabel(agentName: string): string {
+  const parts = agentName.replace(/\\/g, "/").split("/");
+  const agent = parts[parts.length - 1].replace(/^__?agent_/, "");
+  const project = parts[0];
+  return project && project !== agent ? `${agent}@${project}` : agent;
+}
+
+function sessionStatusSearchText(status: Session["status"]): string {
+  return typeof status === "string" ? status : `exited ${status.exited}`;
+}
+
 /** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
 function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   return (replica.repoPaths ?? []).map((p) => {
@@ -127,6 +151,14 @@ function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }):
 /** Get replicas in a workgroup that have active (live) sessions */
 function getActiveReplicasForWg(wg: AcWorkgroup): AcAgentReplica[] {
   return (wg.agents ?? []).filter(replica => isSessionLive(replicaSession(wg, replica)));
+}
+
+function runningCoordinatorPeers(wg: AcWorkgroup, replica: AcAgentReplica): AcAgentReplica[] {
+  return (wg.agents ?? []).filter((peer) => {
+    if (peer.name === replica.name) return false;
+    const dot = replicaDotClass(wg, peer);
+    return dot === "running" || dot === "active";
+  });
 }
 
 const ProjectPanel: Component = () => {
@@ -278,6 +310,9 @@ const ProjectPanel: Component = () => {
         const [wgRetryInProgress, setWgRetryInProgress] = createSignal(false);
         const [wgLastForceUsed, setWgLastForceUsed] = createSignal(false);
         let retryGen = 0;
+        const [filterOpen, setFilterOpen] = createSignal(false);
+        const [filterPattern, setFilterPattern] = createSignal("");
+        let filterInputEl: HTMLInputElement | undefined;
         const [agentCtxMenu, setAgentCtxMenu] = createSignal<{ agent: { name: string; path: string; preferredAgentId?: string }; x: number; y: number } | null>(null);
         const [agentsHeaderCtxMenu, setAgentsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [workgroupsHeaderCtxMenu, setWorkgroupsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
@@ -390,6 +425,225 @@ const ProjectPanel: Component = () => {
         const activeReplicas = createMemo(() => {
           const wg = deletingWg();
           return wg ? getActiveReplicasForWg(wg) : [];
+        });
+        const filterState = createMemo(() => {
+          const pattern = filterPattern().trim();
+          if (!pattern) return { pattern, regex: null, error: "" };
+          try {
+            return { pattern, regex: new RegExp(pattern, "i"), error: "" };
+          } catch {
+            return { pattern, regex: null, error: "Invalid regex" };
+          }
+        });
+        const filterActive = () => filterState().regex !== null;
+        const filterError = () => filterState().error;
+        const focusFilterInput = () => {
+          const focus = () => {
+            filterInputEl?.focus();
+            filterInputEl?.select();
+          };
+          if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(focus);
+            return;
+          }
+          window.setTimeout(focus, 0);
+        };
+        const toggleFilter = () => {
+          // Magnifier acts as a toggle. Closing also drops any in-flight
+          // pattern so we never leave an active-but-hidden filter applied
+          // (the input is the only surface that reveals one is running).
+          if (filterOpen()) {
+            setFilterOpen(false);
+            setFilterPattern("");
+            return;
+          }
+          setFilterOpen(true);
+          focusFilterInput();
+        };
+        const clearFilter = () => {
+          setFilterPattern("");
+          focusFilterInput();
+        };
+        const handleFilterKeyDown = (e: KeyboardEvent) => {
+          if (e.key !== "Escape") return;
+          e.stopPropagation();
+          if (filterPattern()) {
+            setFilterPattern("");
+            focusFilterInput();
+            return;
+          }
+          setFilterOpen(false);
+        };
+        const matchesFilterText = (...parts: Array<string | null | undefined | false>) => {
+          const regex = filterState().regex;
+          if (!regex) return true;
+          return regex.test(joinSearchText(...parts));
+        };
+        // Search text for the session fields visible on EVERY row that shows this
+        // session (shared by replica rows and agent SessionItems): name, agent
+        // label, and the status dot's state. Conditionally-rendered badges are
+        // contributed by the per-row callers under the gate that matches their
+        // render — repo/branch (replicaSearchText / sessionRepoSearchText) and the
+        // profile badge — so "what you match == what you see" (#515 bug 1).
+        // `shell` is dropped: it is never shown on any row. status/waiting/pending
+        // stay — they are the visible status dot's state, so dropping them would
+        // hide a row whose dot the user can see.
+        const sessionSearchText = (session: Session | undefined) => {
+          if (!session) return "";
+          return joinSearchText(
+            session.name,
+            session.agentLabel,
+            sessionStatusSearchText(session.status),
+            session.waitingForInput ? "waiting" : null,
+            session.pendingReview ? "pending" : null
+          );
+        };
+        // Repo/branch chips on an agent SessionItem render only for a coordinator
+        // session with repos (SessionItem gate `isCoordinator && !inactive &&
+        // gitRepos.length`). Gate the search text identically so a non-coordinator
+        // agent row is never surfaced by a branch it isn't showing (#515 bug 1).
+        const sessionRepoSearchText = (session: Session | undefined) => {
+          if (!session || !session.isCoordinator || session.id.startsWith("inactive-")) return "";
+          return session.gitRepos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ");
+        };
+        const liveAgentLabel = (session: Session | undefined) => {
+          if (!session) return null;
+          if (session.agentLabel) return session.agentLabel;
+          if (!session.agentId) return null;
+          return settingsStore.current?.agents?.find((a) => a.id === session.agentId)?.label ?? null;
+        };
+        const replicaSearchText = (
+          replica: AcAgentReplica,
+          wg: AcWorkgroup,
+          extraBadge?: string,
+          taskTitle?: string | null
+        ) => {
+          const session = replicaSession(wg, replica);
+          const repos = session && session.gitRepos.length > 0
+            ? session.gitRepos
+            : configuredReplicaRepoBadges(replica, wg);
+          return joinSearchText(
+            taskTitle,
+            stripFrontmatter(taskTitle ?? ""),
+            replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name,
+            // Repo/branch badges render only for coordinators (renderReplicaItem
+            // gate `isCoord() && repoBadges().length>0`). Match the same gate so a
+            // non-coordinator row is never surfaced by a badge it isn't showing
+            // (#515 bug 1).
+            replica.isCoordinator
+              ? repos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ")
+              : null,
+            liveAgentLabel(session),
+            // A replica row renders the profile badge unconditionally whenever the
+            // session has one (renderReplicaItem) → always matchable here (#515 bug 2).
+            session ? sessionProfileBadge(session) : null,
+            replica.isCoordinator ? "coordinator" : null,
+            extraBadge,
+            sessionSearchText(session)
+          );
+        };
+        const replicaMatches = (
+          replica: AcAgentReplica,
+          wg: AcWorkgroup,
+          extraBadge?: string,
+          taskTitle?: string | null
+        ) => matchesFilterText(replicaSearchText(replica, wg, extraBadge, taskTitle));
+        const workgroupOwnMatches = (wg: AcWorkgroup, sectionLabel?: string) =>
+          matchesFilterText(sectionLabel, wg.name, wg.taskTitle, stripFrontmatter(wg.taskTitle ?? ""));
+        const workgroupMatches = (wg: AcWorkgroup, sectionLabel?: string) =>
+          workgroupOwnMatches(wg, sectionLabel) ||
+          wg.agents.some((replica) => replicaMatches(replica, wg));
+        const filteredReplicasForWorkgroup = (wg: AcWorkgroup, rowContext: string) => {
+          const sectionLabel = rowContext === "selected"
+            ? "Selected Workgroup"
+            : rowContext === "workgroups"
+              ? "Workgroups"
+              : undefined;
+          if (!filterActive() || matchesFilterText(sectionLabel) || workgroupOwnMatches(wg, sectionLabel)) {
+            return wg.agents;
+          }
+          return wg.agents.filter((replica) => replicaMatches(replica, wg));
+        };
+        const agentMatches = (agent: { name: string; path: string; preferredAgentId?: string }) => {
+          const session = sessionsStore.findSessionByName(agent.name);
+          const repoText = sessionRepoSearchText(session);
+          // The coding-agent badge shows the RESOLVED label (session.agentLabel,
+          // else the agentId→settings lookup). sessionSearchText only carries the
+          // raw agentLabel, so a session with a null agentLabel but a resolvable
+          // agentId would render the badge yet stay unmatchable. Include the
+          // resolved label here so the coding-agent badge is matchable wherever it
+          // renders — the headline #515 ask (filter agents by their coding agent).
+          // It is null exactly when no label resolves, i.e. when the badge is also
+          // hidden, so this never matches a badge that isn't shown.
+          const codingAgentLabel = liveAgentLabel(session);
+          // On an agent SessionItem the profile badge lives inside the meta block,
+          // which renders only when an agent label resolves OR a coordinator's
+          // repos show (SessionItem outer <Show>). Mirror that gate so the filter
+          // never surfaces an agent by a profile badge it isn't showing (#515 bug
+          // 1) — unlike replica rows, which render it unconditionally.
+          const metaVisible = !!codingAgentLabel || repoText !== "";
+          return matchesFilterText(
+            agentDisplayName(agent.name),
+            sessionSearchText(session),
+            codingAgentLabel,
+            repoText,
+            metaVisible && session ? sessionProfileBadge(session) : null
+          );
+        };
+        const teamMemberMatches = (team: AcTeam, agentName: string) =>
+          matchesFilterText(teamMemberDisplayLabel(agentName), agentName === team.coordinator ? "coordinator" : null);
+        const teamOwnMatches = (team: AcTeam) => matchesFilterText(team.name);
+        const teamMatches = (team: AcTeam) =>
+          teamOwnMatches(team) || team.agents.some((agentName) => teamMemberMatches(team, agentName));
+        const filteredTeamMembers = (team: AcTeam) => {
+          if (!filterActive() || matchesFilterText("Teams") || teamOwnMatches(team)) return team.agents;
+          return team.agents.filter((agentName) => teamMemberMatches(team, agentName));
+        };
+        // Memoized so each section reads one cached pass per (filter, store)
+        // change instead of rebuilding search text + re-running regex.test on
+        // every access (these are read 3-4× per render). Dependencies are all
+        // reactive (filterPattern signal, sessionsStore, projectStore via proj),
+        // so sections still update live as the user types (#515 bug 3).
+        // NOTE: filteredCoordinatorItems is defined further down, right after the
+        // coordinatorItems memo it reads — createMemo runs eagerly, so it must
+        // follow that declaration (not lead it) to avoid a temporal dead zone.
+        const filteredWorkgroups = createMemo(() => {
+          if (!filterActive() || matchesFilterText("Workgroups")) return proj.workgroups;
+          return proj.workgroups.filter((wg) => workgroupMatches(wg, "Workgroups"));
+        });
+        const filteredAgents = createMemo(() => {
+          if (!filterActive() || matchesFilterText("Agents")) return proj.agents;
+          return proj.agents.filter((agent) => agentMatches(agent));
+        });
+        const filteredTeams = createMemo(() => {
+          if (!filterActive() || matchesFilterText("Teams")) return proj.teams;
+          return proj.teams.filter((team) => teamMatches(team));
+        });
+        const selectedWorkgroupVisible = () => {
+          const wg = selectedWorkgroup();
+          return !filterActive() || matchesFilterText("Selected Workgroup") || (wg ? workgroupMatches(wg, "Selected Workgroup") : false);
+        };
+        // Status line shown on each loop row — shared with the filter search
+        // text so what the regex matches always equals what the user sees.
+        const loopStatusText = (loop: AcLoopSummary) =>
+          loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet");
+        const loopSearchText = (loop: AcLoopSummary) =>
+          // promptPreview is intentionally NOT matched: it renders only as the
+          // row's hover `title` (not visible text), so matching it would surface a
+          // loop with no on-screen reason — the case the comment above warned
+          // about (#515 bug 1).
+          joinSearchText(
+            loop.name,
+            loop.workgroup,
+            loop.expr,
+            loopStatusText(loop),
+            loop.enabled ? null : "disabled",
+            loop.pendingDueAt ? "pending" : null
+          );
+        const loopMatches = (loop: AcLoopSummary) => matchesFilterText(loopSearchText(loop));
+        const filteredLoops = createMemo(() => {
+          if (!filterActive() || matchesFilterText("Loops")) return proj.loops;
+          return proj.loops.filter((loop) => loopMatches(loop));
         });
 
         let replicaCtxMenuEl: HTMLDivElement | undefined;
@@ -543,6 +797,19 @@ const ProjectPanel: Component = () => {
           }
           if (!prev) return null;
             return proj.workgroups.find(w => w.name === prev.name) ?? null;
+        });
+
+        // Memoized like the other filtered collections (#515 bug 3); placed here
+        // because createMemo is eager and this reads the coordinatorItems memo
+        // defined just above.
+        const filteredCoordinatorItems = createMemo(() => {
+          const items = coordinatorItems();
+          if (!filterActive()) return items;
+          return items.filter((item) =>
+            workgroupOwnMatches(item.wg) ||
+            replicaMatches(item.replica, item.wg, item.wg.name, item.wg.taskTitle) ||
+            matchesFilterText(runningCoordinatorPeers(item.wg, item.replica).map((peer) => `${peer.name} RUNNING`).join(" "))
+          );
         });
 
         const runLoopAction = async (
@@ -929,7 +1196,7 @@ const ProjectPanel: Component = () => {
                 </div>
               </div>
               <Show when={!wgCollapsed()}>
-                <For each={wg.agents}>
+                <For each={filteredReplicasForWorkgroup(wg, rowContext)}>
                   {(replica) => renderReplicaItem(replica, wg, undefined, undefined, undefined, rowContext)}
                 </For>
               </Show>
@@ -950,6 +1217,58 @@ const ProjectPanel: Component = () => {
               </span>
               <span class="project-title">Project: {proj.folderName}</span>
             </button>
+            <div
+              class="project-filter-row"
+              classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
+              data-ac-testid="project.regexFilter.row"
+            >
+              <div class="project-filter-field" classList={{ open: filterOpen() }}>
+                <input
+                  ref={filterInputEl}
+                  class="project-filter-input"
+                  value={filterPattern()}
+                  placeholder="wg-2.*"
+                  aria-label="Sidebar regex filter"
+                  aria-invalid={!!filterError()}
+                  data-ac-testid="project.regexFilter.input"
+                  onInput={(e) => setFilterPattern(e.currentTarget.value)}
+                  onKeyDown={handleFilterKeyDown}
+                />
+                <Show when={filterPattern()}>
+                  <button
+                    type="button"
+                    class="project-filter-clear"
+                    title="Clear regex filter"
+                    aria-label="Clear regex filter"
+                    data-ac-testid="project.regexFilter.clear"
+                    onClick={clearFilter}
+                  >
+                    &#x2715;
+                  </button>
+                </Show>
+              </div>
+              <button
+                type="button"
+                class="project-filter-toggle"
+                title={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
+                aria-label={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
+                aria-expanded={filterOpen()}
+                data-ac-testid="project.regexFilter.toggle"
+                onClick={toggleFilter}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m20 20-4.2-4.2" />
+                </svg>
+              </button>
+            </div>
+            <Show when={filterError()}>
+              {(error) => (
+                <div class="project-filter-error" role="alert" data-ac-testid="project.regexFilter.error">
+                  {error()}
+                </div>
+              )}
+            </Show>
 
             {/* Project context menu */}
             {showCtxMenu() && (
@@ -1058,16 +1377,12 @@ const ProjectPanel: Component = () => {
                 {/* Coordinator Quick-Access — shown by styles that enable it via CSS */}
                 {(() => {
                   return (
-                    <Show when={coordinatorItems().length > 0}>
+                    <Show when={filteredCoordinatorItems().length > 0}>
                       <div class="coord-quick-access">
-                        <For each={coordinatorItems()}>
+                        <For each={filteredCoordinatorItems()}>
                           {(item) => {
                             const runningPeers = createMemo(() =>
-                              item.wg.agents.filter((peer) => {
-                                if (peer.name === item.replica.name) return false;
-                                const dot = replicaDotClass(item.wg, peer);
-                                return dot === "running" || dot === "active";
-                              })
+                              runningCoordinatorPeers(item.wg, item.replica)
                             );
                             return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.taskTitle, "quick");
                           }}
@@ -1081,7 +1396,7 @@ const ProjectPanel: Component = () => {
                   const [selectedCollapsed, setSelectedCollapsed] = createSignal(false);
 
                   return (
-                    <Show when={sessionsStore.showCategories || sessionsStore.alwaysShowSelectedWorkgroup}>
+                    <Show when={(sessionsStore.showCategories || sessionsStore.alwaysShowSelectedWorkgroup) && selectedWorkgroupVisible()}>
                       <div class="ac-wg-group">
                         <div
                           class="ac-wg-header ac-wg-header--collapsible"
@@ -1139,7 +1454,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Workgroups") || filteredWorkgroups().length > 0)}>
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -1152,14 +1467,14 @@ const ProjectPanel: Component = () => {
                         <div class="ac-wg-header-text">
                           <span class="ac-wg-name">Workgroups</span>
                         </div>
-                        <span class="ac-team-count">{proj.workgroups.length}</span>
+                        <span class="ac-team-count">{filteredWorkgroups().length}</span>
                       </div>
                       <Show when={!wgsCollapsed()}>
                         <Show
-                          when={proj.workgroups.length > 0}
+                          when={filteredWorkgroups().length > 0}
                           fallback={<div class="ac-empty-hint">No workgroups</div>}
                         >
-                          <For each={proj.workgroups}>
+                          <For each={filteredWorkgroups()}>
                             {(wg) => renderWorkgroupSubgroup(wg, "workgroups")}
                           </For>
                         </Show>
@@ -1229,7 +1544,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Loops") || filteredLoops().length > 0)}>
                     <div class="ac-wg-group ac-loop-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -1243,14 +1558,14 @@ const ProjectPanel: Component = () => {
                         <div class="ac-wg-header-text">
                           <span class="ac-wg-name">Loops</span>
                         </div>
-                        <span class="ac-team-count">{proj.loops.length}</span>
+                        <span class="ac-team-count">{filteredLoops().length}</span>
                       </div>
                       <Show when={!loopsCollapsed()}>
                         <Show
-                          when={proj.loops.length > 0}
+                          when={filteredLoops().length > 0}
                           fallback={<div class="ac-empty-hint">No loops</div>}
                         >
-                          <For each={proj.loops}>
+                          <For each={filteredLoops()}>
                             {(loop) => (
                               <div
                                 class="ac-loop-row"
@@ -1282,7 +1597,7 @@ const ProjectPanel: Component = () => {
                                   </Show>
                                 </div>
                                 <div class="ac-loop-status">
-                                  {loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet")}
+                                  {loopStatusText(loop)}
                                 </div>
                               </div>
                             )}
@@ -1379,7 +1694,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Agents") || filteredAgents().length > 0)}>
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -1395,10 +1710,10 @@ const ProjectPanel: Component = () => {
                       </div>
                       <Show when={!matrixCollapsed()}>
                         <Show
-                          when={proj.agents.length > 0}
+                          when={filteredAgents().length > 0}
                           fallback={<div class="ac-empty-hint">No agents</div>}
                         >
-                          <For each={proj.agents}>
+                          <For each={filteredAgents()}>
                             {(agent) => {
                               const session = () => sessionsStore.findSessionByName(agent.name);
                               return (
@@ -1572,7 +1887,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Teams") || filteredTeams().length > 0)}>
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -1588,12 +1903,13 @@ const ProjectPanel: Component = () => {
                       </div>
                       <Show when={!teamsCollapsed()}>
                         <Show
-                          when={proj.teams.length > 0}
+                          when={filteredTeams().length > 0}
                           fallback={<div class="ac-empty-hint">No teams</div>}
                         >
-                          <For each={proj.teams}>
+                          <For each={filteredTeams()}>
                             {(team) => {
                               const [teamExpanded, setTeamExpanded] = createSignal(false);
+                              const visibleTeamMembers = () => filteredTeamMembers(team);
                               return (
                                 <div class="ac-team-group">
                                   <div
@@ -1605,21 +1921,15 @@ const ProjectPanel: Component = () => {
                                       &#x25BE;
                                     </span>
                                     <span class="ac-team-name">{team.name}</span>
-                                    <span class="ac-team-count">{team.agents.length}</span>
+                                    <span class="ac-team-count">{visibleTeamMembers().length}</span>
                                   </div>
                                   <Show when={teamExpanded()}>
                                     <div class="ac-team-members">
-                                      <For each={team.agents}>
+                                      <For each={visibleTeamMembers()}>
                                         {(agentName) => {
-                                          const shortName = () => {
-                                            const parts = agentName.replace(/\\/g, "/").split("/");
-                                            const agent = parts[parts.length - 1].replace(/^__?agent_/, "");
-                                            const project = parts[0];
-                                            return project && project !== agent ? `${agent}@${project}` : agent;
-                                          };
                                           return (
                                             <div class="ac-team-member" title={agentName}>
-                                              <span class="ac-team-member-name">{shortName()}</span>
+                                              <span class="ac-team-member-name">{teamMemberDisplayLabel(agentName)}</span>
                                               <Show when={agentName === team.coordinator}>
                                                 <span class="ac-discovery-badge coord">coordinator</span>
                                               </Show>
