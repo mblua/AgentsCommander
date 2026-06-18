@@ -300,7 +300,7 @@ const ProjectPanel: Component = () => {
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
         const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<
-          | { kind: "active"; sessionId: string; sessionName: string; x: number; y: number }
+          | { kind: "active"; sessionId: string; sessionName: string; wg: AcWorkgroup; exited: boolean; x: number; y: number }
           | { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
           | null
         >(null);
@@ -982,7 +982,7 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        const handleReplicaContextMenu = (e: MouseEvent, session: Session) => {
+        const handleReplicaContextMenu = (e: MouseEvent, session: Session, wg: AcWorkgroup) => {
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
@@ -999,6 +999,10 @@ const ProjectPanel: Component = () => {
             kind: "active",
             sessionId: session.id,
             sessionName: session.name,
+            wg,
+            // Red/exited replicas get the full menu PLUS the broom; green/live
+            // gets the full menu with no broom (#545 rework).
+            exited: !isSessionLive(session),
             x: e.clientX,
             y: e.clientY,
           });
@@ -1016,9 +1020,10 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        // Gray (never launched) / red (exited) replicas have no live session, so
-        // the active menu's session-id path can't open. Show the minimal
-        // not-running menu instead: Coding Agent selector + broom (#545).
+        // Gray (never launched) replicas have no session at all, so the active
+        // menu's session-id path can't open. Show the minimal not-running menu
+        // instead: Coding Agent selector + broom. Red/exited replicas keep a real
+        // session and route to the full menu + broom instead (#545 rework).
         const handleReplicaInactiveContextMenu = (e: MouseEvent, wg: AcWorkgroup, replica: AcAgentReplica) => {
           e.preventDefault();
           e.stopPropagation();
@@ -1158,8 +1163,11 @@ const ProjectPanel: Component = () => {
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
                 const s = session();
-                if (s && isSessionLive(s)) {
-                  handleReplicaContextMenu(e, s);
+                // Any real session (green/live OR red/exited) gets the full menu;
+                // red additionally shows the broom. Only gray (no session) falls
+                // into the minimal Coding Agent + broom menu (#545 rework).
+                if (s) {
+                  handleReplicaContextMenu(e, s, wg);
                 } else {
                   handleReplicaInactiveContextMenu(e, wg, replica);
                 }
@@ -2236,7 +2244,8 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
-            {/* Replica context menu — active (full) vs gray/red (Coding Agent + broom, #545) */}
+            {/* Replica context menu — full menu for green/live AND red/exited
+                (red adds the broom); gray (no session) gets Coding Agent + broom (#545) */}
             {replicaCtxMenu() && (
               <Portal>
                 <div
@@ -2246,7 +2255,12 @@ const ProjectPanel: Component = () => {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <Show when={activeReplicaMenu()}>
-                    {(menu) => (
+                    {(menu) => {
+                      // Broom only for red/exited replicas — green keeps the full
+                      // menu with no broom (#545 rework). Disabled only when the
+                      // whole workgroup is cold (no resolvable session).
+                      const broomDisabled = () => resolveWorkgroupSessionId(menu().wg) === null;
+                      return (
                       <>
                         <button
                           class="session-context-option context-option-danger"
@@ -2275,8 +2289,21 @@ const ProjectPanel: Component = () => {
                         >
                           {sessionsStore.isDetached(menu().sessionId) ? "Re-attach to main" : "Open in new window"}
                         </button>
+                        <Show when={menu().exited}>
+                          <div class="context-separator" />
+                          <button
+                            class="session-context-option"
+                            classList={{ "context-option-disabled": broomDisabled() }}
+                            disabled={broomDisabled()}
+                            title="Clear task title"
+                            onClick={() => void clearReplicaTaskTitle(menu().wg)}
+                          >
+                            &#x1F9F9; Clear task title
+                          </button>
+                        </Show>
                       </>
-                    )}
+                      );
+                    }}
                   </Show>
                   <Show when={inactiveReplicaMenu()}>
                     {(menu) => {

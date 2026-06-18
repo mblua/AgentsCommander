@@ -18,8 +18,11 @@ import type { Session } from "../../shared/types";
 
 // Issue #545: gray (never launched) and red (exited) replicas could not open a
 // right-click menu, blocking the Coding Agent selector and the clear-task broom
-// before/between launches. Both states now open a two-option menu; the
-// green/running menu is unchanged.
+// before/between launches.
+//   - gray (no session): minimal Coding Agent + broom menu.
+//   - red (exited): the FULL active-replica menu (Restart Session, Coding Agent,
+//     Open in new window) PLUS the clear-task broom (#545 rework).
+//   - green (running): the full menu, unchanged (no broom).
 
 const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
@@ -125,7 +128,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menu.textContent).not.toContain("Open in new window");
   });
 
-  it("opens the same two-option menu on a red (exited) replica", async () => {
+  it("opens the full menu PLUS broom on a red (exited) replica", async () => {
     await setupPanel([coordSession(), memberSession({ status: { exited: 0 } })]);
 
     contextMenu(findRow(rendered!.root, memberRowTestId));
@@ -133,10 +136,45 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     await waitFor(() => {
       const menu = replicaMenu();
       expect(menu).not.toBeNull();
+      // Red keeps the full active-replica menu...
+      expect(menu!.textContent).toContain("Restart Session");
       expect(menu!.textContent).toContain("Coding Agent");
+      expect(menu!.textContent).toContain("Open in new window");
+      // ...and gains the broom (#545 rework).
       expect(menu!.textContent).toContain("Clear task title");
     });
-    expect(replicaMenu()!.textContent).not.toContain("Restart Session");
+  });
+
+  it("broom on a red replica clears the task", async () => {
+    const fake = await setupPanel([
+      coordSession(),
+      memberSession({ status: { exited: 0 } }),
+    ]);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let broom: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      broom =
+        Array.from(menu!.querySelectorAll("button")).find((b) =>
+          b.textContent?.includes("Clear task title")
+        ) ?? null;
+      expect(broom).not.toBeNull();
+      expect(broom!.disabled).toBe(false);
+    });
+
+    click(broom!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("task_clean");
+      expect(call).toBeDefined();
+      // task_clean resolves the workgroup TASK.md from any session cwd under the
+      // wg-* root; resolveWorkgroupSessionId returns the first non-placeholder
+      // session (the coordinator) for the shared workgroup task.
+      expect(call!.args.sessionId).toBe("coord-session");
+    });
   });
 
   it("keeps the full menu on a green (running) replica", async () => {
