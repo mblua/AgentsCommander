@@ -161,6 +161,14 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
+    resourceMonitorEnabled: true,
+    maxConcurrentAgentProcesses: 3,
+    resourceWatchdogAction: "warn",
+    agentGroupWarnPrivateBytes: 8 * 1024 ** 3,
+    agentGroupKillPrivateBytes: 12 * 1024 ** 3,
+    agentProcessKillPrivateBytes: 12 * 1024 ** 3,
+    resourceKeepLastSnapshot: true,
+    resourceBackoffPolling: true,
     ...overrides,
   };
 }
@@ -614,7 +622,9 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  it("includes the restart toggle in both preview and apply requests", async () => {
+  it("hides the restart toggle for replica scope and applies without a backend restart (#537)", async () => {
+    // #537: replica scope is restarted via the post-assign "Restart now?" modal, so
+    // the in-modal toggle is gone and apply never asks the backend to restart.
     const { dispose } = renderPicker({
       agentPath: WG_REPLICA_PATH,
       scopeContext: WG_SCOPE_CONTEXT,
@@ -622,6 +632,29 @@ describe("AgentPickerModal", () => {
     });
     await settle();
 
+    expect(maybe("agentPicker.restartToggle")).toBeNull();
+
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+    expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "replica", restartSessions: false }),
+    );
+
+    dispose();
+  });
+
+  it("keeps the restart toggle for workgroup scope and carries it into preview and apply", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.workgroup");
+    await settle();
+
+    // Toggle is available again for the multi-target scope.
     target<HTMLInputElement>("agentPicker.restartToggle").click();
     await settle();
 
@@ -630,10 +663,13 @@ describe("AgentPickerModal", () => {
       expect.objectContaining({ restartSessions: true }),
     );
 
+    // Arm the danger gate, then apply.
+    target<HTMLInputElement>("agentPicker.armToggle").click();
+    await settle();
     target<HTMLButtonElement>("agentPicker.apply").click();
     await settle();
     expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: "replica", restartSessions: true }),
+      expect.objectContaining({ scope: "workgroup", restartSessions: true }),
     );
 
     dispose();
@@ -689,8 +725,13 @@ describe("AgentPickerModal", () => {
     target<HTMLButtonElement>("agentPicker.apply").click();
     await settle();
 
+    // #537: the failure banner leads with the human-readable backend message
+    // (not the internal code) and is surfaced loudly via a toast as well.
     expect(target("agentPicker.errors")).toBeTruthy();
-    expect(text("agentPicker.errors")).toContain("staleFingerprint");
+    expect(text("agentPicker.errors")).toContain("Assignment failed");
+    expect(text("agentPicker.errors")).toContain("Targets changed; rerun preview.");
+    expect(maybe("agentPicker.toast")).toBeTruthy();
+    expect(text("agentPicker.toast")).toContain("Targets changed; rerun preview.");
     // Modal stays open; selection is not committed; typed confirmation is reset.
     expect(onSelect).not.toHaveBeenCalled();
     expect(maybe("agentPicker.modal")).toBeTruthy();

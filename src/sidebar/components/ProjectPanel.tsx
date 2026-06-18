@@ -10,7 +10,7 @@ import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
-import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge } from "../../shared/profile-utils";
+import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
@@ -18,6 +18,7 @@ import NewWorkgroupModal from "./NewWorkgroupModal";
 import NewLoopModal from "./NewLoopModal";
 import EditLoopModal from "./EditLoopModal";
 import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerModal";
+import RestartPromptModal from "./RestartPromptModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
@@ -177,6 +178,33 @@ const ProjectPanel: Component = () => {
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
+
+  // #537: post-assign "Restart now?" prompt. Hoisted to the stable ProjectPanel
+  // scope (NOT inside the projects <For>) so a background replica-list refresh,
+  // which replaces project object references and so re-creates each <For> row
+  // (disposing its local signals), cannot tear the modal down before the user
+  // answers. Mirrors the pendingLaunch picker below, hoisted for the same reason.
+  // The prompt closes only on Later / Restart now / overlay click.
+  const [restartPrompt, setRestartPrompt] = createSignal<{
+    sessionId: string;
+    replicaName: string;
+    agentId: string;
+    agentLabel: string;
+    requestedProfile: string | null;
+  } | null>(null);
+
+  // Restart the live session on the newly-assigned agent (same SessionAPI.restart
+  // the Restart button uses; honors currentCodingAgent, 0b03ad7). Consume-and-clear
+  // so a single click cannot fire twice.
+  const applyRestartPrompt = () => {
+    const prompt = restartPrompt();
+    setRestartPrompt(null);
+    if (!prompt) return;
+    void SessionAPI.restart(prompt.sessionId, {
+      agentId: prompt.agentId,
+      requestedProfile: prompt.requestedProfile,
+    }).catch((e) => console.error("Failed to restart session:", e));
+  };
 
   const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const existing = replicaSession(wg, replica);
@@ -2227,23 +2255,33 @@ const ProjectPanel: Component = () => {
                     replicaCodingAgentTarget()!.sessionName,
                   )}
                   onSelect={async (selection) => {
-                    // The picker already applied the selection through the backend
-                    // (config write + restart when the toggle is on) for WG replicas.
-                    // Only fall back to a manual restart when there was no broad-scope
-                    // apply path (non-WG agent session) but the user changed the agent.
+                    // The picker already persisted the selection through the backend
+                    // (config write) for WG replicas. For a non-WG agent session there
+                    // is no backend persist path, so apply the change by restarting with
+                    // the chosen agent/profile.
                     const target = replicaCodingAgentTarget();
                     setReplicaCodingAgentTarget(null);
-                    if (
-                      target &&
-                      !isWgReplicaPath(
-                        sessionsStore.sessions.find((s) => s.id === target.sessionId)?.workingDirectory,
-                      )
-                    ) {
+                    if (!target) return;
+                    const session = sessionsStore.sessions.find((s) => s.id === target.sessionId);
+                    if (!isWgReplicaPath(session?.workingDirectory)) {
                       await restartReplicaSession(
                         target.sessionId,
                         selection.agent.id,
                         selection.requestedProfile,
                       );
+                      return;
+                    }
+                    // #537: WG replica was persisted but the live session still runs the
+                    // old agent. Offer an immediate restart when there is a live session.
+                    if (shouldOfferRestartAfterAssign(selection, session)) {
+                      const slash = target.sessionName.lastIndexOf("/");
+                      setRestartPrompt({
+                        sessionId: target.sessionId,
+                        replicaName: slash >= 0 ? target.sessionName.slice(slash + 1) : target.sessionName,
+                        agentId: selection.agent.id,
+                        agentLabel: selection.agent.label,
+                        requestedProfile: selection.requestedProfile,
+                      });
                     }
                   }}
                   onClose={() => setReplicaCodingAgentTarget(null)}
@@ -2570,6 +2608,22 @@ const ProjectPanel: Component = () => {
             setPendingLaunch(null);
           }}
           onClose={() => setPendingLaunch(null)}
+        />
+      </Portal>
+    )}
+
+    {/* #537: post-assign "Restart now?" prompt, rendered here at the stable
+        ProjectPanel root (outside the projects <For>) so a background discovery
+        refresh that replaces project references, re-creating each <For> row,
+        cannot unmount it mid-decision. It closes only on Later / Restart now /
+        overlay click. */}
+    {restartPrompt() && (
+      <Portal>
+        <RestartPromptModal
+          agentLabel={restartPrompt()!.agentLabel}
+          replicaName={restartPrompt()!.replicaName}
+          onRestart={applyRestartPrompt}
+          onLater={() => setRestartPrompt(null)}
         />
       </Portal>
     )}

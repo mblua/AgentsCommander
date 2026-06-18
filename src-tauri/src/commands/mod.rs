@@ -8,6 +8,7 @@ pub mod loops;
 pub mod phone;
 pub mod pty;
 pub mod repos;
+pub mod resource_monitor;
 pub mod role_templates;
 pub mod session;
 pub mod spec_board;

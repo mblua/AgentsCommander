@@ -85,16 +85,120 @@ fn temp_config_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{}.{}.tmp", file_name, std::process::id()))
 }
 
-#[cfg(not(windows))]
-fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
-    std::fs::rename(tmp_path, path).map_err(|e| {
+/// #537 - OS error codes that mean the destination config.json was only
+/// briefly held by another handle (a concurrent in-process reader, a second
+/// AgentsCommander instance, or antivirus / the Windows Search Indexer) at the
+/// instant we tried to publish, rather than a permanent failure. A short
+/// backoff and retry clears them; permanent failures (a bad path, a lasting
+/// permission denial) are NOT in this set, so they surface immediately and we
+/// never spin on an error that cannot clear.
+///
+/// These are Windows codes:
+///   1175 ERROR_UNABLE_TO_REMOVE_REPLACED (ReplaceFileW could not delete dst)
+///     32 ERROR_SHARING_VIOLATION
+///     33 ERROR_LOCK_VIOLATION
+///      5 ERROR_ACCESS_DENIED (commonly a transient AV lock on Windows)
+const TRANSIENT_PUBLISH_OS_ERRORS: [i32; 4] = [1175, 32, 33, 5];
+
+/// #537 - publish attempt budget and backoff schedule, duplicated from the
+/// reviewed pattern in sessions_persistence::rename_with_retry (#280) per the
+/// house "a little duplication over a premature abstraction" rule. Four
+/// attempts so all three backoff entries are used; the terminal attempt has no
+/// backoff. Worst-case added latency on a contended publish is the sum, 260 ms.
+/// Like #280 this uses std::thread::sleep, which briefly blocks the calling
+/// tokio worker; update_config_json_object is already fully synchronous, so
+/// this only enlarges an existing blocking window rather than adding a new one.
+const PUBLISH_ATTEMPTS: u32 = 4;
+const PUBLISH_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
+
+/// #537 - true when a publish error looks like a transient lock collision we
+/// should retry rather than a permanent failure. See TRANSIENT_PUBLISH_OS_ERRORS.
+fn is_transient_publish_error(err: &std::io::Error) -> bool {
+    if err
+        .raw_os_error()
+        .is_some_and(|code| TRANSIENT_PUBLISH_OS_ERRORS.contains(&code))
+    {
+        return true;
+    }
+    // Non-Windows analogue: POSIX rename(2) within a directory is atomic and
+    // does not hit the Windows "destination briefly locked" class, but a
+    // collision on a networked or watched mount can still surface as
+    // PermissionDenied. Mirrors treating Windows code 5 as transient.
+    cfg!(not(windows)) && err.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+/// #537 facet (b) - turn a publish failure into a message that reads clearly in
+/// both the "Assign to this replica" error row and the session-launch dialog. A
+/// transient lock collision gets a plain-language, retry-suggesting sentence
+/// instead of the cryptic raw "os error 1175"; the OS error code is still
+/// appended for diagnostics. Permanent failures keep the precise low-level
+/// detail an operator needs to fix them.
+fn format_publish_error(path: &Path, tmp_path: &Path, err: &std::io::Error) -> String {
+    if is_transient_publish_error(err) {
+        format!(
+            "Could not update {} because it was briefly locked by another program \
+             (a second AgentsCommander instance, antivirus, or Windows Search). \
+             Please try again. (os error {})",
+            path.display(),
+            err.raw_os_error().unwrap_or_default()
+        )
+    } else {
         format!(
             "Failed to replace {} with {}: {}",
             path.display(),
             tmp_path.display(),
-            e
+            err
         )
-    })
+    }
+}
+
+#[cfg(not(windows))]
+fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..PUBLISH_ATTEMPTS {
+        match std::fs::rename(tmp_path, path) {
+            Ok(()) => {
+                if attempt > 0 {
+                    log::info!(
+                        "[config] publish succeeded after retry: path={} attempt={}/{} duration={:?}",
+                        path.display(),
+                        attempt + 1,
+                        PUBLISH_ATTEMPTS,
+                        start.elapsed()
+                    );
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                if !is_transient_publish_error(&e) {
+                    return Err(format_publish_error(path, tmp_path, &e));
+                }
+                log::debug!(
+                    "[config] publish attempt {}/{} failed: path={} os_error={:?} kind={:?}",
+                    attempt + 1,
+                    PUBLISH_ATTEMPTS,
+                    path.display(),
+                    e.raw_os_error(),
+                    e.kind()
+                );
+                last_err = Some(e);
+                if let Some(backoff) = PUBLISH_BACKOFFS_MS.get(attempt as usize) {
+                    std::thread::sleep(std::time::Duration::from_millis(*backoff));
+                }
+            }
+        }
+    }
+
+    let e = last_err.expect("PUBLISH_ATTEMPTS >= 1, so the loop runs at least once");
+    log::error!(
+        "[config] publish exhausted {} attempts: path={} os_error={:?} duration={:?}",
+        PUBLISH_ATTEMPTS,
+        path.display(),
+        e.raw_os_error(),
+        start.elapsed()
+    );
+    Err(format_publish_error(path, tmp_path, &e))
 }
 
 #[cfg(windows)]
@@ -123,32 +227,106 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    let ok = unsafe {
-        ReplaceFileW(
-            path_wide.as_ptr(),
-            tmp_wide.as_ptr(),
-            std::ptr::null(),
-            REPLACEFILE_WRITE_THROUGH,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    if ok == 0 {
-        return Err(format!(
-            "Failed to replace {} with {}: {}",
+
+    // #537 - ReplaceFileW publishes the temp file over the existing
+    // config.json. It returns ERROR_UNABLE_TO_REMOVE_REPLACED (1175) and
+    // friends whenever another handle holds the destination for even an
+    // instant, so a single collision used to fail the whole write. Retry the
+    // publish with a bounded backoff, mirroring rename_with_retry (#280).
+    let start = std::time::Instant::now();
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..PUBLISH_ATTEMPTS {
+        let ok = unsafe {
+            ReplaceFileW(
+                path_wide.as_ptr(),
+                tmp_wide.as_ptr(),
+                std::ptr::null(),
+                REPLACEFILE_WRITE_THROUGH,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        if ok != 0 {
+            if attempt > 0 {
+                log::info!(
+                    "[config] ReplaceFileW succeeded after retry: path={} attempt={}/{} duration={:?}",
+                    path.display(),
+                    attempt + 1,
+                    PUBLISH_ATTEMPTS,
+                    start.elapsed()
+                );
+            }
+            return Ok(());
+        }
+
+        let e = std::io::Error::last_os_error();
+        if !is_transient_publish_error(&e) {
+            return Err(format_publish_error(path, tmp_path, &e));
+        }
+        log::debug!(
+            "[config] ReplaceFileW attempt {}/{} failed: path={} os_error={:?}",
+            attempt + 1,
+            PUBLISH_ATTEMPTS,
             path.display(),
-            tmp_path.display(),
-            std::io::Error::last_os_error()
-        ));
+            e.raw_os_error()
+        );
+        last_err = Some(e);
+        if let Some(backoff) = PUBLISH_BACKOFFS_MS.get(attempt as usize) {
+            std::thread::sleep(std::time::Duration::from_millis(*backoff));
+        }
     }
-    Ok(())
+
+    let e = last_err.expect("PUBLISH_ATTEMPTS >= 1, so the loop runs at least once");
+    log::error!(
+        "[config] ReplaceFileW exhausted {} attempts: path={} os_error={:?} duration={:?}",
+        PUBLISH_ATTEMPTS,
+        path.display(),
+        e.raw_os_error(),
+        start.elapsed()
+    );
+    Err(format_publish_error(path, tmp_path, &e))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::update_config_json_object;
+    use super::{format_publish_error, is_transient_publish_error, update_config_json_object};
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn transient_publish_errors_are_classified_for_retry() {
+        for code in super::TRANSIENT_PUBLISH_OS_ERRORS {
+            let err = std::io::Error::from_raw_os_error(code);
+            assert!(
+                is_transient_publish_error(&err),
+                "os error {code} should be treated as transient"
+            );
+        }
+        // A permanent code (ERROR_FILE_NOT_FOUND) must not be retried.
+        let permanent = std::io::Error::from_raw_os_error(2);
+        assert!(!is_transient_publish_error(&permanent));
+    }
+
+    #[test]
+    fn transient_publish_error_message_is_human_readable() {
+        let err = std::io::Error::from_raw_os_error(1175);
+        let msg = format_publish_error(
+            Path::new("C:/x/config.json"),
+            Path::new("C:/x/.config.json.1.tmp"),
+            &err,
+        );
+        assert!(msg.contains("briefly locked"), "{msg}");
+        assert!(msg.contains("try again"), "{msg}");
+        assert!(msg.contains("1175"), "{msg}");
+        assert!(!msg.contains("Failed to replace"), "{msg}");
+    }
+
+    #[test]
+    fn permanent_publish_error_message_keeps_low_level_detail() {
+        let err = std::io::Error::from_raw_os_error(2);
+        let msg = format_publish_error(Path::new("C:/x/config.json"), Path::new("C:/x/.tmp"), &err);
+        assert!(msg.contains("Failed to replace"), "{msg}");
+    }
 
     #[test]
     fn update_config_json_object_rejects_invalid_existing_json() {
