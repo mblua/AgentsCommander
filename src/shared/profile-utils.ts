@@ -49,12 +49,41 @@ export function sortedProfileLetters(profiles: CodingAgentProfilesConfig): strin
   return [...letters].sort();
 }
 
-export function profileDisplayLabel(
+/**
+ * #548: the resolved display NAME for (agent, letter). Single source of truth for
+ * label resolution, shared by the SettingsModal rails, the AgentPickerModal cards,
+ * and the coordinator quick-access / session-row tooltips. Chain (resolve-on-read):
+ *   1. the agent's own label,
+ *   2. else the primigenio (agents[0]) agent's own label,
+ *   3. else the legacy shared slot label (back-compat for pre-#548 configs),
+ *   4. else "" (caller shows the bare letter).
+ * `agents` MUST be in persisted order (agents[0] = primigenio); pass the raw
+ * settings.agents array, never a sorted copy.
+ */
+export function resolveProfileLabel(
   profiles: CodingAgentProfilesConfig,
+  agents: AgentConfig[],
+  agentId: string | null | undefined,
   letter: string,
 ): string {
-  const label = profiles.profileSlots[letter]?.label.trim();
-  return label ? `${letter}-${label.toUpperCase()}` : letter;
+  const labels = profiles.profileLabelsByAgent;
+  const own = agentId ? labels?.[agentId]?.[letter]?.trim() : "";
+  const primigenioId = agents[0]?.id;
+  const inherited = primigenioId ? labels?.[primigenioId]?.[letter]?.trim() : "";
+  const legacy = profiles.profileSlots[letter]?.label?.trim() ?? "";
+  return own || inherited || legacy || "";
+}
+
+/** Presentation form for the picker cards and the tooltips:
+ *  `${letter}-${NAME}` when a name resolves, else the bare letter. */
+export function profileDisplayLabel(
+  profiles: CodingAgentProfilesConfig,
+  agents: AgentConfig[],
+  agentId: string | null | undefined,
+  letter: string,
+): string {
+  const name = resolveProfileLabel(profiles, agents, agentId, letter);
+  return name ? `${letter}-${name.toUpperCase()}` : letter;
 }
 
 export function nextAvailableProfileLetter(

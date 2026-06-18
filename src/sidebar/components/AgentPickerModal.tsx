@@ -141,8 +141,12 @@ const AgentPickerModal: Component<{
     if (!current) return "A";
     return normalizeProfileLetter(current.codingAgentProfiles.defaultProfileByAgent[targetName()]) ?? "A";
   });
-  const profileLabel = (letter: string) =>
-    settings() ? profileDisplayLabel(settings()!.codingAgentProfiles, letter) : letter;
+  const profileLabel = (letter: string, agentId: string | null | undefined = selectedAgent()?.id) => {
+    const current = settings();
+    return current
+      ? profileDisplayLabel(current.codingAgentProfiles, current.agents, agentId, letter)
+      : letter;
+  };
   const profileCellFor = (agent: AgentConfig | null, letter: string) => {
     const current = settings();
     if (!current || !agent) return null;
@@ -565,7 +569,7 @@ const AgentPickerModal: Component<{
                         <span class="agent-profile-provider-chip">
                           {defaultPreview().fallbackApplied
                             ? `${defaultPreview().requestedProfile}->${defaultPreview().effectiveProfile}`
-                            : profileLabel(defaultPreview().effectiveProfile)}
+                            : profileLabel(defaultPreview().effectiveProfile, agent.id)}
                         </span>
                       </button>
                     );

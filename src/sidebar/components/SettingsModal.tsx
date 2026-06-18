@@ -25,6 +25,7 @@ import {
   parseArgvText,
   profileBadgeKind,
   profileEnvOrigin,
+  resolveProfileLabel,
   resolveProfilePreview,
   sortedProfileLetters,
   validateEnvRows,
@@ -288,12 +289,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
-  const updateProfileLabel = (letter: string, label: string) => {
+  // #548: per-agent label override. Keep the WHOLE-MAP functional replacement —
+  // it creates the missing [agentId] node on an agent's first edit AND fires the
+  // top-level property signal that drives the cross-rail inherited-placeholder
+  // recompute. Do NOT "optimize" to a deep-path set (see plan §9 / §13.2).
+  const updateProfileLabel = (agentId: string, letter: string, label: string) => {
     if (!settings.data) return;
     setDraftDirty(true);
-    setSettings("data", "codingAgentProfiles", "profileSlots", (slots) => ({
-      ...slots,
-      [letter]: { label },
+    setSettings("data", "codingAgentProfiles", "profileLabelsByAgent", (byAgent) => ({
+      ...byAgent,
+      [agentId]: {
+        ...(byAgent[agentId] ?? {}),
+        [letter]: label,
+      },
     }));
   };
 
@@ -322,6 +330,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         delete profiles.profileSlots[letter];
         for (const cells of Object.values(profiles.profilesByAgent)) {
           delete cells[letter];
+        }
+        for (const labels of Object.values(profiles.profileLabelsByAgent)) {
+          delete labels[letter];
         }
       }),
     );
@@ -1307,9 +1318,16 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <div class="settings-profile-name-line">
               <input
                 class="settings-input settings-profile-label"
-                value={settings.data!.codingAgentProfiles.profileSlots[letter]?.label ?? ""}
-                onInput={(e) => updateProfileLabel(letter, e.currentTarget.value)}
-                placeholder={letter === "A" ? "Baseline" : "Profile label"}
+                value={settings.data!.codingAgentProfiles.profileLabelsByAgent[agent.id]?.[letter] ?? ""}
+                onInput={(e) => updateProfileLabel(agent.id, letter, e.currentTarget.value)}
+                placeholder={
+                  resolveProfileLabel(
+                    settings.data!.codingAgentProfiles,
+                    settings.data!.agents,
+                    agent.id,
+                    letter,
+                  ) || (letter === "A" ? "Baseline" : "Profile label")
+                }
                 data-ac-testid={`${cardId}.label`}
                 data-ac-role="textbox"
               />
