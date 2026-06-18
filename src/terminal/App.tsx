@@ -279,16 +279,6 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
                   ? "Session closed"
                   : "No active session"}
               </span>
-              <Show when={!props.detached}>
-                <button
-                  class="terminal-empty-btn"
-                  onClick={() => { homeStore.hide(); SessionAPI.create(); }}
-                  data-ac-testid="terminal.empty.newSession"
-                  data-ac-role="button"
-                >
-                  + New Session
-                </button>
-              </Show>
             </div>
           }
         >
