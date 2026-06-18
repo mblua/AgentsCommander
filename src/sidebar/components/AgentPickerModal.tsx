@@ -1,4 +1,4 @@
-import { Component, createSignal, createMemo, For, Show, onMount, createEffect } from "solid-js";
+import { Component, createSignal, createMemo, For, Show, onMount, onCleanup, createEffect } from "solid-js";
 import type {
   AgentConfig,
   AppSettings,
@@ -98,10 +98,29 @@ const AgentPickerModal: Component<{
   const [scopePreviewBusy, setScopePreviewBusy] = createSignal(false);
   const [scopePreviewError, setScopePreviewError] = createSignal("");
   const [applyErrors, setApplyErrors] = createSignal<ProfileAssignmentError[]>([]);
+  // #537: transient toast so an assign failure is loud and unmissable (the
+  // persistent banner below keeps the actionable detail once the toast fades).
+  const [toastMsg, setToastMsg] = createSignal<string | null>(null);
 
   let overlayRef!: HTMLDivElement;
   let profileResolveSeq = 0;
   let previewSeq = 0;
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // #537: mirror the SidebarApp/SettingsModal toast pattern (.toast-error,
+  // auto-dismiss after 3s). Used to surface a failed Coding Agent assignment.
+  const showToast = (message: string) => {
+    if (toastTimer) clearTimeout(toastTimer);
+    setToastMsg(message);
+    toastTimer = setTimeout(() => {
+      setToastMsg(null);
+      toastTimer = null;
+    }, 3000);
+  };
+
+  onCleanup(() => {
+    if (toastTimer) clearTimeout(toastTimer);
+  });
 
   const sortedAgents = createMemo(() =>
     [...agents()].sort((a, b) =>
@@ -414,6 +433,10 @@ const AgentPickerModal: Component<{
     const scope = selectedScope();
     const requested = requestedProfileForSelection();
     const effective = effectivePreview().effectiveProfile;
+    // #537: replica scope no longer uses the pre-apply restart toggle; the post-assign
+    // "Restart now?" modal (ProjectPanel) owns the restart. Force it off so a toggle
+    // value carried over from kind/workgroup scope cannot trigger a backend restart.
+    const restart = scope === "replica" ? false : restartSessions();
     try {
       let updatedCount: number | undefined;
       let restartedCount: number | undefined;
@@ -425,7 +448,7 @@ const AgentPickerModal: Component<{
           codingAgentId: agent.id,
           profile: selectedProfile(),
           scope,
-          restartSessions: restartSessions(),
+          restartSessions: restart,
           confirmedTargetFingerprint:
             scope === "replica" ? null : scopePreview()?.targetFingerprint ?? null,
           typedConfirmation: scope === "kind" ? kindConfirmationText().trim() : null,
@@ -434,6 +457,11 @@ const AgentPickerModal: Component<{
           // Stale fingerprint / failed targets: surface errors, keep the modal open,
           // reset the typed confirmation and re-run preview so the user re-confirms.
           setApplyErrors(result.errors);
+          // #537: the assign no longer silently no-ops. Fire a loud toast with the
+          // backend's human-readable message so the failure cannot be missed.
+          const firstError = result.errors[0];
+          const extra = result.errors.length - 1;
+          showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
           setKindConfirmationText("");
           setDangerArmed(false);
           setBusy(false);
@@ -448,7 +476,7 @@ const AgentPickerModal: Component<{
         requestedProfile: requested,
         effectiveProfile: effective,
         scope,
-        restartSessions: restartSessions(),
+        restartSessions: restart,
         updatedCount,
         restartedCount,
       });
@@ -456,7 +484,10 @@ const AgentPickerModal: Component<{
       // #516 — surface the failure in the modal (keep it open) rather than
       // letting the rejection escape as a swallowed unhandled rejection. The
       // Resource Monitor cap gets a friendly, actionable message.
-      setError(launchErrorMessage(err));
+      const message = launchErrorMessage(err);
+      setError(message);
+      // #537: keep unexpected apply failures as loud as the structured ones.
+      showToast(message);
       setBusy(false);
     }
   };
@@ -494,6 +525,7 @@ const AgentPickerModal: Component<{
   };
 
   return (
+    <>
     <div
       ref={overlayRef}
       class="modal-overlay"
@@ -918,12 +950,34 @@ const AgentPickerModal: Component<{
             </div>
           </Show>
 
+          {/* #537: prominent, persistent failure banner. The toast (loud, fades
+              after 3s) flags the failure; this banner keeps the backend's
+              human-readable message and a replica-scope retry on screen. */}
           <Show when={applyErrors().length > 0}>
-            <div class="agent-scope-errors" data-ac-testid="agentPicker.errors" data-ac-role="status">
+            <div
+              class="agent-scope-error-banner"
+              role="alert"
+              data-ac-testid="agentPicker.errors"
+              data-ac-role="alert"
+            >
+              <div class="agent-scope-error-banner-head">
+                <span class="agent-scope-error-banner-title">Assignment failed</span>
+                <Show when={selectedScope() === "replica"}>
+                  <button
+                    type="button"
+                    class="agent-scope-error-retry"
+                    disabled={!applyEnabled()}
+                    onClick={() => void apply()}
+                    {...automationAttrs("agentPicker.retry", "button", applyEnabled() ? "enabled" : "disabled")}
+                  >
+                    Retry
+                  </button>
+                </Show>
+              </div>
               <For each={applyErrors()}>
                 {(e) => (
                   <div class="agent-scope-error-row">
-                    <strong>{e.code}</strong> {e.message}
+                    {e.message}
                     <Show when={e.sessionIds.length > 0}>
                       <span class="agent-scope-error-ids"> ({e.sessionIds.join(", ")})</span>
                     </Show>
@@ -939,7 +993,10 @@ const AgentPickerModal: Component<{
           </Show>
 
           <div class="agent-picker-bar">
-            <Show when={isWgReplica()}>
+            {/* #537: replica scope is restarted via the post-assign "Restart now?"
+                modal, not this toggle. The toggle stays for kind/workgroup scope
+                (no per-replica prompt makes sense for a multi-target apply). */}
+            <Show when={isWgReplica() && selectedScope() !== "replica"}>
               <label class="agent-scope-switch" title="Restart matching sessions after writing the selection">
                 <input
                   type="checkbox"
@@ -1007,6 +1064,14 @@ const AgentPickerModal: Component<{
         </div>
       </div>
     </div>
+    {/* #537: viewport-level toast so the failure is unmissable even with the
+        modal scrolled. Mirrors SidebarApp/SettingsModal `.toast-error`. */}
+    <Show when={toastMsg()}>
+      <div class="toast-error" data-ac-testid="agentPicker.toast" data-ac-role="alert">
+        {toastMsg()}
+      </div>
+    </Show>
+    </>
   );
 };
 
