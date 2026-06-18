@@ -5,6 +5,7 @@ import TerminalApp from "./terminal/App";
 import GuideApp from "./guide/App";
 import BrowserApp from "./browser/App";
 import SpecBoardApp from "./spec-board/App";
+import ResourceMonitorApp from "./resource-monitor/App";
 import MainApp from "./main/App";
 import { initAutomationBridge } from "./shared/automation-bridge";
 
@@ -42,6 +43,8 @@ if (!isTauri) {
   );
 } else if (windowType === "guide") {
   render(() => <GuideApp />, root);
+} else if (windowType === "resource-monitor") {
+  render(() => <ResourceMonitorApp />, root);
 } else if (windowType === "spec-board") {
   render(() => <SpecBoardApp />, root);
 } else {

@@ -76,7 +76,10 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
       }
     }
 
-    homeStore.hide();
+    // #516 — create first; only hide Home / close the modal once the session
+    // exists. If create rejects (e.g. the Resource Monitor cap), the rejection
+    // propagates to AgentPickerModal.apply()'s catch, which keeps this modal
+    // open with the error shown instead of hiding Home behind a silent hang.
     await SessionAPI.create({
       cwd: createdPath(),
       sessionName: launchSessionName(),
@@ -84,6 +87,7 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
       requestedProfile: selection.requestedProfile,
     });
 
+    homeStore.hide();
     props.onClose();
   };
 

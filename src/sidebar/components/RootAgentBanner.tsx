@@ -393,6 +393,9 @@ const RootAgentBanner: Component = () => {
             ? "Open Root Agent session (right-click for options)"
             : "Create Root Agent session"
         }
+        data-ac-testid="rootAgent.banner"
+        data-ac-role="button"
+        data-ac-state={rootSession() ? (hasLivePty() ? "live" : "dormant") : "missing"}
       >
         <div class={`session-item-status ${dotClass()}`} />
         <div class="root-agent-avatar">
@@ -507,6 +510,9 @@ const RootAgentBanner: Component = () => {
               onClick={handleDetachToggle}
               title={isDetached() ? "Re-attach to main window" : "Open in new window"}
               innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
+              data-ac-testid="rootAgent.detachToggle"
+              data-ac-role="button"
+              data-ac-state={isDetached() ? "detached" : "attached"}
             />
 
             <Show when={bridge()}>
@@ -537,7 +543,13 @@ const RootAgentBanner: Component = () => {
                 </For>
               </div>
             </Show>
-            <button class="session-item-close" onClick={handleClose} title="Close session">
+            <button
+              class="session-item-close"
+              onClick={handleClose}
+              title="Close session"
+              data-ac-testid="rootAgent.destroy"
+              data-ac-role="button"
+            >
               &#x2715;
             </button>
           </Show>
@@ -565,11 +577,15 @@ const RootAgentBanner: Component = () => {
               top: `${contextMenuPos().y}px`,
             }}
             onClick={(e) => e.stopPropagation()}
+            data-ac-testid="rootAgent.menu"
+            data-ac-role="menu"
           >
             <button
               class="session-context-option context-option-danger"
               onClick={handleRestart}
               disabled={!rootSession()}
+              data-ac-testid="rootAgent.restart"
+              data-ac-role="menuitem"
             >
               Restart Session
             </button>
@@ -582,6 +598,9 @@ const RootAgentBanner: Component = () => {
                 <button
                   class="session-context-option"
                   onClick={handleContextDetachToggle}
+                  data-ac-testid="rootAgent.menu.detachToggle"
+                  data-ac-role="menuitem"
+                  data-ac-state={isDetached() ? "detached" : "attached"}
                 >
                   {isDetached() ? "Re-attach to main" : "Open in new window"}
                 </button>

@@ -478,6 +478,23 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   inset: 0;
 }
 
+.terminal-automation-input {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 2px;
+  height: 2px;
+  min-width: 2px;
+  min-height: 2px;
+  padding: 0;
+  border: 0;
+  opacity: 0.01;
+  resize: none;
+  color: transparent;
+  background: transparent;
+}
+
 .terminal-host .xterm {
   height: 100%;
   padding: 2px 0 0 4px;

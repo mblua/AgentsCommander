@@ -223,4 +223,44 @@ describe("TerminalApp workflow", () => {
       rendered.cleanup();
     }
   });
+
+  it("forwards automation input to the active PTY", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [
+      session({
+        id: "session-1",
+        name: "wg-1-dev-team/architect",
+        workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+
+      const input = rendered.root.querySelector<HTMLTextAreaElement>(
+        '[data-ac-testid="terminal.input"]'
+      );
+      expect(input?.getAttribute("data-ac-state")).toBe("ready");
+
+      input!.value = "status\r";
+      input!.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+      await waitFor(() =>
+        expect(fake.lastCall("pty_write")?.args).toEqual({
+          sessionId: "session-1",
+          data: [115, 116, 97, 116, 117, 115, 13],
+        })
+      );
+      await waitFor(() =>
+        expect(fake.lastCall("set_last_prompt")?.args).toEqual({
+          id: "session-1",
+          text: "status",
+        })
+      );
+      expect(input!.value).toBe("");
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });
