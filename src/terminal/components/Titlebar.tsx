@@ -93,20 +93,36 @@ const Titlebar: Component<TitlebarProps> = (props) => {
               class="titlebar-btn titlebar-btn-attach"
               onClick={handleReattach}
               title="Re-attach to main window"
+              data-ac-testid="terminal.titlebar.reattach"
+              data-ac-role="button"
             >
               &#x2934;
             </button>
           </Show>
-          <button class="titlebar-btn" onClick={handleMinimize} title="Minimize">
+          <button
+            class="titlebar-btn"
+            onClick={handleMinimize}
+            title="Minimize"
+            data-ac-testid="terminal.titlebar.minimize"
+            data-ac-role="button"
+          >
             &#x2014;
           </button>
-          <button class="titlebar-btn" onClick={handleMaximize} title="Maximize">
+          <button
+            class="titlebar-btn"
+            onClick={handleMaximize}
+            title="Maximize"
+            data-ac-testid="terminal.titlebar.maximize"
+            data-ac-role="button"
+          >
             &#x25A1;
           </button>
           <button
             class="titlebar-btn titlebar-btn-close"
             onClick={handleClose}
             title="Close"
+            data-ac-testid="terminal.titlebar.close"
+            data-ac-role="button"
           >
             &#x2715;
           </button>

@@ -17,6 +17,7 @@ use agentscommander_lib::config::settings::{save_settings, AppSettings, Settings
 use agentscommander_lib::pty::git_watcher::GitWatcher;
 use agentscommander_lib::pty::idle_detector::IdleDetector;
 use agentscommander_lib::pty::manager::PtyManager;
+use agentscommander_lib::resource_monitor::ResourceMonitorState;
 use agentscommander_lib::session::manager::SessionManager;
 use agentscommander_lib::session::session::{SessionInfo, SessionStatus};
 use agentscommander_lib::shutdown::ShutdownSignal;
@@ -253,6 +254,7 @@ fn make_test_app(
         .manage(rtk_sweep_lock)
         .manage(rtk_startup_mode)
         .manage(git_watcher)
+        .manage(Arc::new(ResourceMonitorState::new()))
         .manage(Arc::clone(&pty_mgr))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty lifecycle test app");

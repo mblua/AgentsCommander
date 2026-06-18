@@ -160,6 +160,14 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
+    resourceMonitorEnabled: true,
+    maxConcurrentAgentProcesses: 3,
+    resourceWatchdogAction: "warn",
+    agentGroupWarnPrivateBytes: 8 * 1024 ** 3,
+    agentGroupKillPrivateBytes: 12 * 1024 ** 3,
+    agentProcessKillPrivateBytes: 12 * 1024 ** 3,
+    resourceKeepLastSnapshot: true,
+    resourceBackoffPolling: true,
     ...overrides,
   };
 }

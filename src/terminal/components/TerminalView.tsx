@@ -87,6 +87,25 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
+  const writeAutomationInput = (value: string) => {
+    if (!activeSessionId || !value) return;
+    const terminalInput = value.replace(/\r?\n/g, "\r");
+
+    const encoder = new TextEncoder();
+    void PtyAPI.write(activeSessionId, encoder.encode(terminalInput));
+
+    const entry = terminals.get(activeSessionId);
+    if (!entry) return;
+
+    for (const char of terminalInput) {
+      const capture = updatePromptCapture(entry.inputBuffer, char);
+      entry.inputBuffer = capture.buffer;
+      if (capture.submittedPrompt) {
+        void SessionAPI.setLastPrompt(activeSessionId, capture.submittedPrompt);
+      }
+    }
+  };
+
   const createSessionTerminal = (sessionId: string) => {
     const existing = terminals.get(sessionId);
     if (existing) {
@@ -321,7 +340,22 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       ref={hostRef!}
       data-ac-testid="terminal.host"
       data-ac-role="surface"
-    />
+    >
+      <textarea
+        class="terminal-automation-input"
+        aria-label="Terminal automation input"
+        disabled={!terminalStore.activeSessionId}
+        tabIndex={-1}
+        data-ac-testid="terminal.input"
+        data-ac-role="textbox"
+        data-ac-state={terminalStore.activeSessionId ? "ready" : "disabled"}
+        onInput={(event) => {
+          const value = event.currentTarget.value;
+          event.currentTarget.value = "";
+          writeAutomationInput(value);
+        }}
+      />
+    </div>
   );
 };
 

@@ -164,6 +164,10 @@ pub enum Commands {
     UiContextClick(crate::testability::ui_automation::UiContextClickArgs),
     /// Set an input/select WebView automation target by data-ac-testid
     UiSet(crate::testability::ui_automation::UiSetArgs),
+    /// Type text into a WebView automation target by data-ac-testid
+    UiType(crate::testability::ui_automation::UiTypeArgs),
+    /// Execute a Rust-handled automation hook
+    UiBackend(crate::testability::ui_automation::UiBackendArgs),
     /// Wait until a WebView automation target is available by data-ac-testid
     UiWait(crate::testability::ui_automation::UiWaitArgs),
 }
@@ -297,6 +301,8 @@ pub fn handle_cli(cmd: Commands) -> i32 {
             crate::testability::ui_automation::execute_context_click(args)
         }
         Commands::UiSet(args) => crate::testability::ui_automation::execute_set(args),
+        Commands::UiType(args) => crate::testability::ui_automation::execute_type(args),
+        Commands::UiBackend(args) => crate::testability::ui_automation::execute_backend(args),
         Commands::UiWait(args) => crate::testability::ui_automation::execute_wait(args),
     };
 

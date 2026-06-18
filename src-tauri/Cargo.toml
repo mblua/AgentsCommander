@@ -1,6 +1,6 @@
 [package]
 name = "agentscommander-new"
-version = "0.9.7"
+version = "0.9.8"
 edition = "2021"
 authors = ["AgentsCommander Contributors"]
 description = "AgentsCommander: Run multiple teams of AI coding agents"
@@ -45,6 +45,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_RestartManager",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
