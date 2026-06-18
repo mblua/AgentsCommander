@@ -704,19 +704,3 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   color: var(--statusbar-fg);
   font-size: var(--font-size-md);
 }
-
-.terminal-empty-btn {
-  padding: var(--spacing-sm) var(--spacing-md);
-  border: 1px solid rgba(0, 212, 255, 0.3);
-  background: rgba(0, 212, 255, 0.08);
-  color: var(--statusbar-accent);
-  font-family: var(--font-ui);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  border-radius: 6px;
-  transition: background var(--transition-fast);
-}
-
-.terminal-empty-btn:hover {
-  background: rgba(0, 212, 255, 0.15);
-}
