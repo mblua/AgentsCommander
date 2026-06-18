@@ -67,6 +67,10 @@ function makeInactiveEntry(name: string, path: string): Session {
     token: "",
     agentKind: null,
     startupWaitDetected: false,
+    requestedProfile: null,
+    effectiveProfile: null,
+    profileFallbackChain: [],
+    profileFallbackApplied: false,
   };
 }
 

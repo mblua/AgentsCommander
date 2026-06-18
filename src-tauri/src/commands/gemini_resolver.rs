@@ -14,11 +14,7 @@ use std::path::{Path, PathBuf};
 ///
 /// The cwd-to-slug lookup is deferred to `lookup_chats_dir_for_cwd` below
 /// (H1 softened contract — see plan §4.3).
-pub(crate) fn resolve_gemini_home(
-    shell: &str,
-    args: &[String],
-    cwd: &str,
-) -> Option<PathBuf> {
+pub(crate) fn resolve_gemini_home(shell: &str, args: &[String], cwd: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     resolve_gemini_home_at(&home, shell, args, cwd)
 }

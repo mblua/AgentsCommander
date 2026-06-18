@@ -12,6 +12,7 @@ interface PendingLaunch {
   path: string;
   sessionName: string;
   gitRepos: SessionRepoInput[];
+  currentAgentId?: string;
 }
 
 /** Build gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
@@ -46,36 +47,22 @@ const AcDiscoveryPanel: Component = () => {
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
 
   const handleAgentClick = (agent: AcAgentMatrix) => {
-    if (!agent.preferredAgentId) {
-      setPendingLaunch({ path: agent.path, sessionName: agent.name, gitRepos: [] });
-      return;
-    }
-    homeStore.hide();
-    SessionAPI.create({
-      cwd: agent.path,
+    setPendingLaunch({
+      path: agent.path,
       sessionName: agent.name,
-      agentId: agent.preferredAgentId,
+      gitRepos: [],
+      currentAgentId: agent.preferredAgentId,
     });
   };
 
   const handleReplicaClick = (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const gitRepos = buildGitRepos(replica);
 
-    if (!replica.preferredAgentId) {
-      setPendingLaunch({
-        path: replica.path,
-        sessionName: `${wg.name}/${replica.name}`,
-        gitRepos,
-      });
-      return;
-    }
-
-    homeStore.hide();
-    SessionAPI.create({
-      cwd: replica.path,
+    setPendingLaunch({
+      path: replica.path,
       sessionName: `${wg.name}/${replica.name}`,
-      agentId: replica.preferredAgentId,
       gitRepos,
+      currentAgentId: replica.preferredAgentId,
     });
   };
 
@@ -375,15 +362,22 @@ const AcDiscoveryPanel: Component = () => {
         <Portal>
           <AgentPickerModal
             sessionName={pendingLaunch()!.sessionName}
-            onSelect={(agent) => {
+            agentPath={pendingLaunch()!.path}
+            currentAgentId={pendingLaunch()!.currentAgentId}
+            onSelect={async (selection) => {
               const pending = pendingLaunch()!;
-              homeStore.hide();
-              SessionAPI.create({
+              // #516 — await create so a rejection (e.g. the Resource Monitor
+              // cap) reaches AgentPickerModal.apply()'s catch instead of being
+              // a swallowed unhandled rejection. Hide Home / clear the picker
+              // only after the session is created.
+              await SessionAPI.create({
                 cwd: pending.path,
                 sessionName: pending.sessionName,
-                agentId: agent.id,
+                agentId: selection.agent.id,
+                requestedProfile: selection.requestedProfile,
                 gitRepos: pending.gitRepos,
               });
+              homeStore.hide();
               setPendingLaunch(null);
             }}
             onClose={() => setPendingLaunch(null)}

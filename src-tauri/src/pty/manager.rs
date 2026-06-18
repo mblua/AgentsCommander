@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
+use crate::resource_monitor::ResourceLaunchRegistration;
 use crate::session::profile::IdleTuning;
 use crate::telegram::manager::OutputSenderMap;
 
@@ -287,9 +288,12 @@ impl PtyManager {
         cwd: &str,
         cols: u16,
         rows: u16,
+        configured_env: &[(String, String)],
+        env_remove_keys: &[String],
         extra_env: &[(String, String)],
         idle_tuning: IdleTuning,
         app_handle: AppHandle<R>,
+        mut resource_registration: Option<ResourceLaunchRegistration>,
     ) -> Result<(), AppError> {
         let pty_system = native_pty_system();
 
@@ -328,8 +332,22 @@ impl PtyManager {
             c
         };
         command.cwd(cwd);
-        command.env("TERM", "xterm-256color");
+        for key in env_remove_keys {
+            command.env_remove(key);
+        }
+        for (key, value) in configured_env {
+            command.env(key, value);
+        }
+        if !configured_env.is_empty() || !env_remove_keys.is_empty() {
+            log::info!(
+                "[pty] Applied {} configured env vars and removed {} inherited env vars for session {}",
+                configured_env.len(),
+                env_remove_keys.len(),
+                id
+            );
+        }
         crate::pty::credentials::apply_credential_env_to_pty_command(&mut command, extra_env);
+        command.env("TERM", "xterm-256color");
 
         if !extra_env.is_empty() {
             log::info!(
@@ -358,7 +376,7 @@ impl PtyManager {
             }
         }
 
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(command)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
@@ -367,19 +385,41 @@ impl PtyManager {
             id,
             child.process_id()
         );
+        if let Some(registration) = resource_registration.as_mut() {
+            let Some(pid) = child.process_id() else {
+                let _ = child.kill();
+                return Err(AppError::PtyError(
+                    "Resource Monitor could not capture spawned child pid".to_string(),
+                ));
+            };
+            if let Err(err) = registration.register_root_pid(pid) {
+                let _ = child.kill();
+                return Err(AppError::PtyError(err));
+            }
+        }
 
         // Drop the slave side — we only need the master
         drop(pair.slave);
 
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| AppError::PtyError(e.to_string()))?;
+        let writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(e) => {
+                if let Some(registration) = resource_registration.as_ref() {
+                    registration.rollback_registered();
+                }
+                return Err(AppError::PtyError(e.to_string()));
+            }
+        };
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| AppError::PtyError(e.to_string()))?;
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(e) => {
+                if let Some(registration) = resource_registration.as_ref() {
+                    registration.rollback_registered();
+                }
+                return Err(AppError::PtyError(e.to_string()));
+            }
+        };
 
         let instance = PtyInstance {
             master: Arc::new(Mutex::new(pair.master)),

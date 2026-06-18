@@ -26,6 +26,10 @@ export interface Session {
   agentKind: CodingAgentKind | null;
   trustStatus?: "trusted" | "untrusted" | "unknown" | null;
   startupWaitDetected: boolean;
+  requestedProfile: string | null;
+  effectiveProfile: string | null;
+  profileFallbackChain: string[];
+  profileFallbackApplied: boolean;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
@@ -94,6 +98,71 @@ export interface AgentConfig {
   color: string;
   gitPullBefore: boolean;
   excludeGlobalClaudeMd: boolean;
+  envs: CodingAgentEnv[];
+  /**
+   * v2 (#384): renamed from `isolateCodexHome`. Until adapters support other
+   * providers, only Codex consumes this flag. Serialized as `isolatedHome`.
+   */
+  isolatedHome: boolean;
+  /**
+   * #529 — instructions filename written to the agent root at launch (content =
+   * AC context + Role.md). Empty/undefined falls back to the command-derived
+   * default (Claude → CLAUDE.md, Gemini → GEMINI.md, else AGENTS.md). The empty
+   * string is normalized to omitted before save, so it is never persisted.
+   */
+  instructionsFilename?: string;
+}
+
+/**
+ * `"system"` is the v2 name for AgentsCommander-managed rows. The legacy v1
+ * value `"agentsCommander"` is migrated to `"system"` by the backend on load,
+ * so the frontend only ever sees v2 values after `SettingsAPI.get()`.
+ */
+export type CodingAgentEnvSource = "user" | "system";
+
+export interface CodingAgentEnv {
+  key: string;
+  value: string;
+  source: CodingAgentEnvSource;
+  enabled: boolean;
+}
+
+export interface CodingAgentProfilesConfig {
+  schemaVersion: number;
+  /** v2 (#384): renamed from `letters`. Keyed by profile slot letter A–Z. */
+  profileSlots: Record<string, ProfileSlotConfig>;
+  /** v2 (#384): renamed from `agentDefaults`. agentId → default profile letter. */
+  defaultProfileByAgent: Record<string, string>;
+  /** v2 (#384): renamed from `matrix`. agentId → letter → cell. */
+  profilesByAgent: Record<string, Record<string, ProfileCellConfig>>;
+}
+
+export interface ProfileSlotConfig {
+  /** v2 (#384): renamed from `name`. Human display label of the profile slot. */
+  label: string;
+}
+
+export interface ProfileCellConfig {
+  enabled: boolean;
+  /**
+   * v2 (#384): one complete invocation string per profile, replacing the v1
+   * `argv` array. An empty string falls back to `agents[].command` at launch.
+   */
+  command: string;
+  env: Record<string, string>;
+  notes: string;
+}
+
+export interface CodingAgentProfileResolution {
+  requestedProfile: string;
+  effectiveProfile: string;
+  fallbackChain: string[];
+  fallbackApplied: boolean;
+  requestedProfileInput: string | null;
+  instanceProfileOverride: string | null;
+  originDefaultProfile: string | null;
+  agentDefaultProfile: string | null;
+  warnings: string[];
 }
 
 export interface RepoMatch {
@@ -150,6 +219,7 @@ export interface AppSettings {
   defaultShell: string;
   defaultShellArgs: string[];
   agents: AgentConfig[];
+  codingAgentProfiles: CodingAgentProfilesConfig;
   telegramBots: TelegramBotConfig[];
   telegramNetworkPollErrorLogging: TelegramNetworkPollErrorLogging;
   restoreCoordinatorWakeState: boolean;
@@ -188,9 +258,119 @@ export interface AppSettings {
   agentTemplatesPath: string | null;
   themeLight: boolean;
   specBoardEnabled: boolean;
+  resourceMonitorEnabled: boolean;
+  maxConcurrentAgentProcesses: number;
+  resourceWatchdogAction: ResourceWatchdogAction;
+  agentGroupWarnPrivateBytes: number;
+  agentGroupKillPrivateBytes: number;
+  agentProcessKillPrivateBytes: number;
+  resourceKeepLastSnapshot: boolean;
+  resourceBackoffPolling: boolean;
 }
 
-export type UiAutomationAction = "query" | "click" | "setValue";
+export type ResourceWatchdogAction = "warn" | "killGroup";
+export type ResourceOverallState =
+  | "ok"
+  | "warn"
+  | "critical"
+  | "enforcing"
+  | "unknown";
+export type ResourceNetworkState = "unknown" | "observed";
+export type ResourceGroupState =
+  | "starting"
+  | "running"
+  | "terminating"
+  | "terminated"
+  | "quarantined"
+  | "failedCleanup"
+  | "unknownOwnership";
+export type ResourceKillReason =
+  | "user"
+  | "watchdog"
+  | "sessionDestroy"
+  | "appShutdown"
+  | "spawnRollback";
+
+export interface ResourceProcessIdentity {
+  pid: number;
+  creationTime100ns: number;
+}
+
+export interface ResourceProcessSnapshot {
+  identity?: ResourceProcessIdentity | null;
+  pid: number;
+  creationTime100ns?: number;
+  parentPid?: number | null;
+  parentIdentity?: ResourceProcessIdentity | null;
+  name?: string;
+  exeName?: string;
+  privateBytes?: number | null;
+  workingSetBytes?: number | null;
+  cpuPercent?: number | null;
+  owned?: boolean;
+  killAllowed: boolean;
+  depth?: number;
+}
+
+export interface ResourceAgentGroupSnapshot {
+  sessionId: string;
+  name: string;
+  /** #516 - workgroup label (e.g. "wg-5-dev-team"), "Root agent" for root-agent
+   * groups, or `null` for non-WG / ad-hoc / unparseable launches. Always present. */
+  workgroup: string | null;
+  /** #516 - bare agent name (e.g. "dev-rust"), or `null` when the launch cwd
+   * carries no replica identity. Always present. */
+  agent: string | null;
+  rootPid?: number | null;
+  rootIdentity?: ResourceProcessIdentity | null;
+  state: ResourceGroupState;
+  descendantsObserved: boolean;
+  processCount: number;
+  privateBytes?: number | null;
+  workingSetBytes?: number | null;
+  cpuPercent?: number | null;
+  networkState: ResourceNetworkState;
+  networkSummary: string;
+  killAllowed?: boolean;
+  processes: ResourceProcessSnapshot[];
+  lastError?: string | null;
+}
+
+export interface ResourceSnapshot {
+  capturedAt: string;
+  overallState: ResourceOverallState;
+  monitorEnabled: boolean;
+  activeAgentGroups: number;
+  maxConcurrentAgentGroups: number;
+  appPrivateBytes?: number | null;
+  appWorkingSetBytes?: number | null;
+  networkState: ResourceNetworkState;
+  networkSummary: string;
+  groups: ResourceAgentGroupSnapshot[];
+  warnings: string[];
+}
+
+export interface ResourceKillRequest {
+  sessionId: string;
+  reason: ResourceKillReason;
+}
+
+export interface ResourceKillResult {
+  sessionId: string;
+  state: ResourceGroupState;
+  killedProcesses?: ResourceProcessIdentity[];
+  killedPids?: number[];
+  quarantined: boolean;
+  message: string;
+}
+
+export type UiAutomationAction =
+  | "query"
+  | "click"
+  | "contextClick"
+  | "setValue"
+  | "typeText"
+  | "backend";
 
 export interface UiAutomationRequest {
   requestId: string;
@@ -213,6 +393,7 @@ export interface UiAutomationTarget {
   testId: string;
   role: string | null;
   state: string | null;
+  metadata: Record<string, string>;
   tag: string;
   text: string;
   visible: boolean;
@@ -351,6 +532,10 @@ export interface AcAgentReplica {
   repoPaths: string[];
   repoBranch?: string;
   isCoordinator: boolean;
+  /** #384: per-replica stable coding-agent selection (`tooling.currentCodingAgent`). */
+  currentCodingAgentId?: string;
+  /** #384: per-replica profile letter (`tooling.profile`, then legacy override). */
+  currentProfile?: string;
 }
 
 export interface AcWorkgroup {
@@ -363,10 +548,157 @@ export interface AcWorkgroup {
   teamName?: string;
 }
 
+export type LoopTriggerKind = "cron";
+export type LoopTargetKind = "workgroupCoordinator";
+export type MissedWhileClosedPolicy = "notify";
+export type BusyCoordinatorPolicy = "waitUntilIdle" | "forceInject" | "skip";
+
+export interface LoopLastResult {
+  kind: string;
+  message: string;
+}
+
+export interface AcLoopSummary {
+  id: string;
+  name: string;
+  enabled: boolean;
+  expr: string;
+  timezone: string;
+  targetKind: LoopTargetKind;
+  workgroup: string;
+  promptPreview: string;
+  busyCoordinator: BusyCoordinatorPolicy;
+  path: string;
+  configPath: string;
+  lastCheckedAt: string | null;
+  lastDueAt: string | null;
+  lastDeliveredAt: string | null;
+  lastResult: LoopLastResult | null;
+  pendingDueAt: string | null;
+  lastMissedClosedAt: string | null;
+  nextDueAt: string | null;
+}
+
+export interface LoopConfigDetails {
+  summary: AcLoopSummary;
+  promptBody: string;
+}
+
+export interface LoopCreateInput {
+  id?: string | null;
+  name: string;
+  expr: string;
+  workgroup: string;
+  promptBody: string;
+  busyCoordinator?: BusyCoordinatorPolicy | null;
+  enabled?: boolean | null;
+}
+
+export interface LoopUpdateInput {
+  name?: string | null;
+  expr?: string | null;
+  workgroup?: string | null;
+  promptBody?: string | null;
+  busyCoordinator?: BusyCoordinatorPolicy | null;
+  enabled?: boolean | null;
+}
+
+export interface LoopCronPreview {
+  nextDueAt: string | null;
+  upcoming: string[];
+}
+
+export interface LoopEventPayload {
+  kind: string;
+  projectPath: string;
+  loopId: string;
+  summary?: AcLoopSummary | null;
+  message?: string | null;
+}
+
 export interface AcDiscoveryResult {
   agents: AcAgentMatrix[];
   teams: AcTeam[];
   workgroups: AcWorkgroup[];
+  loops: AcLoopSummary[];
+}
+
+// ---------------------------------------------------------------------------
+// Broad-scope coding-agent profile assignment (#384 §7)
+// Mirrors src-tauri/src/commands/config.rs DTOs (all camelCase via serde).
+// ---------------------------------------------------------------------------
+
+/** `"replica"` | `"kind"` | `"workgroup"` — matches Rust `ProfileAssignmentScope`. */
+export type ProfileAssignmentScope = "replica" | "kind" | "workgroup";
+
+export interface ProfileAssignmentTarget {
+  workgroupName: string;
+  workgroupPath: string;
+  replicaName: string;
+  replicaPath: string;
+  identityPath: string;
+  originProject: string | null;
+  /** Every live session whose working directory resolves to this replica. */
+  liveSessionIds: string[];
+}
+
+export interface PreviewCodingAgentProfileSelectionRequest {
+  targetReplicaPath: string;
+  codingAgentId: string;
+  profile: string;
+  scope: ProfileAssignmentScope;
+  /**
+   * #384: the preview `targetFingerprint` is hashed over `restartSessions` (plan
+   * §7, test #29), and apply re-validates that fingerprint — so the preview must
+   * carry the restart choice or the two fingerprints can never match. The §7
+   * Rust DTO listing omits this field; backend must include `restart_sessions`
+   * here for the fingerprint to be consistent. (Flagged to tech-lead/dev-rust.)
+   */
+  restartSessions: boolean;
+}
+
+export interface PreviewCodingAgentProfileSelectionResult {
+  scope: ProfileAssignmentScope;
+  targetCount: number;
+  liveSessionCount: number;
+  /** Hash of (codingAgentId, profile, restart, sorted canonical target paths). */
+  targetFingerprint: string;
+  /** True for `kind`; requires the typed confirmation phrase. */
+  requiresExplicitConfirmation: boolean;
+  targets: ProfileAssignmentTarget[];
+  warnings: string[];
+}
+
+export interface ApplyCodingAgentProfileSelectionRequest {
+  targetReplicaPath: string;
+  codingAgentId: string;
+  profile: string;
+  scope: ProfileAssignmentScope;
+  restartSessions: boolean;
+  /** Required for `kind`/`workgroup`; `null` allowed for single-target `replica`. */
+  confirmedTargetFingerprint?: string | null;
+  /** Required for `kind`; the exact typed phrase from the preview. */
+  typedConfirmation?: string | null;
+}
+
+export interface ProfileAssignmentError {
+  code: string;
+  message: string;
+  sessionIds: string[];
+  replicaPaths: string[];
+}
+
+export interface ApplyCodingAgentProfileSelectionResult {
+  scope: ProfileAssignmentScope;
+  updatedCount: number;
+  restartedCount: number;
+  updatedReplicaPaths: string[];
+  restartedSessionIds: string[];
+  /** Sessions destroyed during restart that could not be recreated — surfaced as errors. */
+  destroyedButNotRecreatedSessionIds: string[];
+  targetFingerprint: string;
+  warnings: string[];
+  errors: ProfileAssignmentError[];
 }
 
 export type AcProjectRefreshReason =

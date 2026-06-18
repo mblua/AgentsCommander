@@ -47,6 +47,21 @@ fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     dst
 }
 
+#[test]
+fn default_capability_allows_resource_monitor_window() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities/default.json");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let capability: Value = serde_json::from_str(&raw).unwrap();
+    let windows = capability["windows"]
+        .as_array()
+        .expect("capability windows must be an array");
+
+    assert!(
+        windows.iter().any(|window| window == "resource-monitor"),
+        "resource-monitor must be in default capability windows so its frontend can mark UI automation ready"
+    );
+}
+
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
     let out = Command::new(bin).args(args).output().expect("spawn binary");
     (
@@ -189,6 +204,27 @@ fn normal_binary_refuses_ui_click_with_json_only_stdout() {
         &bin,
         &[
             "ui-click",
+            "--window",
+            "main",
+            "--selector",
+            "onboarding.confirm",
+        ],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["error"], "refusing_non_testeable_binary");
+}
+
+#[test]
+fn normal_binary_refuses_ui_context_click_with_json_only_stdout() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-context-click-non-testable");
+    let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-context-click",
             "--window",
             "main",
             "--selector",
@@ -386,6 +422,87 @@ fn fake_response_makes_ui_query_succeed() {
     let parsed = first_json(&stdout);
     assert_eq!(parsed["ok"], true);
     assert_eq!(parsed["target"]["testId"], "onboarding.confirm");
+}
+
+#[test]
+fn fake_response_makes_ui_context_click_succeed() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-context-click-fake-response");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let automation_dir = config_dir_for(&bin).join("ui-automation");
+    let requests_dir = automation_dir.join("requests");
+    let responses_dir = automation_dir.join("responses");
+
+    let responder = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+                .collect();
+            if let Some(path) = entries.first() {
+                let raw = std::fs::read_to_string(path).unwrap();
+                let request: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(request["window"], "main");
+                assert_eq!(request["action"], "contextClick");
+                assert_eq!(request["selector"], "project.loops.header.test");
+                let request_id = request["requestId"].as_str().unwrap();
+                let response = json!({
+                    "ok": true,
+                    "requestId": request_id,
+                    "window": "main",
+                    "action": "contextClick",
+                    "selector": "project.loops.header.test",
+                    "target": {
+                        "testId": "project.loops.header.test",
+                        "role": "button",
+                        "state": "ready",
+                        "tag": "button",
+                        "visible": true,
+                        "disabled": false,
+                        "checked": null,
+                        "selected": null,
+                        "pressed": null,
+                        "expanded": null,
+                        "rect": null
+                    }
+                });
+                std::fs::write(
+                    responses_dir.join(format!("{request_id}.json")),
+                    serde_json::to_string(&response).unwrap(),
+                )
+                .unwrap();
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for request");
+            thread::sleep(Duration::from_millis(25));
+        }
+    });
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-context-click",
+            "--window",
+            "main",
+            "--selector",
+            "project.loops.header.test",
+            "--timeout-ms",
+            "3000",
+        ],
+    );
+    responder.join().unwrap();
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["target"]["testId"], "project.loops.header.test");
 }
 
 #[test]

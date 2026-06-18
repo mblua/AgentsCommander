@@ -3,9 +3,11 @@ pub mod commands;
 pub mod config;
 pub mod errors;
 pub mod logging;
+pub mod loops;
 pub mod network;
 pub mod phone;
 pub mod pty;
+pub mod resource_monitor;
 pub mod session;
 pub mod shutdown;
 pub mod telegram;
@@ -243,6 +245,7 @@ pub fn run(
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr_clone = session_mgr.inner().clone();
                 let app_clone = app.clone();
+                let app_for_idle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let mgr = mgr_clone.read().await;
                     mgr.mark_idle(id).await;
@@ -250,6 +253,14 @@ pub fn run(
                         let _ = tauri::Emitter::emit(&app_clone, "session_updated", crate::session::session::SessionInfo::from(&s));
                     }
                     crate::config::sessions_persistence::persist_current_state(&mgr).await;
+                    if let Some(scheduler) =
+                        app_for_idle.try_state::<Arc<loops::scheduler::LoopScheduler>>()
+                    {
+                        scheduler
+                            .inner()
+                            .on_session_idle(app_for_idle.clone(), id)
+                            .await;
+                    }
                 });
             }
         },
@@ -293,12 +304,15 @@ pub fn run(
 
     let settings: SettingsState =
         Arc::new(tokio::sync::RwLock::new(config::settings::load_settings()));
+    let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
     let settings_for_web = Arc::clone(&settings);
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
     let spec_board_state: SpecBoardState = Arc::new(tokio::sync::RwLock::new(
         commands::spec_board::SpecBoardManager::new(),
     ));
+    let loop_scheduler = Arc::new(loops::scheduler::LoopScheduler::new());
+    let loop_scheduler_for_setup = Arc::clone(&loop_scheduler);
 
     // Issue #120 — RTK sweep mutex. Acquired by every in-process writer of
     // `.claude/settings.local.json`. See plan §7.5 for the design.
@@ -315,6 +329,8 @@ pub fn run(
     let shutdown_for_setup = shutdown_signal.clone();
     let shutdown_for_exit = shutdown_signal.clone();
     let tg_mgr_for_exit = tg_mgr.clone();
+    let resource_monitor_for_setup = Arc::clone(&resource_monitor_state);
+    let resource_monitor_for_exit = Arc::clone(&resource_monitor_state);
     let ui_automation_state_for_setup = ui_automation_state.clone();
     let ui_automation_state_for_exit = ui_automation_state.clone();
 
@@ -325,10 +341,12 @@ pub fn run(
         .manage(session_mgr)
         .manage(tg_mgr)
         .manage(network::OutboundNetwork::new().expect("failed to build shared network clients"))
+        .manage(Arc::clone(&resource_monitor_state))
         .manage(voice_tracking)
         .manage(settings)
         .manage(detached_sessions.clone())
         .manage(spec_board_state.clone())
+        .manage(loop_scheduler.clone())
         .manage(web_access_token.clone())
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
@@ -350,6 +368,12 @@ pub fn run(
             // logged before this point stay buffered; the frontend's first
             // `drain_error_logs` call collects them.
             crate::logging::spawn_error_emit_task(app.handle().clone());
+
+            resource_monitor::watchdog::start(
+                (*resource_monitor_for_setup).clone(),
+                app.state::<SettingsState>().inner().clone(),
+                shutdown_for_setup.clone(),
+            );
 
             // #271 — seed `<config_dir>/agent-templates/` + README on startup.
             crate::commands::role_templates::ensure_default_templates_dir_at_config();
@@ -560,6 +584,10 @@ pub fn run(
             // Start the mailbox poller for inter-agent message delivery
             let mailbox_poller = phone::mailbox::MailboxPoller::new();
             mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone());
+
+            loop_scheduler_for_setup
+                .clone()
+                .start(app.handle().clone(), shutdown_for_setup.clone());
 
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .expect("Failed to load app icon");
@@ -1012,6 +1040,7 @@ pub fn run(
                                         &tg_mgr_clone,
                                         &settings_state_clone,
                                         None,
+                                        None,
                                         true,
                                     )
                                     .await
@@ -1083,20 +1112,59 @@ pub fn run(
                                     }
                                 }
                                 if should_create {
+                                    let mut rebuild_failed = false;
+                                    let resolved_spawn = if let Some(aid) = ps.agent_id.as_deref() {
+                                        match commands::session::build_configured_agent_spawn_for_cwd(
+                                            &settings_snapshot,
+                                            aid,
+                                            &root_path,
+                                            ps.requested_profile.as_deref(),
+                                        ) {
+                                            Ok(spawn) => spawn,
+                                            Err(e) => {
+                                                log::error!(
+                                                    "[root-agent] Failed to rebuild configured agent command for restore '{}': {}",
+                                                    ps.name,
+                                                    e
+                                                );
+                                                failed_recoverable.push(ps.clone());
+                                                rebuild_failed = true;
+                                                None
+                                            }
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    if !rebuild_failed {
+                                    let (shell, shell_args, agent_label) =
+                                        if let Some(spawn) = resolved_spawn.as_ref() {
+                                            (
+                                                spawn.shell.clone(),
+                                                spawn.shell_args.clone(),
+                                                Some(spawn.trusted_agent_label.clone()),
+                                            )
+                                        } else {
+                                            (
+                                                ps.shell.clone(),
+                                                ps.shell_args.clone(),
+                                                ps.agent_label.clone(),
+                                            )
+                                        };
                                     match commands::session::create_session_inner(
                                         &app_handle,
                                         &session_mgr_clone,
                                         &pty_mgr_clone,
-                                        ps.shell.clone(),
-                                        ps.shell_args.clone(),
+                                        shell,
+                                        shell_args,
                                         root_path.clone(),
                                         Some(ps.name.clone()),
                                         ps.agent_id.clone(),
-                                        ps.agent_label.clone(),
+                                        agent_label,
                                         false,
                                         ps.git_repos.clone(),
                                         false,
                                         false, // is_delegated
+                                        resolved_spawn,
                                     )
                                     .await
                                     {
@@ -1169,6 +1237,7 @@ pub fn run(
                                             );
                                             failed_recoverable.push(ps.clone());
                                         }
+                                    }
                                     }
                                 }
                             }
@@ -1372,21 +1441,60 @@ pub fn run(
                             continue;
                         }
 
+                        // Wake: rebuild configured-agent sessions from the persisted recipe,
+                        // while custom-shell records keep their materialized shell args.
+                        let resolved_spawn = if let Some(aid) = ps.agent_id.as_deref() {
+                            match commands::session::build_configured_agent_spawn_for_cwd(
+                                &settings_snapshot,
+                                aid,
+                                &ps.working_directory,
+                                ps.requested_profile.as_deref(),
+                            ) {
+                                Ok(spawn) => spawn,
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to rebuild configured agent command for restore '{}': {}",
+                                        ps.name,
+                                        e
+                                    );
+                                    failed_recoverable.push(ps.clone());
+                                    continue;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let (shell, shell_args, agent_label) =
+                            if let Some(spawn) = resolved_spawn.as_ref() {
+                                (
+                                    spawn.shell.clone(),
+                                    spawn.shell_args.clone(),
+                                    Some(spawn.trusted_agent_label.clone()),
+                                )
+                            } else {
+                                (
+                                    ps.shell.clone(),
+                                    ps.shell_args.clone(),
+                                    ps.agent_label.clone(),
+                                )
+                            };
+
                         // Wake: full PTY restore via the existing create_session_inner call.
                         match commands::session::create_session_inner(
                             &app_handle,
                             &session_mgr_clone,
                             &pty_mgr_clone,
-                            ps.shell.clone(),
-                            ps.shell_args.clone(),
+                            shell,
+                            shell_args,
                             ps.working_directory.clone(),
                             Some(ps.name.clone()),
                             ps.agent_id.clone(),
-                            ps.agent_label.clone(),
+                            agent_label,
                             false, // Persist tooling on restore
                             ps.git_repos.clone(),
                             false, // skip_auto_resume = false → restore path; allow `--continue`
                             false, // is_delegated
+                            resolved_spawn,
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {
@@ -1585,6 +1693,16 @@ pub fn run(
             commands::pty::pty_resize,
             commands::config::get_settings,
             commands::config::update_settings,
+            commands::resource_monitor::get_resource_snapshot,
+            commands::resource_monitor::kill_resource_group,
+            commands::config::save_settings_draft,
+            commands::config::update_coding_agent_profiles,
+            commands::config::update_coding_agent_env_settings,
+            commands::config::set_agent_default_profile,
+            commands::config::set_instance_profile_override,
+            commands::config::resolve_coding_agent_profile,
+            commands::config::preview_coding_agent_profile_selection,
+            commands::config::apply_coding_agent_profile_selection,
             commands::config::set_inject_rtk_hook,
             commands::config::set_rtk_prompt_dismissed,
             commands::config::set_sounds_enabled,
@@ -1608,6 +1726,8 @@ pub fn run(
             commands::window::open_in_explorer,
             commands::window::open_guide_window,
             commands::window::open_spec_board_window,
+            commands::window::open_resource_monitor_window,
+            commands::window::dock_resource_monitor_window,
             commands::window::open_external_url,
             commands::window::focus_main_window,
             commands::spec_board::spec_board_new,
@@ -1647,6 +1767,13 @@ pub fn run(
             commands::ac_discovery::discover_project,
             commands::ac_discovery::get_replica_context_files,
             commands::ac_discovery::set_replica_context_files,
+            commands::loops::create_loop,
+            commands::loops::update_loop,
+            commands::loops::delete_loop,
+            commands::loops::toggle_loop,
+            commands::loops::run_loop_now,
+            commands::loops::get_loop_config,
+            commands::loops::preview_loop_cron,
             commands::entity_creation::create_agent_matrix,
             commands::entity_creation::delete_agent_matrix,
             commands::entity_creation::list_all_agents,
@@ -1728,6 +1855,18 @@ pub fn run(
                         shutdown.abort_now();
                     }
 
+                    for result in resource_monitor_for_exit
+                        .kill_all_owned_groups(resource_monitor::ResourceKillReason::AppShutdown)
+                    {
+                        if result.quarantined {
+                            log::warn!(
+                                "[shutdown] resource group {} quarantined during cleanup: {}",
+                                result.session_id,
+                                result.message
+                            );
+                        }
+                    }
+
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
 
@@ -1770,6 +1909,9 @@ mod tests {
                 color: "#10b981".to_string(),
                 git_pull_before: false,
                 exclude_global_claude_md: false,
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
             }],
             ..AppSettings::default()
         }

@@ -909,7 +909,9 @@ mod tests {
         let now = || fixed_now_at(2026, 1, 1, 12, 34, 56);
         let r = perform_inner(&wg, TaskOp::SetTitle("X".into()), now).unwrap();
         let bp = match r {
-            EditOutcome::Wrote { backup: Some(bp), .. } => bp,
+            EditOutcome::Wrote {
+                backup: Some(bp), ..
+            } => bp,
             other => panic!("expected Wrote with backup, got {:?}", other),
         };
         let name = bp.file_name().unwrap().to_string_lossy().into_owned();
@@ -1261,7 +1263,9 @@ mod tests {
         let now = || fixed_now_at(2026, 5, 7, 12, 0, 0);
         let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
         let backup_path = match &r {
-            EditOutcome::Wrote { backup: Some(bp), .. } => bp.clone(),
+            EditOutcome::Wrote {
+                backup: Some(bp), ..
+            } => bp.clone(),
             other => panic!("expected Wrote with backup, got {:?}", other),
         };
         // HIGH-2 assertion: backup bytes must equal the pre-clean file.
@@ -1306,10 +1310,10 @@ mod tests {
             let wg = fix.path().join("wg-1");
             std::fs::create_dir_all(&wg).unwrap();
             let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
-            
+
             // First call sets up the file
             perform_inner(&wg, TaskOp::SetTitle("Initial".into()), now).unwrap();
-            
+
             let barrier = Arc::new(Barrier::new(2));
             let wg_clone1 = wg.clone();
             let wg_clone2 = wg.clone();
@@ -1324,10 +1328,10 @@ mod tests {
                 b2.wait();
                 perform(&wg_clone2, TaskOp::AppendBody("second append".into()))
             });
-            
+
             let r1 = h1.join().unwrap();
             let r2 = h2.join().unwrap();
-            
+
             let content1 = match r1 {
                 Ok(EditOutcome::Wrote { content, .. }) => content,
                 Err(TaskOpError::LockTimeout) => continue,
@@ -1338,9 +1342,9 @@ mod tests {
                 Err(TaskOpError::LockTimeout) => continue,
                 other => panic!("h2 unexpected outcome: {:?}", other),
             };
-            
+
             let final_disk_content = std::fs::read_to_string(wg.join("TASK.md")).unwrap();
-            
+
             if final_disk_content.ends_with("first append\n") {
                 assert_eq!(content1, final_disk_content);
             } else if final_disk_content.ends_with("second append\n") {

@@ -11,6 +11,7 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
 import { TelegramIcon } from "./TelegramIcon";
+import { sessionProfileBadge } from "../../shared/profile-utils";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -38,6 +39,7 @@ const SessionItem: Component<{
     if (!props.session.agentId) return null;
     return settingsStore.current?.agents?.find((a) => a.id === props.session.agentId)?.label ?? null;
   };
+  const profileBadge = () => sessionProfileBadge(props.session);
   const sessionHasLivePty = () => !isInactive() && typeof props.session.status === "string";
   const isRecording = () => voiceRecorder.recordingSessionId() === props.session.id;
   const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
@@ -211,11 +213,14 @@ const SessionItem: Component<{
     });
   };
 
-  const restartSession = async (agentId?: string) => {
+  const restartSession = async (agentId?: string, requestedProfile?: string | null) => {
     setShowContextMenu(false);
     cleanupContextMenu();
     try {
-      await SessionAPI.restart(props.session.id, agentId ? { agentId } : undefined);
+      await SessionAPI.restart(
+        props.session.id,
+        agentId ? { agentId, requestedProfile } : undefined,
+      );
     } catch (e) {
       console.error("Failed to restart session:", e);
     }
@@ -286,6 +291,9 @@ const SessionItem: Component<{
       aria-label={isError() ? "Session Error" : isWarning() ? "Session Warning" : undefined}
       onClick={isInactive() ? undefined : handleClick}
       onContextMenu={isInactive() ? undefined : handleContextMenu}
+      data-ac-testid={`session.${props.session.id}`}
+      data-ac-role="button"
+      data-ac-state={props.isActive ? "active" : isInactive() ? "inactive" : "idle"}
     >
       <div
         class={`session-item-status ${isInactive() ? "offline" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
@@ -359,6 +367,16 @@ const SessionItem: Component<{
                   </span>
                 )}
               </Show>
+              <Show when={profileBadge()}>
+                {(badge) => (
+                  <span
+                    class="profile-badge"
+                    title={`Profile ${badge()}`}
+                  >
+                    {badge()}
+                  </span>
+                )}
+              </Show>
               <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
                 <div class="session-item-branches">
                   <For each={props.session.gitRepos}>
@@ -417,6 +435,9 @@ const SessionItem: Component<{
           onClick={handleDetachToggle}
           title={isDetached() ? "Re-attach to main window" : "Open in new window"}
           innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
+          data-ac-testid={`session.${props.session.id}.detachToggle`}
+          data-ac-role="button"
+          data-ac-state={isDetached() ? "detached" : "attached"}
         />
 
         <Show when={bridge()}>
@@ -447,7 +468,13 @@ const SessionItem: Component<{
             </For>
           </div>
         </Show>
-        <button class="session-item-close" onClick={handleClose} title="Close session">
+        <button
+          class="session-item-close"
+          onClick={handleClose}
+          title="Close session"
+          data-ac-testid={`session.${props.session.id}.destroy`}
+          data-ac-role="button"
+        >
           &#x2715;
         </button>
       </Show>
@@ -463,9 +490,12 @@ const SessionItem: Component<{
         <Portal>
           <AgentPickerModal
             sessionName={props.session.name}
-            onSelect={async (agent) => {
+            agentPath={props.session.workingDirectory}
+            currentAgentId={props.session.agentId}
+            currentRequestedProfile={props.session.requestedProfile}
+            onSelect={async (selection) => {
               setShowCodingAgentPicker(false);
-              await restartSession(agent.id);
+              await restartSession(selection.agent.id, selection.requestedProfile);
             }}
             onClose={() => setShowCodingAgentPicker(false)}
           />
@@ -478,10 +508,14 @@ const SessionItem: Component<{
             ref={contextMenuEl}
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
+            data-ac-testid={`session.${props.session.id}.menu`}
+            data-ac-role="menu"
           >
             <button
               class="session-context-option context-option-danger"
               onClick={handleRestart}
+              data-ac-testid={`session.${props.session.id}.restart`}
+              data-ac-role="menuitem"
             >
               Restart Session
             </button>
@@ -495,6 +529,9 @@ const SessionItem: Component<{
             <button
               class="session-context-option"
               onClick={handleContextDetachToggle}
+              data-ac-testid={`session.${props.session.id}.menu.detachToggle`}
+              data-ac-role="menuitem"
+              data-ac-state={isDetached() ? "detached" : "attached"}
             >
               {isDetached() ? "Re-attach to main" : "Open in new window"}
             </button>

@@ -38,7 +38,6 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Open guide | `actionBar.guide` | `click` |
 | Open spec board when enabled | `actionBar.specBoard` | `click` |
 | Detect terminal empty state | `terminal.empty` | `query` |
-| Start a new empty terminal session | `terminal.empty.newSession` | `click` |
 
 ## Settings Seed
 
@@ -63,7 +62,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 |---|---|
 | Project panel rows | `project.row.*`, `workgroup.row.*`, `team.row.*`, `agent.row.*`, `replica.row.*` |
 | Session rows | `session.row.<sessionId>` and row action selectors for close, detach, Telegram, explorer, mic |
-| Context menus | `contextMenu` action plus `menu.<surface>.<action>` selectors |
+| Context menus | Use `contextClick` on the owning row/header selector, then `query`/`click` the mounted action selector. Project Loops selectors include `project.loops.header.<projectId>`, `loop.row.<projectId>.<loopId>`, `loop.action.new.<projectId>`, `loop.action.runNow.<projectId>.<loopId>`, `loop.action.edit.<projectId>.<loopId>`, `loop.action.toggle.<projectId>.<loopId>`, and `loop.action.delete.<projectId>.<loopId>`. Loop delete uses an in-app confirmation with `loop.delete.confirm.<projectId>.<loopId>` and `loop.delete.cancel.<projectId>.<loopId>`. Disabled Loop rows use `data-ac-state="loop-disabled"` so their context menus remain actionable; reserve `data-ac-state="disabled"` for controls that automation should reject for non-query actions. |
 | Agent/open/new-agent modals | Dialog roots, list rows, template picker rows, form fields, launch actions |
 | New Team modal | Dialog root, wizard step markers, team name input, agent filter, agent checkboxes, coordinator radio buttons, repo input, create/back/next buttons |
 | New Workgroup modal | Dialog root, team select, task-title input, create/cancel buttons, creation progress/error state |

@@ -25,6 +25,18 @@ pub(crate) fn resolve_codex_sessions_root(
     resolve_codex_sessions_root_at(&home, shell, args, cwd)
 }
 
+pub(crate) fn resolve_codex_sessions_root_with_effective_home(
+    effective_codex_home: Option<&Path>,
+    shell: &str,
+    args: &[String],
+    cwd: &str,
+) -> Option<PathBuf> {
+    if let Some(home) = effective_codex_home {
+        return Some(home.join("sessions"));
+    }
+    resolve_codex_sessions_root(shell, args, cwd)
+}
+
 pub(crate) fn resolve_codex_sessions_root_at(
     home: &Path,
     _shell: &str,
@@ -84,6 +96,18 @@ mod tests {
     }
 
     #[test]
+    fn effective_codex_home_returns_sessions_path_before_it_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("isolated-codex");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let resolved =
+            resolve_codex_sessions_root_with_effective_home(Some(&home), "codex", &[], "");
+
+        assert_eq!(resolved, Some(home.join("sessions")));
+    }
+
+    #[test]
     fn resolve_codex_sessions_root_uses_home_dir_join_path() {
         let tmp = tempfile::tempdir().unwrap();
         let expected = tmp.path().join(".codex").join("sessions");
@@ -95,10 +119,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn canonicalize_cwd_for_codex_lowercases_and_normalizes() {
-        assert_eq!(
-            canonicalize_cwd_for_codex("C:/Users/Foo"),
-            "c:\\users\\foo"
-        );
+        assert_eq!(canonicalize_cwd_for_codex("C:/Users/Foo"), "c:\\users\\foo");
         assert_eq!(
             canonicalize_cwd_for_codex(r"C:\Users\Foo"),
             "c:\\users\\foo"

@@ -5,6 +5,7 @@ import type {
   AcDiscoveryResult,
   AppSettings,
   BridgeInfo,
+  CodingAgentProfilesConfig,
   Session,
 } from "../types";
 import { FakeTransport } from "./fake-transport";
@@ -81,6 +82,17 @@ export async function waitFor(
   throw new Error(`Timed out after ${timeoutMs}ms`);
 }
 
+function defaultCodingAgentProfiles(): CodingAgentProfilesConfig {
+  return {
+    schemaVersion: 2,
+    profileSlots: {
+      A: { label: "" },
+    },
+    defaultProfileByAgent: {},
+    profilesByAgent: {},
+  };
+}
+
 export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
     defaultShell: "pwsh",
@@ -131,7 +143,16 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     agentTemplatesPath: null,
     themeLight: true,
     specBoardEnabled: false,
+    resourceMonitorEnabled: true,
+    maxConcurrentAgentProcesses: 3,
+    resourceWatchdogAction: "warn",
+    agentGroupWarnPrivateBytes: 8 * 1024 ** 3,
+    agentGroupKillPrivateBytes: 12 * 1024 ** 3,
+    agentProcessKillPrivateBytes: 12 * 1024 ** 3,
+    resourceKeepLastSnapshot: true,
+    resourceBackoffPolling: true,
     ...overrides,
+    codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
   };
 }
 
@@ -158,6 +179,10 @@ export function session(overrides: Partial<Session> = {}): Session {
     agentKind: "codex",
     startupWaitDetected: false,
     ...overrides,
+    requestedProfile: overrides.requestedProfile ?? null,
+    effectiveProfile: overrides.effectiveProfile ?? null,
+    profileFallbackChain: overrides.profileFallbackChain ?? [],
+    profileFallbackApplied: overrides.profileFallbackApplied ?? false,
   };
 }
 
@@ -168,6 +193,7 @@ export function discovery(
     agents: [],
     teams: [],
     workgroups: [],
+    loops: [],
     ...overrides,
   };
 }

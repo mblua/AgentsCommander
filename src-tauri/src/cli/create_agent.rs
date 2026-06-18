@@ -55,6 +55,8 @@ pub struct SessionRequest {
     pub agent_id: String,
     pub shell: String,
     pub shell_args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_profile: Option<String>,
     pub timestamp: String,
 }
 
@@ -88,29 +90,22 @@ pub(crate) fn build_session_request(
         return Err(format!("launch agent '{}' has an empty command", agent.id));
     }
 
-    let (shell, shell_args) = if agent.git_pull_before {
-        (
-            "cmd.exe".to_string(),
-            vec!["/K".to_string(), format!("git pull && {}", command)],
-        )
-    } else {
-        let normalized = crate::config::agent_command::normalize_legacy_agent_command(command)
-            .map_err(|e| {
-                format!(
-                    "launch agent '{}' has an invalid command: {}. command={:?}",
-                    agent.id, e, agent.command
-                )
-            })?;
-        (normalized.shell, normalized.shell_args)
-    };
+    let normalized = crate::config::agent_command::normalize_legacy_agent_command(command)
+        .map_err(|e| {
+            format!(
+                "launch agent '{}' has an invalid command: {}. command={:?}",
+                agent.id, e, agent.command
+            )
+        })?;
 
     Ok(SessionRequest {
         id: uuid::Uuid::new_v4().to_string(),
         cwd,
         session_name,
         agent_id: agent.id.clone(),
-        shell,
-        shell_args,
+        shell: normalized.shell,
+        shell_args: normalized.shell_args,
+        requested_profile: None,
         timestamp: chrono::Utc::now().to_rfc3339(),
     })
 }
@@ -160,6 +155,9 @@ mod tests {
             color: "#000000".to_string(),
             git_pull_before: false,
             exclude_global_claude_md: false,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
         }
     }
 
@@ -215,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn build_session_request_wraps_git_pull_before_with_cmd_on_windows_shape() {
+    fn build_session_request_leaves_git_pull_before_for_backend_builder() {
         let mut launch_agent = agent("codex", "Codex", "codex --ask-for-approval never");
         launch_agent.git_pull_before = true;
 
@@ -229,13 +227,10 @@ mod tests {
         assert_eq!(request.cwd, "C:/repo/.ac/_agent_architect");
         assert_eq!(request.session_name, "repo/architect");
         assert_eq!(request.agent_id, "codex");
-        assert_eq!(request.shell, "cmd.exe");
+        assert_eq!(request.shell, "codex");
         assert_eq!(
             request.shell_args,
-            vec![
-                "/K".to_string(),
-                "git pull && codex --ask-for-approval never".to_string()
-            ]
+            vec!["--ask-for-approval".to_string(), "never".to_string()]
         );
     }
 
@@ -310,6 +305,7 @@ mod tests {
             agent_id: "codex".to_string(),
             shell: "codex".to_string(),
             shell_args: vec!["--ask-for-approval".to_string(), "never".to_string()],
+            requested_profile: None,
             timestamp: "2026-05-28T00:00:00Z".to_string(),
         };
 

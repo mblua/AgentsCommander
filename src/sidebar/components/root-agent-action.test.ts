@@ -24,6 +24,10 @@ function mkRoot(status: SessionStatus): Session {
     token: "",
     agentKind: null,
     startupWaitDetected: false,
+    requestedProfile: null,
+    effectiveProfile: null,
+    profileFallbackChain: [],
+    profileFallbackApplied: false,
   };
 }
 

@@ -489,11 +489,10 @@ pub(crate) fn create_agent_matrix_on_disk(
         }
     }
 
-    let mut config_str = serde_json::to_string_pretty(&default_agent_matrix_config())
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    config_str.push('\n');
-    std::fs::write(agent_dir.join("config.json"), config_str)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    write_local_config_value(
+        &agent_dir.join("config.json"),
+        default_agent_matrix_config(),
+    )?;
 
     let display_name = agent_matrix_display_name(project, &safe_name);
     Ok(CreatedAgentMatrixOnDisk {
@@ -538,11 +537,10 @@ pub(crate) fn create_agent_matrix_from_role(
     std::fs::write(&role_path, args.role_bytes)
         .map_err(|e| format!("Failed to write Role.md: {}", e))?;
 
-    let mut config_str = serde_json::to_string_pretty(&default_agent_matrix_config())
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))?;
-    config_str.push('\n');
-    std::fs::write(agent_dir.join("config.json"), config_str)
-        .map_err(|e| format!("Failed to write config.json: {}", e))?;
+    write_local_config_value(
+        &agent_dir.join("config.json"),
+        default_agent_matrix_config(),
+    )?;
 
     let project_path = args
         .workspace_dir
@@ -594,6 +592,17 @@ fn default_agent_matrix_config() -> serde_json::Value {
         "tooling": {},
         "context": ["$AGENTSCOMMANDER_CONTEXT", "Role.md"],
     })
+}
+
+fn write_local_config_value(config_path: &Path, value: serde_json::Value) -> Result<(), String> {
+    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+        let map = value
+            .as_object()
+            .ok_or_else(|| "Local config value must be a JSON object".to_string())?;
+        *obj = map.clone();
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn selected_workspace_dir(project: &Path) -> Result<PathBuf, String> {
@@ -912,10 +921,7 @@ pub(crate) fn create_or_update_replica_on_disk(
         "repos": assigned_repos,
         "context": context_entries,
     });
-    let config_str = serde_json::to_string_pretty(&replica_config)
-        .map_err(|e| format!("Failed to serialize replica config: {}", e))?;
-    std::fs::write(replica_dir.join("config.json"), config_str)
-        .map_err(|e| format!("Failed to write replica config: {}", e))?;
+    write_local_config_value(&replica_dir.join("config.json"), replica_config)?;
     Ok(replica_dir)
 }
 
@@ -1344,10 +1350,7 @@ pub async fn create_workgroup(
             "context": context_entries,
         });
 
-        let config_str = serde_json::to_string_pretty(&replica_config)
-            .map_err(|e| format!("Failed to serialize replica config: {}", e))?;
-        std::fs::write(replica_dir.join("config.json"), &config_str)
-            .map_err(|e| format!("Failed to write replica config: {}", e))?;
+        write_local_config_value(&replica_dir.join("config.json"), replica_config)?;
     }
 
     // Clone repos (async, partial failures logged but don't rollback)
@@ -1745,32 +1748,56 @@ async fn sync_workgroup_repos_inner(
 
             // Read existing config, preserving identity/tooling/other runtime fields
             let config_path = replica_dir.join("config.json");
-            let mut config: serde_json::Value = match std::fs::read_to_string(&config_path) {
-                Ok(content) => match serde_json::from_str(&content) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        result.errors.push(SyncError {
-                            replica: dir_name.to_string(),
-                            error: format!("Failed to parse config.json: {}", e),
-                        });
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    result.errors.push(SyncError {
-                        replica: dir_name.to_string(),
-                        error: format!("Failed to read config.json: {}", e),
-                    });
-                    continue;
-                }
-            };
+            let mut repaired_identity = None;
+            let write_result = crate::config::local_config_io::update_config_json_object(
+                &config_path,
+                false,
+                |obj| {
+                    let mut config = serde_json::Value::Object(std::mem::take(obj));
+                    let identity = repair_wg_replica_config_value(
+                        replica_dir,
+                        &mut config,
+                        WG_REPLICA_REQUIRED_CONTEXT,
+                    )?;
 
-            let identity = match repair_wg_replica_config_value(
-                replica_dir,
-                &mut config,
-                WG_REPLICA_REQUIRED_CONTEXT,
-            ) {
-                Ok(identity) => identity,
+                    // Update repos
+                    config["repos"] = serde_json::json!(assigned_repos);
+
+                    // Context merge: prepend required tokens to maintain consistent ordering
+                    // with create_workgroup() (which writes [$AC_CONTEXT, $REPOS_INFO] first).
+                    // Preserve custom non-Role entries while replacing identity-derived Role.md
+                    // entries with the repaired same-workspace identity.
+                    let existing_context: Vec<String> = config
+                        .get("context")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
+                        &existing_context,
+                        &["$AGENTSCOMMANDER_CONTEXT"],
+                        &identity.identity,
+                        identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+                    ));
+
+                    let final_obj = config.as_object_mut().ok_or_else(|| {
+                        format!(
+                            "Replica config {} must be a JSON object",
+                            config_path.display()
+                        )
+                    })?;
+                    *obj = std::mem::take(final_obj);
+                    repaired_identity = Some(identity);
+                    Ok(())
+                },
+            );
+
+            let _identity = match write_result {
+                Ok(_) => repaired_identity.expect("identity repaired before successful write"),
                 Err(e) => {
                     result.errors.push(SyncError {
                         replica: dir_name.to_string(),
@@ -1779,50 +1806,6 @@ async fn sync_workgroup_repos_inner(
                     continue;
                 }
             };
-
-            // Update repos
-            config["repos"] = serde_json::json!(assigned_repos);
-
-            // Context merge: prepend required tokens to maintain consistent ordering
-            // with create_workgroup() (which writes [$AC_CONTEXT, $REPOS_INFO] first).
-            // Preserve custom non-Role entries while replacing identity-derived Role.md
-            // entries with the repaired same-workspace identity.
-            let existing_context: Vec<String> = config
-                .get("context")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
-                &existing_context,
-                &["$AGENTSCOMMANDER_CONTEXT"],
-                &identity.identity,
-                identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
-            ));
-
-            // Write back
-            match serde_json::to_string_pretty(&config) {
-                Ok(serialized) => {
-                    if let Err(e) = std::fs::write(&config_path, &serialized) {
-                        result.errors.push(SyncError {
-                            replica: dir_name.to_string(),
-                            error: format!("Failed to write config.json: {}", e),
-                        });
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    result.errors.push(SyncError {
-                        replica: dir_name.to_string(),
-                        error: format!("Failed to serialize config.json: {}", e),
-                    });
-                    continue;
-                }
-            }
 
             // Write succeeded — record for in-memory refresh. Canonicalize each repo
             // path so source_path matches DiscoveryBranchWatcher's shape. Order of
@@ -2705,6 +2688,9 @@ mod tests {
                 color: "#000000".to_string(),
                 git_pull_before: false,
                 exclude_global_claude_md: false,
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
             },
             crate::config::settings::AgentConfig {
                 id: "claude".to_string(),
@@ -2713,6 +2699,9 @@ mod tests {
                 color: "#ffffff".to_string(),
                 git_pull_before: false,
                 exclude_global_claude_md: true,
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
             },
         ];
 

@@ -23,6 +23,10 @@ import {
   onTerminalAttached,
   onWorkgroupTaskUpdated,
   onAcProjectRefreshRequested,
+  onCodingAgentProfilesUpdated,
+  onCodingAgentEnvSettingsUpdated,
+  onCodingAgentProfileSelectionUpdated,
+  onLoopEvent,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
@@ -41,6 +45,7 @@ import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
 import OnboardingModal from "./components/OnboardingModal";
 import { handleProjectRefreshRequested } from "./project-refresh-handler";
+import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
 import "./styles/sidebar.css";
 
 interface SidebarAppProps {
@@ -57,11 +62,13 @@ function isExitedStatus(status: SessionStatus): boolean {
 
 const SidebarApp: Component<SidebarAppProps> = (props) => {
   const [showOnboarding, setShowOnboarding] = createSignal(false);
+  const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
   const unlisteners: UnlistenFn[] = [];
   let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
   let cleanupZoom: (() => void) | null = null;
   let cleanupGeometry: (() => void) | null = null;
   let stopTeamIdleWatcher: (() => void) | null = null;
+  let loopToastTimer: ReturnType<typeof setTimeout> | null = null;
   let raiseTerminalEnabled = true;
   let lastRaiseTime = 0;
   const blockContextMenu = (e: Event) => {
@@ -87,6 +94,15 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     } catch {}
   };
 
+  const showLoopToast = (toast: LoopToast) => {
+    if (loopToastTimer) clearTimeout(loopToastTimer);
+    setLoopToast(toast);
+    loopToastTimer = setTimeout(() => {
+      setLoopToast(null);
+      loopToastTimer = null;
+    }, 3000);
+  };
+
   onMount(async () => {
     // #289 — optimistically paint in light mode (the historic default and the
     // AppSettings default) to keep first paint flash-free for the common case.
@@ -100,6 +116,43 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentProfilesUpdated(() => {
+        settingsStore.refresh();
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentEnvSettingsUpdated(() => {
+        settingsStore.refresh();
+      })
+    );
+    unlisteners.push(
+      await onCodingAgentProfileSelectionUpdated((data) => {
+        settingsStore.refresh();
+        if (data.agentPath) {
+          void projectStore.reloadProjectIfLoaded(data.agentPath);
+        } else {
+          // Broad-scope apply (#384) touched many replicas with no single
+          // agentPath — reload every loaded project so discovery refreshes
+          // currentCodingAgentId/currentProfile everywhere.
+          for (const proj of projectStore.projects) {
+            void projectStore.reloadProject(proj.path);
+          }
+        }
+      })
+    );
+    unlisteners.push(
+      await onLoopEvent((data) => {
+        if (data.summary) {
+          projectStore.upsertLoop(data.projectPath, data.summary);
+        } else if (data.kind === "deleted") {
+          projectStore.removeLoop(data.projectPath, data.loopId);
+        }
+        void projectStore.reloadProjectIfLoaded(data.projectPath);
+        const toast = loopToastFromEvent(data);
+        if (toast) showLoopToast(toast);
       })
     );
 
@@ -300,6 +353,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (cleanupZoom) cleanupZoom();
     if (cleanupGeometry) cleanupGeometry();
     if (stopTeamIdleWatcher) stopTeamIdleWatcher();
+    if (loopToastTimer) clearTimeout(loopToastTimer);
     sessionsStore.setSidebarPointerInside(false);
     document.removeEventListener("mousedown", handleRaiseTerminal);
     document.removeEventListener("contextmenu", blockContextMenu);
@@ -325,6 +379,13 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       </div>
       <Show when={showOnboarding()}>
         <OnboardingModal onClose={() => setShowOnboarding(false)} />
+      </Show>
+      <Show when={loopToast()}>
+        {(toast) => (
+          <div class={toast().className} data-ac-testid="loop.toast">
+            {toast().message}
+          </div>
+        )}
       </Show>
     </>
   );

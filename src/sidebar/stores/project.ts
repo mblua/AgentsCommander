@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import type { AcWorkgroup, AcAgentMatrix, AcTeam } from "../../shared/types";
+import type { AcWorkgroup, AcAgentMatrix, AcTeam, AcLoopSummary } from "../../shared/types";
 import { ProjectAPI, SettingsAPI, AgentCreatorAPI } from "../../shared/ipc";
 import {
   findLoadedProjectPathForRefresh,
@@ -12,16 +12,34 @@ export interface ProjectState {
   workgroups: AcWorkgroup[];
   agents: AcAgentMatrix[];
   teams: AcTeam[];
+  loops: AcLoopSummary[];
 }
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
 const [loading, setLoading] = createSignal(false);
+const [lastLoadError, setLastLoadError] = createSignal<string | null>(null);
+const [initState, setInitState] = createSignal<{ attempted: boolean; pathCount: number }>({
+  attempted: false,
+  pathCount: 0,
+});
 const inFlightLoads = new Map<string, Promise<void>>();
 const inFlightReloads = new Map<string, Promise<void>>();
+const queuedReloads = new Set<string>();
 let loadingCount = 0;
 
 function normalizePath(p: string): string {
   return normalizeProjectPathForCompare(p);
+}
+
+/** Stringify whatever a rejected Tauri command throws (usually the Err string). */
+function formatLoadError(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
 }
 
 export const projectStore = {
@@ -37,6 +55,21 @@ export const projectStore = {
 
   get isLoading() {
     return loading();
+  },
+
+  /** Last error from a failed loadProject(). Surfaced as a sidebar status chip
+   *  (deferred Round-1 G11) and, critically, to the UI-automation surface so a
+   *  swallowed backend open_project/discover_project failure is observable
+   *  without devtools (#384 empty-tree triage). */
+  get lastLoadError() {
+    return lastLoadError();
+  },
+
+  /** Whether initFromSettings() ran, and how many paths it received. Lets the
+   *  empty-tree diagnostic distinguish "onMount never reached initFromSettings"
+   *  (attempted=false) from "ran but projectPaths was empty" (pathCount=0). */
+  get initState() {
+    return initState();
   },
 
   /** Register a project path in settings (via shared backend) and load its discovery data. */
@@ -74,15 +107,19 @@ export const projectStore = {
               workgroups: result.workgroups,
               agents: result.agents,
               teams: result.teams,
+              loops: result.loops,
             },
           ];
         });
+        setLastLoadError(null);
       } catch (e) {
-        // Round-1 G11 deferred: surface this to the user via toast/sidebar
-        // chip in a follow-up. For now, preserve the existing swallow-and-log
-        // so behaviour is no worse than today (initFromSettings silently drops
-        // a project whose Project AC Root was deleted between sessions.
+        // Round-1 G11: surface the failure instead of only logging it. The
+        // sidebar status chip + UI-automation `project.loadStatus` target now
+        // expose this so a swallowed open_project/discover_project error is
+        // diagnosable without devtools (previously it silently dropped a
+        // project whose Project AC Root was deleted between sessions).
         console.error("Failed to load project:", e);
+        setLastLoadError(formatLoadError(e));
       } finally {
         loadingCount--;
         if (loadingCount === 0) setLoading(false);
@@ -100,6 +137,9 @@ export const projectStore = {
     if (legacyPath && !paths.some((p) => normalizePath(p) === normalizePath(legacyPath))) {
       paths.push(legacyPath);
     }
+    // Record that boot-time load ran and with how many paths, so an empty tree
+    // can be triaged (onMount never got here vs. ran with zero paths).
+    setInitState({ attempted: true, pathCount: paths.length });
     for (const path of paths) {
       await projectStore.loadProject(path);
     }
@@ -123,6 +163,7 @@ export const projectStore = {
           workgroups: result.workgroups,
           agents: result.agents,
           teams: result.teams,
+          loops: result.loops,
         },
       ];
     });
@@ -178,26 +219,74 @@ export const projectStore = {
     );
   },
 
+  /** Apply a Loop summary returned by a mutation/event without waiting for discovery. */
+  upsertLoop(projectPath: string, loop: AcLoopSummary) {
+    const normalized = normalizePath(projectPath);
+    setProjects((prev) =>
+      prev.map((proj) => {
+        if (normalizePath(proj.path) !== normalized) return proj;
+        const existingIndex = proj.loops.findIndex((candidate) => candidate.id === loop.id);
+        const loops =
+          existingIndex === -1
+            ? [...proj.loops, loop]
+            : proj.loops.map((candidate) => (candidate.id === loop.id ? loop : candidate));
+        return { ...proj, loops };
+      })
+    );
+  },
+
+  /** Remove a Loop summary returned by a delete event without waiting for discovery. */
+  removeLoop(projectPath: string, loopId: string) {
+    const normalized = normalizePath(projectPath);
+    setProjects((prev) =>
+      prev.map((proj) =>
+        normalizePath(proj.path) === normalized
+          ? { ...proj, loops: proj.loops.filter((loop) => loop.id !== loopId) }
+          : proj
+      )
+    );
+  },
+
   /** Re-discover a single project and update its data in place */
   async reloadProject(path: string) {
     const normalized = normalizePath(path);
     const existing = inFlightReloads.get(normalized);
-    if (existing) return existing;
+    if (existing) {
+      queuedReloads.add(normalized);
+      return existing;
+    }
 
     const promise = (async () => {
       try {
-        const result = await ProjectAPI.discover(path);
-        setProjects((prev) =>
-          prev.map((p) =>
-            normalizePath(p.path) === normalized
-              ? { ...p, workgroups: result.workgroups, agents: result.agents, teams: result.teams }
-              : p
-          )
-        );
-      } catch (e) {
-        console.error("Failed to reload project:", e);
+        do {
+          queuedReloads.delete(normalized);
+          try {
+            const result = await ProjectAPI.discover(path);
+            if (queuedReloads.has(normalized)) {
+              // A mutation/event may have already applied fresher summary data while this
+              // discovery was awaiting. Let the queued discovery provide the next full state.
+              continue;
+            }
+            setProjects((prev) =>
+              prev.map((p) =>
+                normalizePath(p.path) === normalized
+                  ? {
+                      ...p,
+                      workgroups: result.workgroups,
+                      agents: result.agents,
+                      teams: result.teams,
+                      loops: result.loops,
+                    }
+                  : p
+              )
+            );
+          } catch (e) {
+            console.error("Failed to reload project:", e);
+          }
+        } while (queuedReloads.has(normalized));
       } finally {
         inFlightReloads.delete(normalized);
+        queuedReloads.delete(normalized);
       }
     })();
     inFlightReloads.set(normalized, promise);
@@ -223,8 +312,11 @@ export const projectStore = {
     setProjects([]);
     loadingCount = 0;
     setLoading(false);
+    setLastLoadError(null);
+    setInitState({ attempted: false, pathCount: 0 });
     inFlightLoads.clear();
     inFlightReloads.clear();
+    queuedReloads.clear();
   },
 };
 

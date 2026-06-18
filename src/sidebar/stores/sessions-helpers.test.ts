@@ -58,6 +58,10 @@ function mkSession(id: string, status: SessionStatus, overrides: Partial<Session
     token: "",
     agentKind: null,
     startupWaitDetected: false,
+    requestedProfile: null,
+    effectiveProfile: null,
+    profileFallbackChain: [],
+    profileFallbackApplied: false,
     ...overrides,
   };
 }

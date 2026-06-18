@@ -8,6 +8,7 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 - Multi-agent workgroups with file-based inter-agent messaging
 - Cross-coding-agent profiles: Claude Code · Codex · Gemini
+- OpenCode usable today via the custom coding-agent path (provider-agnostic: point it at any provider or model, including OpenRouter Fusion)
 - Agents Agency role-template picker (explicit downloaded cache from [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents))
 - Telegram bridge (PTY-mode + JSONL reader-mode per agent, plus photo/image sends for screenshots and artifacts)
 - Voice-to-text via Gemini API with auto-execute
@@ -20,7 +21,7 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 ### Coding-agent integrations
 
-- **OpenCode** - first-class profile alongside Claude Code, Codex, Gemini. ([#315](https://github.com/mblua/AgentsCommander/issues/315))
+- **OpenCode first-class profile** - OpenCode already runs via the custom coding-agent path (provider-agnostic). Remaining work: a tuned `CodingAgentKind` profile with resume tokens and idle tuning, alongside Claude Code, Codex, Gemini. ([#315](https://github.com/mblua/AgentsCommander/issues/315))
 - **NVIDIA OpenShell** - sandbox-runtime integration (not a coding-agent profile; OpenShell hosts other coding agents inside a policy-driven sandbox). ([#316](https://github.com/mblua/AgentsCommander/issues/316))
 
 ### Per-agent configuration

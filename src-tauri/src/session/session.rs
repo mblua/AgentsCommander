@@ -103,6 +103,16 @@ pub struct Session {
     /// and Telegram reader selection.
     #[serde(default)]
     pub agent_kind: Option<CodingAgentKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile_fallback_chain: Vec<String>,
+    #[serde(default)]
+    pub profile_fallback_applied: bool,
+    #[serde(skip)]
+    pub effective_codex_home: Option<String>,
     /// Telegram bot id that should be attached whenever this session has a live PTY.
     /// None means the Telegram toggle is OFF for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,6 +214,16 @@ pub struct SessionInfo {
     pub token: String,
     #[serde(default)]
     pub agent_kind: Option<CodingAgentKind>,
+    #[serde(default)]
+    pub requested_profile: Option<String>,
+    #[serde(default)]
+    pub effective_profile: Option<String>,
+    #[serde(default)]
+    pub profile_fallback_chain: Vec<String>,
+    #[serde(default)]
+    pub profile_fallback_applied: bool,
+    #[serde(skip)]
+    pub effective_codex_home: Option<String>,
     /// Internal carrier for sessions persistence. Not part of the frontend contract;
     /// the UI uses BridgeInfo events/listing for live bridge state.
     #[serde(skip)]
@@ -241,6 +261,11 @@ impl From<&Session> for SessionInfo {
             is_root_agent: s.is_root_agent,
             token: s.token.to_string(),
             agent_kind: s.agent_kind,
+            requested_profile: s.requested_profile.clone(),
+            effective_profile: s.effective_profile.clone(),
+            profile_fallback_chain: s.profile_fallback_chain.clone(),
+            profile_fallback_applied: s.profile_fallback_applied,
+            effective_codex_home: s.effective_codex_home.clone(),
             telegram_bot_id: s.telegram_bot_id.clone(),
             was_detached: s.was_detached,
             detached_geometry: s.detached_geometry.clone(),
@@ -276,6 +301,11 @@ mod tests {
             git_repos_gen: 0,
             token: Uuid::nil(),
             agent_kind: None,
+            requested_profile: None,
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,

@@ -14,7 +14,8 @@ import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
-import AgentPickerModal from "./AgentPickerModal";
+import { sessionProfileBadge } from "../../shared/profile-utils";
+import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import { rootAgentCodingAgentAction } from "./root-agent-action";
 import { TelegramIcon } from "./TelegramIcon";
 
@@ -65,6 +66,10 @@ const RootAgentBanner: Component = () => {
     if (!r) return "Root Agent";
     if (typeof r.status !== "string") return "Exited — click to wake";
     return "Root Agent";
+  });
+  const profileBadge = createMemo(() => {
+    const r = rootSession();
+    return r ? sessionProfileBadge(r) : null;
   });
 
   const bridge = () => {
@@ -211,16 +216,20 @@ const RootAgentBanner: Component = () => {
     setShowAgentPicker(true);
   };
 
-  const handleAgentSelected = async (agentId: string) => {
+  const handleAgentSelected = async (selection: AgentPickerSelection) => {
     setShowAgentPicker(false);
     if (busy()) return;
     setBusy(true);
     try {
-      const action = rootAgentCodingAgentAction(rootSession(), agentId);
+      const action = rootAgentCodingAgentAction(rootSession(), selection.agent.id);
       const session = action.kind === "create"
-        ? await SessionAPI.createRootAgent({ agentId: action.agentId })
+        ? await SessionAPI.createRootAgent({
+            agentId: action.agentId,
+            requestedProfile: selection.requestedProfile,
+          })
         : await SessionAPI.restart(action.id, {
             agentId: action.agentId,
+            requestedProfile: selection.requestedProfile,
             skipAutoResume: action.skipAutoResume,
           });
       sessionsStore.addSession(session);
@@ -384,6 +393,9 @@ const RootAgentBanner: Component = () => {
             ? "Open Root Agent session (right-click for options)"
             : "Create Root Agent session"
         }
+        data-ac-testid="rootAgent.banner"
+        data-ac-role="button"
+        data-ac-state={rootSession() ? (hasLivePty() ? "live" : "dormant") : "missing"}
       >
         <div class={`session-item-status ${dotClass()}`} />
         <div class="root-agent-avatar">
@@ -403,7 +415,12 @@ const RootAgentBanner: Component = () => {
         <div class="root-agent-text">
           <span class="root-agent-title">Agent's Commander</span>
           <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
-            <span class="root-agent-subtitle">{subtitle()}</span>
+            <span class="root-agent-subtitle">
+              {subtitle()}
+              <Show when={profileBadge()}>
+                {(badge) => <span class="profile-badge root-profile-badge">{badge()}</span>}
+              </Show>
+            </span>
           </Show>
 
           <Show when={isRecording()}>
@@ -493,6 +510,9 @@ const RootAgentBanner: Component = () => {
               onClick={handleDetachToggle}
               title={isDetached() ? "Re-attach to main window" : "Open in new window"}
               innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
+              data-ac-testid="rootAgent.detachToggle"
+              data-ac-role="button"
+              data-ac-state={isDetached() ? "detached" : "attached"}
             />
 
             <Show when={bridge()}>
@@ -523,7 +543,13 @@ const RootAgentBanner: Component = () => {
                 </For>
               </div>
             </Show>
-            <button class="session-item-close" onClick={handleClose} title="Close session">
+            <button
+              class="session-item-close"
+              onClick={handleClose}
+              title="Close session"
+              data-ac-testid="rootAgent.destroy"
+              data-ac-role="button"
+            >
               &#x2715;
             </button>
           </Show>
@@ -533,7 +559,10 @@ const RootAgentBanner: Component = () => {
         <Portal>
           <AgentPickerModal
             sessionName={rootSession()?.name ?? "Root Agent"}
-            onSelect={(agent) => handleAgentSelected(agent.id)}
+            agentPath={rootSession()?.workingDirectory}
+            currentAgentId={rootSession()?.agentId}
+            currentRequestedProfile={rootSession()?.requestedProfile}
+            onSelect={handleAgentSelected}
             onClose={() => setShowAgentPicker(false)}
           />
         </Portal>
@@ -548,11 +577,15 @@ const RootAgentBanner: Component = () => {
               top: `${contextMenuPos().y}px`,
             }}
             onClick={(e) => e.stopPropagation()}
+            data-ac-testid="rootAgent.menu"
+            data-ac-role="menu"
           >
             <button
               class="session-context-option context-option-danger"
               onClick={handleRestart}
               disabled={!rootSession()}
+              data-ac-testid="rootAgent.restart"
+              data-ac-role="menuitem"
             >
               Restart Session
             </button>
@@ -565,6 +598,9 @@ const RootAgentBanner: Component = () => {
                 <button
                   class="session-context-option"
                   onClick={handleContextDetachToggle}
+                  data-ac-testid="rootAgent.menu.detachToggle"
+                  data-ac-role="menuitem"
+                  data-ac-state={isDetached() ? "detached" : "attached"}
                 >
                   {isDetached() ? "Re-attach to main" : "Open in new window"}
                 </button>

@@ -191,6 +191,8 @@ pub struct PersistedSession {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_profile: Option<String>,
     /// Telegram bot id that was ON for this session at the last successful
     /// bridge attach. None means Telegram was OFF.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -777,6 +779,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             is_root_agent: s.is_root_agent,
             agent_id: s.agent_id.clone(),
             agent_label: s.agent_label.clone(),
+            requested_profile: s.requested_profile.clone(),
             telegram_bot_id: s.telegram_bot_id.clone(),
             // Fix A: read detach state directly from the Session (via SessionInfo). The
             // `DetachedSessionsState` set is NOT consulted at persist time — the Destroyed
@@ -1197,6 +1200,7 @@ mod tests {
             is_root_agent: false,
             agent_id: Some("aid-1".into()),
             agent_label: Some("Claude Code".into()),
+            requested_profile: None,
             telegram_bot_id: Some("bot-1".into()),
             was_detached: false,
             detached_geometry: None,
@@ -1250,6 +1254,7 @@ mod tests {
             is_root_agent: false,
             agent_id: None,
             agent_label: None,
+            requested_profile: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
@@ -1407,7 +1412,7 @@ mod tests {
         let project_paths = vec!["C:/projects/current".to_string()];
         let sessions = vec![
             PersistedSession {
-            last_prompt: None,
+                last_prompt: None,
                 name: "kept-coordinator".into(),
                 working_directory: "C:/projects/current/.ac/wg-1/__agent_tech-lead".into(),
                 is_coordinator: true,
@@ -1415,7 +1420,7 @@ mod tests {
                 ..Default::default()
             },
             PersistedSession {
-            last_prompt: None,
+                last_prompt: None,
                 name: "orphan-coordinator".into(),
                 working_directory: "C:/projects/removed/.ac/wg-1/__agent_tech-lead".into(),
                 is_coordinator: true,
@@ -1423,7 +1428,7 @@ mod tests {
                 ..Default::default()
             },
             PersistedSession {
-            last_prompt: None,
+                last_prompt: None,
                 name: "orphan-member".into(),
                 working_directory: "C:/projects/removed/.ac/wg-1/__agent_dev-rust".into(),
                 is_coordinator: false,
@@ -1450,13 +1455,13 @@ mod tests {
 
         let sessions = vec![
             PersistedSession {
-            last_prompt: None,
+                last_prompt: None,
                 name: "keep".into(),
                 working_directory: current_agent.to_string_lossy().to_string(),
                 ..Default::default()
             },
             PersistedSession {
-            last_prompt: None,
+                last_prompt: None,
                 name: "drop".into(),
                 working_directory: removed_agent.to_string_lossy().to_string(),
                 ..Default::default()
@@ -1745,6 +1750,7 @@ mod tests {
             is_root_agent: false,
             agent_id: None,
             agent_label: None,
+            requested_profile: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
@@ -1788,7 +1794,7 @@ mod tests {
         let cases = [SessionStatus::Exited(0), SessionStatus::Running];
         for status in cases {
             let ps = PersistedSession {
-            last_prompt: None,
+                last_prompt: None,
                 name: "coord-x".into(),
                 shell: "claude".into(),
                 shell_args: vec![],
@@ -1799,6 +1805,7 @@ mod tests {
                 is_root_agent: false,
                 agent_id: Some("aid-arch".into()),
                 agent_label: Some("Architect".into()),
+                requested_profile: None,
                 telegram_bot_id: None,
                 was_detached: false,
                 detached_geometry: None,
@@ -1864,6 +1871,7 @@ mod tests {
             is_root_agent: false,
             agent_id: None,
             agent_label: None,
+            requested_profile: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
@@ -1963,7 +1971,7 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             handles.push(thread::spawn(move || {
                 let sessions = vec![PersistedSession {
-            last_prompt: None,
+                    last_prompt: None,
                     name: format!("sess-{}", i),
                     shell: "cmd".into(),
                     shell_args: vec![],

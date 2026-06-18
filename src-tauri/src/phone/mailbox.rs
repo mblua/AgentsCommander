@@ -171,11 +171,11 @@ fn normalize_agent_for_wake(
 ) -> Result<ResolvedWakeAgentCommand, String> {
     let normalized = crate::config::agent_command::normalize_legacy_agent_command(&agent.command)
         .map_err(|e| {
-            format!(
-                "Invalid agent command from {} (agent id '{}', label '{}'): {}. command={:?}",
-                source, agent.id, agent.label, e, agent.command
-            )
-        })?;
+        format!(
+            "Invalid agent command from {} (agent id '{}', label '{}'): {}. command={:?}",
+            source, agent.id, agent.label, e, agent.command
+        )
+    })?;
 
     Ok(ResolvedWakeAgentCommand {
         shell: normalized.shell,
@@ -190,6 +190,7 @@ fn normalize_agent_for_wake(
 fn resolve_wake_agent_command_from_sources(
     agents: &[AgentConfig],
     preferred_agent: &str,
+    destination_current_agent: Option<&str>,
     destination_last_agent: Option<&str>,
     destination_config_path: Option<&Path>,
     sender_agent: Option<&str>,
@@ -205,6 +206,22 @@ fn resolve_wake_agent_command_from_sources(
         log::warn!(
             "[mailbox] wake: preferredAgent '{}' did not match a configured agent id; falling back to auto resolution",
             preferred_agent
+        );
+    }
+
+    // The Selection UI assignment (currentCodingAgent) is an explicit user choice
+    // and is what the "Entire Workgroup" coding-agent assignment writes to each
+    // replica. Honor it before launch history (lastCodingAgent) so the assignment
+    // propagates to freshly-spawned members that have never recorded a
+    // lastCodingAgent, and so a new selection overrides a stale launch history.
+    if let Some(agent_id) = destination_current_agent {
+        if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
+            return normalize_agent_for_wake(agent, format!("currentCodingAgent '{}'", agent_id))
+                .map(Some);
+        }
+        log::debug!(
+            "[mailbox] wake: currentCodingAgent '{}' did not match a configured agent id; falling back",
+            agent_id
         );
     }
 
@@ -1496,9 +1513,27 @@ impl MailboxPoller {
             local.to_string()
         };
 
+        let resolved_spawn = if let Some(aid) = resolved_command.agent_id.as_deref() {
+            let settings = app.state::<SettingsState>();
+            let cfg = settings.read().await;
+            crate::commands::session::build_configured_agent_spawn_for_cwd(&cfg, aid, &cwd, None)?
+        } else {
+            None
+        };
+        let (spawn_shell, spawn_args, spawn_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+            (
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                Some(spawn.trusted_agent_label.clone()),
+            )
+        } else {
+            (
+                resolved_command.shell.clone(),
+                resolved_command.shell_args.clone(),
+                resolved_command.agent_label.clone(),
+            )
+        };
         let spawn_source = resolved_command.source.clone();
-        let spawn_shell = resolved_command.shell.clone();
-        let spawn_args = resolved_command.shell_args.clone();
         let spawn_raw = resolved_command.raw_command.clone();
 
         log::info!(
@@ -1518,6 +1553,10 @@ impl MailboxPoller {
                 cwd,
                 session_name,
                 spawn_with_resume,
+                spawn_shell.clone(),
+                spawn_args.clone(),
+                spawn_label,
+                resolved_spawn,
             )
             .await
             .map_err(|e| {
@@ -1628,6 +1667,10 @@ impl MailboxPoller {
         cwd: String,
         session_name: String,
         spawn_with_resume: bool,
+        spawn_shell: String,
+        spawn_args: Vec<String>,
+        spawn_label: Option<String>,
+        resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
     ) -> Result<SessionInfo, String> {
         #[cfg(not(test))]
         let _ = msg;
@@ -1639,8 +1682,8 @@ impl MailboxPoller {
                 to: msg.to.clone(),
                 session_name: session_name.clone(),
                 cwd: cwd.clone(),
-                shell: resolved_command.shell.clone(),
-                shell_args: resolved_command.shell_args.clone(),
+                shell: spawn_shell.clone(),
+                shell_args: spawn_args.clone(),
                 skip_auto_resume,
             };
             {
@@ -1656,11 +1699,14 @@ impl MailboxPoller {
             let mgr = session_mgr.read().await;
             let session = mgr
                 .create_session(
-                    resolved_command.shell.clone(),
-                    resolved_command.shell_args.clone(),
+                    spawn_shell.clone(),
+                    spawn_args.clone(),
                     cwd,
-                    resolved_command.agent_id.clone(),
-                    resolved_command.agent_label.clone(),
+                    resolved_spawn
+                        .as_ref()
+                        .map(|spawn| spawn.trusted_agent_id.clone())
+                        .or_else(|| resolved_command.agent_id.clone()),
+                    spawn_label.clone(),
                     Vec::<SessionRepo>::new(),
                     false,
                 )
@@ -1683,16 +1729,17 @@ impl MailboxPoller {
             app,
             session_mgr.inner(),
             pty_mgr.inner(),
-            resolved_command.shell.clone(),
-            resolved_command.shell_args.clone(),
+            spawn_shell,
+            spawn_args,
             cwd,
             Some(session_name),                // readable name, no [temp] prefix
             resolved_command.agent_id.clone(), // links to agent config
-            resolved_command.agent_label.clone(), // human-readable label
-            false,            // skip_tooling_save = false → persist lastCodingAgent
+            spawn_label,                       // human-readable label
+            false,            // skip_tooling_save = false -> persist lastCodingAgent
             Vec::new(),       // git_repos
             skip_auto_resume, // see deliver_wake top
             true, // is_delegated
+            resolved_spawn,
         )
         .await
     }
@@ -2927,11 +2974,20 @@ impl MailboxPoller {
             cfg.agents.clone()
         };
 
+        let mut destination_current_agent: Option<String> = None;
         let mut destination_last_agent: Option<String> = None;
         let mut destination_config_path: Option<PathBuf> = None;
 
         if let Some(dest_path) = self.resolve_repo_path(&msg.to, app).await {
-            let config_path = Path::new(&dest_path)
+            let dest = Path::new(&dest_path);
+            // The Selection UI assignment (currentCodingAgent), including the
+            // "Entire Workgroup" path, is written to the replica's top-level
+            // config.json by set_replica_coding_agent_selection, not to the
+            // per-instance agent_local_dir config that holds lastCodingAgent.
+            destination_current_agent =
+                crate::config::coding_agent_profiles::read_replica_current_coding_agent(dest);
+
+            let config_path = dest
                 .join(crate::config::agent_local_dir_name())
                 .join("config.json");
             destination_config_path = Some(config_path.clone());
@@ -2946,6 +3002,7 @@ impl MailboxPoller {
         resolve_wake_agent_command_from_sources(
             &agents,
             &msg.preferred_agent,
+            destination_current_agent.as_deref(),
             destination_last_agent.as_deref(),
             destination_config_path.as_deref(),
             msg.sender_agent.as_deref(),
@@ -3131,21 +3188,52 @@ impl MailboxPoller {
 
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+            let resolved_spawn = {
+                let settings = app.state::<SettingsState>();
+                let cfg = settings.read().await;
+                match crate::commands::session::build_configured_agent_spawn_for_cwd(
+                    &cfg,
+                    &request.agent_id,
+                    &request.cwd,
+                    request.requested_profile.as_deref(),
+                ) {
+                    Ok(spawn) => spawn,
+                    Err(e) => {
+                        log::error!(
+                            "[session-requests] Failed to rebuild configured agent command for '{}': {}",
+                            request.session_name,
+                            e
+                        );
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                }
+            };
+            let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+                (
+                    spawn.shell.clone(),
+                    spawn.shell_args.clone(),
+                    Some(spawn.trusted_agent_label.clone()),
+                )
+            } else {
+                (request.shell.clone(), request.shell_args.clone(), None)
+            };
 
             match crate::commands::session::create_session_inner(
                 app,
                 session_mgr.inner(),
                 pty_mgr.inner(),
-                request.shell.clone(),
-                request.shell_args.clone(),
+                shell,
+                shell_args,
                 request.cwd.clone(),
                 Some(request.session_name.clone()),
                 Some(request.agent_id.clone()),
-                None,       // No agent label — auto-detected from shell
-                false,      // Persist tooling
-                Vec::new(), // git_repos
-                true,       // skip_auto_resume = true → CLI session-request is a fresh create
-                true,       // is_delegated
+                agent_label, // No agent label for legacy custom-shell fallback
+                false,       // Persist tooling
+                Vec::new(),  // git_repos
+                true,        // skip_auto_resume = true → CLI session-request is a fresh create
+                true,        // is_delegated
+                resolved_spawn,
             )
             .await
             {
@@ -3250,6 +3338,11 @@ mod tests {
             is_root_agent: false,
             token: "t".into(),
             agent_kind: Some(crate::session::profile::CodingAgentKind::Claude),
+            requested_profile: None,
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
@@ -3338,6 +3431,9 @@ mod tests {
             color: "#10b981".into(),
             git_pull_before: false,
             exclude_global_claude_md: false,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
         }
     }
 
@@ -3617,9 +3713,16 @@ mod tests {
         let agents = wake_agents();
 
         let resolved =
-            resolve_wake_agent_command_from_sources(&agents, "codex", Some("claude"), None, None)
-                .unwrap()
-                .unwrap();
+            resolve_wake_agent_command_from_sources(
+                &agents,
+                "codex",
+                None,
+                Some("claude"),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);
@@ -3635,6 +3738,7 @@ mod tests {
         let resolved = resolve_wake_agent_command_from_sources(
             &agents,
             "missing",
+            None,
             Some("codex"),
             Some(config_path),
             Some("claude"),
@@ -3652,9 +3756,16 @@ mod tests {
         let agents = wake_agents();
 
         let resolved =
-            resolve_wake_agent_command_from_sources(&agents, "auto", Some("codex"), None, None)
-                .unwrap()
-                .unwrap();
+            resolve_wake_agent_command_from_sources(
+                &agents,
+                "auto",
+                None,
+                Some("codex"),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);
@@ -3668,6 +3779,7 @@ mod tests {
         let resolved = resolve_wake_agent_command_from_sources(
             &agents,
             "auto",
+            None,
             Some("missing"),
             None,
             Some("claude"),
@@ -3688,6 +3800,7 @@ mod tests {
         let resolved = resolve_wake_agent_command_from_sources(
             &agents,
             "auto",
+            None,
             Some("missing"),
             None,
             Some("also-missing"),
@@ -3702,10 +3815,53 @@ mod tests {
     }
 
     #[test]
+    fn wake_agent_command_prefers_current_coding_agent_over_last() {
+        let agents = wake_agents();
+
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "auto",
+            Some("claude"),
+            Some("codex"),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.shell, "claude");
+        assert_eq!(resolved.agent_id.as_deref(), Some("claude"));
+        assert!(resolved.source.contains("currentCodingAgent 'claude'"));
+    }
+
+    #[test]
+    fn wake_agent_command_uses_current_coding_agent_when_last_missing() {
+        // The "Entire Workgroup" assignment writes currentCodingAgent to a
+        // freshly-spawned member that has no lastCodingAgent yet. Without it the
+        // resolver would fall through to senderAgent / first configured agent.
+        let agents = wake_agents();
+
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "auto",
+            Some("codex"),
+            None,
+            None,
+            Some("claude"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.shell, "codex");
+        assert_eq!(resolved.agent_id.as_deref(), Some("codex"));
+        assert!(resolved.source.contains("currentCodingAgent 'codex'"));
+    }
+
+    #[test]
     fn wake_agent_command_rejects_invalid_quoted_command_with_source() {
         let agents = vec![wake_agent("codex", "Codex", "codex \"unterminated")];
 
-        let err = resolve_wake_agent_command_from_sources(&agents, "codex", None, None, None)
+        let err = resolve_wake_agent_command_from_sources(&agents, "codex", None, None, None, None)
             .unwrap_err();
 
         assert!(err.contains("preferredAgent 'codex'"));
@@ -3720,9 +3876,16 @@ mod tests {
         let agents = wake_agents();
 
         let resolved =
-            resolve_wake_agent_command_from_sources(&agents, "codex", None, None, Some("claude"))
-                .unwrap()
-                .unwrap();
+            resolve_wake_agent_command_from_sources(
+                &agents,
+                "codex",
+                None,
+                None,
+                None,
+                Some("claude"),
+            )
+            .unwrap()
+            .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);

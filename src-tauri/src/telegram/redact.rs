@@ -71,10 +71,7 @@ pub fn redact(input: &str) -> String {
             // Look for `<digits>:<chars>` immediately after `/bot`.
             let after_prefix = i + 4;
             let digits_end = scan_while(bytes, after_prefix, is_ascii_digit);
-            if digits_end > after_prefix
-                && digits_end < bytes.len()
-                && bytes[digits_end] == b':'
-            {
+            if digits_end > after_prefix && digits_end < bytes.len() && bytes[digits_end] == b':' {
                 let chars_start = digits_end + 1;
                 let chars_end = scan_while(bytes, chars_start, is_token_char);
                 if chars_end - chars_start >= 10 {
@@ -175,7 +172,10 @@ mod tests {
 
     #[test]
     fn redacts_sendmessage_url() {
-        let s = format!("POST https://api.telegram.org/bot{}/sendMessage", FAKE_TG_TOKEN);
+        let s = format!(
+            "POST https://api.telegram.org/bot{}/sendMessage",
+            FAKE_TG_TOKEN
+        );
         let got = redact(&s);
         assert!(got.contains("/bot***/sendMessage"));
         assert!(!got.contains(FAKE_TG_TOKEN));
@@ -217,9 +217,15 @@ mod tests {
 
     #[test]
     fn preserves_non_secret_text() {
-        assert_eq!(redact("Telegram error: Unauthorized"), "Telegram error: Unauthorized");
+        assert_eq!(
+            redact("Telegram error: Unauthorized"),
+            "Telegram error: Unauthorized"
+        );
         assert_eq!(redact("Conflict"), "Conflict");
-        assert_eq!(redact("HTTP 429 Too Many Requests"), "HTTP 429 Too Many Requests");
+        assert_eq!(
+            redact("HTTP 429 Too Many Requests"),
+            "HTTP 429 Too Many Requests"
+        );
     }
 
     #[test]
@@ -240,10 +246,7 @@ mod tests {
 
     #[test]
     fn handles_telegram_and_gemini_in_one_string() {
-        let s = format!(
-            "tg=/bot{}/x gemini=?key={}",
-            FAKE_TG_TOKEN, FAKE_GEMINI_KEY
-        );
+        let s = format!("tg=/bot{}/x gemini=?key={}", FAKE_TG_TOKEN, FAKE_GEMINI_KEY);
         let got = redact(&s);
         assert!(!got.contains(FAKE_TG_TOKEN));
         assert!(!got.contains(FAKE_GEMINI_KEY));
@@ -334,10 +337,7 @@ mod tests {
 
     #[test]
     fn redacts_telegram_token_surrounded_by_non_ascii() {
-        let s = format!(
-            "résumé /bot{}/sendMessage 中文 ñ",
-            FAKE_TG_TOKEN
-        );
+        let s = format!("résumé /bot{}/sendMessage 中文 ñ", FAKE_TG_TOKEN);
         let got = redact(&s);
         assert!(got.contains("/bot***/sendMessage"), "got: {got}");
         assert!(!got.contains(FAKE_TG_TOKEN), "token leaked: {got}");

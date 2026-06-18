@@ -17,6 +17,7 @@ use agentscommander_lib::config::settings::{save_settings, AppSettings, Settings
 use agentscommander_lib::pty::git_watcher::GitWatcher;
 use agentscommander_lib::pty::idle_detector::IdleDetector;
 use agentscommander_lib::pty::manager::PtyManager;
+use agentscommander_lib::resource_monitor::ResourceMonitorState;
 use agentscommander_lib::session::manager::SessionManager;
 use agentscommander_lib::session::session::{SessionInfo, SessionStatus};
 use agentscommander_lib::shutdown::ShutdownSignal;
@@ -253,6 +254,7 @@ fn make_test_app(
         .manage(rtk_sweep_lock)
         .manage(rtk_startup_mode)
         .manage(git_watcher)
+        .manage(Arc::new(ResourceMonitorState::new()))
         .manage(Arc::clone(&pty_mgr))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty lifecycle test app");
@@ -433,6 +435,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             fixture.app.state::<SettingsState>().inner(),
             restart_old_id,
             None,
+            None,
             Some(true),
         )
         .await
@@ -611,7 +614,8 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             true,
             persisted_row.git_repos,
             false,
-            false,
+            false, // is_delegated
+            None,  // resolved_spawn
         )
         .await
         .unwrap_or_else(|e| {
@@ -702,7 +706,8 @@ impl LifecycleFixture {
             false,
             Vec::new(),
             true,
-            false,
+            false, // is_delegated
+            None,  // resolved_spawn
         )
         .await
     }

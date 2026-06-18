@@ -1,7 +1,7 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { AcWorkgroup, AcAgentReplica, AcTeam, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
+import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
@@ -10,11 +10,15 @@ import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
+import { isWgReplicaPath, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
-import AgentPickerModal from "./AgentPickerModal";
+import NewLoopModal from "./NewLoopModal";
+import EditLoopModal from "./EditLoopModal";
+import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerModal";
+import RestartPromptModal from "./RestartPromptModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
@@ -29,6 +33,33 @@ interface PendingLaunch {
   path: string;
   sessionName: string;
   gitRepos: SessionRepoInput[];
+  currentAgentId?: string;
+  currentRequestedProfile?: string | null;
+  scopeContext?: AgentPickerScopeContext;
+}
+
+function joinSearchText(...parts: Array<string | null | undefined | false>): string {
+  return parts
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .join(" ");
+}
+
+function agentDisplayName(name: string): string {
+  const normalized = name.replace(/\\/g, "/");
+  return normalized
+    .slice(normalized.lastIndexOf("/") + 1)
+    .replace(/^__?agent_/, "");
+}
+
+function teamMemberDisplayLabel(agentName: string): string {
+  const parts = agentName.replace(/\\/g, "/").split("/");
+  const agent = parts[parts.length - 1].replace(/^__?agent_/, "");
+  const project = parts[0];
+  return project && project !== agent ? `${agent}@${project}` : agent;
+}
+
+function sessionStatusSearchText(status: Session["status"]): string {
+  return typeof status === "string" ? status : `exited ${status.exited}`;
 }
 
 /** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
@@ -36,6 +67,53 @@ function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   return (replica.repoPaths ?? []).map((p) => {
     return { label: repoLabelFromPath(p), sourcePath: p };
   });
+}
+
+/**
+ * Build the AgentPicker scope context for a launching WG replica (#384 Frontend §5).
+ * Broad-scope assignment is only offered when the launch resolves to a real WG
+ * replica; the backend re-enumerates and is authoritative either way.
+ */
+function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPickerScopeContext {
+  return {
+    workgroupPath: wg.path,
+    workgroupName: wg.name,
+    targetReplicaPath: replica.path,
+    targetReplicaName: replica.name,
+    currentCodingAgentId: replica.currentCodingAgentId ?? null,
+    currentProfile: replica.currentProfile ?? null,
+  };
+}
+
+/** Derive scope context from a live replica session for the right-click "Coding
+ *  Agent" action. Falls back to a single-path (no broad scope) context when the
+ *  session is not a WG replica. */
+function deriveScopeContextFromSession(
+  session: Session | undefined,
+  sessionName: string,
+): AgentPickerScopeContext | undefined {
+  if (!session) return undefined;
+  const replicaPath = session.workingDirectory;
+  if (!isWgReplicaPath(replicaPath)) {
+    return {
+      targetReplicaPath: replicaPath,
+      currentCodingAgentId: session.agentId,
+      currentProfile: session.requestedProfile,
+    };
+  }
+  // Workgroup dir = parent of the replica dir, preserving the original separators.
+  const dirMatch = replicaPath.match(/^(.*)[\\/][^\\/]+[\\/]?$/);
+  const slash = sessionName.indexOf("/");
+  const wgName = slash >= 0 ? sessionName.slice(0, slash) : "";
+  const replicaName = slash >= 0 ? sessionName.slice(slash + 1) : sessionName;
+  return {
+    workgroupPath: dirMatch?.[1] ?? "",
+    workgroupName: wgName,
+    targetReplicaPath: replicaPath,
+    targetReplicaName: replicaName,
+    currentCodingAgentId: session.agentId,
+    currentProfile: session.requestedProfile,
+  };
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
@@ -76,6 +154,14 @@ function getActiveReplicasForWg(wg: AcWorkgroup): AcAgentReplica[] {
   return (wg.agents ?? []).filter(replica => isSessionLive(replicaSession(wg, replica)));
 }
 
+function runningCoordinatorPeers(wg: AcWorkgroup, replica: AcAgentReplica): AcAgentReplica[] {
+  return (wg.agents ?? []).filter((peer) => {
+    if (peer.name === replica.name) return false;
+    const dot = replicaDotClass(wg, peer);
+    return dot === "running" || dot === "active";
+  });
+}
+
 const ProjectPanel: Component = () => {
   // Listen for replica branch updates from the discovery watcher. TASK.md
   // updates are wired in sidebar/App.tsx (it owns the listener for the
@@ -92,6 +178,33 @@ const ProjectPanel: Component = () => {
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
+
+  // #537: post-assign "Restart now?" prompt. Hoisted to the stable ProjectPanel
+  // scope (NOT inside the projects <For>) so a background replica-list refresh,
+  // which replaces project object references and so re-creates each <For> row
+  // (disposing its local signals), cannot tear the modal down before the user
+  // answers. Mirrors the pendingLaunch picker below, hoisted for the same reason.
+  // The prompt closes only on Later / Restart now / overlay click.
+  const [restartPrompt, setRestartPrompt] = createSignal<{
+    sessionId: string;
+    replicaName: string;
+    agentId: string;
+    agentLabel: string;
+    requestedProfile: string | null;
+  } | null>(null);
+
+  // Restart the live session on the newly-assigned agent (same SessionAPI.restart
+  // the Restart button uses; honors currentCodingAgent, 0b03ad7). Consume-and-clear
+  // so a single click cannot fire twice.
+  const applyRestartPrompt = () => {
+    const prompt = restartPrompt();
+    setRestartPrompt(null);
+    if (!prompt) return;
+    void SessionAPI.restart(prompt.sessionId, {
+      agentId: prompt.agentId,
+      requestedProfile: prompt.requestedProfile,
+    }).catch((e) => console.error("Failed to restart session:", e));
+  };
 
   const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const existing = replicaSession(wg, replica);
@@ -129,30 +242,14 @@ const ProjectPanel: Component = () => {
     // Not instantiated — create session in-place
     const gitRepos = buildGitRepos(replica);
 
-    if (!replica.preferredAgentId) {
-      setPendingLaunch({
-        path: replica.path,
-        sessionName: replicaSessionName(wg, replica),
-        gitRepos,
-      });
-      return;
-    }
-
-    const newSession = await SessionAPI.create({
-      cwd: replica.path,
+    setPendingLaunch({
+      path: replica.path,
       sessionName: replicaSessionName(wg, replica),
-      agentId: replica.preferredAgentId,
       gitRepos,
+      currentAgentId: replica.currentCodingAgentId ?? replica.preferredAgentId,
+      currentRequestedProfile: replica.currentProfile ?? null,
+      scopeContext: replicaScopeContext(wg, replica),
     });
-    await SessionAPI.switch(newSession.id);
-    if (isTauri) {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const detachedLabel = `terminal-${newSession.id.replace(/-/g, "")}`;
-      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-      if (!detachedWin) {
-        await WindowAPI.ensureTerminal();
-      }
-    }
   };
 
   const handleAgentClick = async (agent: { name: string; path: string; preferredAgentId?: string }) => {
@@ -170,29 +267,50 @@ const ProjectPanel: Component = () => {
       return;
     }
 
-    if (!agent.preferredAgentId) {
-      setPendingLaunch({ path: agent.path, sessionName: agent.name, gitRepos: [] });
-      return;
-    }
-
-    const newSession = await SessionAPI.create({
-      cwd: agent.path,
+    setPendingLaunch({
+      path: agent.path,
       sessionName: agent.name,
-      agentId: agent.preferredAgentId,
+      gitRepos: [],
+      currentAgentId: agent.preferredAgentId,
     });
-    await SessionAPI.switch(newSession.id);
-    if (isTauri) {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const detachedLabel = `terminal-${newSession.id.replace(/-/g, "")}`;
-      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-      if (!detachedWin) {
-        await WindowAPI.ensureTerminal();
-      }
-    }
   };
 
   return (
     <>
+    {/* Empty-tree status: visible to the user (deferred Round-1 G11 chip) and
+        to UI-automation. `data-ac-state` + `data-ac-detail` make a swallowed
+        boot/load failure observable without devtools — loading (stuck) vs
+        error (with message) vs empty (did initFromSettings run? how many paths?). */}
+    <Show when={projectStore.projects.length === 0}>
+      <div
+        class="project-load-status"
+        data-ac-testid="project.loadStatus"
+        data-ac-role="status"
+        data-ac-state={
+          projectStore.isLoading ? "loading" : projectStore.lastLoadError ? "error" : "empty"
+        }
+        data-ac-detail={
+          `init:${projectStore.initState.attempted ? projectStore.initState.pathCount : "no"}` +
+          ` err:${projectStore.lastLoadError ?? "none"}`
+        }
+      >
+        <Show
+          when={projectStore.isLoading}
+          fallback={
+            <Show
+              when={projectStore.lastLoadError}
+              fallback={<span class="ac-empty-hint">No projects loaded</span>}
+            >
+              <span class="ac-empty-hint">
+                Failed to load project: {projectStore.lastLoadError}
+              </span>
+            </Show>
+          }
+        >
+          <span class="ac-empty-hint">Loading projects…</span>
+        </Show>
+      </div>
+    </Show>
     <For each={projectStore.projects}>
       {(proj) => {
         const [collapsed, setCollapsed] = createSignal(false);
@@ -201,6 +319,8 @@ const ProjectPanel: Component = () => {
         const [showNewAgent, setShowNewAgent] = createSignal(false);
         const [showNewTeam, setShowNewTeam] = createSignal(false);
         const [showNewWorkgroup, setShowNewWorkgroup] = createSignal(false);
+        const [showNewLoop, setShowNewLoop] = createSignal(false);
+        const [editingLoop, setEditingLoop] = createSignal<AcLoopSummary | null>(null);
         const [teamCtxMenu, setTeamCtxMenu] = createSignal<{ team: AcTeam; x: number; y: number } | null>(null);
         const [editingTeam, setEditingTeam] = createSignal<AcTeam | null>(null);
         const [deletingTeam, setDeletingTeam] = createSignal<AcTeam | null>(null);
@@ -218,9 +338,21 @@ const ProjectPanel: Component = () => {
         const [wgRetryInProgress, setWgRetryInProgress] = createSignal(false);
         const [wgLastForceUsed, setWgLastForceUsed] = createSignal(false);
         let retryGen = 0;
+        const [filterOpen, setFilterOpen] = createSignal(false);
+        const [filterPattern, setFilterPattern] = createSignal("");
+        let filterInputEl: HTMLInputElement | undefined;
         const [agentCtxMenu, setAgentCtxMenu] = createSignal<{ agent: { name: string; path: string; preferredAgentId?: string }; x: number; y: number } | null>(null);
         const [agentsHeaderCtxMenu, setAgentsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [workgroupsHeaderCtxMenu, setWorkgroupsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
+        const [loopCtxMenu, setLoopCtxMenu] = createSignal<{ loop: AcLoopSummary; x: number; y: number } | null>(null);
+        const [loopsHeaderCtxMenu, setLoopsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
+        const [loopActionInProgress, setLoopActionInProgress] = createSignal<string | null>(null);
+        const [deletingLoop, setDeletingLoop] = createSignal<AcLoopSummary | null>(null);
+        const [loopDeleteError, setLoopDeleteError] = createSignal("");
+        const currentLoopDeleteInProgress = () => {
+          const loop = deletingLoop();
+          return !!loop && loopActionInProgress() === `${loop.id}:delete`;
+        };
         const [teamsHeaderCtxMenu, setTeamsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [deletingAgent, setDeletingAgent] = createSignal<{ name: string; path: string } | null>(null);
         const [agentDeleteError, setAgentDeleteError] = createSignal("");
@@ -246,8 +378,13 @@ const ProjectPanel: Component = () => {
           setDeleteInProgress(false);
           setDeletingTeam(null);
         };
+        const closeLoopDeleteModal = () => {
+          if (currentLoopDeleteInProgress()) return;
+          setLoopDeleteError("");
+          setDeletingLoop(null);
+        };
         createEffect(() => {
-          if (!deletingAgent() && !deletingWg() && !deletingTeam()) return;
+          if (!deletingAgent() && !deletingWg() && !deletingTeam() && !deletingLoop()) return;
           const handleDeleteModalKeyDown = (e: KeyboardEvent) => {
             if (e.key !== "Escape") return;
             if (deletingAgent()) {
@@ -256,6 +393,10 @@ const ProjectPanel: Component = () => {
             }
             if (deletingWg()) {
               closeWgDeleteModal();
+              return;
+            }
+            if (deletingLoop()) {
+              closeLoopDeleteModal();
               return;
             }
             closeTeamDeleteModal();
@@ -313,6 +454,225 @@ const ProjectPanel: Component = () => {
           const wg = deletingWg();
           return wg ? getActiveReplicasForWg(wg) : [];
         });
+        const filterState = createMemo(() => {
+          const pattern = filterPattern().trim();
+          if (!pattern) return { pattern, regex: null, error: "" };
+          try {
+            return { pattern, regex: new RegExp(pattern, "i"), error: "" };
+          } catch {
+            return { pattern, regex: null, error: "Invalid regex" };
+          }
+        });
+        const filterActive = () => filterState().regex !== null;
+        const filterError = () => filterState().error;
+        const focusFilterInput = () => {
+          const focus = () => {
+            filterInputEl?.focus();
+            filterInputEl?.select();
+          };
+          if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(focus);
+            return;
+          }
+          window.setTimeout(focus, 0);
+        };
+        const toggleFilter = () => {
+          // Magnifier acts as a toggle. Closing also drops any in-flight
+          // pattern so we never leave an active-but-hidden filter applied
+          // (the input is the only surface that reveals one is running).
+          if (filterOpen()) {
+            setFilterOpen(false);
+            setFilterPattern("");
+            return;
+          }
+          setFilterOpen(true);
+          focusFilterInput();
+        };
+        const clearFilter = () => {
+          setFilterPattern("");
+          focusFilterInput();
+        };
+        const handleFilterKeyDown = (e: KeyboardEvent) => {
+          if (e.key !== "Escape") return;
+          e.stopPropagation();
+          if (filterPattern()) {
+            setFilterPattern("");
+            focusFilterInput();
+            return;
+          }
+          setFilterOpen(false);
+        };
+        const matchesFilterText = (...parts: Array<string | null | undefined | false>) => {
+          const regex = filterState().regex;
+          if (!regex) return true;
+          return regex.test(joinSearchText(...parts));
+        };
+        // Search text for the session fields visible on EVERY row that shows this
+        // session (shared by replica rows and agent SessionItems): name, agent
+        // label, and the status dot's state. Conditionally-rendered badges are
+        // contributed by the per-row callers under the gate that matches their
+        // render — repo/branch (replicaSearchText / sessionRepoSearchText) and the
+        // profile badge — so "what you match == what you see" (#515 bug 1).
+        // `shell` is dropped: it is never shown on any row. status/waiting/pending
+        // stay — they are the visible status dot's state, so dropping them would
+        // hide a row whose dot the user can see.
+        const sessionSearchText = (session: Session | undefined) => {
+          if (!session) return "";
+          return joinSearchText(
+            session.name,
+            session.agentLabel,
+            sessionStatusSearchText(session.status),
+            session.waitingForInput ? "waiting" : null,
+            session.pendingReview ? "pending" : null
+          );
+        };
+        // Repo/branch chips on an agent SessionItem render only for a coordinator
+        // session with repos (SessionItem gate `isCoordinator && !inactive &&
+        // gitRepos.length`). Gate the search text identically so a non-coordinator
+        // agent row is never surfaced by a branch it isn't showing (#515 bug 1).
+        const sessionRepoSearchText = (session: Session | undefined) => {
+          if (!session || !session.isCoordinator || session.id.startsWith("inactive-")) return "";
+          return session.gitRepos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ");
+        };
+        const liveAgentLabel = (session: Session | undefined) => {
+          if (!session) return null;
+          if (session.agentLabel) return session.agentLabel;
+          if (!session.agentId) return null;
+          return settingsStore.current?.agents?.find((a) => a.id === session.agentId)?.label ?? null;
+        };
+        const replicaSearchText = (
+          replica: AcAgentReplica,
+          wg: AcWorkgroup,
+          extraBadge?: string,
+          taskTitle?: string | null
+        ) => {
+          const session = replicaSession(wg, replica);
+          const repos = session && session.gitRepos.length > 0
+            ? session.gitRepos
+            : configuredReplicaRepoBadges(replica, wg);
+          return joinSearchText(
+            taskTitle,
+            stripFrontmatter(taskTitle ?? ""),
+            replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name,
+            // Repo/branch badges render only for coordinators (renderReplicaItem
+            // gate `isCoord() && repoBadges().length>0`). Match the same gate so a
+            // non-coordinator row is never surfaced by a badge it isn't showing
+            // (#515 bug 1).
+            replica.isCoordinator
+              ? repos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ")
+              : null,
+            liveAgentLabel(session),
+            // A replica row renders the profile badge unconditionally whenever the
+            // session has one (renderReplicaItem) → always matchable here (#515 bug 2).
+            session ? sessionProfileBadge(session) : null,
+            replica.isCoordinator ? "coordinator" : null,
+            extraBadge,
+            sessionSearchText(session)
+          );
+        };
+        const replicaMatches = (
+          replica: AcAgentReplica,
+          wg: AcWorkgroup,
+          extraBadge?: string,
+          taskTitle?: string | null
+        ) => matchesFilterText(replicaSearchText(replica, wg, extraBadge, taskTitle));
+        const workgroupOwnMatches = (wg: AcWorkgroup, sectionLabel?: string) =>
+          matchesFilterText(sectionLabel, wg.name, wg.taskTitle, stripFrontmatter(wg.taskTitle ?? ""));
+        const workgroupMatches = (wg: AcWorkgroup, sectionLabel?: string) =>
+          workgroupOwnMatches(wg, sectionLabel) ||
+          wg.agents.some((replica) => replicaMatches(replica, wg));
+        const filteredReplicasForWorkgroup = (wg: AcWorkgroup, rowContext: string) => {
+          const sectionLabel = rowContext === "selected"
+            ? "Selected Workgroup"
+            : rowContext === "workgroups"
+              ? "Workgroups"
+              : undefined;
+          if (!filterActive() || matchesFilterText(sectionLabel) || workgroupOwnMatches(wg, sectionLabel)) {
+            return wg.agents;
+          }
+          return wg.agents.filter((replica) => replicaMatches(replica, wg));
+        };
+        const agentMatches = (agent: { name: string; path: string; preferredAgentId?: string }) => {
+          const session = sessionsStore.findSessionByName(agent.name);
+          const repoText = sessionRepoSearchText(session);
+          // The coding-agent badge shows the RESOLVED label (session.agentLabel,
+          // else the agentId→settings lookup). sessionSearchText only carries the
+          // raw agentLabel, so a session with a null agentLabel but a resolvable
+          // agentId would render the badge yet stay unmatchable. Include the
+          // resolved label here so the coding-agent badge is matchable wherever it
+          // renders — the headline #515 ask (filter agents by their coding agent).
+          // It is null exactly when no label resolves, i.e. when the badge is also
+          // hidden, so this never matches a badge that isn't shown.
+          const codingAgentLabel = liveAgentLabel(session);
+          // On an agent SessionItem the profile badge lives inside the meta block,
+          // which renders only when an agent label resolves OR a coordinator's
+          // repos show (SessionItem outer <Show>). Mirror that gate so the filter
+          // never surfaces an agent by a profile badge it isn't showing (#515 bug
+          // 1) — unlike replica rows, which render it unconditionally.
+          const metaVisible = !!codingAgentLabel || repoText !== "";
+          return matchesFilterText(
+            agentDisplayName(agent.name),
+            sessionSearchText(session),
+            codingAgentLabel,
+            repoText,
+            metaVisible && session ? sessionProfileBadge(session) : null
+          );
+        };
+        const teamMemberMatches = (team: AcTeam, agentName: string) =>
+          matchesFilterText(teamMemberDisplayLabel(agentName), agentName === team.coordinator ? "coordinator" : null);
+        const teamOwnMatches = (team: AcTeam) => matchesFilterText(team.name);
+        const teamMatches = (team: AcTeam) =>
+          teamOwnMatches(team) || team.agents.some((agentName) => teamMemberMatches(team, agentName));
+        const filteredTeamMembers = (team: AcTeam) => {
+          if (!filterActive() || matchesFilterText("Teams") || teamOwnMatches(team)) return team.agents;
+          return team.agents.filter((agentName) => teamMemberMatches(team, agentName));
+        };
+        // Memoized so each section reads one cached pass per (filter, store)
+        // change instead of rebuilding search text + re-running regex.test on
+        // every access (these are read 3-4× per render). Dependencies are all
+        // reactive (filterPattern signal, sessionsStore, projectStore via proj),
+        // so sections still update live as the user types (#515 bug 3).
+        // NOTE: filteredCoordinatorItems is defined further down, right after the
+        // coordinatorItems memo it reads — createMemo runs eagerly, so it must
+        // follow that declaration (not lead it) to avoid a temporal dead zone.
+        const filteredWorkgroups = createMemo(() => {
+          if (!filterActive() || matchesFilterText("Workgroups")) return proj.workgroups;
+          return proj.workgroups.filter((wg) => workgroupMatches(wg, "Workgroups"));
+        });
+        const filteredAgents = createMemo(() => {
+          if (!filterActive() || matchesFilterText("Agents")) return proj.agents;
+          return proj.agents.filter((agent) => agentMatches(agent));
+        });
+        const filteredTeams = createMemo(() => {
+          if (!filterActive() || matchesFilterText("Teams")) return proj.teams;
+          return proj.teams.filter((team) => teamMatches(team));
+        });
+        const selectedWorkgroupVisible = () => {
+          const wg = selectedWorkgroup();
+          return !filterActive() || matchesFilterText("Selected Workgroup") || (wg ? workgroupMatches(wg, "Selected Workgroup") : false);
+        };
+        // Status line shown on each loop row — shared with the filter search
+        // text so what the regex matches always equals what the user sees.
+        const loopStatusText = (loop: AcLoopSummary) =>
+          loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet");
+        const loopSearchText = (loop: AcLoopSummary) =>
+          // promptPreview is intentionally NOT matched: it renders only as the
+          // row's hover `title` (not visible text), so matching it would surface a
+          // loop with no on-screen reason — the case the comment above warned
+          // about (#515 bug 1).
+          joinSearchText(
+            loop.name,
+            loop.workgroup,
+            loop.expr,
+            loopStatusText(loop),
+            loop.enabled ? null : "disabled",
+            loop.pendingDueAt ? "pending" : null
+          );
+        const loopMatches = (loop: AcLoopSummary) => matchesFilterText(loopSearchText(loop));
+        const filteredLoops = createMemo(() => {
+          if (!filterActive() || matchesFilterText("Loops")) return proj.loops;
+          return proj.loops.filter((loop) => loopMatches(loop));
+        });
 
         let replicaCtxMenuEl: HTMLDivElement | undefined;
         let dismissCtx: (() => void) | null = null;
@@ -352,11 +712,18 @@ const ProjectPanel: Component = () => {
           );
         };
 
-        const restartReplicaSession = async (sessionId: string, agentId?: string) => {
+        const restartReplicaSession = async (
+          sessionId: string,
+          agentId?: string,
+          requestedProfile?: string | null,
+        ) => {
           setReplicaCtxMenu(null);
           cleanupCtx();
           try {
-            await SessionAPI.restart(sessionId, agentId ? { agentId } : undefined);
+            await SessionAPI.restart(
+              sessionId,
+              agentId ? { agentId, requestedProfile } : undefined,
+            );
           } catch (e) {
             console.error("Failed to restart session:", e);
           }
@@ -385,6 +752,8 @@ const ProjectPanel: Component = () => {
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
           setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu(null);
           setCtxMenuPos({ x: e.clientX, y: e.clientY });
@@ -403,6 +772,9 @@ const ProjectPanel: Component = () => {
         };
 
         const hasTeams = () => proj.teams.length > 0;
+        const projectAutomationId = () => automationIdPart(proj.path);
+        const hasLoopTargets = () =>
+          proj.workgroups.some((wg) => wg.agents.some((agent) => agent.isCoordinator));
         const naturalCoordinatorItems = createMemo(() => {
           const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
           for (const wg of proj.workgroups) {
@@ -455,6 +827,85 @@ const ProjectPanel: Component = () => {
             return proj.workgroups.find(w => w.name === prev.name) ?? null;
         });
 
+        // Memoized like the other filtered collections (#515 bug 3); placed here
+        // because createMemo is eager and this reads the coordinatorItems memo
+        // defined just above.
+        const filteredCoordinatorItems = createMemo(() => {
+          const items = coordinatorItems();
+          if (!filterActive()) return items;
+          return items.filter((item) =>
+            workgroupOwnMatches(item.wg) ||
+            replicaMatches(item.replica, item.wg, item.wg.name, item.wg.taskTitle) ||
+            matchesFilterText(runningCoordinatorPeers(item.wg, item.replica).map((peer) => `${peer.name} RUNNING`).join(" "))
+          );
+        });
+
+        const runLoopAction = async (
+          loop: AcLoopSummary,
+          action: "run" | "toggle" | "delete",
+          task: () => Promise<AcLoopSummary | null>
+        ) => {
+          const actionKey = `${loop.id}:${action}`;
+          if (loopActionInProgress()) return;
+          setLoopActionInProgress(actionKey);
+          try {
+            const updatedLoop = await task();
+            if (updatedLoop) {
+              projectStore.upsertLoop(proj.path, updatedLoop);
+            }
+            await projectStore.reloadProject(proj.path);
+          } catch (e) {
+            console.error(`Loop ${action} failed:`, e);
+          } finally {
+            setLoopActionInProgress(null);
+          }
+        };
+
+        const deleteLoop = async (loop: AcLoopSummary) => {
+          const actionKey = `${loop.id}:delete`;
+          if (loopActionInProgress()) return;
+          setLoopActionInProgress(actionKey);
+          setLoopDeleteError("");
+          try {
+            await LoopAPI.delete(proj.path, loop.id);
+            projectStore.removeLoop(proj.path, loop.id);
+            await projectStore.reloadProject(proj.path);
+            setDeletingLoop(null);
+          } catch (e: unknown) {
+            console.error("delete_loop failed:", e);
+            setLoopDeleteError(typeof e === "string" ? e : e instanceof Error ? e.message : "Failed to delete Loop");
+          } finally {
+            setLoopActionInProgress(null);
+          }
+        };
+
+        const handleLoopContextMenu = (e: MouseEvent, loop: AcLoopSummary) => {
+          e.preventDefault();
+          e.stopPropagation();
+          cleanupCtx();
+          setShowCtxMenu(false);
+          setTeamCtxMenu(null);
+          setWgCtxMenu(null);
+          setAgentCtxMenu(null);
+          setAgentsHeaderCtxMenu(null);
+          setWorkgroupsHeaderCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
+          setTeamsHeaderCtxMenu(null);
+          setReplicaCtxMenu(null);
+          setLoopCtxMenu({ loop, x: e.clientX, y: e.clientY });
+          const dismiss = (ev?: Event) => {
+            if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+            setLoopCtxMenu(null);
+            cleanupCtx();
+          };
+          dismissCtx = dismiss;
+          setTimeout(() => {
+            window.addEventListener("click", dismiss);
+            window.addEventListener("contextmenu", dismiss);
+            window.addEventListener("keydown", dismiss as any);
+          });
+        };
+
         const handleRemoveProject = () => {
           setShowCtxMenu(false);
           projectStore.removeProject(proj.path);
@@ -469,6 +920,8 @@ const ProjectPanel: Component = () => {
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
           setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu(null);
           setTeamCtxMenu({ team, x: e.clientX, y: e.clientY });
@@ -494,6 +947,8 @@ const ProjectPanel: Component = () => {
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
           setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu(null);
           setWgCtxMenu({ wg, x: e.clientX, y: e.clientY });
@@ -520,6 +975,8 @@ const ProjectPanel: Component = () => {
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
           setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu({
             sessionId: session.id,
@@ -572,6 +1029,10 @@ const ProjectPanel: Component = () => {
             if (s.agentLabel) return s.agentLabel;
             if (!s.agentId) return null;
             return settingsStore.current?.agents?.find((a) => a.id === s.agentId)?.label ?? null;
+          };
+          const profileBadge = () => {
+            const s = session();
+            return s ? sessionProfileBadge(s) : null;
           };
           const isLive = () => isSessionLive(session());
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
@@ -701,6 +1162,9 @@ const ProjectPanel: Component = () => {
                   <Show when={liveAgentLabel()}>
                     <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
                   </Show>
+                  <Show when={profileBadge()}>
+                    {(badge) => <span class="profile-badge">{badge()}</span>}
+                  </Show>
                   <Show when={isCoord()}>
                     <span class="ac-discovery-badge coord">coordinator</span>
                   </Show>
@@ -774,7 +1238,7 @@ const ProjectPanel: Component = () => {
                 </div>
               </div>
               <Show when={!wgCollapsed()}>
-                <For each={wg.agents}>
+                <For each={filteredReplicasForWorkgroup(wg, rowContext)}>
                   {(replica) => renderReplicaItem(replica, wg, undefined, undefined, undefined, rowContext)}
                 </For>
               </Show>
@@ -795,6 +1259,58 @@ const ProjectPanel: Component = () => {
               </span>
               <span class="project-title">Project: {proj.folderName}</span>
             </button>
+            <div
+              class="project-filter-row"
+              classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
+              data-ac-testid="project.regexFilter.row"
+            >
+              <div class="project-filter-field" classList={{ open: filterOpen() }}>
+                <input
+                  ref={filterInputEl}
+                  class="project-filter-input"
+                  value={filterPattern()}
+                  placeholder="wg-2.*"
+                  aria-label="Sidebar regex filter"
+                  aria-invalid={!!filterError()}
+                  data-ac-testid="project.regexFilter.input"
+                  onInput={(e) => setFilterPattern(e.currentTarget.value)}
+                  onKeyDown={handleFilterKeyDown}
+                />
+                <Show when={filterPattern()}>
+                  <button
+                    type="button"
+                    class="project-filter-clear"
+                    title="Clear regex filter"
+                    aria-label="Clear regex filter"
+                    data-ac-testid="project.regexFilter.clear"
+                    onClick={clearFilter}
+                  >
+                    &#x2715;
+                  </button>
+                </Show>
+              </div>
+              <button
+                type="button"
+                class="project-filter-toggle"
+                title={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
+                aria-label={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
+                aria-expanded={filterOpen()}
+                data-ac-testid="project.regexFilter.toggle"
+                onClick={toggleFilter}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m20 20-4.2-4.2" />
+                </svg>
+              </button>
+            </div>
+            <Show when={filterError()}>
+              {(error) => (
+                <div class="project-filter-error" role="alert" data-ac-testid="project.regexFilter.error">
+                  {error()}
+                </div>
+              )}
+            </Show>
 
             {/* Project context menu */}
             {showCtxMenu() && (
@@ -827,6 +1343,19 @@ const ProjectPanel: Component = () => {
                     }}
                   >
                     New Workgroup
+                  </button>
+                  <button
+                    class="session-context-option"
+                    classList={{ "context-option-disabled": !hasLoopTargets() }}
+                    disabled={!hasLoopTargets()}
+                    onClick={() => {
+                      if (!hasLoopTargets()) return;
+                      setShowCtxMenu(false);
+                      setShowNewLoop(true);
+                    }}
+                    data-ac-testid={`loop.action.new.${projectAutomationId()}.projectMenu`}
+                  >
+                    New Loop
                   </button>
                   <div class="context-separator" />
                   <button
@@ -865,22 +1394,37 @@ const ProjectPanel: Component = () => {
                 />
               </Portal>
             )}
+            {showNewLoop() && (
+              <Portal>
+                <NewLoopModal
+                  projectPath={proj.path}
+                  workgroups={proj.workgroups}
+                  onClose={() => setShowNewLoop(false)}
+                />
+              </Portal>
+            )}
+            {editingLoop() && (
+              <Portal>
+                <EditLoopModal
+                  projectPath={proj.path}
+                  workgroups={proj.workgroups}
+                  loop={editingLoop()!}
+                  onClose={() => setEditingLoop(null)}
+                />
+              </Portal>
+            )}
 
             <Show when={!collapsed()}>
               <div class="project-content">
                 {/* Coordinator Quick-Access — shown by styles that enable it via CSS */}
                 {(() => {
                   return (
-                    <Show when={coordinatorItems().length > 0}>
+                    <Show when={filteredCoordinatorItems().length > 0}>
                       <div class="coord-quick-access">
-                        <For each={coordinatorItems()}>
+                        <For each={filteredCoordinatorItems()}>
                           {(item) => {
                             const runningPeers = createMemo(() =>
-                              item.wg.agents.filter((peer) => {
-                                if (peer.name === item.replica.name) return false;
-                                const dot = replicaDotClass(item.wg, peer);
-                                return dot === "running" || dot === "active";
-                              })
+                              runningCoordinatorPeers(item.wg, item.replica)
                             );
                             return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.taskTitle, "quick");
                           }}
@@ -894,7 +1438,7 @@ const ProjectPanel: Component = () => {
                   const [selectedCollapsed, setSelectedCollapsed] = createSignal(false);
 
                   return (
-                    <Show when={sessionsStore.showCategories || sessionsStore.alwaysShowSelectedWorkgroup}>
+                    <Show when={(sessionsStore.showCategories || sessionsStore.alwaysShowSelectedWorkgroup) && selectedWorkgroupVisible()}>
                       <div class="ac-wg-group">
                         <div
                           class="ac-wg-header ac-wg-header--collapsible"
@@ -934,6 +1478,8 @@ const ProjectPanel: Component = () => {
                     setAgentsHeaderCtxMenu(null);
                     setTeamsHeaderCtxMenu(null);
                     setReplicaCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setLoopsHeaderCtxMenu(null);
                     setWorkgroupsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -950,7 +1496,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Workgroups") || filteredWorkgroups().length > 0)}>
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -963,14 +1509,14 @@ const ProjectPanel: Component = () => {
                         <div class="ac-wg-header-text">
                           <span class="ac-wg-name">Workgroups</span>
                         </div>
-                        <span class="ac-team-count">{proj.workgroups.length}</span>
+                        <span class="ac-team-count">{filteredWorkgroups().length}</span>
                       </div>
                       <Show when={!wgsCollapsed()}>
                         <Show
-                          when={proj.workgroups.length > 0}
+                          when={filteredWorkgroups().length > 0}
                           fallback={<div class="ac-empty-hint">No workgroups</div>}
                         >
-                          <For each={proj.workgroups}>
+                          <For each={filteredWorkgroups()}>
                             {(wg) => renderWorkgroupSubgroup(wg, "workgroups")}
                           </For>
                         </Show>
@@ -1004,6 +1550,132 @@ const ProjectPanel: Component = () => {
                     </>
                   );
                 })()}
+                {/* Loops */}
+                {(() => {
+                  const [loopsCollapsed, setLoopsCollapsed] = createSignal(false);
+
+                  const handleLoopsHeaderContextMenu = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cleanupCtx();
+                    setShowCtxMenu(false);
+                    setTeamCtxMenu(null);
+                    setWgCtxMenu(null);
+                    setAgentCtxMenu(null);
+                    setAgentsHeaderCtxMenu(null);
+                    setWorkgroupsHeaderCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setTeamsHeaderCtxMenu(null);
+                    setReplicaCtxMenu(null);
+                    setLoopsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
+                    const dismiss = (ev?: Event) => {
+                      if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+                      setLoopsHeaderCtxMenu(null);
+                      cleanupCtx();
+                    };
+                    dismissCtx = dismiss;
+                    setTimeout(() => {
+                      window.addEventListener("click", dismiss);
+                      window.addEventListener("contextmenu", dismiss);
+                      window.addEventListener("keydown", dismiss);
+                    });
+                  };
+
+                  const loopTestId = (loop: AcLoopSummary) =>
+                    `loop.row.${projectAutomationId()}.${automationIdPart(loop.id)}`;
+
+                  return (
+                    <>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Loops") || filteredLoops().length > 0)}>
+                    <div class="ac-wg-group ac-loop-group">
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        onClick={() => setLoopsCollapsed((c) => !c)}
+                        onContextMenu={handleLoopsHeaderContextMenu}
+                        data-ac-testid={`project.loops.header.${projectAutomationId()}`}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: loopsCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">Loops</span>
+                        </div>
+                        <span class="ac-team-count">{filteredLoops().length}</span>
+                      </div>
+                      <Show when={!loopsCollapsed()}>
+                        <Show
+                          when={filteredLoops().length > 0}
+                          fallback={<div class="ac-empty-hint">No loops</div>}
+                        >
+                          <For each={filteredLoops()}>
+                            {(loop) => (
+                              <div
+                                class="ac-loop-row"
+                                classList={{
+                                  "ac-loop-row-disabled": !loop.enabled,
+                                  "ac-loop-row-pending": !!loop.pendingDueAt,
+                                  "ac-loop-row-missed": loop.lastResult?.kind === "missedWhileClosed",
+                                }}
+                                onClick={() => setEditingLoop(loop)}
+                                onContextMenu={(e) => handleLoopContextMenu(e, loop)}
+                                title={loop.promptPreview}
+                                data-ac-testid={loopTestId(loop)}
+                                data-ac-state={[
+                                  loop.enabled ? "enabled" : "loop-disabled",
+                                  loop.pendingDueAt ? "pending" : "",
+                                ].filter(Boolean).join(" ")}
+                              >
+                                <div class="ac-loop-main">
+                                  <span class="ac-loop-name">{loop.name}</span>
+                                  <span class="ac-loop-target">{loop.workgroup}</span>
+                                </div>
+                                <div class="ac-loop-meta">
+                                  <span>{loop.expr}</span>
+                                  <Show when={loop.pendingDueAt}>
+                                    <span class="ac-discovery-badge pending">pending</span>
+                                  </Show>
+                                  <Show when={!loop.enabled}>
+                                    <span class="ac-discovery-badge disabled">disabled</span>
+                                  </Show>
+                                </div>
+                                <div class="ac-loop-status">
+                                  {loopStatusText(loop)}
+                                </div>
+                              </div>
+                            )}
+                          </For>
+                        </Show>
+                      </Show>
+                    </div>
+                    </Show>
+
+                    {/* Loops header context menu */}
+                    {loopsHeaderCtxMenu() && (
+                      <Portal>
+                        <div
+                          class="session-context-menu"
+                          style={{ left: `${loopsHeaderCtxMenu()!.x}px`, top: `${loopsHeaderCtxMenu()!.y}px` }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            class="session-context-option"
+                            classList={{ "context-option-disabled": !hasLoopTargets() }}
+                            disabled={!hasLoopTargets()}
+                            onClick={() => {
+                              if (!hasLoopTargets()) return;
+                              setLoopsHeaderCtxMenu(null);
+                              setShowNewLoop(true);
+                            }}
+                            data-ac-testid={`loop.action.new.${projectAutomationId()}`}
+                          >
+                            New Loop
+                          </button>
+                        </div>
+                      </Portal>
+                    )}
+                    </>
+                  );
+                })()}
                 {/* Agents */}
                 {(() => {
                   const [matrixCollapsed, setMatrixCollapsed] = createSignal(false);
@@ -1019,6 +1691,8 @@ const ProjectPanel: Component = () => {
                     setWorkgroupsHeaderCtxMenu(null);
                     setTeamsHeaderCtxMenu(null);
                     setReplicaCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setLoopsHeaderCtxMenu(null);
                     setAgentCtxMenu({ agent, x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -1044,6 +1718,8 @@ const ProjectPanel: Component = () => {
                     setWorkgroupsHeaderCtxMenu(null);
                     setTeamsHeaderCtxMenu(null);
                     setReplicaCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setLoopsHeaderCtxMenu(null);
                     setAgentsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -1060,7 +1736,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Agents") || filteredAgents().length > 0)}>
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -1076,10 +1752,10 @@ const ProjectPanel: Component = () => {
                       </div>
                       <Show when={!matrixCollapsed()}>
                         <Show
-                          when={proj.agents.length > 0}
+                          when={filteredAgents().length > 0}
                           fallback={<div class="ac-empty-hint">No agents</div>}
                         >
-                          <For each={proj.agents}>
+                          <For each={filteredAgents()}>
                             {(agent) => {
                               const session = () => sessionsStore.findSessionByName(agent.name);
                               return (
@@ -1235,6 +1911,8 @@ const ProjectPanel: Component = () => {
                     setAgentsHeaderCtxMenu(null);
                     setWorkgroupsHeaderCtxMenu(null);
                     setReplicaCtxMenu(null);
+                    setLoopCtxMenu(null);
+                    setLoopsHeaderCtxMenu(null);
                     setTeamsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
                     const dismiss = (ev?: Event) => {
                       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -1251,7 +1929,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Teams") || filteredTeams().length > 0)}>
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -1267,12 +1945,13 @@ const ProjectPanel: Component = () => {
                       </div>
                       <Show when={!teamsCollapsed()}>
                         <Show
-                          when={proj.teams.length > 0}
+                          when={filteredTeams().length > 0}
                           fallback={<div class="ac-empty-hint">No teams</div>}
                         >
-                          <For each={proj.teams}>
+                          <For each={filteredTeams()}>
                             {(team) => {
                               const [teamExpanded, setTeamExpanded] = createSignal(false);
+                              const visibleTeamMembers = () => filteredTeamMembers(team);
                               return (
                                 <div class="ac-team-group">
                                   <div
@@ -1284,21 +1963,15 @@ const ProjectPanel: Component = () => {
                                       &#x25BE;
                                     </span>
                                     <span class="ac-team-name">{team.name}</span>
-                                    <span class="ac-team-count">{team.agents.length}</span>
+                                    <span class="ac-team-count">{visibleTeamMembers().length}</span>
                                   </div>
                                   <Show when={teamExpanded()}>
                                     <div class="ac-team-members">
-                                      <For each={team.agents}>
+                                      <For each={visibleTeamMembers()}>
                                         {(agentName) => {
-                                          const shortName = () => {
-                                            const parts = agentName.replace(/\\/g, "/").split("/");
-                                            const agent = parts[parts.length - 1].replace(/^__?agent_/, "");
-                                            const project = parts[0];
-                                            return project && project !== agent ? `${agent}@${project}` : agent;
-                                          };
                                           return (
                                             <div class="ac-team-member" title={agentName}>
-                                              <span class="ac-team-member-name">{shortName()}</span>
+                                              <span class="ac-team-member-name">{teamMemberDisplayLabel(agentName)}</span>
                                               <Show when={agentName === team.coordinator}>
                                                 <span class="ac-discovery-badge coord">coordinator</span>
                                               </Show>
@@ -1402,6 +2075,128 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
+            {/* Loop context menu */}
+            {loopCtxMenu() && (
+              <Portal>
+                <div
+                  class="session-context-menu"
+                  style={{ left: `${loopCtxMenu()!.x}px`, top: `${loopCtxMenu()!.y}px` }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    class="session-context-option"
+                    disabled={loopActionInProgress() === `${loopCtxMenu()!.loop.id}:run`}
+                    onClick={async () => {
+                      const menu = loopCtxMenu();
+                      setLoopCtxMenu(null);
+                      cleanupCtx();
+                      if (!menu) return;
+                      await runLoopAction(menu.loop, "run", async () => {
+                        const details = await LoopAPI.runNow(proj.path, menu.loop.id);
+                        return details.summary;
+                      });
+                    }}
+                    data-ac-testid={`loop.action.runNow.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                  >
+                    Run Now
+                  </button>
+                  <button
+                    class="session-context-option"
+                    onClick={() => {
+                      const menu = loopCtxMenu();
+                      setLoopCtxMenu(null);
+                      cleanupCtx();
+                      if (menu) setEditingLoop(menu.loop);
+                    }}
+                    data-ac-testid={`loop.action.edit.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    class="session-context-option"
+                    disabled={loopActionInProgress() === `${loopCtxMenu()!.loop.id}:toggle`}
+                    onClick={async () => {
+                      const menu = loopCtxMenu();
+                      setLoopCtxMenu(null);
+                      cleanupCtx();
+                      if (!menu) return;
+                      await runLoopAction(menu.loop, "toggle", async () => {
+                        const details = await LoopAPI.setEnabled(proj.path, menu.loop.id, !menu.loop.enabled);
+                        return details.summary;
+                      });
+                    }}
+                    data-ac-testid={`loop.action.toggle.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                  >
+                    {loopCtxMenu()!.loop.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <div class="context-separator" />
+                  <button
+                    class="session-context-option context-option-danger"
+                    disabled={!!loopActionInProgress()}
+                    onClick={() => {
+                      const menu = loopCtxMenu();
+                      setLoopCtxMenu(null);
+                      cleanupCtx();
+                      if (!menu || loopActionInProgress()) return;
+                      setLoopDeleteError("");
+                      setDeletingLoop(menu.loop);
+                    }}
+                    data-ac-testid={`loop.action.delete.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                  >
+                    Delete Loop
+                  </button>
+                </div>
+              </Portal>
+            )}
+
+            {/* Delete Loop confirmation */}
+            {deletingLoop() && (
+              <Portal>
+                <div class="modal-overlay">
+                  <div
+                    class="agent-modal"
+                    style={{ "max-width": "360px" }}
+                    data-ac-testid={`loop.delete.dialog.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                  >
+                    <div class="agent-modal-header">
+                      <span class="agent-modal-title">Delete Loop</span>
+                    </div>
+                    <div class="new-agent-form">
+                      <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
+                        Delete Loop <strong>{deletingLoop()!.name}</strong>? This will remove the Loop configuration and scheduled delivery state. This action cannot be undone.
+                      </p>
+                      <Show when={loopDeleteError()}>
+                        <div class="new-agent-error">{loopDeleteError()}</div>
+                      </Show>
+                    </div>
+                    <div class="new-agent-footer">
+                      <button
+                        class="new-agent-cancel-btn"
+                        onClick={closeLoopDeleteModal}
+                        disabled={currentLoopDeleteInProgress()}
+                        data-ac-testid={`loop.delete.cancel.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        class="new-agent-create-btn"
+                        style={{ "background": "var(--danger, #c0392b)" }}
+                        disabled={!!loopActionInProgress()}
+                        onClick={() => {
+                          const loop = deletingLoop();
+                          if (!loop || loopActionInProgress()) return;
+                          void deleteLoop(loop);
+                        }}
+                        data-ac-testid={`loop.delete.confirm.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                      >
+                        {currentLoopDeleteInProgress() ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </Portal>
+            )}
+
             {/* Replica context menu */}
             {replicaCtxMenu() && (
               <Portal>
@@ -1455,11 +2250,41 @@ const ProjectPanel: Component = () => {
               <Portal>
                 <AgentPickerModal
                   sessionName={replicaCodingAgentTarget()!.sessionName}
-                  onSelect={async (agent) => {
+                  agentPath={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.workingDirectory}
+                  currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
+                  currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
+                  scopeContext={deriveScopeContextFromSession(
+                    sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
+                    replicaCodingAgentTarget()!.sessionName,
+                  )}
+                  onSelect={async (selection) => {
+                    // The picker already persisted the selection through the backend
+                    // (config write) for WG replicas. For a non-WG agent session there
+                    // is no backend persist path, so apply the change by restarting with
+                    // the chosen agent/profile.
                     const target = replicaCodingAgentTarget();
                     setReplicaCodingAgentTarget(null);
-                    if (target) {
-                      await restartReplicaSession(target.sessionId, agent.id);
+                    if (!target) return;
+                    const session = sessionsStore.sessions.find((s) => s.id === target.sessionId);
+                    if (!isWgReplicaPath(session?.workingDirectory)) {
+                      await restartReplicaSession(
+                        target.sessionId,
+                        selection.agent.id,
+                        selection.requestedProfile,
+                      );
+                      return;
+                    }
+                    // #537: WG replica was persisted but the live session still runs the
+                    // old agent. Offer an immediate restart when there is a live session.
+                    if (shouldOfferRestartAfterAssign(selection, session)) {
+                      const slash = target.sessionName.lastIndexOf("/");
+                      setRestartPrompt({
+                        sessionId: target.sessionId,
+                        replicaName: slash >= 0 ? target.sessionName.slice(slash + 1) : target.sessionName,
+                        agentId: selection.agent.id,
+                        agentLabel: selection.agent.label,
+                        requestedProfile: selection.requestedProfile,
+                      });
                     }
                   }}
                   onClose={() => setReplicaCodingAgentTarget(null)}
@@ -1761,12 +2586,17 @@ const ProjectPanel: Component = () => {
       <Portal>
         <AgentPickerModal
           sessionName={pendingLaunch()!.sessionName}
-          onSelect={async (agent) => {
+          agentPath={pendingLaunch()!.path}
+          currentAgentId={pendingLaunch()!.currentAgentId}
+          currentRequestedProfile={pendingLaunch()!.currentRequestedProfile}
+          scopeContext={pendingLaunch()!.scopeContext}
+          onSelect={async (selection) => {
             const pending = pendingLaunch()!;
             const newSession = await SessionAPI.create({
               cwd: pending.path,
               sessionName: pending.sessionName,
-              agentId: agent.id,
+              agentId: selection.agent.id,
+              requestedProfile: selection.requestedProfile,
               gitRepos: pending.gitRepos,
             });
             await SessionAPI.switch(newSession.id);
@@ -1781,6 +2611,22 @@ const ProjectPanel: Component = () => {
             setPendingLaunch(null);
           }}
           onClose={() => setPendingLaunch(null)}
+        />
+      </Portal>
+    )}
+
+    {/* #537: post-assign "Restart now?" prompt, rendered here at the stable
+        ProjectPanel root (outside the projects <For>) so a background discovery
+        refresh that replaces project references, re-creating each <For> row,
+        cannot unmount it mid-decision. It closes only on Later / Restart now /
+        overlay click. */}
+    {restartPrompt() && (
+      <Portal>
+        <RestartPromptModal
+          agentLabel={restartPrompt()!.agentLabel}
+          replicaName={restartPrompt()!.replicaName}
+          onRestart={applyRestartPrompt}
+          onLater={() => setRestartPrompt(null)}
         />
       </Portal>
     )}

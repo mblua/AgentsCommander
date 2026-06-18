@@ -473,6 +473,56 @@ Idempotent: re-running on a folder that already has `.ac/` only sweeps the Proje
 
 ---
 
+## `loop`
+
+Manage scheduled Project Loops for a registered AC project.
+
+```bash
+agentscommander loop list --project MyProject
+
+agentscommander loop create \
+  --project MyProject \
+  --name "Daily sync" \
+  --cron "0 9 * * 1-5" \
+  --workgroup wg-1-dev-team \
+  --prompt "Check status and ask for blockers."
+
+agentscommander loop update \
+  --project MyProject \
+  --loop daily-sync \
+  --cron "30 9 * * 1-5"
+
+agentscommander loop disable --project MyProject --loop daily-sync
+agentscommander loop enable  --project MyProject --loop daily-sync
+agentscommander loop remove  --project MyProject --loop daily-sync
+```
+
+| Subcommand | Description |
+|---|---|
+| `list` | Print configured Loops and scheduler state for the project. |
+| `create` | Create `_loop_<id>/config.toml` plus initial scheduler state. |
+| `update` | Change metadata, cron, target workgroup, prompt, or busy policy. Name-only and no-op updates preserve pending state. |
+| `enable` / `disable` | Toggle a Loop. Repeating the current state is a no-op for scheduler state. |
+| `remove` | Delete the Loop directory. |
+
+| Flag | Used by | Description |
+|---|---|---|
+| `--project` | all | Registered project name or project path. |
+| `--loop` | update, enable, disable, remove | Existing Loop id. |
+| `--id` | create | Optional id. Defaults to a sanitized form of `--name`. |
+| `--name` | create, update | Human-readable Loop name. |
+| `--cron` | create, update | Five-field cron expression: minute hour day-of-month month day-of-week. |
+| `--workgroup` | create, update | Target `wg-<N>-<team>` directory whose coordinator receives the prompt. |
+| `--prompt` / `--prompt-file` | create, update | Prompt text or UTF-8 prompt file. Use exactly one when setting a prompt. |
+| `--busy-coordinator` | create, update | `wait-until-idle`, `force-inject`, or `skip`. |
+| `--force-inject-when-busy` | create, update | Backward-compatible shortcut for `--busy-coordinator force-inject`. |
+
+Output is JSON for list/create/update/enable/disable. `remove` prints a short message unless `AC_MACHINE_OUTPUT` is set, in which case it prints JSON.
+
+**No token required**: Loop commands mutate project files on disk, which any shell-capable process can already write to.
+
+---
+
 ## `telegram-send-image`
 
 Send a local file (image or document) to a configured Telegram bot from the terminal, bypassing the GUI.
