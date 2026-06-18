@@ -160,6 +160,8 @@ mod tests {
         ResourceAgentGroupSnapshot {
             session_id: Uuid::new_v4().to_string(),
             name: "agent".to_string(),
+            workgroup: None,
+            agent: None,
             root_pid: 1,
             root_identity: identity(1),
             state: ResourceGroupState::Running,

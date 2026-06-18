@@ -976,6 +976,25 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .map(|spawn| spawn.env_remove_keys.clone())
         .unwrap_or_default();
     let resource_registration = resource_permit.take().map(|permit| {
+        // #516 - human-readable WG + agent identity for the Resource Monitor row,
+        // derived from the deterministic spawn cwd (not the user-renamable
+        // session.name). Root agents carry no wg-/__agent_ segments, so label them
+        // explicitly with the bare replica dir name.
+        let (workgroup, agent) = {
+            let (wg, ag) = crate::config::teams::workgroup_and_agent_from_path(&cwd);
+            if wg.is_some() {
+                (wg, ag)
+            } else if is_root_agent {
+                let bare = cwd
+                    .replace('\\', "/")
+                    .rsplit('/')
+                    .find(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                (Some("Root agent".to_string()), bare)
+            } else {
+                (None, None)
+            }
+        };
         ResourceLaunchRegistration::new(
             resource_monitor.as_ref().clone(),
             permit,
@@ -984,6 +1003,8 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                 name: session.name.clone(),
                 agent_id: agent_id.clone(),
                 agent_label: agent_label.clone(),
+                workgroup,
+                agent,
             },
         )
     });

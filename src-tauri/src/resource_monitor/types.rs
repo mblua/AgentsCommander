@@ -128,6 +128,12 @@ impl From<&ObservedProcess> for ResourceProcessSnapshot {
 pub struct ResourceAgentGroupSnapshot {
     pub session_id: String,
     pub name: String,
+    /// #516 - human-readable workgroup label (e.g. "wg-5-dev-team"), or `None`
+    /// for non-WG launches. Root-agent groups carry "Root agent".
+    pub workgroup: Option<String>,
+    /// #516 - human-readable agent name (e.g. "dev-rust"), or `None` when the
+    /// launch cwd carries no replica identity.
+    pub agent: Option<String>,
     pub root_pid: u32,
     pub root_identity: ProcessIdentity,
     pub state: ResourceGroupState,
@@ -203,4 +209,9 @@ pub struct ResourceLaunchMetadata {
     pub name: String,
     pub agent_id: Option<String>,
     pub agent_label: Option<String>,
+    /// #516 - workgroup label derived from the spawn cwd (e.g. "wg-5-dev-team"),
+    /// "Root agent" for root-agent launches, or `None` for non-WG launches.
+    pub workgroup: Option<String>,
+    /// #516 - agent name derived from the spawn cwd (e.g. "dev-rust"), or `None`.
+    pub agent: Option<String>,
 }
