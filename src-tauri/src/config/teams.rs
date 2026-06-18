@@ -96,6 +96,38 @@ pub fn agent_fqn_from_path(path: &str) -> String {
     agent_name_from_path(path)
 }
 
+/// Derive the `(workgroup, agent)` identity from a CWD for the Resource
+/// Monitor's human-readable agent-group label (#516).
+///
+/// - WG replica CWD `<...>/<project>/.ac/wg-N-team/__agent_alice[/...]`
+///   becomes `(Some("wg-N-team"), Some("alice"))`.
+/// - Any other shape (origin agent, root agent, ad-hoc shell, unparseable)
+///   becomes `(None, None)`.
+///
+/// Anchors on the right-most `.ac` workspace segment via `find_workspace_segment`,
+/// identical to `agent_fqn_from_path`, so subdirectories inside a replica resolve
+/// to the owning replica's identity. The workgroup is the bare `wg-N-team` segment
+/// (not project-prefixed), and the agent is the replica dir with `__agent_` stripped.
+/// The root-agent label fallback is applied by the caller (which knows
+/// `is_root_agent`); this returns only the raw pair and never panics.
+pub fn workgroup_and_agent_from_path(path: &str) -> (Option<String>, Option<String>) {
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+
+    if let Some(ac_idx) = find_workspace_segment(&parts) {
+        if ac_idx + 2 < parts.len() {
+            let wg = parts[ac_idx + 1];
+            let agent_dir = parts[ac_idx + 2];
+            if wg.starts_with("wg-") && agent_dir.starts_with("__agent_") {
+                let agent = agent_dir.strip_prefix("__agent_").unwrap_or(agent_dir);
+                return (Some(wg.to_string()), Some(agent.to_string()));
+            }
+        }
+    }
+
+    (None, None)
+}
+
 // ── FQN resolution (shared between CLI and mailbox — §AR2-shared) ──
 
 /// Error type for `resolve_agent_target`. Each variant carries the data needed to
@@ -1045,6 +1077,49 @@ mod tests {
     fn agent_fqn_from_path_parent_ac_prefix() {
         let cwd = "C:/.ac/repos/proj-a/.ac/wg-1-devs/__agent_alice";
         assert_eq!(agent_fqn_from_path(cwd), "proj-a:wg-1-devs/alice");
+    }
+
+    // ── #516 workgroup_and_agent_from_path ──
+
+    #[test]
+    fn workgroup_and_agent_from_path_wg_replica() {
+        let cwd = "C:/repos/proj-a/.ac/wg-5-dev-team/__agent_dev-rust";
+        assert_eq!(
+            workgroup_and_agent_from_path(cwd),
+            (
+                Some("wg-5-dev-team".to_string()),
+                Some("dev-rust".to_string())
+            )
+        );
+    }
+
+    /// A deep subdir inside a replica (and Windows backslashes) still resolves
+    /// to the owning replica's WG/agent pair.
+    #[test]
+    fn workgroup_and_agent_from_path_deeper_cwd() {
+        let cwd = r"C:\repos\proj-a\.ac\wg-1-devs\__agent_alice\repo-x\src";
+        assert_eq!(
+            workgroup_and_agent_from_path(cwd),
+            (Some("wg-1-devs".to_string()), Some("alice".to_string()))
+        );
+    }
+
+    #[test]
+    fn workgroup_and_agent_from_path_non_wg_returns_none() {
+        assert_eq!(
+            workgroup_and_agent_from_path("C:/repos/my-project/tech-lead"),
+            (None, None)
+        );
+    }
+
+    /// Root-agent dir has no `wg-`/`__agent_` segments: the helper returns
+    /// `(None, None)` and the caller applies the "Root agent" label fallback.
+    #[test]
+    fn workgroup_and_agent_from_path_root_agent_dir_returns_none() {
+        assert_eq!(
+            workgroup_and_agent_from_path("C:/repos/proj-a/.ac/ac-root-agent"),
+            (None, None)
+        );
     }
 
     #[test]

@@ -50,12 +50,13 @@ const GEMINI_MODELS = [
 // #526: the former "agents" + "profiles" tabs are merged into one unified
 // "Coding Agents" screen (agent list + dual comparison rails). The "profiles"
 // section name is kept as an alias so existing callers still land on the
-// unified screen.
-type SettingsTab = "general" | "agents" | "integrations";
+// unified screen. #516 adds a separate "resources" tab.
+type SettingsTab = "general" | "agents" | "resources" | "integrations";
 
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: "general", label: "General" },
   { key: "agents", label: "Coding Agents" },
+  { key: "resources", label: "Resources" },
   { key: "integrations", label: "Integrations" },
 ];
 
@@ -65,6 +66,16 @@ const resolveSettingsSection = (s: string | undefined): SettingsTab =>
     : s === "integrations"
       ? "integrations"
       : "general";
+
+const BYTES_PER_GIB = 1024 ** 3;
+
+const bytesToGiBInput = (bytes: number): string => {
+  const value = bytes / BYTES_PER_GIB;
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+};
+
+const giBInputToBytes = (value: string): number =>
+  Math.round(Number(value) * BYTES_PER_GIB);
 
 const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   if (!value) return null;
@@ -286,42 +297,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         [letter]: cell,
       },
     }));
-  };
-
-  const addProfileCell = (agentId: string, letter: string) => {
-    setProfileCell(agentId, letter, emptyProfileCell());
-    const key = profileCellKey(agentId, letter);
-    setProfileCellText(key, "");
-    setProfileCellErrors(key, "");
-    setProfileCellEnvRows(key, []);
-  };
-
-  const removeProfileCell = (agentId: string, letter: string) => {
-    if (!settings.data || letter === "A") return;
-    setDraftDirty(true);
-    const cells = settings.data.codingAgentProfiles.profilesByAgent[agentId] ?? {};
-    const nextCells = { ...cells };
-    delete nextCells[letter];
-    setSettings("data", "codingAgentProfiles", "profilesByAgent", (byAgent) => ({
-      ...byAgent,
-      [agentId]: nextCells,
-    }));
-    const key = profileCellKey(agentId, letter);
-    setProfileCellText((prev) => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-    setProfileCellErrors((prev) => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-    setProfileCellEnvRows((prev) => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
   };
 
   const updateProfileLabel = (letter: string, label: string) => {
@@ -623,10 +598,38 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
+  const validateResources = (): string | null => {
+    const data = settings.data;
+    if (!data) return null;
+
+    if (
+      !Number.isInteger(data.maxConcurrentAgentProcesses) ||
+      data.maxConcurrentAgentProcesses < 1 ||
+      data.maxConcurrentAgentProcesses > 16
+    ) {
+      return "Resources: max concurrent agent processes must be between 1 and 16";
+    }
+
+    const warn = data.agentGroupWarnPrivateBytes;
+    const groupKill = data.agentGroupKillPrivateBytes;
+    const processKill = data.agentProcessKillPrivateBytes;
+    if (warn <= 0 || groupKill <= 0 || processKill <= 0) {
+      return "Resources: memory thresholds must be greater than 0 GiB";
+    }
+    if (warn > groupKill) {
+      return "Resources: group warning threshold must be at or below group kill threshold";
+    }
+
+    return null;
+  };
+
+  const currentValidationError = (): string | null =>
+    validateAgents() ?? validateResources();
+
   // ── Save ──
   const handleSave = async () => {
     if (!settings.data) return;
-    const validationError = validateAgents();
+    const validationError = currentValidationError();
     if (validationError) {
       setSaveError(validationError);
       return;
@@ -1290,6 +1293,154 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     </div>
   );
 
+  const renderResourcesTab = () => (
+    <>
+      <div class="settings-section">
+        <div class="settings-section-title">Resource Monitor</div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.resourceMonitorEnabled}
+            onChange={(e) =>
+              updateField("resourceMonitorEnabled", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.resources.enabled"
+            data-ac-role="checkbox"
+          />
+          <span>Enable resource monitor and watchdog</span>
+        </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.resourceKeepLastSnapshot}
+            onChange={(e) =>
+              updateField("resourceKeepLastSnapshot", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.resources.keepLastSnapshot"
+            data-ac-role="checkbox"
+          />
+          <span>Keep last successful snapshot when polling fails</span>
+        </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.resourceBackoffPolling}
+            onChange={(e) =>
+              updateField("resourceBackoffPolling", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.resources.backoffPolling"
+            data-ac-role="checkbox"
+          />
+          <span>Back off polling when no agent groups are active</span>
+        </label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Watchdog</div>
+        <label class="settings-field">
+          <span class="settings-label">Action</span>
+          <select
+            class="settings-input"
+            value={settings.data!.resourceWatchdogAction}
+            onChange={(e) =>
+              updateField(
+                "resourceWatchdogAction",
+                e.currentTarget.value as AppSettings["resourceWatchdogAction"]
+              )
+            }
+            data-ac-testid="settings.resources.watchdogAction"
+            data-ac-role="combobox"
+          >
+            <option value="warn">Warn only</option>
+            <option value="killGroup">Kill group</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Max Concurrent Agent Processes</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="1"
+            max="16"
+            step="1"
+            value={settings.data!.maxConcurrentAgentProcesses}
+            onInput={(e) => {
+              const value = parseInt(e.currentTarget.value, 10);
+              if (!Number.isNaN(value)) {
+                updateField("maxConcurrentAgentProcesses", value);
+              }
+            }}
+            data-ac-testid="settings.resources.maxConcurrentAgentProcesses"
+            data-ac-role="spinbutton"
+          />
+        </label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Memory Thresholds</div>
+        <div class="settings-resource-grid">
+          <label class="settings-field">
+            <span class="settings-label">Group Warn GiB</span>
+            <input
+              class="settings-input settings-input-sm"
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={bytesToGiBInput(settings.data!.agentGroupWarnPrivateBytes)}
+              onInput={(e) => {
+                const bytes = giBInputToBytes(e.currentTarget.value);
+                if (Number.isFinite(bytes)) {
+                  updateField("agentGroupWarnPrivateBytes", bytes);
+                }
+              }}
+              data-ac-testid="settings.resources.groupWarnGiB"
+              data-ac-role="spinbutton"
+            />
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Group Kill GiB</span>
+            <input
+              class="settings-input settings-input-sm"
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={bytesToGiBInput(settings.data!.agentGroupKillPrivateBytes)}
+              onInput={(e) => {
+                const bytes = giBInputToBytes(e.currentTarget.value);
+                if (Number.isFinite(bytes)) {
+                  updateField("agentGroupKillPrivateBytes", bytes);
+                }
+              }}
+              data-ac-testid="settings.resources.groupKillGiB"
+              data-ac-role="spinbutton"
+            />
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Process Kill GiB</span>
+            <input
+              class="settings-input settings-input-sm"
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={bytesToGiBInput(settings.data!.agentProcessKillPrivateBytes)}
+              onInput={(e) => {
+                const bytes = giBInputToBytes(e.currentTarget.value);
+                if (Number.isFinite(bytes)) {
+                  updateField("agentProcessKillPrivateBytes", bytes);
+                }
+              }}
+              data-ac-testid="settings.resources.processKillGiB"
+              data-ac-role="spinbutton"
+            />
+          </label>
+        </div>
+      </div>
+    </>
+  );
+
   const BADGE_LABEL: Record<ProfileBadge, string> = {
     match: "MATCH",
     configured: "CONFIGURED",
@@ -1302,19 +1453,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // split into separate fields (#384). The two comparison rails render the slots
   // A..Z of two coding agents side by side; cards are addressed by rail index.
   const renderProfileCard = (agent: AgentConfig, railIndex: number, letter: string) => {
-    const cell = () => profileCell(agent.id, letter);
-    const configured = () => letter === "A" || Boolean(cell()?.enabled);
     const badge = () => profileCellBadge(agent.id, letter);
-    const preview = () =>
-      resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
     const command = () => displayedProfileCellCommand(agent.id, letter);
     const cellError = () => profileCellErrors[profileCellKey(agent.id, letter)];
     const cardId = `settings.profileCard.${railIndex}.${letter}`;
     const expanded = () => isCellExpanded(agent.id, letter);
+    const preview = () =>
+      resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
+    // #538: every cell always exposes its command editor (no "Add cell" / missing
+    // box). The badge reports the real match/configured/fallback/missing state; the
+    // sub-line shows the cell's own executable, or — when it has no command of its
+    // own — what it launches via fallback, so it never contradicts a MISSING or
+    // FALLBACK badge by claiming "Configured".
     const subLine = () => {
-      if (!configured()) return `Configured elsewhere; launches ${preview().effectiveProfile}`;
       if (cellError()) return "Command syntax error";
-      return commandExecutableBasename(command()) || "Configured";
+      const ownCommand = commandExecutableBasename(command());
+      if (ownCommand) return ownCommand;
+      const resolved = preview();
+      return resolved.fallbackApplied ? `Launches ${resolved.effectiveProfile}` : "Configured";
     };
     return (
       <article
@@ -1355,57 +1511,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
             <div class="settings-profile-card-sub">{subLine()}</div>
           </div>
-          <Show when={configured()}>
-            <button
-              class="settings-profile-chevron"
-              onClick={() => toggleCell(agent.id, letter)}
-              title={expanded() ? "Collapse" : "Expand"}
-              aria-expanded={expanded()}
-              data-ac-testid={`${cardId}.toggle`}
-              data-ac-role="button"
-            >
-              {expanded() ? "▾" : "▸"}
-            </button>
-          </Show>
+          <button
+            class="settings-profile-chevron"
+            onClick={() => toggleCell(agent.id, letter)}
+            title={expanded() ? "Collapse" : "Expand"}
+            aria-expanded={expanded()}
+            data-ac-testid={`${cardId}.toggle`}
+            data-ac-role="button"
+          >
+            {expanded() ? "▾" : "▸"}
+          </button>
         </div>
 
-        <Show
-          when={configured()}
-          fallback={
-            <div
-              class="settings-profile-missing"
-              data-ac-testid={`${cardId}.missing`}
-              data-ac-role="status"
-            >
-              <span>
-                {letter} &rarr; {preview().effectiveProfile} (fallback)
-              </span>
-              <div class="settings-profile-missing-actions">
-                <button
-                  class="settings-profile-cell-btn"
-                  onClick={() => addProfileCell(agent.id, letter)}
-                  data-ac-testid={`${cardId}.add`}
-                  data-ac-role="button"
-                >
-                  Add cell
-                </button>
-                {/* #526: slot-level delete — drops the whole letter from every
-                    coding agent (draft-reversible). Distinct from per-agent
-                    "Delete cell". */}
-                <button
-                  class="settings-profile-cell-btn settings-profile-delete-profile"
-                  onClick={() => removeProfileLetter(letter)}
-                  title={`Delete the entire ${letter} profile slot from all coding agents`}
-                  data-ac-testid={`${cardId}.deleteProfile`}
-                  data-ac-role="button"
-                >
-                  Delete Profile
-                </button>
-              </div>
-            </div>
-          }
-        >
-          <Show when={expanded()}>
+        <Show when={expanded()}>
           <label class="settings-profile-field-label">Command</label>
           <input
             class="settings-input settings-profile-command"
@@ -1518,17 +1636,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
           <Show when={letter !== "A"}>
             <div class="settings-profile-card-footer">
-              {/* "Delete cell" clears only this agent's cell for the letter;
-                  "Delete Profile" removes the whole slot across all agents (#526). */}
-              <button
-                class="settings-profile-cell-btn settings-profile-delete-cell"
-                onClick={() => removeProfileCell(agent.id, letter)}
-                title={`Remove ${agent.label || agent.id}'s ${letter} cell (keeps the slot)`}
-                data-ac-testid={`${cardId}.delete`}
-                data-ac-role="button"
-              >
-                Delete cell
-              </button>
+              {/* #538: per-cell "Delete cell" removed — cells are never deleted
+                  individually. Slot-level "Delete Profile" (drops the letter from
+                  every agent; A is immutable) stays so added letters stay removable. */}
               <button
                 class="settings-profile-cell-btn settings-profile-delete-profile"
                 onClick={() => removeProfileLetter(letter)}
@@ -1539,7 +1649,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 Delete Profile
               </button>
             </div>
-          </Show>
           </Show>
         </Show>
       </article>
@@ -1934,6 +2043,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           >
             <Show when={activeTab() === "general"}>{renderGeneralTab()}</Show>
             <Show when={activeTab() === "agents"}>{renderCodingAgentsScreen()}</Show>
+            <Show when={activeTab() === "resources"}>
+              {renderResourcesTab()}
+            </Show>
             <Show when={activeTab() === "integrations"}>
               {renderIntegrationsTab()}
             </Show>
@@ -1941,8 +2053,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         </Show>
 
         <div class="modal-footer">
-          <Show when={saveError()}>
-            <span class="modal-save-error">{saveError()}</span>
+          <Show when={saveError() || currentValidationError()}>
+            <span class="modal-save-error">
+              {saveError() || currentValidationError()}
+            </span>
           </Show>
           <button
             class="modal-btn modal-btn-cancel"
@@ -1955,7 +2069,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <button
             class="modal-btn modal-btn-save"
             onClick={handleSave}
-            disabled={saving() || rtkSweepInFlight()}
+            disabled={saving() || rtkSweepInFlight() || !!currentValidationError()}
             data-ac-testid="settings.save"
             data-ac-role="button"
             data-ac-state={saving() ? "saving" : rtkSweepInFlight() ? "sweeping" : "ready"}

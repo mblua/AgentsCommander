@@ -7,6 +7,7 @@ pub mod loops;
 pub mod network;
 pub mod phone;
 pub mod pty;
+pub mod resource_monitor;
 pub mod session;
 pub mod shutdown;
 pub mod telegram;
@@ -295,6 +296,7 @@ pub fn run(
 
     let settings: SettingsState =
         Arc::new(tokio::sync::RwLock::new(config::settings::load_settings()));
+    let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
     let settings_for_web = Arc::clone(&settings);
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
@@ -319,6 +321,8 @@ pub fn run(
     let shutdown_for_setup = shutdown_signal.clone();
     let shutdown_for_exit = shutdown_signal.clone();
     let tg_mgr_for_exit = tg_mgr.clone();
+    let resource_monitor_for_setup = Arc::clone(&resource_monitor_state);
+    let resource_monitor_for_exit = Arc::clone(&resource_monitor_state);
     let ui_automation_state_for_setup = ui_automation_state.clone();
     let ui_automation_state_for_exit = ui_automation_state.clone();
 
@@ -329,6 +333,7 @@ pub fn run(
         .manage(session_mgr)
         .manage(tg_mgr)
         .manage(network::OutboundNetwork::new().expect("failed to build shared network clients"))
+        .manage(Arc::clone(&resource_monitor_state))
         .manage(voice_tracking)
         .manage(settings)
         .manage(detached_sessions.clone())
@@ -355,6 +360,12 @@ pub fn run(
             // logged before this point stay buffered; the frontend's first
             // `drain_error_logs` call collects them.
             crate::logging::spawn_error_emit_task(app.handle().clone());
+
+            resource_monitor::watchdog::start(
+                (*resource_monitor_for_setup).clone(),
+                app.state::<SettingsState>().inner().clone(),
+                shutdown_for_setup.clone(),
+            );
 
             // #271 — seed `<config_dir>/agent-templates/` + README on startup.
             crate::commands::role_templates::ensure_default_templates_dir_at_config();
@@ -1673,6 +1684,8 @@ pub fn run(
             commands::pty::pty_resize,
             commands::config::get_settings,
             commands::config::update_settings,
+            commands::resource_monitor::get_resource_snapshot,
+            commands::resource_monitor::kill_resource_group,
             commands::config::save_settings_draft,
             commands::config::update_coding_agent_profiles,
             commands::config::update_coding_agent_env_settings,
@@ -1704,6 +1717,8 @@ pub fn run(
             commands::window::open_in_explorer,
             commands::window::open_guide_window,
             commands::window::open_spec_board_window,
+            commands::window::open_resource_monitor_window,
+            commands::window::dock_resource_monitor_window,
             commands::window::open_external_url,
             commands::window::focus_main_window,
             commands::spec_board::spec_board_new,
@@ -1829,6 +1844,18 @@ pub fn run(
                     };
                     for shutdown in bridge_shutdowns {
                         shutdown.abort_now();
+                    }
+
+                    for result in resource_monitor_for_exit
+                        .kill_all_owned_groups(resource_monitor::ResourceKillReason::AppShutdown)
+                    {
+                        if result.quarantined {
+                            log::warn!(
+                                "[shutdown] resource group {} quarantined during cleanup: {}",
+                                result.session_id,
+                                result.message
+                            );
+                        }
                     }
 
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");

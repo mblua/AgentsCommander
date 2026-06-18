@@ -174,7 +174,7 @@ async function executeAutomationRequestInner(
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
 
-  if (request.action === "setValue") {
+  if (request.action === "setValue" || request.action === "typeText") {
     return setElementValue(windowLabel, request, element, diagnostics);
   }
 
@@ -415,13 +415,28 @@ function snapshotText(element: HTMLElement): string {
     return "";
   }
 
+  // Defense-in-depth: an element that carries a value-bearing attribute must
+  // never surface free text, regardless of role. #516 broadened the set of
+  // text-allowed roles (status/metric/row/cell/...), so the absence of a role
+  // from the allow-list can no longer be relied on to suppress a value-like
+  // target's text — gate on the attributes explicitly instead.
+  if (element.hasAttribute("data-ac-value") || element.hasAttribute("data-ac-token")) {
+    return "";
+  }
+
   const role = element.getAttribute("data-ac-role") ?? element.getAttribute("role") ?? "";
   const allowText =
     role === "agent-preset" ||
     role === "button" ||
     role === "checkbox" ||
+    role === "cell" ||
+    role === "group" ||
+    role === "metric" ||
     role === "menuitem" ||
+    role === "row" ||
+    role === "status" ||
     role === "tab" ||
+    role === "text" ||
     element instanceof HTMLButtonElement;
 
   if (!allowText) return "";
