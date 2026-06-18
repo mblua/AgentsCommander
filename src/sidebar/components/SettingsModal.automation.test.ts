@@ -390,11 +390,24 @@ describe("SettingsModal automation hooks", () => {
     expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.key").value).toBe("OPENAI_ORG");
     expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.value").value).toBe("ac-prod");
 
-    // Profile B slot is configured on Claude but not on codex → MISSING with Add.
+    // #538: codex has no B cell, but B no longer shows an "Add cell" / missing
+    // box. The badge still honestly reports MISSING (codex's B falls back to its
+    // base command until a command is typed).
     expect(byTestId("settings.profileCard.0.B").getAttribute("data-ac-state")).toBe("missing");
     expect(byTestId("settings.profileCard.0.B.badge").textContent).toContain("MISSING");
-    expect(byTestId("settings.profileCard.0.B.missing")).toBeTruthy();
-    expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.add")).toBeTruthy();
+    // #538: the sub-line states what the cell launches via fallback (consistent
+    // with the MISSING badge) instead of a contradictory bare "Configured".
+    expect(
+      byTestId("settings.profileCard.0.B").querySelector(".settings-profile-card-sub")?.textContent,
+    ).toBe("Launches A");
+    expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B.missing"]')).toBeNull();
+    expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B.add"]')).toBeNull();
+    // Instead it exposes the same expand/edit affordance as every cell: a chevron
+    // toggle that reveals an (empty) command input the user can fill in.
+    expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle")).toBeTruthy();
+    byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
+    await settle();
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.B.command").value).toBe("");
     // Claude rail: B has its own enabled cell (non-A, direct match) → CONFIGURED,
     // NOT MATCH. MATCH is reserved for the A baseline (#526).
     expect(byTestId("settings.profileCard.1.B").getAttribute("data-ac-state")).toBe("configured");
