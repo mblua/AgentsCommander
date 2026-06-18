@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const os = require('os');
 const { execSync } = require('child_process');
 
-const VERSION = "0.9.10"; // Must match package.json
+const VERSION = "0.9.11"; // Must match package.json
 const OWNER = 'mblua';
 const REPO = 'AgentsCommander';
 
