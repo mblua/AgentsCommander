@@ -37,6 +37,13 @@ interface PendingLaunch {
   scopeContext?: AgentPickerScopeContext;
 }
 
+/** #545: the broom has nothing to clear when the workgroup task title is
+ *  empty/missing or the literal Clean sentinel. Title-only approximation of
+ *  the backend's structural clean check; exact-match + case-sensitive on
+ *  purpose (mirrors the backend `title: 'Clean'` sentinel). See plan G2/G4. */
+export const isTaskClean = (t?: string | null): boolean =>
+  !t?.trim() || t.trim() === "Clean";
+
 function joinSearchText(...parts: Array<string | null | undefined | false>): string {
   return parts
     .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
@@ -752,9 +759,15 @@ const ProjectPanel: Component = () => {
           setReplicaCtxMenu(null);
           cleanupCtx();
           const sessionId = resolveWorkgroupSessionId(wg);
-          if (!sessionId) return;
           try {
-            await TaskAPI.clean(sessionId);
+            if (sessionId) {
+              await TaskAPI.clean(sessionId);
+            } else {
+              // Cold workgroup: no live/exited session resolves the root, so
+              // address the wg-* root directly (#545). wg.path is always present
+              // (types.ts:431), even for a never-launched workgroup.
+              await TaskAPI.cleanAt(wg.path);
+            }
           } catch (e) {
             console.error("Failed to clear task title:", e);
           }
@@ -2256,10 +2269,12 @@ const ProjectPanel: Component = () => {
                 >
                   <Show when={activeReplicaMenu()}>
                     {(menu) => {
-                      // Broom only for red/exited replicas — green keeps the full
-                      // menu with no broom (#545 rework). Disabled only when the
-                      // whole workgroup is cold (no resolvable session).
-                      const broomDisabled = () => resolveWorkgroupSessionId(menu().wg) === null;
+                      // Broom renders in EVERY replica dot state (#545). Disabled
+                      // only when the task title has nothing to clear (empty/missing
+                      // or the literal "Clean" sentinel); enabled otherwise.
+                      const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
+                      const broomTitle = () =>
+                        broomDisabled() ? "Nothing to clear" : "Clear task title";
                       return (
                       <>
                         <button
@@ -2289,25 +2304,25 @@ const ProjectPanel: Component = () => {
                         >
                           {sessionsStore.isDetached(menu().sessionId) ? "Re-attach to main" : "Open in new window"}
                         </button>
-                        <Show when={menu().exited}>
-                          <div class="context-separator" />
-                          <button
-                            class="session-context-option"
-                            classList={{ "context-option-disabled": broomDisabled() }}
-                            disabled={broomDisabled()}
-                            title="Clear task title"
-                            onClick={() => void clearReplicaTaskTitle(menu().wg)}
-                          >
-                            &#x1F9F9; Clear task title
-                          </button>
-                        </Show>
+                        <div class="context-separator" />
+                        <button
+                          class="session-context-option"
+                          classList={{ "context-option-disabled": broomDisabled() }}
+                          disabled={broomDisabled()}
+                          title={broomTitle()}
+                          onClick={() => void clearReplicaTaskTitle(menu().wg)}
+                        >
+                          &#x1F9F9; Clear task title
+                        </button>
                       </>
                       );
                     }}
                   </Show>
                   <Show when={inactiveReplicaMenu()}>
                     {(menu) => {
-                      const broomDisabled = () => resolveWorkgroupSessionId(menu().wg) === null;
+                      const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
+                      const broomTitle = () =>
+                        broomDisabled() ? "Nothing to clear" : "Clear task title";
                       return (
                         <>
                           <button
@@ -2326,7 +2341,7 @@ const ProjectPanel: Component = () => {
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}
                             disabled={broomDisabled()}
-                            title="Clear task title"
+                            title={broomTitle()}
                             onClick={() => void clearReplicaTaskTitle(menu().wg)}
                           >
                             &#x1F9F9; Clear task title
