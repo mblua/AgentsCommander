@@ -1517,11 +1517,8 @@ html.light-theme .root-agent-avatar {
   color: var(--sidebar-accent);
 }
 
-.settings-profile-delete-cell {
-  align-self: flex-start;
-}
-
-/* Footer holding the per-agent "Delete cell" + slot-level "Delete Profile". */
+/* Footer holding the slot-level "Delete Profile" affordance (#538: the per-cell
+   "Delete cell" button was removed). */
 .settings-profile-card-footer {
   display: flex;
   flex-wrap: wrap;
@@ -1530,7 +1527,7 @@ html.light-theme .root-agent-avatar {
 }
 
 /* Slot-level delete is destructive (drops the letter from every agent) — give it
-   a muted-red affordance that intensifies on hover, distinct from "Delete cell". */
+   a muted-red affordance that intensifies on hover. */
 .settings-profile-delete-profile {
   color: var(--status-exited, #ff5d5d);
   border-color: rgba(255, 93, 93, 0.4);
@@ -1539,22 +1536,6 @@ html.light-theme .root-agent-avatar {
 .settings-profile-delete-profile:hover:not(:disabled) {
   color: var(--status-exited, #ff5d5d);
   border-color: var(--status-exited, #ff5d5d);
-}
-
-.settings-profile-missing {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-xs);
-  min-height: 22px;
-  justify-content: space-between;
-  color: var(--sidebar-fg-dim);
-  font-size: var(--font-size-sm);
-}
-
-.settings-profile-missing-actions {
-  display: flex;
-  gap: var(--spacing-xs);
-  flex: 0 0 auto;
 }
 
 .settings-profile-cell-btn {

@@ -299,42 +299,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
-  const addProfileCell = (agentId: string, letter: string) => {
-    setProfileCell(agentId, letter, emptyProfileCell());
-    const key = profileCellKey(agentId, letter);
-    setProfileCellText(key, "");
-    setProfileCellErrors(key, "");
-    setProfileCellEnvRows(key, []);
-  };
-
-  const removeProfileCell = (agentId: string, letter: string) => {
-    if (!settings.data || letter === "A") return;
-    setDraftDirty(true);
-    const cells = settings.data.codingAgentProfiles.profilesByAgent[agentId] ?? {};
-    const nextCells = { ...cells };
-    delete nextCells[letter];
-    setSettings("data", "codingAgentProfiles", "profilesByAgent", (byAgent) => ({
-      ...byAgent,
-      [agentId]: nextCells,
-    }));
-    const key = profileCellKey(agentId, letter);
-    setProfileCellText((prev) => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-    setProfileCellErrors((prev) => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-    setProfileCellEnvRows((prev) => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-  };
-
   const updateProfileLabel = (letter: string, label: string) => {
     if (!settings.data) return;
     setDraftDirty(true);
@@ -1489,19 +1453,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // split into separate fields (#384). The two comparison rails render the slots
   // A..Z of two coding agents side by side; cards are addressed by rail index.
   const renderProfileCard = (agent: AgentConfig, railIndex: number, letter: string) => {
-    const cell = () => profileCell(agent.id, letter);
-    const configured = () => letter === "A" || Boolean(cell()?.enabled);
     const badge = () => profileCellBadge(agent.id, letter);
-    const preview = () =>
-      resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
     const command = () => displayedProfileCellCommand(agent.id, letter);
     const cellError = () => profileCellErrors[profileCellKey(agent.id, letter)];
     const cardId = `settings.profileCard.${railIndex}.${letter}`;
     const expanded = () => isCellExpanded(agent.id, letter);
+    const preview = () =>
+      resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
+    // #538: every cell always exposes its command editor (no "Add cell" / missing
+    // box). The badge reports the real match/configured/fallback/missing state; the
+    // sub-line shows the cell's own executable, or — when it has no command of its
+    // own — what it launches via fallback, so it never contradicts a MISSING or
+    // FALLBACK badge by claiming "Configured".
     const subLine = () => {
-      if (!configured()) return `Configured elsewhere; launches ${preview().effectiveProfile}`;
       if (cellError()) return "Command syntax error";
-      return commandExecutableBasename(command()) || "Configured";
+      const ownCommand = commandExecutableBasename(command());
+      if (ownCommand) return ownCommand;
+      const resolved = preview();
+      return resolved.fallbackApplied ? `Launches ${resolved.effectiveProfile}` : "Configured";
     };
     return (
       <article
@@ -1542,57 +1511,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
             <div class="settings-profile-card-sub">{subLine()}</div>
           </div>
-          <Show when={configured()}>
-            <button
-              class="settings-profile-chevron"
-              onClick={() => toggleCell(agent.id, letter)}
-              title={expanded() ? "Collapse" : "Expand"}
-              aria-expanded={expanded()}
-              data-ac-testid={`${cardId}.toggle`}
-              data-ac-role="button"
-            >
-              {expanded() ? "▾" : "▸"}
-            </button>
-          </Show>
+          <button
+            class="settings-profile-chevron"
+            onClick={() => toggleCell(agent.id, letter)}
+            title={expanded() ? "Collapse" : "Expand"}
+            aria-expanded={expanded()}
+            data-ac-testid={`${cardId}.toggle`}
+            data-ac-role="button"
+          >
+            {expanded() ? "▾" : "▸"}
+          </button>
         </div>
 
-        <Show
-          when={configured()}
-          fallback={
-            <div
-              class="settings-profile-missing"
-              data-ac-testid={`${cardId}.missing`}
-              data-ac-role="status"
-            >
-              <span>
-                {letter} &rarr; {preview().effectiveProfile} (fallback)
-              </span>
-              <div class="settings-profile-missing-actions">
-                <button
-                  class="settings-profile-cell-btn"
-                  onClick={() => addProfileCell(agent.id, letter)}
-                  data-ac-testid={`${cardId}.add`}
-                  data-ac-role="button"
-                >
-                  Add cell
-                </button>
-                {/* #526: slot-level delete — drops the whole letter from every
-                    coding agent (draft-reversible). Distinct from per-agent
-                    "Delete cell". */}
-                <button
-                  class="settings-profile-cell-btn settings-profile-delete-profile"
-                  onClick={() => removeProfileLetter(letter)}
-                  title={`Delete the entire ${letter} profile slot from all coding agents`}
-                  data-ac-testid={`${cardId}.deleteProfile`}
-                  data-ac-role="button"
-                >
-                  Delete Profile
-                </button>
-              </div>
-            </div>
-          }
-        >
-          <Show when={expanded()}>
+        <Show when={expanded()}>
           <label class="settings-profile-field-label">Command</label>
           <input
             class="settings-input settings-profile-command"
@@ -1705,17 +1636,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
           <Show when={letter !== "A"}>
             <div class="settings-profile-card-footer">
-              {/* "Delete cell" clears only this agent's cell for the letter;
-                  "Delete Profile" removes the whole slot across all agents (#526). */}
-              <button
-                class="settings-profile-cell-btn settings-profile-delete-cell"
-                onClick={() => removeProfileCell(agent.id, letter)}
-                title={`Remove ${agent.label || agent.id}'s ${letter} cell (keeps the slot)`}
-                data-ac-testid={`${cardId}.delete`}
-                data-ac-role="button"
-              >
-                Delete cell
-              </button>
+              {/* #538: per-cell "Delete cell" removed — cells are never deleted
+                  individually. Slot-level "Delete Profile" (drops the letter from
+                  every agent; A is immutable) stays so added letters stay removable. */}
               <button
                 class="settings-profile-cell-btn settings-profile-delete-profile"
                 onClick={() => removeProfileLetter(letter)}
@@ -1726,7 +1649,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 Delete Profile
               </button>
             </div>
-          </Show>
           </Show>
         </Show>
       </article>
