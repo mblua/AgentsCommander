@@ -9,6 +9,8 @@ import { setSoundsEnabled } from "../../shared/sound";
 import { homeStore } from "../../main/stores/home";
 import SettingsModal from "./SettingsModal";
 
+const SELECTED_WORKGROUP_VISIBILITY_LABEL = "Always keep selected workgroup visible";
+
 const ActionBar: Component = () => {
   const [showDropdown, setShowDropdown] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
@@ -298,7 +300,8 @@ const ActionBar: Component = () => {
           <button
             class={`toolbar-gear-btn show-categories-btn ${sessionsStore.alwaysShowSelectedWorkgroup ? "active" : ""}`}
             onClick={() => sessionsStore.toggleAlwaysShowSelectedWorkgroup()}
-            title={sessionsStore.alwaysShowSelectedWorkgroup ? "Don't force 'Selected Workgroup' visible" : "Always show 'Selected Workgroup'"}
+            title={SELECTED_WORKGROUP_VISIBILITY_LABEL}
+            aria-label={SELECTED_WORKGROUP_VISIBILITY_LABEL}
             aria-pressed={sessionsStore.alwaysShowSelectedWorkgroup}
             data-ac-testid="actionBar.pinSelectedWorkgroup"
             data-ac-role="button"
