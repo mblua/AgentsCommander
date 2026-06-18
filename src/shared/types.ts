@@ -313,6 +313,12 @@ export interface ResourceProcessSnapshot {
 export interface ResourceAgentGroupSnapshot {
   sessionId: string;
   name: string;
+  /** #516 - workgroup label (e.g. "wg-5-dev-team"), "Root agent" for root-agent
+   * groups, or `null` for non-WG / ad-hoc / unparseable launches. Always present. */
+  workgroup: string | null;
+  /** #516 - bare agent name (e.g. "dev-rust"), or `null` when the launch cwd
+   * carries no replica identity. Always present. */
+  agent: string | null;
   rootPid?: number | null;
   rootIdentity?: ResourceProcessIdentity | null;
   state: ResourceGroupState;

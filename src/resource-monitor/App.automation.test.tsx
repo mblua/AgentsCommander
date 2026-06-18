@@ -27,6 +27,8 @@ const activeSnapshot = (): ResourceSnapshot => ({
     {
       sessionId: "session-1",
       name: "cap-one",
+      workgroup: "wg-5-dev-team",
+      agent: "dev-rust",
       rootPid: 100,
       state: "running",
       descendantsObserved: true,
@@ -64,6 +66,13 @@ const emptySnapshot = (): ResourceSnapshot => ({
   warnings: [],
   groups: [],
 });
+
+const nullIdentitySnapshot = (): ResourceSnapshot => {
+  const snapshot = activeSnapshot();
+  snapshot.groups[0].workgroup = null;
+  snapshot.groups[0].agent = null;
+  return snapshot;
+};
 
 function setupResourceMonitor(fake: FakeTransport, snapshot: ResourceSnapshot): void {
   fake.resolve("get_settings", baseSettings());
@@ -130,6 +139,12 @@ describe("ResourceMonitorApp automation hooks", () => {
         rendered.root.querySelector('[data-ac-testid="resourceMonitor.warning.0"]')?.textContent
       ).toContain("cap reached");
 
+      expect(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.group.session-1.origin"]'
+        )?.textContent
+      ).toBe("wg-5-dev-team / dev-rust");
+
       const toggle = rendered.root.querySelector(
         '[data-ac-testid="resourceMonitor.group.session-1.toggle"]'
       );
@@ -162,6 +177,15 @@ describe("ResourceMonitorApp automation hooks", () => {
         ).not.toBeNull();
       });
 
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.killConfirm.origin"]')
+          ?.textContent
+      ).toBe("wg-5-dev-team / dev-rust");
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.killConfirm.name"]')
+          ?.textContent
+      ).toBe("cap-one");
+
       click(rendered.root.querySelector('[data-ac-testid="resourceMonitor.killConfirm.cancel"]')!);
       await waitFor(() => {
         expect(
@@ -183,6 +207,32 @@ describe("ResourceMonitorApp automation hooks", () => {
         const empty = rendered.root.querySelector('[data-ac-testid="resourceMonitor.empty"]');
         expect(empty?.getAttribute("data-ac-state")).toBe("empty");
         expect(empty?.textContent).toContain("No active agent groups");
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("falls back to the group name in the origin label when WG/agent are null", async () => {
+    const fake = new FakeTransport();
+    setupResourceMonitor(fake, nullIdentitySnapshot());
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.group.session-1.origin"]'
+          )?.textContent
+        ).toBe("- / cap-one");
+      });
+
+      click(rendered.root.querySelector('[data-ac-testid="resourceMonitor.group.session-1.kill"]')!);
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector('[data-ac-testid="resourceMonitor.killConfirm.origin"]')
+            ?.textContent
+        ).toBe("- / cap-one");
       });
     } finally {
       rendered.cleanup();

@@ -343,12 +343,29 @@ button {
   font-family: var(--font-terminal, "Cascadia Code", monospace);
 }
 
+.rm-group-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 5px 0;
+}
+
 .rm-group-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 700;
+}
+
+.rm-group-origin {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sidebar-fg-dim);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rm-group-state {
@@ -464,6 +481,12 @@ button {
   margin: var(--spacing-sm) 0 0;
   color: var(--sidebar-fg);
   font-size: var(--font-size-md);
+}
+
+.rm-modal-target {
+  font-size: 15px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .rm-modal-detail {

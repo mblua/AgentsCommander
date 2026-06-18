@@ -79,6 +79,12 @@ const overallLabel = (state: ResourceOverallState): string => {
 const processName = (process: ResourceProcessSnapshot): string =>
   process.name || process.exeName || `pid ${process.pid}`;
 
+// #516 - "wg-5-dev-team / dev-rust" identity so the user can tell which group a
+// Kill targets. Falls back to the coding-agent name when no replica identity is
+// present (non-WG / ad-hoc launches), and "-" for an unknown workgroup.
+const groupOrigin = (group: ResourceAgentGroupSnapshot): string =>
+  `${group.workgroup ?? "-"} / ${group.agent ?? group.name}`;
+
 const canKillGroup = (group: ResourceAgentGroupSnapshot): boolean =>
   group.killAllowed !== false && !NON_KILLABLE_GROUP_STATES.has(group.state);
 
@@ -408,12 +414,22 @@ const ResourceMonitorApp: Component = () => {
                       <span class="rm-expander">
                         {expandedGroupId() === group.sessionId ? "v" : ">"}
                       </span>
-                      <span
-                        class="rm-group-name"
-                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.name`}
-                        data-ac-role="cell"
-                      >
-                        {group.name}
+                      <span class="rm-group-identity">
+                        <span
+                          class="rm-group-name"
+                          data-ac-testid={`resourceMonitor.group.${group.sessionId}.name`}
+                          data-ac-role="cell"
+                        >
+                          {group.name}
+                        </span>
+                        <span
+                          class="rm-group-origin"
+                          title={groupOrigin(group)}
+                          data-ac-testid={`resourceMonitor.group.${group.sessionId}.origin`}
+                          data-ac-role="cell"
+                        >
+                          {groupOrigin(group)}
+                        </span>
                       </span>
                       <span
                         class="rm-group-state"
@@ -587,7 +603,21 @@ const ResourceMonitorApp: Component = () => {
           <div class="rm-modal-backdrop" data-ac-testid="resourceMonitor.killConfirm">
             <div class="rm-modal" role="dialog" aria-modal="true">
               <h2>Kill agent group</h2>
-              <p>{target.name}</p>
+              <p
+                class="rm-modal-target"
+                title={groupOrigin(target)}
+                data-ac-testid="resourceMonitor.killConfirm.origin"
+                data-ac-role="text"
+              >
+                {groupOrigin(target)}
+              </p>
+              <p
+                class="rm-modal-detail"
+                data-ac-testid="resourceMonitor.killConfirm.name"
+                data-ac-role="text"
+              >
+                {target.name}
+              </p>
               <p class="rm-modal-detail">
                 Session {target.sessionId} will be terminated by the backend resource watchdog.
               </p>
