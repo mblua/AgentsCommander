@@ -174,7 +174,7 @@ graph TD
 
     SA --> TB["Titlebar.tsx<br/>Drag region, icon, version<br/>DEV badge, minimize, close"]
     SA --> SL["SessionList.tsx<br/>For each session → SessionItem"]
-    SA --> TL["Toolbar.tsx<br/>Open Agent + New Session + Settings"]
+    SA --> TL["Toolbar.tsx<br/>Open Project + New Agent + Open Agent"]
 
     SL --> SI["SessionItem.tsx<br/>Status dot, name (inline rename)<br/>git branch, shell path<br/>mic button, detach, telegram, close"]
 
@@ -609,7 +609,7 @@ graph TD
 | `sidebar/components/Titlebar.tsx` | Drag region, icon, version, controls |
 | `sidebar/components/SessionList.tsx` | `<For>` over sessions → `SessionItem` |
 | `sidebar/components/SessionItem.tsx` | Status dot, name, git branch, mic, telegram, detach, close |
-| `sidebar/components/Toolbar.tsx` | Open Agent + New Session + Settings gear |
+| `sidebar/components/Toolbar.tsx` | Open Project + New Agent + Open Agent |
 | `sidebar/components/SettingsModal.tsx` | 4-tab settings: General, Agents, Integrations, Dark Factory |
 | `sidebar/components/OpenAgentModal.tsx` | Repo search → agent picker → launch |
 | `terminal/App.tsx` | Terminal root — session switching, detached mode |
