@@ -9,8 +9,8 @@ mod platform {
 
     use super::*;
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
-        WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, GetLastError, ERROR_NO_MORE_FILES, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+        WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -233,9 +233,16 @@ mod platform {
         let snapshot = OwnedHandle(snapshot);
         let mut entry = unsafe { std::mem::zeroed::<PROCESSENTRY32W>() };
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut ok = unsafe { Process32FirstW(snapshot.raw(), &mut entry) };
+        // #559 (G1) - a valid snapshot always contains at least System Idle / System /
+        // the calling process, so a zero return here is an enumeration FAILURE, not a
+        // legitimately empty list. Returning Err keeps a failed/partial walk off the
+        // reap path: the H1 nomination treats a missing root as "gone", so a spuriously
+        // empty or truncated map must never be mistaken for dead roots.
+        if unsafe { Process32FirstW(snapshot.raw(), &mut entry) } == 0 {
+            return Err(last_error("Process32FirstW failed"));
+        }
         let mut entries = HashMap::new();
-        while ok != 0 {
+        loop {
             let pid = entry.th32ProcessID;
             entries.insert(
                 pid,
@@ -245,7 +252,15 @@ mod platform {
                     exe_name: exe_name(&entry.szExeFile),
                 },
             );
-            ok = unsafe { Process32NextW(snapshot.raw(), &mut entry) };
+            if unsafe { Process32NextW(snapshot.raw(), &mut entry) } == 0 {
+                let code = unsafe { GetLastError() };
+                if code == ERROR_NO_MORE_FILES {
+                    break;
+                }
+                return Err(ResourceError::Message(format!(
+                    "Process32NextW failed: win32 error {code}"
+                )));
+            }
         }
         Ok(entries)
     }
