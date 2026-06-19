@@ -2899,6 +2899,16 @@ html.light-theme .root-agent-avatar {
   background: rgba(0, 212, 255, 0.08);
 }
 
+/* #563: cosmetic-only hover affordance. Selection is click-driven — hovering a
+   card must never pre-select it or update the Effective Projection. Only color
+   shifts here (border width and box size are unchanged), so nothing reflows.
+   `:not(.active)` keeps the selected card's distinct accent tint. */
+.agent-profile-provider-card:hover:not(.active),
+.agent-profile-card:hover:not(.active) {
+  border-color: rgba(0, 212, 255, 0.35);
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .agent-profile-provider-name,
 .agent-profile-card-title {
   display: block;
