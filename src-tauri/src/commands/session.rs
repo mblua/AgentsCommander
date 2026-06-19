@@ -1495,6 +1495,7 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
     {
         let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
         if resource_monitor.has_registered_group(uuid) {
+            let cleanup_started = std::time::Instant::now();
             let monitor = Arc::clone(&resource_monitor);
             let result = tokio::task::spawn_blocking(move || {
                 monitor.kill_group(
@@ -1504,6 +1505,12 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
             })
             .await
             .map_err(|e| e.to_string())??;
+            log::info!(
+                "[session] destroy resource cleanup for {} took {}ms (quarantined={})",
+                id,
+                cleanup_started.elapsed().as_millis(),
+                result.quarantined
+            );
             if result.quarantined {
                 log::warn!(
                     "[session] Resource cleanup for {} quarantined: {}",
