@@ -3,6 +3,7 @@ pub mod agent_config;
 pub mod agent_creation;
 pub mod claude_settings;
 pub mod coding_agent_profiles;
+pub mod coordinator_clocks;
 pub mod daemon_pid;
 pub mod local_config_io;
 pub mod loops;

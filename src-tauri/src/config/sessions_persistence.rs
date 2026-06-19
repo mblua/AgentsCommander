@@ -47,7 +47,7 @@ static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 /// ERROR line carries enough state to investigate the AV / Indexer / second
 /// instance contention pattern.
 #[derive(Debug)]
-struct RenameDiagnostics {
+pub(crate) struct RenameDiagnostics {
     op_id: u64,
     pid: u32,
     instance_id: String,
@@ -95,7 +95,10 @@ const RENAME_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
 /// out of scope for #280 (observability hardening, not concurrency
 /// rework). File a follow-up if the 260 ms tail latency becomes
 /// user-perceptible.
-fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, RenameDiagnostics)> {
+pub(crate) fn rename_with_retry(
+    tmp: &Path,
+    dst: &Path,
+) -> Result<(), (String, RenameDiagnostics)> {
     static OP_ID: AtomicU64 = AtomicU64::new(0);
     let op_id = OP_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
