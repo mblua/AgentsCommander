@@ -2490,6 +2490,19 @@ html.light-theme .root-agent-avatar {
   margin: 0 0 var(--spacing-sm) 0;
 }
 
+/* Warning variant of the settings hint — amber caution text (#565). Reuses the
+   base .settings-hint layout and only shifts the color. Dark theme uses the
+   bright amber already used by .settings-codex-home-preview.warning; the light
+   theme overrides to a darker amber so 11px text keeps adequate contrast on the
+   light background (mirrors the per-theme override convention used in this file). */
+.settings-hint-warning {
+  color: #fbbf24;
+}
+
+html.light-theme .settings-hint-warning {
+  color: #b45309;
+}
+
 /* Empty state */
 .empty-state {
   display: flex;

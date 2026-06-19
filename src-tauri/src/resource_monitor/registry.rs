@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use thiserror::Error;
@@ -68,6 +68,15 @@ struct ResourceAgentGroup {
     kill_started_at: Option<Instant>,
     last_error: Option<String>,
     permit_released: bool,
+    /// #559 - consecutive samples where observe_tree reported the root missing.
+    /// Reaped only after two strikes so a single enumeration fluke never frees a
+    /// live agent's slot. Reset to 0 whenever the root is observed alive or merely
+    /// unreadable, so the counter is consecutive-only by design (a momentarily
+    /// unreadable root means the pid still exists, i.e. possibly alive).
+    missing_root_strikes: u8,
+    /// #559 - when this group entered Terminated, used to bound retained
+    /// terminated rows (prune oldest first) without unbounded map growth.
+    terminated_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -217,6 +226,16 @@ impl ResourceMonitorState {
         if !inner.pending_permits.remove(&permit.generation) {
             return Err("resource monitor launch permit was not pending".to_string());
         }
+        // #559 (H3) - a relaunch of the same wg/role must not leave its prior
+        // Terminated row behind as a duplicate. Only dedup concrete identities so
+        // unrelated non-WG launches (workgroup = agent = None) are never merged.
+        if workgroup.is_some() || agent.is_some() {
+            inner.groups.retain(|_, g| {
+                !(matches!(g.state, ResourceGroupState::Terminated)
+                    && g.workgroup == workgroup
+                    && g.agent == agent)
+            });
+        }
         inner.groups.insert(
             session_id,
             ResourceAgentGroup {
@@ -233,6 +252,8 @@ impl ResourceMonitorState {
                 kill_started_at: None,
                 last_error,
                 permit_released: false,
+                missing_root_strikes: 0,
+                terminated_at: None,
             },
         );
         Ok(())
@@ -258,20 +279,60 @@ impl ResourceMonitorState {
             .unwrap_or(0)
     }
 
+    /// #559 (H2) - true if a quarantined group is eligible for another cleanup retry
+    /// (its last cleanup attempt is older than the backoff). kill_started_at is
+    /// refreshed by kill_group at the start of every attempt, so the backoff spaces
+    /// attempts from the start of the previous one. A Quarantined group always has
+    /// kill_started_at = Some (it can only reach Quarantined through kill_group), so
+    /// the unwrap_or(true) branch is dead-but-defensive.
+    pub fn quarantine_retry_due(&self, session_id: Uuid) -> bool {
+        let Ok(inner) = self.inner.lock() else {
+            return false;
+        };
+        match inner.groups.get(&session_id) {
+            Some(group) if matches!(group.state, ResourceGroupState::Quarantined) => group
+                .kill_started_at
+                .map(|t| t.elapsed() >= QUARANTINE_RETRY_BACKOFF)
+                .unwrap_or(true),
+            _ => false,
+        }
+    }
+
     pub fn snapshot(&self, limits: ResourceLimits) -> ResourceSnapshot {
         let samples = self.sample_running_groups();
         let mut warnings = Vec::new();
+        let mut reap_candidates: Vec<(Uuid, ProcessIdentity)> = Vec::new();
         for (session_id, result) in samples {
             match result {
                 Ok(tree) => {
-                    if let Some(error) = self.merge_tree(session_id, tree) {
+                    let outcome = self.merge_sample(session_id, tree);
+                    if let Some(error) = outcome.warning {
                         warnings.push(error);
+                    }
+                    if let Some(root) = outcome.reap_candidate {
+                        reap_candidates.push((session_id, root));
                     }
                 }
                 Err(err) => {
                     warnings.push(err.to_string());
                     self.set_group_error(session_id, err.to_string());
                 }
+            }
+        }
+
+        // #559 (H1) - confirm each reap candidate with a direct identity syscall
+        // OUTSIDE the lock before the irreversible reap. observe_identity opens the
+        // pid directly, so it does not depend on toolhelp-enumeration completeness
+        // (closes G1) and is a fresh check at reap time (closes G2). Reap only when
+        // the registered identity is confirmed gone (absent) or recycled (mismatch);
+        // abort and reset strikes when the root is alive or unverifiable.
+        for (session_id, root) in reap_candidates {
+            match self.backend.observe_identity(root.pid) {
+                Ok(Some(current)) if current == root => {
+                    self.reset_missing_root_strikes(session_id, root);
+                }
+                Ok(_) => self.apply_reap(session_id, root),
+                Err(_) => self.reset_missing_root_strikes(session_id, root),
             }
         }
 
@@ -282,6 +343,10 @@ impl ResourceMonitorState {
                 ProcessMemory::default()
             }
         };
+
+        // #559 (H3) - bound retained Terminated rows after the reap, so a row reaped
+        // this tick still renders as Terminated but the map cannot grow without limit.
+        self.prune_terminated_groups();
 
         let mut snapshot = {
             let inner = self.inner.lock().expect("resource monitor lock poisoned");
@@ -502,6 +567,7 @@ impl ResourceMonitorState {
                 };
                 if !quarantined {
                     group.permit_released = true;
+                    group.terminated_at = Some(Instant::now());
                 }
             }
         }
@@ -578,6 +644,127 @@ impl ResourceMonitorState {
         joined
     }
 
+    /// #559 (H1) - snapshot-path merge. Advances the missing-root strike counter and,
+    /// when it reaches REAP_STRIKES, NOMINATES the group for reap (returns its root
+    /// identity) without reaping: the reap is gated by a direct observe_identity
+    /// confirm done outside the lock in snapshot(). Preserves merge_tree's warning
+    /// contract, except on the nominating sample, where it returns no warning so the
+    /// raw missing-root string does not also flip overall_state to Warn (G4).
+    fn merge_sample(&self, session_id: Uuid, tree: ObservedProcessTree) -> SampleOutcome {
+        let none = SampleOutcome {
+            warning: None,
+            reap_candidate: None,
+        };
+        let Ok(mut inner) = self.inner.lock() else {
+            return none;
+        };
+        let Some(group) = inner.groups.get_mut(&session_id) else {
+            return none;
+        };
+
+        // #559 (H1) - read the signal from the structured errors BEFORE moving the tree.
+        let root_missing = tree
+            .errors
+            .iter()
+            .any(|e| is_missing_root_cleanup_error(e, group.root_identity));
+        let root_alive = tree
+            .processes
+            .iter()
+            .any(|p| p.identity == group.root_identity);
+
+        group.descendants_observed |= tree.processes.len() > 1;
+        merge_observed(&mut group.observed_processes, tree.processes);
+        let joined = join_errors(tree.errors);
+        if joined.is_some() {
+            group.last_error = joined.clone();
+        }
+
+        if matches!(group.state, ResourceGroupState::Running) && root_missing && !root_alive {
+            group.missing_root_strikes = group.missing_root_strikes.saturating_add(1);
+            if group.missing_root_strikes >= REAP_STRIKES {
+                // Nominate; suppress the raw warning on this sample (G4).
+                return SampleOutcome {
+                    warning: None,
+                    reap_candidate: Some(group.root_identity),
+                };
+            }
+        } else {
+            group.missing_root_strikes = 0;
+        }
+
+        SampleOutcome {
+            warning: joined,
+            reap_candidate: None,
+        }
+    }
+
+    /// #559 (H1) - perform the confirmed reap under the lock. Re-checks the group is
+    /// still Running, still at the strike threshold, and still the same root, so a
+    /// concurrent kill_group that already terminated it wins and this becomes a no-op.
+    fn apply_reap(&self, session_id: Uuid, root: ProcessIdentity) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        let Some(group) = inner.groups.get_mut(&session_id) else {
+            return;
+        };
+        if matches!(group.state, ResourceGroupState::Running)
+            && group.missing_root_strikes >= REAP_STRIKES
+            && group.root_identity == root
+        {
+            group.state = ResourceGroupState::Terminated;
+            group.permit_released = true;
+            group.terminated_at = Some(Instant::now());
+            group.missing_root_strikes = 0;
+            group.last_error = Some("agent process exited; resource slot reclaimed".to_string());
+            log::info!(
+                "[resource-monitor] reaped exited group session={} root_pid={}",
+                session_id,
+                root.pid
+            );
+        }
+    }
+
+    /// #559 (H1) - the confirm said the root is alive (or was unverifiable); clear the
+    /// strikes so a future genuine exit starts counting fresh.
+    fn reset_missing_root_strikes(&self, session_id: Uuid, root: ProcessIdentity) {
+        if let Ok(mut inner) = self.inner.lock() {
+            if let Some(group) = inner.groups.get_mut(&session_id) {
+                if matches!(group.state, ResourceGroupState::Running)
+                    && group.root_identity == root
+                {
+                    group.missing_root_strikes = 0;
+                }
+            }
+        }
+    }
+
+    /// #559 (H3) - bound retained Terminated rows so inner.groups cannot grow without
+    /// limit. Keeps the MAX_TERMINATED_RETAINED most recent; evicts the oldest.
+    /// Released-permit Terminated groups never count toward active_count, so eviction
+    /// never affects the cap.
+    fn prune_terminated_groups(&self) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        let mut terminated: Vec<(Uuid, Instant)> = inner
+            .groups
+            .iter()
+            .filter(|(_, g)| {
+                matches!(g.state, ResourceGroupState::Terminated) && g.permit_released
+            })
+            .map(|(id, g)| (*id, g.terminated_at.unwrap_or_else(Instant::now)))
+            .collect();
+        if terminated.len() <= MAX_TERMINATED_RETAINED {
+            return;
+        }
+        terminated.sort_by_key(|(_, at)| *at); // oldest first
+        let remove = terminated.len() - MAX_TERMINATED_RETAINED;
+        for (id, _) in terminated.into_iter().take(remove) {
+            inner.groups.remove(&id);
+        }
+    }
+
     fn set_group_error(&self, session_id: Uuid, error: String) {
         if let Ok(mut inner) = self.inner.lock() {
             if let Some(group) = inner.groups.get_mut(&session_id) {
@@ -616,6 +803,24 @@ fn merge_observed(
 fn join_errors(errors: Vec<String>) -> Option<String> {
     (!errors.is_empty()).then(|| errors.join("; "))
 }
+
+/// #559 - result of a snapshot-path sample merge: the warning to surface (if any)
+/// and, when the strike threshold is reached, the root identity nominated for reap.
+struct SampleOutcome {
+    warning: Option<String>,
+    reap_candidate: Option<ProcessIdentity>,
+}
+
+/// #559 - consecutive missing-root samples required before a group is NOMINATED for
+/// reap. A pre-filter only; the reap itself is gated by a direct observe_identity
+/// confirm (see snapshot()), so this threshold never authorizes a reap on its own.
+const REAP_STRIKES: u8 = 2;
+
+/// #559 - upper bound on retained Terminated rows (matches the slot cap).
+const MAX_TERMINATED_RETAINED: usize = 16;
+
+/// #559 - minimum interval between cleanup retries for a single quarantine.
+const QUARANTINE_RETRY_BACKOFF: Duration = Duration::from_secs(15);
 
 fn is_missing_root_cleanup_error(error: &str, root_identity: ProcessIdentity) -> bool {
     error == format!("root pid {} was not in process snapshot", root_identity.pid)
@@ -792,6 +997,10 @@ mod tests {
         exit_during_terminate: Mutex<BTreeSet<ProcessIdentity>>,
         remove_on_terminate: Mutex<HashMap<ProcessIdentity, Vec<ProcessIdentity>>>,
         terminated: Mutex<Vec<ProcessIdentity>>,
+        /// #559 (T1) - roots flagged here make observe_tree return Err, modelling a
+        /// failed enumeration. The Err arm of snapshot() must never reach the strike
+        /// counter or reap.
+        fail_observe: Mutex<BTreeSet<ProcessIdentity>>,
     }
 
     impl FakeProcessTreeBackend {
@@ -854,6 +1063,10 @@ mod tests {
             self.unverifiable.lock().unwrap().insert(pid);
         }
 
+        fn mark_fail_observe(&self, identity: ProcessIdentity) {
+            self.fail_observe.lock().unwrap().insert(identity);
+        }
+
         fn mark_exit_during_terminate(&self, identity: ProcessIdentity) {
             self.exit_during_terminate.lock().unwrap().insert(identity);
         }
@@ -879,6 +1092,9 @@ mod tests {
             &self,
             root: ProcessIdentity,
         ) -> Result<ObservedProcessTree, ResourceError> {
+            if self.fail_observe.lock().unwrap().contains(&root) {
+                return Err(ResourceError::Message("observe failed".into()));
+            }
             Ok(self
                 .trees
                 .lock()
@@ -1476,5 +1692,357 @@ mod tests {
         let _a = state.try_reserve_agent_slot(limits(2)).unwrap().unwrap();
         let _b = state.try_reserve_agent_slot(limits(2)).unwrap().unwrap();
         assert!(state.try_reserve_agent_slot(limits(1)).is_err());
+    }
+
+    // #559 - test-only accessors into the internal group state. `mod tests` is a child
+    // of the registry module, so it can read the private `inner` field directly.
+    impl ResourceMonitorState {
+        fn test_strikes(&self, id: Uuid) -> Option<u8> {
+            self.inner
+                .lock()
+                .unwrap()
+                .groups
+                .get(&id)
+                .map(|g| g.missing_root_strikes)
+        }
+
+        fn test_state(&self, id: Uuid) -> Option<ResourceGroupState> {
+            self.inner.lock().unwrap().groups.get(&id).map(|g| g.state)
+        }
+    }
+
+    fn missing_root_error(root: ProcessIdentity) -> Vec<String> {
+        vec![format!(
+            "root pid {} was not in process snapshot",
+            root.pid
+        )]
+    }
+
+    // (a) H1 - a naturally-exited root reaps after two strikes + a confirmed-gone check.
+    #[test]
+    fn natural_exit_reaps_after_two_strikes_and_confirm() {
+        let (state, backend) = state_with_fake();
+        let root = identity(60, 60);
+        backend.add_tree(root, vec![observed(60, 60, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+
+        // Live root: no strike.
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Running));
+        assert_eq!(state.active_agent_groups(), 1);
+
+        // Root exits: tree reports it missing, observe_identity confirms gone.
+        backend.replace_tree(root, Vec::new(), missing_root_error(root));
+        backend.mark_gone(root);
+
+        // First strike: still Running (the two-strike pre-filter).
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Running));
+        assert_eq!(state.test_strikes(id), Some(1));
+        assert_eq!(state.active_agent_groups(), 1);
+
+        // Second strike + confirm gone: reaped, slot reclaimed.
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Terminated));
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    // (a2) H1 - a live sample between two missing-root samples resets the strike count.
+    #[test]
+    fn missing_root_strike_resets_on_live_sample() {
+        let (state, backend) = state_with_fake();
+        let root = identity(62, 62);
+        backend.add_tree(root, vec![observed(62, 62, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+
+        // One missing-root strike.
+        backend.replace_tree(root, Vec::new(), missing_root_error(root));
+        state.snapshot(limits(1));
+        assert_eq!(state.test_strikes(id), Some(1));
+
+        // Live again: strike resets.
+        backend.replace_tree(root, vec![observed(62, 62, None, 0)], Vec::new());
+        state.snapshot(limits(1));
+        assert_eq!(state.test_strikes(id), Some(0));
+
+        // A single fresh missing-root sample only reaches one strike again: no reap.
+        backend.replace_tree(root, Vec::new(), missing_root_error(root));
+        state.snapshot(limits(1));
+        assert_eq!(state.test_strikes(id), Some(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Running));
+        assert_eq!(state.active_agent_groups(), 1);
+    }
+
+    // (a3 = T1, MANDATORY) H1 - observe_tree Err must never reap or touch the strikes.
+    #[test]
+    fn never_reaps_when_observe_tree_errors() {
+        let (state, backend) = state_with_fake();
+        let root = identity(63, 63);
+        backend.add_tree(root, vec![observed(63, 63, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+
+        // A failed enumeration routes through set_group_error (the Err arm), which never
+        // reaches merge_sample. Assert no reap and no strike change across two ticks.
+        backend.mark_fail_observe(root);
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Running));
+        assert_eq!(state.test_strikes(id), Some(0));
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Running));
+        assert_eq!(state.test_strikes(id), Some(0));
+        assert_eq!(state.active_agent_groups(), 1);
+    }
+
+    // (a4) H1 - a recycled root (PID reuse) reaps after two strikes + a mismatch confirm.
+    #[test]
+    fn recycled_root_reaps_after_two_strikes() {
+        let (state, backend) = state_with_fake();
+        let root = identity(64, 64);
+        backend.add_tree(root, vec![observed(64, 64, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+
+        // Tree reports missing-root (the creation-time-mismatch path) and the confirm
+        // returns a bumped identity (foreign process recycled the pid).
+        backend.replace_tree(root, Vec::new(), missing_root_error(root));
+        backend.mark_stale(root);
+
+        state.snapshot(limits(1));
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Terminated));
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    // (a5) H1 - a spurious missing-root signal on two ticks is overridden by the confirm
+    // when the root is actually still alive: no reap, strikes reset.
+    #[test]
+    fn confirm_overrides_spurious_missing_root_signal() {
+        let (state, backend) = state_with_fake();
+        let root = identity(65, 65);
+        backend.add_tree(root, vec![observed(65, 65, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+
+        // Root stays in the identities map, so observe_identity returns Ok(Some(root)).
+        backend.replace_tree(root, Vec::new(), missing_root_error(root));
+        state.snapshot(limits(1));
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Running));
+        assert_eq!(state.test_strikes(id), Some(0));
+        assert_eq!(state.active_agent_groups(), 1);
+    }
+
+    // (a6) H1 - an unverifiable confirm (observe_identity Err) aborts the reap.
+    #[test]
+    fn unverifiable_confirm_aborts_reap() {
+        let (state, backend) = state_with_fake();
+        let root = identity(66, 66);
+        backend.add_tree(root, vec![observed(66, 66, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+
+        // Missing-root signal fires, but observe_identity returns Err (pid still exists,
+        // momentarily unreadable): conservative abort.
+        backend.replace_tree(root, Vec::new(), missing_root_error(root));
+        backend.mark_unverifiable(root.pid);
+        state.snapshot(limits(1));
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Running));
+        assert_eq!(state.test_strikes(id), Some(0));
+        assert_eq!(state.active_agent_groups(), 1);
+    }
+
+    // (b) H2 - re-invoking kill_group on a quarantine after the blocker clears frees it.
+    #[test]
+    fn quarantine_recleanup_frees_slot() {
+        let (state, backend) = state_with_fake();
+        let root = identity(67, 67);
+        let child = identity(68, 68);
+        backend.add_tree(
+            root,
+            vec![observed(67, 67, None, 0), observed(68, 68, Some(67), 1)],
+        );
+        backend.mark_stubborn(child);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+        assert!(result.quarantined);
+        assert_eq!(result.state, ResourceGroupState::Quarantined);
+        assert_eq!(state.active_agent_groups(), 1);
+
+        // The stubborn child finally exits; the watchdog-driven retry now cleans up.
+        backend.mark_gone(child);
+        let retry = state.kill_group(id, ResourceKillReason::Watchdog).unwrap();
+        assert!(!retry.quarantined);
+        assert_eq!(retry.state, ResourceGroupState::Terminated);
+        assert_eq!(state.active_agent_groups(), 0);
+        assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
+    }
+
+    // (c) H3 - registering the same wg/role drops the prior Terminated duplicate row.
+    #[test]
+    fn register_dedups_prior_terminated_row_for_same_identity() {
+        let (state, backend) = state_with_fake();
+        let root_a = identity(70, 70);
+        backend.add_tree(root_a, vec![observed(70, 70, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
+        let id_a = Uuid::new_v4();
+        state
+            .register_group(
+                permit,
+                id_a,
+                "agent".into(),
+                None,
+                None,
+                Some("wg-1".into()),
+                Some("tech-lead".into()),
+                root_a,
+            )
+            .unwrap();
+        let killed = state.kill_group(id_a, ResourceKillReason::User).unwrap();
+        assert_eq!(killed.state, ResourceGroupState::Terminated);
+
+        // Relaunch the same wg/role with a fresh pid: the prior Terminated row is dropped.
+        let root_b = identity(71, 71);
+        backend.add_tree(root_b, vec![observed(71, 71, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
+        let id_b = Uuid::new_v4();
+        state
+            .register_group(
+                permit,
+                id_b,
+                "agent".into(),
+                None,
+                None,
+                Some("wg-1".into()),
+                Some("tech-lead".into()),
+                root_b,
+            )
+            .unwrap();
+
+        let snap = state.snapshot(limits(3));
+        assert_eq!(snap.groups.len(), 1);
+        assert_eq!(snap.groups[0].session_id, id_b.to_string());
+        assert_eq!(snap.groups[0].state, ResourceGroupState::Running);
+    }
+
+    // (T2) H1 - the reaping sample stamps the friendly message and suppresses the raw
+    // warning, while the non-reaping strike still surfaces it.
+    #[test]
+    fn reaping_sample_sets_friendly_message_and_suppresses_warning() {
+        let (state, backend) = state_with_fake();
+        let root = identity(72, 72);
+        backend.add_tree(root, vec![observed(72, 72, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+
+        backend.replace_tree(root, Vec::new(), missing_root_error(root));
+        backend.mark_gone(root);
+
+        // First strike (non-reaping): the raw warning IS surfaced.
+        let first = state.snapshot(limits(1));
+        assert!(first
+            .warnings
+            .iter()
+            .any(|w| w.contains("was not in process snapshot")));
+
+        // Second strike reaps: friendly last_error, raw warning suppressed.
+        let reaping = state.snapshot(limits(1));
+        assert!(reaping
+            .warnings
+            .iter()
+            .all(|w| !w.contains("was not in process snapshot")));
+        let row = reaping
+            .groups
+            .iter()
+            .find(|g| g.session_id == id.to_string())
+            .expect("reaped group present in snapshot");
+        assert_eq!(row.state, ResourceGroupState::Terminated);
+        assert_eq!(
+            row.last_error.as_deref(),
+            Some("agent process exited; resource slot reclaimed")
+        );
+    }
+
+    // (T3) H1 never races H2: a Quarantined group is never sampled, so it is never reaped.
+    #[test]
+    fn reap_never_touches_quarantined_group() {
+        let (state, backend) = state_with_fake();
+        let root = identity(73, 73);
+        let child = identity(74, 74);
+        backend.add_tree(
+            root,
+            vec![observed(73, 73, None, 0), observed(74, 74, Some(73), 1)],
+        );
+        backend.mark_stubborn(child);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .unwrap();
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+        assert!(result.quarantined);
+
+        // Even with a missing-root signal + confirmed-gone root, sample_running_groups
+        // skips Quarantined, so H1 never reaps it to Terminated.
+        backend.replace_tree(root, Vec::new(), missing_root_error(root));
+        backend.mark_gone(root);
+        state.snapshot(limits(1));
+        state.snapshot(limits(1));
+        assert_eq!(state.test_state(id), Some(ResourceGroupState::Quarantined));
+        assert_eq!(state.active_agent_groups(), 1);
+    }
+
+    // (T4) H3 - retained Terminated rows are bounded by MAX_TERMINATED_RETAINED.
+    #[test]
+    fn terminated_rows_are_bounded_by_retention_cap() {
+        let (state, backend) = state_with_fake();
+        let total = MAX_TERMINATED_RETAINED + 4;
+        for i in 0..total {
+            let pid = 100 + i as u32;
+            let root = identity(pid, pid as u64);
+            backend.add_tree(root, vec![observed(pid, pid as u64, None, 0)]);
+            let permit = state.try_reserve_agent_slot(limits(100)).unwrap().unwrap();
+            let id = Uuid::new_v4();
+            state
+                .register_group(permit, id, "agent".into(), None, None, None, None, root)
+                .unwrap();
+            let killed = state.kill_group(id, ResourceKillReason::User).unwrap();
+            assert_eq!(killed.state, ResourceGroupState::Terminated);
+        }
+
+        let snap = state.snapshot(limits(100));
+        assert_eq!(snap.groups.len(), MAX_TERMINATED_RETAINED);
+        assert_eq!(state.active_agent_groups(), 0);
     }
 }
