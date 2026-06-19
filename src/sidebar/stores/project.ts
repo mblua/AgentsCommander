@@ -198,6 +198,45 @@ export const projectStore = {
     );
   },
 
+  /** #552 patch a coordinator replica's lastUserMessageAt from the clock event.
+   *  Match by NORMALIZED path (required, not a deviation: the event path is the
+   *  session working_directory, which can differ in slash/case from the
+   *  discovery path on Windows). Discovery reload self-heals on any miss. */
+  updateCoordinatorClock(replicaPath: string, lastUserMessageAt: string) {
+    const target = normalizePath(replicaPath);
+    setProjects((prev) =>
+      prev.map((proj) => ({
+        ...proj,
+        workgroups: proj.workgroups.map((wg) => ({
+          ...wg,
+          agents: wg.agents.map((a) =>
+            normalizePath(a.path) === target ? { ...a, lastUserMessageAt } : a
+          ),
+        })),
+      }))
+    );
+  },
+
+  /** #552 patch a coordinator replica's autoClosedAt from the auto-close event.
+   *  A string sets the marker (auto-closed); `null` clears it (reopen). Matched
+   *  by normalized path, same as updateCoordinatorClock. */
+  updateCoordinatorAutoClosed(replicaPath: string, autoClosedAt: string | null) {
+    const target = normalizePath(replicaPath);
+    setProjects((prev) =>
+      prev.map((proj) => ({
+        ...proj,
+        workgroups: proj.workgroups.map((wg) => ({
+          ...wg,
+          agents: wg.agents.map((a) =>
+            normalizePath(a.path) === target
+              ? { ...a, autoClosedAt: autoClosedAt ?? undefined }
+              : a
+          ),
+        })),
+      }))
+    );
+  },
+
   /** Update a workgroup's TASK.md fields from the discovery watcher. */
   updateWorkgroupTask(
     workgroupPath: string,

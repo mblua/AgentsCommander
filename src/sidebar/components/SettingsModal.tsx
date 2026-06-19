@@ -623,8 +623,38 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
+  // #552 Coordinator idle badge + auto-close thresholds. Enforced at Save (NOT
+  // inline per keystroke — the numeric inputs use the non-clamping guard so they
+  // don't fight the user mid-edit). yellow < red is required because the badge
+  // color helper tests red first, so an inverted pair makes the yellow band
+  // unreachable.
+  const validateCoordinatorIdle = (): string | null => {
+    const data = settings.data;
+    if (!data) return null;
+
+    const yellow = data.coordinatorIdleBadgeYellowMinutes;
+    const red = data.coordinatorIdleBadgeRedMinutes;
+    if (!Number.isInteger(yellow) || yellow < 1) {
+      return "Coordinator idle: badge yellow threshold must be a whole number of at least 1 minute";
+    }
+    if (!Number.isInteger(red) || red < 1) {
+      return "Coordinator idle: badge red threshold must be a whole number of at least 1 minute";
+    }
+    if (yellow >= red) {
+      return "Coordinator idle: yellow threshold must be below the red threshold";
+    }
+    if (
+      !Number.isInteger(data.coordinatorAutoCloseMinutes) ||
+      data.coordinatorAutoCloseMinutes < 1
+    ) {
+      return "Coordinator idle: auto-close minutes must be a whole number of at least 1";
+    }
+
+    return null;
+  };
+
   const currentValidationError = (): string | null =>
-    validateAgents() ?? validateResources();
+    validateAgents() ?? validateResources() ?? validateCoordinatorIdle();
 
   // ── Save ──
   const handleSave = async () => {
@@ -780,6 +810,83 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Raise terminal when clicking sidebar</span>
         </label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Coordinator idle</div>
+        <label class="settings-field">
+          <span class="settings-label">Badge turns yellow after (minutes)</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="1"
+            step="1"
+            value={settings.data!.coordinatorIdleBadgeYellowMinutes}
+            onInput={(e) => {
+              const value = parseInt(e.currentTarget.value, 10);
+              if (!Number.isNaN(value)) {
+                updateField("coordinatorIdleBadgeYellowMinutes", value);
+              }
+            }}
+            data-ac-testid="settings.general.coordinatorIdleBadgeYellowMinutes"
+            data-ac-role="spinbutton"
+          />
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Badge turns red after (minutes)</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="1"
+            step="1"
+            value={settings.data!.coordinatorIdleBadgeRedMinutes}
+            onInput={(e) => {
+              const value = parseInt(e.currentTarget.value, 10);
+              if (!Number.isNaN(value)) {
+                updateField("coordinatorIdleBadgeRedMinutes", value);
+              }
+            }}
+            data-ac-testid="settings.general.coordinatorIdleBadgeRedMinutes"
+            data-ac-role="spinbutton"
+          />
+        </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.coordinatorAutoCloseEnabled}
+            onChange={(e) =>
+              updateField("coordinatorAutoCloseEnabled", e.currentTarget.checked)
+            }
+          />
+          <span>Auto-close idle teams (terminate sessions to free resources)</span>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Auto-close after (minutes of total silence)</span>
+          <input
+            class="settings-input settings-input-sm"
+            type="number"
+            min="1"
+            step="1"
+            disabled={!settings.data!.coordinatorAutoCloseEnabled}
+            value={settings.data!.coordinatorAutoCloseMinutes}
+            onInput={(e) => {
+              const value = parseInt(e.currentTarget.value, 10);
+              if (!Number.isNaN(value)) {
+                updateField("coordinatorAutoCloseMinutes", value);
+              }
+            }}
+            data-ac-testid="settings.general.coordinatorAutoCloseMinutes"
+            data-ac-role="spinbutton"
+          />
+        </label>
+        <div class="settings-hint">
+          The idle badge shows minutes since your last message to a coordinator
+          (green below yellow, yellow up to red, red beyond). Auto-close
+          terminates a team's sessions after the whole team is silent for the
+          configured minutes; the coordinator stays as a dormant row you can
+          reopen by messaging it.
+        </div>
       </div>
 
       <div class="settings-section">
