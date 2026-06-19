@@ -602,12 +602,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const data = settings.data;
     if (!data) return null;
 
+    // #565: mirror the backend (validate_resource_settings) — floor at 1, NO
+    // upper ceiling. The user sets this deliberately; the hard cap was replaced
+    // by an adjacent latency warning (see below), not a maximum.
     if (
       !Number.isInteger(data.maxConcurrentAgentProcesses) ||
-      data.maxConcurrentAgentProcesses < 1 ||
-      data.maxConcurrentAgentProcesses > 16
+      data.maxConcurrentAgentProcesses < 1
     ) {
-      return "Resources: max concurrent agent processes must be between 1 and 16";
+      return "Resources: max concurrent agent processes must be at least 1";
     }
 
     const warn = data.agentGroupWarnPrivateBytes;
@@ -1364,7 +1366,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             class="settings-input settings-input-sm"
             type="number"
             min="1"
-            max="16"
             step="1"
             value={settings.data!.maxConcurrentAgentProcesses}
             onInput={(e) => {
@@ -1377,6 +1378,15 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             data-ac-role="spinbutton"
           />
         </label>
+        <div
+          class="settings-hint settings-hint-warning"
+          data-ac-testid="settings.resources.maxConcurrentAgentProcesses.warning"
+          data-ac-role="status"
+        >
+          No upper limit (default 32). Higher values let more agent processes run
+          at once, but can worsen stop / restart / assign latency — per-group
+          cleanup on the destroy path gets more expensive as the cap grows.
+        </div>
       </div>
 
       <div class="settings-section">
