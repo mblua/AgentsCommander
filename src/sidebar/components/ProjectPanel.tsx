@@ -2392,6 +2392,9 @@ const ProjectPanel: Component = () => {
                     sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
                     replicaCodingAgentTarget()!.sessionName,
                   )}
+                  // #551: re-assigning the running agent+profile is a no-op and
+                  // pops a needless restart prompt — disable it with a tooltip.
+                  disableRedundantReplicaAssign
                   onSelect={async (selection) => {
                     // The picker already persisted the selection through the backend
                     // (config write) for WG replicas. For a non-WG agent session there
@@ -2438,6 +2441,9 @@ const ProjectPanel: Component = () => {
                     currentAgentId={target().replica.currentCodingAgentId ?? target().replica.preferredAgentId}
                     currentRequestedProfile={target().replica.currentProfile ?? null}
                     scopeContext={replicaScopeContext(target().wg, target().replica)}
+                    // #551: pre-launch "Set Coding Agent" opens pre-selected to the
+                    // replica's current pair; re-assigning it is a no-op, so disable.
+                    disableRedundantReplicaAssign
                     onSelect={async () => {
                       // WG replica: the picker already wrote the coding-agent
                       // selection via the backend (no restart — the agent isn't

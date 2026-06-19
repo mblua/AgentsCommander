@@ -69,12 +69,24 @@ const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string>
   missing: "MISSING",
 };
 
+// #551: shown on the disabled "Assign to this replica" button when the pending
+// selection still equals the replica's current Coding Agent + Profile.
+const REDUNDANT_REPLICA_ASSIGN_TOOLTIP =
+  "This replica already uses this Coding Agent + Profile.";
+
 const AgentPickerModal: Component<{
   sessionName: string;
   agentPath?: string | null;
   currentAgentId?: string | null;
   currentRequestedProfile?: string | null;
   scopeContext?: AgentPickerScopeContext;
+  // #551: opt-in for the replica *assign* flows. When set, the "Assign to this
+  // replica" button is disabled (with a tooltip) while the pending selection
+  // still equals the replica's current Coding Agent + Profile — re-assigning the
+  // same pair is a no-op and (since #537) pops a needless "Restart now?" prompt.
+  // The launch flow leaves this off so a replica can always be started with its
+  // configured agent.
+  disableRedundantReplicaAssign?: boolean;
   onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
   onClose: () => void;
 }> = (props) => {
@@ -413,10 +425,50 @@ const AgentPickerModal: Component<{
     return `Overwrite ${count}${wg ? ` in ${wg}` : " in this workgroup"}`;
   });
 
+  // #551: the replica's *current* profile letter — the baseline for the redundant
+  // selection check. The backend ranks the replica's persisted instance override
+  // ahead of the launch-time requested profile (resolve_profile:
+  // instance_override.or(explicit)…), so when present it — not
+  // props.currentRequestedProfile — is what the modal resolves to and applies on
+  // open. It is read from disk independently of the requested input, so it stays a
+  // stable baseline even after the user picks a different profile (which would
+  // otherwise let a stale session.requestedProfile wrongly enable a no-op assign).
+  // Falls back to the explicit requested profile, then the AC default, then "A",
+  // mirroring onMount's initial selection when there is no override.
+  const currentProfileLetter = createMemo(() => {
+    const override = normalizeProfileLetter(backendPreview()?.instanceProfileOverride);
+    if (override) return override;
+    const explicit = normalizeProfileLetter(props.currentRequestedProfile);
+    if (explicit) return explicit;
+    const current = settings();
+    if (current && isAcAgentPath(targetReplicaPath())) {
+      const acDefault = normalizeProfileLetter(
+        current.codingAgentProfiles.defaultProfileByAgent[targetName()],
+      );
+      if (acDefault) return acDefault;
+    }
+    return "A";
+  });
+
+  // #551: true while the pending selection still equals the replica's current
+  // Coding Agent + Profile (replica scope only, and only when the caller opted in
+  // via the assign flows). The untouched short-circuit covers the just-opened
+  // state robustly even if a backend default differs from the front-end default;
+  // once the user picks a profile, an explicit letter match is required.
+  const isRedundantReplicaSelection = createMemo(() => {
+    if (!props.disableRedundantReplicaAssign) return false;
+    if (selectedScope() !== "replica") return false;
+    const agent = selectedAgent();
+    if (!agent || !props.currentAgentId) return false;
+    if (agent.id !== props.currentAgentId) return false;
+    if (!profileTouched()) return true;
+    return selectedProfile() === currentProfileLetter();
+  });
+
   const applyEnabled = createMemo(() => {
     if (busy() || profileResolving() || !selectedAgent()) return false;
     const scope = selectedScope();
-    if (scope === "replica") return true;
+    if (scope === "replica") return !isRedundantReplicaSelection();
     if (!isWgReplica()) return false;
     if (scopePreviewBusy() || !scopePreview()) return false;
     if (scope === "workgroup") return dangerArmed();
@@ -1035,6 +1087,7 @@ const AgentPickerModal: Component<{
               class="modal-btn modal-btn-save agent-picker-apply"
               classList={{ danger: selectedScope() !== "replica" }}
               disabled={!applyEnabled()}
+              title={isRedundantReplicaSelection() ? REDUNDANT_REPLICA_ASSIGN_TOOLTIP : undefined}
               onClick={() => void apply()}
               {...automationAttrs(
                 "agentPicker.apply",
