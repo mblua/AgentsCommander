@@ -1,7 +1,7 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
@@ -37,6 +37,13 @@ interface PendingLaunch {
   currentRequestedProfile?: string | null;
   scopeContext?: AgentPickerScopeContext;
 }
+
+/** #545: the broom has nothing to clear when the workgroup task title is
+ *  empty/missing or the literal Clean sentinel. Title-only approximation of
+ *  the backend's structural clean check; exact-match + case-sensitive on
+ *  purpose (mirrors the backend `title: 'Clean'` sentinel). See plan G2/G4. */
+export const isTaskClean = (t?: string | null): boolean =>
+  !t?.trim() || t.trim() === "Clean";
 
 function joinSearchText(...parts: Array<string | null | undefined | false>): string {
   return parts
@@ -327,8 +334,14 @@ const ProjectPanel: Component = () => {
         const [deleteError, setDeleteError] = createSignal("");
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
-        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; sessionName: string; x: number; y: number } | null>(null);
+        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<
+          | { kind: "active"; sessionId: string; sessionName: string; wg: AcWorkgroup; exited: boolean; x: number; y: number }
+          | { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
+          | null
+        >(null);
         const [replicaCodingAgentTarget, setReplicaCodingAgentTarget] = createSignal<{ sessionId: string; sessionName: string } | null>(null);
+        // Coding Agent picker target for a gray/red (not-running) replica — #545.
+        const [inactiveCodingAgentTarget, setInactiveCodingAgentTarget] = createSignal<{ wg: AcWorkgroup; replica: AcAgentReplica } | null>(null);
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -743,6 +756,51 @@ const ProjectPanel: Component = () => {
           }
         };
 
+        // Narrow the replica context-menu union for the active vs gray/red
+        // (#545) render branches.
+        const activeReplicaMenu = () => {
+          const m = replicaCtxMenu();
+          return m && m.kind === "active" ? m : null;
+        };
+        const inactiveReplicaMenu = () => {
+          const m = replicaCtxMenu();
+          return m && m.kind === "inactive" ? m : null;
+        };
+
+        // Resolve any real (non-placeholder) session under this workgroup. Every
+        // replica in a workgroup shares one TASK.md and task_clean resolves it
+        // from the session cwd, so any live/exited sibling session clears the same
+        // title. This lets a never-launched (gray) replica reuse the existing
+        // session-id-based broom with no backend change (#545).
+        const resolveWorkgroupSessionId = (wg: AcWorkgroup): string | null => {
+          for (const peer of wg.agents) {
+            const s = replicaSession(wg, peer);
+            if (s && !s.id.startsWith("inactive-")) return s.id;
+          }
+          return null;
+        };
+
+        // Broom (clear task title) for a gray/red replica — reuses the
+        // active-agent TaskAPI.clean. The backend emits workgroup_task_updated,
+        // which sidebar/App.tsx applies to projectStore, refreshing the sidebar.
+        const clearReplicaTaskTitle = async (wg: AcWorkgroup) => {
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+          const sessionId = resolveWorkgroupSessionId(wg);
+          try {
+            if (sessionId) {
+              await TaskAPI.clean(sessionId);
+            } else {
+              // Cold workgroup: no live/exited session resolves the root, so
+              // address the wg-* root directly (#545). wg.path is always present
+              // (types.ts:431), even for a never-launched workgroup.
+              await TaskAPI.cleanAt(wg.path);
+            }
+          } catch (e) {
+            console.error("Failed to clear task title:", e);
+          }
+        };
+
         const handleProjectContextMenu = (e: MouseEvent) => {
           e.preventDefault();
           e.stopPropagation();
@@ -965,7 +1023,7 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        const handleReplicaContextMenu = (e: MouseEvent, session: Session) => {
+        const handleReplicaContextMenu = (e: MouseEvent, session: Session, wg: AcWorkgroup) => {
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
@@ -979,11 +1037,48 @@ const ProjectPanel: Component = () => {
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           setReplicaCtxMenu({
+            kind: "active",
             sessionId: session.id,
             sessionName: session.name,
+            wg,
+            // Red/exited replicas get the full menu PLUS the broom; green/live
+            // gets the full menu with no broom (#545 rework).
+            exited: !isSessionLive(session),
             x: e.clientX,
             y: e.clientY,
           });
+          const dismiss = (ev?: Event) => {
+            if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+            setReplicaCtxMenu(null);
+            cleanupCtx();
+          };
+          dismissCtx = dismiss;
+          setTimeout(() => {
+            positionReplicaCtxMenu(e.clientX, e.clientY);
+            window.addEventListener("click", dismiss);
+            window.addEventListener("contextmenu", dismiss);
+            window.addEventListener("keydown", dismiss as any);
+          });
+        };
+
+        // Gray (never launched) replicas have no session at all, so the active
+        // menu's session-id path can't open. Show the minimal not-running menu
+        // instead: Coding Agent selector + broom. Red/exited replicas keep a real
+        // session and route to the full menu + broom instead (#545 rework).
+        const handleReplicaInactiveContextMenu = (e: MouseEvent, wg: AcWorkgroup, replica: AcAgentReplica) => {
+          e.preventDefault();
+          e.stopPropagation();
+          cleanupCtx();
+          setShowCtxMenu(false);
+          setTeamCtxMenu(null);
+          setWgCtxMenu(null);
+          setAgentCtxMenu(null);
+          setAgentsHeaderCtxMenu(null);
+          setWorkgroupsHeaderCtxMenu(null);
+          setLoopCtxMenu(null);
+          setLoopsHeaderCtxMenu(null);
+          setTeamsHeaderCtxMenu(null);
+          setReplicaCtxMenu({ kind: "inactive", wg, replica, x: e.clientX, y: e.clientY });
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
             setReplicaCtxMenu(null);
@@ -1109,7 +1204,14 @@ const ProjectPanel: Component = () => {
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
                 const s = session();
-                if (s) handleReplicaContextMenu(e, s);
+                // Any real session (green/live OR red/exited) gets the full menu;
+                // red additionally shows the broom. Only gray (no session) falls
+                // into the minimal Coding Agent + broom menu (#545 rework).
+                if (s) {
+                  handleReplicaContextMenu(e, s, wg);
+                } else {
+                  handleReplicaInactiveContextMenu(e, wg, replica);
+                }
               }}
               title={replica.path}
             >
@@ -2183,7 +2285,8 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
-            {/* Replica context menu */}
+            {/* Replica context menu — full menu for green/live AND red/exited
+                (red adds the broom); gray (no session) gets Coding Agent + broom (#545) */}
             {replicaCtxMenu() && (
               <Portal>
                 <div
@@ -2192,43 +2295,89 @@ const ProjectPanel: Component = () => {
                   style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <button
-                    class="session-context-option context-option-danger"
-                    onClick={async () => {
-                      const menu = replicaCtxMenu();
-                      if (menu) {
-                        await restartReplicaSession(menu.sessionId);
-                      }
+                  <Show when={activeReplicaMenu()}>
+                    {(menu) => {
+                      // Broom renders in EVERY replica dot state (#545). Disabled
+                      // only when the task title has nothing to clear (empty/missing
+                      // or the literal "Clean" sentinel); enabled otherwise.
+                      const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
+                      const broomTitle = () =>
+                        broomDisabled() ? "Nothing to clear" : "Clear task title";
+                      return (
+                      <>
+                        <button
+                          class="session-context-option context-option-danger"
+                          onClick={async () => {
+                            await restartReplicaSession(menu().sessionId);
+                          }}
+                        >
+                          Restart Session
+                        </button>
+                        <button
+                          class="session-context-option"
+                          onClick={() => {
+                            const sessionId = menu().sessionId;
+                            const sessionName = menu().sessionName;
+                            setReplicaCtxMenu(null);
+                            cleanupCtx();
+                            setReplicaCodingAgentTarget({ sessionId, sessionName });
+                          }}
+                        >
+                          Coding Agent
+                        </button>
+                        <div class="context-separator" />
+                        <button
+                          class="session-context-option"
+                          onClick={() => toggleReplicaDetach(menu().sessionId)}
+                        >
+                          {sessionsStore.isDetached(menu().sessionId) ? "Re-attach to main" : "Open in new window"}
+                        </button>
+                        <div class="context-separator" />
+                        <button
+                          class="session-context-option"
+                          classList={{ "context-option-disabled": broomDisabled() }}
+                          disabled={broomDisabled()}
+                          title={broomTitle()}
+                          onClick={() => void clearReplicaTaskTitle(menu().wg)}
+                        >
+                          &#x1F9F9; Clear task title
+                        </button>
+                      </>
+                      );
                     }}
-                  >
-                    Restart Session
-                  </button>
-                  <button
-                    class="session-context-option"
-                    onClick={() => {
-                      const menu = replicaCtxMenu();
-                      setReplicaCtxMenu(null);
-                      cleanupCtx();
-                      if (menu) {
-                        setReplicaCodingAgentTarget({
-                          sessionId: menu.sessionId,
-                          sessionName: menu.sessionName,
-                        });
-                      }
+                  </Show>
+                  <Show when={inactiveReplicaMenu()}>
+                    {(menu) => {
+                      const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
+                      const broomTitle = () =>
+                        broomDisabled() ? "Nothing to clear" : "Clear task title";
+                      return (
+                        <>
+                          <button
+                            class="session-context-option"
+                            onClick={() => {
+                              const wg = menu().wg;
+                              const replica = menu().replica;
+                              setReplicaCtxMenu(null);
+                              cleanupCtx();
+                              setInactiveCodingAgentTarget({ wg, replica });
+                            }}
+                          >
+                            Coding Agent
+                          </button>
+                          <button
+                            class="session-context-option"
+                            classList={{ "context-option-disabled": broomDisabled() }}
+                            disabled={broomDisabled()}
+                            title={broomTitle()}
+                            onClick={() => void clearReplicaTaskTitle(menu().wg)}
+                          >
+                            &#x1F9F9; Clear task title
+                          </button>
+                        </>
+                      );
                     }}
-                  >
-                    Coding Agent
-                  </button>
-                  <div class="context-separator" />
-                  <button
-                    class="session-context-option"
-                    onClick={() => {
-                      const menu = replicaCtxMenu();
-                      if (menu) toggleReplicaDetach(menu.sessionId);
-                    }}
-                  >
-                    {sessionsStore.isDetached(replicaCtxMenu()!.sessionId) ? "Re-attach to main" : "Open in new window"}
-                  </button>
+                  </Show>
                 </div>
               </Portal>
             )}
@@ -2277,6 +2426,31 @@ const ProjectPanel: Component = () => {
                 />
               </Portal>
             )}
+            {/* Coding Agent picker for a gray/red replica — pick what launches
+                before first launch / relaunch, without starting the agent (#545).
+                For a WG replica the picker writes the selection through the backend. */}
+            <Show when={inactiveCodingAgentTarget()}>
+              {(target) => (
+                <Portal>
+                  <AgentPickerModal
+                    sessionName={replicaSessionName(target().wg, target().replica)}
+                    agentPath={target().replica.path}
+                    currentAgentId={target().replica.currentCodingAgentId ?? target().replica.preferredAgentId}
+                    currentRequestedProfile={target().replica.currentProfile ?? null}
+                    scopeContext={replicaScopeContext(target().wg, target().replica)}
+                    onSelect={async () => {
+                      // WG replica: the picker already wrote the coding-agent
+                      // selection via the backend (no restart — the agent isn't
+                      // running). Close first, then reload so the chosen agent
+                      // shows and is pre-selected at first launch.
+                      setInactiveCodingAgentTarget(null);
+                      await projectStore.reloadProject(proj.path);
+                    }}
+                    onClose={() => setInactiveCodingAgentTarget(null)}
+                  />
+                </Portal>
+              )}
+            </Show>
 
             {/* Delete WG confirmation */}
             {deletingWg() && (

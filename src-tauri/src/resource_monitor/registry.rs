@@ -368,6 +368,7 @@ impl ResourceMonitorState {
         session_id: Uuid,
         reason: ResourceKillReason,
     ) -> Result<ResourceKillResult, String> {
+        let kill_started = Instant::now();
         let (root_identity, previous_targets) = {
             let mut inner = self
                 .inner
@@ -419,7 +420,10 @@ impl ResourceMonitorState {
         let mut current_cleanup_identities = BTreeSet::new();
         let mut pending_identity_errors = Vec::new();
         let mut errors = Vec::new();
-        match self.backend.observe_tree(root_identity) {
+        let observe_started = Instant::now();
+        let observed_tree = self.backend.observe_tree(root_identity);
+        let observe_ms = observe_started.elapsed().as_millis();
+        match observed_tree {
             Ok(tree) => {
                 let current_processes = tree.processes.clone();
                 current_cleanup_identities
@@ -472,6 +476,7 @@ impl ResourceMonitorState {
                 .cmp(&a.depth)
                 .then_with(|| b.identity.cmp(&a.identity))
         });
+        let target_count = targets.len();
 
         let mut killed = Vec::new();
         for process in targets.iter() {
@@ -571,6 +576,17 @@ impl ResourceMonitorState {
                 }
             }
         }
+
+        log::info!(
+            "[resource-monitor] kill_group session={} reason={} observe_tree_ms={} total_ms={} targets={} killed={} quarantined={}",
+            session_id,
+            reason.as_log_reason(),
+            observe_ms,
+            kill_started.elapsed().as_millis(),
+            target_count,
+            killed.len(),
+            quarantined
+        );
 
         Ok(ResourceKillResult {
             session_id: session_id.to_string(),
