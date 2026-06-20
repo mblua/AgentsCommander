@@ -315,7 +315,7 @@ Located at `.ac/project-settings.json`. Defines the coding agent configurations 
 
 ## 5. Profile Path Placeholders
 
-Coding-agent **profile** command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Everything else in a profile value is passed to the child process **verbatim** — there is no shell, so `$(pwd)`, `${VAR}`, and other `%VAR%` forms are NOT expanded and are taken literally. Only the three tokens below are recognized.
+Coding-agent **profile** command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Only the three tokens below are recognized. There is no shell to evaluate values, so `$`-style forms such as `$(pwd)` and `${VAR}` are **not** expanded — they pass through to the child process **verbatim**. Any other `%WORD%` marker (one that is not one of the three AC tokens) is **not** taken literally: it is **rejected** at launch as an unknown placeholder (fail-closed), and for `CODEX_HOME` it also fails at settings save-time.
 
 The tokens map onto the matrix layout from the sections above: a replica is a `__agent_<name>` dir under a `wg-*` workgroup, the workspace is the project's `.ac` root, and the matrix is the canonical `_agent_<name>` dir.
 
