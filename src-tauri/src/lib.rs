@@ -1795,6 +1795,20 @@ pub fn run(
                             commands::spec_board::spec_board_close_all(state).await;
                         });
                     }
+                    // #566 - when the main window is destroyed (any close path:
+                    // X, Alt+F4, programmatic, silent- or confirm-quit), close the
+                    // Resource Monitor window so it cannot orphan and keep the app
+                    // alive. No-op if it was never opened or already closed.
+                    if label == "main" {
+                        if let Some(rm) = app_handle.get_webview_window("resource-monitor") {
+                            // G4: log on failure rather than swallow. A swallowed
+                            // error would hide the exact orphan bug this fixes;
+                            // mirrors the FE quit path's console.warn.
+                            if let Err(e) = rm.destroy() {
+                                log::warn!("[shutdown] RM window destroy failed: {e}");
+                            }
+                        }
+                    }
                     // Detached-window destroyed (by any mechanism — X, Alt+F4, programmatic).
                     // Two jobs:
                     //   1) Clear from `DetachedSessionsState` — switch_session needs an
