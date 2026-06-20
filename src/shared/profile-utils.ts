@@ -2,6 +2,7 @@ import type {
   AgentConfig,
   CodingAgentEnv,
   CodingAgentProfilesConfig,
+  ProfileAssignmentScope,
   ProfileCellConfig,
   Session,
 } from "./types";
@@ -473,6 +474,25 @@ export function isWgReplicaPath(path: string | null | undefined): boolean {
   const leaf = parts[parts.length - 1] ?? "";
   const parent = parts[parts.length - 2] ?? "";
   return parts.includes(".ac") && /^__agent_/.test(leaf) && /^wg-/.test(parent);
+}
+
+/**
+ * #537: After a replica-scope Coding Agent assignment is persisted, decide whether
+ * to offer an immediate "Restart now?" prompt so the change applies without a manual
+ * restart. We only offer it for `replica` scope (one unambiguous live session), when
+ * the picker did not already restart (the checkbox path), and when the target is a WG
+ * replica with a live PTY. A `{ exited }` status (object, not string) has nothing to
+ * restart, so it is skipped. kind/workgroup scope never prompts here.
+ */
+export function shouldOfferRestartAfterAssign(
+  selection: { scope: ProfileAssignmentScope; restartSessions: boolean },
+  session: Pick<Session, "status" | "workingDirectory"> | undefined,
+): boolean {
+  if (selection.scope !== "replica") return false;
+  if (selection.restartSessions) return false;
+  if (!session) return false;
+  if (!isWgReplicaPath(session.workingDirectory)) return false;
+  return typeof session.status === "string";
 }
 
 export function sessionProfileBadge(

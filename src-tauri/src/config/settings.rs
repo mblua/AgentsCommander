@@ -473,7 +473,7 @@ fn default_resource_monitor_enabled() -> bool {
 }
 
 fn default_max_concurrent_agent_processes() -> u32 {
-    16
+    32
 }
 
 fn default_coord_badge_yellow_minutes() -> u32 {
@@ -1254,8 +1254,10 @@ fn validate_agent_command_text(context: &str, command: &str) -> Result<(), Strin
 }
 
 pub fn validate_resource_settings(settings: &AppSettings) -> Result<(), String> {
-    if !(1..=16).contains(&settings.max_concurrent_agent_processes) {
-        return Err("maxConcurrentAgentProcesses must be between 1 and 16".to_string());
+    // Floor at 1 (a value of 0 would block every agent launch); no upper ceiling.
+    // The user sets this deliberately and is responsible for sizing it to their machine.
+    if settings.max_concurrent_agent_processes == 0 {
+        return Err("maxConcurrentAgentProcesses must be at least 1".to_string());
     }
     if settings.agent_group_warn_private_bytes > settings.agent_group_kill_private_bytes {
         return Err(
@@ -2258,7 +2260,7 @@ mod tests {
     fn resource_monitor_settings_round_trip_through_serde() {
         let mut s = AppSettings::default();
         assert!(s.resource_monitor_enabled);
-        assert_eq!(s.max_concurrent_agent_processes, 16);
+        assert_eq!(s.max_concurrent_agent_processes, 32);
         assert_eq!(s.resource_watchdog_action, ResourceWatchdogAction::Warn);
         assert_eq!(s.agent_group_warn_private_bytes, 8 * 1024 * 1024 * 1024);
         assert_eq!(s.agent_group_kill_private_bytes, 12 * 1024 * 1024 * 1024);
@@ -2324,14 +2326,6 @@ mod tests {
             .contains("maxConcurrentAgentProcesses"));
 
         let s = AppSettings {
-            max_concurrent_agent_processes: 17,
-            ..AppSettings::default()
-        };
-        assert!(validate_resource_settings(&s)
-            .unwrap_err()
-            .contains("maxConcurrentAgentProcesses"));
-
-        let s = AppSettings {
             agent_group_warn_private_bytes: 10,
             agent_group_kill_private_bytes: 9,
             ..AppSettings::default()
@@ -2358,6 +2352,22 @@ mod tests {
         assert!(validate_resource_settings(&s)
             .unwrap_err()
             .contains("agentProcessKillPrivateBytes"));
+    }
+
+    #[test]
+    fn validate_resource_settings_accepts_max_concurrent_above_legacy_cap() {
+        // #565: the old 1..=16 upper ceiling is gone. Any value >= 1 is accepted;
+        // the user is responsible for sizing it to their machine.
+        for value in [17u32, 32, 64, 256, 10_000] {
+            let s = AppSettings {
+                max_concurrent_agent_processes: value,
+                ..AppSettings::default()
+            };
+            assert!(
+                validate_resource_settings(&s).is_ok(),
+                "expected max_concurrent_agent_processes={value} to validate"
+            );
+        }
     }
 
     #[test]
@@ -2783,7 +2793,7 @@ mod tests {
 
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(s.resource_monitor_enabled);
-        assert_eq!(s.max_concurrent_agent_processes, 16);
+        assert_eq!(s.max_concurrent_agent_processes, 32);
         assert_eq!(s.resource_watchdog_action, ResourceWatchdogAction::Warn);
         assert!(validate_resource_settings(&s).is_ok());
     }

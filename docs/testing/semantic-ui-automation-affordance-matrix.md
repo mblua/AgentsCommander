@@ -38,7 +38,6 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Open guide | `actionBar.guide` | `click` |
 | Open spec board when enabled | `actionBar.specBoard` | `click` |
 | Detect terminal empty state | `terminal.empty` | `query` |
-| Start a new empty terminal session | `terminal.empty.newSession` | `click` |
 
 ## Settings Seed
 

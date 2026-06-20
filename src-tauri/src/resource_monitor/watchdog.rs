@@ -53,6 +53,25 @@ async fn run_tick(monitor: &ResourceMonitorState, settings: &SettingsState) {
     }
     let limits = ResourceLimits::from(&cfg);
     let groups = monitor.sample_for_watchdog(limits);
+
+    // #559 (H2) - retry cleanup for quarantined groups regardless of the configured
+    // watchdog action; a leaked slot must be reclaimed even in Warn mode. kill_group
+    // already re-observes and releases if the process is now gone. A double-dispatch
+    // (a still-Quarantined group whose prior retry is mid-flight) is a no-op via
+    // kill_group's Terminating/Terminated idempotency guard, so this relies on that
+    // guard staying intact.
+    for (session_id, group) in &groups {
+        if group.state == ResourceGroupState::Quarantined
+            && monitor.quarantine_retry_due(*session_id)
+        {
+            let session_id = *session_id;
+            let monitor = monitor.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = monitor.kill_group(session_id, ResourceKillReason::Watchdog);
+            });
+        }
+    }
+
     if cfg.resource_watchdog_action != ResourceWatchdogAction::KillGroup {
         return;
     }

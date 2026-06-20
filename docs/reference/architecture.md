@@ -235,7 +235,7 @@ graph LR
 
         SSTORE["stores/settings.ts<br/>Global settings signal<br/>voiceEnabled computed"]
 
-        SHORTS["shortcuts.ts<br/>Ctrl+Shift+N/W/R"]
+        SHORTS["shortcuts.ts<br/>Ctrl+Shift+W/R"]
 
         CONST["constants.ts<br/>WINDOW_TYPE,<br/>IS_SIDEBAR, IS_TERMINAL"]
     end
@@ -598,7 +598,7 @@ graph TD
 | `main.tsx` | Entry, window routing by query param |
 | `shared/types.ts` | All TypeScript interfaces |
 | `shared/ipc.ts` | All API wrappers + event listeners |
-| `shared/shortcuts.ts` | Global keyboard shortcuts (Ctrl+Shift+N/W/R) |
+| `shared/shortcuts.ts` | Global keyboard shortcuts (Ctrl+Shift+W/R) |
 | `shared/constants.ts` | `WINDOW_TYPE`, `IS_SIDEBAR`, `IS_TERMINAL` |
 | `shared/voice-recorder.ts` | Mic recording → Gemini → PTY inject |
 | `shared/console-capture.ts` | Console monkey-patch, 500 entries buffer |

@@ -1,6 +1,5 @@
 import { SessionAPI } from "./ipc";
 import { voiceRecorder } from "./voice-recorder";
-import { homeStore } from "../main/stores/home";
 
 type ShortcutHandler = (e: KeyboardEvent) => void;
 
@@ -10,12 +9,6 @@ const shortcuts: Array<{
   key: string;
   handler: () => void;
 }> = [
-  {
-    ctrl: true,
-    shift: true,
-    key: "n",
-    handler: () => { homeStore.hide(); SessionAPI.create(); },
-  },
   {
     ctrl: true,
     shift: true,

@@ -447,6 +447,10 @@ export const TaskAPI = {
   clean: (sessionId: string) =>
     transport.invoke<TaskUpdateResult>("task_clean", { sessionId }),
 
+  // #545: path-addressed clean for a cold workgroup with no live/exited session
+  // to resolve a session id from. Returns the same TaskUpdateResult as task_clean.
+  cleanAt: (workgroupRoot: string) =>
+    transport.invoke<TaskUpdateResult>("task_clean_at", { workgroupRoot }),
 };
 
 // Telegram Bridge API

@@ -18,6 +18,7 @@ import {
   profileEnvOrigin,
   resolveProfilePreview,
   sessionProfileBadge,
+  shouldOfferRestartAfterAssign,
   stringifyArgv,
   validateEnvRows,
 } from "./profile-utils";
@@ -202,6 +203,28 @@ describe("profile utils", () => {
         profileFallbackApplied: false,
       }),
     ).toBe("C");
+  });
+
+  it("offers a post-assign restart only for a replica-scope assign onto a live WG session (#537)", () => {
+    const wgPath = "C:/repo/.ac/wg-7-dev-team/__agent_dev-webpage-ui";
+    const replica = (restartSessions = false) => ({ scope: "replica" as const, restartSessions });
+
+    // Live PTY (string status) on a WG replica, replica scope, no prior restart -> prompt.
+    expect(shouldOfferRestartAfterAssign(replica(), { status: "running", workingDirectory: wgPath })).toBe(true);
+    expect(shouldOfferRestartAfterAssign(replica(), { status: "idle", workingDirectory: wgPath })).toBe(true);
+    expect(shouldOfferRestartAfterAssign(replica(), { status: "active", workingDirectory: wgPath })).toBe(true);
+
+    // Exited session ({ exited }) has nothing to restart.
+    expect(shouldOfferRestartAfterAssign(replica(), { status: { exited: 0 }, workingDirectory: wgPath })).toBe(false);
+    // No session at all.
+    expect(shouldOfferRestartAfterAssign(replica(), undefined)).toBe(false);
+    // The picker already restarted via the toggle -> no second prompt.
+    expect(shouldOfferRestartAfterAssign(replica(true), { status: "running", workingDirectory: wgPath })).toBe(false);
+    // Non-WG path (origin agent / repo) restarts directly, never via this prompt.
+    expect(shouldOfferRestartAfterAssign(replica(), { status: "running", workingDirectory: "C:/repo/.ac/_agent_architect" })).toBe(false);
+    // Broad scopes never prompt here (kept on the in-modal toggle).
+    expect(shouldOfferRestartAfterAssign({ scope: "kind", restartSessions: false }, { status: "running", workingDirectory: wgPath })).toBe(false);
+    expect(shouldOfferRestartAfterAssign({ scope: "workgroup", restartSessions: false }, { status: "running", workingDirectory: wgPath })).toBe(false);
   });
 });
 

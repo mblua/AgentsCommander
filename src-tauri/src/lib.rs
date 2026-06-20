@@ -1693,6 +1693,7 @@ pub fn run(
             commands::task::task_get_title,
             commands::task::task_set_title,
               commands::task::task_clean,
+            commands::task::task_clean_at,
                         commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::config::get_settings,
