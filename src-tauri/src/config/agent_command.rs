@@ -5,8 +5,8 @@ use crate::config::coding_agent_profiles::{
     resolve_profile, ProfileResolution, ProfileResolutionRequest,
 };
 use crate::config::placeholders::{
-    ac_root_error, expand_placeholders, expand_placeholders_in_args,
-    placeholder_context_for_launch_root, reject_unexpanded_markers, value_contains_ac_root,
+    ac_placeholder_error, expand_placeholders, expand_placeholders_in_args,
+    placeholder_context_for_launch_root, reject_unexpanded_markers, value_contains_ac_placeholder,
     PlaceholderContext,
 };
 use crate::config::session_context::ManagedContextTarget;
@@ -371,8 +371,8 @@ fn expand_runtime_value(
             Ok(expanded)
         }
         None => {
-            if value_contains_ac_root(value) {
-                return Err(ac_root_error().to_string());
+            if value_contains_ac_placeholder(value) {
+                return Err(ac_placeholder_error().to_string());
             }
             reject_unexpanded_markers(value, context, strict_path_value)?;
             Ok(value.to_string())
@@ -600,21 +600,21 @@ pub fn build_agent_spawn_command(
     command_tokens.extend(normalized.shell_args);
     let needs_placeholder_context = command_tokens
         .iter()
-        .any(|value| value_contains_ac_root(value))
+        .any(|value| value_contains_ac_placeholder(value))
         || agent
             .envs
             .iter()
             .filter(|row| row.enabled)
-            .any(|row| value_contains_ac_root(&row.value))
+            .any(|row| value_contains_ac_placeholder(&row.value))
         || profile_resolution
             .cell
             .env
             .values()
-            .any(|value| value_contains_ac_root(value));
+            .any(|value| value_contains_ac_placeholder(value));
     let placeholder_context = if needs_placeholder_context {
         Some(
             launch_path
-                .ok_or_else(|| ac_root_error().to_string())
+                .ok_or_else(|| ac_placeholder_error().to_string())
                 .and_then(placeholder_context_for_launch_root)?,
         )
     } else {
@@ -969,7 +969,7 @@ mod tests {
                 "A".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    command: "%AC_ROOT%\\bin\\codex.exe --flag".to_string(),
+                    command: "%AC_REPLICA_ROOT%\\bin\\codex.exe --flag".to_string(),
                     env: BTreeMap::new(),
                     notes: String::new(),
                 },
@@ -979,7 +979,7 @@ mod tests {
             .expect("replica launch root should expand");
 
         // build_agent_spawn_command canonicalizes the launch root before expanding
-        // %AC_ROOT% (see placeholders.rs). On Windows, canonicalization resolves an
+        // %AC_REPLICA_ROOT% (see placeholders.rs). On Windows, canonicalization resolves an
         // 8.3 short path component (e.g. a CI runner's RUNNER~1) back to its long
         // form (runneradmin), whereas the temp dir may be reported in 8.3 short form
         // when the username exceeds 8 chars. Normalize the expected value through the
@@ -1005,14 +1005,136 @@ mod tests {
         let repo = temp.path().join("repo-thing");
         std::fs::create_dir_all(&repo).unwrap();
         let settings = AppSettings {
-            agents: vec![agent("codex", "%AC_ROOT%\\bin\\codex.exe")],
+            agents: vec![agent("codex", "%AC_REPLICA_ROOT%\\bin\\codex.exe")],
             ..AppSettings::default()
         };
 
         let err = build_agent_spawn_command(&settings, "codex", Some(&repo), Some("A"))
-            .expect_err("normal repo launch must reject AC_ROOT");
+            .expect_err("normal repo launch must reject AC_REPLICA_ROOT");
 
-        assert!(err.contains("%AC_ROOT% requires an AC replica or root-agent launch root"));
+        assert!(err.contains("%AC_REPLICA_ROOT% requires an AC replica or root-agent launch root"));
+    }
+
+    #[test]
+    fn workspace_and_matrix_placeholders_expand_in_profile_env_for_replica_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = temp
+            .path()
+            .join("root with spaces")
+            .join(".ac")
+            .join("wg-7-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).unwrap();
+        let mut settings = AppSettings {
+            agents: vec![agent("claude", "claude")],
+            ..AppSettings::default()
+        };
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("claude".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: String::new(),
+                    env: BTreeMap::from([
+                        (
+                            "CLAUDE_CONFIG_DIR".to_string(),
+                            "%AC_WORKSPACE_ROOT%\\.claude".to_string(),
+                        ),
+                        (
+                            "CLAUDE_MATRIX_DIR".to_string(),
+                            "%AC_MATRIX_ROOT%\\.claude".to_string(),
+                        ),
+                    ]),
+                    notes: String::new(),
+                },
+            );
+
+        let spawn = build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A"))
+            .expect("replica launch root should expand workspace + matrix placeholders");
+        let env: BTreeMap<_, _> = spawn.child_env.into_iter().collect();
+
+        // Mirror the canonicalize + verbatim-prefix strip the builder applies, then
+        // derive the .ac workspace ancestor and the matrix dir from it.
+        let canonical_root = std::fs::canonicalize(&replica).unwrap();
+        let canonical_text = canonical_root.to_string_lossy();
+        let expected_replica = canonical_text
+            .strip_prefix(r"\\?\")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(canonical_root);
+        let expected_workspace = expected_replica
+            .parent()
+            .and_then(|parent| parent.parent())
+            .expect("replica has a .ac workspace ancestor");
+        let expected_matrix = expected_workspace.join("_agent_dev-rust");
+
+        let expected_config = format!("{}\\.claude", expected_workspace.to_string_lossy());
+        let expected_matrix_claude = format!("{}\\.claude", expected_matrix.to_string_lossy());
+        assert_eq!(env.get("CLAUDE_CONFIG_DIR"), Some(&expected_config));
+        assert_eq!(env.get("CLAUDE_MATRIX_DIR"), Some(&expected_matrix_claude));
+    }
+
+    #[test]
+    fn matrix_codex_home_expands_to_absolute_path_for_replica_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = temp
+            .path()
+            .join("root with spaces")
+            .join(".ac")
+            .join("wg-7-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).unwrap();
+        let mut settings = AppSettings {
+            agents: vec![agent("codex", "codex")],
+            ..AppSettings::default()
+        };
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("codex".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: String::new(),
+                    env: BTreeMap::from([(
+                        "CODEX_HOME".to_string(),
+                        "%AC_MATRIX_ROOT%\\.codex".to_string(),
+                    )]),
+                    notes: String::new(),
+                },
+            );
+
+        let spawn = build_agent_spawn_command(&settings, "codex", Some(&replica), Some("A"))
+            .expect("matrix CODEX_HOME should expand to an absolute path");
+
+        let canonical_root = std::fs::canonicalize(&replica).unwrap();
+        let canonical_text = canonical_root.to_string_lossy();
+        let expected_replica = canonical_text
+            .strip_prefix(r"\\?\")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(canonical_root);
+        let expected_matrix = expected_replica
+            .parent()
+            .and_then(|parent| parent.parent())
+            .expect("replica has a .ac workspace ancestor")
+            .join("_agent_dev-rust");
+
+        let home = spawn
+            .effective_codex_home
+            .expect("codex home resolves from the matrix placeholder");
+        assert!(home.is_absolute(), "{}", home.display());
+        // Mirror the builder's string concatenation (matrix + literal "\.codex"). Comparing
+        // the whole path keeps the assertion exact on Windows and still correct on platforms
+        // where the backslash is an ordinary character rather than a path separator, so the
+        // test does not silently become Windows-only.
+        let expected_home =
+            std::path::PathBuf::from(format!("{}\\.codex", expected_matrix.to_string_lossy()));
+        assert_eq!(home, expected_home);
     }
 
     #[test]
