@@ -1,12 +1,13 @@
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
 use crate::voice::tracker::VoiceTrackingState;
 
 #[tauri::command]
-pub fn pty_write(
+pub async fn pty_write(
+    app: AppHandle,
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
     voice_tracker: State<'_, VoiceTrackingState>,
     session_id: String,
@@ -23,13 +24,76 @@ pub fn pty_write(
         }
     }
 
+    // Existing behavior: write keystrokes to the PTY FIRST (no await held here)
+    // so input latency is unchanged; the #552 bookkeeping is additive and after.
     pty_mgr
         .lock()
         .unwrap()
         .write(uuid, &data)
         .map_err(|e| e.to_string())?;
 
+    // #552 user input -> silence touch (+ badge reset if coordinator). Resolves
+    // all state from `app`, so the same helper serves Telegram and web.
+    note_user_message_to_session(&app, uuid).await;
+
     Ok(())
+}
+
+/// #552 Record a real user message to `session_id`: always reset the auto-close
+/// silence clock; if the session is a coordinator, reset its badge clock and
+/// emit `coordinator_clock_updated` (and clear any "auto-closed" marker).
+/// Resolves all state from `app`, so every user-input surface (xterm `pty_write`,
+/// Telegram inbound, web UI) can call it with just (app, uuid). Injection /
+/// auto-resume MUST NOT call this (they are not user messages).
+///
+/// Generic over the Tauri runtime so callers holding either a concrete
+/// `AppHandle` or a generic `AppHandle<R>` (e.g. the Telegram bridge) can reuse it.
+pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) {
+    // (a) auto-close silence: any user message keeps the team alive.
+    if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+        idle.touch_silence(session_id);
+    }
+
+    // (b) badge: reset only when the typed-to session is a coordinator.
+    let cwd = {
+        let mgr = app
+            .state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
+        cwd
+    };
+    let Some(cwd) = cwd else { return };
+    let Some(clocks) =
+        app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+    else {
+        return;
+    };
+
+    // agent_fqn_from_path returns String (teams.rs:80), not Option.
+    let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+    let now = chrono::Utc::now();
+    let (changed, cleared) = {
+        let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = guard.note_user_message(&fqn, now);
+        // #552 a real user message reopens the coordinator -> clear any
+        // "auto-closed" marker (idempotent; no-op if not marked).
+        let cleared = guard.clear_auto_closed(&fqn);
+        (changed, cleared)
+    };
+    if changed {
+        let _ = app.emit(
+            "coordinator_clock_updated",
+            serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
+        );
+    }
+    if cleared {
+        let _ = app.emit(
+            "coordinator_auto_close_changed",
+            serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
+        );
+    }
 }
 
 #[tauri::command]

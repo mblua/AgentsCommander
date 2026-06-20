@@ -744,6 +744,37 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
     let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
 
+    // #552 seed the badge clock for a coordinator's first spawn so it shows 0m
+    // immediately, and clear any "auto-closed" marker. An auto-closed coordinator
+    // is DESTROYED, so its reopen flows through this create path (the "create
+    // in-place" branch of handleReplicaClick), NOT restart_session_inner.
+    // seed_if_absent never overwrites, so a respawn does NOT reset the badge.
+    if is_coordinator {
+        if let Some(clocks) =
+            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        {
+            // agent_fqn_from_path returns String (teams.rs:80), not Option.
+            let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+            let now = chrono::Utc::now();
+            let (seeded, cleared) = {
+                let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                (g.seed_if_absent(&fqn, now), g.clear_auto_closed(&fqn))
+            };
+            if seeded {
+                let _ = app.emit(
+                    "coordinator_clock_updated",
+                    serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
+                );
+            }
+            if cleared {
+                let _ = app.emit(
+                    "coordinator_auto_close_changed",
+                    serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
+                );
+            }
+        }
+    }
+
     let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
     let is_agent_owned_launch = agent_id.is_some() || agent_kind.is_some() || is_root_agent;
     let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
@@ -1499,6 +1530,7 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
     {
         let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
         if resource_monitor.has_registered_group(uuid) {
+            let cleanup_started = std::time::Instant::now();
             let monitor = Arc::clone(&resource_monitor);
             let result = tokio::task::spawn_blocking(move || {
                 monitor.kill_group(
@@ -1508,6 +1540,12 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
             })
             .await
             .map_err(|e| e.to_string())??;
+            log::info!(
+                "[session] destroy resource cleanup for {} took {}ms (quarantined={})",
+                id,
+                cleanup_started.elapsed().as_millis(),
+                result.quarantined
+            );
             if result.quarantined {
                 log::warn!(
                     "[session] Resource cleanup for {} quarantined: {}",

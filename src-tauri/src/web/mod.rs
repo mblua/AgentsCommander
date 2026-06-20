@@ -225,7 +225,7 @@ async fn handle_ws_connection(socket: WebSocket, ws_state: WsState) {
                     handle_text_message(&state_clone, &text).await;
                 }
                 Message::Binary(data) => {
-                    handle_binary_message(&state_clone, &data);
+                    handle_binary_message(&state_clone, &data).await;
                 }
                 Message::Close(_) => break,
                 _ => {}
@@ -282,7 +282,7 @@ async fn handle_text_message(state: &WsState, text: &str) {
 
 /// Handle a binary PTY write from a WS client.
 /// Format: [36 bytes UUID ASCII][raw PTY input bytes]
-fn handle_binary_message(state: &WsState, data: &[u8]) {
+async fn handle_binary_message(state: &WsState, data: &[u8]) {
     if data.len() < 36 {
         return;
     }
@@ -298,7 +298,13 @@ fn handle_binary_message(state: &WsState, data: &[u8]) {
     };
 
     let pty_data = &data[36..];
+    // Write FIRST (the std Mutex guard is dropped at the end of this statement,
+    // never held across the await below), then record the user message (#552).
     let _ = state.pty_mgr.lock().unwrap().write(uuid, pty_data);
+
+    // #552 web UI keystrokes (binary frame) are the real web input path and a
+    // genuine user message: reset the badge clock + auto-close silence.
+    crate::commands::pty::note_user_message_to_session(&state.app_handle, uuid).await;
 }
 
 /// Resolve the dist/ directory for static file serving.

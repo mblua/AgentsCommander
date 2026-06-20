@@ -1472,6 +1472,39 @@ html.light-theme .root-agent-avatar {
   color: var(--sidebar-fg-dim);
 }
 
+.settings-profile-field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* #576: compact always-visible "?" that surfaces the AC path placeholder
+   reference via a native title tooltip + aria-label (mirrors the existing
+   `title=` hover-help in this modal). Opacity-based separation, no border, per
+   the industrial-dark UI. */
+.settings-field-help {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--sidebar-fg-dim);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+}
+
+.settings-field-help:hover {
+  background: var(--sidebar-accent, #00d4ff);
+  color: var(--sidebar-bg, #0b0f14);
+}
+
 .settings-profile-command {
   width: 100%;
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
@@ -2912,6 +2945,16 @@ html.light-theme .settings-hint-warning {
   background: rgba(0, 212, 255, 0.08);
 }
 
+/* #563: cosmetic-only hover affordance. Selection is click-driven — hovering a
+   card must never pre-select it or update the Effective Projection. Only color
+   shifts here (border width and box size are unchanged), so nothing reflows.
+   `:not(.active)` keeps the selected card's distinct accent tint. */
+.agent-profile-provider-card:hover:not(.active),
+.agent-profile-card:hover:not(.active) {
+  border-color: rgba(0, 212, 255, 0.35);
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .agent-profile-provider-name,
 .agent-profile-card-title {
   display: block;
@@ -4152,6 +4195,39 @@ html.light-theme .settings-hint-warning {
 html.light-theme .ac-discovery-badge.running-peer {
   background: rgba(37, 99, 235, 0.12);
   color: #2563eb;
+}
+
+/* #552 coordinator idle badge — minutes since the user's last message to a
+   coordinator. Translucent bg + saturated text to match the sibling badges in
+   this row (separation by opacity/color, not borders). Lowercase ("45m") via
+   text-transform:none, unlike the uppercase status labels. Three-class
+   specificity (0,3,0) wins over the per-theme `.ac-discovery-badge` base rules. */
+.ac-discovery-badge.coord-idle {
+  text-transform: none;
+}
+
+.ac-discovery-badge.coord-idle.green {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+
+.ac-discovery-badge.coord-idle.yellow {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+
+.ac-discovery-badge.coord-idle.red {
+  background: rgba(255, 59, 92, 0.16);
+  color: var(--status-exited, #ff3b5c);
+}
+
+/* #552 auto-closed pill — NEUTRAL/muted on purpose so it reads as a state label
+   and stays distinct from the red idle badge (a dormant row can show BOTH).
+   Mirrors the muted `.disabled` badge; no border, per the industrial-dark
+   "separation by opacity, not borders" aesthetic. */
+.ac-discovery-badge.coord-autoclosed {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
 }
 
 /* Workgroup styles */

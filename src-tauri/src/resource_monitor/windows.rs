@@ -44,10 +44,24 @@ mod platform {
             root: ProcessIdentity,
         ) -> Result<ObservedProcessTree, ResourceError> {
             let entries = process_entries()?;
-            let identities = observe_identities(&entries);
-            Ok(build_observed_tree(&entries, &identities, root, |pid| {
-                process_memory(pid).unwrap_or_default()
-            }))
+            // #564 - resolve identities lazily for only the PIDs the walk visits
+            // (root + descendants + their direct parents), not every system PID, and
+            // memoize so a pid referenced both as a node and as a child's parent is
+            // opened at most once and yields one consistent value across the walk
+            // (matching the old single-snapshot identity map). The previous full-system
+            // precompute opened ~498 processes (each a syscall, with a redundant full
+            // snapshot on every permission-denied open) and discarded ~98% of the results.
+            let mut identity_cache: HashMap<u32, Option<ProcessIdentity>> = HashMap::new();
+            Ok(build_observed_tree(
+                &entries,
+                root,
+                |pid| {
+                    *identity_cache
+                        .entry(pid)
+                        .or_insert_with(|| observe_identity(pid).ok().flatten())
+                },
+                |pid| process_memory(pid).unwrap_or_default(),
+            ))
         }
 
         fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
@@ -126,18 +140,27 @@ mod platform {
 
     /// Walk the process snapshot from `root`, returning the observed subtree.
     ///
-    /// Root-PID-reuse guard: the registry stores the root's creation time, so a
-    /// recycled PID (the original root exited and a foreign process took the same
-    /// PID) shows up here as a creation-time mismatch. When that happens we drop
-    /// the whole subtree and report it exactly like a missing root, so the registry
-    /// never adopts, and later terminates, a process it does not own. Descendant
-    /// identities are already verified at terminate time; this makes the root just
-    /// as strict at observe time. Memory lookups are injected so the walk is a pure
+    /// Root-PID-reuse guard: the registry stores the root's creation time, so the
+    /// live process at the root PID must prove it is that same process before we
+    /// adopt its subtree. It can fail to prove it two ways. First (#516), its
+    /// creation time is readable but differs, because the original root exited and a
+    /// foreign process took the recycled PID. Second (#543), its identity cannot be
+    /// read at all (creation_time 0), so a foreign process occupying the recycled PID
+    /// could otherwise still expose a readable child that would inherit
+    /// `kill_allowed = true`. In either case we drop the whole subtree and report it
+    /// exactly like a missing root, so the registry never adopts, and later
+    /// terminates, a process it does not own, and no descendant under an unverifiable
+    /// root is ever kill-eligible. The guard only applies when the registry captured
+    /// a real root creation time (`root.creation_time_100ns != 0`); the drop is
+    /// re-evaluated on every observe cycle, so a root that is only briefly unreadable
+    /// is re-adopted in full on the next cycle once it reads cleanly. Descendant
+    /// identities are already verified at terminate time; this makes the root just as
+    /// strict at observe time. Memory lookups are injected so the walk is a pure
     /// function over the snapshot and can be unit-tested without real processes.
     fn build_observed_tree(
         entries: &HashMap<u32, ProcessEntry>,
-        identities: &HashMap<u32, ProcessIdentity>,
         root: ProcessIdentity,
+        mut identity_for: impl FnMut(u32) -> Option<ProcessIdentity>,
         mut memory_for: impl FnMut(u32) -> ProcessMemory,
     ) -> ObservedProcessTree {
         let mut by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -158,28 +181,36 @@ mod platform {
                 }
                 continue;
             };
-            let identity = identities.get(&pid).copied().unwrap_or_else(|| {
-                errors.push(format!("identity unavailable for pid {pid}"));
-                ProcessIdentity {
-                    pid,
-                    creation_time_100ns: 0,
-                }
-            });
+            let resolved_identity = identity_for(pid);
             if pid == root.pid
                 && root.creation_time_100ns != 0
-                && identity.creation_time_100ns != 0
-                && identity.creation_time_100ns != root.creation_time_100ns
+                && resolved_identity.map(|id| id.creation_time_100ns)
+                    != Some(root.creation_time_100ns)
             {
-                // Live process at the root pid is not the one we registered: the
-                // pid was recycled. Drop the subtree and surface the same error the
-                // missing-root path uses, so cleanup releases the slot instead of
-                // adopting a foreign process.
+                // Live process at the root pid is not provably the one we
+                // registered: its creation time is readable but differs (#516, the
+                // pid was recycled by a foreign process) or its identity can't be
+                // read at all (#543, creation_time 0 / unreadable). Either way, drop
+                // the subtree and surface the same error the missing-root path uses,
+                // so cleanup releases the slot instead of adopting a foreign process
+                // and no readable descendant under an unverifiable root becomes
+                // kill-eligible.
                 errors.push(format!("root pid {} was not in process snapshot", root.pid));
                 continue;
             }
+            let identity = match resolved_identity {
+                Some(identity) => identity,
+                None => {
+                    errors.push(format!("identity unavailable for pid {pid}"));
+                    ProcessIdentity {
+                        pid,
+                        creation_time_100ns: 0,
+                    }
+                }
+            };
             let parent_identity = (entry.parent_pid != 0)
                 .then_some(entry.parent_pid)
-                .and_then(|parent| identities.get(&parent).copied());
+                .and_then(&mut identity_for);
             let memory = memory_for(pid);
             processes.push(ObservedProcess {
                 identity,
@@ -263,18 +294,6 @@ mod platform {
             }
         }
         Ok(entries)
-    }
-
-    fn observe_identities(entries: &HashMap<u32, ProcessEntry>) -> HashMap<u32, ProcessIdentity> {
-        entries
-            .keys()
-            .filter_map(|pid| {
-                observe_identity(*pid)
-                    .ok()
-                    .flatten()
-                    .map(|identity| (*pid, identity))
-            })
-            .collect()
     }
 
     fn observe_identity(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
@@ -398,7 +417,12 @@ mod platform {
             let identities =
                 HashMap::from([(1000, identity(1000, 111)), (1001, identity(1001, 222))]);
 
-            let tree = build_observed_tree(&entries, &identities, identity(1000, 111), no_memory);
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                no_memory,
+            );
 
             assert!(tree.errors.is_empty(), "unexpected errors: {:?}", tree.errors);
             assert_eq!(tree.processes.len(), 2);
@@ -422,7 +446,12 @@ mod platform {
             let identities =
                 HashMap::from([(1000, identity(1000, 222)), (1001, identity(1001, 333))]);
 
-            let tree = build_observed_tree(&entries, &identities, identity(1000, 111), no_memory);
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                no_memory,
+            );
 
             assert!(
                 tree.processes.is_empty(),
@@ -436,16 +465,98 @@ mod platform {
         }
 
         #[test]
+        fn unreadable_root_drops_subtree_and_protects_readable_child() {
+            // #543 (follow-up to #516) - pid 1000 was registered with creation time
+            // 111, but the live process now occupying the pid is UNREADABLE: its
+            // identity resolves to None (creation_time 0). The #516 mismatch check
+            // alone skipped the guard for this case, so a foreign but READABLE child
+            // hanging off the unreadable root was still walked and marked
+            // kill_allowed = true. The widened guard must drop the whole subtree
+            // exactly like a recycled root, so the readable child is never observed
+            // and can never be terminated.
+            let entries = HashMap::from([
+                (1000, entry(1000, 4, "foreign-unreadable.exe")),
+                (1001, entry(1001, 1000, "foreign-child.exe")),
+            ]);
+            // Root identity is unreadable (absent from the map -> None); only the
+            // readable child resolves to a real identity.
+            let identities = HashMap::from([(1001, identity(1001, 222))]);
+
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                no_memory,
+            );
+
+            assert!(
+                tree.processes.is_empty(),
+                "unverifiable-root subtree must be dropped, got {:?}",
+                tree.processes
+            );
+            assert!(
+                !tree.processes.iter().any(|p| p.kill_allowed),
+                "no descendant under an unverifiable root may be kill_allowed"
+            );
+            assert_eq!(
+                tree.errors,
+                vec!["root pid 1000 was not in process snapshot".to_string()]
+            );
+        }
+
+        #[test]
         fn missing_root_reports_not_in_snapshot() {
             let entries: HashMap<u32, ProcessEntry> = HashMap::new();
             let identities: HashMap<u32, ProcessIdentity> = HashMap::new();
 
-            let tree = build_observed_tree(&entries, &identities, identity(1000, 111), no_memory);
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                no_memory,
+            );
 
             assert!(tree.processes.is_empty());
             assert_eq!(
                 tree.errors,
                 vec!["root pid 1000 was not in process snapshot".to_string()]
+            );
+        }
+
+        #[test]
+        fn resolves_identity_only_for_subtree_pids() {
+            // Two unrelated processes (2000/2001) live in the snapshot but are not in
+            // the root's subtree. The identity resolver must never be invoked for them;
+            // that is exactly the ~498-PID cost #564 removes.
+            let entries = HashMap::from([
+                (1000, entry(1000, 4, "agent.exe")),
+                (1001, entry(1001, 1000, "child.exe")),
+                (2000, entry(2000, 4, "unrelated.exe")),
+                (2001, entry(2001, 2000, "unrelated-child.exe")),
+            ]);
+            let identities = HashMap::from([
+                (1000, identity(1000, 111)),
+                (1001, identity(1001, 222)),
+                (2000, identity(2000, 333)),
+                (2001, identity(2001, 444)),
+            ]);
+            let mut probed: Vec<u32> = Vec::new();
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| {
+                    probed.push(pid);
+                    identities.get(&pid).copied()
+                },
+                no_memory,
+            );
+
+            assert!(tree.errors.is_empty(), "unexpected errors: {:?}", tree.errors);
+            assert_eq!(tree.processes.len(), 2);
+            assert!(probed.contains(&1000) && probed.contains(&1001));
+            assert!(
+                !probed.contains(&2000) && !probed.contains(&2001),
+                "identity resolver must not touch processes outside the subtree, probed={probed:?}"
             );
         }
     }

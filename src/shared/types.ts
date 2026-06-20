@@ -264,6 +264,15 @@ export interface AppSettings {
   agentProcessKillPrivateBytes: number;
   resourceKeepLastSnapshot: boolean;
   resourceBackoffPolling: boolean;
+  /** #552 coordinator idle-badge color thresholds, in minutes. Mirror of the
+   *  Rust `coordinator_idle_badge_*_minutes` fields (camelCase via serde).
+   *  Color helper requires yellow < red (validated at Settings save time). */
+  coordinatorIdleBadgeYellowMinutes: number;
+  coordinatorIdleBadgeRedMinutes: number;
+  /** #552 auto-close lifecycle clock: when enabled, a team whose sessions go
+   *  fully silent for `coordinatorAutoCloseMinutes` is terminated. */
+  coordinatorAutoCloseEnabled: boolean;
+  coordinatorAutoCloseMinutes: number;
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";
@@ -537,6 +546,14 @@ export interface AcAgentReplica {
   currentCodingAgentId?: string;
   /** #384: per-replica profile letter (`tooling.profile`, then legacy override). */
   currentProfile?: string;
+  /** #552 RFC3339 time of the user's last message to this coordinator, or
+   *  undefined. Only meaningful when `isCoordinator`. Drives the idle badge;
+   *  read from the persisted CoordinatorClocks store (survives restart + dormant). */
+  lastUserMessageAt?: string;
+  /** #552 RFC3339 time this coordinator's team was auto-closed for inactivity,
+   *  or undefined. Only meaningful when `isCoordinator`. Drives the neutral
+   *  "auto-closed" pill; cleared on reopen. */
+  autoClosedAt?: string;
 }
 
 export interface AcWorkgroup {

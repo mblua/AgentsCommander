@@ -274,6 +274,9 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 .write(uuid, &data)
                 .map_err(|e| e.to_string())?;
 
+            // #552 web UI input is a real user message (resets badge + silence).
+            crate::commands::pty::note_user_message_to_session(&state.app_handle, uuid).await;
+
             Ok(json!(null))
         }
 
