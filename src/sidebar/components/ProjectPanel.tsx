@@ -5,6 +5,7 @@ import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, Ta
 import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
+import { launchErrorMessage } from "../../shared/launch-errors";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
@@ -127,6 +128,19 @@ function deriveScopeContextFromSession(
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
 
+/**
+ * #573 (grinch Step-7): upper bound for the post-assign restart await. The Tauri
+ * IPC transport (`transport-tauri.ts`) has NO timeout, unlike `WsTransport.invoke`
+ * (`transport-ws.ts`), which rejects after 30s with `Command timeout: <cmd>`. If
+ * the backend `restart_session` neither resolves nor rejects (session-manager
+ * write-lock stall, ConPTY respawn hang, dropped IPC reply), `restarting()` would
+ * stay true forever and trap the modal (both buttons disabled + dismiss gated →
+ * app-kill required). Racing this timeout lets the desktop modal self-heal exactly
+ * as it already does on WS/remote — intentional parity, so mirror the WS value.
+ * The WS 30s is a bare literal there (not exported), hence a local named const.
+ */
+export const RESTART_TIMEOUT_MS = 30_000;
+
 /** Build the session name used to link a replica to its session */
 function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
   return `${wg.name}/${replica.name}`;
@@ -213,18 +227,65 @@ const ProjectPanel: Component = () => {
     agentLabel: string;
     requestedProfile: string | null;
   } | null>(null);
+  // #573: in-flight + error state for the prompt's restart. The old code did a
+  // consume-and-clear (setRestartPrompt(null) before the async settled) with a
+  // bare `.catch(console.error)`, so a failed restart vanished silently and the
+  // user thought the new agent applied while the old one kept running. We now
+  // keep the modal open, surface the failure, and let the user retry — mirroring
+  // AgentPickerModal.apply() and Resource Monitor's confirmKill.
+  const [restarting, setRestarting] = createSignal(false);
+  const [restartError, setRestartError] = createSignal("");
 
   // Restart the live session on the newly-assigned agent (same SessionAPI.restart
-  // the Restart button uses; honors currentCodingAgent, 0b03ad7). Consume-and-clear
-  // so a single click cannot fire twice.
-  const applyRestartPrompt = () => {
+  // the Restart button uses; honors currentCodingAgent, 0b03ad7). The `restarting`
+  // guard replaces the old early setRestartPrompt(null) as the double-fire guard:
+  // re-entry is refused while a restart is in flight. On success the modal closes;
+  // on failure it stays open with the error so the user can retry.
+  const applyRestartPrompt = async () => {
     const prompt = restartPrompt();
+    if (!prompt || restarting()) return;
+    setRestarting(true);
+    setRestartError("");
+    // #573 (grinch Step-7): bound the await with RESTART_TIMEOUT_MS. The Tauri IPC
+    // transport never times out, so a wedged backend would leave `restarting()`
+    // true forever and trap the modal (buttons disabled + dismiss gated). Racing a
+    // timeout guarantees `finally` runs within the bound, surfacing the error
+    // inline and re-enabling the modal — matching WsTransport.invoke's self-heal.
+    let timeoutTimer: number | undefined;
+    try {
+      await Promise.race([
+        SessionAPI.restart(prompt.sessionId, {
+          agentId: prompt.agentId,
+          requestedProfile: prompt.requestedProfile,
+        }),
+        // Mirror WsTransport.invoke's reject (a bare `Command timeout: <cmd>`
+        // string) so launchErrorMessage yields identical copy on desktop and WS.
+        new Promise<never>((_, reject) => {
+          timeoutTimer = window.setTimeout(
+            () => reject("Command timeout: restart_session"),
+            RESTART_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      setRestartPrompt(null);
+    } catch (e) {
+      console.error("Failed to restart session:", e);
+      setRestartError(launchErrorMessage(e));
+    } finally {
+      // Timer hygiene: cancel the pending timeout when the restart settles first,
+      // so a successful restart can't leave a dangling timer / late rejection.
+      window.clearTimeout(timeoutTimer);
+      setRestarting(false);
+    }
+  };
+
+  // Close the prompt, clearing any error. Refused while a restart is in flight so
+  // neither the Later button nor an overlay click can tear the modal down before
+  // the restart settles (the buttons are also disabled via `busy`).
+  const dismissRestartPrompt = () => {
+    if (restarting()) return;
+    setRestartError("");
     setRestartPrompt(null);
-    if (!prompt) return;
-    void SessionAPI.restart(prompt.sessionId, {
-      agentId: prompt.agentId,
-      requestedProfile: prompt.requestedProfile,
-    }).catch((e) => console.error("Failed to restart session:", e));
   };
 
   const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
@@ -2465,6 +2526,11 @@ const ProjectPanel: Component = () => {
                     // old agent. Offer an immediate restart when there is a live session.
                     if (shouldOfferRestartAfterAssign(selection, session)) {
                       const slash = target.sessionName.lastIndexOf("/");
+                      // #573: clear any error left over from a prior failed restart
+                      // so a fresh prompt never opens showing a stale message. (No
+                      // need to reset `restarting`: dismiss is blocked while it is
+                      // true, so the picker can't reopen to reach here mid-flight.)
+                      setRestartError("");
                       setRestartPrompt({
                         sessionId: target.sessionId,
                         replicaName: slash >= 0 ? target.sessionName.slice(slash + 1) : target.sessionName,
@@ -2837,8 +2903,10 @@ const ProjectPanel: Component = () => {
         <RestartPromptModal
           agentLabel={restartPrompt()!.agentLabel}
           replicaName={restartPrompt()!.replicaName}
+          error={restartError()}
+          busy={restarting()}
           onRestart={applyRestartPrompt}
-          onLater={() => setRestartPrompt(null)}
+          onLater={dismissRestartPrompt}
         />
       </Portal>
     )}
