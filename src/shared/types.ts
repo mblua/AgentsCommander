@@ -319,6 +319,9 @@ export interface ResourceAgentGroupSnapshot {
   /** #516 - bare agent name (e.g. "dev-rust"), or `null` when the launch cwd
    * carries no replica identity. Always present. */
   agent: string | null;
+  /** #566 - project folder name (e.g. "AgentsCommander_ac"), or `null` for
+   * origin / ad-hoc / unparseable launches. Always present. */
+  project: string | null;
   rootPid?: number | null;
   rootIdentity?: ResourceProcessIdentity | null;
   state: ResourceGroupState;

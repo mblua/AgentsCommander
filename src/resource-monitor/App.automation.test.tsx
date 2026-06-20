@@ -29,6 +29,7 @@ const activeSnapshot = (): ResourceSnapshot => ({
       name: "cap-one",
       workgroup: "wg-5-dev-team",
       agent: "dev-rust",
+      project: "AgentsCommander_ac",
       rootPid: 100,
       state: "running",
       descendantsObserved: true,
@@ -71,8 +72,50 @@ const nullIdentitySnapshot = (): ResourceSnapshot => {
   const snapshot = activeSnapshot();
   snapshot.groups[0].workgroup = null;
   snapshot.groups[0].agent = null;
+  snapshot.groups[0].project = null;
   return snapshot;
 };
+
+// #566 - multiple groups spanning projects / workgroups / roles / states so the
+// filter dimensions visibly change the rendered row count.
+const multiGroupSnapshot = (): ResourceSnapshot => {
+  const snapshot = activeSnapshot();
+  snapshot.activeAgentGroups = 2;
+  snapshot.maxConcurrentAgentGroups = 3;
+  snapshot.groups = [
+    {
+      ...snapshot.groups[0],
+      sessionId: "session-1",
+      name: "cap-one",
+      workgroup: "wg-5-dev-team",
+      agent: "dev-rust",
+      project: "AgentsCommander_ac",
+      state: "running",
+    },
+    {
+      ...snapshot.groups[0],
+      sessionId: "session-2",
+      name: "cap-two",
+      workgroup: "wg-9-other-team",
+      agent: "tech-lead",
+      project: "OtherProject_ac",
+      state: "running",
+    },
+    {
+      ...snapshot.groups[0],
+      sessionId: "session-3",
+      name: "cap-dead",
+      workgroup: "wg-5-dev-team",
+      agent: "shipper",
+      project: "AgentsCommander_ac",
+      state: "terminated",
+    },
+  ];
+  return snapshot;
+};
+
+const groupRowCount = (root: ParentNode): number =>
+  root.querySelectorAll(".rm-group-row").length;
 
 function setupResourceMonitor(fake: FakeTransport, snapshot: ResourceSnapshot): void {
   fake.resolve("get_settings", baseSettings());
@@ -197,7 +240,7 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
-  it("exposes a stable empty-state selector when no agent groups are active", async () => {
+  it("exposes a stable empty-state selector when no agents are active", async () => {
     const fake = new FakeTransport();
     setupResourceMonitor(fake, emptySnapshot());
 
@@ -206,7 +249,7 @@ describe("ResourceMonitorApp automation hooks", () => {
       await waitFor(() => {
         const empty = rendered.root.querySelector('[data-ac-testid="resourceMonitor.empty"]');
         expect(empty?.getAttribute("data-ac-state")).toBe("empty");
-        expect(empty?.textContent).toContain("No active agent groups");
+        expect(empty?.textContent).toContain("No active agents");
       });
     } finally {
       rendered.cleanup();
@@ -234,6 +277,148 @@ describe("ResourceMonitorApp automation hooks", () => {
             ?.textContent
         ).toBe("- / cap-one");
       });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("filters rows by status, workgroup, and project, and re-runs when a chip is toggled off (G3)", async () => {
+    const fake = new FakeTransport();
+    setupResourceMonitor(fake, multiGroupSnapshot());
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      // All three rows visible once the snapshot loads.
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(3);
+      });
+
+      // Status: Active hides the single terminated row.
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.status.active"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(2);
+      });
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.group.session-3"]')
+      ).toBeNull();
+
+      // Status: Inactive shows only the terminated row.
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.status.inactive"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(1);
+      });
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.group.session-3"]')
+      ).not.toBeNull();
+
+      // Reset status back to All.
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.status.all"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(3);
+      });
+
+      // Workgroup chip (multi-select Set) narrows to its single row. This is the
+      // G3 assertion: in-place Set mutation would leave the count unchanged here.
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.workgroup.wg-9-other-team"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(1);
+      });
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.group.session-2"]')
+      ).not.toBeNull();
+
+      // "Showing X of Y" indicator appears only while a filter is active.
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.filter.count"]')
+          ?.textContent
+      ).toContain("Showing 1 of 3");
+
+      // Toggling the SAME chip off restores every row — proves the toggle yields
+      // a fresh Set in both directions (the core G3 regression guard).
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.workgroup.wg-9-other-team"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(3);
+      });
+
+      // Project chip narrows to the matching project (new #566 dimension).
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.project.OtherProject_ac"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(1);
+      });
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.group.session-2"]')
+      ).not.toBeNull();
+
+      // Clear filters resets everything and hides the indicator.
+      click(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.filter.clear"]')!
+      );
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(3);
+      });
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.filter.count"]')
+      ).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("shows a distinct filtered-empty state when filters exclude every row", async () => {
+    const fake = new FakeTransport();
+    setupResourceMonitor(fake, multiGroupSnapshot());
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(3);
+      });
+
+      // Inactive + a workgroup with no terminated row => zero matches, but the
+      // snapshot still has rows, so this is filtered-empty, not truly-empty.
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.status.inactive"]'
+        )!
+      );
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.workgroup.wg-9-other-team"]'
+        )!
+      );
+
+      await waitFor(() => {
+        const empty = rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.empty"]'
+        );
+        expect(empty?.getAttribute("data-ac-state")).toBe("filtered-empty");
+        expect(empty?.textContent).toContain("No agents match the filters");
+      });
+      expect(groupRowCount(rendered.root)).toBe(0);
     } finally {
       rendered.cleanup();
     }
