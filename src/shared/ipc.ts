@@ -526,6 +526,30 @@ export function onDiscoveryBranchUpdated(
   );
 }
 
+// #552 coordinator idle badge: a real user message to a coordinator resets its
+// badge clock; the backend emits this with the new RFC3339 timestamp. Mirrors
+// `ac_discovery_branch_updated` so ProjectPanel can patch the replica in place
+// without waiting for a full discovery reload.
+export function onCoordinatorClockUpdated(
+  callback: (data: { replicaPath: string; lastUserMessageAt: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ replicaPath: string; lastUserMessageAt: string }>(
+    "coordinator_clock_updated",
+    callback
+  );
+}
+
+// #552 auto-closed pill: the auto-close task sets the marker (string timestamp)
+// when it terminates a team; reopen clears it (`autoClosedAt: null`).
+export function onCoordinatorAutoCloseChanged(
+  callback: (data: { replicaPath: string; autoClosedAt: string | null }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ replicaPath: string; autoClosedAt: string | null }>(
+    "coordinator_auto_close_changed",
+    callback
+  );
+}
+
 export function onAcProjectRefreshRequested(
   callback: (data: AcProjectRefreshRequestedPayload) => void
 ): Promise<UnlistenFn> {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import ProjectPanel from "./ProjectPanel";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import ProjectPanel, { RESTART_TIMEOUT_MS } from "./ProjectPanel";
 import type {
   AgentConfig,
   ApplyCodingAgentProfileSelectionResult,
@@ -218,6 +218,10 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
   });
 
   afterEach(() => {
+    // Defensive: the never-settles test installs fake timers. Restore real
+    // timers here too (no-op for the real-timer tests) so a future throw inside
+    // its fake-timer window can't leak frozen timers into the next test.
+    vi.useRealTimers();
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -279,6 +283,101 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
       await waitFor(() => expect(q("restartPrompt.modal")).toBeNull());
       // A single click must not fire a second restart.
       expect(fake.callsFor("restart_session")).toHaveLength(1);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #573: a rejected SessionAPI.restart used to be swallowed (consume-and-clear +
+  // bare console.error), so the user thought the new agent applied while the old
+  // one kept running. The modal must now stay open and surface the failure.
+  it("keeps the prompt open and surfaces the error when the restart fails, then closes on a successful retry", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    // The Resource Monitor concurrency cap is the most likely relaunch failure;
+    // launchErrorMessage rephrases it into actionable copy.
+    fake.reject("restart_session", "Resource Monitor cap reached: 16/16 agent groups are active");
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await driveToRestartPrompt(rendered.root);
+
+      click(q<HTMLButtonElement>("restartPrompt.restart")!);
+
+      // The restart was attempted, but it rejected — the modal must stay open with
+      // the surfaced (friendly) error rather than silently closing.
+      await waitFor(() => expect(fake.callsFor("restart_session")).toHaveLength(1));
+      await waitFor(() => expect(q("restartPrompt.error")).toBeTruthy());
+      expect(q("restartPrompt.error")?.textContent ?? "").toContain("Resource Monitor cap reached");
+      expect(q("restartPrompt.modal")).toBeTruthy();
+
+      // Retry now succeeds: the in-flight guard reset lets the click through, the
+      // restart fires again, and the modal closes once it resolves.
+      fake.resolve(
+        "restart_session",
+        session({ id: sessionId, name: sessionName, workingDirectory: replicaPath }),
+      );
+      click(q<HTMLButtonElement>("restartPrompt.restart")!);
+
+      await waitFor(() => expect(fake.callsFor("restart_session")).toHaveLength(2));
+      await waitFor(() => expect(q("restartPrompt.modal")).toBeNull());
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #573 (grinch Step-7, Finding 1): a backend `restart_session` that neither
+  // resolves nor rejects (write-lock stall, ConPTY respawn hang, dropped IPC
+  // reply) must not trap the modal. The Tauri IPC transport has no timeout, so
+  // without the bounded race `restarting()` would stay true forever — and with
+  // both buttons disabled and dismiss gated while restarting, the modal could
+  // only be cleared by killing the app. The 30s timeout (WS parity) must clear
+  // `restarting()`, surface a timeout error inline, and make the modal escapable.
+  it("times out a never-settling restart and re-enables the modal", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    // A restart that never settles — emulates a wedged backend / dropped reply.
+    fake.onInvoke("restart_session", () => new Promise(() => {}));
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await driveToRestartPrompt(rendered.root);
+
+      // Fake timers must own the production window.setTimeout BEFORE the restart
+      // fires, so advanceTimers controls the bound. Setup above ran on real timers
+      // (waitFor polls real time); the synchronous click + assertions below need
+      // no waitFor, so the switch is safe only from here on.
+      vi.useFakeTimers();
+      try {
+        click(q<HTMLButtonElement>("restartPrompt.restart")!);
+
+        // In flight: the restart was invoked and the modal is busy (both buttons
+        // disabled, dismiss gated) with no error yet. All synchronous — the call
+        // is recorded and restarting() flips before the first await.
+        expect(fake.callsFor("restart_session")).toHaveLength(1);
+        expect(q<HTMLButtonElement>("restartPrompt.restart")?.disabled).toBe(true);
+        expect(q<HTMLButtonElement>("restartPrompt.later")?.disabled).toBe(true);
+        expect(q("restartPrompt.error")).toBeNull();
+
+        // Advance past the bound: the timeout wins the race and rejects.
+        await vi.advanceTimersByTimeAsync(RESTART_TIMEOUT_MS);
+
+        // restarting() cleared, the timeout error surfaced, and the modal stayed
+        // open and interactive again — the exact regression Finding 1 describes.
+        expect(q("restartPrompt.error")?.textContent ?? "").toContain(
+          "Command timeout: restart_session",
+        );
+        expect(q("restartPrompt.modal")).toBeTruthy();
+        expect(q<HTMLButtonElement>("restartPrompt.restart")?.disabled).toBe(false);
+        expect(q<HTMLButtonElement>("restartPrompt.later")?.disabled).toBe(false);
+
+        // Genuinely escapable now: the dismiss gate no longer traps because
+        // restarting() is false, so Later closes the modal.
+        click(q<HTMLButtonElement>("restartPrompt.later")!);
+        expect(q("restartPrompt.modal")).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
     } finally {
       rendered.cleanup();
     }

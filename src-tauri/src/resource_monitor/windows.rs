@@ -140,13 +140,22 @@ mod platform {
 
     /// Walk the process snapshot from `root`, returning the observed subtree.
     ///
-    /// Root-PID-reuse guard: the registry stores the root's creation time, so a
-    /// recycled PID (the original root exited and a foreign process took the same
-    /// PID) shows up here as a creation-time mismatch. When that happens we drop
-    /// the whole subtree and report it exactly like a missing root, so the registry
-    /// never adopts, and later terminates, a process it does not own. Descendant
-    /// identities are already verified at terminate time; this makes the root just
-    /// as strict at observe time. Memory lookups are injected so the walk is a pure
+    /// Root-PID-reuse guard: the registry stores the root's creation time, so the
+    /// live process at the root PID must prove it is that same process before we
+    /// adopt its subtree. It can fail to prove it two ways. First (#516), its
+    /// creation time is readable but differs, because the original root exited and a
+    /// foreign process took the recycled PID. Second (#543), its identity cannot be
+    /// read at all (creation_time 0), so a foreign process occupying the recycled PID
+    /// could otherwise still expose a readable child that would inherit
+    /// `kill_allowed = true`. In either case we drop the whole subtree and report it
+    /// exactly like a missing root, so the registry never adopts, and later
+    /// terminates, a process it does not own, and no descendant under an unverifiable
+    /// root is ever kill-eligible. The guard only applies when the registry captured
+    /// a real root creation time (`root.creation_time_100ns != 0`); the drop is
+    /// re-evaluated on every observe cycle, so a root that is only briefly unreadable
+    /// is re-adopted in full on the next cycle once it reads cleanly. Descendant
+    /// identities are already verified at terminate time; this makes the root just as
+    /// strict at observe time. Memory lookups are injected so the walk is a pure
     /// function over the snapshot and can be unit-tested without real processes.
     fn build_observed_tree(
         entries: &HashMap<u32, ProcessEntry>,
@@ -172,7 +181,24 @@ mod platform {
                 }
                 continue;
             };
-            let identity = match identity_for(pid) {
+            let resolved_identity = identity_for(pid);
+            if pid == root.pid
+                && root.creation_time_100ns != 0
+                && resolved_identity.map(|id| id.creation_time_100ns)
+                    != Some(root.creation_time_100ns)
+            {
+                // Live process at the root pid is not provably the one we
+                // registered: its creation time is readable but differs (#516, the
+                // pid was recycled by a foreign process) or its identity can't be
+                // read at all (#543, creation_time 0 / unreadable). Either way, drop
+                // the subtree and surface the same error the missing-root path uses,
+                // so cleanup releases the slot instead of adopting a foreign process
+                // and no readable descendant under an unverifiable root becomes
+                // kill-eligible.
+                errors.push(format!("root pid {} was not in process snapshot", root.pid));
+                continue;
+            }
+            let identity = match resolved_identity {
                 Some(identity) => identity,
                 None => {
                     errors.push(format!("identity unavailable for pid {pid}"));
@@ -182,18 +208,6 @@ mod platform {
                     }
                 }
             };
-            if pid == root.pid
-                && root.creation_time_100ns != 0
-                && identity.creation_time_100ns != 0
-                && identity.creation_time_100ns != root.creation_time_100ns
-            {
-                // Live process at the root pid is not the one we registered: the
-                // pid was recycled. Drop the subtree and surface the same error the
-                // missing-root path uses, so cleanup releases the slot instead of
-                // adopting a foreign process.
-                errors.push(format!("root pid {} was not in process snapshot", root.pid));
-                continue;
-            }
             let parent_identity = (entry.parent_pid != 0)
                 .then_some(entry.parent_pid)
                 .and_then(&mut identity_for);
@@ -443,6 +457,46 @@ mod platform {
                 tree.processes.is_empty(),
                 "recycled-root subtree must be dropped, got {:?}",
                 tree.processes
+            );
+            assert_eq!(
+                tree.errors,
+                vec!["root pid 1000 was not in process snapshot".to_string()]
+            );
+        }
+
+        #[test]
+        fn unreadable_root_drops_subtree_and_protects_readable_child() {
+            // #543 (follow-up to #516) - pid 1000 was registered with creation time
+            // 111, but the live process now occupying the pid is UNREADABLE: its
+            // identity resolves to None (creation_time 0). The #516 mismatch check
+            // alone skipped the guard for this case, so a foreign but READABLE child
+            // hanging off the unreadable root was still walked and marked
+            // kill_allowed = true. The widened guard must drop the whole subtree
+            // exactly like a recycled root, so the readable child is never observed
+            // and can never be terminated.
+            let entries = HashMap::from([
+                (1000, entry(1000, 4, "foreign-unreadable.exe")),
+                (1001, entry(1001, 1000, "foreign-child.exe")),
+            ]);
+            // Root identity is unreadable (absent from the map -> None); only the
+            // readable child resolves to a real identity.
+            let identities = HashMap::from([(1001, identity(1001, 222))]);
+
+            let tree = build_observed_tree(
+                &entries,
+                identity(1000, 111),
+                |pid| identities.get(&pid).copied(),
+                no_memory,
+            );
+
+            assert!(
+                tree.processes.is_empty(),
+                "unverifiable-root subtree must be dropped, got {:?}",
+                tree.processes
+            );
+            assert!(
+                !tree.processes.iter().any(|p| p.kill_allowed),
+                "no descendant under an unverifiable root may be kill_allowed"
             );
             assert_eq!(
                 tree.errors,

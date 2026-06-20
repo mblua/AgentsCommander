@@ -262,6 +262,62 @@ impl SessionManager {
         self.sessions.read().await.get(&id).map(|s| s.shell.clone())
     }
 
+    /// Return the working_directory iff the session exists AND is a coordinator.
+    /// Cheap (no full Session clone) for the user-message hot path. (#552)
+    pub async fn coordinator_cwd(&self, id: Uuid) -> Option<String> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .get(&id)
+            .filter(|s| s.is_coordinator)
+            .map(|s| s.working_directory.clone())
+    }
+
+    /// (#552) AGENT-OWNED sessions only, paired with their auto-close team key
+    /// `<project>:<wg>` (the agent FQN minus the trailing `/agent`). Ad-hoc user
+    /// shells (no agent_id, not a coordinator) are excluded so they are never
+    /// auto-closed. Sessions whose cwd does not yield a `/`-bearing FQN are skipped.
+    pub async fn agent_team_members(&self) -> Vec<(Uuid, String)> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .values()
+            .filter(|s| s.is_coordinator || s.agent_id.is_some())
+            .filter_map(|s| {
+                // agent_fqn_from_path returns String (teams.rs:80), not Option,
+                // so no `?` on it. The `?` sits on rsplit_once, which is None only
+                // for a `/`-less FQN (non-team fallback) -> skipped. The
+                // is_coordinator || agent_id guard above is the real scope gate.
+                // `s.id` is already a Uuid (Copy), so no parse is needed.
+                let fqn = crate::config::teams::agent_fqn_from_path(&s.working_directory);
+                let team_key = fqn.rsplit_once('/').map(|(team, _agent)| team.to_string())?;
+                Some((s.id, team_key))
+            })
+            .collect()
+    }
+
+    /// (#552 auto-closed badge) team key `<project>:<wg>` -> (coordinator FQN,
+    /// coordinator working_directory) for every coordinator session record. The
+    /// auto-close task snapshots this BEFORE destroying so it can set the
+    /// "auto-closed" marker on the correct coordinator row: the FQN keys the
+    /// store, the cwd is the event `replicaPath`. One coordinator per team; on
+    /// the unlikely duplicate, last writer wins.
+    pub async fn coordinator_refs_by_team(
+        &self,
+    ) -> std::collections::HashMap<String, (String, String)> {
+        let sessions = self.sessions.read().await;
+        let mut out: std::collections::HashMap<String, (String, String)> =
+            std::collections::HashMap::new();
+        for s in sessions.values() {
+            if !s.is_coordinator {
+                continue;
+            }
+            let fqn = crate::config::teams::agent_fqn_from_path(&s.working_directory);
+            if let Some((team, _agent)) = fqn.rsplit_once('/') {
+                out.insert(team.to_string(), (fqn.clone(), s.working_directory.clone()));
+            }
+        }
+        out
+    }
+
     pub async fn mark_exited(&self, id: Uuid, code: i32) {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
@@ -876,5 +932,118 @@ mod tests {
             SessionStatus::Idle,
             "mark_idle must transition Running → Idle"
         );
+    }
+
+    // #552: a WG replica cwd that agent_fqn_from_path resolves to
+    // `<project>:<wg>/<agent>`. team key = `<project>:<wg>`.
+    const COORD_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_lead";
+    const RUST_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_rust";
+    const TEAM_KEY: &str = "myproj:wg-1-team";
+
+    #[tokio::test]
+    async fn coordinator_cwd_returns_cwd_only_for_coordinators() {
+        let mgr = SessionManager::new();
+        let coord = mgr
+            .create_session(
+                "claude".into(),
+                vec![],
+                COORD_CWD.into(),
+                None,
+                None,
+                vec![],
+                true, // is_coordinator
+            )
+            .await
+            .unwrap();
+        let plain = mgr
+            .create_session(
+                "powershell.exe".into(),
+                vec![],
+                "C:\\tmp".into(),
+                None,
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mgr.coordinator_cwd(coord.id).await.as_deref(),
+            Some(COORD_CWD)
+        );
+        assert!(mgr.coordinator_cwd(plain.id).await.is_none());
+        assert!(mgr.coordinator_cwd(Uuid::new_v4()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_team_members_includes_agent_owned_excludes_adhoc() {
+        let mgr = SessionManager::new();
+        let coord = mgr
+            .create_session("claude".into(), vec![], COORD_CWD.into(), None, None, vec![], true)
+            .await
+            .unwrap();
+        // agent_id set, not a coordinator -> still agent-owned.
+        let rust = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                RUST_CWD.into(),
+                Some("codex".into()),
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+        // ad-hoc user shell: no agent_id, not a coordinator -> excluded.
+        let _shell = mgr
+            .create_session(
+                "powershell.exe".into(),
+                vec![],
+                "C:\\repos\\myproj\\.ac\\wg-1-team\\scratch".into(),
+                None,
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        let members: std::collections::HashMap<Uuid, String> =
+            mgr.agent_team_members().await.into_iter().collect();
+
+        assert_eq!(members.len(), 2, "only the two agent-owned sessions");
+        assert_eq!(members.get(&coord.id).map(String::as_str), Some(TEAM_KEY));
+        assert_eq!(members.get(&rust.id).map(String::as_str), Some(TEAM_KEY));
+    }
+
+    #[tokio::test]
+    async fn coordinator_refs_by_team_maps_team_to_coordinator() {
+        let mgr = SessionManager::new();
+        let coord = mgr
+            .create_session("claude".into(), vec![], COORD_CWD.into(), None, None, vec![], true)
+            .await
+            .unwrap();
+        // A non-coordinator agent must NOT appear in the refs map.
+        let _rust = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                RUST_CWD.into(),
+                Some("codex".into()),
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        let refs = mgr.coordinator_refs_by_team().await;
+        assert_eq!(refs.len(), 1, "exactly one coordinator team");
+        let (fqn, cwd) = refs.get(TEAM_KEY).expect("team key present");
+        assert_eq!(fqn, "myproj:wg-1-team/lead");
+        assert_eq!(cwd, COORD_CWD);
+        let _ = coord;
     }
 }

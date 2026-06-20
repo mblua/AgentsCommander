@@ -168,6 +168,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     agentProcessKillPrivateBytes: 12 * 1024 ** 3,
     resourceKeepLastSnapshot: true,
     resourceBackoffPolling: true,
+    coordinatorIdleBadgeYellowMinutes: 30,
+    coordinatorIdleBadgeRedMinutes: 60,
+    coordinatorAutoCloseEnabled: true,
+    coordinatorAutoCloseMinutes: 60,
     ...overrides,
   };
 }
@@ -425,6 +429,34 @@ describe("AgentPickerModal", () => {
 
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
     // Effective Projection chosen-pair shows the selected coding agent + resolved command.
+    expect(text("agentPicker.projected")).toContain("Claude Code");
+    expect(text("agentPicker.projected")).toContain("claude --dangerously-skip-permissions");
+
+    dispose();
+  });
+
+  it("does not pre-select a coding agent on hover; selection stays click-only (#563)", async () => {
+    const { dispose } = renderPicker({ agentPath: REPO_PATH });
+    await settle();
+
+    // Baseline: codex is the initial selection and drives the projection.
+    expect(target("agentPicker.provider.codex").getAttribute("data-ac-state")).toBe("active");
+    expect(text("agentPicker.projected")).toContain("Codex");
+
+    // Hovering claude must NOT activate it nor update the Effective Projection.
+    const claudeCard = target<HTMLButtonElement>("agentPicker.provider.claude");
+    claudeCard.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+    claudeCard.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    await settle();
+    expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("inactive");
+    expect(target("agentPicker.provider.codex").getAttribute("data-ac-state")).toBe("active");
+    expect(text("agentPicker.projected")).toContain("Codex");
+    expect(text("agentPicker.projected")).not.toContain("Claude Code");
+
+    // Clicking still selects and updates the projection.
+    claudeCard.click();
+    await settle();
+    expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
     expect(text("agentPicker.projected")).toContain("Claude Code");
     expect(text("agentPicker.projected")).toContain("claude --dangerously-skip-permissions");
 

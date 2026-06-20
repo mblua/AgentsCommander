@@ -659,7 +659,6 @@ const AgentPickerModal: Component<{
                         classList={{ active: active() }}
                         aria-pressed={active()}
                         onClick={() => setHighlightIndex(i())}
-                        onMouseEnter={() => setHighlightIndex(i())}
                         data-component={`${agent.label} coding agent option`}
                         data-ac-agent-id={agent.id}
                         data-ac-agent-command={agent.command}

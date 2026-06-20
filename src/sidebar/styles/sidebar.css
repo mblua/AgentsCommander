@@ -2912,6 +2912,16 @@ html.light-theme .settings-hint-warning {
   background: rgba(0, 212, 255, 0.08);
 }
 
+/* #563: cosmetic-only hover affordance. Selection is click-driven — hovering a
+   card must never pre-select it or update the Effective Projection. Only color
+   shifts here (border width and box size are unchanged), so nothing reflows.
+   `:not(.active)` keeps the selected card's distinct accent tint. */
+.agent-profile-provider-card:hover:not(.active),
+.agent-profile-card:hover:not(.active) {
+  border-color: rgba(0, 212, 255, 0.35);
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .agent-profile-provider-name,
 .agent-profile-card-title {
   display: block;
@@ -4152,6 +4162,39 @@ html.light-theme .settings-hint-warning {
 html.light-theme .ac-discovery-badge.running-peer {
   background: rgba(37, 99, 235, 0.12);
   color: #2563eb;
+}
+
+/* #552 coordinator idle badge — minutes since the user's last message to a
+   coordinator. Translucent bg + saturated text to match the sibling badges in
+   this row (separation by opacity/color, not borders). Lowercase ("45m") via
+   text-transform:none, unlike the uppercase status labels. Three-class
+   specificity (0,3,0) wins over the per-theme `.ac-discovery-badge` base rules. */
+.ac-discovery-badge.coord-idle {
+  text-transform: none;
+}
+
+.ac-discovery-badge.coord-idle.green {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+
+.ac-discovery-badge.coord-idle.yellow {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+
+.ac-discovery-badge.coord-idle.red {
+  background: rgba(255, 59, 92, 0.16);
+  color: var(--status-exited, #ff3b5c);
+}
+
+/* #552 auto-closed pill — NEUTRAL/muted on purpose so it reads as a state label
+   and stays distinct from the red idle badge (a dormant row can show BOTH).
+   Mirrors the muted `.disabled` badge; no border, per the industrial-dark
+   "separation by opacity, not borders" aesthetic. */
+.ac-discovery-badge.coord-autoclosed {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
 }
 
 /* Workgroup styles */
