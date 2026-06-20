@@ -526,8 +526,10 @@ export function onDiscoveryBranchUpdated(
   );
 }
 
-// #552 coordinator idle badge: a real user message to a coordinator resets its
-// badge clock; the backend emits this with the new RFC3339 timestamp. Mirrors
+// #552/#580 coordinator idle badge clock event. The backend emits the unified
+// team-idle anchor (#580: `max(last_user_message_at, last_activity_at)`) in the
+// `lastUserMessageAt` field — the field name is retained (rename deferred) but
+// it now means "team idle since", not just the user's last message. Mirrors
 // `ac_discovery_branch_updated` so ProjectPanel can patch the replica in place
 // without waiting for a full discovery reload.
 export function onCoordinatorClockUpdated(
