@@ -30,9 +30,16 @@ const EMPTY_CELL: ProfileCellConfig = {
   notes: "",
 };
 
-/** Display-only `%AC_ROOT%` placeholder. The backend is authoritative for the
- *  real expansion + validation at launch (#384 F17). */
-export const AC_ROOT_PLACEHOLDER = "%AC_ROOT%";
+/** Display-only profile path placeholders. The backend is authoritative for real
+ *  expansion + validation at launch (#576 / #384 F17). */
+export const AC_REPLICA_ROOT_PLACEHOLDER = "%AC_REPLICA_ROOT%";
+export const AC_WORKSPACE_ROOT_PLACEHOLDER = "%AC_WORKSPACE_ROOT%";
+export const AC_MATRIX_ROOT_PLACEHOLDER = "%AC_MATRIX_ROOT%";
+export const AC_PLACEHOLDERS = [
+  AC_REPLICA_ROOT_PLACEHOLDER,
+  AC_WORKSPACE_ROOT_PLACEHOLDER,
+  AC_MATRIX_ROOT_PLACEHOLDER,
+] as const;
 
 export function isProfileLetter(value: string): boolean {
   return /^[A-Z]$/.test(value);
@@ -88,22 +95,52 @@ export function profileCellCommandText(cell: ProfileCellConfig | null | undefine
   return cell?.command ?? "";
 }
 
-/** True when a value still contains the `%AC_ROOT%` placeholder (display check). */
-export function hasAcRootPlaceholder(value: string): boolean {
-  return value.includes(AC_ROOT_PLACEHOLDER);
+/** True when a value contains any AC path placeholder (display check). */
+export function hasAcPlaceholder(value: string): boolean {
+  return AC_PLACEHOLDERS.some((token) => value.includes(token));
+}
+
+/** Display-only: the `.ac` workspace ancestor of a replica path, or null. */
+export function deriveWorkspaceRoot(replicaPath: string | null | undefined): string | null {
+  if (!replicaPath) return null;
+  const parts = replicaPath.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+  const idx = parts.lastIndexOf(".ac");
+  if (idx < 0) return null;
+  const sep = replicaPath.includes("\\") ? "\\" : "/";
+  return parts.slice(0, idx + 1).join(sep);
+}
+
+/** Display-only: the matrix dir `<workspace>/_agent_<name>` for a WG replica path, or null. */
+export function deriveMatrixRoot(replicaPath: string | null | undefined): string | null {
+  if (!replicaPath) return null;
+  const workspace = deriveWorkspaceRoot(replicaPath);
+  if (!workspace) return null;
+  const parts = replicaPath.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+  const leaf = parts[parts.length - 1] ?? "";
+  const parent = parts[parts.length - 2] ?? "";
+  if (!/^__agent_/.test(leaf) || !/^wg-/.test(parent)) return null;
+  const name = leaf.replace(/^__agent_/, "");
+  const sep = replicaPath.includes("\\") ? "\\" : "/";
+  return `${workspace}${sep}_agent_${name}`;
 }
 
 /**
- * Display-only preview of `%AC_ROOT%` expansion against a known replica root.
- * Returns the value unchanged when no root is available — the backend performs
- * the authoritative expansion and absolute-path validation at launch.
+ * Display-only preview of AC placeholder expansion against a known replica root.
+ * Workspace and matrix are derived from the replica path. Returns the value
+ * unchanged when no replica root is available; the backend performs the
+ * authoritative expansion + absolute-path validation at launch.
  */
-export function expandAcRootPreview(
+export function expandAcPlaceholdersPreview(
   value: string,
-  acRoot: string | null | undefined,
+  replicaRoot: string | null | undefined,
 ): string {
-  if (!acRoot || !hasAcRootPlaceholder(value)) return value;
-  return value.split(AC_ROOT_PLACEHOLDER).join(acRoot);
+  if (!replicaRoot || !hasAcPlaceholder(value)) return value;
+  let out = value.split(AC_REPLICA_ROOT_PLACEHOLDER).join(replicaRoot);
+  const workspace = deriveWorkspaceRoot(replicaRoot);
+  if (workspace) out = out.split(AC_WORKSPACE_ROOT_PLACEHOLDER).join(workspace);
+  const matrix = deriveMatrixRoot(replicaRoot);
+  if (matrix) out = out.split(AC_MATRIX_ROOT_PLACEHOLDER).join(matrix);
+  return out;
 }
 
 export function resolveProfilePreview(
@@ -298,7 +335,7 @@ export function hasEnabledEnvKey(rows: CodingAgentEnv[], key: string): boolean {
 }
 
 /** Origin badge for an env value shown in the Config/Selection projections (#526/#527).
- *  - `system`   — AgentsCommander-managed home path (%AC_ROOT% placeholder on a known home key)
+ *  - `system`   — AgentsCommander-managed home path (an AC path placeholder on a known home key)
  *  - `accepted` — a user literal absolute path kept as-is (nothing to expand)
  *  - `profile`  — a value defined by the profile cell (the common case) */
 export type EnvOrigin = "system" | "profile" | "accepted";
@@ -318,12 +355,12 @@ function isLiteralAbsolutePath(value: string): boolean {
 }
 
 /** Classify a profile-cell env value's origin for its badge. A managed home key
- *  using %AC_ROOT% is AC-managed (`system`); a managed home key with a literal
+ *  using an AC path placeholder is AC-managed (`system`); a managed home key with a literal
  *  absolute path is a user-accepted override (`accepted`); everything else is a
  *  plain profile-defined value (`profile`). */
 export function profileEnvOrigin(key: string, value: string): EnvOrigin {
   if (MANAGED_HOME_ENV_KEYS.has(envKeyCompare(key))) {
-    if (hasAcRootPlaceholder(value)) return "system";
+    if (hasAcPlaceholder(value)) return "system";
     if (isLiteralAbsolutePath(value)) return "accepted";
   }
   return "profile";
@@ -339,7 +376,7 @@ export interface EffectiveEnvEntry {
  *  into the effective env that is actually set at launch (#527 Env / EFFECTIVE).
  *  Agent rows form the base (source `system` → system badge, user → accepted);
  *  profile env overrides on key collision and carries the `profile` origin.
- *  `%AC_ROOT%` is expanded for display when a replica root is known. */
+ *  AC path placeholders are expanded for display when a replica root is known. */
 export function effectiveEnvProjection(
   agentEnvs: CodingAgentEnv[] | undefined,
   profileEnv: Record<string, string> | undefined,
@@ -352,7 +389,7 @@ export function effectiveEnvProjection(
     if (!key) continue;
     byKey.set(envKeyCompare(key), {
       key,
-      value: expandAcRootPreview(row.value, acRoot),
+      value: expandAcPlaceholdersPreview(row.value, acRoot),
       origin: row.source === "system" ? "system" : "accepted",
     });
   }
@@ -361,7 +398,7 @@ export function effectiveEnvProjection(
     if (!key) continue;
     byKey.set(envKeyCompare(key), {
       key,
-      value: expandAcRootPreview(rawValue, acRoot),
+      value: expandAcPlaceholdersPreview(rawValue, acRoot),
       origin: profileEnvOrigin(key, rawValue),
     });
   }

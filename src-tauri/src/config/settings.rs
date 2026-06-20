@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
 use crate::telegram::types::TelegramBotConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1000,6 +1001,14 @@ pub fn is_codex_home_key(key: &str) -> bool {
     normalize_env_key_for_platform(key) == normalize_env_key_for_platform("CODEX_HOME")
 }
 
+/// True for opencode's config-dir env key. Analogous to [`is_codex_home_key`];
+/// the launch path uses it to auto-create the resolved `OPENCODE_CONFIG_DIR`
+/// before spawn (opencode does not create that dir itself and exits 1 if it is
+/// missing). Case-insensitive on Windows via `normalize_env_key_for_platform`.
+pub fn is_opencode_config_dir_key(key: &str) -> bool {
+    normalize_env_key_for_platform(key) == normalize_env_key_for_platform("OPENCODE_CONFIG_DIR")
+}
+
 pub fn is_reserved_env_key(key: &str) -> bool {
     let normalized = normalize_env_key_for_platform(key);
     let ac_prefix = normalize_env_key_for_platform("AGENTSCOMMANDER_");
@@ -1051,18 +1060,34 @@ fn validate_codex_home_basic<'a>(value: &'a str, context: &str) -> Result<&'a st
 
 pub fn validate_codex_home_template_value(value: &str, context: &str) -> Result<(), String> {
     let trimmed = validate_codex_home_basic(value, context)?;
-    if trimmed.contains("%AC_ROOT%") {
-        if !(trimmed == "%AC_ROOT%"
-            || trimmed.starts_with("%AC_ROOT%/")
-            || trimmed.starts_with("%AC_ROOT%\\"))
-        {
-            return Err(format!(
-                "{context}: CODEX_HOME template must start with %AC_ROOT% as a complete path segment"
-            ));
-        }
+
+    // Accept when the value's COMPLETE LEADING path segment is a known token.
+    // Do NOT pick "first token contained anywhere" (it would name the wrong token
+    // for a value that starts with one token but mentions another later; #576 R1 F3).
+    let starts_with_token = AC_PLACEHOLDER_TOKENS.iter().any(|&token| {
+        trimmed == token
+            || trimmed.starts_with(&format!("{token}/"))
+            || trimmed.starts_with(&format!("{token}\\"))
+    });
+    if starts_with_token {
+        // Leading segment OK; the remainder scanner rejects any unknown %marker%
+        // (and skips known tokens that appear later in the path).
         reject_unknown_codex_home_template_markers(trimmed, context)?;
         return Ok(());
     }
+
+    // No valid leading token. If a known token still appears anywhere, the leading
+    // segment is wrong: report the "complete path segment" error naming that token.
+    if let Some(&token) = AC_PLACEHOLDER_TOKENS
+        .iter()
+        .find(|&&token| trimmed.contains(token))
+    {
+        return Err(format!(
+            "{context}: CODEX_HOME template must start with {token} as a complete path segment"
+        ));
+    }
+
+    // No token at all: must already be a literal absolute path.
     reject_unknown_codex_home_template_markers(trimmed, context)?;
     validate_expanded_codex_home_value(trimmed, context).map(|_| ())
 }
@@ -1090,8 +1115,11 @@ fn reject_unknown_codex_home_template_markers(value: &str, context: &str) -> Res
     let mut rest = value;
     while let Some(start) = rest.find('%') {
         rest = &rest[start..];
-        if rest.starts_with("%AC_ROOT%") {
-            rest = &rest["%AC_ROOT%".len()..];
+        if let Some(&token) = AC_PLACEHOLDER_TOKENS
+            .iter()
+            .find(|&&token| rest.starts_with(token))
+        {
+            rest = &rest[token.len()..];
             continue;
         }
         if let Some(end) = rest[1..].find('%') {
@@ -1584,6 +1612,45 @@ mod tests {
         let settings = settings_with_agents(&[("Gemini", "gemini --resume latest")]);
         let err = super::validate_agent_commands(&settings).unwrap_err();
         assert!(err.contains("Gemini commands must not include --resume"));
+    }
+
+    #[test]
+    fn codex_home_template_accepts_each_token_alone_and_as_leading_segment() {
+        for token in ["%AC_REPLICA_ROOT%", "%AC_WORKSPACE_ROOT%", "%AC_MATRIX_ROOT%"] {
+            super::validate_codex_home_template_value(token, "ctx")
+                .unwrap_or_else(|e| panic!("{token} alone should be accepted: {e}"));
+            super::validate_codex_home_template_value(&format!("{token}\\.codex"), "ctx")
+                .unwrap_or_else(|e| panic!("{token}\\.codex should be accepted: {e}"));
+            super::validate_codex_home_template_value(&format!("{token}/.codex"), "ctx")
+                .unwrap_or_else(|e| panic!("{token}/.codex should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn codex_home_template_rejects_token_not_at_leading_segment() {
+        let err = super::validate_codex_home_template_value(r"prefix%AC_MATRIX_ROOT%\x", "ctx")
+            .unwrap_err();
+        assert!(
+            err.contains("complete path segment") && err.contains("%AC_MATRIX_ROOT%"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn codex_home_template_rejects_legacy_ac_root_as_unknown_marker() {
+        // Save-time break: the old token is now an unknown placeholder, named in the error.
+        let err = super::validate_codex_home_template_value(r"%AC_ROOT%\x", "ctx").unwrap_err();
+        assert!(err.contains("%AC_ROOT%"), "{err}");
+    }
+
+    #[test]
+    fn codex_home_template_keys_on_leading_token_not_list_order() {
+        // F3: the leading segment is a valid token; another token appearing later must
+        // NOT trigger a rejection that names the wrong token.
+        super::validate_codex_home_template_value(r"%AC_MATRIX_ROOT%\sub", "ctx")
+            .expect("matrix leading segment is valid");
+        super::validate_codex_home_template_value(r"%AC_MATRIX_ROOT%\%AC_REPLICA_ROOT%\x", "ctx")
+            .expect("leading token valid; remainder tokens are known at shape level");
     }
 
     use super::{
