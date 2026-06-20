@@ -110,9 +110,12 @@ pub struct AcAgentReplica {
     /// covers WG-aware suffix matching that simple `originProject/name`
     /// comparison on the frontend misses. See issue #69.
     pub is_coordinator: bool,
-    /// #552 RFC3339 timestamp of the user's last message to this coordinator,
-    /// or None. Only meaningful when `is_coordinator`. Read from the persisted
-    /// CoordinatorClocks store keyed by FQN.
+    /// #552/#580 RFC3339 timestamp of the unified team-idle anchor
+    /// `max(last_user_message_at, last_activity_at)` for this coordinator, or
+    /// None. Only meaningful when `is_coordinator`. The badge displays and
+    /// auto-close triggers on this value (closed time counts). The field keeps
+    /// its #552 name (rename to `idleSinceAt` deferred, Decision C). Read from
+    /// the persisted CoordinatorClocks store keyed by FQN.
     pub last_user_message_at: Option<String>,
     /// #552 RFC3339 timestamp this coordinator's team was auto-closed for
     /// inactivity, or None. Only meaningful when `is_coordinator`. Drives the
@@ -1132,8 +1135,13 @@ pub async fn discover_ac_agents(
                                 } else {
                                     None
                                 };
+                                // (#580) the badge field carries the unified idle
+                                // anchor max(user, activity) (rename deferred,
+                                // Decision C) so a dormant/just-loaded row shows the
+                                // real accumulated idle (closed time included), not
+                                // just the user-message age.
                                 let last_user_message_at = clock_entry
-                                    .and_then(|e| e.last_user_message_at)
+                                    .and_then(|e| e.idle_anchor())
                                     .map(|dt| dt.to_rfc3339());
                                 let auto_closed_at = clock_entry
                                     .and_then(|e| e.auto_closed_at)
@@ -1621,8 +1629,12 @@ pub async fn discover_project(
                         } else {
                             None
                         };
+                        // (#580) the badge field carries the unified idle anchor
+                        // max(user, activity) (rename deferred, Decision C) so a
+                        // dormant/just-loaded row shows the real accumulated idle
+                        // (closed time included), not just the user-message age.
                         let last_user_message_at = clock_entry
-                            .and_then(|e| e.last_user_message_at)
+                            .and_then(|e| e.idle_anchor())
                             .map(|dt| dt.to_rfc3339());
                         let auto_closed_at = clock_entry
                             .and_then(|e| e.auto_closed_at)
