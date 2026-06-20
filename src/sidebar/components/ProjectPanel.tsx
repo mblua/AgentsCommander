@@ -1,7 +1,7 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, onDiscoveryBranchUpdated, emitOpenSettings } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
@@ -11,6 +11,8 @@ import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder } from "../../shared/voice-recorder";
 import { isWgReplicaPath, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
+import { clockStore } from "../stores/clock";
+import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
@@ -175,13 +177,25 @@ const ProjectPanel: Component = () => {
   // canonical `workgroup_task_updated` event); ProjectPanel reads the
   // resulting state through projectStore.
   let unlistenBranch: (() => void) | null = null;
+  let unlistenClock: (() => void) | null = null;
+  let unlistenAutoClose: (() => void) | null = null;
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
       projectStore.updateReplicaBranch(data.replicaPath, data.branch);
     });
+    // #552 coordinator idle badge + auto-closed pill: patch the replica in place
+    // (mirrors the branch watcher). Discovery reload self-heals on any path miss.
+    unlistenClock = await onCoordinatorClockUpdated((data) => {
+      projectStore.updateCoordinatorClock(data.replicaPath, data.lastUserMessageAt);
+    });
+    unlistenAutoClose = await onCoordinatorAutoCloseChanged((data) => {
+      projectStore.updateCoordinatorAutoClosed(data.replicaPath, data.autoClosedAt);
+    });
   });
   onCleanup(() => {
     unlistenBranch?.();
+    unlistenClock?.();
+    unlistenAutoClose?.();
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
@@ -1110,6 +1124,23 @@ const ProjectPanel: Component = () => {
               ? s.gitRepos
               : configuredReplicaRepoBadges(replica, wg);
           });
+          // #552 coordinator idle badge. A createMemo (NOT an IIFE — the IIFE
+          // froze; confirmed blocker) so it subscribes to clockStore.nowMs (the
+          // live 30s tick) and settingsStore.current (threshold edits apply
+          // instantly). replica.lastUserMessageAt is a plain prop read; a reset
+          // event recreates this row via the keyed <For>, re-running the memo.
+          const idleBadge = createMemo(() =>
+            isCoord()
+              ? coordinatorIdleBadge(
+                  replica.lastUserMessageAt,
+                  clockStore.nowMs,
+                  settingsStore.current
+                )
+              : null
+          );
+          // #552 auto-closed pill: coexists with the minutes badge on a dormant
+          // row. Driven by the persisted autoClosedAt marker, patched in place.
+          const autoClosed = createMemo(() => isCoord() && !!replica.autoClosedAt);
           const rowTestId = () =>
             `replica.row.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const badgesTestId = () =>
@@ -1222,6 +1253,27 @@ const ProjectPanel: Component = () => {
                 </Show>
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                 <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
+                  {/* #552: the coordinator idle (minutes) badge leads the row,
+                      with the neutral auto-closed pill immediately after it, so
+                      the two #552 badges render first before all other badges. */}
+                  <Show when={idleBadge()}>
+                    {(b) => (
+                      <span
+                        class={`ac-discovery-badge coord-idle ${b().colorClass}`}
+                        title="Time since your last message to this coordinator"
+                      >
+                        {b().label}
+                      </span>
+                    )}
+                  </Show>
+                  <Show when={autoClosed()}>
+                    <span
+                      class="ac-discovery-badge coord-autoclosed"
+                      title="This team was auto-closed after inactivity. Reopen it to clear."
+                    >
+                      auto-closed
+                    </span>
+                  </Show>
                   <Show when={runningPeers && runningPeers()!.length > 0}>
                     <For each={runningPeers!()}>
                       {(peer) => (

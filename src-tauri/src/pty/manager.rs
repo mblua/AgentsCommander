@@ -456,6 +456,16 @@ impl PtyManager {
                     Ok(n) => {
                         let data = buf[..n].to_vec();
 
+                        // #552 auto-close silence clock: ANY PTY output proves the
+                        // session is alive, so it resets the silence timer. This is
+                        // DELIBERATELY broader than the idle-dot activity signal below
+                        // (which ignores escape-only spinner output per #260), so a
+                        // silent-but-spinning agent is NOT auto-closed mid-work. The
+                        // only case this does NOT cover is a foreground command that
+                        // emits literally zero terminal bytes for the whole timeout
+                        // (documented residual; see plan §7 H2).
+                        idle_detector.touch_silence(id);
+
                         // Scan for response markers.
                         // Use from_utf8_lossy to prevent silent detection skips
                         // when a multi-byte UTF-8 character is split at the 4096-byte

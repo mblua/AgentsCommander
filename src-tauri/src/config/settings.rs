@@ -387,6 +387,16 @@ pub struct AppSettings {
     pub resource_keep_last_snapshot: bool,
     #[serde(default = "default_resource_backoff_polling")]
     pub resource_backoff_polling: bool,
+    /// #552 badge color thresholds (minutes). green < yellow <= value < red <= value.
+    #[serde(default = "default_coord_badge_yellow_minutes")]
+    pub coordinator_idle_badge_yellow_minutes: u32,
+    #[serde(default = "default_coord_badge_red_minutes")]
+    pub coordinator_idle_badge_red_minutes: u32,
+    /// #552 auto-close lifecycle clock.
+    #[serde(default = "default_true")]
+    pub coordinator_auto_close_enabled: bool,
+    #[serde(default = "default_coord_auto_close_minutes")]
+    pub coordinator_auto_close_minutes: u32,
 }
 
 fn default_true() -> bool {
@@ -464,6 +474,18 @@ fn default_resource_monitor_enabled() -> bool {
 
 fn default_max_concurrent_agent_processes() -> u32 {
     32
+}
+
+fn default_coord_badge_yellow_minutes() -> u32 {
+    30
+}
+
+fn default_coord_badge_red_minutes() -> u32 {
+    60
+}
+
+fn default_coord_auto_close_minutes() -> u32 {
+    60
 }
 
 fn default_resource_watchdog_action() -> ResourceWatchdogAction {
@@ -553,6 +575,10 @@ impl Default for AppSettings {
             agent_process_kill_private_bytes: default_agent_process_kill_private_bytes(),
             resource_keep_last_snapshot: default_resource_keep_last_snapshot(),
             resource_backoff_polling: default_resource_backoff_polling(),
+            coordinator_idle_badge_yellow_minutes: default_coord_badge_yellow_minutes(),
+            coordinator_idle_badge_red_minutes: default_coord_badge_red_minutes(),
+            coordinator_auto_close_enabled: true,
+            coordinator_auto_close_minutes: default_coord_auto_close_minutes(),
         }
     }
 }
@@ -2267,6 +2293,26 @@ mod tests {
         assert_eq!(back.agent_process_kill_private_bytes, 512);
         assert!(!back.resource_keep_last_snapshot);
         assert!(!back.resource_backoff_polling);
+    }
+
+    #[test]
+    fn coordinator_clock_settings_default_when_keys_absent() {
+        // #552: an old settings.json (no coordinator-* keys) must deserialize
+        // cleanly to the documented defaults (true / 60 / 30 / 60), no migration.
+        // Serialize a default, strip ONLY the 4 coordinator keys, deserialize back.
+        let mut value =
+            serde_json::to_value(AppSettings::default()).expect("serialize default to value");
+        let obj = value.as_object_mut().expect("settings serializes to an object");
+        obj.remove("coordinatorIdleBadgeYellowMinutes");
+        obj.remove("coordinatorIdleBadgeRedMinutes");
+        obj.remove("coordinatorAutoCloseEnabled");
+        obj.remove("coordinatorAutoCloseMinutes");
+
+        let back: AppSettings = serde_json::from_value(value).expect("deserialize without keys");
+        assert!(back.coordinator_auto_close_enabled);
+        assert_eq!(back.coordinator_auto_close_minutes, 60);
+        assert_eq!(back.coordinator_idle_badge_yellow_minutes, 30);
+        assert_eq!(back.coordinator_idle_badge_red_minutes, 60);
     }
 
     #[test]
