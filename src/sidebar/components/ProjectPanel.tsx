@@ -1253,6 +1253,27 @@ const ProjectPanel: Component = () => {
                 </Show>
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                 <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
+                  {/* #552: the coordinator idle (minutes) badge leads the row,
+                      with the neutral auto-closed pill immediately after it, so
+                      the two #552 badges render first before all other badges. */}
+                  <Show when={idleBadge()}>
+                    {(b) => (
+                      <span
+                        class={`ac-discovery-badge coord-idle ${b().colorClass}`}
+                        title="Time since your last message to this coordinator"
+                      >
+                        {b().label}
+                      </span>
+                    )}
+                  </Show>
+                  <Show when={autoClosed()}>
+                    <span
+                      class="ac-discovery-badge coord-autoclosed"
+                      title="This team was auto-closed after inactivity. Reopen it to clear."
+                    >
+                      auto-closed
+                    </span>
+                  </Show>
                   <Show when={runningPeers && runningPeers()!.length > 0}>
                     <For each={runningPeers!()}>
                       {(peer) => (
@@ -1286,24 +1307,6 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <Show when={isCoord()}>
                     <span class="ac-discovery-badge coord">coordinator</span>
-                  </Show>
-                  <Show when={idleBadge()}>
-                    {(b) => (
-                      <span
-                        class={`ac-discovery-badge coord-idle ${b().colorClass}`}
-                        title="Time since your last message to this coordinator"
-                      >
-                        {b().label}
-                      </span>
-                    )}
-                  </Show>
-                  <Show when={autoClosed()}>
-                    <span
-                      class="ac-discovery-badge coord-autoclosed"
-                      title="This team was auto-closed after inactivity. Reopen it to clear."
-                    >
-                      auto-closed
-                    </span>
                   </Show>
                   <Show when={extraBadge}>
                     <span class="ac-discovery-badge team">{extraBadge}</span>
