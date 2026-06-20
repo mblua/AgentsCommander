@@ -154,7 +154,14 @@ describe("ProjectPanel restart-failure toast (#574)", () => {
 
       await waitFor(() => expect(q("toast.item")).toBeTruthy());
       expect(q("toast.item")?.getAttribute("data-ac-kind")).toBe("error");
-      expect(q("toast.item")?.textContent ?? "").toContain("Resource Monitor cap reached");
+      // Assert on normalization-only fragments. The parenthesized "(16/16)" ratio
+      // and the actionable tail exist ONLY in launchErrorMessage's output, never in
+      // the raw "...: 16/16 agent groups are active" reject. A regression swapping
+      // launchErrorMessage(e) for String(e) would fail here, so this genuinely
+      // guards that the catch funnels through normalization (#573's path).
+      const toastText = q("toast.item")?.textContent ?? "";
+      expect(toastText).toContain("Resource Monitor cap reached (16/16).");
+      expect(toastText).toContain("Close an agent or raise the limit in Settings > Resources.");
       expect(fake.callsFor("restart_session")).toHaveLength(1);
     } finally {
       rendered.cleanup();
