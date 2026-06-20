@@ -15,6 +15,9 @@ import { sessionsStore } from "../stores/sessions";
 import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
+  AC_MATRIX_ROOT_PLACEHOLDER,
+  AC_REPLICA_ROOT_PLACEHOLDER,
+  AC_WORKSPACE_ROOT_PLACEHOLDER,
   commandExecutableBasename,
   defaultInstructionsFilename,
   executableTokenBasename,
@@ -31,6 +34,18 @@ import {
 } from "../../shared/profile-utils";
 
 type ProfileCellEnvRow = { key: string; value: string };
+
+// #576: always-visible reference for the AC path placeholders usable in a
+// profile's command and env values. The token strings are taken from the shared
+// profile-utils constants so they match the backend (placeholders.rs) byte for
+// byte; the backend stays the authority for real expansion + validation at launch.
+const AC_PLACEHOLDER_HELP = [
+  "AC path placeholders (expand at launch):",
+  `${AC_REPLICA_ROOT_PLACEHOLDER} — this replica's working dir`,
+  `${AC_WORKSPACE_ROOT_PLACEHOLDER} — the .ac workspace root`,
+  `${AC_MATRIX_ROOT_PLACEHOLDER} — the canonical _agent_<name> dir`,
+  "Full details: docs/agent-matrix-conventions.md §5",
+].join("\n");
 
 const ENV_ORIGIN_LABEL: Record<string, string> = {
   system: "SYSTEM",
@@ -1641,7 +1656,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         </div>
 
         <Show when={expanded()}>
-          <label class="settings-profile-field-label">Command</label>
+          <div class="settings-profile-field-label-row">
+            <label class="settings-profile-field-label">Command</label>
+            <button
+              type="button"
+              class="settings-field-help"
+              title={AC_PLACEHOLDER_HELP}
+              aria-label={AC_PLACEHOLDER_HELP}
+              data-ac-testid={`${cardId}.placeholderHelp`}
+              data-ac-role="button"
+            >
+              ?
+            </button>
+          </div>
           <input
             class="settings-input settings-profile-command"
             classList={{ invalid: Boolean(cellError()) }}
