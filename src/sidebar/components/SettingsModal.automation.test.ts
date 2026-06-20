@@ -560,7 +560,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("renders the %AC_ROOT% template preview for env rows", async () => {
+  it("renders the %AC_REPLICA_ROOT% template preview for env rows", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       codingAgentProfiles: {
         schemaVersion: 2,
@@ -571,7 +571,7 @@ describe("SettingsModal automation hooks", () => {
             A: {
               enabled: true,
               command: "codex",
-              env: { CODEX_HOME: "%AC_ROOT%\\.codex\\agents\\codex" },
+              env: { CODEX_HOME: "%AC_REPLICA_ROOT%\\.codex\\agents\\codex" },
               notes: "",
             },
           },

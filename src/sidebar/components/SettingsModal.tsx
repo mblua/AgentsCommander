@@ -18,7 +18,7 @@ import {
   commandExecutableBasename,
   defaultInstructionsFilename,
   executableTokenBasename,
-  hasAcRootPlaceholder,
+  hasAcPlaceholder,
   hasEnabledEnvKey,
   isCodexAgent,
   nextAvailableProfileLetter,
@@ -1661,10 +1661,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               {cellError()}
             </div>
           </Show>
-          <Show when={hasAcRootPlaceholder(command())}>
+          <Show when={hasAcPlaceholder(command())}>
             <div class="settings-profile-ph-hint" data-ac-testid={`${cardId}.command.placeholder`}>
-              <span class="settings-profile-ph-token">%AC_ROOT%</span> expands to this
-              replica&rsquo;s root at launch; the backend validates the result.
+              <span class="settings-profile-ph-token">%AC_REPLICA_ROOT%</span>,{" "}
+              <span class="settings-profile-ph-token">%AC_WORKSPACE_ROOT%</span>, and{" "}
+              <span class="settings-profile-ph-token">%AC_MATRIX_ROOT%</span> expand at
+              launch; the backend validates the result.
             </div>
           </Show>
 
@@ -1719,14 +1721,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   >
                     &#x2715;
                   </button>
-                  <Show when={hasAcRootPlaceholder(row.value)}>
+                  <Show when={hasAcPlaceholder(row.value)}>
                     <div
                       class="settings-profile-ph-preview"
                       data-ac-testid={`${cardId}.envRow.${rowIndex()}.placeholder`}
                       data-ac-role="status"
                     >
                       <span class="arrow">&rarr;</span>
-                      <span>expands to this replica&rsquo;s root at launch</span>
+                      <span>AC path placeholders expand at launch</span>
                     </div>
                   </Show>
                 </div>
