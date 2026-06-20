@@ -126,6 +126,19 @@ function deriveScopeContextFromSession(
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
 
+/**
+ * #573 (grinch Step-7): upper bound for the post-assign restart await. The Tauri
+ * IPC transport (`transport-tauri.ts`) has NO timeout, unlike `WsTransport.invoke`
+ * (`transport-ws.ts`), which rejects after 30s with `Command timeout: <cmd>`. If
+ * the backend `restart_session` neither resolves nor rejects (session-manager
+ * write-lock stall, ConPTY respawn hang, dropped IPC reply), `restarting()` would
+ * stay true forever and trap the modal (both buttons disabled + dismiss gated →
+ * app-kill required). Racing this timeout lets the desktop modal self-heal exactly
+ * as it already does on WS/remote — intentional parity, so mirror the WS value.
+ * The WS 30s is a bare literal there (not exported), hence a local named const.
+ */
+export const RESTART_TIMEOUT_MS = 30_000;
+
 /** Build the session name used to link a replica to its session */
 function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
   return `${wg.name}/${replica.name}`;
@@ -219,16 +232,35 @@ const ProjectPanel: Component = () => {
     if (!prompt || restarting()) return;
     setRestarting(true);
     setRestartError("");
+    // #573 (grinch Step-7): bound the await with RESTART_TIMEOUT_MS. The Tauri IPC
+    // transport never times out, so a wedged backend would leave `restarting()`
+    // true forever and trap the modal (buttons disabled + dismiss gated). Racing a
+    // timeout guarantees `finally` runs within the bound, surfacing the error
+    // inline and re-enabling the modal — matching WsTransport.invoke's self-heal.
+    let timeoutTimer: number | undefined;
     try {
-      await SessionAPI.restart(prompt.sessionId, {
-        agentId: prompt.agentId,
-        requestedProfile: prompt.requestedProfile,
-      });
+      await Promise.race([
+        SessionAPI.restart(prompt.sessionId, {
+          agentId: prompt.agentId,
+          requestedProfile: prompt.requestedProfile,
+        }),
+        // Mirror WsTransport.invoke's reject (a bare `Command timeout: <cmd>`
+        // string) so launchErrorMessage yields identical copy on desktop and WS.
+        new Promise<never>((_, reject) => {
+          timeoutTimer = window.setTimeout(
+            () => reject("Command timeout: restart_session"),
+            RESTART_TIMEOUT_MS,
+          );
+        }),
+      ]);
       setRestartPrompt(null);
     } catch (e) {
       console.error("Failed to restart session:", e);
       setRestartError(launchErrorMessage(e));
     } finally {
+      // Timer hygiene: cancel the pending timeout when the restart settles first,
+      // so a successful restart can't leave a dangling timer / late rejection.
+      window.clearTimeout(timeoutTimer);
       setRestarting(false);
     }
   };
