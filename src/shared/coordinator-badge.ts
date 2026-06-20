@@ -10,15 +10,18 @@ export interface CoordinatorBadge {
 }
 
 /**
- * #552 Pure, timer-free badge derivation so it unit-tests cleanly. Minutes-only,
- * raw integer, NO h/d rollover (spec): 45m, 135m, 4320m. Color comes from the
- * global thresholds: `minutes >= red -> red`, else `>= yellow -> yellow`, else
- * green (red is tested first, so an inverted yellow>=red pair just collapses the
- * yellow band rather than misbehaving). The `Math.max(0, ...)` floor means clock
- * skew / a future-dated timestamp shows `0m`, never a negative value.
+ * #552/#580 Pure, timer-free badge derivation so it unit-tests cleanly. The
+ * input timestamp is the unified team-idle anchor (#580): minutes since the team
+ * was last truly active, not merely the user's last message (the param name is
+ * retained — rename deferred). Minutes-only, raw integer, NO h/d rollover (spec):
+ * 45m, 135m, 4320m. Color comes from the global thresholds: `minutes >= red ->
+ * red`, else `>= yellow -> yellow`, else green (red is tested first, so an
+ * inverted yellow>=red pair just collapses the yellow band rather than
+ * misbehaving). The `Math.max(0, ...)` floor means clock skew / a future-dated
+ * timestamp shows `0m`, never a negative value.
  *
  * Returns `null` when there is no usable timestamp (absent or unparseable), so
- * callers render nothing for a coordinator that has never been messaged.
+ * callers render nothing for a coordinator with no idle anchor yet.
  */
 export function coordinatorIdleBadge(
   lastUserMessageAtIso: string | undefined,

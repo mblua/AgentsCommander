@@ -11,16 +11,27 @@ use serde::{Deserialize, Serialize};
 const COALESCE_SECS: i64 = 10;
 
 /// Persisted per-coordinator state, keyed by the coordinator FQN
-/// (`<project>:<wg>/<agent>`). One entry holds BOTH #552 persisted facts: the
-/// badge clock (`last_user_message_at`) and the auto-closed marker
-/// (`auto_closed_at`). Both are wall-clock, persisted, FQN-keyed, and survive
-/// restart, so they share one map / one file (one source of truth).
+/// (`<project>:<wg>/<agent>`). One entry holds the persisted facts behind the
+/// unified idle counter (#580): the user-message clock (`last_user_message_at`),
+/// the last-real-activity clock (`last_activity_at`), and the auto-closed marker
+/// (`auto_closed_at`). All are wall-clock, persisted, FQN-keyed, and survive
+/// restart, so they share one map / one file (one source of truth). The badge and
+/// auto-close both read the unified anchor
+/// `team_idle_since = max(last_user_message_at, last_activity_at)`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClockEntry {
     /// Badge clock: time of the user's last message to this coordinator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_user_message_at: Option<DateTime<Utc>>,
+    /// (#580) Wall-clock of the last REAL team activity (any member or the
+    /// coordinator), advanced by the auto-close evaluator from the in-memory
+    /// silence clock. With `last_user_message_at` it forms the unified idle
+    /// anchor `team_idle_since = max(last_user_message_at, last_activity_at)`,
+    /// which the badge displays and auto-close triggers on. Persisted so the
+    /// counter survives restart (closed time counts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<DateTime<Utc>>,
     /// Auto-closed marker: set by the auto-close task when this coordinator's
     /// team was terminated for inactivity; cleared on reopen. `Some` => show
     /// the "auto-closed" pill. Only the task sets it, which is what
@@ -28,6 +39,20 @@ pub struct ClockEntry {
     /// error exit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_closed_at: Option<DateTime<Utc>>,
+}
+
+impl ClockEntry {
+    /// (#580) The unified team-idle anchor for this coordinator: the newer of the
+    /// user-message and last-activity clocks (`max`), or None if neither is set.
+    /// The badge displays and auto-close triggers on this value. Single source for
+    /// the max rule; mirrors `auto_close::team_idle_since_secs`, which folds the
+    /// same two components as i64 seconds on the evaluator's hot path.
+    pub fn idle_anchor(&self) -> Option<DateTime<Utc>> {
+        [self.last_user_message_at, self.last_activity_at]
+            .into_iter()
+            .flatten()
+            .max()
+    }
 }
 
 /// Persisted per-coordinator clocks store. ON DISK this is the flat map
@@ -69,6 +94,7 @@ impl CoordinatorClocks {
             fqn.to_string(),
             ClockEntry {
                 last_user_message_at: Some(now),
+                last_activity_at: None,
                 auto_closed_at: None,
             },
         );
@@ -79,6 +105,25 @@ impl CoordinatorClocks {
     /// Badge clock accessor.
     pub fn last_user_message_at(&self, fqn: &str) -> Option<DateTime<Utc>> {
         self.map.get(fqn).and_then(|e| e.last_user_message_at)
+    }
+
+    /// (#580) Last-real-activity clock accessor.
+    pub fn last_activity_at(&self, fqn: &str) -> Option<DateTime<Utc>> {
+        self.map.get(fqn).and_then(|e| e.last_activity_at)
+    }
+
+    /// (#580) Advance `last_activity_at` for `fqn` to `candidate` iff it is newer
+    /// than the stored value (monotonic forward). Returns true (and dirties the
+    /// store) only when it actually moved, so an idle team (stable candidate) does
+    /// not churn the file each tick. Preserves last_user_message_at / auto_closed_at.
+    pub fn note_activity(&mut self, fqn: &str, candidate: DateTime<Utc>) -> bool {
+        let entry = self.map.entry(fqn.to_string()).or_default();
+        if entry.last_activity_at.is_none_or(|prev| candidate > prev) {
+            entry.last_activity_at = Some(candidate);
+            self.dirty = true;
+            return true;
+        }
+        false
     }
 
     /// Auto-closed marker accessor.
@@ -284,6 +329,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn note_activity_advances_monotonic_forward_only() {
+        let mut clocks = CoordinatorClocks::default();
+        let fqn = "proj:wg-1-team/coord";
+
+        // First activity: None -> Some advances and dirties.
+        assert!(clocks.note_activity(fqn, ts(100)));
+        assert_eq!(clocks.last_activity_at(fqn), Some(ts(100)));
+        assert!(clocks.take_dirty(), "a real advance dirties the store");
+
+        // A newer candidate advances; clear dirty to isolate the no-op checks.
+        assert!(clocks.note_activity(fqn, ts(200)));
+        assert_eq!(clocks.last_activity_at(fqn), Some(ts(200)));
+        assert!(clocks.take_dirty(), "a forward advance dirties the store");
+
+        // An older candidate is a no-op (monotonic forward) and does not dirty.
+        assert!(!clocks.note_activity(fqn, ts(150)));
+        assert_eq!(clocks.last_activity_at(fqn), Some(ts(200)));
+        assert!(!clocks.take_dirty(), "an older candidate must not dirty the store");
+
+        // An equal candidate is also a no-op (advance is strictly-newer).
+        assert!(!clocks.note_activity(fqn, ts(200)));
+        assert_eq!(clocks.last_activity_at(fqn), Some(ts(200)));
+        assert!(!clocks.take_dirty(), "an equal candidate must not dirty the store");
+    }
+
+    #[test]
+    fn note_activity_preserves_user_message_and_auto_closed() {
+        let mut clocks = CoordinatorClocks::default();
+        let fqn = "proj:wg-1-team/coord";
+
+        clocks.note_user_message(fqn, ts(0));
+        clocks.mark_auto_closed(fqn, ts(1));
+        // Advancing activity must touch ONLY last_activity_at.
+        assert!(clocks.note_activity(fqn, ts(500)));
+        assert_eq!(clocks.last_activity_at(fqn), Some(ts(500)));
+        assert_eq!(
+            clocks.last_user_message_at(fqn),
+            Some(ts(0)),
+            "note_activity must not touch last_user_message_at"
+        );
+        assert_eq!(
+            clocks.auto_closed_at(fqn),
+            Some(ts(1)),
+            "note_activity must not touch auto_closed_at"
+        );
+    }
+
+    #[test]
+    fn idle_anchor_is_max_of_present_components() {
+        assert_eq!(ClockEntry::default().idle_anchor(), None);
+
+        let user_only = ClockEntry {
+            last_user_message_at: Some(ts(100)),
+            ..Default::default()
+        };
+        assert_eq!(user_only.idle_anchor(), Some(ts(100)));
+
+        let activity_only = ClockEntry {
+            last_activity_at: Some(ts(200)),
+            ..Default::default()
+        };
+        assert_eq!(activity_only.idle_anchor(), Some(ts(200)));
+
+        let both = ClockEntry {
+            last_user_message_at: Some(ts(100)),
+            last_activity_at: Some(ts(200)),
+            ..Default::default()
+        };
+        assert_eq!(
+            both.idle_anchor(),
+            Some(ts(200)),
+            "anchor is the max of the two present components"
+        );
+    }
+
     /// B1/H1 trap: exercise the REAL save_map_to + load_from pair (NOT a
     /// hand-rolled map round-trip) so an asymmetry between serialize and
     /// deserialize is caught. Asserts BOTH ClockEntry fields survive.
@@ -297,14 +418,16 @@ mod tests {
             "proj:wg-1-team/coord".to_string(),
             ClockEntry {
                 last_user_message_at: Some(ts(0) + Duration::minutes(45)),
+                last_activity_at: Some(ts(0) + Duration::minutes(50)),
                 auto_closed_at: Some(ts(0) + Duration::minutes(60)),
             },
         );
-        // A second entry exercising the skip_serializing_if absence of one field.
+        // A second entry exercising the skip_serializing_if absence of two fields.
         original.insert(
             "proj:wg-2-team/coord".to_string(),
             ClockEntry {
                 last_user_message_at: Some(ts(0)),
+                last_activity_at: None,
                 auto_closed_at: None,
             },
         );
@@ -317,15 +440,21 @@ mod tests {
             original,
             "the loaded map must equal the saved map (save/load symmetry)"
         );
-        // Spot-check both fields explicitly via the accessors.
+        // Spot-check all three fields explicitly via the accessors.
         assert_eq!(
             loaded.last_user_message_at("proj:wg-1-team/coord"),
             Some(ts(0) + Duration::minutes(45))
         );
         assert_eq!(
+            loaded.last_activity_at("proj:wg-1-team/coord"),
+            Some(ts(0) + Duration::minutes(50)),
+            "last_activity_at must survive save/load (#580)"
+        );
+        assert_eq!(
             loaded.auto_closed_at("proj:wg-1-team/coord"),
             Some(ts(0) + Duration::minutes(60))
         );
+        assert_eq!(loaded.last_activity_at("proj:wg-2-team/coord"), None);
         assert_eq!(loaded.auto_closed_at("proj:wg-2-team/coord"), None);
     }
 }
