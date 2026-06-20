@@ -51,6 +51,22 @@ function codexAgent(): AgentConfig {
   };
 }
 
+// #551: a second coding agent so the test can make a *real* re-assignment.
+// Re-assigning the live session's current agent (codex) is now disabled, so the
+// restart prompt is reached by switching to a different coding agent.
+function claudeAgent(): AgentConfig {
+  return {
+    id: "claude",
+    label: "Claude Code",
+    command: "claude",
+    color: "#d97706",
+    gitPullBefore: false,
+    excludeGlobalClaudeMd: false,
+    envs: [],
+    isolatedHome: false,
+  };
+}
+
 function resolution(): CodingAgentProfileResolution {
   return {
     requestedProfile: "A",
@@ -127,7 +143,10 @@ function discoveryResult() {
 function setupTransport(fake: FakeTransport): void {
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
   fake.resolve("discover_project", discoveryResult());
-  fake.resolve("get_settings", baseSettings({ agents: [codexAgent()] }) satisfies AppSettings);
+  fake.resolve(
+    "get_settings",
+    baseSettings({ agents: [codexAgent(), claudeAgent()] }) satisfies AppSettings,
+  );
   fake.resolve("resolve_coding_agent_profile", resolution());
   fake.resolve("preview_coding_agent_profile_selection", previewResult());
   fake.resolve("apply_coding_agent_profile_selection", applyResult());
@@ -175,6 +194,12 @@ async function driveToRestartPrompt(root: HTMLElement): Promise<void> {
   click(findButtonByText("Coding Agent"));
 
   await waitFor(() => expect(q("agentPicker.modal")).toBeTruthy());
+  // #551: the picker opens pre-selected to the live session's current Coding Agent
+  // (codex), so "Assign to this replica" starts disabled (re-assigning the same
+  // pair is a no-op). Switch to a different coding agent to make it a real
+  // re-assignment that enables apply and pops the post-assign restart prompt.
+  await waitFor(() => expect(q("agentPicker.provider.claude")).toBeTruthy());
+  click(q<HTMLButtonElement>("agentPicker.provider.claude")!);
   await waitFor(() => {
     const apply = q<HTMLButtonElement>("agentPicker.apply");
     expect(apply && apply.disabled).toBe(false);
@@ -251,7 +276,7 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
       expect(fake.lastCall("restart_session")?.args).toEqual(
         expect.objectContaining({
           id: sessionId,
-          agentId: "codex",
+          agentId: "claude",
           requestedProfile: "A",
         }),
       );
