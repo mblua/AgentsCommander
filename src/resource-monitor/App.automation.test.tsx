@@ -423,4 +423,88 @@ describe("ResourceMonitorApp automation hooks", () => {
       rendered.cleanup();
     }
   });
+
+  // #566 N1 - regression guard: with a snapshot already loaded but the active
+  // filter matching zero rows, an in-flight poll (loading=true, kept snapshot)
+  // must NOT flash the "loading" empty-state over the stable filtered-empty one.
+  it("keeps the filtered-empty state during an in-flight poll instead of flashing loading (N1)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.resolve("kill_resource_group", {
+      sessionId: "session-1",
+      state: "terminating",
+      quarantined: false,
+      message: "terminating",
+    });
+    // A controllable snapshot handler: returns rows normally, but once `hang` is
+    // set the next call stays pending so the store's `loading` flag stays true.
+    let hang = false;
+    const pending: { resolve: (snapshot: ResourceSnapshot) => void } = {
+      resolve: () => {},
+    };
+    fake.onInvoke("get_resource_snapshot", () => {
+      if (!hang) return multiGroupSnapshot();
+      return new Promise<ResourceSnapshot>((resolve) => {
+        pending.resolve = resolve;
+      });
+    });
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      await waitFor(() => {
+        expect(groupRowCount(rendered.root)).toBe(3);
+      });
+
+      // Exclude every row: Inactive + a workgroup that has no terminated row.
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.status.inactive"]'
+        )!
+      );
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.filter.workgroup.wg-9-other-team"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(
+          rendered.root
+            .querySelector('[data-ac-testid="resourceMonitor.empty"]')
+            ?.getAttribute("data-ac-state")
+        ).toBe("filtered-empty");
+      });
+
+      // Drive a poll in-flight while filtered-empty. Settle any prior poll first,
+      // stop the timer so only our hanging refresh flips `loading`, then make the
+      // next snapshot call hang so `loading` stays true deterministically.
+      await waitFor(() => {
+        expect(resourceMonitorStore.loading).toBe(false);
+      });
+      resourceMonitorStore.stopPolling();
+      hang = true;
+      void resourceMonitorStore.refresh();
+
+      await waitFor(() => {
+        expect(resourceMonitorStore.loading).toBe(true);
+        const empty = rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.empty"]'
+        );
+        // The N1 assertion: still filtered-empty, NOT "loading".
+        expect(empty?.getAttribute("data-ac-state")).toBe("filtered-empty");
+        expect(empty?.textContent).toContain("No agents match the filters");
+      });
+    } finally {
+      // Release the pending snapshot so the store settles back to loading=false
+      // and does not leak an in-flight promise into later tests. cleanup() must
+      // run even if the settle wait throws, so guard it in its own finally.
+      pending.resolve(emptySnapshot());
+      try {
+        await waitFor(() => {
+          expect(resourceMonitorStore.loading).toBe(false);
+        });
+      } finally {
+        rendered.cleanup();
+      }
+    }
+  });
 });

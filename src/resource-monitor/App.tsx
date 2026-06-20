@@ -632,14 +632,20 @@ const ResourceMonitorApp: Component = () => {
                 data-ac-testid="resourceMonitor.empty"
                 data-ac-role="status"
                 data-ac-state={
-                  resourceMonitorStore.loading
+                  // #566 N1 - loading only wins when there is genuinely no data
+                  // yet (groups().length === 0). With keepLastSnapshot, every
+                  // poll's setLoading(true) would otherwise flash "loading" over
+                  // an already-populated-but-filtered view each cycle. Once rows
+                  // exist but the active filter matches none, stay on the stable
+                  // filtered-empty state; initial load (no data) still shows it.
+                  resourceMonitorStore.loading && groups().length === 0
                     ? "loading"
                     : groups().length === 0
                       ? "empty"
                       : "filtered-empty"
                 }
               >
-                {resourceMonitorStore.loading
+                {resourceMonitorStore.loading && groups().length === 0
                   ? "Loading snapshot..."
                   : groups().length === 0
                     ? "No active agents"
