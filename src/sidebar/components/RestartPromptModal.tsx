@@ -1,4 +1,4 @@
-import { Component } from "solid-js";
+import { Component, Show } from "solid-js";
 import { automationAttrs } from "../../shared/automation-hooks";
 
 /**
@@ -10,10 +10,18 @@ import { automationAttrs } from "../../shared/automation-hooks";
  * Presentational only: the caller decides when to show it (a live session must exist)
  * and supplies the restart action. Mirrors the Delete-Workgroup modal shell
  * (`modal-overlay` + `agent-modal` + `new-agent-footer`).
+ *
+ * #573: the restart can fail (e.g. the Resource Monitor concurrency cap re-trips on
+ * the relaunch). The caller drives `error`/`busy` so a rejected restart stays visible
+ * — the modal keeps itself open, shows the failure, and lets the user retry, instead
+ * of silently closing while the old agent still runs. Mirrors the inline-error pattern
+ * in `AgentPickerModal.apply()` and Resource Monitor's `confirmKill`.
  */
 const RestartPromptModal: Component<{
   agentLabel: string;
   replicaName: string;
+  error?: string;
+  busy?: boolean;
   onRestart: () => void;
   onLater: () => void;
 }> = (props) => {
@@ -40,10 +48,22 @@ const RestartPromptModal: Component<{
             <strong>{props.agentLabel}</strong> assigned to <strong>{props.replicaName}</strong>.
             Restart the session now to apply it?
           </p>
+          {/* #573: surface a failed restart inline (reusing `.agent-picker-error`)
+              and keep the modal open so the user can retry — a swallowed rejection
+              would leave the old agent running while the UI looks applied. */}
+          <Show when={props.error}>
+            <div
+              class="agent-picker-error"
+              {...automationAttrs("restartPrompt.error", "status")}
+            >
+              {props.error}
+            </div>
+          </Show>
           <div class="new-agent-footer">
             <button
               class="new-agent-cancel-btn"
               onClick={props.onLater}
+              disabled={props.busy}
               {...automationAttrs("restartPrompt.later", "button")}
             >
               Later
@@ -51,9 +71,10 @@ const RestartPromptModal: Component<{
             <button
               class="new-agent-create-btn"
               onClick={props.onRestart}
+              disabled={props.busy}
               {...automationAttrs("restartPrompt.restart", "button")}
             >
-              Restart now
+              {props.busy ? "Restarting…" : "Restart now"}
             </button>
           </div>
         </div>
