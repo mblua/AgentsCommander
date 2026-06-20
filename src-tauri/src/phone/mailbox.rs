@@ -1628,7 +1628,21 @@ impl MailboxPoller {
             return result.unwrap_or(Ok(()));
         }
 
-        self.inject_into_pty(app, session_id, msg, true).await
+        let result = self.inject_into_pty(app, session_id, msg, true).await;
+        // #552 auto-close: a successful inter-agent wake is activity for the
+        // recipient team's silence clock (NOT the badge; inter-agent is not a
+        // user message). This single site covers both wake paths (deliver_wake
+        // and the spawned-wake path), which both funnel through here. The
+        // recipient's own response output would also reset silence via the read
+        // loop; recording the delivery makes inter-agent traffic count at once.
+        if result.is_ok() {
+            if let Some(idle) =
+                app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
+            {
+                idle.touch_silence(session_id);
+            }
+        }
+        result
     }
 
     async fn destroy_exited_wake_session<R: tauri::Runtime>(
