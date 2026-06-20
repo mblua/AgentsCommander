@@ -313,7 +313,69 @@ Located at `.ac/project-settings.json`. Defines the coding agent configurations 
 
 ---
 
-## 5. The .gitignore
+## 5. Profile Path Placeholders
+
+Coding-agent **profile** command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Everything else in a profile value is passed to the child process **verbatim** — there is no shell, so `$(pwd)`, `${VAR}`, and other `%VAR%` forms are NOT expanded and are taken literally. Only the three tokens below are recognized.
+
+The tokens map onto the matrix layout from the sections above: a replica is a `__agent_<name>` dir under a `wg-*` workgroup, the workspace is the project's `.ac` root, and the matrix is the canonical `_agent_<name>` dir.
+
+| Token | Resolves to | Valid when |
+|---|---|---|
+| `%AC_REPLICA_ROOT%` | The **replica** dir — the launch working directory, canonicalized | A WG replica (`__agent_*` under `wg-*`) **or** the `ac-root-agent` launch root |
+| `%AC_WORKSPACE_ROOT%` | The **`.ac` workspace** root (the nearest `.ac` ancestor of the launch root) | Any launch root **inside** a `.ac` workspace — including non-replica roots (a `repo-*` checkout, a bare `wg-*` dir, an `_agent_*` matrix dir) |
+| `%AC_MATRIX_ROOT%` | The **matrix** dir `<workspace>\_agent_<name>` (the agent's canonical Agent Matrix) | **Only** a WG replica launch |
+
+### Example resolutions
+
+For a WG replica launched at `…\AgentsCommander_ac\.ac\wg-6-dev-team\__agent_tech-lead`:
+
+| Token | Expands to |
+|---|---|
+| `%AC_REPLICA_ROOT%` | `…\AgentsCommander_ac\.ac\wg-6-dev-team\__agent_tech-lead` |
+| `%AC_WORKSPACE_ROOT%` | `…\AgentsCommander_ac\.ac` |
+| `%AC_MATRIX_ROOT%` | `…\AgentsCommander_ac\.ac\_agent_tech-lead` |
+
+### Validity rules and the workspace/replica asymmetry
+
+The three tokens have **different** validity gates. A value is rejected only when it uses a token that does not apply to the current launch root:
+
+- **WG replica** (`__agent_*` under `wg-*`): all three tokens resolve.
+- **Root agent** (`ac-root-agent`): only `%AC_REPLICA_ROOT%` resolves (to the root-agent dir). `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` are unavailable — the root agent has no `.ac` workspace and no Agent Matrix — and error if used.
+- **Non-replica launch root inside a `.ac` workspace** (a `repo-*` checkout at `…\.ac\wg-6\repo-X`, a bare `wg-*` dir, or an `_agent_*` matrix dir): **only** `%AC_WORKSPACE_ROOT%` resolves (its `.ac` ancestor exists); `%AC_REPLICA_ROOT%` and `%AC_MATRIX_ROOT%` still error there. This "workspace resolves but replica/matrix error" asymmetry is intentional.
+- **Launch root outside any `.ac`** (a normal repo): none of the tokens resolve.
+
+When a token is used where it does not apply, the launch fails with a specific error:
+
+- `%AC_REPLICA_ROOT% requires an AC replica or root-agent launch root`
+- `%AC_WORKSPACE_ROOT% requires a launch root inside an AC (.ac) workspace`
+- `%AC_MATRIX_ROOT% requires an AC workgroup replica launch root`
+
+### Breaking change: `%AC_ROOT%` was removed
+
+There is **no `%AC_ROOT%` token and no alias.** The former `%AC_ROOT%` (which resolved to the replica dir) was renamed to `%AC_REPLICA_ROOT%`. A profile that still contains the literal `%AC_ROOT%`:
+
+- **fails at launch** — any unexpanded `%...%` marker is rejected with an "unknown placeholder marker" error; and
+- for a `CODEX_HOME` value, **also fails at settings save-time** — validation reports `CODEX_HOME contains unknown placeholder %AC_ROOT%`.
+
+Update any old configuration to `%AC_REPLICA_ROOT%` (or one of the new tokens).
+
+### Usage examples
+
+Use a placeholder as the **leading path segment** of an env value; the backend expands it and then validates the resulting absolute path:
+
+```text
+OPENCODE_CONFIG_DIR = %AC_REPLICA_ROOT%\.opencode
+CODEX_HOME          = %AC_MATRIX_ROOT%\.codex
+CLAUDE_CONFIG_DIR   = %AC_REPLICA_ROOT%\.claude
+```
+
+`CODEX_HOME` is validated more strictly than other keys: its value must **start** with a token as a complete leading path segment (or be a literal absolute path). A value like `prefix%AC_MATRIX_ROOT%\x`, where the token is not the leading segment, is rejected at save-time with a "must start with … as a complete path segment" error. `CLAUDE_CONFIG_DIR` and other env keys accept the tokens wherever a path is expected, with no special leading-segment rule.
+
+The backend is the single authority for real expansion and absolute-path validation at launch; the sidebar's profile preview only mirrors these tokens for display.
+
+---
+
+## 6. The .gitignore
 
 **MANDATORY** at `.ac/.gitignore`:
 
@@ -327,7 +389,7 @@ This is non-negotiable. Without it, `git checkout` or `git reset` on the parent 
 
 ---
 
-## 6. Complete Setup Checklist
+## 7. Complete Setup Checklist
 
 When creating a full agent team for a new project:
 
@@ -379,7 +441,7 @@ This should return all team members. If empty, the team config is misconfigured 
 
 ---
 
-## 7. Common Mistakes & How to Avoid Them
+## 8. Common Mistakes & How to Avoid Them
 
 ### Mistake: Agents appear as `@other-project` in sidebar
 **Cause:** Team config.json references `_agent_*` folders from a different project.
@@ -413,7 +475,7 @@ This should return all team members. If empty, the team config is misconfigured 
 
 ---
 
-## 8. Agent Team Archetypes
+## 9. Agent Team Archetypes
 
 These are proven team compositions. Adapt to your project's domain.
 
@@ -444,7 +506,7 @@ These are proven team compositions. Adapt to your project's domain.
 
 ---
 
-## 9. CLI Reference for Agent Management
+## 10. CLI Reference for Agent Management
 
 ### Create an agent programmatically
 
