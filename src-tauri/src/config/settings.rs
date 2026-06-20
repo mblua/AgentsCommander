@@ -1001,6 +1001,14 @@ pub fn is_codex_home_key(key: &str) -> bool {
     normalize_env_key_for_platform(key) == normalize_env_key_for_platform("CODEX_HOME")
 }
 
+/// True for opencode's config-dir env key. Analogous to [`is_codex_home_key`];
+/// the launch path uses it to auto-create the resolved `OPENCODE_CONFIG_DIR`
+/// before spawn (opencode does not create that dir itself and exits 1 if it is
+/// missing). Case-insensitive on Windows via `normalize_env_key_for_platform`.
+pub fn is_opencode_config_dir_key(key: &str) -> bool {
+    normalize_env_key_for_platform(key) == normalize_env_key_for_platform("OPENCODE_CONFIG_DIR")
+}
+
 pub fn is_reserved_env_key(key: &str) -> bool {
     let normalized = normalize_env_key_for_platform(key);
     let ac_prefix = normalize_env_key_for_platform("AGENTSCOMMANDER_");

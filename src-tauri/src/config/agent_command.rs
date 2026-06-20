@@ -11,8 +11,8 @@ use crate::config::placeholders::{
 };
 use crate::config::session_context::ManagedContextTarget;
 use crate::config::settings::{
-    is_codex_home_key, normalize_env_key_for_platform, validate_expanded_codex_home_value,
-    validate_user_env_key, AgentConfig, AppSettings,
+    is_codex_home_key, is_opencode_config_dir_key, normalize_env_key_for_platform,
+    validate_expanded_codex_home_value, validate_user_env_key, AgentConfig, AppSettings,
 };
 use crate::session::profile::CodingAgentKind;
 
@@ -493,6 +493,102 @@ fn compute_codex_home(
     })
 }
 
+/// Outcome of [`ensure_opencode_config_dir`]. Returned for unit testing; the
+/// launch path ignores it (the operation is best-effort, see the fn docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpencodeConfigDirOutcome {
+    /// Command does not run opencode, or no `OPENCODE_CONFIG_DIR` is set, or the
+    /// value is not an absolute path: nothing was created.
+    Skipped,
+    /// `create_dir_all` succeeded (dir created, or already existed).
+    Ensured,
+    /// `create_dir_all` failed; the launch proceeds anyway (warning logged).
+    Failed,
+}
+
+/// True when the launch command runs opencode, matched by executable basename.
+/// There is no `CodingAgentKind::OpenCode` (the enum is Claude/Codex/Gemini and
+/// `detect` does not know opencode), so this mirrors the
+/// `executable_basename(shell) == "codex"` fallback in [`compute_codex_home`].
+/// Args are scanned too, so a `cmd /c opencode` wrapper is still recognized.
+/// Called BEFORE the `git_pull_before` wrap, so `shell` is the real command.
+fn command_runs_opencode(shell: &str, shell_args: &[String]) -> bool {
+    if executable_basename(shell) == "opencode" {
+        return true;
+    }
+    shell_args
+        .iter()
+        .flat_map(|arg| arg.split_whitespace())
+        .any(|token| executable_basename(token) == "opencode")
+}
+
+/// Resolved `OPENCODE_CONFIG_DIR` value with profile-over-agent precedence,
+/// mirroring `merge_env_layers` (`generated_env` never carries this key).
+fn find_opencode_config_dir<'a>(
+    agent_env: &'a BTreeMap<String, String>,
+    profile_env: &'a BTreeMap<String, String>,
+) -> Option<&'a String> {
+    profile_env
+        .iter()
+        .find(|(key, _)| is_opencode_config_dir_key(key))
+        .or_else(|| agent_env.iter().find(|(key, _)| is_opencode_config_dir_key(key)))
+        .map(|(_, value)| value)
+}
+
+/// #576 follow-up: opencode does not create its `OPENCODE_CONFIG_DIR`; at
+/// startup it writes a managed `.gitignore` into that dir and exits 1 if the dir
+/// is missing (ENOENT on the parent). When the launch runs opencode and the
+/// resolved (post-expansion) `OPENCODE_CONFIG_DIR` is an absolute path, create
+/// it up front so the child can start.
+///
+/// This mirrors the `create_dir_all` precedent in [`compute_codex_home`], with
+/// one deliberate difference: it is BEST-EFFORT. A `create_dir_all` failure is
+/// logged and the launch proceeds (opencode will surface its own error), so a
+/// transient failure never blocks a spawn, unlike the AC-owned isolated codex
+/// home which aborts. A non-absolute value (relative, empty, or otherwise not a
+/// real path) is skipped, never created.
+///
+/// Scope: only the agent and profile env layers are inspected (the AC-managed,
+/// config-driven sources, same precedence as `compute_codex_home`). An
+/// `OPENCODE_CONFIG_DIR` that AC merely inherits from its own ambient
+/// environment is intentionally NOT created here: AC does not own that value,
+/// and the bug this targets comes from AC-configured replica-local paths.
+fn ensure_opencode_config_dir(
+    shell: &str,
+    shell_args: &[String],
+    agent_env: &BTreeMap<String, String>,
+    profile_env: &BTreeMap<String, String>,
+) -> OpencodeConfigDirOutcome {
+    if !command_runs_opencode(shell, shell_args) {
+        return OpencodeConfigDirOutcome::Skipped;
+    }
+    let Some(value) = find_opencode_config_dir(agent_env, profile_env) else {
+        return OpencodeConfigDirOutcome::Skipped;
+    };
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        log::debug!(
+            "[opencode] OPENCODE_CONFIG_DIR '{}' is not an absolute path; not creating it.",
+            value
+        );
+        return OpencodeConfigDirOutcome::Skipped;
+    }
+    match std::fs::create_dir_all(&path) {
+        Ok(()) => {
+            log::info!("[opencode] Ensured OPENCODE_CONFIG_DIR '{}'", path.display());
+            OpencodeConfigDirOutcome::Ensured
+        }
+        Err(e) => {
+            log::warn!(
+                "[opencode] Failed to create OPENCODE_CONFIG_DIR '{}': {}. Launching anyway.",
+                path.display(),
+                e
+            );
+            OpencodeConfigDirOutcome::Failed
+        }
+    }
+}
+
 fn merge_env_layers(layers: &[&BTreeMap<String, String>]) -> Vec<(String, String)> {
     let mut by_normalized: BTreeMap<String, (String, String)> = BTreeMap::new();
     for layer in layers {
@@ -643,6 +739,10 @@ pub fn build_agent_spawn_command(
     )?;
     let computed_codex_home =
         compute_codex_home(agent, &shell, &shell_args, &agent_env, &profile_env)?;
+    // #576 follow-up: opencode exits 1 if OPENCODE_CONFIG_DIR is missing, so
+    // create it before spawn. Best-effort (never aborts the build); see fn docs.
+    // Runs before the git_pull_before wrap so `shell` is still the real command.
+    ensure_opencode_config_dir(&shell, &shell_args, &agent_env, &profile_env);
     let child_env =
         merge_env_layers(&[&agent_env, &profile_env, &computed_codex_home.generated_env]);
 
@@ -670,9 +770,10 @@ pub fn build_agent_spawn_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_agent_spawn_command, default_instructions_filename_for_command,
-        is_safe_instructions_filename, managed_instructions_filenames,
-        normalize_legacy_agent_command, resolve_instructions_filename, resolve_target_filename,
+        build_agent_spawn_command, command_runs_opencode, default_instructions_filename_for_command,
+        ensure_opencode_config_dir, find_opencode_config_dir, is_safe_instructions_filename,
+        managed_instructions_filenames, normalize_legacy_agent_command, resolve_instructions_filename,
+        resolve_target_filename, OpencodeConfigDirOutcome,
     };
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
@@ -1403,6 +1504,153 @@ mod tests {
         assert!(
             !is_safe_instructions_filename(&long),
             "should reject an over-long name"
+        );
+    }
+
+    // #576 follow-up - auto-create OPENCODE_CONFIG_DIR before spawn.
+
+    fn opencode_env(value: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([("OPENCODE_CONFIG_DIR".to_string(), value.to_string())])
+    }
+
+    #[test]
+    fn command_runs_opencode_matches_basename_and_wrapper() {
+        assert!(command_runs_opencode("opencode", &[]));
+        assert!(command_runs_opencode("opencode.exe", &[]));
+        assert!(command_runs_opencode(
+            r"C:\tools\opencode.exe",
+            &["--flag".to_string()]
+        ));
+        // cmd /c opencode wrapper: opencode appears as an arg token.
+        assert!(command_runs_opencode(
+            "cmd.exe",
+            &["/c".to_string(), "opencode".to_string()]
+        ));
+        // Non-opencode commands do not match.
+        assert!(!command_runs_opencode("codex", &[]));
+        assert!(!command_runs_opencode("claude", &["--resume".to_string()]));
+    }
+
+    #[test]
+    fn find_opencode_config_dir_prefers_profile_over_agent() {
+        let agent_env = opencode_env("agent-value");
+        let profile_env = opencode_env("profile-value");
+        assert_eq!(
+            find_opencode_config_dir(&agent_env, &profile_env).map(String::as_str),
+            Some("profile-value")
+        );
+        // Falls back to the agent layer when the profile lacks the key.
+        let empty = BTreeMap::new();
+        assert_eq!(
+            find_opencode_config_dir(&agent_env, &empty).map(String::as_str),
+            Some("agent-value")
+        );
+        // None when neither layer sets it.
+        assert_eq!(find_opencode_config_dir(&empty, &empty), None);
+    }
+
+    #[test]
+    fn ensure_opencode_config_dir_creates_missing_absolute_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        // Nested + missing, to prove create_dir_all builds the whole chain.
+        let target = temp.path().join("nested").join(".opencode");
+        assert!(!target.exists());
+        let profile_env = opencode_env(&target.to_string_lossy());
+
+        let outcome = ensure_opencode_config_dir("opencode", &[], &BTreeMap::new(), &profile_env);
+
+        assert_eq!(outcome, OpencodeConfigDirOutcome::Ensured);
+        assert!(target.is_dir(), "config dir should have been created");
+    }
+
+    #[test]
+    fn ensure_opencode_config_dir_existing_dir_is_noop_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join(".opencode");
+        std::fs::create_dir_all(&target).unwrap();
+        let agent_env = opencode_env(&target.to_string_lossy());
+
+        let outcome = ensure_opencode_config_dir("opencode", &[], &agent_env, &BTreeMap::new());
+
+        assert_eq!(outcome, OpencodeConfigDirOutcome::Ensured);
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn ensure_opencode_config_dir_skips_relative_value() {
+        // Not an absolute path -> never created (cannot trust where it would land).
+        let profile_env = opencode_env(r"relative\.opencode");
+        let outcome = ensure_opencode_config_dir("opencode", &[], &BTreeMap::new(), &profile_env);
+        assert_eq!(outcome, OpencodeConfigDirOutcome::Skipped);
+    }
+
+    #[test]
+    fn ensure_opencode_config_dir_skips_non_opencode_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join(".opencode");
+        let profile_env = opencode_env(&target.to_string_lossy());
+
+        let outcome = ensure_opencode_config_dir("codex", &[], &BTreeMap::new(), &profile_env);
+
+        assert_eq!(outcome, OpencodeConfigDirOutcome::Skipped);
+        assert!(!target.exists(), "must not create the dir for a non-opencode command");
+    }
+
+    #[test]
+    fn ensure_opencode_config_dir_skips_when_unset() {
+        let outcome =
+            ensure_opencode_config_dir("opencode", &[], &BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(outcome, OpencodeConfigDirOutcome::Skipped);
+    }
+
+    #[test]
+    fn ensure_opencode_config_dir_warns_and_continues_on_create_failure() {
+        // Make an ancestor a regular file so create_dir_all cannot succeed.
+        let temp = tempfile::tempdir().unwrap();
+        let blocker = temp.path().join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        let target = blocker.join(".opencode");
+        let profile_env = opencode_env(&target.to_string_lossy());
+
+        let outcome = ensure_opencode_config_dir("opencode", &[], &BTreeMap::new(), &profile_env);
+
+        assert_eq!(outcome, OpencodeConfigDirOutcome::Failed);
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn build_spawn_creates_opencode_config_dir_for_literal_absolute_value() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("nested").join(".opencode");
+        assert!(!target.exists());
+
+        let mut settings = AppSettings {
+            agents: vec![agent("opencode", "opencode")],
+            ..AppSettings::default()
+        };
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("opencode".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: String::new(),
+                    env: opencode_env(&target.to_string_lossy()),
+                    notes: String::new(),
+                },
+            );
+
+        // launch_path None is fine: a literal absolute value needs no placeholder context.
+        let spawn = build_agent_spawn_command(&settings, "opencode", None, Some("A")).unwrap();
+
+        assert!(target.is_dir(), "build should have created OPENCODE_CONFIG_DIR");
+        let env: BTreeMap<_, _> = spawn.child_env.into_iter().collect();
+        assert_eq!(
+            env.get("OPENCODE_CONFIG_DIR").map(String::as_str),
+            Some(target.to_string_lossy().as_ref())
         );
     }
 }
