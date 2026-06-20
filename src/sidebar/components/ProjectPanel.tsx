@@ -2387,6 +2387,9 @@ const ProjectPanel: Component = () => {
                   sessionName={replicaCodingAgentTarget()!.sessionName}
                   agentPath={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.workingDirectory}
                   currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
+                  // #551 FIX 2: a live session's agent IS the explicit current
+                  // coding agent, so it doubles as the redundancy baseline.
+                  explicitCurrentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
                   currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
                   scopeContext={deriveScopeContextFromSession(
                     sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
@@ -2439,6 +2442,11 @@ const ProjectPanel: Component = () => {
                     sessionName={replicaSessionName(target().wg, target().replica)}
                     agentPath={target().replica.path}
                     currentAgentId={target().replica.currentCodingAgentId ?? target().replica.preferredAgentId}
+                    // #551 FIX 2: redundancy keys off the EXPLICIT currentCodingAgentId
+                    // only — never the preferredAgentId hint above. A never-assigned gray
+                    // replica (no currentCodingAgentId) keeps "Assign" enabled so its
+                    // preferred agent can be pinned in one click.
+                    explicitCurrentAgentId={target().replica.currentCodingAgentId ?? null}
                     currentRequestedProfile={target().replica.currentProfile ?? null}
                     scopeContext={replicaScopeContext(target().wg, target().replica)}
                     // #551: pre-launch "Set Coding Agent" opens pre-selected to the

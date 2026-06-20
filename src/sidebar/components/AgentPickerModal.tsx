@@ -78,6 +78,14 @@ const AgentPickerModal: Component<{
   sessionName: string;
   agentPath?: string | null;
   currentAgentId?: string | null;
+  // #551 FIX 2: the EXPLICIT persisted current coding agent — the replica's
+  // `currentCodingAgentId` (or a live session's `agentId`). The redundancy disable
+  // keys off THIS, never off `currentAgentId` (which may carry a soft
+  // `preferredAgentId` / `lastCodingAgent` hint used only to pre-select the picker).
+  // A never-assigned replica has no explicit current agent (undefined/null here), so
+  // its "Assign to this replica" stays enabled — the user can still pin the hinted
+  // agent as a genuine first assignment.
+  explicitCurrentAgentId?: string | null;
   currentRequestedProfile?: string | null;
   scopeContext?: AgentPickerScopeContext;
   // #551: opt-in for the replica *assign* flows. When set, the "Assign to this
@@ -426,20 +434,29 @@ const AgentPickerModal: Component<{
   });
 
   // #551: the replica's *current* profile letter — the baseline for the redundant
-  // selection check. The backend ranks the replica's persisted instance override
-  // ahead of the launch-time requested profile (resolve_profile:
-  // instance_override.or(explicit)…), so when present it — not
-  // props.currentRequestedProfile — is what the modal resolves to and applies on
-  // open. It is read from disk independently of the requested input, so it stays a
-  // stable baseline even after the user picks a different profile (which would
+  // selection check. It must mirror the backend's resolve_profile fallback chain
+  // exactly (coding_agent_profiles.rs):
+  //   instance_override → explicit (requested) → origin_default → agent_default → "A"
+  // The backend ranks the persisted instance override ahead of the launch-time
+  // requested profile, so when present it — not props.currentRequestedProfile — is
+  // what the modal resolves to and applies on open. The origin_default and
+  // agent_default tiers are read from the backend resolution fields (request-
+  // independent, computed from disk/settings — same as configuredDefault()), so the
+  // baseline stays stable even after the user picks a different profile (which would
   // otherwise let a stale session.requestedProfile wrongly enable a no-op assign).
-  // Falls back to the explicit requested profile, then the AC default, then "A",
-  // mirroring onMount's initial selection when there is no override.
+  // The local-settings read is only a last-resort fallback for when the backend
+  // preview is unavailable (non-AC path or a resolution error) — the same
+  // agent_default tier, read locally.
   const currentProfileLetter = createMemo(() => {
-    const override = normalizeProfileLetter(backendPreview()?.instanceProfileOverride);
+    const preview = backendPreview();
+    const override = normalizeProfileLetter(preview?.instanceProfileOverride);
     if (override) return override;
     const explicit = normalizeProfileLetter(props.currentRequestedProfile);
     if (explicit) return explicit;
+    const originDefault = normalizeProfileLetter(preview?.originDefaultProfile);
+    if (originDefault) return originDefault;
+    const agentDefault = normalizeProfileLetter(preview?.agentDefaultProfile);
+    if (agentDefault) return agentDefault;
     const current = settings();
     if (current && isAcAgentPath(targetReplicaPath())) {
       const acDefault = normalizeProfileLetter(
@@ -455,12 +472,17 @@ const AgentPickerModal: Component<{
   // via the assign flows). The untouched short-circuit covers the just-opened
   // state robustly even if a backend default differs from the front-end default;
   // once the user picks a profile, an explicit letter match is required.
+  // FIX 2: the agent-equality baseline is the EXPLICIT current coding agent
+  // (explicitCurrentAgentId), never the pre-select hint in currentAgentId. A
+  // never-assigned replica (no explicit current agent) is never redundant, so its
+  // assign stays enabled even though the picker opens on a preferred-agent hint.
   const isRedundantReplicaSelection = createMemo(() => {
     if (!props.disableRedundantReplicaAssign) return false;
     if (selectedScope() !== "replica") return false;
     const agent = selectedAgent();
-    if (!agent || !props.currentAgentId) return false;
-    if (agent.id !== props.currentAgentId) return false;
+    const baselineAgentId = props.explicitCurrentAgentId;
+    if (!agent || !baselineAgentId) return false;
+    if (agent.id !== baselineAgentId) return false;
     if (!profileTouched()) return true;
     return selectedProfile() === currentProfileLetter();
   });
