@@ -1185,7 +1185,12 @@ const ProjectPanel: Component = () => {
               ? s.gitRepos
               : configuredReplicaRepoBadges(replica, wg);
           });
-          // #552 coordinator idle badge. A createMemo (NOT an IIFE — the IIFE
+          // #552/#580 coordinator idle badge. The value is now the unified
+          // team-idle anchor (#580): minutes since the whole team was last truly
+          // active — it pins to 0 when you message the coordinator, any member is
+          // active, or the coordinator is active. The backend carries that anchor
+          // in the EXISTING `lastUserMessageAt` field/event (rename deferred), so
+          // the FE derivation is unchanged. A createMemo (NOT an IIFE — the IIFE
           // froze; confirmed blocker) so it subscribes to clockStore.nowMs (the
           // live 30s tick) and settingsStore.current (threshold edits apply
           // instantly). replica.lastUserMessageAt is a plain prop read; a reset
@@ -1199,9 +1204,21 @@ const ProjectPanel: Component = () => {
                 )
               : null
           );
-          // #552 auto-closed pill: coexists with the minutes badge on a dormant
-          // row. Driven by the persisted autoClosedAt marker, patched in place.
+          // #552 auto-closed pill. Driven by the persisted autoClosedAt marker,
+          // patched in place. #580: MUTUALLY EXCLUSIVE with the minutes badge —
+          // when autoClosed() is true the counter is gated off (XOR below), so a
+          // closed team shows ONLY the gray AUTO-CLOSED pill; clearing the marker
+          // on reopen makes autoClosed() false and the counter returns.
           const autoClosed = createMemo(() => isCoord() && !!replica.autoClosedAt);
+          // #580 idle-badge tooltip. The auto-close clause is appended ONLY when
+          // the setting is enabled: Decision 3 keeps the badge (and its red >=60
+          // color) visible even when auto-close is OFF, where the team will NOT
+          // close — so an unconditional "auto-closes" claim would be wrong.
+          const idleBadgeTitle = () =>
+            "Time this team has been idle. Resets when you message the coordinator or any member is active (persists across restarts)." +
+            (settingsStore.current?.coordinatorAutoCloseEnabled
+              ? " The team auto-closes at the configured limit."
+              : "");
           const rowTestId = () =>
             `replica.row.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const badgesTestId = () =>
@@ -1314,14 +1331,15 @@ const ProjectPanel: Component = () => {
                 </Show>
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                 <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
-                  {/* #552: the coordinator idle (minutes) badge leads the row,
-                      with the neutral auto-closed pill immediately after it, so
-                      the two #552 badges render first before all other badges. */}
-                  <Show when={idleBadge()}>
+                  {/* #552/#580: the coordinator idle (minutes) badge leads the
+                      row; the neutral AUTO-CLOSED pill REPLACES it when the team
+                      is auto-closed (mutually exclusive — the #580 XOR gate), so
+                      exactly one of the two renders first, before all others. */}
+                  <Show when={!autoClosed() && idleBadge()}>
                     {(b) => (
                       <span
                         class={`ac-discovery-badge coord-idle ${b().colorClass}`}
-                        title="Time since your last message to this coordinator"
+                        title={idleBadgeTitle()}
                       >
                         {b().label}
                       </span>
@@ -1332,7 +1350,7 @@ const ProjectPanel: Component = () => {
                       class="ac-discovery-badge coord-autoclosed"
                       title="This team was auto-closed after inactivity. Reopen it to clear."
                     >
-                      auto-closed
+                      AUTO-CLOSED
                     </span>
                   </Show>
                   <Show when={runningPeers && runningPeers()!.length > 0}>

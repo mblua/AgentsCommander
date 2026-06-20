@@ -4189,9 +4189,10 @@ html.light-theme .ac-discovery-badge.running-peer {
 }
 
 /* #552 auto-closed pill — NEUTRAL/muted on purpose so it reads as a state label
-   and stays distinct from the red idle badge (a dormant row can show BOTH).
-   Mirrors the muted `.disabled` badge; no border, per the industrial-dark
-   "separation by opacity, not borders" aesthetic. */
+   and stays distinct from the red idle badge. #580: the pill and the idle
+   counter are mutually exclusive (XOR gate), so a row shows one or the other,
+   never both. Mirrors the muted `.disabled` badge; no border, per the
+   industrial-dark "separation by opacity, not borders" aesthetic. */
 .ac-discovery-badge.coord-autoclosed {
   background: rgba(148, 163, 184, 0.14);
   color: #94a3b8;

@@ -198,10 +198,12 @@ export const projectStore = {
     );
   },
 
-  /** #552 patch a coordinator replica's lastUserMessageAt from the clock event.
-   *  Match by NORMALIZED path (required, not a deviation: the event path is the
-   *  session working_directory, which can differ in slash/case from the
-   *  discovery path on Windows). Discovery reload self-heals on any miss. */
+  /** #552/#580 patch a coordinator replica's lastUserMessageAt (which now carries
+   *  the unified team-idle anchor, #580 — "team idle since", not just the user's
+   *  last message) from the clock event. Match by NORMALIZED path (required, not
+   *  a deviation: the event path is the session working_directory, which can
+   *  differ in slash/case from the discovery path on Windows). Discovery reload
+   *  self-heals on any miss. */
   updateCoordinatorClock(replicaPath: string, lastUserMessageAt: string) {
     const target = normalizePath(replicaPath);
     setProjects((prev) =>
