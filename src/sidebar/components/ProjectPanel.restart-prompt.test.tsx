@@ -258,4 +258,42 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
       rendered.cleanup();
     }
   });
+
+  // #573: a rejected SessionAPI.restart used to be swallowed (consume-and-clear +
+  // bare console.error), so the user thought the new agent applied while the old
+  // one kept running. The modal must now stay open and surface the failure.
+  it("keeps the prompt open and surfaces the error when the restart fails, then closes on a successful retry", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    // The Resource Monitor concurrency cap is the most likely relaunch failure;
+    // launchErrorMessage rephrases it into actionable copy.
+    fake.reject("restart_session", "Resource Monitor cap reached: 16/16 agent groups are active");
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await driveToRestartPrompt(rendered.root);
+
+      click(q<HTMLButtonElement>("restartPrompt.restart")!);
+
+      // The restart was attempted, but it rejected — the modal must stay open with
+      // the surfaced (friendly) error rather than silently closing.
+      await waitFor(() => expect(fake.callsFor("restart_session")).toHaveLength(1));
+      await waitFor(() => expect(q("restartPrompt.error")).toBeTruthy());
+      expect(q("restartPrompt.error")?.textContent ?? "").toContain("Resource Monitor cap reached");
+      expect(q("restartPrompt.modal")).toBeTruthy();
+
+      // Retry now succeeds: the in-flight guard reset lets the click through, the
+      // restart fires again, and the modal closes once it resolves.
+      fake.resolve(
+        "restart_session",
+        session({ id: sessionId, name: sessionName, workingDirectory: replicaPath }),
+      );
+      click(q<HTMLButtonElement>("restartPrompt.restart")!);
+
+      await waitFor(() => expect(fake.callsFor("restart_session")).toHaveLength(2));
+      await waitFor(() => expect(q("restartPrompt.modal")).toBeNull());
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

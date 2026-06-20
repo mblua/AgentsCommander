@@ -13,6 +13,8 @@ function renderModal(
   overrides: Partial<{
     agentLabel: string;
     replicaName: string;
+    error: string;
+    busy: boolean;
     onRestart: () => void;
     onLater: () => void;
   }> = {},
@@ -26,6 +28,8 @@ function renderModal(
       <RestartPromptModal
         agentLabel={overrides.agentLabel ?? "Codex"}
         replicaName={overrides.replicaName ?? "dev-webpage-ui"}
+        error={overrides.error}
+        busy={overrides.busy}
         onRestart={overrides.onRestart ?? onRestart}
         onLater={overrides.onLater ?? onLater}
       />
@@ -79,6 +83,45 @@ describe("RestartPromptModal (#537)", () => {
     target("restartPrompt.modal").click();
     expect(onLater).not.toHaveBeenCalled();
     expect(onRestart).not.toHaveBeenCalled();
+    dispose();
+  });
+
+  // #573: a swallowed restart failure used to leave the old agent running while
+  // the UI looked applied. The modal now surfaces the error and exposes a busy
+  // state so the caller can keep it open for a retry.
+  it("renders no error chip and an idle, enabled confirm button by default", () => {
+    const { dispose } = renderModal();
+    expect(document.querySelector('[data-ac-testid="restartPrompt.error"]')).toBeNull();
+    const restart = target<HTMLButtonElement>("restartPrompt.restart");
+    expect(restart.disabled).toBe(false);
+    expect(restart.textContent?.trim()).toBe("Restart now");
+    dispose();
+  });
+
+  it("surfaces a failed restart inline while leaving the buttons usable for retry", () => {
+    const { dispose } = renderModal({
+      error: "Resource Monitor cap reached (16/16). Close an agent or raise the limit in Settings > Resources.",
+    });
+    const chip = target("restartPrompt.error");
+    expect(chip.textContent ?? "").toContain("Resource Monitor cap reached");
+    // Not busy → the user can immediately retry from the still-open modal.
+    expect(target<HTMLButtonElement>("restartPrompt.restart").disabled).toBe(false);
+    expect(target<HTMLButtonElement>("restartPrompt.later").disabled).toBe(false);
+    dispose();
+  });
+
+  it("disables both buttons and shows a progress label while busy", () => {
+    const { dispose, onRestart, onLater } = renderModal({ busy: true });
+    const restart = target<HTMLButtonElement>("restartPrompt.restart");
+    const later = target<HTMLButtonElement>("restartPrompt.later");
+    expect(restart.disabled).toBe(true);
+    expect(later.disabled).toBe(true);
+    expect(restart.textContent?.trim()).toBe("Restarting…");
+    // A disabled control must not fire its callback (no double-restart).
+    restart.click();
+    later.click();
+    expect(onRestart).not.toHaveBeenCalled();
+    expect(onLater).not.toHaveBeenCalled();
     dispose();
   });
 });
