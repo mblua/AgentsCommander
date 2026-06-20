@@ -14,8 +14,8 @@ import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
   effectiveEnvProjection,
-  expandAcRootPreview,
-  hasAcRootPlaceholder,
+  expandAcPlaceholdersPreview,
+  hasAcPlaceholder,
   isAcAgentPath,
   isCodexAgent,
   isWgReplicaPath,
@@ -232,10 +232,10 @@ const AgentPickerModal: Component<{
     return enabledLaunchCellFor(agent, effectivePreview().effectiveProfile);
   });
   // The cell command is the full invocation; an empty cell command falls back to
-  // the agent's base command. Display-only %AC_ROOT% expansion uses the replica root.
+  // the agent's base command. Display-only AC placeholder expansion uses the replica root.
   const projectedCommand = createMemo(() => {
     const cmd = profileCellCommandText(projectedCell()) || selectedAgent()?.command || "";
-    return expandAcRootPreview(cmd, acRoot());
+    return expandAcPlaceholdersPreview(cmd, acRoot());
   });
   // #527 Effective Projection: merged effective env (agent env + profile env) with
   // per-value origin badges, plus the chosen-pair resolution descriptors.
@@ -251,8 +251,8 @@ const AgentPickerModal: Component<{
       ? `${profileLabel(effectivePreview().requestedProfile)} → ${profileLabel(effectivePreview().effectiveProfile)} (fallback)`
       : "Direct match",
   );
-  const commandUsesAcRoot = createMemo(() =>
-    hasAcRootPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || ""),
+  const commandUsesAcPlaceholder = createMemo(() =>
+    hasAcPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || ""),
   );
   const providerDefaultPreview = (agent: AgentConfig) => {
     const current = settings();
@@ -849,10 +849,10 @@ const AgentPickerModal: Component<{
                     <span class="agent-projection-command-label">Invocation</span>
                     <span class="agent-projection-command-value">{projectedCommand() || "none"}</span>
                   </div>
-                  <Show when={commandUsesAcRoot()}>
+                  <Show when={commandUsesAcPlaceholder()}>
                     <div class="agent-projection-ph">
                       <span class="arrow">→</span>
-                      <span>%AC_ROOT% expands at launch; the backend validates the path.</span>
+                      <span>AC path placeholders expand at launch; the backend validates the path.</span>
                     </div>
                   </Show>
                   <Show when={selectedIsCodex() || selectedAgent()?.isolatedHome}>
