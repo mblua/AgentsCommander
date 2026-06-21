@@ -1,0 +1,62 @@
+/* Reusable toast host + items (#574). Imported at the App level (see ExternalLink
+   precedent), not self-imported by the component. */
+.toast-host {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  z-index: 2000;             /* parity with the existing toasts */
+  pointer-events: none;      /* container ignores clicks; items opt back in */
+}
+
+.toast-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 420px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;      /* dismissible */
+}
+
+.toast-item--error {
+  background: rgba(220, 50, 50, 0.92);
+  color: #fff;
+}
+.toast-item--info {
+  background: rgba(31, 41, 55, 0.94);
+  border: 1px solid var(--sidebar-border);
+  color: var(--sidebar-fg);
+}
+.toast-item--success {
+  background: rgba(34, 139, 78, 0.94);
+  color: #fff;
+}
+
+.toast-item__message {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.toast-item__dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.toast-item__dismiss:hover {
+  opacity: 1;
+}

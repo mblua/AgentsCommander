@@ -10,6 +10,7 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
+import { toastStore } from "../../shared/stores/toasts";
 import { voiceRecorder } from "../../shared/voice-recorder";
 import { isWgReplicaPath, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import { clockStore } from "../stores/clock";
@@ -807,13 +808,36 @@ const ProjectPanel: Component = () => {
         ) => {
           setReplicaCtxMenu(null);
           cleanupCtx();
+          // #574 §15.1: bound the await with RESTART_TIMEOUT_MS, mirroring
+          // applyRestartPrompt (:244-279). The Tauri IPC transport has no
+          // client-side timeout (transport-tauri.ts:23-26), so a wedged backend
+          // would never settle this await, the catch would never run, and NO toast
+          // would fire on desktop - the exact #574 silent-failure class. WsTransport
+          // self-heals after 30s; this gives desktop the same guarantee. The bare
+          // "Command timeout: restart_session" reject string passes through
+          // launchErrorMessage verbatim (launch-errors.ts:17-28), so desktop and WS
+          // get identical copy.
+          let timeoutTimer: number | undefined;
           try {
-            await SessionAPI.restart(
-              sessionId,
-              agentId ? { agentId, requestedProfile } : undefined,
-            );
+            await Promise.race([
+              SessionAPI.restart(
+                sessionId,
+                agentId ? { agentId, requestedProfile } : undefined,
+              ),
+              new Promise<never>((_, reject) => {
+                timeoutTimer = window.setTimeout(
+                  () => reject("Command timeout: restart_session"),
+                  RESTART_TIMEOUT_MS,
+                );
+              }),
+            ]);
           } catch (e) {
-            console.error("Failed to restart session:", e);
+            console.error("Failed to restart session:", e); // keep for logs
+            toastStore.error(launchErrorMessage(e));
+          } finally {
+            // Cancel the pending timeout when the restart settles first, so a
+            // successful restart can't leave a dangling timer / late rejection.
+            window.clearTimeout(timeoutTimer);
           }
         };
 

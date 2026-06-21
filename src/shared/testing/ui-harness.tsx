@@ -9,6 +9,7 @@ import type {
   Session,
 } from "../types";
 import { FakeTransport } from "./fake-transport";
+import { toastStore } from "../stores/toasts";
 import { projectStore } from "../../sidebar/stores/project";
 import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
@@ -224,6 +225,7 @@ export function resetUiStoresForTests(): void {
   bridgesStore.setBridges([]);
   terminalStore.setActiveSession(null, "", "", null, "", null);
   terminalStore.setActiveWorkgroupTask(null);
+  toastStore.clear();
   __resetHomeStoreForTests();
 }
 
