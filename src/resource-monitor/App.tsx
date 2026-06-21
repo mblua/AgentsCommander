@@ -138,6 +138,13 @@ const toggleFilter = (
 };
 
 const Titlebar: Component = () => {
+  // #587 - tracks the real OS maximize state so the button glyph (maximize vs
+  // restore) and its labels stay correct. Not all maximize paths route through
+  // handleMaximize: Tauri v2 also maximizes natively on data-tauri-drag-region
+  // double-click, and the OS does it on Win+Up / edge-snap. onResized below
+  // re-reads the truth after every such change.
+  const [maximized, setMaximized] = createSignal(false);
+
   const handleDock = async () => {
     try {
       await WindowAPI.dockResourceMonitor();
@@ -152,11 +159,49 @@ const Titlebar: Component = () => {
     await getCurrentWindow().minimize();
   };
 
+  const handleMaximize = async () => {
+    if (!isTauri) return;
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const win = getCurrentWindow();
+    await win.toggleMaximize();
+    // Reflect immediately so the icon swaps without waiting for the resize event.
+    setMaximized(await win.isMaximized());
+  };
+
   const handleClose = async () => {
     if (!isTauri) return;
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().close();
   };
+
+  onMount(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    // Register cleanup synchronously so it binds to this component's owner; the
+    // async listener registration below fills in `unlisten` once it resolves.
+    onCleanup(() => {
+      disposed = true;
+      unlisten?.();
+    });
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        setMaximized(await win.isMaximized());
+        const stop = await win.onResized(() => {
+          void win.isMaximized().then(setMaximized).catch(() => {});
+        });
+        if (disposed) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+      } catch (err) {
+        console.error("Resource monitor maximize-state tracking failed:", err);
+      }
+    })();
+  });
 
   return (
     <div class="rm-titlebar" data-tauri-drag-region>
@@ -198,6 +243,28 @@ const Titlebar: Component = () => {
               data-ac-role="button"
             >
               &#x2014;
+            </span>
+          </button>
+          <button
+            class="rm-titlebar-btn"
+            onClick={handleMaximize}
+            title={maximized() ? "Restore" : "Maximize"}
+            aria-label={
+              maximized() ? "Restore Resource Monitor" : "Maximize Resource Monitor"
+            }
+            data-ac-testid="resourceMonitor.titlebar.maximize"
+            data-ac-role="button"
+            data-ac-state={maximized() ? "maximized" : "normal"}
+          >
+            <span
+              class="rm-titlebar-btn-alias"
+              data-ac-testid="resourceMonitor.maximize"
+              data-ac-role="button"
+            >
+              {/* restore (when maximized) vs maximize glyph; built from char codes
+                  to keep the source ASCII-only, matching the sibling buttons
+                  which render &#x25A1; / &#x2750; HTML entities. */}
+              {maximized() ? String.fromCharCode(0x2750) : String.fromCharCode(0x25A1)}
             </span>
           </button>
           <button
