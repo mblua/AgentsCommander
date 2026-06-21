@@ -1156,6 +1156,20 @@ pub async fn set_theme_light(
     .await
 }
 
+/// Narrow setter for `main_resource_monitor_attached` (#587). Same
+/// candidate-save-publish pattern as `set_theme_light`; lets the central-view
+/// toggle persist without a get+update round-trip racing SettingsModal.
+#[tauri::command]
+pub async fn set_main_resource_monitor_attached(
+    settings: State<'_, SettingsState>,
+    value: bool,
+) -> Result<(), String> {
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate.main_resource_monitor_attached = value;
+    })
+    .await
+}
+
 /// Sweep every AC-managed agent directory and apply
 /// `ensure_rtk_pretool_hook(dir, enabled)`. Best-effort per directory:
 /// per-dir failures are logged + appended to `errors` and the sweep

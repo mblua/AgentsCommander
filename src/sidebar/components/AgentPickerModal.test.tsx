@@ -101,6 +101,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     mainSidebarWidth: 360,
     mainSidebarSide: "right",
     mainAlwaysOnTop: false,
+    mainResourceMonitorAttached: false,
     agents: [
       agent({
         id: "codex",

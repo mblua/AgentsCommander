@@ -241,6 +241,11 @@ export const SettingsAPI = {
     transport.invoke<void>("set_sounds_enabled", { value }),
   setThemeLight: (value: boolean) =>
     transport.invoke<void>("set_theme_light", { value }),
+  // #587 — narrow setter for the central-view toggle (RM attached vs terminal).
+  // Same write-lock pattern as the other narrow setters; avoids a get+update
+  // round-trip racing SettingsModal.
+  setMainResourceMonitorAttached: (value: boolean) =>
+    transport.invoke<void>("set_main_resource_monitor_attached", { value }),
   updateCodingAgentProfiles: (profiles: CodingAgentProfilesConfig) =>
     transport.invoke<void>("update_coding_agent_profiles", { profiles }),
   updateCodingAgentEnvSettings: (
@@ -802,6 +807,19 @@ export function onThemeChanged(
   callback: (data: { light: boolean }) => void
 ): Promise<UnlistenFn> {
   return transport.listen<{ light: boolean }>("theme_changed", callback);
+}
+
+// #587 — the detached Resource Monitor window asks the main window to pull RM
+// back into the central pane. Fire-and-forget; main's listener sets the central
+// view. Mirrors the theme_changed emit/listen pair.
+export function emitResourceMonitorAttach(): Promise<void> {
+  return transport.emit("resource_monitor_attach", {});
+}
+
+export function onResourceMonitorAttach(
+  callback: () => void
+): Promise<UnlistenFn> {
+  return transport.listen<unknown>("resource_monitor_attach", () => callback());
 }
 
 // Open the Settings modal (handled by sidebar ActionBar). Emitted from any

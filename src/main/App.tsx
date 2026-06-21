@@ -7,6 +7,9 @@ import { initZoom } from "../shared/zoom";
 import { initWindowGeometry } from "../shared/window-geometry";
 import SidebarApp from "../sidebar/App";
 import TerminalApp from "../terminal/App";
+import ResourceMonitorApp from "../resource-monitor/App";
+import { centralViewStore } from "./stores/centralView";
+import { wireCentralViewListeners } from "./listeners-central-view";
 import Titlebar from "../sidebar/components/Titlebar";
 import QuitConfirmModal from "./components/QuitConfirmModal";
 import RtkBanner from "./components/RtkBanner";
@@ -165,6 +168,11 @@ const MainApp: Component = () => {
       const saved = settings.mainSidebarWidth ?? DEFAULT_MAIN_SIDEBAR_WIDTH;
       setSidebarWidth(clampMainSidebarWidth(saved, window.innerWidth));
       setSidebarSide(settings.mainSidebarSide === "left" ? "left" : DEFAULT_SIDEBAR_SIDE);
+      // #587 — restore the persisted central-view choice (RM attached vs
+      // terminal). setInitialView only sets the signal; it does not persist.
+      centralViewStore.setInitialView(
+        settings.mainResourceMonitorAttached ? "resourceMonitor" : "terminal"
+      );
       if (isTauri && settings.mainAlwaysOnTop) {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().setAlwaysOnTop(true);
@@ -177,6 +185,11 @@ const MainApp: Component = () => {
     // dedicated helper so the gating logic — especially the userInitiated
     // discriminator on session_switched — is unit-testable in isolation.
     unlisteners.push(...(await wireHomeListeners()));
+
+    // #587 — central-view event contract (gated session_switched + RM attach).
+    // Extracted to a helper that mirrors wireHomeListeners so the userInitiated
+    // discriminator is unit-testable in isolation (see listeners-central-view.ts).
+    unlisteners.push(...(await wireCentralViewListeners()));
 
     window.addEventListener("resize", onWindowResize);
     window.addEventListener("main-sidebar-width-change", onSidebarWidthChange);
@@ -249,6 +262,15 @@ const MainApp: Component = () => {
         />
         <div class="main-terminal-pane">
           <TerminalApp embedded />
+          <Show when={centralViewStore.isResourceMonitor}>
+            <div
+              class="main-rm-pane"
+              data-ac-testid="main.resourceMonitorPane"
+              data-ac-role="surface"
+            >
+              <ResourceMonitorApp embedded />
+            </div>
+          </Show>
         </div>
       </div>
       <Show when={quitModalCount() !== null}>

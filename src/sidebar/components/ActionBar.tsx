@@ -3,11 +3,12 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { UnlistenFn } from "../../shared/transport";
-import { ProjectAPI, GuideAPI, SettingsAPI, SpecBoardAPI, WindowAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
+import { ProjectAPI, GuideAPI, SettingsAPI, SpecBoardAPI, emitThemeChanged, onOpenSettings } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import { resourceMonitorStore } from "../../shared/stores/resourceMonitor";
 import { setSoundsEnabled } from "../../shared/sound";
 import { homeStore } from "../../main/stores/home";
+import { centralViewStore } from "../../main/stores/centralView";
 import SettingsModal from "./SettingsModal";
 
 const SELECTED_WORKGROUP_VISIBILITY_LABEL = "Always keep selected workgroup visible";
@@ -233,11 +234,11 @@ const ActionBar: Component = () => {
     return `Resource Monitor: ${snapshot.activeAgentGroups}/${snapshot.maxConcurrentAgentGroups} agents, ${state}`;
   };
 
-  const handleOpenResourceMonitor = () => {
-    WindowAPI.openResourceMonitor().catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      showToast(`Failed to open Resource Monitor: ${msg}`);
-    });
+  // #587 — the ▦ button now toggles the central-pane RM view (mirrors the 🏠
+  // Home toggle two slots away). Opening RM in a separate OS window is reachable
+  // from the embedded RM's "Detach" button.
+  const handleToggleResourceMonitor = () => {
+    centralViewStore.toggleResourceMonitor();
   };
 
   return (
@@ -374,10 +375,11 @@ const ActionBar: Component = () => {
             &#x1F4A1;
           </button>
           <button
-            class={`toolbar-gear-btn resource-monitor-btn state-${resourceBadgeState()}`}
-            onClick={handleOpenResourceMonitor}
+            class={`toolbar-gear-btn resource-monitor-btn state-${resourceBadgeState()} ${centralViewStore.isResourceMonitor ? "active" : ""}`}
+            onClick={handleToggleResourceMonitor}
             title={resourceBadgeTitle()}
             aria-label={resourceBadgeTitle()}
+            aria-pressed={centralViewStore.isResourceMonitor}
             data-ac-testid="actionBar.resourceMonitor"
             data-ac-role="button"
             data-ac-state={resourceBadgeState()}
