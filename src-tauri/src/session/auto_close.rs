@@ -111,6 +111,17 @@ fn team_is_closeable(established: bool, anchor_secs: i64, now_secs: i64, timeout
     established && anchor_secs != i64::MIN && (now_secs - anchor_secs) > timeout_secs
 }
 
+/// (#589) Should a successful destroy stamp its team's coordinator row
+/// AUTO-CLOSED? True IFF the destroyed session IS that team's coordinator
+/// (`coord_id_of_team == Some(destroyed_id)`). A reaped sibling member while the
+/// coordinator survives (spared by the TOCTOU/repaint guards) returns false, so
+/// the LIVE coordinator keeps its idle counter instead of a stale pill. `None`
+/// (no coordinator record for the team) is never a coordinator close. Pure; this
+/// is the #589 gate and gets its own unit test.
+fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uuid>) -> bool {
+    coord_id_of_team == Some(destroyed_id)
+}
+
 async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
     let settings = app.state::<SettingsState>();
     let (enabled, timeout_min) = {
@@ -153,6 +164,13 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
     let id_to_team: HashMap<Uuid, String> =
         members.iter().map(|(id, k)| (*id, k.clone())).collect();
     let coord_refs = session_mgr.read().await.coordinator_refs_by_team().await;
+    // (#589) team -> coordinator session id, over the same coordinator records as
+    // coord_refs. Gates the AUTO-CLOSED mark on the coordinator's OWN destruction
+    // (not "any member destroyed"): a surviving coordinator whose sibling was
+    // reaped keeps its idle counter instead of getting a stale pill. A separate
+    // read lock from coord_refs, but a transient disagreement is benign (a team in
+    // one map but not the other simply yields no spurious mark).
+    let coord_ids = session_mgr.read().await.coordinator_ids_by_team().await;
 
     let now_secs = Utc::now().timestamp();
     let Some(clocks) = app.try_state::<CoordinatorClocksState>() else {
@@ -232,7 +250,10 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
         .map(|(id, _)| *id)
         .collect();
 
-    let mut closed_teams: HashSet<String> = HashSet::new();
+    // (#589) Teams whose COORDINATOR'S OWN session was auto-closed this tick. A
+    // team where only a non-coordinator member was reaped is deliberately absent,
+    // so the surviving coordinator row is never stamped AUTO-CLOSED.
+    let mut coord_closed_teams: HashSet<String> = HashSet::new();
     for id in to_close {
         // TOCTOU re-check (G2): skip if a user message advanced the anchor since
         // the snapshot, OR this member emitted within REPAINT_GRACE. The second
@@ -265,8 +286,14 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
                 "[auto-close] terminated idle session {}",
                 &id.to_string()[..8]
             );
+            // (#589) Record the team for the AUTO-CLOSED mark ONLY when the
+            // destroyed session IS this team's coordinator. A sibling member
+            // reaped while the coordinator survives must NOT stamp the live
+            // coordinator row; it keeps its idle counter.
             if let Some(team) = id_to_team.get(&id) {
-                closed_teams.insert(team.clone());
+                if destroyed_is_team_coordinator(id, coord_ids.get(team).copied()) {
+                    coord_closed_teams.insert(team.clone());
+                }
             }
         }
     }
@@ -275,12 +302,12 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
     // emit so the sidebar shows the pill live (discovery reload self-heals from
     // the persisted marker). mark_auto_closed is idempotent (emits once). The
     // dirty flag set here is persisted by flush_clocks at the end of this tick.
-    if !closed_teams.is_empty() {
+    if !coord_closed_teams.is_empty() {
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
         {
             let now = chrono::Utc::now();
-            for team in &closed_teams {
+            for team in &coord_closed_teams {
                 // No live coordinator record for this team at close time (already
                 // torn down) -> nothing to badge; sessions were still terminated.
                 // Rare; documented in plan §7.
@@ -544,6 +571,33 @@ mod tests {
         assert!(
             !team_is_closeable(true, i64::MIN, now, 3600),
             "a team with no anchor (i64::MIN) is never closeable"
+        );
+    }
+
+    // ---- destroyed_is_team_coordinator (#589 gated AUTO-CLOSED mark) ----
+
+    #[test]
+    fn mark_gate_true_only_when_destroyed_is_the_coordinator() {
+        let coord = Uuid::new_v4();
+        let member = Uuid::new_v4();
+
+        // The destroyed session IS the team's coordinator -> the row may be marked.
+        assert!(
+            destroyed_is_team_coordinator(coord, Some(coord)),
+            "destroying the coordinator's own session marks the row"
+        );
+
+        // A sibling member was reaped while the coordinator (coord) survives ->
+        // the live coordinator row must NOT be stamped. This is the #589 bug.
+        assert!(
+            !destroyed_is_team_coordinator(member, Some(coord)),
+            "a surviving coordinator must NOT be stamped when only a member is reaped"
+        );
+
+        // No coordinator record for the team -> never a coordinator close.
+        assert!(
+            !destroyed_is_team_coordinator(member, None),
+            "absent coordinator id must not mark the row"
         );
     }
 }

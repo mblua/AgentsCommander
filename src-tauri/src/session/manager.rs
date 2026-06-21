@@ -318,6 +318,27 @@ impl SessionManager {
         out
     }
 
+    /// (#589) team key `<project>:<wg>` -> the coordinator session's `Uuid`, over
+    /// the SAME coordinator records that `coordinator_refs_by_team` keys. The
+    /// auto-close task uses this to mark a coordinator row AUTO-CLOSED only when
+    /// the coordinator's OWN session was the one destroyed, not when any sibling
+    /// member was reaped while the coordinator survived. One coordinator per team;
+    /// on the unlikely duplicate, last writer wins (mirrors `coordinator_refs_by_team`).
+    pub async fn coordinator_ids_by_team(&self) -> std::collections::HashMap<String, Uuid> {
+        let sessions = self.sessions.read().await;
+        let mut out: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
+        for s in sessions.values() {
+            if !s.is_coordinator {
+                continue;
+            }
+            let fqn = crate::config::teams::agent_fqn_from_path(&s.working_directory);
+            if let Some((team, _agent)) = fqn.rsplit_once('/') {
+                out.insert(team.to_string(), s.id);
+            }
+        }
+        out
+    }
+
     pub async fn mark_exited(&self, id: Uuid, code: i32) {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
@@ -1045,5 +1066,35 @@ mod tests {
         assert_eq!(fqn, "myproj:wg-1-team/lead");
         assert_eq!(cwd, COORD_CWD);
         let _ = coord;
+    }
+
+    #[tokio::test]
+    async fn coordinator_ids_by_team_maps_team_to_coordinator_id() {
+        let mgr = SessionManager::new();
+        let coord = mgr
+            .create_session("claude".into(), vec![], COORD_CWD.into(), None, None, vec![], true)
+            .await
+            .unwrap();
+        // A non-coordinator agent on the same team must NOT appear (only the coordinator).
+        let _rust = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                RUST_CWD.into(),
+                Some("codex".into()),
+                None,
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        let ids = mgr.coordinator_ids_by_team().await;
+        assert_eq!(ids.len(), 1, "exactly one coordinator team");
+        assert_eq!(
+            ids.get(TEAM_KEY),
+            Some(&coord.id),
+            "team key maps to the coordinator session id, not a member"
+        );
     }
 }
