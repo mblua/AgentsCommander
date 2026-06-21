@@ -8,6 +8,7 @@ import {
   setPendingCoordinatorClose,
   confirmPendingCoordinatorClose,
   requestCoordinatorClose,
+  registerCoordinatorCloseModalHost,
 } from "../stores/coordinator-close";
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
@@ -201,6 +202,10 @@ const ProjectPanel: Component = () => {
   let unlistenClock: (() => void) | null = null;
   let unlistenAutoClose: (() => void) | null = null;
   let unlistenManualClose: (() => void) | null = null;
+  // #588 register this ProjectPanel as the confirm-modal host for THIS window, so
+  // the shared close helper opens the modal here (sidebar / web) but falls back to
+  // a plain destroy in a window with no host (the detached terminal webview).
+  onCleanup(registerCoordinatorCloseModalHost());
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
       projectStore.updateReplicaBranch(data.replicaPath, data.branch);

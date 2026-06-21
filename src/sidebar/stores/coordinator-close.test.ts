@@ -10,6 +10,8 @@ import {
   confirmPendingCoordinatorClose,
   pendingCoordinatorClose,
   setPendingCoordinatorClose,
+  registerCoordinatorCloseModalHost,
+  __resetCoordinatorCloseModalHostForTests,
 } from "./coordinator-close";
 
 // #588 — the single by-id helper funnels all three close paths (ProjectPanel
@@ -22,15 +24,23 @@ const COORD_NAME = "wg-2-dev-team/dev-webpage-ui";
 describe("coordinator-close helper (#588)", () => {
   let fake: FakeTransport;
   let restoreTransport: () => void;
+  // Tests that expect the confirm modal must register a host (a window with a
+  // mounted ProjectPanel); dispose it in afterEach so the ref-count resets.
+  let disposeModalHost: (() => void) | null = null;
 
   beforeEach(() => {
     fake = new FakeTransport();
     restoreTransport = __setTransportForTests(fake);
     sessionsStore.setSessions([]);
     setPendingCoordinatorClose(null);
+    disposeModalHost = null;
+    // Deterministic host==0 precondition regardless of test order/shuffle.
+    __resetCoordinatorCloseModalHostForTests();
   });
 
   afterEach(() => {
+    disposeModalHost?.();
+    disposeModalHost = null;
     restoreTransport();
     sessionsStore.setSessions([]);
     setPendingCoordinatorClose(null);
@@ -63,6 +73,7 @@ describe("coordinator-close helper (#588)", () => {
   });
 
   it("opens the confirmation modal (named from the session) when the backend reports working members", async () => {
+    disposeModalHost = registerCoordinatorCloseModalHost(); // a window with the modal host
     const s = session({ id: "s-coord", name: COORD_NAME, isCoordinator: true });
     sessionsStore.setSessions([s]);
     fake.resolve("close_coordinator", { closed: false, workingCount: 3 });
@@ -98,6 +109,7 @@ describe("coordinator-close helper (#588)", () => {
   });
 
   it("by-id with an unknown id still routes through close_coordinator and falls back to 'this coordinator'", async () => {
+    disposeModalHost = registerCoordinatorCloseModalHost(); // sidebar/web window
     // No session in the store for this id -> the helper cannot short-circuit to a
     // plain destroy; it lets the backend self-route. The modal name falls back to
     // the generic label (the id-only keyboard-shortcut path).
@@ -109,5 +121,25 @@ describe("coordinator-close helper (#588)", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].args).toEqual({ id: "ghost-id", confirmed: false });
     expect(pendingCoordinatorClose()?.name).toBe("this coordinator");
+  });
+
+  it("falls back to a plain destroy (no modal, no cascade) on closed:false when NO modal host is mounted", async () => {
+    // The detached terminal webview: registerShortcuts runs but no ProjectPanel
+    // hosts the confirm modal. A busy coordinator close must NOT silently no-op —
+    // it falls back to destroying JUST the coordinator.
+    const s = session({ id: "s-coord", name: COORD_NAME, isCoordinator: true });
+    sessionsStore.setSessions([s]);
+    fake.resolve("close_coordinator", { closed: false, workingCount: 2 });
+    fake.resolve("destroy_session", undefined);
+
+    await requestCoordinatorCloseById("s-coord");
+
+    // close_coordinator(confirmed:false) was attempted, came back closed:false,
+    // then the helper fell back to destroy_session(id) — no pending modal.
+    expect(fake.callsFor("close_coordinator")).toEqual([
+      { cmd: "close_coordinator", args: { id: "s-coord", confirmed: false } },
+    ]);
+    expect(fake.callsFor("destroy_session").map((c) => c.args)).toEqual([{ id: "s-coord" }]);
+    expect(pendingCoordinatorClose()).toBeNull();
   });
 });
