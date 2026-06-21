@@ -161,11 +161,17 @@ const Titlebar: Component = () => {
 
   const handleMaximize = async () => {
     if (!isTauri) return;
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    const win = getCurrentWindow();
-    await win.toggleMaximize();
-    // Reflect immediately so the icon swaps without waiting for the resize event.
-    setMaximized(await win.isMaximized());
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const win = getCurrentWindow();
+      await win.toggleMaximize();
+      // Reflect immediately so the icon swaps without waiting for the resize
+      // event. On failure leave the glyph as-is; the onResized mirror reconciles
+      // it once the window settles.
+      setMaximized(await win.isMaximized());
+    } catch (err) {
+      console.error("Resource monitor toggle maximize failed:", err);
+    }
   };
 
   const handleClose = async () => {
@@ -261,9 +267,9 @@ const Titlebar: Component = () => {
               data-ac-testid="resourceMonitor.maximize"
               data-ac-role="button"
             >
-              {/* restore (when maximized) vs maximize glyph; built from char codes
-                  to keep the source ASCII-only, matching the sibling buttons
-                  which render &#x25A1; / &#x2750; HTML entities. */}
+              {/* U+2750 = restore glyph (shown when maximized), U+25A1 = maximize
+                  glyph. Built from char codes so the source stays ASCII-only,
+                  avoiding a literal glyph or \u escape that tooling can mangle. */}
               {maximized() ? String.fromCharCode(0x2750) : String.fromCharCode(0x25A1)}
             </span>
           </button>
