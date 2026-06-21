@@ -164,7 +164,20 @@ const Titlebar: Component = () => {
     try {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       const win = getCurrentWindow();
-      await win.toggleMaximize();
+      // Use explicit maximize()/unmaximize() rather than toggleMaximize().
+      // The app capability set (src-tauri/capabilities/default.json) grants
+      // core:window:allow-maximize, allow-unmaximize and allow-is-maximized,
+      // but NOT allow-toggle-maximize. toggleMaximize() therefore gets rejected
+      // at the Tauri v2 ACL layer at runtime, which is why the button "did
+      // nothing" in the real build (the rejection was only logged below). The
+      // drag-region double-click still maximizes because that path uses the
+      // separate allow-internal-toggle-maximize permission, which IS in
+      // core:window:default.
+      if (await win.isMaximized()) {
+        await win.unmaximize();
+      } else {
+        await win.maximize();
+      }
       // Reflect immediately so the icon swaps without waiting for the resize
       // event. On failure leave the glyph as-is; the onResized mirror reconciles
       // it once the window settles.
