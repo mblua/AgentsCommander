@@ -12,7 +12,7 @@ import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { toastStore } from "../../shared/stores/toasts";
 import { voiceRecorder } from "../../shared/voice-recorder";
-import { isWgReplicaPath, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
+import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import { clockStore } from "../stores/clock";
 import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import SessionItem from "./SessionItem";
@@ -1260,6 +1260,17 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionProfileBadge(s) : null;
           };
+          // #548: resolver-backed tooltip naming the EFFECTIVE profile (the one
+          // actually in effect) for this session's coding agent. Plain function
+          // (NOT createMemo) — row-local and recomputes on settings reload.
+          const profileBadgeTitle = () => {
+            const s = session();
+            const cfg = settingsStore.current?.codingAgentProfiles;
+            if (!s || !cfg) return undefined;
+            const letter = s.effectiveProfile || s.requestedProfile;
+            if (!letter) return undefined;
+            return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], s.agentId, letter);
+          };
           const isLive = () => isSessionLive(session());
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
           const isDetached = () => { const s = session(); return s ? sessionsStore.isDetached(s.id) : false; };
@@ -1406,7 +1417,7 @@ const ProjectPanel: Component = () => {
                     <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
                   </Show>
                   <Show when={profileBadge()}>
-                    {(badge) => <span class="profile-badge">{badge()}</span>}
+                    {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
                   </Show>
                   <Show when={isCoord()}>
                     <span class="ac-discovery-badge coord">coordinator</span>

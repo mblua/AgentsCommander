@@ -91,6 +91,7 @@ function defaultCodingAgentProfiles(): CodingAgentProfilesConfig {
     },
     defaultProfileByAgent: {},
     profilesByAgent: {},
+    profileLabelsByAgent: {},
   };
 }
 
