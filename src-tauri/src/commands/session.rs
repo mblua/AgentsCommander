@@ -834,6 +834,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             spawn.profile_resolution.fallback_chain.clone(),
             spawn.profile_resolution.fallback_applied,
             effective_codex_home.clone(),
+            Some(spawn.profile_content_hash.clone()),
         )
         .await;
         session.requested_profile = Some(spawn.profile_resolution.requested_profile.clone());
@@ -841,6 +842,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         session.profile_fallback_chain = spawn.profile_resolution.fallback_chain.clone();
         session.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
         session.effective_codex_home = effective_codex_home;
+        session.profile_content_hash = Some(spawn.profile_content_hash.clone());
     }
 
     let mut shell_args = shell_args;
@@ -1209,6 +1211,16 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             ) {
                 log::warn!("Failed to save lastCodingAgent: {}", e);
             }
+            // #592 - persist the loaded profile content-hash so drift survives an
+            // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
+            if let Some(hash) = session.profile_content_hash.as_deref() {
+                if let Err(e) = crate::config::coding_agent_profiles::set_replica_profile_content_hash(
+                    std::path::Path::new(&cwd),
+                    hash,
+                ) {
+                    log::warn!("Failed to persist profileContentHash: {}", e);
+                }
+            }
         }
     }
 
@@ -1231,6 +1243,49 @@ pub(crate) fn build_configured_agent_spawn_for_cwd(
         requested_profile,
     )
     .map(Some)
+}
+
+/// #592 - true when a session's loaded profile cell no longer matches what a
+/// Reload would load right now. Mirrors the restart-time resolution so the
+/// "configured" side equals `restart_session`'s effective cell. Hashes RAW
+/// cells (cell-only); swallows all "cannot determine" cases to false (never
+/// false-alarms). Plain-shell sessions (no agent) never drift.
+fn compute_profile_outdated(settings: &AppSettings, info: &SessionInfo) -> bool {
+    if info.agent_id.is_none() {
+        return false;
+    }
+    let cwd = info.working_directory.as_str();
+    // Which coding agent + letter a Reload would launch (honors currentCodingAgent).
+    let Some(agent_id) =
+        resolve_restart_selected_agent_id(settings, cwd, None, info.agent_id.as_deref())
+    else {
+        return false;
+    };
+    let requested = effective_restart_requested_profile(None, info.requested_profile.clone());
+    let resolution = crate::config::coding_agent_profiles::resolve_profile(
+        settings,
+        crate::config::coding_agent_profiles::ProfileResolutionRequest {
+            coding_agent_id: &agent_id,
+            launch_path: Some(std::path::Path::new(cwd)),
+            agent_matrix_name: None,
+            requested_profile: requested.as_deref(),
+        },
+    );
+    let configured = crate::config::agent_command::profile_content_hash(
+        &resolution.cell.command,
+        &resolution.cell.env,
+    );
+    // Loaded hash: in-memory stamp, else the persisted replica copy (survives an
+    // AC restart that cleared the in-memory stamp).
+    let loaded = info.profile_content_hash.clone().or_else(|| {
+        crate::config::coding_agent_profiles::read_replica_profile_content_hash(
+            std::path::Path::new(cwd),
+        )
+    });
+    match loaded {
+        Some(loaded) => loaded != configured,
+        None => false,
+    }
 }
 
 /// Create a new session. Optionally override shell/args/cwd/name (for action buttons).
@@ -2029,9 +2084,16 @@ pub async fn rename_session(
 #[tauri::command]
 pub async fn list_sessions(
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    settings: State<'_, SettingsState>,
 ) -> Result<Vec<SessionInfo>, String> {
-    let mgr = session_mgr.read().await;
-    Ok(mgr.list_sessions().await)
+    let mut infos = { session_mgr.read().await.list_sessions().await };
+    // #592 - recompute drift per session against current settings (settings-aware,
+    // unlike the `From<&Session>` path which always emits `profile_outdated=false`).
+    let cfg = settings.read().await;
+    for info in infos.iter_mut() {
+        info.profile_outdated = compute_profile_outdated(&cfg, info);
+    }
+    Ok(infos)
 }
 
 #[tauri::command]
@@ -2474,14 +2536,14 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_existing_root, effective_restart_requested_profile, inject_codex_resume,
-        resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
+        classify_existing_root, compute_profile_outdated, effective_restart_requested_profile,
+        inject_codex_resume, resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
         resolve_restart_selected_agent_id, resolve_root_agent_command, should_inject_continue,
         ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::session::manager::SessionManager;
-    use crate::session::session::SessionStatus;
+    use crate::session::session::{SessionInfo, SessionStatus};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -2684,6 +2746,91 @@ mod tests {
         assert_eq!(spawn.profile_resolution.requested_profile, "C");
         assert_eq!(spawn.profile_resolution.effective_profile, "C");
         assert_eq!(spawn.shell_args, vec!["--profile-c".to_string()]);
+    }
+
+    // #592 - compute_profile_outdated integration: loaded hash vs current config.
+    fn make_info(
+        cwd: &str,
+        agent_id: Option<&str>,
+        requested_profile: Option<&str>,
+        loaded_hash: Option<String>,
+    ) -> SessionInfo {
+        SessionInfo {
+            id: "00000000-0000-0000-0000-000000000000".to_string(),
+            name: "s".to_string(),
+            shell: "codex".to_string(),
+            shell_args: Vec::new(),
+            effective_shell_args: None,
+            created_at: "2026-06-21T00:00:00Z".to_string(),
+            working_directory: cwd.to_string(),
+            status: SessionStatus::Running,
+            waiting_for_input: false,
+            pending_review: false,
+            last_prompt: None,
+            agent_id: agent_id.map(str::to_string),
+            agent_label: None,
+            git_repos: Vec::new(),
+            workgroup_task: None,
+            is_coordinator: false,
+            is_root_agent: false,
+            token: "t".to_string(),
+            agent_kind: None,
+            requested_profile: requested_profile.map(str::to_string),
+            effective_profile: None,
+            profile_fallback_chain: Vec::new(),
+            profile_fallback_applied: false,
+            effective_codex_home: None,
+            profile_content_hash: loaded_hash,
+            profile_outdated: false,
+            telegram_bot_id: None,
+            was_detached: false,
+            detached_geometry: None,
+        }
+    }
+
+    #[test]
+    fn compute_profile_outdated_flips_when_effective_cell_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+
+        let mut settings = test_settings();
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("codex".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "codex --v1".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+
+        // The hash the session was launched ("loaded") with: cell A v1.
+        let loaded =
+            crate::config::agent_command::profile_content_hash("codex --v1", &BTreeMap::new());
+        let mut info = make_info(&cwd, Some("codex"), Some("A"), Some(loaded));
+
+        // Config unchanged -> not outdated.
+        assert!(!compute_profile_outdated(&settings, &info));
+
+        // Edit the effective cell -> outdated.
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("codex")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .command = "codex --v2".to_string();
+        assert!(compute_profile_outdated(&settings, &info));
+
+        // A plain-shell session (no agent) never drifts.
+        info.agent_id = None;
+        assert!(!compute_profile_outdated(&settings, &info));
     }
 
     #[test]

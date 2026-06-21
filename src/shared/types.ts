@@ -28,6 +28,8 @@ export interface Session {
   effectiveProfile: string | null;
   profileFallbackChain: string[];
   profileFallbackApplied: boolean;
+  /** #592 - backend-computed: loaded profile cell != current config. */
+  profileOutdated?: boolean;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };

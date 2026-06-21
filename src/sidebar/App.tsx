@@ -115,6 +115,20 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (!props.embedded) {
       document.documentElement.classList.add("light-theme");
     }
+    // #592 - re-fetch sessions and surgically patch each session's drift flag.
+    // Profile/env/selection edits change the "configured" cell; the backend
+    // recomputes profileOutdated in list_sessions, so we pull and apply it
+    // without setSessions (which would clobber frontend-only pendingReview).
+    const refreshProfileOutdated = async () => {
+      try {
+        const list = await SessionAPI.list();
+        for (const s of list) {
+          sessionsStore.setProfileOutdated(s.id, s.profileOutdated ?? false);
+        }
+      } catch (e) {
+        console.error("Failed to refresh profile drift:", e);
+      }
+    };
     unlisteners.push(
       await onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
@@ -123,16 +137,19 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onCodingAgentProfilesUpdated(() => {
         settingsStore.refresh();
+        void refreshProfileOutdated();
       })
     );
     unlisteners.push(
       await onCodingAgentEnvSettingsUpdated(() => {
         settingsStore.refresh();
+        void refreshProfileOutdated();
       })
     );
     unlisteners.push(
       await onCodingAgentProfileSelectionUpdated((data) => {
         settingsStore.refresh();
+        void refreshProfileOutdated();
         if (data.agentPath) {
           void projectStore.reloadProjectIfLoaded(data.agentPath);
         } else {

@@ -374,6 +374,19 @@ const SessionItem: Component<{
                   </span>
                 )}
               </Show>
+              <Show when={props.session.profileOutdated}>
+                <button
+                  type="button"
+                  class="profile-outdated-badge"
+                  title="Loaded profile no longer matches its configuration. Reload to relaunch with the current profile."
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void restartSession();
+                  }}
+                >
+                  ⟳ outdated
+                </button>
+              </Show>
               <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
                 <div class="session-item-branches">
                   <For each={props.session.gitRepos}>

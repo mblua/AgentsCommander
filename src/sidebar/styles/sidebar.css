@@ -564,6 +564,24 @@ html, body, #root {
   white-space: nowrap;
 }
 
+/* #592 - drift indicator: amber, clickable (Reload). */
+.profile-outdated-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: none;
+  cursor: pointer;
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+.profile-outdated-badge:hover {
+  background: rgba(234, 179, 8, 0.28);
+}
+
 .root-profile-badge {
   margin-left: 6px;
   vertical-align: middle;

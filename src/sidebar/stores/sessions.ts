@@ -358,6 +358,13 @@ export const sessionsStore = {
     setState("sessions", (s) => s.id === sessionId, "isCoordinator", value);
   },
 
+  // #592 - surgical per-session drift flag update. Mirrors setIsCoordinator;
+  // never use setSessions for this (a wholesale replace would reset the
+  // frontend-only pendingReview field).
+  setProfileOutdated(id: string, outdated: boolean) {
+    setState("sessions", (s) => s.id === id, "profileOutdated", outdated);
+  },
+
   setTeams(teams: Team[]) {
     setState("teams", teams);
     if (

@@ -15,6 +15,7 @@ use crate::config::settings::{
     validate_expanded_codex_home_value, validate_user_env_key, AgentConfig, AppSettings,
 };
 use crate::session::profile::CodingAgentKind;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedAgentCommand {
@@ -33,6 +34,9 @@ pub struct AgentSpawnCommand {
     pub env_remove_keys: Vec<String>,
     pub effective_codex_home: Option<PathBuf>,
     pub profile_resolution: ProfileResolution,
+    /// 16-hex SHA-256 of the effective resolved cell's RAW command + env
+    /// (#592). Drift detector only; positional identity stays the locator.
+    pub profile_content_hash: String,
     pub trusted_agent_id: String,
     pub trusted_agent_label: String,
 }
@@ -684,6 +688,34 @@ fn wrap_git_pull_before(
     Ok((shell, shell_args))
 }
 
+/// #592 - stable 16-hex content fingerprint of a profile CELL, for drift
+/// detection ("loaded != configured"). Hashes the RAW `command` + `env`
+/// (placeholders un-expanded) of the EFFECTIVE resolved cell only; never the
+/// agent base layer. Env keys are normalized with the same platform rule
+/// `merge_env_layers` uses (Windows case-fold), then ordered via `BTreeMap`,
+/// so a case-only key edit on Windows does not false-flag and iteration order
+/// is irrelevant. SHA-256 (stable across Rust versions, unlike DefaultHasher),
+/// truncated to the first 16 hex chars (matches the existing
+/// `profile_assignment_fingerprint` 16-hex shape).
+pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> String {
+    use std::fmt::Write as _;
+    // Normalize keys for dedup/compare; value stays verbatim (raw).
+    let mut normalized: BTreeMap<String, &str> = BTreeMap::new();
+    for (key, value) in env {
+        normalized.insert(normalize_env_key_for_platform(key), value.as_str());
+    }
+    // Versioned, NUL-tagged serialization. NUL cannot appear in commands/env we
+    // accept, and the field tags stop a value from forging a record boundary.
+    let mut buf = String::new();
+    let _ = write!(buf, "v1\u{0}cmd\u{0}{}\u{0}envc\u{0}{}\u{0}", command, normalized.len());
+    for (key, value) in &normalized {
+        let _ = write!(buf, "k\u{0}{}\u{0}v\u{0}{}\u{0}", key, value);
+    }
+    let digest = format!("{:x}", Sha256::digest(buf.as_bytes()));
+    // Hex is ASCII single-byte; slicing the first 16 chars is char-boundary safe.
+    digest[..16].to_string()
+}
+
 pub fn build_agent_spawn_command(
     settings: &AppSettings,
     agent_id: &str,
@@ -707,6 +739,13 @@ pub fn build_agent_spawn_command(
     for warning in &profile_resolution.warnings {
         log::warn!("[profiles] {}", warning);
     }
+
+    // #592 - fingerprint the RAW effective cell (pre-expansion, cell-only) so a
+    // later edit to this cell's command/env is detectable as drift.
+    let profile_hash = profile_content_hash(
+        &profile_resolution.cell.command,
+        &profile_resolution.cell.env,
+    );
 
     let selected_command = if profile_resolution.cell.command.trim().is_empty() {
         agent.command.as_str()
@@ -790,6 +829,7 @@ pub fn build_agent_spawn_command(
         env_remove_keys: computed_codex_home.env_remove_keys,
         effective_codex_home: computed_codex_home.effective_codex_home,
         profile_resolution,
+        profile_content_hash: profile_hash,
         trusted_agent_id: agent.id.clone(),
         trusted_agent_label: agent.label.clone(),
     })
@@ -800,8 +840,8 @@ mod tests {
     use super::{
         build_agent_spawn_command, command_runs_opencode, default_instructions_filename_for_command,
         ensure_opencode_config_dir, find_opencode_config_dir, is_safe_instructions_filename,
-        managed_instructions_filenames, normalize_legacy_agent_command, resolve_instructions_filename,
-        resolve_target_filename, OpencodeConfigDirOutcome,
+        managed_instructions_filenames, normalize_legacy_agent_command, profile_content_hash,
+        resolve_instructions_filename, resolve_target_filename, OpencodeConfigDirOutcome,
     };
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
@@ -1789,6 +1829,126 @@ mod tests {
         assert!(
             std::path::Path::new(&expected_config).is_dir(),
             "build should have created the expanded OPENCODE_CONFIG_DIR at {expected_config}"
+        );
+    }
+
+    // #592 - profile content-hash (drift detector) tests.
+
+    fn cell(command: &str, env: BTreeMap<String, String>) -> ProfileCellConfig {
+        ProfileCellConfig {
+            enabled: true,
+            command: command.to_string(),
+            env,
+            notes: String::new(),
+        }
+    }
+
+    fn settings_with_cell(agent_command: &str, letter: &str, cell: ProfileCellConfig) -> AppSettings {
+        let mut settings = AppSettings {
+            agents: vec![agent("codex", agent_command)],
+            ..AppSettings::default()
+        };
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("codex".to_string())
+            .or_default()
+            .insert(letter.to_string(), cell);
+        settings
+    }
+
+    #[test]
+    fn profile_content_hash_is_deterministic_and_16_lowercase_hex() {
+        let mut env = BTreeMap::new();
+        env.insert("FOO".to_string(), "bar".to_string());
+        let a = profile_content_hash("claude --x", &env);
+        let b = profile_content_hash("claude --x", &env);
+        assert_eq!(a, b, "same inputs must hash identically");
+        assert_eq!(a.len(), 16, "hash must be 16 chars");
+        assert!(
+            a.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "hash must be lowercase hex: {a}"
+        );
+    }
+
+    #[test]
+    fn profile_content_hash_is_raw_not_expanded() {
+        let env = BTreeMap::new();
+        let raw = profile_content_hash("%AC_REPLICA_ROOT%\\bin\\claude", &env);
+        let expanded = profile_content_hash("C:\\replica\\bin\\claude", &env);
+        assert_ne!(
+            raw, expanded,
+            "the function must hash the raw placeholder text, never an expansion"
+        );
+    }
+
+    #[test]
+    fn profile_content_hash_is_cell_only_ignoring_agent_base_command() {
+        // Two settings differing ONLY in agent.command, both with an EMPTY cell
+        // command for letter A. The cell hash must be identical (§0.1/§0.6).
+        let s1 = settings_with_cell("codex --one", "A", cell("", BTreeMap::new()));
+        let s2 = settings_with_cell("codex --two", "A", cell("", BTreeMap::new()));
+        let h1 = build_agent_spawn_command(&s1, "codex", None, Some("A"))
+            .unwrap()
+            .profile_content_hash;
+        let h2 = build_agent_spawn_command(&s2, "codex", None, Some("A"))
+            .unwrap()
+            .profile_content_hash;
+        assert_eq!(h1, h2, "an agent-base edit must not change the cell hash");
+    }
+
+    #[test]
+    fn profile_content_hash_flips_on_cell_command_edit() {
+        let s1 = settings_with_cell("codex", "A", cell("claude", BTreeMap::new()));
+        let s2 = settings_with_cell("codex", "A", cell("claude --foo", BTreeMap::new()));
+        let h1 = build_agent_spawn_command(&s1, "codex", None, Some("A"))
+            .unwrap()
+            .profile_content_hash;
+        let h2 = build_agent_spawn_command(&s2, "codex", None, Some("A"))
+            .unwrap()
+            .profile_content_hash;
+        assert_ne!(h1, h2, "a cell command edit must flip the hash (drift)");
+    }
+
+    #[test]
+    fn profile_content_hash_uses_effective_cell_after_fallback() {
+        let mut settings = AppSettings {
+            agents: vec![agent("codex", "codex")],
+            ..AppSettings::default()
+        };
+        {
+            let cells = settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .entry("codex".to_string())
+                .or_default();
+            cells.insert("A".to_string(), cell("codex --a", BTreeMap::new()));
+            cells.insert("C".to_string(), cell("codex --c", BTreeMap::new()));
+        }
+
+        // Request D with only A/C present -> falls back to C.
+        let spawn = build_agent_spawn_command(&settings, "codex", None, Some("D")).unwrap();
+        assert_eq!(spawn.profile_resolution.effective_profile, "C");
+        assert_eq!(spawn.profile_resolution.cell.command, "codex --c");
+        // The stamped hash is the EFFECTIVE (post-fallback C) cell, not D.
+        let expected = profile_content_hash(
+            &spawn.profile_resolution.cell.command,
+            &spawn.profile_resolution.cell.env,
+        );
+        assert_eq!(spawn.profile_content_hash, expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn profile_content_hash_normalizes_env_keys_case_insensitively_on_windows() {
+        let mut lower = BTreeMap::new();
+        lower.insert("Path".to_string(), "x".to_string());
+        let mut upper = BTreeMap::new();
+        upper.insert("PATH".to_string(), "x".to_string());
+        assert_eq!(
+            profile_content_hash("claude", &lower),
+            profile_content_hash("claude", &upper),
+            "a case-only env-key edit must not false-flag drift on Windows"
         );
     }
 }

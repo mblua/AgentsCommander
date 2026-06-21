@@ -213,3 +213,50 @@ describe("SessionItem profile badge tooltip (#548)", () => {
     }
   });
 });
+
+describe("SessionItem profile-outdated badge (#592)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  it("shows the Reload badge when profileOutdated is true", async () => {
+    const settings = baseSettings({ agents: TWO_AGENTS, codingAgentProfiles: profiles({}) });
+    const rendered = await renderRow(
+      { agentId: "codex", agentLabel: "Codex", profileOutdated: true },
+      settings,
+    );
+    try {
+      await waitFor(() =>
+        expect(rendered.root.querySelector(".profile-outdated-badge")).not.toBeNull(),
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("hides the Reload badge when profileOutdated is falsy", async () => {
+    const settings = baseSettings({ agents: TWO_AGENTS, codingAgentProfiles: profiles({}) });
+    const rendered = await renderRow(
+      { agentId: "codex", agentLabel: "Codex", profileOutdated: false },
+      settings,
+    );
+    try {
+      // The agent badge renders, so the meta container is present; the outdated
+      // badge specifically must not be.
+      await waitFor(() => expect(rendered.root.querySelector(".agent-badge")).not.toBeNull());
+      expect(rendered.root.querySelector(".profile-outdated-badge")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
