@@ -546,9 +546,13 @@ export interface AcAgentReplica {
   currentCodingAgentId?: string;
   /** #384: per-replica profile letter (`tooling.profile`, then legacy override). */
   currentProfile?: string;
-  /** #552 RFC3339 time of the user's last message to this coordinator, or
-   *  undefined. Only meaningful when `isCoordinator`. Drives the idle badge;
-   *  read from the persisted CoordinatorClocks store (survives restart + dormant). */
+  /** #552/#580 RFC3339 timestamp of the unified team-idle anchor, i.e. the
+   *  backend's `max(last_user_message_at, last_activity_at)` — the field now
+   *  means "team idle since" (reset when you message the coordinator, any member
+   *  is active, or the coordinator is active), NOT just the user's last message
+   *  (#580; rename to idleSinceAt deferred). `undefined` when none. Only
+   *  meaningful when `isCoordinator`. Drives the idle badge; read from the
+   *  persisted CoordinatorClocks store (survives restart + dormant). */
   lastUserMessageAt?: string;
   /** #552 RFC3339 time this coordinator's team was auto-closed for inactivity,
    *  or undefined. Only meaningful when `isCoordinator`. Drives the neutral

@@ -44,9 +44,11 @@ import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
 import OnboardingModal from "./components/OnboardingModal";
+import ToastHost from "../shared/components/ToastHost";
 import { handleProjectRefreshRequested } from "./project-refresh-handler";
 import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
 import "./styles/sidebar.css";
+import "../shared/styles/toast.css";
 
 interface SidebarAppProps {
   /**
@@ -387,6 +389,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
           </div>
         )}
       </Show>
+      <ToastHost />
     </>
   );
 };
