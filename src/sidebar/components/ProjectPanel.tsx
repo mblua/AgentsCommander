@@ -1233,7 +1233,21 @@ const ProjectPanel: Component = () => {
           // when autoClosed() is true the counter is gated off (XOR below), so a
           // closed team shows ONLY the gray AUTO-CLOSED pill; clearing the marker
           // on reopen makes autoClosed() false and the counter returns.
-          const autoClosed = createMemo(() => isCoord() && !!replica.autoClosedAt);
+          // #589: ALSO gate on liveness. On raise the dot turns green from the
+          // sessionsStore (live session), but a discovery reload can clobber the
+          // event-cleared autoClosedAt back to its stale value (reloadProject's
+          // wholesale `workgroups` replace, project.ts:311-323), leaving the pill
+          // stuck while the dot is green. An auto-closed team is DESTROYED, so it is
+          // never live — there is no legitimate "live + auto-closed" state. Gating
+          // on `!live` hides the pill the moment the session goes live, reusing the
+          // exact signal the status dot reads, so it self-heals regardless of the
+          // stale marker; the XOR'd idle counter returns automatically. Inlined
+          // isSessionLive(session()) (=== isLive() below) because createMemo runs
+          // EAGERLY and `isLive` is declared further down — calling it here would
+          // hit its temporal dead zone for a coordinator already auto-closed at mount.
+          const autoClosed = createMemo(
+            () => isCoord() && !!replica.autoClosedAt && !isSessionLive(session())
+          );
           // #580 idle-badge tooltip. The auto-close clause is appended ONLY when
           // the setting is enabled: Decision 3 keeps the badge (and its red >=60
           // color) visible even when auto-close is OFF, where the team will NOT
