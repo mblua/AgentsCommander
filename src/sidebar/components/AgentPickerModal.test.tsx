@@ -152,6 +152,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
           },
         },
       },
+      profileLabelsByAgent: {},
     },
     telegramBots: [],
     onboardingDismissed: true,
@@ -432,6 +433,36 @@ describe("AgentPickerModal", () => {
     // Effective Projection chosen-pair shows the selected coding agent + resolved command.
     expect(text("agentPicker.projected")).toContain("Claude Code");
     expect(text("agentPicker.projected")).toContain("claude --dangerously-skip-permissions");
+
+    dispose();
+  });
+
+  it("#548: each provider chip resolves its OWN per-agent label, not the highlighted agent's", async () => {
+    // codex (agents[0] = primigenio) and claude each get a distinct A label.
+    const base = settings();
+    currentSettings = settings({
+      codingAgentProfiles: {
+        ...base.codingAgentProfiles,
+        profileLabelsByAgent: {
+          codex: { A: "alpha-codex" },
+          claude: { A: "alpha-claude" },
+        },
+      },
+    });
+    mockSettingsApi.get.mockResolvedValue(currentSettings);
+    // Repo path → no backend resolution; each provider's default resolves to A.
+    const { dispose } = renderPicker({ agentPath: REPO_PATH, currentAgentId: "codex" });
+    await settle();
+
+    const chip = (id: string) =>
+      target(`agentPicker.provider.${id}`)
+        .querySelector(".agent-profile-provider-chip")
+        ?.textContent?.trim();
+
+    // codex is the highlighted row. With the :568 bug, claude's chip would resolve
+    // against codex and read "A-ALPHA-CODEX". Each must show its OWN A label.
+    expect(chip("codex")).toBe("A-ALPHA-CODEX");
+    expect(chip("claude")).toBe("A-ALPHA-CLAUDE");
 
     dispose();
   });

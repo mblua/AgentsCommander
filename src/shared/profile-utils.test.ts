@@ -16,6 +16,7 @@ import {
   profileConfiguredElsewhere,
   profileDisplayLabel,
   profileEnvOrigin,
+  resolveProfileLabel,
   resolveProfilePreview,
   sessionProfileBadge,
   shouldOfferRestartAfterAssign,
@@ -38,6 +39,7 @@ function profiles(): CodingAgentProfilesConfig {
         C: { enabled: true, command: "codex --model gpt-5", env: {}, notes: "" },
       },
     },
+    profileLabelsByAgent: {},
   };
 }
 
@@ -57,8 +59,72 @@ function agent(overrides: Partial<AgentConfig>): AgentConfig {
 
 describe("profile utils", () => {
   it("formats custom profile names as letter-name labels", () => {
-    expect(profileDisplayLabel(profiles(), "B")).toBe("B-FULL POWER");
-    expect(profileDisplayLabel(profiles(), "A")).toBe("A");
+    // No per-agent overrides → resolves via the legacy slot label (back-compat).
+    const agents = [agent({ id: "codex" })];
+    expect(profileDisplayLabel(profiles(), agents, "codex", "B")).toBe("B-FULL POWER");
+    expect(profileDisplayLabel(profiles(), agents, "codex", "A")).toBe("A");
+  });
+
+  it("#548: per-agent labels — own override, primigenio inheritance, independence", () => {
+    // codex = agents[0] = primigenio; claude is the second coding agent.
+    const agents = [agent({ id: "codex" }), agent({ id: "claude" })];
+    const p: CodingAgentProfilesConfig = {
+      ...profiles(),
+      profileLabelsByAgent: { codex: { B: "turbo" } },
+    };
+    // codex shows its OWN label.
+    expect(profileDisplayLabel(p, agents, "codex", "B")).toBe("B-TURBO");
+    // claude has no own B label → inherits the primigenio (codex).
+    expect(profileDisplayLabel(p, agents, "claude", "B")).toBe("B-TURBO");
+    // After claude sets its own B, editing claude does NOT change codex.
+    const p2: CodingAgentProfilesConfig = {
+      ...profiles(),
+      profileLabelsByAgent: { codex: { B: "turbo" }, claude: { B: "zen" } },
+    };
+    expect(profileDisplayLabel(p2, agents, "claude", "B")).toBe("B-ZEN");
+    expect(profileDisplayLabel(p2, agents, "codex", "B")).toBe("B-TURBO");
+  });
+
+  it("#548: a fresh config (no labels, empty slot) shows the bare letter", () => {
+    const fresh: CodingAgentProfilesConfig = {
+      schemaVersion: 2,
+      profileSlots: { A: { label: "" } },
+      defaultProfileByAgent: {},
+      profilesByAgent: {},
+      profileLabelsByAgent: {},
+    };
+    expect(profileDisplayLabel(fresh, [agent({ id: "codex" })], "codex", "A")).toBe("A");
+  });
+
+  it("#548: resolveProfileLabel follows own > primigenio > legacy slot > empty", () => {
+    const agents = [agent({ id: "codex" }), agent({ id: "claude" })];
+    const base = profiles(); // legacy slot labels: B = "full power", C = "fast"
+    // 1. own label wins over everything.
+    expect(
+      resolveProfileLabel(
+        { ...base, profileLabelsByAgent: { claude: { B: "own" }, codex: { B: "prim" } } },
+        agents,
+        "claude",
+        "B",
+      ),
+    ).toBe("own");
+    // 2. else the primigenio (codex) label, when the queried agent has none.
+    expect(
+      resolveProfileLabel(
+        { ...base, profileLabelsByAgent: { codex: { B: "prim" } } },
+        agents,
+        "claude",
+        "B",
+      ),
+    ).toBe("prim");
+    // 3. else the legacy shared slot label (pre-#548 back-compat bridge).
+    expect(
+      resolveProfileLabel({ ...base, profileLabelsByAgent: {} }, agents, "claude", "B"),
+    ).toBe("full power");
+    // 4. else "" — the "no name" case the rail placeholder relies on.
+    expect(
+      resolveProfileLabel({ ...base, profileLabelsByAgent: {} }, agents, "claude", "A"),
+    ).toBe("");
   });
 
   it("previews fallback to the nearest lower available cell (v2 profileSlots/profilesByAgent)", () => {
@@ -320,6 +386,7 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
           B: { enabled: true, command: "claude --model opus", env: {}, notes: "" },
         },
       },
+      profileLabelsByAgent: {},
     };
     // B exists on claude but not on codex → codex B is MISSING (red), not fallback.
     expect(profileBadgeKind(config, "codex", "B")).toBe("missing");
@@ -341,6 +408,7 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
           B: { enabled: false, command: "codex --profile fast", env: {}, notes: "" },
         },
       },
+      profileLabelsByAgent: {},
     };
     // A disabled cell is not a live config → B resolves back to A.
     expect(profileBadgeKind(config, "codex", "B")).toBe("fallback");

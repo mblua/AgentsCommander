@@ -12,7 +12,7 @@ import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { toastStore } from "../../shared/stores/toasts";
 import { voiceRecorder } from "../../shared/voice-recorder";
-import { isWgReplicaPath, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
+import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import { clockStore } from "../stores/clock";
 import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import SessionItem from "./SessionItem";
@@ -1233,7 +1233,21 @@ const ProjectPanel: Component = () => {
           // when autoClosed() is true the counter is gated off (XOR below), so a
           // closed team shows ONLY the gray AUTO-CLOSED pill; clearing the marker
           // on reopen makes autoClosed() false and the counter returns.
-          const autoClosed = createMemo(() => isCoord() && !!replica.autoClosedAt);
+          // #589: ALSO gate on liveness. On raise the dot turns green from the
+          // sessionsStore (live session), but a discovery reload can clobber the
+          // event-cleared autoClosedAt back to its stale value (reloadProject's
+          // wholesale `workgroups` replace, project.ts:311-323), leaving the pill
+          // stuck while the dot is green. An auto-closed team is DESTROYED, so it is
+          // never live — there is no legitimate "live + auto-closed" state. Gating
+          // on `!live` hides the pill the moment the session goes live, reusing the
+          // exact signal the status dot reads, so it self-heals regardless of the
+          // stale marker; the XOR'd idle counter returns automatically. Inlined
+          // isSessionLive(session()) (=== isLive() below) because createMemo runs
+          // EAGERLY and `isLive` is declared further down — calling it here would
+          // hit its temporal dead zone for a coordinator already auto-closed at mount.
+          const autoClosed = createMemo(
+            () => isCoord() && !!replica.autoClosedAt && !isSessionLive(session())
+          );
           // #580 idle-badge tooltip. The auto-close clause is appended ONLY when
           // the setting is enabled: Decision 3 keeps the badge (and its red >=60
           // color) visible even when auto-close is OFF, where the team will NOT
@@ -1259,6 +1273,17 @@ const ProjectPanel: Component = () => {
           const profileBadge = () => {
             const s = session();
             return s ? sessionProfileBadge(s) : null;
+          };
+          // #548: resolver-backed tooltip naming the EFFECTIVE profile (the one
+          // actually in effect) for this session's coding agent. Plain function
+          // (NOT createMemo) — row-local and recomputes on settings reload.
+          const profileBadgeTitle = () => {
+            const s = session();
+            const cfg = settingsStore.current?.codingAgentProfiles;
+            if (!s || !cfg) return undefined;
+            const letter = s.effectiveProfile || s.requestedProfile;
+            if (!letter) return undefined;
+            return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], s.agentId, letter);
           };
           const isLive = () => isSessionLive(session());
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
@@ -1406,7 +1431,7 @@ const ProjectPanel: Component = () => {
                     <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
                   </Show>
                   <Show when={profileBadge()}>
-                    {(badge) => <span class="profile-badge">{badge()}</span>}
+                    {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
                   </Show>
                   <Show when={isCoord()}>
                     <span class="ac-discovery-badge coord">coordinator</span>

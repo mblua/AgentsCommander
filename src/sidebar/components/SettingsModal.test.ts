@@ -50,6 +50,7 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
       profileSlots: { A: { label: "" } },
       defaultProfileByAgent: {},
       profilesByAgent: {},
+      profileLabelsByAgent: {},
     },
     telegramBots: [],
     onboardingDismissed: false,

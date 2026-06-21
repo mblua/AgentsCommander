@@ -109,6 +109,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
       profileSlots: { A: { label: "" } },
       defaultProfileByAgent: {},
       profilesByAgent: {},
+      profileLabelsByAgent: {},
     },
     telegramBots: [],
     onboardingDismissed: true,
@@ -368,6 +369,7 @@ describe("SettingsModal automation hooks", () => {
           B: { label: "fast" },
         },
         defaultProfileByAgent: {},
+        profileLabelsByAgent: {},
         profilesByAgent: {
           codex: {
             A: {
@@ -454,6 +456,61 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("#548: a per-agent label edit isolates to that rail (no cross-rail, no legacy-slot write)", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        {
+          id: "codex", label: "Codex", command: "codex", color: "#10b981",
+          gitPullBefore: false, excludeGlobalClaudeMd: true, envs: [], isolatedHome: false,
+        },
+        {
+          id: "claude", label: "Claude Code", command: "claude", color: "#d97706",
+          gitPullBefore: false, excludeGlobalClaudeMd: false, envs: [], isolatedHome: false,
+        },
+      ],
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: { A: { label: "" }, B: { label: "fast" } },
+        defaultProfileByAgent: {},
+        profileLabelsByAgent: {},
+        profilesByAgent: {
+          codex: { A: { enabled: true, command: "codex", env: {}, notes: "" } },
+          claude: { A: { enabled: true, command: "claude", env: {}, notes: "" } },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    // Rail 0 = codex (primigenio), rail 1 = claude. Type a name into codex's B label.
+    const codexB = byTestId<HTMLInputElement>("settings.profileCard.0.B.label");
+    codexB.value = "turbo";
+    codexB.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    // codex's own override shows the typed value; claude's OWN B override stays empty
+    // (claude inherits via the placeholder, but its stored override is untouched).
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.B.label").value).toBe("turbo");
+    expect(byTestId<HTMLInputElement>("settings.profileCard.1.B.label").value).toBe("");
+
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="settings.save"]')?.click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    // Only codex.B got the override; claude has none; the legacy slot label is never
+    // written by the per-agent input (it stays the back-compat fallback).
+    expect(saved?.codingAgentProfiles.profileLabelsByAgent).toEqual({ codex: { B: "turbo" } });
+    expect(saved?.codingAgentProfiles.profileLabelsByAgent.claude).toBeUndefined();
+    expect(saved?.codingAgentProfiles.profileSlots.B.label).toBe("fast");
+
+    dispose();
+  });
+
   it("collapses non-A profile cards by default and expands them on toggle", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       agents: [
@@ -472,6 +529,7 @@ describe("SettingsModal automation hooks", () => {
         schemaVersion: 2,
         profileSlots: { A: { label: "" }, B: { label: "fast" } },
         defaultProfileByAgent: {},
+        profileLabelsByAgent: {},
         profilesByAgent: {
           claude: {
             A: { enabled: true, command: "claude", env: {}, notes: "" },
@@ -551,6 +609,7 @@ describe("SettingsModal automation hooks", () => {
         schemaVersion: 2,
         profileSlots: { A: { label: "" } },
         defaultProfileByAgent: {},
+        profileLabelsByAgent: {},
         profilesByAgent: {
           codex: { A: { enabled: true, command: "codex", env: {}, notes: "" } },
         },
@@ -588,6 +647,7 @@ describe("SettingsModal automation hooks", () => {
         schemaVersion: 2,
         profileSlots: { A: { label: "" } },
         defaultProfileByAgent: {},
+        profileLabelsByAgent: {},
         profilesByAgent: {
           codex: {
             A: {
@@ -720,6 +780,7 @@ describe("SettingsModal automation hooks", () => {
           D: { label: "full-auto" },
         },
         defaultProfileByAgent: {},
+        profileLabelsByAgent: {},
         profilesByAgent: {
           codex: {
             A: { enabled: true, command: "codex --sandbox workspace-write", env: {}, notes: "" },
@@ -786,6 +847,7 @@ describe("SettingsModal automation hooks", () => {
         schemaVersion: 2,
         profileSlots: { A: { label: "" }, B: { label: "fast" } },
         defaultProfileByAgent: {},
+        profileLabelsByAgent: {},
         profilesByAgent: {
           codex: {
             A: { enabled: true, command: "codex", env: {}, notes: "" },

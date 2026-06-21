@@ -133,6 +133,9 @@ export interface CodingAgentProfilesConfig {
   defaultProfileByAgent: Record<string, string>;
   /** v2 (#384): renamed from `matrix`. agentId → letter → cell. */
   profilesByAgent: Record<string, Record<string, ProfileCellConfig>>;
+  /** #548: agentId → letter → override label. Empty/absent for a cell means
+   *  inherit (primigenio label, else the legacy slot label, else the letter). */
+  profileLabelsByAgent: Record<string, Record<string, string>>;
 }
 
 export interface ProfileSlotConfig {
