@@ -98,6 +98,45 @@ const groupSeverity = (group: ResourceAgentGroupSnapshot): string => {
   return "ok";
 };
 
+// #566 - active = the agent still holds (or is releasing) live OS processes /
+// a concurrency slot: every state except `terminated` (matches the backend's
+// active_count semantics). Single source of truth for the status filter (A.1).
+const isActiveGroup = (group: ResourceAgentGroupSnapshot): boolean =>
+  group.state !== "terminated";
+
+// #566 - status filter is component-local view state, not part of the IPC data
+// contract (deliberately kept out of shared/types.ts).
+type RmStatusFilter = "all" | "active" | "inactive";
+
+const STATUS_FILTERS: ReadonlyArray<{ value: RmStatusFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+];
+
+// #566 - distinct, sorted, non-empty values for a filter dimension. Derives from
+// the full snapshot set so a value stays selectable even while filtered out.
+const distinct = (values: (string | null | undefined)[]): string[] =>
+  [...new Set(values.filter((v): v is string => !!v))].sort();
+
+// #566 - G3 reactivity contract: a multi-select toggle MUST replace the Set with
+// a fresh copy. Mutating in place returns the same reference, so SolidJS's
+// Object.is equality treats it as unchanged and the dependent memos silently
+// never re-run (the filters render, clicks register, nothing filters).
+const toggleFilter = (
+  get: () => Set<string>,
+  set: (next: Set<string>) => void,
+  value: string,
+): void => {
+  const next = new Set(get());
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  set(next);
+};
+
 const Titlebar: Component = () => {
   const handleDock = async () => {
     try {
@@ -219,6 +258,57 @@ const ResourceMonitorApp: Component = () => {
 
   const snapshot = () => resourceMonitorStore.snapshot;
   const groups = createMemo(() => snapshot()?.groups ?? []);
+
+  // #566 - filter view-state (ephemeral, not persisted). The three multi-selects
+  // are Set<string>; every toggle goes through toggleFilter (fresh-Set copy) so
+  // the dependent memos actually re-run (see the G3 contract above).
+  const [statusFilter, setStatusFilter] = createSignal<RmStatusFilter>("all");
+  const [projectFilter, setProjectFilter] = createSignal<Set<string>>(new Set());
+  const [workgroupFilter, setWorkgroupFilter] = createSignal<Set<string>>(
+    new Set()
+  );
+  const [roleFilter, setRoleFilter] = createSignal<Set<string>>(new Set());
+
+  // Option lists derive from the FULL snapshot set, not the filtered one, so a
+  // value stays selectable even while it is filtered out (A.4.2).
+  const projectOptions = createMemo(() =>
+    distinct(groups().map((g) => g.project))
+  );
+  const workgroupOptions = createMemo(() =>
+    distinct(groups().map((g) => g.workgroup))
+  );
+  const roleOptions = createMemo(() => distinct(groups().map((g) => g.agent)));
+
+  // AND across dimensions, OR within a dimension; an empty Set = no constraint.
+  const filteredGroups = createMemo(() => {
+    const status = statusFilter();
+    const projects = projectFilter();
+    const wgs = workgroupFilter();
+    const roles = roleFilter();
+    return groups().filter((g) => {
+      if (status === "active" && !isActiveGroup(g)) return false;
+      if (status === "inactive" && isActiveGroup(g)) return false;
+      if (projects.size > 0 && !(g.project && projects.has(g.project)))
+        return false;
+      if (wgs.size > 0 && !(g.workgroup && wgs.has(g.workgroup))) return false;
+      if (roles.size > 0 && !(g.agent && roles.has(g.agent))) return false;
+      return true;
+    });
+  });
+  const filtersActive = createMemo(
+    () =>
+      statusFilter() !== "all" ||
+      projectFilter().size > 0 ||
+      workgroupFilter().size > 0 ||
+      roleFilter().size > 0
+  );
+  const clearFilters = () => {
+    setStatusFilter("all");
+    setProjectFilter(new Set<string>());
+    setWorkgroupFilter(new Set<string>());
+    setRoleFilter(new Set<string>());
+  };
+
   const statusClass = createMemo(() => {
     const s = snapshot();
     if (!s || s.overallState === "unknown") return "unknown";
@@ -312,7 +402,7 @@ const ResourceMonitorApp: Component = () => {
             data-ac-testid="resourceMonitor.summary.activeGroups"
             data-ac-role="metric"
           >
-            <span class="rm-tile-label">Active Groups</span>
+            <span class="rm-tile-label">Active Agents</span>
             <strong>
               <span
                 data-ac-testid="resourceMonitor.summary.activeGroups.count"
@@ -373,30 +463,198 @@ const ResourceMonitorApp: Component = () => {
 
         <section class="rm-groups">
           <div class="rm-section-header">
-            <h2>Agent Groups</h2>
-            <span
-              data-ac-testid="resourceMonitor.summary.timestamp"
-              data-ac-role="text"
+            <h2>Agents</h2>
+            <div class="rm-section-header-meta">
+              <Show when={filtersActive()}>
+                <span
+                  class="rm-filter-count"
+                  data-ac-testid="resourceMonitor.filter.count"
+                  data-ac-role="text"
+                >
+                  Showing {filteredGroups().length} of {groups().length}
+                </span>
+              </Show>
+              <span
+                data-ac-testid="resourceMonitor.summary.timestamp"
+                data-ac-role="text"
+              >
+                Last update {formatTimestamp(snapshot()?.capturedAt)}
+              </span>
+            </div>
+          </div>
+
+          <div
+            class="rm-filter-bar"
+            data-ac-testid="resourceMonitor.filter"
+            data-ac-role="toolbar"
+          >
+            <div
+              class="rm-filter-segment"
+              role="group"
+              aria-label="Filter by status"
+              data-ac-testid="resourceMonitor.filter.status"
+              data-ac-role="group"
             >
-              Last update {formatTimestamp(snapshot()?.capturedAt)}
-            </span>
+              <For each={STATUS_FILTERS}>
+                {(option) => (
+                  <button
+                    type="button"
+                    class="rm-filter-seg-btn"
+                    classList={{ "is-active": statusFilter() === option.value }}
+                    onClick={() => setStatusFilter(option.value)}
+                    aria-pressed={statusFilter() === option.value}
+                    data-ac-testid={`resourceMonitor.filter.status.${option.value}`}
+                    data-ac-role="button"
+                    data-ac-state={
+                      statusFilter() === option.value ? "active" : "inactive"
+                    }
+                  >
+                    {option.label}
+                  </button>
+                )}
+              </For>
+            </div>
+
+            <Show when={projectOptions().length > 0}>
+              <div
+                class="rm-filter-group"
+                role="group"
+                aria-label="Filter by project"
+                data-ac-testid="resourceMonitor.filter.project"
+                data-ac-role="group"
+              >
+                <span class="rm-filter-label">Project</span>
+                <For each={projectOptions()}>
+                  {(value) => (
+                    <button
+                      type="button"
+                      class="rm-filter-chip"
+                      classList={{ "is-active": projectFilter().has(value) }}
+                      onClick={() =>
+                        toggleFilter(projectFilter, setProjectFilter, value)
+                      }
+                      aria-pressed={projectFilter().has(value)}
+                      data-ac-testid={`resourceMonitor.filter.project.${value}`}
+                      data-ac-role="button"
+                      data-ac-state={
+                        projectFilter().has(value) ? "active" : "inactive"
+                      }
+                    >
+                      {value}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+
+            <Show when={workgroupOptions().length > 0}>
+              <div
+                class="rm-filter-group"
+                role="group"
+                aria-label="Filter by workgroup"
+                data-ac-testid="resourceMonitor.filter.workgroup"
+                data-ac-role="group"
+              >
+                <span class="rm-filter-label">Workgroup</span>
+                <For each={workgroupOptions()}>
+                  {(value) => (
+                    <button
+                      type="button"
+                      class="rm-filter-chip"
+                      classList={{ "is-active": workgroupFilter().has(value) }}
+                      onClick={() =>
+                        toggleFilter(workgroupFilter, setWorkgroupFilter, value)
+                      }
+                      aria-pressed={workgroupFilter().has(value)}
+                      data-ac-testid={`resourceMonitor.filter.workgroup.${value}`}
+                      data-ac-role="button"
+                      data-ac-state={
+                        workgroupFilter().has(value) ? "active" : "inactive"
+                      }
+                    >
+                      {value}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+
+            <Show when={roleOptions().length > 0}>
+              <div
+                class="rm-filter-group"
+                role="group"
+                aria-label="Filter by role"
+                data-ac-testid="resourceMonitor.filter.role"
+                data-ac-role="group"
+              >
+                <span class="rm-filter-label">Role</span>
+                <For each={roleOptions()}>
+                  {(value) => (
+                    <button
+                      type="button"
+                      class="rm-filter-chip"
+                      classList={{ "is-active": roleFilter().has(value) }}
+                      onClick={() =>
+                        toggleFilter(roleFilter, setRoleFilter, value)
+                      }
+                      aria-pressed={roleFilter().has(value)}
+                      data-ac-testid={`resourceMonitor.filter.role.${value}`}
+                      data-ac-role="button"
+                      data-ac-state={
+                        roleFilter().has(value) ? "active" : "inactive"
+                      }
+                    >
+                      {value}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+
+            <Show when={filtersActive()}>
+              <button
+                type="button"
+                class="rm-filter-clear"
+                onClick={clearFilters}
+                data-ac-testid="resourceMonitor.filter.clear"
+                data-ac-role="button"
+              >
+                Clear filters
+              </button>
+            </Show>
           </div>
 
           <Show
-            when={groups().length > 0}
+            when={filteredGroups().length > 0}
             fallback={
               <div
                 class="rm-empty"
                 data-ac-testid="resourceMonitor.empty"
                 data-ac-role="status"
-                data-ac-state={resourceMonitorStore.loading ? "loading" : "empty"}
+                data-ac-state={
+                  // #566 N1 - loading only wins when there is genuinely no data
+                  // yet (groups().length === 0). With keepLastSnapshot, every
+                  // poll's setLoading(true) would otherwise flash "loading" over
+                  // an already-populated-but-filtered view each cycle. Once rows
+                  // exist but the active filter matches none, stay on the stable
+                  // filtered-empty state; initial load (no data) still shows it.
+                  resourceMonitorStore.loading && groups().length === 0
+                    ? "loading"
+                    : groups().length === 0
+                      ? "empty"
+                      : "filtered-empty"
+                }
               >
-                {resourceMonitorStore.loading ? "Loading snapshot..." : "No active agent groups"}
+                {resourceMonitorStore.loading && groups().length === 0
+                  ? "Loading snapshot..."
+                  : groups().length === 0
+                    ? "No active agents"
+                    : "No agents match the filters"}
               </div>
             }
           >
             <div class="rm-group-list">
-              <For each={groups()}>
+              <For each={filteredGroups()}>
                 {(group) => (
                   <div
                     class={`rm-group-row state-${groupSeverity(group)}`}
@@ -602,7 +860,7 @@ const ResourceMonitorApp: Component = () => {
         {(target) => (
           <div class="rm-modal-backdrop" data-ac-testid="resourceMonitor.killConfirm">
             <div class="rm-modal" role="dialog" aria-modal="true">
-              <h2>Kill agent group</h2>
+              <h2>Kill agent</h2>
               <p
                 class="rm-modal-target"
                 title={groupOrigin(target)}
@@ -641,7 +899,7 @@ const ResourceMonitorApp: Component = () => {
                   data-ac-testid="resourceMonitor.killConfirm.confirm"
                   data-ac-role="button"
                 >
-                  {killInFlight() ? "Killing..." : "Kill Group"}
+                  {killInFlight() ? "Killing..." : "Kill Agent"}
                 </button>
               </div>
             </div>

@@ -1032,6 +1032,9 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                 (None, None)
             }
         };
+        // #566 - project folder name for the Resource Monitor row, derived from
+        // the same deterministic spawn cwd as the (workgroup, agent) pair above.
+        let project = crate::config::teams::project_from_path(&cwd);
         ResourceLaunchRegistration::new(
             resource_monitor.as_ref().clone(),
             permit,
@@ -1042,6 +1045,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                 agent_label: agent_label.clone(),
                 workgroup,
                 agent,
+                project,
             },
         )
     });

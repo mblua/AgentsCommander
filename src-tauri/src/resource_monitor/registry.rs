@@ -61,6 +61,7 @@ struct ResourceAgentGroup {
     agent_label: Option<String>,
     workgroup: Option<String>,
     agent: Option<String>,
+    project: Option<String>,
     root_identity: ProcessIdentity,
     state: ResourceGroupState,
     descendants_observed: bool,
@@ -130,6 +131,7 @@ impl ResourceLaunchRegistration {
             self.metadata.agent_label.clone(),
             self.metadata.workgroup.clone(),
             self.metadata.agent.clone(),
+            self.metadata.project.clone(),
             identity,
         )?;
         self.registered = true;
@@ -202,6 +204,7 @@ impl ResourceMonitorState {
         agent_label: Option<String>,
         workgroup: Option<String>,
         agent: Option<String>,
+        project: Option<String>,
         root_identity: ProcessIdentity,
     ) -> Result<(), String> {
         let observed = self.backend.observe_tree(root_identity);
@@ -233,7 +236,12 @@ impl ResourceMonitorState {
             inner.groups.retain(|_, g| {
                 !(matches!(g.state, ResourceGroupState::Terminated)
                     && g.workgroup == workgroup
-                    && g.agent == agent)
+                    && g.agent == agent
+                    // #566 - also match project so two different projects running
+                    // the same wg/role never dedup against each other's Terminated
+                    // row. PREDICATE only; the gate above stays (wg|agent) so
+                    // unrelated non-WG launches are never merged (preserves #559).
+                    && g.project == project)
             });
         }
         inner.groups.insert(
@@ -245,6 +253,7 @@ impl ResourceMonitorState {
                 agent_label,
                 workgroup,
                 agent,
+                project,
                 root_identity,
                 state: ResourceGroupState::Running,
                 descendants_observed,
@@ -832,7 +841,10 @@ struct SampleOutcome {
 /// confirm (see snapshot()), so this threshold never authorizes a reap on its own.
 const REAP_STRIKES: u8 = 2;
 
-/// #559 - upper bound on retained Terminated rows (matches the slot cap).
+/// #559 - upper bound on retained Terminated (released-permit) rows kept for
+/// recent-history display. Deliberately a fixed bound, independent of the
+/// active-slot cap `max_concurrent_agent_processes` (#565): eviction here never
+/// affects active_count, so it does not need to track the configurable cap.
 const MAX_TERMINATED_RETAINED: usize = 16;
 
 /// #559 - minimum interval between cleanup retries for a single quarantine.
@@ -967,6 +979,7 @@ fn group_snapshot(group: &ResourceAgentGroup) -> ResourceAgentGroupSnapshot {
             .unwrap_or_else(|| group.name.clone()),
         workgroup: group.workgroup.clone(),
         agent: group.agent.clone(),
+        project: group.project.clone(),
         root_pid: group.root_identity.pid,
         root_identity: group.root_identity,
         state: group.state,
@@ -1274,7 +1287,7 @@ mod tests {
         );
         let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
         state
-            .register_group(permit, Uuid::new_v4(), "agent".into(), None, None, None, None, root)
+            .register_group(permit, Uuid::new_v4(), "agent".into(), None, None, None, None, None, root)
             .unwrap();
         let snapshot = state.snapshot(limits(3));
         assert_eq!(snapshot.groups[0].process_count, 2);
@@ -1298,7 +1311,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(!result.quarantined);
@@ -1322,7 +1335,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(!result.quarantined);
@@ -1345,7 +1358,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(result.quarantined);
@@ -1362,7 +1375,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.mark_gone(root);
@@ -1395,7 +1408,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.replace_tree(
@@ -1432,7 +1445,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
@@ -1457,7 +1470,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.replace_tree(
@@ -1500,7 +1513,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.replace_tree(
@@ -1531,7 +1544,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.replace_tree(
@@ -1563,7 +1576,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.replace_tree(
@@ -1601,7 +1614,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.replace_tree(
@@ -1638,7 +1651,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.mark_unverifiable(root.pid);
@@ -1663,7 +1676,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.mark_exit_during_terminate(root);
@@ -1684,7 +1697,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
         let first = state.kill_group(id, ResourceKillReason::User).unwrap();
         let second = state.kill_group(id, ResourceKillReason::Watchdog).unwrap();
@@ -1743,7 +1756,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         // Live root: no strike.
@@ -1777,7 +1790,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         // One missing-root strike.
@@ -1807,7 +1820,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         // A failed enumeration routes through set_group_error (the Err arm), which never
@@ -1831,7 +1844,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         // Tree reports missing-root (the creation-time-mismatch path) and the confirm
@@ -1856,7 +1869,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         // Root stays in the identities map, so observe_identity returns Ok(Some(root)).
@@ -1877,7 +1890,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         // Missing-root signal fires, but observe_identity returns Err (pid still exists,
@@ -1905,7 +1918,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
@@ -1939,6 +1952,7 @@ mod tests {
                 None,
                 Some("wg-1".into()),
                 Some("tech-lead".into()),
+                None,
                 root_a,
             )
             .unwrap();
@@ -1959,6 +1973,7 @@ mod tests {
                 None,
                 Some("wg-1".into()),
                 Some("tech-lead".into()),
+                None,
                 root_b,
             )
             .unwrap();
@@ -1967,6 +1982,61 @@ mod tests {
         assert_eq!(snap.groups.len(), 1);
         assert_eq!(snap.groups[0].session_id, id_b.to_string());
         assert_eq!(snap.groups[0].state, ResourceGroupState::Running);
+    }
+
+    // (c2) #566 - two different projects running the same wg/role must NOT dedup
+    // against each other's Terminated row (the dedup predicate gained `project`).
+    // Regression guard: reverting the `g.project == project` clause makes this
+    // assert len == 1 instead of 2.
+    #[test]
+    fn cross_project_same_role_terminated_rows_are_not_deduped() {
+        let (state, backend) = state_with_fake();
+
+        // Project A: register the (wg-1, tech-lead) group, then kill it so its
+        // row is Terminated.
+        let root_a = identity(80, 80);
+        backend.add_tree(root_a, vec![observed(80, 80, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
+        let id_a = Uuid::new_v4();
+        state
+            .register_group(
+                permit,
+                id_a,
+                "agent".into(),
+                None,
+                None,
+                Some("wg-1".into()),
+                Some("tech-lead".into()),
+                Some("proj-a".into()),
+                root_a,
+            )
+            .unwrap();
+        let killed = state.kill_group(id_a, ResourceKillReason::User).unwrap();
+        assert_eq!(killed.state, ResourceGroupState::Terminated);
+
+        // Project B: same wg/role, different project. The predicate's
+        // `g.project == project` clause means A's Terminated row is NOT dropped.
+        let root_b = identity(81, 81);
+        backend.add_tree(root_b, vec![observed(81, 81, None, 0)]);
+        let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
+        let id_b = Uuid::new_v4();
+        state
+            .register_group(
+                permit,
+                id_b,
+                "agent".into(),
+                None,
+                None,
+                Some("wg-1".into()),
+                Some("tech-lead".into()),
+                Some("proj-b".into()),
+                root_b,
+            )
+            .unwrap();
+
+        // Both rows survive: A (Terminated, proj-a) + B (Running, proj-b).
+        let snap = state.snapshot(limits(3));
+        assert_eq!(snap.groups.len(), 2);
     }
 
     // (T2) H1 - the reaping sample stamps the friendly message and suppresses the raw
@@ -1979,7 +2049,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
 
         backend.replace_tree(root, Vec::new(), missing_root_error(root));
@@ -2024,7 +2094,7 @@ mod tests {
         let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
-            .register_group(permit, id, "agent".into(), None, None, None, None, root)
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
             .unwrap();
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(result.quarantined);
@@ -2051,7 +2121,7 @@ mod tests {
             let permit = state.try_reserve_agent_slot(limits(100)).unwrap().unwrap();
             let id = Uuid::new_v4();
             state
-                .register_group(permit, id, "agent".into(), None, None, None, None, root)
+                .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
                 .unwrap();
             let killed = state.kill_group(id, ResourceKillReason::User).unwrap();
             assert_eq!(killed.state, ResourceGroupState::Terminated);

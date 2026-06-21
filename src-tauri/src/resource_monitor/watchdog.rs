@@ -181,6 +181,7 @@ mod tests {
             name: "agent".to_string(),
             workgroup: None,
             agent: None,
+            project: None,
             root_pid: 1,
             root_identity: identity(1),
             state: ResourceGroupState::Running,
