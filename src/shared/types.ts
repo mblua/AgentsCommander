@@ -240,6 +240,9 @@ export interface AppSettings {
   mainSidebarWidth: number;
   mainSidebarSide: MainSidebarSide;
   mainAlwaysOnTop: boolean;
+  // #587 — whether the Resource Monitor occupies the main central pane (vs the
+  // terminal). Restored on startup; default false (terminal).
+  mainResourceMonitorAttached: boolean;
   webServerEnabled: boolean;
   webServerPort: number;
   webServerBind: string;

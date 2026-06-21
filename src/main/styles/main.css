@@ -74,6 +74,26 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  /* #587 — containing block for the Resource Monitor overlay (.main-rm-pane). */
+  position: relative;
+}
+
+/* #587 — Resource Monitor as a central-pane view. The RM overlay covers the
+ * always-mounted terminal while RM is the selected central view (same pattern
+ * as the Home overlay). z-index MUST exceed .home-view's z-index:10 (above) so
+ * RM reliably covers Home too; .terminal-layout does not establish its own
+ * stacking context (position:relative + z-index:auto), so Home's z-10 lives in
+ * this pane's stacking context. */
+.main-rm-pane {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  background: var(--sidebar-bg, #0a0e14);
+}
+.main-rm-pane > .rm-root {
+  width: 100%;
+  height: 100%;
 }
 
 .main-root.main-sidebar-right .main-terminal-pane {

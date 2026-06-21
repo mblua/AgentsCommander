@@ -1,12 +1,14 @@
 import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
 import type { UnlistenFn } from "../shared/transport";
 import type { MainSidebarSide } from "../shared/types";
-import { SettingsAPI } from "../shared/ipc";
+import { SettingsAPI, onResourceMonitorAttach, onSessionSwitched } from "../shared/ipc";
 import { isTauri } from "../shared/platform";
 import { initZoom } from "../shared/zoom";
 import { initWindowGeometry } from "../shared/window-geometry";
 import SidebarApp from "../sidebar/App";
 import TerminalApp from "../terminal/App";
+import ResourceMonitorApp from "../resource-monitor/App";
+import { centralViewStore } from "./stores/centralView";
 import Titlebar from "../sidebar/components/Titlebar";
 import QuitConfirmModal from "./components/QuitConfirmModal";
 import RtkBanner from "./components/RtkBanner";
@@ -165,6 +167,11 @@ const MainApp: Component = () => {
       const saved = settings.mainSidebarWidth ?? DEFAULT_MAIN_SIDEBAR_WIDTH;
       setSidebarWidth(clampMainSidebarWidth(saved, window.innerWidth));
       setSidebarSide(settings.mainSidebarSide === "left" ? "left" : DEFAULT_SIDEBAR_SIDE);
+      // #587 — restore the persisted central-view choice (RM attached vs
+      // terminal). setInitialView only sets the signal; it does not persist.
+      centralViewStore.setInitialView(
+        settings.mainResourceMonitorAttached ? "resourceMonitor" : "terminal"
+      );
       if (isTauri && settings.mainAlwaysOnTop) {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().setAlwaysOnTop(true);
@@ -177,6 +184,17 @@ const MainApp: Component = () => {
     // dedicated helper so the gating logic — especially the userInitiated
     // discriminator on session_switched — is unit-testable in isolation.
     unlisteners.push(...(await wireHomeListeners()));
+
+    // #587 — selecting any session reveals the terminal (covers an embedded
+    // RM); the detached RM window's Attach button pulls RM back in-pane. Both
+    // calls are guarded idempotent in centralViewStore, so double-firing
+    // alongside SessionItem's direct showTerminal() is harmless.
+    unlisteners.push(
+      await onSessionSwitched(() => centralViewStore.showTerminal())
+    );
+    unlisteners.push(
+      await onResourceMonitorAttach(() => centralViewStore.showResourceMonitor())
+    );
 
     window.addEventListener("resize", onWindowResize);
     window.addEventListener("main-sidebar-width-change", onSidebarWidthChange);
@@ -249,6 +267,15 @@ const MainApp: Component = () => {
         />
         <div class="main-terminal-pane">
           <TerminalApp embedded />
+          <Show when={centralViewStore.isResourceMonitor}>
+            <div
+              class="main-rm-pane"
+              data-ac-testid="main.resourceMonitorPane"
+              data-ac-role="surface"
+            >
+              <ResourceMonitorApp embedded />
+            </div>
+          </Show>
         </div>
       </div>
       <Show when={quitModalCount() !== null}>

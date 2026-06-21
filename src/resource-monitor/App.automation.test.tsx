@@ -240,6 +240,64 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
+  // #587 — embedded mode (mounted in MainApp's central pane) drops the window
+  // titlebar and exposes a Detach control instead.
+  it("in embedded mode hides the window titlebar and shows a Detach button", async () => {
+    const fake = new FakeTransport();
+    setupResourceMonitor(fake, activeSnapshot());
+
+    const rendered = renderWithFakeTransport(
+      () => <ResourceMonitorApp embedded />,
+      fake
+    );
+    try {
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector('[data-ac-testid="resourceMonitor.window"]')
+        ).not.toBeNull();
+      });
+
+      // No window titlebar (main owns the window chrome).
+      expect(rendered.root.querySelector(".rm-titlebar")).toBeNull();
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.titlebar.attach"]')
+      ).toBeNull();
+      // Detach button present; the body + root still render.
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.detach"]')
+      ).not.toBeNull();
+      expect(rendered.root.querySelector(".rm-root")).not.toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #587 — windowed (default) mode keeps the window titlebar and shows no
+  // Detach button. (The titlebar's controls — including the renamed Attach
+  // button — are gated behind isTauri, which is false under jsdom, so only the
+  // titlebar shell is observable here; the Detach-vs-titlebar split is the
+  // meaningful embedded/windowed distinction.)
+  it("in windowed mode keeps the titlebar and shows no Detach button", async () => {
+    const fake = new FakeTransport();
+    setupResourceMonitor(fake, activeSnapshot());
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector('[data-ac-testid="resourceMonitor.window"]')
+        ).not.toBeNull();
+      });
+
+      expect(rendered.root.querySelector(".rm-titlebar")).not.toBeNull();
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.detach"]')
+      ).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("exposes a stable empty-state selector when no agents are active", async () => {
     const fake = new FakeTransport();
     setupResourceMonitor(fake, emptySnapshot());

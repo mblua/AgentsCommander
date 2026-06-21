@@ -7,6 +7,7 @@ import { isTauri } from "../../shared/platform";
 import { bridgesStore } from "../stores/bridges";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
+import { centralViewStore } from "../../main/stores/centralView";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
@@ -88,6 +89,9 @@ const SessionItem: Component<{
   };
 
   const handleClick = async () => {
+    // #587 — cover an embedded RM with the terminal even when switch_session
+    // no-ops on the already-active session (which emits no session_switched).
+    centralViewStore.showTerminal();
     await SessionAPI.switch(props.session.id);
     if (isTauri) {
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");

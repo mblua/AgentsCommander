@@ -128,6 +128,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     mainSidebarWidth: 360,
     mainSidebarSide: "right",
     mainAlwaysOnTop: false,
+    mainResourceMonitorAttached: false,
     webServerEnabled: false,
     webServerPort: 8765,
     webServerBind: "127.0.0.1",
