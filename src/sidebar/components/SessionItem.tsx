@@ -6,6 +6,7 @@ import { extractProjectName } from "../../shared/path-extractors";
 import { isTauri } from "../../shared/platform";
 import { bridgesStore } from "../stores/bridges";
 import { sessionsStore } from "../stores/sessions";
+import { requestCoordinatorClose } from "../stores/coordinator-close";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import OpenAgentModal from "./OpenAgentModal";
@@ -152,7 +153,10 @@ const SessionItem: Component<{
 
   const handleClose = (e: MouseEvent) => {
     e.stopPropagation();
-    SessionAPI.destroy(props.session.id);
+    // #588 route through the shared helper: closing a coordinator from the
+    // session list marks + (settings-gated) cascades + confirms when busy. For a
+    // non-coordinator this is identical to the previous SessionAPI.destroy.
+    void requestCoordinatorClose(props.session);
   };
 
   /** True if any configured coding agent is Claude-based */

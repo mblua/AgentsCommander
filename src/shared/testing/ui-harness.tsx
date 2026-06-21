@@ -156,6 +156,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     coordinatorIdleBadgeRedMinutes: 60,
     coordinatorAutoCloseEnabled: true,
     coordinatorAutoCloseMinutes: 60,
+    coordinatorCascadeCloseEnabled: true,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
   };

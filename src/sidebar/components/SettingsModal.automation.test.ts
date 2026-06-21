@@ -129,6 +129,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     coordinatorIdleBadgeRedMinutes: 60,
     coordinatorAutoCloseEnabled: true,
     coordinatorAutoCloseMinutes: 60,
+    coordinatorCascadeCloseEnabled: true,
     ...overrides,
   };
 }
@@ -1005,6 +1006,38 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.agents[0]).not.toHaveProperty("instructionsFilename");
+
+    dispose();
+  });
+
+  it("round-trips coordinatorCascadeCloseEnabled through the General cascade checkbox (#588)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>("settings.general.coordinatorCascadeCloseEnabled");
+    // The label is the issue's verbatim wording.
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "Always close team members when manually closing Coordinator",
+    );
+    // Loaded default is true (the seeded settings have it on).
+    expect(checkbox.checked).toBe(true);
+
+    // Toggle OFF and save -> the persisted draft carries the new value, proving
+    // updateField accepts the new AppSettings key end to end.
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.coordinatorCascadeCloseEnabled).toBe(false);
 
     dispose();
   });
