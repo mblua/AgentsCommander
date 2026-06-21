@@ -12,6 +12,17 @@ type Callback = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 pub struct IdleDetector {
     activity: Arc<Mutex<HashMap<Uuid, Instant>>>,
+    /// #552 auto-close silence clock. SEPARATE from `activity` (which drives the
+    /// #260 idle dot). Reset by ANY PTY output (printable OR escape-only), user
+    /// input, and inter-agent delivery. Never read by the idle-dot watcher, so
+    /// it cannot mask #260 idle detection.
+    silence: Arc<Mutex<HashMap<Uuid, Instant>>>,
+    /// (#580) Per-session "alive since" clock: the `Instant` the PTY was
+    /// registered (spawned). Mirrors `silence` (seeded in `register_session`,
+    /// cleared in `remove_session`). Read via `alive_age` so auto-close can apply
+    /// WAKE_GRACE: a freshly-woken session is neither kill-eligible nor allowed to
+    /// advance the persisted idle anchor until it is alive past the grace.
+    registered_at: Arc<Mutex<HashMap<Uuid, Instant>>>,
     idle_set: Arc<Mutex<HashSet<Uuid>>>,
     resize_grace: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// Per-session idle tuning, populated by `register_session` at PTY spawn.
@@ -61,6 +72,8 @@ impl IdleDetector {
     ) -> Arc<Self> {
         Arc::new(Self {
             activity: Arc::new(Mutex::new(HashMap::new())),
+            silence: Arc::new(Mutex::new(HashMap::new())),
+            registered_at: Arc::new(Mutex::new(HashMap::new())),
             idle_set: Arc::new(Mutex::new(HashSet::new())),
             resize_grace: Arc::new(Mutex::new(HashMap::new())),
             tuning: Arc::new(Mutex::new(HashMap::new())),
@@ -92,6 +105,20 @@ impl IdleDetector {
                 tuning.idle_threshold.as_millis()
             );
         }
+        // #552 always seed the silence clock so a freshly spawned session has a
+        // baseline age (the auto-close evaluator treats untracked-but-live as a
+        // spawn race; see auto_close.rs). Independent of the #260 activity seed
+        // above, which is gated on `seed_initial_activity`.
+        self.silence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id, Instant::now());
+        // (#580) seed the alive-since clock alongside silence so auto-close can
+        // apply WAKE_GRACE (kill-eligibility / anchor-advance gating) from spawn.
+        self.registered_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id, Instant::now());
     }
 
     /// Mark that a resize just happened for this session.
@@ -155,9 +182,51 @@ impl IdleDetector {
         self.record_activity_with_bytes(session_id, 0);
     }
 
+    /// #552 Reset the auto-close silence clock for a session. Does NOT touch
+    /// `activity`/`idle_set`/`on_busy`, so it never affects the #260 idle dot.
+    /// Called for ANY PTY output, user input, and inter-agent delivery.
+    pub fn touch_silence(&self, session_id: Uuid) {
+        self.silence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id, Instant::now());
+    }
+
+    /// #552 Time since last silence-reset for a session, or None if untracked.
+    /// Read by the auto-close evaluator.
+    pub fn silence_age(&self, session_id: Uuid) -> Option<Duration> {
+        let now = Instant::now();
+        self.silence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+            .and_then(|&t| now.checked_duration_since(t))
+    }
+
+    /// (#580) Time since this session's PTY was registered (spawned), or None if
+    /// untracked. Used by auto-close to apply WAKE_GRACE: a freshly-woken session
+    /// is neither kill-eligible nor allowed to advance the persisted idle anchor
+    /// until alive past the grace (so wake-time scrollback repaint cannot reset it).
+    pub fn alive_age(&self, session_id: Uuid) -> Option<Duration> {
+        let now = Instant::now();
+        self.registered_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+            .and_then(|&t| now.checked_duration_since(t))
+    }
+
     /// Remove a session from tracking (called on session destroy).
     pub fn remove_session(&self, session_id: Uuid) {
         self.activity.lock().unwrap().remove(&session_id);
+        self.silence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
+        self.registered_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
         self.idle_set.lock().unwrap().remove(&session_id);
         self.resize_grace.lock().unwrap().remove(&session_id);
         self.tuning.lock().unwrap().remove(&session_id);
@@ -334,5 +403,152 @@ mod tests {
             "remove_session must drop the tuning entry"
         );
         assert!(!detector.activity.lock().unwrap().contains_key(&id));
+    }
+
+    /// #552: touch_silence updates only the `silence` map; it must NOT insert
+    /// into `activity`/`idle_set` or fire on_busy, or it would couple the
+    /// auto-close clock to the #260 idle dot.
+    #[test]
+    fn touch_silence_is_decoupled_from_idle_dot() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let busy_calls = Arc::new(AtomicUsize::new(0));
+        let busy_calls_cb = Arc::clone(&busy_calls);
+        let detector = IdleDetector::new(move |_| {}, move |_| {
+            busy_calls_cb.fetch_add(1, Ordering::SeqCst);
+        });
+        let id = Uuid::new_v4();
+
+        detector.touch_silence(id);
+
+        assert!(
+            detector.silence.lock().unwrap().contains_key(&id),
+            "touch_silence must populate the silence map"
+        );
+        assert!(
+            !detector.activity.lock().unwrap().contains_key(&id),
+            "touch_silence must NOT touch activity (the #260 idle-dot signal)"
+        );
+        assert!(
+            !detector.idle_set.lock().unwrap().contains(&id),
+            "touch_silence must NOT touch idle_set"
+        );
+        assert_eq!(
+            busy_calls.load(Ordering::SeqCst),
+            0,
+            "touch_silence must NOT fire on_busy"
+        );
+    }
+
+    /// #552: silence_age grows over time and is None for an untracked id.
+    #[test]
+    fn silence_age_increases_and_is_none_when_untracked() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+
+        assert!(
+            detector.silence_age(id).is_none(),
+            "an untracked session has no silence age"
+        );
+
+        detector.touch_silence(id);
+        let first = detector.silence_age(id).expect("tracked now");
+        std::thread::sleep(Duration::from_millis(10));
+        let second = detector.silence_age(id).expect("still tracked");
+        assert!(
+            second >= first,
+            "silence age must be monotonic non-decreasing ({second:?} >= {first:?})"
+        );
+    }
+
+    /// #552: the silence seed in register_session is UNCONDITIONAL, unlike the
+    /// activity seed which is gated on `seed_initial_activity`. A live member
+    /// with no silence baseline would be treated as a spawn race and protected,
+    /// so the seed must fire even when the profile opts out of the activity seed.
+    #[test]
+    fn register_session_seeds_silence_even_when_activity_seed_disabled() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(
+            id,
+            IdleTuning {
+                seed_initial_activity: false,
+                ..IdleTuning::DEFAULT
+            },
+        );
+        assert!(
+            !detector.activity.lock().unwrap().contains_key(&id),
+            "activity seed is gated off here"
+        );
+        assert!(
+            detector.silence.lock().unwrap().contains_key(&id),
+            "silence seed must be unconditional (#552)"
+        );
+        assert!(
+            detector.silence_age(id).is_some(),
+            "a registered session has a silence baseline age"
+        );
+    }
+
+    /// #552: remove_session must clear the silence entry (no leak on destroy).
+    #[test]
+    fn remove_session_clears_silence() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+        assert!(detector.silence.lock().unwrap().contains_key(&id));
+        detector.remove_session(id);
+        assert!(
+            !detector.silence.lock().unwrap().contains_key(&id),
+            "remove_session must drop the silence entry"
+        );
+    }
+
+    /// (#580): register_session seeds registered_at; alive_age is Some after
+    /// register and None after remove_session (the WAKE_GRACE clock lifecycle).
+    #[test]
+    fn register_session_seeds_registered_at_and_alive_age() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+
+        assert!(
+            detector.alive_age(id).is_none(),
+            "an unregistered session has no alive age"
+        );
+
+        detector.register_session(id, IdleTuning::DEFAULT);
+        assert!(
+            detector.registered_at.lock().unwrap().contains_key(&id),
+            "register_session must seed registered_at (#580)"
+        );
+        assert!(
+            detector.alive_age(id).is_some(),
+            "a registered session has an alive age"
+        );
+
+        detector.remove_session(id);
+        assert!(
+            !detector.registered_at.lock().unwrap().contains_key(&id),
+            "remove_session must drop the registered_at entry"
+        );
+        assert!(
+            detector.alive_age(id).is_none(),
+            "alive_age is None after remove_session"
+        );
+    }
+
+    /// (#580): alive_age grows monotonically (non-decreasing).
+    #[test]
+    fn alive_age_is_monotonic() {
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        let id = Uuid::new_v4();
+        detector.register_session(id, IdleTuning::DEFAULT);
+
+        let first = detector.alive_age(id).expect("tracked after register");
+        std::thread::sleep(Duration::from_millis(10));
+        let second = detector.alive_age(id).expect("still tracked");
+        assert!(
+            second >= first,
+            "alive age must be monotonic non-decreasing ({second:?} >= {first:?})"
+        );
     }
 }

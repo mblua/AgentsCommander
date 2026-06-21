@@ -267,6 +267,15 @@ export interface AppSettings {
   agentProcessKillPrivateBytes: number;
   resourceKeepLastSnapshot: boolean;
   resourceBackoffPolling: boolean;
+  /** #552 coordinator idle-badge color thresholds, in minutes. Mirror of the
+   *  Rust `coordinator_idle_badge_*_minutes` fields (camelCase via serde).
+   *  Color helper requires yellow < red (validated at Settings save time). */
+  coordinatorIdleBadgeYellowMinutes: number;
+  coordinatorIdleBadgeRedMinutes: number;
+  /** #552 auto-close lifecycle clock: when enabled, a team whose sessions go
+   *  fully silent for `coordinatorAutoCloseMinutes` is terminated. */
+  coordinatorAutoCloseEnabled: boolean;
+  coordinatorAutoCloseMinutes: number;
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";
@@ -322,6 +331,9 @@ export interface ResourceAgentGroupSnapshot {
   /** #516 - bare agent name (e.g. "dev-rust"), or `null` when the launch cwd
    * carries no replica identity. Always present. */
   agent: string | null;
+  /** #566 - project folder name (e.g. "AgentsCommander_ac"), or `null` for
+   * origin / ad-hoc / unparseable launches. Always present. */
+  project: string | null;
   rootPid?: number | null;
   rootIdentity?: ResourceProcessIdentity | null;
   state: ResourceGroupState;
@@ -537,6 +549,18 @@ export interface AcAgentReplica {
   currentCodingAgentId?: string;
   /** #384: per-replica profile letter (`tooling.profile`, then legacy override). */
   currentProfile?: string;
+  /** #552/#580 RFC3339 timestamp of the unified team-idle anchor, i.e. the
+   *  backend's `max(last_user_message_at, last_activity_at)` — the field now
+   *  means "team idle since" (reset when you message the coordinator, any member
+   *  is active, or the coordinator is active), NOT just the user's last message
+   *  (#580; rename to idleSinceAt deferred). `undefined` when none. Only
+   *  meaningful when `isCoordinator`. Drives the idle badge; read from the
+   *  persisted CoordinatorClocks store (survives restart + dormant). */
+  lastUserMessageAt?: string;
+  /** #552 RFC3339 time this coordinator's team was auto-closed for inactivity,
+   *  or undefined. Only meaningful when `isCoordinator`. Drives the neutral
+   *  "auto-closed" pill; cleared on reopen. */
+  autoClosedAt?: string;
 }
 
 export interface AcWorkgroup {

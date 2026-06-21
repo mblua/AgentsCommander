@@ -67,6 +67,10 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     agentProcessKillPrivateBytes: 12 * 1024 ** 3,
     resourceKeepLastSnapshot: true,
     resourceBackoffPolling: true,
+    coordinatorIdleBadgeYellowMinutes: 30,
+    coordinatorIdleBadgeRedMinutes: 60,
+    coordinatorAutoCloseEnabled: true,
+    coordinatorAutoCloseMinutes: 60,
     ...overrides,
   };
 }

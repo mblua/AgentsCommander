@@ -128,6 +128,23 @@ pub fn workgroup_and_agent_from_path(path: &str) -> (Option<String>, Option<Stri
     (None, None)
 }
 
+/// Derive the project folder name from a CWD: the directory immediately
+/// preceding the `.ac` workspace segment. Mirrors the project anchor used by
+/// `agent_fqn_from_path` (#566). Returns `None` when there is no workspace
+/// segment (origin agents, ad-hoc shells) or `.ac` is the first segment.
+///
+/// Deliberately more permissive than `workgroup_and_agent_from_path`: it
+/// returns `Some(project)` for ANY cwd with a `.ac` segment that has a parent,
+/// so root agents (`<proj>/.ac/ac-root-agent`) and origin/matrix agents
+/// (`<proj>/.ac/_agent_x`) also carry a project even when their wg/agent are
+/// `None`. Only a cwd with no `.ac` segment at all yields `None`.
+pub fn project_from_path(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    let ac_idx = find_workspace_segment(&parts)?;
+    (ac_idx > 0).then(|| parts[ac_idx - 1].to_string())
+}
+
 // ── FQN resolution (shared between CLI and mailbox — §AR2-shared) ──
 
 /// Error type for `resolve_agent_target`. Each variant carries the data needed to
@@ -1120,6 +1137,56 @@ mod tests {
             workgroup_and_agent_from_path("C:/repos/proj-a/.ac/ac-root-agent"),
             (None, None)
         );
+    }
+
+    // ── #566 project_from_path ──
+
+    #[test]
+    fn project_from_path_wg_replica() {
+        let cwd = "C:/repos/AgentsCommander_ac/.ac/wg-5-dev-team/__agent_dev-rust";
+        assert_eq!(
+            project_from_path(cwd),
+            Some("AgentsCommander_ac".to_string())
+        );
+    }
+
+    /// Deep subdir inside a replica (and Windows backslashes) still anchors on
+    /// the right-most `.ac` and returns the owning project.
+    #[test]
+    fn project_from_path_deeper_cwd_windows_style() {
+        let cwd = r"C:\repos\proj-a\.ac\wg-1-devs\__agent_alice\repo-x\src";
+        assert_eq!(project_from_path(cwd), Some("proj-a".to_string()));
+    }
+
+    /// Permissive by design: root agents carry a project even though their
+    /// wg/agent resolve to `(None, None)` / the "Root agent" label fallback.
+    #[test]
+    fn project_from_path_root_agent() {
+        assert_eq!(
+            project_from_path("C:/repos/proj-a/.ac/ac-root-agent"),
+            Some("proj-a".to_string())
+        );
+    }
+
+    /// Origin / matrix agents also carry a project (the parent of `.ac`).
+    #[test]
+    fn project_from_path_origin_agent() {
+        assert_eq!(
+            project_from_path("C:/repos/proj-a/.ac/_agent_architect"),
+            Some("proj-a".to_string())
+        );
+    }
+
+    /// No `.ac` segment at all (ad-hoc / non-AC shell) -> `None`.
+    #[test]
+    fn project_from_path_no_workspace_segment_returns_none() {
+        assert_eq!(project_from_path("C:/repos/my-project/tech-lead"), None);
+    }
+
+    /// `.ac` as the first segment has no parent project dir -> `None`.
+    #[test]
+    fn project_from_path_ac_first_segment_returns_none() {
+        assert_eq!(project_from_path("/.ac/wg-1-devs/__agent_alice"), None);
     }
 
     #[test]

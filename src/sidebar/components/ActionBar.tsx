@@ -230,7 +230,7 @@ const ActionBar: Component = () => {
     const snapshot = resourceMonitorStore.snapshot;
     if (state === "disabled") return "Resource Monitor disabled";
     if (!snapshot) return "Resource Monitor status unknown";
-    return `Resource Monitor: ${snapshot.activeAgentGroups}/${snapshot.maxConcurrentAgentGroups} agent groups, ${state}`;
+    return `Resource Monitor: ${snapshot.activeAgentGroups}/${snapshot.maxConcurrentAgentGroups} agents, ${state}`;
   };
 
   const handleOpenResourceMonitor = () => {

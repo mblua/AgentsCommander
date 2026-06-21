@@ -286,6 +286,9 @@ pub fn run(
     let session_mgr_for_exit = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
     let idle_detector_for_pty = Arc::clone(&idle_detector);
+    // #552 manage the IdleDetector so the shared user-message helper, the mailbox
+    // wake path, and the auto-close task can reach its silence clock.
+    let idle_detector_for_state = Arc::clone(&idle_detector);
     let broadcaster_for_pty = broadcaster.clone();
     let broadcaster_for_web = broadcaster.clone();
     let web_token_for_server = Arc::clone(&web_access_token);
@@ -296,6 +299,11 @@ pub fn run(
 
     let settings: SettingsState =
         Arc::new(tokio::sync::RwLock::new(config::settings::load_settings()));
+    // #552 persisted coordinator badge clock + auto-closed marker store (loaded
+    // once at startup; flushed by the auto-close tick and on app exit).
+    let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
+        Arc::new(Mutex::new(crate::config::coordinator_clocks::load()));
+    let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
     let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
     let settings_for_web = Arc::clone(&settings);
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
@@ -336,6 +344,8 @@ pub fn run(
         .manage(Arc::clone(&resource_monitor_state))
         .manage(voice_tracking)
         .manage(settings)
+        .manage(idle_detector_for_state) // #552 managed type: Arc<IdleDetector>
+        .manage(coordinator_clocks) // #552 managed type: CoordinatorClocksState
         .manage(detached_sessions.clone())
         .manage(spec_board_state.clone())
         .manage(loop_scheduler.clone())
@@ -580,6 +590,10 @@ pub fn run(
             loop_scheduler_for_setup
                 .clone()
                 .start(app.handle().clone(), shutdown_for_setup.clone());
+
+            // #552 auto-close watcher: terminates teams idle past the configured
+            // timeout (reads SettingsState each tick) and flushes the badge store.
+            crate::session::auto_close::start(app.handle().clone(), shutdown_for_setup.clone());
 
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .expect("Failed to load app icon");
@@ -1679,6 +1693,7 @@ pub fn run(
             commands::task::task_get_title,
             commands::task::task_set_title,
               commands::task::task_clean,
+            commands::task::task_clean_at,
                         commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::config::get_settings,
@@ -1795,6 +1810,20 @@ pub fn run(
                             commands::spec_board::spec_board_close_all(state).await;
                         });
                     }
+                    // #566 - when the main window is destroyed (any close path:
+                    // X, Alt+F4, programmatic, silent- or confirm-quit), close the
+                    // Resource Monitor window so it cannot orphan and keep the app
+                    // alive. No-op if it was never opened or already closed.
+                    if label == "main" {
+                        if let Some(rm) = app_handle.get_webview_window("resource-monitor") {
+                            // G4: log on failure rather than swallow. A swallowed
+                            // error would hide the exact orphan bug this fixes;
+                            // mirrors the FE quit path's console.warn.
+                            if let Err(e) = rm.destroy() {
+                                log::warn!("[shutdown] RM window destroy failed: {e}");
+                            }
+                        }
+                    }
                     // Detached-window destroyed (by any mechanism — X, Alt+F4, programmatic).
                     // Two jobs:
                     //   1) Clear from `DetachedSessionsState` — switch_session needs an
@@ -1867,6 +1896,19 @@ pub fn run(
                         sessions_persistence::persist_current_state(&mgr).await;
                     });
                     log::info!("[shutdown] Session state persisted, process exiting");
+
+                    // #552 flush the coordinator badge / auto-closed store on clean
+                    // exit (the 60s tick can leave up to one tick of recency
+                    // unpersisted). Sync snapshot + save; best-effort on poison.
+                    {
+                        let snap = coordinator_clocks_for_exit
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .snapshot();
+                        if let Err(e) = crate::config::coordinator_clocks::save_map(&snap) {
+                            log::warn!("[coordinator-clocks] exit flush failed: {}", e);
+                        }
+                    }
 
                     // Issue #231 + grinch G-LOW (#246): remove daemon.pid AFTER
                     // persist_current_state so a concurrent CLI invocation never

@@ -9,6 +9,7 @@ import type {
   Session,
 } from "../types";
 import { FakeTransport } from "./fake-transport";
+import { toastStore } from "../stores/toasts";
 import { projectStore } from "../../sidebar/stores/project";
 import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
@@ -152,6 +153,10 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     agentProcessKillPrivateBytes: 12 * 1024 ** 3,
     resourceKeepLastSnapshot: true,
     resourceBackoffPolling: true,
+    coordinatorIdleBadgeYellowMinutes: 30,
+    coordinatorIdleBadgeRedMinutes: 60,
+    coordinatorAutoCloseEnabled: true,
+    coordinatorAutoCloseMinutes: 60,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
   };
@@ -221,6 +226,7 @@ export function resetUiStoresForTests(): void {
   bridgesStore.setBridges([]);
   terminalStore.setActiveSession(null, "", "", null, "", null);
   terminalStore.setActiveWorkgroupTask(null);
+  toastStore.clear();
   __resetHomeStoreForTests();
 }
 

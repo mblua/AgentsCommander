@@ -169,6 +169,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     agentProcessKillPrivateBytes: 12 * 1024 ** 3,
     resourceKeepLastSnapshot: true,
     resourceBackoffPolling: true,
+    coordinatorIdleBadgeYellowMinutes: 30,
+    coordinatorIdleBadgeRedMinutes: 60,
+    coordinatorAutoCloseEnabled: true,
+    coordinatorAutoCloseMinutes: 60,
     ...overrides,
   };
 }
@@ -321,8 +325,10 @@ function renderPicker(
     sessionName: string;
     agentPath: string | null;
     currentAgentId: string | null;
+    explicitCurrentAgentId: string | null;
     currentRequestedProfile: string | null;
     scopeContext: AgentPickerScopeContext | undefined;
+    disableRedundantReplicaAssign: boolean;
     onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
     onClose: () => void;
   }> = {},
@@ -337,8 +343,16 @@ function renderPicker(
         sessionName={overrides.sessionName ?? "architect"}
         agentPath={overrides.agentPath === undefined ? ORIGIN_AGENT_PATH : overrides.agentPath}
         currentAgentId={overrides.currentAgentId ?? "codex"}
+        // Defaults to the currentAgentId baseline (simulating an explicitly-assigned
+        // replica / live session); the never-assigned case passes null explicitly.
+        explicitCurrentAgentId={
+          overrides.explicitCurrentAgentId !== undefined
+            ? overrides.explicitCurrentAgentId
+            : overrides.currentAgentId ?? "codex"
+        }
         currentRequestedProfile={overrides.currentRequestedProfile}
         scopeContext={overrides.scopeContext}
+        disableRedundantReplicaAssign={overrides.disableRedundantReplicaAssign}
         onSelect={overrides.onSelect ?? onSelect}
         onClose={overrides.onClose ?? onClose}
       />
@@ -448,6 +462,34 @@ describe("AgentPickerModal", () => {
     // against codex and read "A-ALPHA-CODEX". Each must show its OWN A label.
     expect(chip("codex")).toBe("A-ALPHA-CODEX");
     expect(chip("claude")).toBe("A-ALPHA-CLAUDE");
+
+    dispose();
+  });
+
+  it("does not pre-select a coding agent on hover; selection stays click-only (#563)", async () => {
+    const { dispose } = renderPicker({ agentPath: REPO_PATH });
+    await settle();
+
+    // Baseline: codex is the initial selection and drives the projection.
+    expect(target("agentPicker.provider.codex").getAttribute("data-ac-state")).toBe("active");
+    expect(text("agentPicker.projected")).toContain("Codex");
+
+    // Hovering claude must NOT activate it nor update the Effective Projection.
+    const claudeCard = target<HTMLButtonElement>("agentPicker.provider.claude");
+    claudeCard.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+    claudeCard.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    await settle();
+    expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("inactive");
+    expect(target("agentPicker.provider.codex").getAttribute("data-ac-state")).toBe("active");
+    expect(text("agentPicker.projected")).toContain("Codex");
+    expect(text("agentPicker.projected")).not.toContain("Claude Code");
+
+    // Clicking still selects and updates the projection.
+    claudeCard.click();
+    await settle();
+    expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
+    expect(text("agentPicker.projected")).toContain("Claude Code");
+    expect(text("agentPicker.projected")).toContain("claude --dangerously-skip-permissions");
 
     dispose();
   });
@@ -848,5 +890,214 @@ describe("AgentPickerModal", () => {
     expect(text("agentPicker.profile.B.pill")).toContain("MISSING");
 
     dispose();
+  });
+
+  // #551: disable "Assign to this replica" when the pending selection still equals
+  // the replica's current Coding Agent + Profile (assign flows opt in).
+  describe("redundant replica assignment (#551)", () => {
+    const REDUNDANT_TOOLTIP = "This replica already uses this Coding Agent + Profile.";
+
+    it("disables apply with a tooltip while the selection matches the current pair", async () => {
+      const { dispose } = renderPicker({
+        currentAgentId: "codex",
+        currentRequestedProfile: "B",
+        disableRedundantReplicaAssign: true,
+      });
+      await settle();
+
+      const apply = target<HTMLButtonElement>("agentPicker.apply");
+      expect(text("agentPicker.apply")).toContain("Assign to this replica");
+      expect(apply.disabled).toBe(true);
+      expect(apply.getAttribute("title")).toBe(REDUNDANT_TOOLTIP);
+
+      dispose();
+    });
+
+    it("re-enables apply when a different coding agent is selected", async () => {
+      const { dispose } = renderPicker({
+        currentAgentId: "codex",
+        currentRequestedProfile: "B",
+        disableRedundantReplicaAssign: true,
+      });
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      target<HTMLButtonElement>("agentPicker.provider.claude").click();
+      await settle();
+
+      const apply = target<HTMLButtonElement>("agentPicker.apply");
+      expect(apply.disabled).toBe(false);
+      expect(apply.getAttribute("title")).toBeNull();
+
+      dispose();
+    });
+
+    it("re-enables apply on a different profile and re-disables when the current pair returns", async () => {
+      const { dispose } = renderPicker({
+        currentAgentId: "codex",
+        currentRequestedProfile: "B",
+        disableRedundantReplicaAssign: true,
+      });
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      // codex configures A and B; A differs from the current B.
+      target<HTMLButtonElement>("agentPicker.profile.A").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      // Returning to the current letter re-disables (value comparison, not a touched flag).
+      target<HTMLButtonElement>("agentPicker.profile.B").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      dispose();
+    });
+
+    it("leaves apply enabled for a redundant pair when the opt-in is off (launch flow)", async () => {
+      const { dispose } = renderPicker({
+        currentAgentId: "codex",
+        currentRequestedProfile: "B",
+        // disableRedundantReplicaAssign omitted → unchanged launch/legacy behavior
+      });
+      await settle();
+
+      const apply = target<HTMLButtonElement>("agentPicker.apply");
+      expect(apply.disabled).toBe(false);
+      expect(apply.getAttribute("title")).toBeNull();
+
+      dispose();
+    });
+
+    it("scopes the disable to replica scope for a WG replica", async () => {
+      const { dispose } = renderPicker({
+        agentPath: WG_REPLICA_PATH,
+        scopeContext: WG_SCOPE_CONTEXT,
+        currentAgentId: "codex",
+        currentRequestedProfile: "A",
+        disableRedundantReplicaAssign: true,
+      });
+      await settle();
+
+      // Replica scope + current pair → disabled with tooltip.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+      expect(target("agentPicker.apply").getAttribute("title")).toBe(REDUNDANT_TOOLTIP);
+
+      // A different profile re-enables replica scope (redundancy is replica-only).
+      target<HTMLButtonElement>("agentPicker.profile.B").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+      expect(target("agentPicker.apply").getAttribute("title")).toBeNull();
+
+      dispose();
+    });
+
+    it("uses the backend instance override as the baseline so a stale session profile can't leak a no-op", async () => {
+      // Live-session flow where the replica's persisted instance override ("C")
+      // differs from the session's launch-time requested profile ("B"). The
+      // backend ranks the override first (resolve_profile), so the modal resolves
+      // to "C"; the redundancy baseline must be "C", not the stale "B".
+      mockSettingsApi.resolveCodingAgentProfile.mockResolvedValue(
+        resolution({
+          requestedProfile: "C",
+          effectiveProfile: "C",
+          fallbackChain: ["C"],
+          instanceProfileOverride: "C",
+        }),
+      );
+      const { dispose } = renderPicker({
+        currentAgentId: "codex",
+        currentRequestedProfile: "B",
+        disableRedundantReplicaAssign: true,
+      });
+      await settle();
+
+      // Opens resolved to the override "C" → redundant → disabled.
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+
+      // Picking a different letter ("A") is a real change → enabled.
+      target<HTMLButtonElement>("agentPicker.profile.A").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      // Picking the override letter "C" is the replica's current pair → disabled
+      // again. Without the override-aware baseline this would compare against the
+      // stale "B" and wrongly stay enabled (a no-op assign + needless restart
+      // prompt — exactly what #551 blocks).
+      target<HTMLButtonElement>("agentPicker.profile.C").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+      expect(target("agentPicker.apply").getAttribute("title")).toBe(REDUNDANT_TOOLTIP);
+
+      dispose();
+    });
+
+    it("uses the origin default profile tier as the baseline (#551 FIX 1)", async () => {
+      // Replica with an origin-matrix default profile of "C" (set via "set default
+      // profile") and NO instance override / explicit requested profile. The backend
+      // fallback chain ranks origin_default above agent_default, so the redundancy
+      // baseline must be the origin "C" — not the local defaultProfileByAgent ("B"
+      // for "architect" in the fixture), which the buggy memo read instead.
+      mockSettingsApi.resolveCodingAgentProfile.mockResolvedValue(
+        resolution({
+          requestedProfile: "B",
+          effectiveProfile: "B",
+          fallbackChain: ["B"],
+          instanceProfileOverride: null,
+          originDefaultProfile: "C",
+          agentDefaultProfile: "B",
+        }),
+      );
+      const { dispose } = renderPicker({
+        currentAgentId: "codex",
+        currentRequestedProfile: null,
+        disableRedundantReplicaAssign: true,
+      });
+      await settle();
+
+      // Selecting the origin-default letter "C" is the replica's current pair → no-op
+      // → disabled. (The buggy memo resolved the baseline to "B" and wrongly enabled.)
+      target<HTMLButtonElement>("agentPicker.profile.C").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+      expect(target("agentPicker.apply").getAttribute("title")).toBe(REDUNDANT_TOOLTIP);
+
+      // Selecting the local agent-default letter "B" is a genuine change away from the
+      // origin default → enabled. (The buggy memo treated "B" as current → disabled.)
+      target<HTMLButtonElement>("agentPicker.profile.B").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+      expect(target("agentPicker.apply").getAttribute("title")).toBeNull();
+
+      dispose();
+    });
+
+    it("keeps assign enabled for a never-assigned replica on its preferred-agent hint (#551 FIX 2)", async () => {
+      // Gray replica that was never assigned a coding agent (no currentCodingAgentId)
+      // but carries a lastCodingAgent/preferredAgentId hint ("codex"). The picker
+      // opens pre-selected on that hint, but with no EXPLICIT current agent the assign
+      // is a genuine first pin — never a redundant no-op — so it must stay enabled.
+      const { dispose } = renderPicker({
+        currentAgentId: "codex", // preferredAgentId hint → pre-selects the picker
+        explicitCurrentAgentId: null, // never assigned → no explicit current agent
+        currentRequestedProfile: null,
+        disableRedundantReplicaAssign: true,
+      });
+      await settle();
+
+      // Pre-selected on the preferred agent + its default profile, yet enabled.
+      const apply = target<HTMLButtonElement>("agentPicker.apply");
+      expect(apply.disabled).toBe(false);
+      expect(apply.getAttribute("title")).toBeNull();
+
+      // Re-affirming the preferred agent and its default profile keeps it enabled —
+      // the user can pin the hinted pair in one click.
+      target<HTMLButtonElement>("agentPicker.provider.codex").click();
+      target<HTMLButtonElement>("agentPicker.profile.A").click();
+      await settle();
+      expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+      dispose();
+    });
   });
 });

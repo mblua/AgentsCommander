@@ -110,6 +110,17 @@ pub struct AcAgentReplica {
     /// covers WG-aware suffix matching that simple `originProject/name`
     /// comparison on the frontend misses. See issue #69.
     pub is_coordinator: bool,
+    /// #552/#580 RFC3339 timestamp of the unified team-idle anchor
+    /// `max(last_user_message_at, last_activity_at)` for this coordinator, or
+    /// None. Only meaningful when `is_coordinator`. The badge displays and
+    /// auto-close triggers on this value (closed time counts). The field keeps
+    /// its #552 name (rename to `idleSinceAt` deferred, Decision C). Read from
+    /// the persisted CoordinatorClocks store keyed by FQN.
+    pub last_user_message_at: Option<String>,
+    /// #552 RFC3339 timestamp this coordinator's team was auto-closed for
+    /// inactivity, or None. Only meaningful when `is_coordinator`. Drives the
+    /// "auto-closed" pill; cleared on reopen. Read from the same store entry.
+    pub auto_closed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -900,8 +911,18 @@ pub async fn discover_ac_agents(
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     settings: State<'_, SettingsState>,
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
+    coordinator_clocks: State<'_, crate::config::coordinator_clocks::CoordinatorClocksState>,
 ) -> Result<AcDiscoveryResult, String> {
     let cfg = settings.read().await;
+    // #552 snapshot the persisted badge/auto-closed store once so the per-replica
+    // scan below never locks inside the loop.
+    let clocks_snapshot: std::collections::HashMap<
+        String,
+        crate::config::coordinator_clocks::ClockEntry,
+    > = coordinator_clocks
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .snapshot();
     // Discovery-wide team snapshot — used per-replica for is_coordinator
     // and at the end for refresh_coordinator_flags. Computed once so a
     // single discovery pass presents a coherent coordinator view.
@@ -1105,6 +1126,27 @@ pub async fn discover_ac_agents(
                                     is_coordinator
                                 );
 
+                                // #552 look up this coordinator's persisted clocks by FQN
+                                // (same shape as agent_fqn_from_path: <project>:<wg>/<agent>).
+                                let fqn =
+                                    format!("{}:{}/{}", project_folder, dir_name, replica_name);
+                                let clock_entry = if is_coordinator {
+                                    clocks_snapshot.get(&fqn)
+                                } else {
+                                    None
+                                };
+                                // (#580) the badge field carries the unified idle
+                                // anchor max(user, activity) (rename deferred,
+                                // Decision C) so a dormant/just-loaded row shows the
+                                // real accumulated idle (closed time included), not
+                                // just the user-message age.
+                                let last_user_message_at = clock_entry
+                                    .and_then(|e| e.idle_anchor())
+                                    .map(|dt| dt.to_rfc3339());
+                                let auto_closed_at = clock_entry
+                                    .and_then(|e| e.auto_closed_at)
+                                    .map(|dt| dt.to_rfc3339());
+
                                 wg_agents.push(AcAgentReplica {
                                     name: replica_name,
                                     path: wg_path.to_string_lossy().to_string(),
@@ -1116,6 +1158,8 @@ pub async fn discover_ac_agents(
                                     repo_paths,
                                     repo_branch,
                                     is_coordinator,
+                                    last_user_message_at,
+                                    auto_closed_at,
                                 });
                             }
                         }
@@ -1397,6 +1441,7 @@ pub async fn discover_project(
     path: String,
     settings: State<'_, SettingsState>,
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
+    coordinator_clocks: State<'_, crate::config::coordinator_clocks::CoordinatorClocksState>,
 ) -> Result<AcDiscoveryResult, String> {
     let base = Path::new(&path);
     if !base.is_dir() {
@@ -1404,6 +1449,14 @@ pub async fn discover_project(
     }
 
     let cfg = settings.read().await;
+    // #552 snapshot the persisted badge/auto-closed store once (see discover_ac_agents).
+    let clocks_snapshot: std::collections::HashMap<
+        String,
+        crate::config::coordinator_clocks::ClockEntry,
+    > = coordinator_clocks
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .snapshot();
 
     let Some(workspace_dir) = existing_workspace_dir(base) else {
         return Ok(AcDiscoveryResult {
@@ -1568,6 +1621,25 @@ pub async fn discover_project(
                             is_coordinator
                         );
 
+                        // #552 look up this coordinator's persisted clocks by FQN
+                        // (same shape as agent_fqn_from_path: <project>:<wg>/<agent>).
+                        let fqn = format!("{}:{}/{}", project_folder, dir_name, replica_name);
+                        let clock_entry = if is_coordinator {
+                            clocks_snapshot.get(&fqn)
+                        } else {
+                            None
+                        };
+                        // (#580) the badge field carries the unified idle anchor
+                        // max(user, activity) (rename deferred, Decision C) so a
+                        // dormant/just-loaded row shows the real accumulated idle
+                        // (closed time included), not just the user-message age.
+                        let last_user_message_at = clock_entry
+                            .and_then(|e| e.idle_anchor())
+                            .map(|dt| dt.to_rfc3339());
+                        let auto_closed_at = clock_entry
+                            .and_then(|e| e.auto_closed_at)
+                            .map(|dt| dt.to_rfc3339());
+
                         wg_agents.push(AcAgentReplica {
                             name: replica_name,
                             path: wg_path.to_string_lossy().to_string(),
@@ -1579,6 +1651,8 @@ pub async fn discover_project(
                             repo_paths,
                             repo_branch,
                             is_coordinator,
+                            last_user_message_at,
+                            auto_closed_at,
                         });
                     }
                 }

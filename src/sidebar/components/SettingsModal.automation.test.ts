@@ -4,6 +4,11 @@ import { render } from "solid-js/web";
 import SettingsModal from "./SettingsModal";
 import type { AppSettings } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
+import {
+  AC_MATRIX_ROOT_PLACEHOLDER,
+  AC_REPLICA_ROOT_PLACEHOLDER,
+  AC_WORKSPACE_ROOT_PLACEHOLDER,
+} from "../../shared/profile-utils";
 
 vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
@@ -121,6 +126,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     agentProcessKillPrivateBytes: 12 * 1024 ** 3,
     resourceKeepLastSnapshot: true,
     resourceBackoffPolling: true,
+    coordinatorIdleBadgeYellowMinutes: 30,
+    coordinatorIdleBadgeRedMinutes: 60,
+    coordinatorAutoCloseEnabled: true,
+    coordinatorAutoCloseMinutes: 60,
     ...overrides,
   };
 }
@@ -328,7 +337,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("renders coding-agent rails, profile cards, command inputs, env rows, and badges", async () => {
+  it("renders coding-agent rails, profile cards, command inputs, env rows, badges, and placeholder help", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       agents: [
         {
@@ -399,6 +408,22 @@ describe("SettingsModal automation hooks", () => {
     expect(byTestId("settings.profileCard.0.A.env")).toBeTruthy();
     expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.key").value).toBe("OPENAI_ORG");
     expect(byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.value").value).toBe("ac-prod");
+
+    // #576: an expanded profile card surfaces an always-visible "?" help button
+    // whose native tooltip + aria-label list the three AC path placeholder
+    // tokens. The expected tokens are the shared profile-utils constants (which
+    // mirror the backend), so this asserts the byte-for-byte match end to end.
+    const help = byTestId<HTMLButtonElement>("settings.profileCard.0.A.placeholderHelp");
+    expect(help.tagName).toBe("BUTTON");
+    expect(help.getAttribute("type")).toBe("button");
+    for (const token of [
+      AC_REPLICA_ROOT_PLACEHOLDER,
+      AC_WORKSPACE_ROOT_PLACEHOLDER,
+      AC_MATRIX_ROOT_PLACEHOLDER,
+    ]) {
+      expect(help.getAttribute("title")).toContain(token);
+      expect(help.getAttribute("aria-label")).toContain(token);
+    }
 
     // #538: codex has no B cell, but B no longer shows an "Add cell" / missing
     // box. The badge still honestly reports MISSING (codex's B falls back to its
@@ -615,7 +640,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("renders the %AC_ROOT% template preview for env rows", async () => {
+  it("renders the %AC_REPLICA_ROOT% template preview for env rows", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       codingAgentProfiles: {
         schemaVersion: 2,
@@ -627,7 +652,7 @@ describe("SettingsModal automation hooks", () => {
             A: {
               enabled: true,
               command: "codex",
-              env: { CODEX_HOME: "%AC_ROOT%\\.codex\\agents\\codex" },
+              env: { CODEX_HOME: "%AC_REPLICA_ROOT%\\.codex\\agents\\codex" },
               notes: "",
             },
           },

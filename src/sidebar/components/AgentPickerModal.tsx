@@ -14,8 +14,8 @@ import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
   effectiveEnvProjection,
-  expandAcRootPreview,
-  hasAcRootPlaceholder,
+  expandAcPlaceholdersPreview,
+  hasAcPlaceholder,
   isAcAgentPath,
   isCodexAgent,
   isWgReplicaPath,
@@ -69,12 +69,32 @@ const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string>
   missing: "MISSING",
 };
 
+// #551: shown on the disabled "Assign to this replica" button when the pending
+// selection still equals the replica's current Coding Agent + Profile.
+const REDUNDANT_REPLICA_ASSIGN_TOOLTIP =
+  "This replica already uses this Coding Agent + Profile.";
+
 const AgentPickerModal: Component<{
   sessionName: string;
   agentPath?: string | null;
   currentAgentId?: string | null;
+  // #551 FIX 2: the EXPLICIT persisted current coding agent — the replica's
+  // `currentCodingAgentId` (or a live session's `agentId`). The redundancy disable
+  // keys off THIS, never off `currentAgentId` (which may carry a soft
+  // `preferredAgentId` / `lastCodingAgent` hint used only to pre-select the picker).
+  // A never-assigned replica has no explicit current agent (undefined/null here), so
+  // its "Assign to this replica" stays enabled — the user can still pin the hinted
+  // agent as a genuine first assignment.
+  explicitCurrentAgentId?: string | null;
   currentRequestedProfile?: string | null;
   scopeContext?: AgentPickerScopeContext;
+  // #551: opt-in for the replica *assign* flows. When set, the "Assign to this
+  // replica" button is disabled (with a tooltip) while the pending selection
+  // still equals the replica's current Coding Agent + Profile — re-assigning the
+  // same pair is a no-op and (since #537) pops a needless "Restart now?" prompt.
+  // The launch flow leaves this off so a replica can always be started with its
+  // configured agent.
+  disableRedundantReplicaAssign?: boolean;
   onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
   onClose: () => void;
 }> = (props) => {
@@ -216,10 +236,10 @@ const AgentPickerModal: Component<{
     return enabledLaunchCellFor(agent, effectivePreview().effectiveProfile);
   });
   // The cell command is the full invocation; an empty cell command falls back to
-  // the agent's base command. Display-only %AC_ROOT% expansion uses the replica root.
+  // the agent's base command. Display-only AC placeholder expansion uses the replica root.
   const projectedCommand = createMemo(() => {
     const cmd = profileCellCommandText(projectedCell()) || selectedAgent()?.command || "";
-    return expandAcRootPreview(cmd, acRoot());
+    return expandAcPlaceholdersPreview(cmd, acRoot());
   });
   // #527 Effective Projection: merged effective env (agent env + profile env) with
   // per-value origin badges, plus the chosen-pair resolution descriptors.
@@ -235,8 +255,8 @@ const AgentPickerModal: Component<{
       ? `${profileLabel(effectivePreview().requestedProfile)} → ${profileLabel(effectivePreview().effectiveProfile)} (fallback)`
       : "Direct match",
   );
-  const commandUsesAcRoot = createMemo(() =>
-    hasAcRootPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || ""),
+  const commandUsesAcPlaceholder = createMemo(() =>
+    hasAcPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || ""),
   );
   const providerDefaultPreview = (agent: AgentConfig) => {
     const current = settings();
@@ -417,10 +437,64 @@ const AgentPickerModal: Component<{
     return `Overwrite ${count}${wg ? ` in ${wg}` : " in this workgroup"}`;
   });
 
+  // #551: the replica's *current* profile letter — the baseline for the redundant
+  // selection check. It must mirror the backend's resolve_profile fallback chain
+  // exactly (coding_agent_profiles.rs):
+  //   instance_override → explicit (requested) → origin_default → agent_default → "A"
+  // The backend ranks the persisted instance override ahead of the launch-time
+  // requested profile, so when present it — not props.currentRequestedProfile — is
+  // what the modal resolves to and applies on open. The origin_default and
+  // agent_default tiers are read from the backend resolution fields (request-
+  // independent, computed from disk/settings — same as configuredDefault()), so the
+  // baseline stays stable even after the user picks a different profile (which would
+  // otherwise let a stale session.requestedProfile wrongly enable a no-op assign).
+  // The local-settings read is only a last-resort fallback for when the backend
+  // preview is unavailable (non-AC path or a resolution error) — the same
+  // agent_default tier, read locally.
+  const currentProfileLetter = createMemo(() => {
+    const preview = backendPreview();
+    const override = normalizeProfileLetter(preview?.instanceProfileOverride);
+    if (override) return override;
+    const explicit = normalizeProfileLetter(props.currentRequestedProfile);
+    if (explicit) return explicit;
+    const originDefault = normalizeProfileLetter(preview?.originDefaultProfile);
+    if (originDefault) return originDefault;
+    const agentDefault = normalizeProfileLetter(preview?.agentDefaultProfile);
+    if (agentDefault) return agentDefault;
+    const current = settings();
+    if (current && isAcAgentPath(targetReplicaPath())) {
+      const acDefault = normalizeProfileLetter(
+        current.codingAgentProfiles.defaultProfileByAgent[targetName()],
+      );
+      if (acDefault) return acDefault;
+    }
+    return "A";
+  });
+
+  // #551: true while the pending selection still equals the replica's current
+  // Coding Agent + Profile (replica scope only, and only when the caller opted in
+  // via the assign flows). The untouched short-circuit covers the just-opened
+  // state robustly even if a backend default differs from the front-end default;
+  // once the user picks a profile, an explicit letter match is required.
+  // FIX 2: the agent-equality baseline is the EXPLICIT current coding agent
+  // (explicitCurrentAgentId), never the pre-select hint in currentAgentId. A
+  // never-assigned replica (no explicit current agent) is never redundant, so its
+  // assign stays enabled even though the picker opens on a preferred-agent hint.
+  const isRedundantReplicaSelection = createMemo(() => {
+    if (!props.disableRedundantReplicaAssign) return false;
+    if (selectedScope() !== "replica") return false;
+    const agent = selectedAgent();
+    const baselineAgentId = props.explicitCurrentAgentId;
+    if (!agent || !baselineAgentId) return false;
+    if (agent.id !== baselineAgentId) return false;
+    if (!profileTouched()) return true;
+    return selectedProfile() === currentProfileLetter();
+  });
+
   const applyEnabled = createMemo(() => {
     if (busy() || profileResolving() || !selectedAgent()) return false;
     const scope = selectedScope();
-    if (scope === "replica") return true;
+    if (scope === "replica") return !isRedundantReplicaSelection();
     if (!isWgReplica()) return false;
     if (scopePreviewBusy() || !scopePreview()) return false;
     if (scope === "workgroup") return dangerArmed();
@@ -589,7 +663,6 @@ const AgentPickerModal: Component<{
                         classList={{ active: active() }}
                         aria-pressed={active()}
                         onClick={() => setHighlightIndex(i())}
-                        onMouseEnter={() => setHighlightIndex(i())}
                         data-component={`${agent.label} coding agent option`}
                         data-ac-agent-id={agent.id}
                         data-ac-agent-command={agent.command}
@@ -780,10 +853,10 @@ const AgentPickerModal: Component<{
                     <span class="agent-projection-command-label">Invocation</span>
                     <span class="agent-projection-command-value">{projectedCommand() || "none"}</span>
                   </div>
-                  <Show when={commandUsesAcRoot()}>
+                  <Show when={commandUsesAcPlaceholder()}>
                     <div class="agent-projection-ph">
                       <span class="arrow">→</span>
-                      <span>%AC_ROOT% expands at launch; the backend validates the path.</span>
+                      <span>AC path placeholders expand at launch; the backend validates the path.</span>
                     </div>
                   </Show>
                   <Show when={selectedIsCodex() || selectedAgent()?.isolatedHome}>
@@ -1039,6 +1112,7 @@ const AgentPickerModal: Component<{
               class="modal-btn modal-btn-save agent-picker-apply"
               classList={{ danger: selectedScope() !== "replica" }}
               disabled={!applyEnabled()}
+              title={isRedundantReplicaSelection() ? REDUNDANT_REPLICA_ASSIGN_TOOLTIP : undefined}
               onClick={() => void apply()}
               {...automationAttrs(
                 "agentPicker.apply",

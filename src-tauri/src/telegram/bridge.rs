@@ -1178,6 +1178,11 @@ async fn poll_task<R: tauri::Runtime>(
                                 log::error!("Failed to write Telegram input to PTY: {}", e);
                             }
 
+                            // #552 a Telegram message is a real user message to this
+                            // coordinator: reset the badge clock + auto-close silence
+                            // (covers text and transcribed-voice inbound; both converge here).
+                            crate::commands::pty::note_user_message_to_session(&app, session_id).await;
+
                             let _ = app.emit(
                                 "telegram_incoming",
                                 serde_json::json!({

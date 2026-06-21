@@ -134,6 +134,11 @@ pub struct ResourceAgentGroupSnapshot {
     /// #516 - human-readable agent name (e.g. "dev-rust"), or `None` when the
     /// launch cwd carries no replica identity.
     pub agent: Option<String>,
+    /// #566 - project folder name (e.g. "AgentsCommander_ac"), or `None` for
+    /// origin / ad-hoc / unparseable launches. Always serialized (no
+    /// `skip_serializing_if`) for parity with `workgroup`/`agent`, so the
+    /// frontend sees `null` rather than `undefined`.
+    pub project: Option<String>,
     pub root_pid: u32,
     pub root_identity: ProcessIdentity,
     pub state: ResourceGroupState,
@@ -214,4 +219,6 @@ pub struct ResourceLaunchMetadata {
     pub workgroup: Option<String>,
     /// #516 - agent name derived from the spawn cwd (e.g. "dev-rust"), or `None`.
     pub agent: Option<String>,
+    /// #566 - project folder name derived from the spawn cwd, or `None`.
+    pub project: Option<String>,
 }

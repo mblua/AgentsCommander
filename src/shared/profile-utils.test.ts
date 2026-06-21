@@ -5,8 +5,8 @@ import {
   defaultInstructionsFilename,
   effectiveEnvProjection,
   executableBasename,
-  expandAcRootPreview,
-  hasAcRootPlaceholder,
+  expandAcPlaceholdersPreview,
+  hasAcPlaceholder,
   isAcAgentPath,
   isCodexAgent,
   isWgReplicaPath,
@@ -161,14 +161,31 @@ describe("profile utils", () => {
     expect(isWgReplicaPath(null)).toBe(false);
   });
 
-  it("previews %AC_ROOT% expansion for display only", () => {
-    expect(hasAcRootPlaceholder("%AC_ROOT%\\.codex")).toBe(true);
-    expect(hasAcRootPlaceholder("D:\\manual\\codex")).toBe(false);
-    expect(expandAcRootPreview("%AC_ROOT%\\.codex\\agents\\codex", "C:\\wg\\__agent_codex")).toBe(
-      "C:\\wg\\__agent_codex\\.codex\\agents\\codex",
+  it("previews AC placeholder expansion for display only (3 tokens, #576)", () => {
+    expect(hasAcPlaceholder("%AC_REPLICA_ROOT%\\.codex")).toBe(true);
+    expect(hasAcPlaceholder("%AC_WORKSPACE_ROOT%\\.claude")).toBe(true);
+    expect(hasAcPlaceholder("%AC_MATRIX_ROOT%\\.codex")).toBe(true);
+    expect(hasAcPlaceholder("D:\\manual\\codex")).toBe(false);
+    // Old %AC_ROOT% token is no longer recognized (breaking rename, no alias).
+    expect(hasAcPlaceholder("%AC_ROOT%\\.codex")).toBe(false);
+
+    // %AC_REPLICA_ROOT% → replica root; %AC_WORKSPACE_ROOT% and %AC_MATRIX_ROOT%
+    // derive from a full replica path (…\.ac\wg-*\__agent_<name>).
+    const replica = "C:\\proj\\.ac\\wg-6-dev-team\\__agent_codex";
+    expect(expandAcPlaceholdersPreview("%AC_REPLICA_ROOT%\\.codex\\agents\\codex", replica)).toBe(
+      "C:\\proj\\.ac\\wg-6-dev-team\\__agent_codex\\.codex\\agents\\codex",
     );
+    expect(expandAcPlaceholdersPreview("%AC_WORKSPACE_ROOT%\\.claude", replica)).toBe(
+      "C:\\proj\\.ac\\.claude",
+    );
+    expect(expandAcPlaceholdersPreview("%AC_MATRIX_ROOT%\\.codex", replica)).toBe(
+      "C:\\proj\\.ac\\_agent_codex\\.codex",
+    );
+
     // No root context → returned unchanged (backend expands authoritatively at launch).
-    expect(expandAcRootPreview("%AC_ROOT%\\.codex", null)).toBe("%AC_ROOT%\\.codex");
+    expect(expandAcPlaceholdersPreview("%AC_REPLICA_ROOT%\\.codex", null)).toBe(
+      "%AC_REPLICA_ROOT%\\.codex",
+    );
   });
 
   it("parses and stringifies argv text with quoted values", () => {
@@ -296,8 +313,11 @@ describe("profile utils", () => {
 
 describe("profileEnvOrigin (#526/#527 env origin badges)", () => {
   it("classifies an AgentsCommander-managed home path as system", () => {
-    expect(profileEnvOrigin("CODEX_HOME", "%AC_ROOT%\\.codex\\agents\\codex")).toBe("system");
-    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_ROOT%/.claude")).toBe("system");
+    expect(profileEnvOrigin("CODEX_HOME", "%AC_REPLICA_ROOT%\\.codex\\agents\\codex")).toBe("system");
+    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_REPLICA_ROOT%/.claude")).toBe("system");
+    // Any of the three AC placeholders on a managed home key is system-managed.
+    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_WORKSPACE_ROOT%/.claude")).toBe("system");
+    expect(profileEnvOrigin("CODEX_HOME", "%AC_MATRIX_ROOT%\\.codex")).toBe("system");
   });
 
   it("classifies a literal absolute path on a managed home key as accepted", () => {
@@ -317,7 +337,7 @@ describe("effectiveEnvProjection (#527 Env / EFFECTIVE)", () => {
   it("merges agent env (system/accepted) with profile env (profile), profile wins", () => {
     const merged = effectiveEnvProjection(
       [
-        { key: "CODEX_HOME", value: "%AC_ROOT%\\.codex", source: "system", enabled: true },
+        { key: "CODEX_HOME", value: "%AC_REPLICA_ROOT%\\.codex", source: "system", enabled: true },
         { key: "OPENAI_API_KEY", value: "redacted", source: "user", enabled: true },
         { key: "DISABLED", value: "x", source: "user", enabled: false },
       ],
