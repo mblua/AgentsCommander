@@ -398,6 +398,10 @@ pub struct AppSettings {
     pub coordinator_auto_close_enabled: bool,
     #[serde(default = "default_coord_auto_close_minutes")]
     pub coordinator_auto_close_minutes: u32,
+    /// #588 When true, manually closing a coordinator also closes its team
+    /// agents (cascade). When false, only the coordinator closes. Default true.
+    #[serde(default = "default_true")]
+    pub coordinator_cascade_close_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -580,6 +584,7 @@ impl Default for AppSettings {
             coordinator_idle_badge_red_minutes: default_coord_badge_red_minutes(),
             coordinator_auto_close_enabled: true,
             coordinator_auto_close_minutes: default_coord_auto_close_minutes(),
+            coordinator_cascade_close_enabled: true,
         }
     }
 }

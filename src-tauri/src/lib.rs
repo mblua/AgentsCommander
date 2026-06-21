@@ -1683,6 +1683,7 @@ pub fn run(
         .invoke_handler(tauri::generate_handler![
             commands::session::create_session,
             commands::session::destroy_session,
+            commands::session::close_coordinator,
             commands::session::restart_session,
             commands::session::switch_session,
             commands::session::rename_session,
