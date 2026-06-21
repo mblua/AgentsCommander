@@ -66,6 +66,12 @@ pub struct CodingAgentProfilesConfig {
     pub default_profile_by_agent: BTreeMap<String, String>,
     #[serde(default, alias = "matrix")]
     pub profiles_by_agent: BTreeMap<String, BTreeMap<String, ProfileCellConfig>>,
+    /// #548: per-(agent, letter) label override. Empty for an agent/letter means
+    /// "inherit": primigenio (agents[0]) label, else legacy profile_slots[letter].label,
+    /// else the bare letter. Always serializes (no skip_serializing_if) like
+    /// profiles_by_agent, so the key is always present on disk.
+    #[serde(default)]
+    pub profile_labels_by_agent: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for CodingAgentProfilesConfig {
@@ -75,6 +81,7 @@ impl Default for CodingAgentProfilesConfig {
             profile_slots: default_profile_slots(),
             default_profile_by_agent: BTreeMap::new(),
             profiles_by_agent: BTreeMap::new(),
+            profile_labels_by_agent: BTreeMap::new(),
         }
     }
 }
@@ -978,6 +985,17 @@ pub fn repair_coding_agent_profiles_config(
         let original_cells_len = cells.len();
         cells.retain(|letter, _| is_valid_profile_letter(letter));
         changed |= cells.len() != original_cells_len;
+    }
+
+    // #548: prune invalid (non A..Z) letters from each agent's label-override map,
+    // mirroring the cell-letter prune above. Never creates override entries and never
+    // prunes by agent id (an override for a not-yet-loaded agent is harmless and may
+    // precede its agent in load order, per plan 3.7). `retain` keeps every valid key,
+    // so a clean config leaves `changed` false and is not rewritten on load.
+    for (_agent_id, labels) in profiles.profile_labels_by_agent.iter_mut() {
+        let original_len = labels.len();
+        labels.retain(|letter, _| is_valid_profile_letter(letter));
+        changed |= labels.len() != original_len;
     }
 
     for agent in agents {
@@ -2852,6 +2870,137 @@ mod tests {
 
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(!s.spec_board_enabled);
+    }
+
+    // ---- #548: per-(agent, letter) profile label overrides ----
+
+    #[test]
+    fn profile_labels_override_survives_serde_round_trip() {
+        let mut settings = AppSettings::default();
+        settings
+            .coding_agent_profiles
+            .profile_labels_by_agent
+            .insert(
+                "codex".to_string(),
+                BTreeMap::from([("B".to_string(), "turbo".to_string())]),
+            );
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let round_tripped: AppSettings = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            round_tripped.coding_agent_profiles.profile_labels_by_agent["codex"]["B"],
+            "turbo"
+        );
+    }
+
+    #[test]
+    fn profile_labels_default_to_empty_and_always_serialize() {
+        // A pre-#548 v2 codingAgentProfiles object with NO profileLabelsByAgent key
+        // must load as an empty map (proves #[serde(default)]).
+        let json = r##"{
+            "schemaVersion": 2,
+            "profileSlots": { "A": { "label": "" } },
+            "defaultProfileByAgent": {},
+            "profilesByAgent": {}
+        }"##;
+
+        let profiles: super::CodingAgentProfilesConfig = serde_json::from_str(json).unwrap();
+        assert!(profiles.profile_labels_by_agent.is_empty());
+
+        // Re-serializing always emits the key (no skip_serializing_if), parity with
+        // profilesByAgent, so the on-disk key is stable.
+        let out = serde_json::to_string(&profiles).unwrap();
+        assert!(out.contains("profileLabelsByAgent"));
+    }
+
+    #[test]
+    fn repair_prunes_invalid_letter_label_overrides_and_keeps_valid() {
+        let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
+        // Pre-seed the A cell so the config is otherwise repair-clean; the only
+        // change repair makes is dropping the invalid-letter overrides.
+        settings.coding_agent_profiles.profiles_by_agent.insert(
+            "agent-0".to_string(),
+            BTreeMap::from([("A".to_string(), super::empty_profile_cell())]),
+        );
+        settings
+            .coding_agent_profiles
+            .profile_labels_by_agent
+            .insert(
+                "agent-0".to_string(),
+                BTreeMap::from([
+                    ("B".to_string(), "turbo".to_string()),
+                    ("1".to_string(), "bad-digit".to_string()),
+                    ("ab".to_string(), "bad-two-char".to_string()),
+                    ("b".to_string(), "bad-lowercase".to_string()),
+                ]),
+            );
+
+        let changed = repair_coding_agent_profiles_config(
+            &mut settings.coding_agent_profiles,
+            &settings.agents,
+        );
+
+        assert!(changed);
+        let labels = &settings.coding_agent_profiles.profile_labels_by_agent["agent-0"];
+        assert_eq!(labels.get("B").map(String::as_str), Some("turbo"));
+        assert!(!labels.contains_key("1"));
+        assert!(!labels.contains_key("ab"));
+        assert!(!labels.contains_key("b"));
+    }
+
+    #[test]
+    fn repair_keeps_orphan_agent_id_label_override() {
+        // An override under an agent id NOT present in settings.agents must survive
+        // repair: no agent-id prune (plan 3.7); it is inert dead storage the
+        // resolver never reads.
+        let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
+        settings
+            .coding_agent_profiles
+            .profile_labels_by_agent
+            .insert(
+                "ghost-agent".to_string(),
+                BTreeMap::from([("B".to_string(), "turbo".to_string())]),
+            );
+
+        repair_coding_agent_profiles_config(
+            &mut settings.coding_agent_profiles,
+            &settings.agents,
+        );
+
+        assert_eq!(
+            settings.coding_agent_profiles.profile_labels_by_agent["ghost-agent"]["B"],
+            "turbo"
+        );
+    }
+
+    #[test]
+    fn repair_with_valid_label_map_does_not_flip_changed() {
+        let mut settings = settings_with_agents(&[("Codex", "codex")]); // id = agent-0
+        // Make the config otherwise repair-clean: agent-0 already holds its A cell.
+        settings.coding_agent_profiles.profiles_by_agent.insert(
+            "agent-0".to_string(),
+            BTreeMap::from([("A".to_string(), super::empty_profile_cell())]),
+        );
+        // A label map holding only valid letters must not trigger a disk rewrite.
+        settings
+            .coding_agent_profiles
+            .profile_labels_by_agent
+            .insert(
+                "agent-0".to_string(),
+                BTreeMap::from([("B".to_string(), "turbo".to_string())]),
+            );
+
+        let changed = repair_coding_agent_profiles_config(
+            &mut settings.coding_agent_profiles,
+            &settings.agents,
+        );
+
+        assert!(!changed);
+        assert_eq!(
+            settings.coding_agent_profiles.profile_labels_by_agent["agent-0"]["B"],
+            "turbo"
+        );
     }
 
     #[test]
