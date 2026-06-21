@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
-use crate::config::coordinator_clocks::CoordinatorClocksState;
+use crate::config::coordinator_clocks::{ClockEntry, CoordinatorClocksState};
 use crate::config::settings::SettingsState;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::manager::PtyManager;
@@ -100,6 +100,49 @@ fn team_idle_since_secs(
     let u = last_user_message_at.map_or(i64::MIN, |t| t.timestamp());
     let a = last_activity_at.map_or(i64::MIN, |t| t.timestamp());
     u.max(a)
+}
+
+/// (#582) Idle anchor for a GENUINELY ORPHANED member: a live agent member whose
+/// team has NO live coordinator record (its coordinator was destroyed, so there is
+/// no persisted clock to key by the coordinator FQN). Falls back to the member's
+/// own in-memory silence (`now - silence_age`) so the orphan stays
+/// auto-close-eligible and is reaped on a later idle tick instead of reading
+/// `i64::MIN` and lingering until a manual close. `None` silence_age (a
+/// just-spawned, untracked member) yields `i64::MIN` (not closeable this tick),
+/// matching the spawn-race conservatism elsewhere. Pure; unit-tested.
+fn orphan_anchor_secs(silence_age: Option<Duration>, now_secs: i64) -> i64 {
+    match silence_age {
+        Some(d) => now_secs.saturating_sub(d.as_secs() as i64),
+        None => i64::MIN,
+    }
+}
+
+/// (#582) Resolve the idle anchor for ONE live member, keeping the orphan and
+/// normal cases DISTINCT (the #582 HIGH fix). If the team has a LIVE coordinator
+/// record, use the normal persisted team anchor from the snapshot; an absent
+/// snapshot entry yields `i64::MIN` (not closeable), exactly as before #582 -- the
+/// normal path is unchanged, so an unclocked-but-live coordinator (e.g. a team
+/// restored after restart whose FQN is not yet in the clock file) is NEVER closed
+/// from raw member silence. ONLY a member whose team has NO coordinator record (a
+/// genuine orphan) falls back to its own silence via `orphan_anchor_secs`. Mirrors
+/// the kill-loop re-check, which already matches on `coord_refs.get(team)` first
+/// (`auto_close.rs:265`). Pure; unit-tested for all branches.
+fn resolve_member_anchor(
+    coord_ref: Option<&(String, String)>,
+    snap: &std::collections::HashMap<String, ClockEntry>,
+    member_silence: Option<Duration>,
+    now_secs: i64,
+) -> i64 {
+    match coord_ref {
+        Some((fqn, _)) => {
+            let e = snap.get(fqn);
+            team_idle_since_secs(
+                e.and_then(|e| e.last_user_message_at),
+                e.and_then(|e| e.last_activity_at),
+            )
+        }
+        None => orphan_anchor_secs(member_silence, now_secs),
+    }
 }
 
 /// (#580) KILL predicate for ONE team: closeable iff it has an ESTABLISHED
@@ -234,11 +277,12 @@ async fn tick(app: &AppHandle, last_emitted: &mut HashMap<String, i64>) {
     // `snap` already reflects step 1's advance (taken after it) -> reuse, no re-lock.
     let to_close: Vec<Uuid> = members
         .iter()
-        .filter(|(_, team)| {
-            let e = coord_refs.get(team).and_then(|(fqn, _)| snap.get(fqn));
-            let anchor = team_idle_since_secs(
-                e.and_then(|e| e.last_user_message_at),
-                e.and_then(|e| e.last_activity_at),
+        .filter(|(id, team)| {
+            let anchor = resolve_member_anchor(
+                coord_refs.get(team),
+                &snap,
+                idle.silence_age(*id),
+                now_secs,
             );
             team_is_closeable(
                 established_teams.contains(team),
@@ -572,6 +616,94 @@ mod tests {
             !team_is_closeable(true, i64::MIN, now, 3600),
             "a team with no anchor (i64::MIN) is never closeable"
         );
+    }
+
+    // ---- orphan_anchor_secs (#582 orphan fallback anchor) ----
+
+    #[test]
+    fn orphan_anchor_uses_member_own_silence_and_becomes_closeable() {
+        let now = ts(10_000).timestamp();
+        let anchor = orphan_anchor_secs(Some(Duration::from_secs(3700)), now);
+        assert_eq!(anchor, now - 3700);
+        assert!(
+            team_is_closeable(true, anchor, now, 3600),
+            "an orphan silent past the timeout must become closeable"
+        );
+    }
+
+    #[test]
+    fn orphan_anchor_fresh_silence_keeps_member_open() {
+        let now = ts(10_000).timestamp();
+        let anchor = orphan_anchor_secs(Some(Duration::from_secs(30)), now);
+        assert!(
+            !team_is_closeable(true, anchor, now, 3600),
+            "a recently-active orphan must keep its full-timeout lease"
+        );
+    }
+
+    #[test]
+    fn orphan_anchor_untracked_is_min_and_not_closeable() {
+        let now = ts(10_000).timestamp();
+        assert_eq!(orphan_anchor_secs(None, now), i64::MIN);
+        assert!(!team_is_closeable(true, i64::MIN, now, 3600));
+    }
+
+    // ---- resolve_member_anchor (#582 two-case anchor; HIGH-1 regression guard) ----
+
+    #[test]
+    fn resolve_anchor_orphan_uses_member_silence() {
+        let now = ts(10_000).timestamp();
+        let snap: std::collections::HashMap<String, ClockEntry> = std::collections::HashMap::new();
+        // No coordinator record -> genuine orphan -> own silence.
+        let anchor = resolve_member_anchor(None, &snap, Some(Duration::from_secs(3700)), now);
+        assert_eq!(anchor, now - 3700);
+        assert!(team_is_closeable(true, anchor, now, 3600));
+    }
+
+    #[test]
+    fn resolve_anchor_live_coordinator_empty_snapshot_stays_min() {
+        // HIGH-1 GUARD: a LIVE coordinator (record present) whose FQN is NOT in the
+        // snapshot (e.g. a team restored after restart, FQN not yet in the clock
+        // file) must stay i64::MIN / not-closeable -- it must NOT fall back to the
+        // member's raw silence. This is the normal path, unchanged from before #582.
+        let now = ts(10_000).timestamp();
+        let snap: std::collections::HashMap<String, ClockEntry> = std::collections::HashMap::new();
+        let coord = ("proj:wg-1/tech-lead".to_string(), "C:/x".to_string());
+        let anchor = resolve_member_anchor(
+            Some(&coord),
+            &snap,
+            Some(Duration::from_secs(99_999)), // very idle member -- MUST be ignored
+            now,
+        );
+        assert_eq!(
+            anchor,
+            i64::MIN,
+            "live coordinator + empty snapshot must NOT use member silence"
+        );
+        assert!(
+            !team_is_closeable(true, anchor, now, 3600),
+            "an unclocked LIVE coordinator team must stay open (normal path)"
+        );
+    }
+
+    #[test]
+    fn resolve_anchor_live_coordinator_uses_team_clock() {
+        let now = ts(10_000).timestamp();
+        let fqn = "proj:wg-1/tech-lead".to_string();
+        let coord = (fqn.clone(), "C:/x".to_string());
+        let mut snap: std::collections::HashMap<String, ClockEntry> = std::collections::HashMap::new();
+        snap.insert(
+            fqn,
+            ClockEntry {
+                last_user_message_at: Some(ts(10_000 - 3700)),
+                last_activity_at: None,
+                auto_closed_at: None,
+            },
+        );
+        // Normal path: anchor from the persisted team clock; member silence ignored.
+        let anchor = resolve_member_anchor(Some(&coord), &snap, Some(Duration::from_secs(1)), now);
+        assert_eq!(anchor, ts(10_000 - 3700).timestamp());
+        assert!(team_is_closeable(true, anchor, now, 3600));
     }
 
     // ---- destroyed_is_team_coordinator (#589 gated AUTO-CLOSED mark) ----
