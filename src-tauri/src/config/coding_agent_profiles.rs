@@ -393,15 +393,28 @@ pub fn read_replica_profile_content_hash(launch_path: &Path) -> Option<String> {
 }
 
 /// #592 - persist the loaded profile content-hash. No-op for non-replica /
-/// non-matrix launch roots (a normal repo has no per-agent config.json and must
-/// not be littered with one). Best-effort: callers log + ignore errors.
+/// non-matrix / non-root-agent launch roots (a normal repo has no per-agent
+/// config.json and must not be littered with one). Best-effort: callers log +
+/// ignore errors.
 pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Result<(), String> {
     let is_agent_dir = launch_path
         .file_name()
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("__agent_") || name.starts_with("_agent_"))
         .unwrap_or(false);
-    if !is_agent_dir {
+    // #592 - the Root Agent (`ac-root-agent`) is a legitimate replica that runs a
+    // coding agent and must support drift like any other; its dir name does not
+    // match the `__agent_`/`_agent_` prefix, so accept it explicitly. Name-only
+    // (vs path-validated `is_root_agent_path`) is sufficient here: the sole caller
+    // `create_session_inner` already writes this dir's `config.json`
+    // unconditionally via `set_last_coding_agent` right before this call, so the
+    // gate only governs whether the hash field is added, never whether a stray
+    // config.json is created. The read side is ungated, so it round-trips.
+    let is_root_agent = launch_path
+        .to_str()
+        .map(crate::config::root_agent::is_root_agent_dir_name)
+        .unwrap_or(false);
+    if !is_agent_dir && !is_root_agent {
         return Ok(());
     }
     write_tooling_string(launch_path, "profileContentHash", Some(hash))
@@ -1033,5 +1046,26 @@ mod tests {
         assert!(set_replica_profile_content_hash(&repo, "x").is_ok());
         assert!(!repo.join("config.json").exists());
         assert_eq!(read_replica_profile_content_hash(&repo), None);
+    }
+
+    #[test]
+    fn profile_content_hash_write_persists_for_root_agent_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        // The Root Agent dir name does NOT start with `__agent_`/`_agent_`, but it
+        // is a legitimate replica running a coding agent: the hash must persist
+        // and round-trip so drift survives an AC restart (#592 Root Agent fix).
+        let root_agent = temp.path().join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root_agent).unwrap();
+
+        set_replica_profile_content_hash(&root_agent, "cafef00dcafef00d").unwrap();
+
+        assert_eq!(
+            read_replica_profile_content_hash(&root_agent).as_deref(),
+            Some("cafef00dcafef00d")
+        );
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root_agent.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["tooling"]["profileContentHash"], "cafef00dcafef00d");
     }
 }
