@@ -230,6 +230,12 @@ pub async fn update_coding_agent_profiles(
     profiles: CodingAgentProfilesConfig,
 ) -> Result<(), String> {
     persist_coding_agent_profiles_update(settings.inner(), profiles).await?;
+    // #592/#597 diagnostic: confirm the in-memory settings were updated and the
+    // refresh event is emitted, so a later `list_sessions` recomputes drift
+    // against the edited cell.
+    log::info!(
+        "[profile-hash] coding agent profiles saved (in-memory updated); emitting coding_agent_profiles_updated"
+    );
     let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
     Ok(())
 }

@@ -1214,6 +1214,13 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             // #592 - persist the loaded profile content-hash so drift survives an
             // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
             if let Some(hash) = session.profile_content_hash.as_deref() {
+                log::info!(
+                    "[profile-hash] spawn-persist: session={} agent={} hash={} cwd={:?}",
+                    id,
+                    aid,
+                    hash,
+                    cwd,
+                );
                 if let Err(e) = crate::config::coding_agent_profiles::set_replica_profile_content_hash(
                     std::path::Path::new(&cwd),
                     hash,
@@ -1259,6 +1266,12 @@ fn compute_profile_outdated(settings: &AppSettings, info: &SessionInfo) -> bool 
     let Some(agent_id) =
         resolve_restart_selected_agent_id(settings, cwd, None, info.agent_id.as_deref())
     else {
+        log::info!(
+            "[profile-hash] drift-check: session={} no resolvable reload agent (cwd={:?}, stored={:?}); outdated=false",
+            info.id,
+            cwd,
+            info.agent_id,
+        );
         return false;
     };
     let requested = effective_restart_requested_profile(None, info.requested_profile.clone());
@@ -1275,26 +1288,59 @@ fn compute_profile_outdated(settings: &AppSettings, info: &SessionInfo) -> bool 
     // (agent base + cell params) and the raw merged env (agent + cell). Look up the
     // agent a Reload would launch; if it vanished from settings, do not false-flag.
     let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) else {
+        log::info!(
+            "[profile-hash] drift-check: session={} reload agent {} not in settings; outdated=false",
+            info.id,
+            agent_id,
+        );
         return false;
     };
-    let configured = crate::config::agent_command::profile_content_hash(
-        &crate::config::agent_command::compose_effective_command(
-            &agent.command,
-            &resolution.cell.command,
-        ),
-        &crate::config::agent_command::raw_merged_profile_env(agent, &resolution.cell.env),
+    let configured_command = crate::config::agent_command::compose_effective_command(
+        &agent.command,
+        &resolution.cell.command,
     );
+    let configured_env =
+        crate::config::agent_command::raw_merged_profile_env(agent, &resolution.cell.env);
+    let configured =
+        crate::config::agent_command::profile_content_hash(&configured_command, &configured_env);
     // Loaded hash: in-memory stamp, else the persisted replica copy (survives an
     // AC restart that cleared the in-memory stamp).
+    let loaded_source = if info.profile_content_hash.is_some() {
+        "in-memory"
+    } else {
+        "replica-config"
+    };
     let loaded = info.profile_content_hash.clone().or_else(|| {
         crate::config::coding_agent_profiles::read_replica_profile_content_hash(
             std::path::Path::new(cwd),
         )
     });
-    match loaded {
-        Some(loaded) => loaded != configured,
+    let outdated = match &loaded {
+        Some(loaded) => *loaded != configured,
         None => false,
-    }
+    };
+    // #592/#597 diagnostic: per-session drift decision. `loaded` is the hash
+    // stamped at the session's spawn (from memory or the replica config.json);
+    // `configured` is recomputed from CURRENT settings. They diverge when the
+    // profile cell/base command/env was edited after spawn.
+    log::info!(
+        "[profile-hash] drift-check: session={} agent={} profile={} loaded={:?} (via {}) configured={} outdated={} configured_command={:?} env_keys=[{}] ({} entries)",
+        info.id,
+        agent_id,
+        resolution.effective_profile,
+        loaded,
+        loaded_source,
+        configured,
+        outdated,
+        configured_command,
+        configured_env
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        configured_env.len(),
+    );
+    outdated
 }
 
 /// Create a new session. Optionally override shell/args/cwd/name (for action buttons).

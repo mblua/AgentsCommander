@@ -415,8 +415,18 @@ pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Resul
         .map(crate::config::root_agent::is_root_agent_dir_name)
         .unwrap_or(false);
     if !is_agent_dir && !is_root_agent {
+        log::info!(
+            "[profile-hash] persist skipped (not a replica/matrix/root-agent dir): {} hash={}",
+            launch_path.display(),
+            hash,
+        );
         return Ok(());
     }
+    log::info!(
+        "[profile-hash] persist: writing profileContentHash={} to {}",
+        hash,
+        launch_path.display(),
+    );
     write_tooling_string(launch_path, "profileContentHash", Some(hash))
 }
 

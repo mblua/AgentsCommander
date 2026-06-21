@@ -795,9 +795,24 @@ pub fn build_agent_spawn_command(
     // the RAW merged env (agent enabled rows + cell, profile-wins) so an edit to
     // the base command, cell command, base env, or cell env is detectable as
     // drift. SUPERSEDES the #592 cell-only hash input.
-    let profile_hash = profile_content_hash(
-        &effective_command,
-        &raw_merged_profile_env(agent, &profile_resolution.cell.env),
+    let merged_profile_env = raw_merged_profile_env(agent, &profile_resolution.cell.env);
+    let profile_hash = profile_content_hash(&effective_command, &merged_profile_env);
+    // #592/#597 diagnostic: surface exactly what gets hashed at spawn so a later
+    // drift mismatch can be traced. Env VALUES are intentionally omitted (they may
+    // hold secrets); the hash already fingerprints them, and the key set + count
+    // reveal whether an env row participated.
+    log::info!(
+        "[profile-hash] spawn-stamp: agent={} profile={} hash={} effective_command={:?} env_keys=[{}] ({} entries)",
+        agent.id,
+        profile_resolution.effective_profile,
+        profile_hash,
+        effective_command,
+        merged_profile_env
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        merged_profile_env.len(),
     );
 
     let normalized = normalize_legacy_agent_command(&effective_command).map_err(|e| {
