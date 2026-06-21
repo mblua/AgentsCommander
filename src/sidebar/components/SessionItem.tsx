@@ -11,7 +11,7 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
 import { TelegramIcon } from "./TelegramIcon";
-import { sessionProfileBadge } from "../../shared/profile-utils";
+import { profileDisplayLabel, sessionProfileBadge } from "../../shared/profile-utils";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -40,6 +40,20 @@ const SessionItem: Component<{
     return settingsStore.current?.agents?.find((a) => a.id === props.session.agentId)?.label ?? null;
   };
   const profileBadge = () => sessionProfileBadge(props.session);
+  // #548: unify with the ProjectPanel quick-access tooltip — resolve the name of
+  // the EFFECTIVE profile via the SAME shared resolver (no second resolver, no
+  // badge-string parsing). Plain function, matching profileBadge.
+  const profileBadgeTitle = () => {
+    const badge = profileBadge();
+    if (!badge) return undefined;
+    const cfg = settingsStore.current?.codingAgentProfiles;
+    const letter = props.session.effectiveProfile || props.session.requestedProfile;
+    // Graceful degrade: before settings load there is no cfg; keep today's
+    // letter-only tooltip rather than dropping it. Once loaded, show the resolved
+    // name (same shape as the ProjectPanel quick-access tooltip).
+    if (!cfg || !letter) return `Profile ${badge}`;
+    return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], props.session.agentId, letter);
+  };
   const sessionHasLivePty = () => !isInactive() && typeof props.session.status === "string";
   const isRecording = () => voiceRecorder.recordingSessionId() === props.session.id;
   const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
@@ -354,7 +368,7 @@ const SessionItem: Component<{
                 {(badge) => (
                   <span
                     class="profile-badge"
-                    title={`Profile ${badge()}`}
+                    title={profileBadgeTitle()}
                   >
                     {badge()}
                   </span>
