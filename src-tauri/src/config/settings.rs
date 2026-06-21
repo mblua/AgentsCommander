@@ -297,6 +297,10 @@ pub struct AppSettings {
     /// Keep the unified main window always on top.
     #[serde(default)]
     pub main_always_on_top: bool,
+    /// #587 - whether the Resource Monitor occupies the main central pane (vs the
+    /// terminal). Restored on startup; default false (terminal).
+    #[serde(default)]
+    pub main_resource_monitor_attached: bool,
     /// Enable the embedded web server for remote browser access
     #[serde(default)]
     pub web_server_enabled: bool,
@@ -550,6 +554,7 @@ impl Default for AppSettings {
             main_sidebar_width: default_main_sidebar_width(),
             main_sidebar_side: MainSidebarSide::default(),
             main_always_on_top: false,
+            main_resource_monitor_attached: false,
             web_server_enabled: false,
             web_server_port: default_web_port(),
             web_server_bind: default_web_bind(),
@@ -2623,6 +2628,55 @@ mod tests {
         assert!(json.contains("\"injectRtkHook\":true"));
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(back.inject_rtk_hook);
+    }
+
+    #[test]
+    fn main_resource_monitor_attached_round_trips_and_defaults_false() {
+        // #587 - round-trips through serde as camelCase.
+        let mut s = AppSettings::default();
+        assert!(!s.main_resource_monitor_attached);
+        s.main_resource_monitor_attached = true;
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"mainResourceMonitorAttached\":true"));
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.main_resource_monitor_attached);
+
+        // Absent from an older settings.json => serde default false.
+        let json_without = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": [],
+            "startOnlyCoordinators": true,
+            "sidebarAlwaysOnTop": false,
+            "raiseTerminalOnClick": true,
+            "voiceToTextEnabled": false,
+            "geminiApiKey": "",
+            "geminiModel": "gemini-2.5-flash",
+            "voiceAutoExecute": true,
+            "voiceAutoExecuteDelay": 15,
+            "sidebarZoom": 1.0,
+            "terminalZoom": 1.0,
+            "mainZoom": 1.0,
+            "guideZoom": 1.0,
+            "darkfactoryZoom": 1.0,
+            "sidebarGeometry": null,
+            "terminalGeometry": null,
+            "mainGeometry": null,
+            "mainSidebarWidth": 280.0,
+            "mainAlwaysOnTop": false,
+            "webServerEnabled": false,
+            "webServerPort": 7777,
+            "webServerBind": "127.0.0.1",
+            "projectPath": null,
+            "projectPaths": [],
+            "sidebarStyle": "noir-minimal",
+            "onboardingDismissed": false,
+            "coordSortByActivity": false
+        }"#;
+        let from_old: AppSettings =
+            serde_json::from_str(json_without).expect("deserialize old json");
+        assert!(!from_old.main_resource_monitor_attached);
     }
 
     #[test]
