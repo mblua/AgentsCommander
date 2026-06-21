@@ -119,9 +119,24 @@ export function profileCellOrDefault(
   return profiles.profilesByAgent[agentId]?.[letter] ?? EMPTY_CELL;
 }
 
-/** v2 (#384): the full invocation string stored on a profile cell. */
+/** v2 (#384): the params string stored on a profile cell (#597: appended to the agent base command at launch). */
 export function profileCellCommandText(cell: ProfileCellConfig | null | undefined): string {
   return cell?.command ?? "";
+}
+
+/**
+ * #597 - the effective launch command: the agent base command (the binary,
+ * possibly with its own fixed args) followed by the profile cell command (extra
+ * params). Each side is trimmed; a single space joins them when both are
+ * non-empty; an empty side contributes nothing (no stray space). Mirrors the Rust
+ * `compose_effective_command` so the UI preview matches what actually launches.
+ */
+export function composeEffectiveCommand(base: string, cell: string): string {
+  const b = base.trim();
+  const c = cell.trim();
+  if (!b) return c;
+  if (!c) return b;
+  return `${b} ${c}`;
 }
 
 /** True when a value contains any AC path placeholder (display check). */

@@ -376,7 +376,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }));
   };
 
-  // ── Profile cell command string (one full invocation per cell) ──
+  // ── Profile cell command string (params appended to the agent base command, #597) ──
   const updateProfileCellCommand = (agentId: string, letter: string, text: string) => {
     const key = profileCellKey(agentId, letter);
     setDraftDirty(true);
@@ -1592,9 +1592,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     invalid: "invalid",
   };
 
-  // One full invocation string per profile cell — model/effort/sandbox are NOT
-  // split into separate fields (#384). The two comparison rails render the slots
-  // A..Z of two coding agents side by side; cards are addressed by rail index.
+  // The cell command holds the params appended to the agent base command (#597);
+  // model/effort/sandbox are not split into separate fields (#384). The two
+  // comparison rails render the slots A..Z of two coding agents side by side;
+  // cards are addressed by rail index.
   const renderProfileCard = (agent: AgentConfig, railIndex: number, letter: string) => {
     const badge = () => profileCellBadge(agent.id, letter);
     const command = () => displayedProfileCellCommand(agent.id, letter);
@@ -1605,13 +1606,15 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       resolveProfilePreview(settings.data!.codingAgentProfiles, agent.id, letter);
     // #538: every cell always exposes its command editor (no "Add cell" / missing
     // box). The badge reports the real match/configured/fallback/missing state; the
-    // sub-line shows the cell's own executable, or — when it has no command of its
-    // own — what it launches via fallback, so it never contradicts a MISSING or
-    // FALLBACK badge by claiming "Configured".
+    // sub-line shows the agent base binary the cell params append to (#597), or,
+    // when no base command is set yet, the fallback/configured text, so it never
+    // contradicts a MISSING or FALLBACK badge by claiming "Configured".
     const subLine = () => {
       if (cellError()) return "Command syntax error";
-      const ownCommand = commandExecutableBasename(command());
-      if (ownCommand) return ownCommand;
+      // #597 - the binary comes from the agent base command; the cell holds only
+      // params. Show the effective binary basename, not the params text.
+      const baseExe = commandExecutableBasename(agent.command);
+      if (baseExe) return baseExe;
       const resolved = preview();
       return resolved.fallbackApplied ? `Launches ${resolved.effectiveProfile}` : "Configured";
     };
@@ -1687,12 +1690,15 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               ?
             </button>
           </div>
+          <div class="settings-profile-command-base" data-ac-testid={`${cardId}.commandBase`}>
+            Runs <code>{agent.command || "(set the Coding Agent command first)"}</code> then your params:
+          </div>
           <input
             class="settings-input settings-profile-command"
             classList={{ invalid: Boolean(cellError()) }}
             value={command()}
             onInput={(e) => updateProfileCellCommand(agent.id, letter, e.currentTarget.value)}
-            placeholder="codex --sandbox workspace-write --model gpt-5-codex"
+            placeholder="--sandbox workspace-write --model gpt-5-codex"
             data-ac-testid={`${cardId}.command`}
             data-ac-role="textbox"
             data-ac-state={cellError() ? "invalid" : "valid"}

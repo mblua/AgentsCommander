@@ -1271,9 +1271,18 @@ fn compute_profile_outdated(settings: &AppSettings, info: &SessionInfo) -> bool 
             requested_profile: requested.as_deref(),
         },
     );
+    // #597 - mirror the spawn-time composition exactly: hash the effective command
+    // (agent base + cell params) and the raw merged env (agent + cell). Look up the
+    // agent a Reload would launch; if it vanished from settings, do not false-flag.
+    let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) else {
+        return false;
+    };
     let configured = crate::config::agent_command::profile_content_hash(
-        &resolution.cell.command,
-        &resolution.cell.env,
+        &crate::config::agent_command::compose_effective_command(
+            &agent.command,
+            &resolution.cell.command,
+        ),
+        &crate::config::agent_command::raw_merged_profile_env(agent, &resolution.cell.env),
     );
     // Loaded hash: in-memory stamp, else the persisted replica copy (survives an
     // AC restart that cleared the in-memory stamp).
@@ -2731,7 +2740,9 @@ mod tests {
                 "C".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    command: "codex --profile-c".to_string(),
+                    // #597 - the cell holds params only; they append to the agent
+                    // base command (`codex`) to launch `codex --profile-c`.
+                    command: "--profile-c".to_string(),
                     env: BTreeMap::new(),
                     notes: String::new(),
                 },
@@ -2803,21 +2814,28 @@ mod tests {
                 "A".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    command: "codex --v1".to_string(),
+                    command: "--v1".to_string(),
                     env: BTreeMap::new(),
                     notes: String::new(),
                 },
             );
 
-        // The hash the session was launched ("loaded") with: cell A v1.
-        let loaded =
-            crate::config::agent_command::profile_content_hash("codex --v1", &BTreeMap::new());
+        // #597 - the hash the session launched with: agent base + cell A params,
+        // composed via the SAME helpers the spawn path uses. The codex borrow ends
+        // with this block, before the get_mut mutation below.
+        let loaded = {
+            let codex = settings.agents.iter().find(|a| a.id == "codex").unwrap();
+            crate::config::agent_command::profile_content_hash(
+                &crate::config::agent_command::compose_effective_command(&codex.command, "--v1"),
+                &crate::config::agent_command::raw_merged_profile_env(codex, &BTreeMap::new()),
+            )
+        };
         let mut info = make_info(&cwd, Some("codex"), Some("A"), Some(loaded));
 
         // Config unchanged -> not outdated.
         assert!(!compute_profile_outdated(&settings, &info));
 
-        // Edit the effective cell -> outdated.
+        // Edit the effective cell params -> outdated.
         settings
             .coding_agent_profiles
             .profiles_by_agent
@@ -2825,12 +2843,56 @@ mod tests {
             .unwrap()
             .get_mut("A")
             .unwrap()
-            .command = "codex --v2".to_string();
+            .command = "--v2".to_string();
         assert!(compute_profile_outdated(&settings, &info));
 
         // A plain-shell session (no agent) never drifts.
         info.agent_id = None;
         assert!(!compute_profile_outdated(&settings, &info));
+    }
+
+    #[test]
+    fn compute_profile_outdated_flips_on_agent_base_command_edit() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+
+        let mut settings = test_settings();
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("codex".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "--v1".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+
+        // #597 - stamp loaded from agent base `codex` + cell `--v1`.
+        let loaded = {
+            let codex = settings.agents.iter().find(|a| a.id == "codex").unwrap();
+            crate::config::agent_command::profile_content_hash(
+                &crate::config::agent_command::compose_effective_command(&codex.command, "--v1"),
+                &crate::config::agent_command::raw_merged_profile_env(codex, &BTreeMap::new()),
+            )
+        };
+        let info = make_info(&cwd, Some("codex"), Some("A"), Some(loaded));
+
+        // Base unchanged -> not outdated.
+        assert!(!compute_profile_outdated(&settings, &info));
+
+        // Edit the agent base command -> outdated (the base is now in the hash).
+        settings
+            .agents
+            .iter_mut()
+            .find(|a| a.id == "codex")
+            .unwrap()
+            .command = "codex-next".into();
+        assert!(compute_profile_outdated(&settings, &info));
     }
 
     #[test]

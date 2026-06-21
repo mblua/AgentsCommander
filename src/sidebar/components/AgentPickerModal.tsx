@@ -13,6 +13,7 @@ import { launchErrorMessage } from "../../shared/launch-errors";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
+  composeEffectiveCommand,
   effectiveEnvProjection,
   expandAcPlaceholdersPreview,
   hasAcPlaceholder,
@@ -235,10 +236,13 @@ const AgentPickerModal: Component<{
     if (!agent) return EMPTY_DISPLAY_CELL;
     return enabledLaunchCellFor(agent, effectivePreview().effectiveProfile);
   });
-  // The cell command is the full invocation; an empty cell command falls back to
-  // the agent's base command. Display-only AC placeholder expansion uses the replica root.
+  // #597: the effective command is the agent base command followed by the cell params.
+  // Display-only AC placeholder expansion uses the replica root.
   const projectedCommand = createMemo(() => {
-    const cmd = profileCellCommandText(projectedCell()) || selectedAgent()?.command || "";
+    const cmd = composeEffectiveCommand(
+      selectedAgent()?.command ?? "",
+      profileCellCommandText(projectedCell()),
+    );
     return expandAcPlaceholdersPreview(cmd, acRoot());
   });
   // #527 Effective Projection: merged effective env (agent env + profile env) with
@@ -256,7 +260,12 @@ const AgentPickerModal: Component<{
       : "Direct match",
   );
   const commandUsesAcPlaceholder = createMemo(() =>
-    hasAcPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || ""),
+    hasAcPlaceholder(
+      composeEffectiveCommand(
+        selectedAgent()?.command ?? "",
+        profileCellCommandText(projectedCell()),
+      ),
+    ),
   );
   const providerDefaultPreview = (agent: AgentConfig) => {
     const current = settings();
@@ -777,7 +786,7 @@ const AgentPickerModal: Component<{
                         <span class="agent-profile-param-list">
                           <span class="agent-profile-param">
                             <span>Command </span>
-                            <span>{profileCellCommandText(cell()) || selectedAgent()?.command || "none"}</span>
+                            <span>{composeEffectiveCommand(selectedAgent()?.command ?? "", profileCellCommandText(cell())) || "none"}</span>
                           </span>
                           <Show when={!configured()}>
                             <span class="agent-profile-token warn">

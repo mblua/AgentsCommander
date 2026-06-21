@@ -688,14 +688,57 @@ fn wrap_git_pull_before(
     Ok((shell, shell_args))
 }
 
-/// #592 - stable 16-hex content fingerprint of a profile CELL, for drift
-/// detection ("loaded != configured"). Hashes the RAW `command` + `env`
-/// (placeholders un-expanded) of the EFFECTIVE resolved cell only; never the
-/// agent base layer. Env keys are normalized with the same platform rule
-/// `merge_env_layers` uses (Windows case-fold), then ordered via `BTreeMap`,
-/// so a case-only key edit on Windows does not false-flag and iteration order
-/// is irrelevant. SHA-256 (stable across Rust versions, unlike DefaultHasher),
-/// truncated to the first 16 hex chars (matches the existing
+/// #597 - the effective launch command: the agent base command (the binary,
+/// possibly with its own fixed args) followed by the profile cell command (extra
+/// params), joined as `<base> <cell>`. Each side is trimmed; a single ASCII space
+/// joins them when both are non-empty; an empty side contributes nothing (no
+/// stray space). Both empty yields `""`, which `normalize_legacy_agent_command`
+/// then rejects as "agent command is empty", the same failure a blank command has
+/// always produced. This is the single source of truth for the concatenation rule
+/// (build, drift recompute, and settings validation all call it).
+pub fn compose_effective_command(agent_command: &str, cell_command: &str) -> String {
+    let base = agent_command.trim();
+    let cell = cell_command.trim();
+    match (base.is_empty(), cell.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => base.to_string(),
+        (true, false) => cell.to_string(),
+        (false, false) => format!("{base} {cell}"),
+    }
+}
+
+/// #597 - RAW (pre-expansion) merged env used for the content hash: the agent's
+/// ENABLED env rows overlaid by the cell env (profile-wins), keys normalized for
+/// the platform so a case-only difference does not double-count. Values verbatim.
+/// Mirrors `merge_env_layers`' agent-then-profile precedence but stays raw and
+/// excludes the generated layer (CODEX_HOME isolation etc.), which is derived
+/// state, not user config (decision §0.2; see Notes for the accepted limitation).
+pub fn raw_merged_profile_env(
+    agent: &AgentConfig,
+    cell_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut merged: BTreeMap<String, String> = BTreeMap::new();
+    for row in agent.envs.iter().filter(|row| row.enabled) {
+        merged.insert(normalize_env_key_for_platform(&row.key), row.value.clone());
+    }
+    for (key, value) in cell_env {
+        merged.insert(normalize_env_key_for_platform(key), value.clone());
+    }
+    merged
+}
+
+/// #592 - stable 16-hex content fingerprint for profile drift detection
+/// ("loaded != configured"). Hashes the RAW `command` + `env` it is given
+/// (placeholders un-expanded); the primitive is agnostic to how those are built.
+/// #597 - callers now pass the COMPOSED effective command (agent base + cell
+/// params) via `compose_effective_command` and the merged env (agent enabled rows
+/// overlaid by the cell, profile-wins) via `raw_merged_profile_env`, so an edit to
+/// the base command, cell command, base env, or cell env all flip the hash
+/// (SUPERSEDES the original #592 cell-only input). Env keys are normalized with
+/// the same platform rule `merge_env_layers` uses (Windows case-fold), then
+/// ordered via `BTreeMap`, so a case-only key edit on Windows does not false-flag
+/// and iteration order is irrelevant. SHA-256 (stable across Rust versions, unlike
+/// DefaultHasher), truncated to the first 16 hex chars (matches the existing
 /// `profile_assignment_fingerprint` 16-hex shape).
 pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> String {
     use std::fmt::Write as _;
@@ -740,22 +783,27 @@ pub fn build_agent_spawn_command(
         log::warn!("[profiles] {}", warning);
     }
 
-    // #592 - fingerprint the RAW effective cell (pre-expansion, cell-only) so a
-    // later edit to this cell's command/env is detectable as drift.
+    // #597 - the effective command CONCATENATES the agent base command (the
+    // binary, possibly with its own fixed args) with the profile cell command
+    // (extra params): `<base> <cell>`. An empty side drops cleanly; both empty
+    // yields an empty string that the tokenizer rejects, same as a blank command
+    // has always been rejected.
+    let effective_command =
+        compose_effective_command(&agent.command, &profile_resolution.cell.command);
+
+    // #597 - fingerprint the RAW effective command (base+cell, pre-expansion) and
+    // the RAW merged env (agent enabled rows + cell, profile-wins) so an edit to
+    // the base command, cell command, base env, or cell env is detectable as
+    // drift. SUPERSEDES the #592 cell-only hash input.
     let profile_hash = profile_content_hash(
-        &profile_resolution.cell.command,
-        &profile_resolution.cell.env,
+        &effective_command,
+        &raw_merged_profile_env(agent, &profile_resolution.cell.env),
     );
 
-    let selected_command = if profile_resolution.cell.command.trim().is_empty() {
-        agent.command.as_str()
-    } else {
-        profile_resolution.cell.command.as_str()
-    };
-    let normalized = normalize_legacy_agent_command(selected_command).map_err(|e| {
+    let normalized = normalize_legacy_agent_command(&effective_command).map_err(|e| {
         format!(
             "Invalid profile command for '{}:{}': {}. command={:?}",
-            agent.id, profile_resolution.effective_profile, e, selected_command
+            agent.id, profile_resolution.effective_profile, e, effective_command
         )
     })?;
     let mut command_tokens = Vec::with_capacity(normalized.shell_args.len() + 1);
@@ -967,25 +1015,10 @@ mod tests {
     }
 
     #[test]
-    fn build_spawn_uses_profile_command_as_complete_invocation() {
-        let mut settings = AppSettings {
-            agents: vec![agent("codex", "codex --base")],
-            ..AppSettings::default()
-        };
-        settings
-            .coding_agent_profiles
-            .profiles_by_agent
-            .entry("codex".to_string())
-            .or_default()
-            .insert(
-                "B".to_string(),
-                ProfileCellConfig {
-                    enabled: true,
-                    command: "codex --profile fast".to_string(),
-                    env: BTreeMap::new(),
-                    notes: String::new(),
-                },
-            );
+    fn build_spawn_concatenates_agent_base_and_cell_params() {
+        // #597 - the cell holds params only; they append to the agent base command,
+        // so base `codex` + cell `--profile fast` launches `codex --profile fast`.
+        let settings = settings_with_cell("codex", "B", cell("--profile fast", BTreeMap::new()));
 
         let spawn = build_agent_spawn_command(&settings, "codex", None, Some("B")).unwrap();
 
@@ -1125,8 +1158,12 @@ mod tests {
             .join("wg-7-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&replica).unwrap();
+        // #597 - under concatenation the binary (placeholder included) lives in the
+        // agent base command and the cell holds the param. The placeholder must
+        // still expand on the composed token list so the launched shell is the
+        // expanded binary path.
         let mut settings = AppSettings {
-            agents: vec![agent("codex", "codex")],
+            agents: vec![agent("codex", "%AC_REPLICA_ROOT%\\bin\\codex.exe")],
             ..AppSettings::default()
         };
         settings
@@ -1138,7 +1175,7 @@ mod tests {
                 "A".to_string(),
                 ProfileCellConfig {
                     enabled: true,
-                    command: "%AC_REPLICA_ROOT%\\bin\\codex.exe --flag".to_string(),
+                    command: "--flag".to_string(),
                     env: BTreeMap::new(),
                     notes: String::new(),
                 },
@@ -1883,18 +1920,18 @@ mod tests {
     }
 
     #[test]
-    fn profile_content_hash_is_cell_only_ignoring_agent_base_command() {
-        // Two settings differing ONLY in agent.command, both with an EMPTY cell
-        // command for letter A. The cell hash must be identical (§0.1/§0.6).
-        let s1 = settings_with_cell("codex --one", "A", cell("", BTreeMap::new()));
-        let s2 = settings_with_cell("codex --two", "A", cell("", BTreeMap::new()));
+    fn profile_content_hash_changes_on_agent_base_command_edit() {
+        // #597 - the hash now fingerprints the EFFECTIVE command (base + cell), so
+        // an edit to the agent base command flips it even with the cell unchanged.
+        let s1 = settings_with_cell("codex --one", "A", cell("--p", BTreeMap::new()));
+        let s2 = settings_with_cell("codex --two", "A", cell("--p", BTreeMap::new()));
         let h1 = build_agent_spawn_command(&s1, "codex", None, Some("A"))
             .unwrap()
             .profile_content_hash;
         let h2 = build_agent_spawn_command(&s2, "codex", None, Some("A"))
             .unwrap()
             .profile_content_hash;
-        assert_eq!(h1, h2, "an agent-base edit must not change the cell hash");
+        assert_ne!(h1, h2, "an agent-base edit must flip the effective-command hash");
     }
 
     #[test]
@@ -1930,12 +1967,134 @@ mod tests {
         let spawn = build_agent_spawn_command(&settings, "codex", None, Some("D")).unwrap();
         assert_eq!(spawn.profile_resolution.effective_profile, "C");
         assert_eq!(spawn.profile_resolution.cell.command, "codex --c");
-        // The stamped hash is the EFFECTIVE (post-fallback C) cell, not D.
+        // The stamped hash is the EFFECTIVE (post-fallback C) cell composed with
+        // the agent base command, not D. (#597)
+        let agent_cfg = settings.agents.iter().find(|a| a.id == "codex").unwrap();
         let expected = profile_content_hash(
-            &spawn.profile_resolution.cell.command,
-            &spawn.profile_resolution.cell.env,
+            &super::compose_effective_command(
+                &agent_cfg.command,
+                &spawn.profile_resolution.cell.command,
+            ),
+            &super::raw_merged_profile_env(agent_cfg, &spawn.profile_resolution.cell.env),
         );
         assert_eq!(spawn.profile_content_hash, expected);
+    }
+
+    #[test]
+    fn compose_effective_command_joins_and_drops_empty_sides() {
+        assert_eq!(super::compose_effective_command("claude", "--x"), "claude --x");
+        assert_eq!(super::compose_effective_command("claude", ""), "claude");
+        assert_eq!(super::compose_effective_command("", "--x"), "--x");
+        assert_eq!(super::compose_effective_command("", ""), "");
+        // Each side is trimmed; no double space at the seam.
+        assert_eq!(
+            super::compose_effective_command("  claude  ", "  --x  "),
+            "claude --x"
+        );
+    }
+
+    #[test]
+    fn build_spawn_empty_cell_uses_base_command_only() {
+        let settings = settings_with_cell("codex --yolo", "A", cell("", BTreeMap::new()));
+        let spawn = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap();
+        assert_eq!(spawn.shell, "codex");
+        assert_eq!(spawn.shell_args, vec!["--yolo"]);
+    }
+
+    #[test]
+    fn build_spawn_concatenation_handles_base_with_args_and_quoted_params() {
+        // The whole `<base> <cell>` line tokenizes once; quotes/embedded spaces survive.
+        let settings = settings_with_cell(
+            "cmd.exe /c claude",
+            "A",
+            cell("--model \"gpt 5\"", BTreeMap::new()),
+        );
+        let spawn = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap();
+        assert_eq!(spawn.shell, "cmd.exe");
+        assert_eq!(spawn.shell_args, vec!["/c", "claude", "--model", "gpt 5"]);
+    }
+
+    #[test]
+    fn build_spawn_errors_when_base_and_cell_both_empty() {
+        let settings = settings_with_cell("", "A", cell("", BTreeMap::new()));
+        let err = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap_err();
+        assert!(
+            err.contains("agent command is empty"),
+            "both-empty must report an empty command: {err}"
+        );
+    }
+
+    #[test]
+    fn profile_content_hash_changes_on_agent_base_env_edit() {
+        // The base env is now in the hash; a value edit on an enabled row flips it.
+        // LOWERCASE key so the Windows case-fold in raw_merged_profile_env does not
+        // skew the assertion.
+        fn settings_with_env_value(value: &str) -> AppSettings {
+            let mut ag = agent("codex", "codex");
+            ag.envs = vec![CodingAgentEnv {
+                key: "kk".to_string(),
+                value: value.to_string(),
+                source: CodingAgentEnvSource::User,
+                enabled: true,
+            }];
+            let mut settings = AppSettings {
+                agents: vec![ag],
+                ..AppSettings::default()
+            };
+            settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .entry("codex".to_string())
+                .or_default()
+                .insert("A".to_string(), cell("", BTreeMap::new()));
+            settings
+        }
+        let h1 =
+            build_agent_spawn_command(&settings_with_env_value("one"), "codex", None, Some("A"))
+                .unwrap()
+                .profile_content_hash;
+        let h2 =
+            build_agent_spawn_command(&settings_with_env_value("two"), "codex", None, Some("A"))
+                .unwrap()
+                .profile_content_hash;
+        assert_ne!(h1, h2, "an agent base env edit must flip the hash");
+    }
+
+    #[test]
+    fn raw_merged_profile_env_overlays_cell_over_agent_raw() {
+        let mut ag = agent("codex", "codex");
+        ag.envs = vec![
+            CodingAgentEnv {
+                key: "ka".to_string(),
+                value: "agent".to_string(),
+                source: CodingAgentEnvSource::User,
+                enabled: true,
+            },
+            CodingAgentEnv {
+                key: "kb".to_string(),
+                value: "agent".to_string(),
+                source: CodingAgentEnvSource::User,
+                enabled: true,
+            },
+            CodingAgentEnv {
+                key: "koff".to_string(),
+                value: "agent".to_string(),
+                source: CodingAgentEnvSource::User,
+                enabled: false,
+            },
+        ];
+        let cell_env = BTreeMap::from([
+            ("kb".to_string(), "cell".to_string()),
+            ("kc".to_string(), "cell".to_string()),
+        ]);
+        let merged = super::raw_merged_profile_env(&ag, &cell_env);
+        // Keys come back platform-normalized (uppercased on Windows), so look them
+        // up through the same normalizer to stay cross-platform.
+        let key = |k: &str| crate::config::settings::normalize_env_key_for_platform(k);
+        assert_eq!(merged.get(&key("ka")).map(String::as_str), Some("agent"));
+        assert_eq!(merged.get(&key("kb")).map(String::as_str), Some("cell")); // profile wins
+        assert_eq!(merged.get(&key("kc")).map(String::as_str), Some("cell"));
+        assert!(!merged.contains_key(&key("koff")), "disabled rows are excluded");
     }
 
     #[cfg(windows)]

@@ -1538,6 +1538,20 @@ html.light-theme .root-agent-avatar {
   line-height: 1.4;
 }
 
+/* #597 - hint above a profile cell editor showing the agent base command the
+   cell params append to. */
+.settings-profile-command-base {
+  font-size: 11px;
+  color: var(--sidebar-fg-dim);
+  margin: 2px 0 4px;
+}
+.settings-profile-command-base code {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--sidebar-fg);
+}
+
 .settings-profile-ph-token {
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
   color: var(--sidebar-accent);
