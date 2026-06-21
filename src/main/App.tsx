@@ -1,7 +1,7 @@
 import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
 import type { UnlistenFn } from "../shared/transport";
 import type { MainSidebarSide } from "../shared/types";
-import { SettingsAPI, onResourceMonitorAttach, onSessionSwitched } from "../shared/ipc";
+import { SettingsAPI } from "../shared/ipc";
 import { isTauri } from "../shared/platform";
 import { initZoom } from "../shared/zoom";
 import { initWindowGeometry } from "../shared/window-geometry";
@@ -9,6 +9,7 @@ import SidebarApp from "../sidebar/App";
 import TerminalApp from "../terminal/App";
 import ResourceMonitorApp from "../resource-monitor/App";
 import { centralViewStore } from "./stores/centralView";
+import { wireCentralViewListeners } from "./listeners-central-view";
 import Titlebar from "../sidebar/components/Titlebar";
 import QuitConfirmModal from "./components/QuitConfirmModal";
 import RtkBanner from "./components/RtkBanner";
@@ -185,16 +186,10 @@ const MainApp: Component = () => {
     // discriminator on session_switched — is unit-testable in isolation.
     unlisteners.push(...(await wireHomeListeners()));
 
-    // #587 — selecting any session reveals the terminal (covers an embedded
-    // RM); the detached RM window's Attach button pulls RM back in-pane. Both
-    // calls are guarded idempotent in centralViewStore, so double-firing
-    // alongside SessionItem's direct showTerminal() is harmless.
-    unlisteners.push(
-      await onSessionSwitched(() => centralViewStore.showTerminal())
-    );
-    unlisteners.push(
-      await onResourceMonitorAttach(() => centralViewStore.showResourceMonitor())
-    );
+    // #587 — central-view event contract (gated session_switched + RM attach).
+    // Extracted to a helper that mirrors wireHomeListeners so the userInitiated
+    // discriminator is unit-testable in isolation (see listeners-central-view.ts).
+    unlisteners.push(...(await wireCentralViewListeners()));
 
     window.addEventListener("resize", onWindowResize);
     window.addEventListener("main-sidebar-width-change", onSidebarWidthChange);
