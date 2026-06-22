@@ -39,6 +39,12 @@ pub struct ClockEntry {
     /// error exit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_closed_at: Option<DateTime<Utc>>,
+    /// #588 Manual-close marker: set when this coordinator was closed manually
+    /// by the user; cleared on reopen. `Some` => show the "manually-closed" pill.
+    /// Mutually exclusive with `auto_closed_at` (hardened in `mark_*`), but the
+    /// renderer treats manual as the winner if both were ever set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manually_closed_at: Option<DateTime<Utc>>,
 }
 
 impl ClockEntry {
@@ -96,6 +102,7 @@ impl CoordinatorClocks {
                 last_user_message_at: Some(now),
                 last_activity_at: None,
                 auto_closed_at: None,
+                manually_closed_at: None,
             },
         );
         self.dirty = true;
@@ -137,6 +144,12 @@ impl CoordinatorClocks {
     /// counting on the dormant row).
     pub fn mark_auto_closed(&mut self, fqn: &str, now: DateTime<Utc>) -> bool {
         let entry = self.map.entry(fqn.to_string()).or_default();
+        // #588 manual close wins: never auto-mark a coordinator the user closed by
+        // hand (stops a concurrent tick re-setting auto_closed_at + emitting a stray
+        // coordinator_auto_close_changed).
+        if entry.manually_closed_at.is_some() {
+            return false;
+        }
         if entry.auto_closed_at.is_some() {
             return false;
         }
@@ -152,6 +165,41 @@ impl CoordinatorClocks {
         if let Some(entry) = self.map.get_mut(fqn) {
             if entry.auto_closed_at.is_some() {
                 entry.auto_closed_at = None;
+                self.dirty = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// #588 Manual-close marker accessor.
+    pub fn manually_closed_at(&self, fqn: &str) -> Option<DateTime<Utc>> {
+        self.map.get(fqn).and_then(|e| e.manually_closed_at)
+    }
+
+    /// #588 Mark this coordinator manually-closed at `now`. Idempotent: returns
+    /// `true` only on the None -> Some transition so the caller emits once. Clears
+    /// `auto_closed_at` ON THE TRANSITION (mutual-exclusion that also keeps the
+    /// dirty flag honest; manual is the deliberate action). Preserves
+    /// last_user_message_at / last_activity_at.
+    pub fn mark_manually_closed(&mut self, fqn: &str, now: DateTime<Utc>) -> bool {
+        let entry = self.map.entry(fqn.to_string()).or_default();
+        if entry.manually_closed_at.is_some() {
+            return false;
+        }
+        entry.auto_closed_at = None; // mutual-exclusion, on the real transition
+        entry.manually_closed_at = Some(now);
+        self.dirty = true;
+        true
+    }
+
+    /// #588 Clear the manual-close marker on reopen. Returns `true` only on the
+    /// Some -> None transition so the caller emits the clear once. Preserves
+    /// last_user_message_at.
+    pub fn clear_manually_closed(&mut self, fqn: &str) -> bool {
+        if let Some(entry) = self.map.get_mut(fqn) {
+            if entry.manually_closed_at.is_some() {
+                entry.manually_closed_at = None;
                 self.dirty = true;
                 return true;
             }
@@ -314,6 +362,82 @@ mod tests {
     }
 
     #[test]
+    fn mark_manually_closed_is_idempotent() {
+        let mut clocks = CoordinatorClocks::default();
+        let fqn = "proj:wg-1-team/coord";
+
+        assert!(
+            clocks.mark_manually_closed(fqn, ts(0)),
+            "first mark transitions None -> Some"
+        );
+        assert_eq!(clocks.manually_closed_at(fqn), Some(ts(0)));
+        assert!(
+            !clocks.mark_manually_closed(fqn, ts(50)),
+            "second mark is a no-op (already Some)"
+        );
+        // The original marker time is preserved on the idempotent call.
+        assert_eq!(clocks.manually_closed_at(fqn), Some(ts(0)));
+    }
+
+    #[test]
+    fn clear_manually_closed_only_on_some_to_none_and_preserves_badge() {
+        let mut clocks = CoordinatorClocks::default();
+        let fqn = "proj:wg-1-team/coord";
+
+        // No entry -> nothing to clear.
+        assert!(!clocks.clear_manually_closed(fqn));
+
+        clocks.note_user_message(fqn, ts(0));
+        clocks.mark_manually_closed(fqn, ts(1));
+        assert!(clocks.clear_manually_closed(fqn), "Some -> None returns true");
+        assert_eq!(clocks.manually_closed_at(fqn), None);
+        // The badge clock survives the clear.
+        assert_eq!(clocks.last_user_message_at(fqn), Some(ts(0)));
+        // Clearing again is a no-op.
+        assert!(!clocks.clear_manually_closed(fqn));
+    }
+
+    #[test]
+    fn mark_manually_closed_clears_preset_auto_closed_on_transition() {
+        let mut clocks = CoordinatorClocks::default();
+        let fqn = "proj:wg-1-team/coord";
+
+        clocks.note_user_message(fqn, ts(0));
+        clocks.mark_auto_closed(fqn, ts(1));
+        assert_eq!(clocks.auto_closed_at(fqn), Some(ts(1)));
+
+        // Marking manual clears the auto marker on the real transition.
+        assert!(clocks.mark_manually_closed(fqn, ts(2)));
+        assert_eq!(
+            clocks.auto_closed_at(fqn),
+            None,
+            "mark_manually_closed must clear a pre-set auto_closed_at"
+        );
+        assert_eq!(clocks.manually_closed_at(fqn), Some(ts(2)));
+        // The badge clock is untouched.
+        assert_eq!(clocks.last_user_message_at(fqn), Some(ts(0)));
+    }
+
+    #[test]
+    fn mark_auto_closed_skips_when_manually_closed() {
+        let mut clocks = CoordinatorClocks::default();
+        let fqn = "proj:wg-1-team/coord";
+
+        clocks.mark_manually_closed(fqn, ts(0));
+        // A concurrent auto-close tick must NOT re-mark a manually-closed coordinator.
+        assert!(
+            !clocks.mark_auto_closed(fqn, ts(5)),
+            "mark_auto_closed must skip when manually_closed_at is set"
+        );
+        assert_eq!(
+            clocks.auto_closed_at(fqn),
+            None,
+            "auto_closed_at must stay None when manual close already won"
+        );
+        assert_eq!(clocks.manually_closed_at(fqn), Some(ts(0)));
+    }
+
+    #[test]
     fn note_user_message_preserves_auto_closed_marker() {
         let mut clocks = CoordinatorClocks::default();
         let fqn = "proj:wg-1-team/coord";
@@ -420,6 +544,7 @@ mod tests {
                 last_user_message_at: Some(ts(0) + Duration::minutes(45)),
                 last_activity_at: Some(ts(0) + Duration::minutes(50)),
                 auto_closed_at: Some(ts(0) + Duration::minutes(60)),
+                manually_closed_at: Some(ts(0) + Duration::minutes(70)),
             },
         );
         // A second entry exercising the skip_serializing_if absence of two fields.
@@ -429,6 +554,7 @@ mod tests {
                 last_user_message_at: Some(ts(0)),
                 last_activity_at: None,
                 auto_closed_at: None,
+                manually_closed_at: None,
             },
         );
 
@@ -454,7 +580,13 @@ mod tests {
             loaded.auto_closed_at("proj:wg-1-team/coord"),
             Some(ts(0) + Duration::minutes(60))
         );
+        assert_eq!(
+            loaded.manually_closed_at("proj:wg-1-team/coord"),
+            Some(ts(0) + Duration::minutes(70)),
+            "manually_closed_at must survive save/load (#588)"
+        );
         assert_eq!(loaded.last_activity_at("proj:wg-2-team/coord"), None);
         assert_eq!(loaded.auto_closed_at("proj:wg-2-team/coord"), None);
+        assert_eq!(loaded.manually_closed_at("proj:wg-2-team/coord"), None);
     }
 }

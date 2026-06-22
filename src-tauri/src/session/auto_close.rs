@@ -698,6 +698,9 @@ mod tests {
                 last_user_message_at: Some(ts(10_000 - 3700)),
                 last_activity_at: None,
                 auto_closed_at: None,
+                // #588 added this required field to ClockEntry; the orphan-anchor
+                // path (#582) ignores it, so None keeps this test's intent intact.
+                manually_closed_at: None,
             },
         );
         // Normal path: anchor from the persisted team clock; member silence ignored.

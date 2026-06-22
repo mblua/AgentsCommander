@@ -1,5 +1,6 @@
 import { SessionAPI } from "./ipc";
 import { voiceRecorder } from "./voice-recorder";
+import { requestCoordinatorCloseById } from "../sidebar/stores/coordinator-close";
 
 type ShortcutHandler = (e: KeyboardEvent) => void;
 
@@ -15,7 +16,11 @@ const shortcuts: Array<{
     key: "w",
     handler: async () => {
       const activeId = await SessionAPI.getActive();
-      if (activeId) SessionAPI.destroy(activeId);
+      // #588 route the active session close through the shared helper so the
+      // keyboard shortcut marks + (settings-gated) cascades + confirms a
+      // coordinator close exactly like the row "X". The helper resolves the id to
+      // a Session internally; a non-coordinator is an unchanged plain destroy.
+      if (activeId) void requestCoordinatorCloseById(activeId);
     },
   },
   {

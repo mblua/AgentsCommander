@@ -72,6 +72,7 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     coordinatorIdleBadgeRedMinutes: 60,
     coordinatorAutoCloseEnabled: true,
     coordinatorAutoCloseMinutes: 60,
+    coordinatorCascadeCloseEnabled: true,
     ...overrides,
   };
 }
