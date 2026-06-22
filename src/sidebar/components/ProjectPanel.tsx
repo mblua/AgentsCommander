@@ -23,6 +23,7 @@ import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, shouldOfferR
 import { clockStore } from "../stores/clock";
 import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import SessionItem from "./SessionItem";
+import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
@@ -1474,6 +1475,21 @@ const ProjectPanel: Component = () => {
                   <Show when={profileBadge()}>
                     {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
                   </Show>
+                  {/* #592 - drift indicator for a WG replica session. Mirrors the
+                      SessionItem badge: the backend marks profileOutdated in
+                      list_sessions when the loaded cell != current config; clicking
+                      relaunches via the existing replica restart (re-stamps the hash
+                      and clears the flag). stopPropagation keeps the row from
+                      selecting the session under the click. */}
+                  <Show when={session()?.profileOutdated}>
+                    <ProfileOutdatedBadge
+                      testId={`replica.outdated.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                      onReload={() => {
+                        const s = session();
+                        if (s) void restartReplicaSession(s.id);
+                      }}
+                    />
+                  </Show>
                   <Show when={isCoord()}>
                     <span class="ac-discovery-badge coord">coordinator</span>
                   </Show>
@@ -2619,6 +2635,10 @@ const ProjectPanel: Component = () => {
                   // #551: re-assigning the running agent+profile is a no-op and
                   // pops a needless restart prompt — disable it with a tooltip.
                   disableRedundantReplicaAssign
+                  // #592: but DRIFT (loaded cell != current config) makes a same-pair
+                  // re-assign meaningful (re-stamp + relaunch), so it overrides the
+                  // disable. Same backend profileOutdated the badge reads.
+                  targetProfileOutdated={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.profileOutdated}
                   onSelect={async (selection) => {
                     // The picker already persisted the selection through the backend
                     // (config write) for WG replicas. For a non-WG agent session there

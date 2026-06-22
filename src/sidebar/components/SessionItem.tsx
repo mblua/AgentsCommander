@@ -12,6 +12,7 @@ import { centralViewStore } from "../../main/stores/centralView";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
+import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import { TelegramIcon } from "./TelegramIcon";
 import { profileDisplayLabel, sessionProfileBadge } from "../../shared/profile-utils";
 
@@ -381,6 +382,9 @@ const SessionItem: Component<{
                     {badge()}
                   </span>
                 )}
+              </Show>
+              <Show when={props.session.profileOutdated}>
+                <ProfileOutdatedBadge onReload={() => void restartSession()} />
               </Show>
               <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
                 <div class="session-item-branches">

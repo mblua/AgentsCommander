@@ -13,6 +13,7 @@ import { launchErrorMessage } from "../../shared/launch-errors";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
+  composeEffectiveCommand,
   effectiveEnvProjection,
   expandAcPlaceholdersPreview,
   hasAcPlaceholder,
@@ -95,6 +96,13 @@ const AgentPickerModal: Component<{
   // The launch flow leaves this off so a replica can always be started with its
   // configured agent.
   disableRedundantReplicaAssign?: boolean;
+  // #592: when the target session's loaded profile has DRIFTED from its current
+  // configuration (profileOutdated), re-assigning the same Coding Agent + Profile
+  // is no longer a no-op: it re-stamps the cell content and relaunches. So drift
+  // overrides the redundancy disable above and keeps "Assign to this replica"
+  // enabled: a sibling "manual reload" affordance to the outdated badge. Read
+  // from the SAME backend-computed profileOutdated the badge uses (no FE hash).
+  targetProfileOutdated?: boolean;
   onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
   onClose: () => void;
 }> = (props) => {
@@ -235,10 +243,13 @@ const AgentPickerModal: Component<{
     if (!agent) return EMPTY_DISPLAY_CELL;
     return enabledLaunchCellFor(agent, effectivePreview().effectiveProfile);
   });
-  // The cell command is the full invocation; an empty cell command falls back to
-  // the agent's base command. Display-only AC placeholder expansion uses the replica root.
+  // #597: the effective command is the agent base command followed by the cell params.
+  // Display-only AC placeholder expansion uses the replica root.
   const projectedCommand = createMemo(() => {
-    const cmd = profileCellCommandText(projectedCell()) || selectedAgent()?.command || "";
+    const cmd = composeEffectiveCommand(
+      selectedAgent()?.command ?? "",
+      profileCellCommandText(projectedCell()),
+    );
     return expandAcPlaceholdersPreview(cmd, acRoot());
   });
   // #527 Effective Projection: merged effective env (agent env + profile env) with
@@ -256,7 +267,12 @@ const AgentPickerModal: Component<{
       : "Direct match",
   );
   const commandUsesAcPlaceholder = createMemo(() =>
-    hasAcPlaceholder(profileCellCommandText(projectedCell()) || selectedAgent()?.command || ""),
+    hasAcPlaceholder(
+      composeEffectiveCommand(
+        selectedAgent()?.command ?? "",
+        profileCellCommandText(projectedCell()),
+      ),
+    ),
   );
   const providerDefaultPreview = (agent: AgentConfig) => {
     const current = settings();
@@ -483,6 +499,9 @@ const AgentPickerModal: Component<{
   const isRedundantReplicaSelection = createMemo(() => {
     if (!props.disableRedundantReplicaAssign) return false;
     if (selectedScope() !== "replica") return false;
+    // #592 - drift makes a same-pair re-assign meaningful (re-stamp + relaunch
+    // with the current cell content), so it is never redundant while outdated.
+    if (props.targetProfileOutdated) return false;
     const agent = selectedAgent();
     const baselineAgentId = props.explicitCurrentAgentId;
     if (!agent || !baselineAgentId) return false;
@@ -777,7 +796,7 @@ const AgentPickerModal: Component<{
                         <span class="agent-profile-param-list">
                           <span class="agent-profile-param">
                             <span>Command </span>
-                            <span>{profileCellCommandText(cell()) || selectedAgent()?.command || "none"}</span>
+                            <span>{composeEffectiveCommand(selectedAgent()?.command ?? "", profileCellCommandText(cell())) || "none"}</span>
                           </span>
                           <Show when={!configured()}>
                             <span class="agent-profile-token warn">

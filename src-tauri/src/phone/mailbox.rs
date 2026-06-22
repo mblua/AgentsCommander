@@ -3353,6 +3353,8 @@ mod tests {
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
             effective_codex_home: None,
+            profile_content_hash: None,
+            profile_outdated: false,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,

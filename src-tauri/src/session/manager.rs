@@ -76,6 +76,7 @@ impl SessionManager {
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
             effective_codex_home: None,
+            profile_content_hash: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
@@ -423,6 +424,7 @@ impl SessionManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_profile_metadata(
         &self,
         id: Uuid,
@@ -431,6 +433,7 @@ impl SessionManager {
         profile_fallback_chain: Vec<String>,
         profile_fallback_applied: bool,
         effective_codex_home: Option<String>,
+        profile_content_hash: Option<String>,
     ) {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
@@ -439,6 +442,7 @@ impl SessionManager {
             s.profile_fallback_chain = profile_fallback_chain;
             s.profile_fallback_applied = profile_fallback_applied;
             s.effective_codex_home = effective_codex_home;
+            s.profile_content_hash = profile_content_hash;
         }
     }
 

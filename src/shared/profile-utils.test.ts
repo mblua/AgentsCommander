@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
   commandExecutableBasename,
+  composeEffectiveCommand,
   defaultInstructionsFilename,
   effectiveEnvProjection,
   executableBasename,
@@ -145,6 +146,16 @@ describe("profile utils", () => {
     expect(profileCellCommandText(profiles().profilesByAgent.codex.C)).toBe("codex --model gpt-5");
     expect(profileCellCommandText(null)).toBe("");
     expect(profileCellCommandText(undefined)).toBe("");
+  });
+
+  it("composes the effective command from agent base + cell params (#597)", () => {
+    // Mirrors the Rust compose_effective_command edge cases.
+    expect(composeEffectiveCommand("claude", "--x")).toBe("claude --x");
+    expect(composeEffectiveCommand("claude", "")).toBe("claude");
+    expect(composeEffectiveCommand("", "--x")).toBe("--x");
+    expect(composeEffectiveCommand("", "")).toBe("");
+    // Each side is trimmed; no double space at the seam.
+    expect(composeEffectiveCommand("  claude  ", "  --x  ")).toBe("claude --x");
   });
 
   it("derives the binary basename from a full command string", () => {
