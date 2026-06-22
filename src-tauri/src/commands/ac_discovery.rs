@@ -121,6 +121,10 @@ pub struct AcAgentReplica {
     /// inactivity, or None. Only meaningful when `is_coordinator`. Drives the
     /// "auto-closed" pill; cleared on reopen. Read from the same store entry.
     pub auto_closed_at: Option<String>,
+    /// #588 RFC3339 time this coordinator was manually closed, or None. Only
+    /// meaningful when `is_coordinator`. Drives the MANUALLY-CLOSED pill;
+    /// cleared on reopen. Read from the same persisted store entry.
+    pub manually_closed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1146,6 +1150,9 @@ pub async fn discover_ac_agents(
                                 let auto_closed_at = clock_entry
                                     .and_then(|e| e.auto_closed_at)
                                     .map(|dt| dt.to_rfc3339());
+                                let manually_closed_at = clock_entry
+                                    .and_then(|e| e.manually_closed_at)
+                                    .map(|dt| dt.to_rfc3339());
 
                                 wg_agents.push(AcAgentReplica {
                                     name: replica_name,
@@ -1160,6 +1167,7 @@ pub async fn discover_ac_agents(
                                     is_coordinator,
                                     last_user_message_at,
                                     auto_closed_at,
+                                    manually_closed_at,
                                 });
                             }
                         }
@@ -1639,6 +1647,9 @@ pub async fn discover_project(
                         let auto_closed_at = clock_entry
                             .and_then(|e| e.auto_closed_at)
                             .map(|dt| dt.to_rfc3339());
+                        let manually_closed_at = clock_entry
+                            .and_then(|e| e.manually_closed_at)
+                            .map(|dt| dt.to_rfc3339());
 
                         wg_agents.push(AcAgentReplica {
                             name: replica_name,
@@ -1653,6 +1664,7 @@ pub async fn discover_project(
                             is_coordinator,
                             last_user_message_at,
                             auto_closed_at,
+                            manually_closed_at,
                         });
                     }
                 }

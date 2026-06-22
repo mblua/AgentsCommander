@@ -43,7 +43,8 @@ import type {
   UiAutomationResponse,
   ResourceKillRequest,
   ResourceKillResult,
-  ResourceSnapshot
+  ResourceSnapshot,
+  CoordinatorCloseOutcome
 } from "./types";
 
 export interface SessionRepoInput {
@@ -163,6 +164,12 @@ export const SessionAPI = {
     }),
 
   destroy: (id: string) => transport.invoke<void>("destroy_session", { id }),
+
+  /** #588 Manually close a coordinator. When the cascade setting is on and the
+   *  team has working members, the backend returns `{ closed: false, workingCount }`
+   *  so the caller can confirm; calling again with `confirmed: true` forces it. */
+  closeCoordinator: (id: string, confirmed: boolean) =>
+    transport.invoke<CoordinatorCloseOutcome>("close_coordinator", { id, confirmed }),
 
   restart: (id: string, opts?: RestartSessionOptions): Promise<Session> =>
     transport.invoke<Session>("restart_session", {
@@ -553,6 +560,17 @@ export function onCoordinatorAutoCloseChanged(
 ): Promise<UnlistenFn> {
   return transport.listen<{ replicaPath: string; autoClosedAt: string | null }>(
     "coordinator_auto_close_changed",
+    callback
+  );
+}
+
+// #588 manually-closed pill: close_coordinator sets the marker (string
+// timestamp) when the user manually closes a coordinator; reopen clears it.
+export function onCoordinatorManualCloseChanged(
+  callback: (data: { replicaPath: string; manuallyClosedAt: string | null }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ replicaPath: string; manuallyClosedAt: string | null }>(
+    "coordinator_manual_close_changed",
     callback
   );
 }
