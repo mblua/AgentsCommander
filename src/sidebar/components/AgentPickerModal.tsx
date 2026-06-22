@@ -96,6 +96,13 @@ const AgentPickerModal: Component<{
   // The launch flow leaves this off so a replica can always be started with its
   // configured agent.
   disableRedundantReplicaAssign?: boolean;
+  // #592: when the target session's loaded profile has DRIFTED from its current
+  // configuration (profileOutdated), re-assigning the same Coding Agent + Profile
+  // is no longer a no-op: it re-stamps the cell content and relaunches. So drift
+  // overrides the redundancy disable above and keeps "Assign to this replica"
+  // enabled: a sibling "manual reload" affordance to the outdated badge. Read
+  // from the SAME backend-computed profileOutdated the badge uses (no FE hash).
+  targetProfileOutdated?: boolean;
   onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
   onClose: () => void;
 }> = (props) => {
@@ -492,6 +499,9 @@ const AgentPickerModal: Component<{
   const isRedundantReplicaSelection = createMemo(() => {
     if (!props.disableRedundantReplicaAssign) return false;
     if (selectedScope() !== "replica") return false;
+    // #592 - drift makes a same-pair re-assign meaningful (re-stamp + relaunch
+    // with the current cell content), so it is never redundant while outdated.
+    if (props.targetProfileOutdated) return false;
     const agent = selectedAgent();
     const baselineAgentId = props.explicitCurrentAgentId;
     if (!agent || !baselineAgentId) return false;

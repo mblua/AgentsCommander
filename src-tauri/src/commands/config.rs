@@ -195,7 +195,16 @@ fn settings_draft_update_events(
     }
 
     SettingsDraftUpdateEvents {
-        profiles_changed: before.coding_agent_profiles != after.coding_agent_profiles,
+        // #592/#597 - the drift content-hash fingerprints the EFFECTIVE command
+        // (agent base command + cell command, via compose_effective_command), so a
+        // bare agent-base-command edit (e.g. `claude` -> `claude-amp -c ...`) is real
+        // drift even when the profile cells are untouched. It is neither a
+        // coding_agent_profiles change nor an env change, so without folding it in
+        // here the SettingsModal save path emits NO refresh event and the outdated
+        // badge never updates. coding_agent_profiles_updated drives
+        // refreshProfileOutdated in the sidebar, so route base-command edits through it.
+        profiles_changed: before.coding_agent_profiles != after.coding_agent_profiles
+            || agent_commands_by_id(before) != agent_commands_by_id(after),
         env_agent_ids,
     }
 }
@@ -210,12 +219,35 @@ fn agent_env_settings_by_id(
         .collect()
 }
 
+/// #592/#597 - per-agent base command, the other half of the drift hash input
+/// (`compose_effective_command(agent.command, cell.command)`). A change here must
+/// trigger a drift refresh just like a profile-cell edit.
+fn agent_commands_by_id(settings: &AppSettings) -> BTreeMap<String, String> {
+    settings
+        .agents
+        .iter()
+        .map(|agent| (agent.id.clone(), agent.command.clone()))
+        .collect()
+}
+
 fn emit_settings_draft_update_events(app: &AppHandle, events: &SettingsDraftUpdateEvents) {
     if events.profiles_changed {
+        // #592/#597 diagnostic: the SettingsModal "Save" persists profile cells AND
+        // agent base commands through save_settings_draft (NOT
+        // update_coding_agent_profiles), so THIS is the emit point the user's normal
+        // edit flow actually reaches. Logged with the same [profile-hash] prefix so
+        // the drift trace shows the refresh event firing from the real save path.
+        log::info!(
+            "[profile-hash] profile-save (save_settings_draft): coding-agent config changed; emitting coding_agent_profiles_updated"
+        );
         let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
     }
 
     for agent_id in &events.env_agent_ids {
+        log::info!(
+            "[profile-hash] profile-save (save_settings_draft): agent env changed for {}; emitting coding_agent_env_settings_updated",
+            agent_id
+        );
         let _ = app.emit(
             "coding_agent_env_settings_updated",
             serde_json::json!({ "agentId": agent_id }),
@@ -1362,6 +1394,55 @@ mod tests {
         assert_ne!(ab_c, a_bc);
         assert_ne!(ab_c, restart);
         assert_ne!(ab_c, other_targets);
+    }
+
+    #[test]
+    fn settings_draft_events_flag_agent_base_command_edit() {
+        // #592/#597 - a bare agent base-command edit changes the effective-command
+        // drift hash, so save_settings_draft must emit coding_agent_profiles_updated
+        // even though the profile cells and envs are untouched. This is the bug the
+        // user hit editing `claude` -> `claude-amp -c ...` in Settings -> Coding Agents.
+        let before = settings_with_single_agent();
+        let mut after = settings_with_single_agent();
+        after.agents[0].command = "codex --resume".to_string();
+
+        let events = super::settings_draft_update_events(&before, &after);
+        assert!(
+            events.profiles_changed,
+            "an agent base-command edit must flag a profiles refresh"
+        );
+        assert!(events.env_agent_ids.is_empty(), "no env changed");
+    }
+
+    #[test]
+    fn settings_draft_events_quiet_for_non_drift_field_edit() {
+        // A non-drift field (label) changing must NOT emit a profiles refresh, so the
+        // fix does not over-fire on unrelated settings saves.
+        let before = settings_with_single_agent();
+        let mut after = settings_with_single_agent();
+        after.agents[0].label = "Renamed".to_string();
+
+        let events = super::settings_draft_update_events(&before, &after);
+        assert!(!events.profiles_changed, "a label edit is not drift");
+        assert!(events.env_agent_ids.is_empty());
+    }
+
+    #[test]
+    fn settings_draft_events_flag_agent_env_edit() {
+        // Regression guard: the pre-existing env path still flags the agent id (the
+        // base env is also a drift-hash input, surfaced via the env event).
+        let before = settings_with_single_agent();
+        let mut after = settings_with_single_agent();
+        after.agents[0].envs = vec![CodingAgentEnv {
+            key: "FOO".to_string(),
+            value: "bar".to_string(),
+            source: CodingAgentEnvSource::User,
+            enabled: true,
+        }];
+
+        let events = super::settings_draft_update_events(&before, &after);
+        assert_eq!(events.env_agent_ids, vec!["agent-0".to_string()]);
+        assert!(!events.profiles_changed, "env-only edit is not a profiles change");
     }
 
     #[tokio::test]

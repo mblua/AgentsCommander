@@ -16,6 +16,7 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
 import { sessionProfileBadge } from "../../shared/profile-utils";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
+import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import { rootAgentCodingAgentAction } from "./root-agent-action";
 import { TelegramIcon } from "./TelegramIcon";
 
@@ -419,6 +420,12 @@ const RootAgentBanner: Component = () => {
               {subtitle()}
               <Show when={profileBadge()}>
                 {(badge) => <span class="profile-badge root-profile-badge">{badge()}</span>}
+              </Show>
+              {/* #592 - drift reload for the Root Agent (loaded profile cell no
+                  longer matches its current config). Reuses the restart path, which
+                  re-stamps the content hash and clears the flag. */}
+              <Show when={rootSession()?.profileOutdated}>
+                <ProfileOutdatedBadge onReload={() => void handleRestart()} />
               </Show>
             </span>
           </Show>

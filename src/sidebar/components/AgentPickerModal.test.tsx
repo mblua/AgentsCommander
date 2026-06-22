@@ -330,6 +330,7 @@ function renderPicker(
     currentRequestedProfile: string | null;
     scopeContext: AgentPickerScopeContext | undefined;
     disableRedundantReplicaAssign: boolean;
+    targetProfileOutdated: boolean;
     onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
     onClose: () => void;
   }> = {},
@@ -354,6 +355,7 @@ function renderPicker(
         currentRequestedProfile={overrides.currentRequestedProfile}
         scopeContext={overrides.scopeContext}
         disableRedundantReplicaAssign={overrides.disableRedundantReplicaAssign}
+        targetProfileOutdated={overrides.targetProfileOutdated}
         onSelect={overrides.onSelect ?? onSelect}
         onClose={overrides.onClose ?? onClose}
       />
@@ -964,6 +966,29 @@ describe("AgentPickerModal", () => {
       await settle();
 
       const apply = target<HTMLButtonElement>("agentPicker.apply");
+      expect(apply.disabled).toBe(false);
+      expect(apply.getAttribute("title")).toBeNull();
+
+      dispose();
+    });
+
+    // #592: drift overrides the #551 redundancy disable. When the target session's
+    // loaded profile no longer matches its configuration (profileOutdated), the
+    // same-pair re-assign is meaningful (re-stamp the cell content + relaunch), so
+    // "Assign to this replica" must stay ENABLED even on the otherwise-redundant pair.
+    it("re-enables apply for a redundant pair when the target session has drifted (#592)", async () => {
+      const { dispose } = renderPicker({
+        currentAgentId: "codex",
+        currentRequestedProfile: "B",
+        disableRedundantReplicaAssign: true,
+        targetProfileOutdated: true,
+      });
+      await settle();
+
+      const apply = target<HTMLButtonElement>("agentPicker.apply");
+      expect(text("agentPicker.apply")).toContain("Assign to this replica");
+      // Without drift this exact pair would be disabled with the redundant tooltip
+      // (see the first test in this block); drift flips it back on.
       expect(apply.disabled).toBe(false);
       expect(apply.getAttribute("title")).toBeNull();
 
