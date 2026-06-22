@@ -254,6 +254,47 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  // #598 — the config-seed control renders for every agent (not Codex-only) and
+  // its dest field is gated behind the enable toggle.
+  it("exposes the config-seed toggle and reveals the dest field when enabled", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    // The seeded test agent has no configSeed, so the toggle starts unchecked
+    // and the dest field is hidden until the seed is enabled.
+    const toggle = byTestId<HTMLInputElement>("settings.agentRow.0.configSeedEnabled");
+    expect(toggle.checked).toBe(false);
+    expect(toggle.getAttribute("data-ac-state")).toBe("unchecked");
+    expect(
+      document.querySelector('[data-ac-testid="settings.agentRow.0.configSeedDest"]'),
+    ).toBeNull();
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    expect(
+      byTestId("settings.agentRow.0.configSeedEnabled").getAttribute("data-ac-state"),
+    ).toBe("checked");
+    const dest = byTestId<HTMLInputElement>("settings.agentRow.0.configSeedDest");
+    expect(dest).toBeTruthy();
+
+    dest.value = ".claude";
+    dest.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.configSeedDest").value).toBe(".claude");
+
+    dispose();
+  });
+
   it("keeps an early custom agent draft when the fresh load resolves late", async () => {
     let resolveLoadedSettings: (value: AppSettings) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(

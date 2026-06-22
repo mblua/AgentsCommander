@@ -89,6 +89,17 @@ export interface PtyOutputEvent {
   data: number[];
 }
 
+/**
+ * #598 — per-agent config-folder seed. Mirrors the Rust `ConfigSeedConfig`
+ * (`#[serde(rename_all = "camelCase")]`): `enabled` (serde default true) and
+ * `dest` (serde default ""). Lives on `AgentConfig` ONLY — nothing on
+ * `ProfileCellConfig` / `CodingAgentProfilesConfig`.
+ */
+export interface ConfigSeedConfig {
+  enabled: boolean;
+  dest: string;
+}
+
 export interface AgentConfig {
   id: string;
   label: string;
@@ -109,6 +120,16 @@ export interface AgentConfig {
    * string is normalized to omitted before save, so it is never persisted.
    */
   instructionsFilename?: string;
+  /**
+   * #598 — optional config-folder seed. When `enabled` and `dest` is non-empty,
+   * AC copies a template config folder (chosen by convention, precedence
+   * profile > matrix > coding-agent base) into the replica at spawn,
+   * overwriting it every launch. `dest` is the destination folder NAME under
+   * the replica root (e.g. ".claude"). Dropped to omitted before save when
+   * disabled or `dest` is empty (mirrors `instructionsFilename`), so an
+   * inactive seed is never persisted as a sentinel.
+   */
+  configSeed?: ConfigSeedConfig;
 }
 
 /**

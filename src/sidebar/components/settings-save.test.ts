@@ -138,3 +138,46 @@ describe("mergeSettingsForSavePreservingProjects (#529 G3 normalization)", () =>
     expect(merged.projectPaths).toEqual(["C:/fresh", "C:/other"]);
   });
 });
+
+describe("mergeSettingsForSavePreservingProjects (#598 configSeed normalization)", () => {
+  it("drops an inactive configSeed so it never persists as a sentinel", () => {
+    const draft = settings({
+      agents: [
+        agent({ id: "absent", configSeed: undefined }),
+        agent({ id: "disabled", configSeed: { enabled: false, dest: ".claude" } }),
+        agent({ id: "emptyDest", configSeed: { enabled: true, dest: "" } }),
+        agent({ id: "spacesDest", configSeed: { enabled: true, dest: "   " } }),
+      ],
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    for (const a of merged.agents) {
+      expect("configSeed" in a).toBe(false);
+    }
+  });
+
+  it("keeps an active configSeed, trims dest, and forces enabled true", () => {
+    const draft = settings({
+      agents: [agent({ id: "set", configSeed: { enabled: true, dest: "  .claude  " } })],
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect(merged.agents[0]?.configSeed).toEqual({ enabled: true, dest: ".claude" });
+  });
+
+  it("normalizes configSeed and instructionsFilename together without cross-talk", () => {
+    const draft = settings({
+      agents: [
+        agent({
+          id: "both",
+          instructionsFilename: "  CLAUDE.md  ",
+          configSeed: { enabled: true, dest: ".claude" },
+        }),
+      ],
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings());
+
+    expect(merged.agents[0]?.instructionsFilename).toBe("CLAUDE.md");
+    expect(merged.agents[0]?.configSeed).toEqual({ enabled: true, dest: ".claude" });
+  });
+});

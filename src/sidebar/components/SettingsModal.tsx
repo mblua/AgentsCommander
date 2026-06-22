@@ -243,6 +243,30 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", "agents", index, field as any, value as any);
   };
 
+  // #598 — config seed is a nested object on AgentConfig, so it cannot flow
+  // through updateAgent (scalar fields only). These setters merge the nested
+  // shape while editing; the disabled/empty case is normalized to omitted at
+  // the save choke point (settings-save.ts::normalizeAgentConfigSeed).
+  const setAgentConfigSeedEnabled = (index: number, enabled: boolean) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    const current = settings.data.agents[index]?.configSeed;
+    setSettings("data", "agents", index, "configSeed", {
+      enabled,
+      dest: current?.dest ?? "",
+    });
+  };
+
+  const setAgentConfigSeedDest = (index: number, dest: string) => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    const current = settings.data.agents[index]?.configSeed;
+    setSettings("data", "agents", index, "configSeed", {
+      enabled: current?.enabled ?? true,
+      dest,
+    });
+  };
+
   const updateAgentEnv = (
     agentIndex: number,
     rowIndex: number,
@@ -1329,6 +1353,39 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               Filename AC writes into the agent root at launch (its AC context +
               Role.md). Leave blank to use the default shown.
             </div>
+            <label class="settings-checkbox-field">
+              <input
+                type="checkbox"
+                class="settings-checkbox"
+                checked={!!agent.configSeed?.enabled}
+                onChange={(e) =>
+                  setAgentConfigSeedEnabled(i(), e.currentTarget.checked)
+                }
+                data-ac-testid={`settings.agentRow.${i()}.configSeedEnabled`}
+                data-ac-role="checkbox"
+                data-ac-state={agent.configSeed?.enabled ? "checked" : "unchecked"}
+              />
+              <span>Seed a config folder into the replica at spawn</span>
+            </label>
+            <Show when={agent.configSeed?.enabled}>
+              <label class="settings-field">
+                <span class="settings-label">Config folder</span>
+                <input
+                  class="settings-input"
+                  value={agent.configSeed?.dest ?? ""}
+                  onInput={(e) => setAgentConfigSeedDest(i(), e.currentTarget.value)}
+                  placeholder=".claude"
+                  data-ac-testid={`settings.agentRow.${i()}.configSeedDest`}
+                  data-ac-role="textbox"
+                />
+              </label>
+              <div class="settings-hint">
+                {"AC seeds this folder from the first template present: " +
+                  "<workspace>/default_profile_<letter><dest>, then " +
+                  "<matrix>/<dest>, then <workspace>/default<dest>. " +
+                  "It is overwritten on every spawn. Leave the folder blank to disable."}
+              </div>
+            </Show>
             <label class="settings-field">
               <span class="settings-label">Color</span>
               <div class="settings-color-row">
