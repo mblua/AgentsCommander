@@ -73,6 +73,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   let loopToastTimer: ReturnType<typeof setTimeout> | null = null;
   let raiseTerminalEnabled = true;
   let lastRaiseTime = 0;
+  // #592 - debounce handle for the profile-drift re-list (collapses bursts).
+  let profileDriftRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const blockContextMenu = (e: Event) => {
     // Allow the WebView2 native menu over the embedded terminal so users get
     // Copy/Paste. Custom menus elsewhere (SessionItem, ProjectPanel, etc.)
@@ -105,6 +107,41 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }, 3000);
   };
 
+  // #592 - pull the backend-computed drift flag and surgically patch each
+  // session. Uses setProfileOutdated (never setSessions) so the frontend-only
+  // pendingReview field is preserved. list_sessions recomputes profileOutdated
+  // from the persisted replica hash vs the current config, so this surfaces drift
+  // from ANY source: a profile event, an external settings.json edit, or
+  // pre-existing drift restored at boot.
+  const refreshProfileOutdated = async () => {
+    try {
+      const list = await SessionAPI.list();
+      for (const s of list) {
+        sessionsStore.setProfileOutdated(s.id, s.profileOutdated ?? false);
+      }
+    } catch (e) {
+      console.error("Failed to refresh profile drift:", e);
+    }
+  };
+  // Debounce so a burst (a workgroup spawn emitting many session_created, or a
+  // broad-scope profile apply touching many replicas) collapses into a single
+  // list_sessions round-trip.
+  const scheduleProfileOutdatedRefresh = () => {
+    if (profileDriftRefreshTimer) clearTimeout(profileDriftRefreshTimer);
+    profileDriftRefreshTimer = setTimeout(() => {
+      profileDriftRefreshTimer = null;
+      void refreshProfileOutdated();
+    }, 250);
+  };
+  // Re-check drift when the window regains focus / becomes visible. The robust
+  // catch-all for a cell edited OUTSIDE the app (a hand edit to settings.json,
+  // or any path that does not emit coding_agent_profiles_updated): the badge
+  // lights up as soon as the user returns to AC.
+  const handleWindowFocusDriftRefresh = () => {
+    if (document.visibilityState === "hidden") return;
+    scheduleProfileOutdatedRefresh();
+  };
+
   onMount(async () => {
     // #289 — optimistically paint in light mode (the historic default and the
     // AppSettings default) to keep first paint flash-free for the common case.
@@ -123,16 +160,19 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(
       await onCodingAgentProfilesUpdated(() => {
         settingsStore.refresh();
+        void refreshProfileOutdated();
       })
     );
     unlisteners.push(
       await onCodingAgentEnvSettingsUpdated(() => {
         settingsStore.refresh();
+        void refreshProfileOutdated();
       })
     );
     unlisteners.push(
       await onCodingAgentProfileSelectionUpdated((data) => {
         settingsStore.refresh();
+        void refreshProfileOutdated();
         if (data.agentPath) {
           void projectStore.reloadProjectIfLoaded(data.agentPath);
         } else {
@@ -232,6 +272,13 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     const activeId = await SessionAPI.getActive();
     sessionsStore.setActiveId(activeId);
 
+    // #592 - surface profile drift edited OUTSIDE the app (a hand edit to
+    // settings.json, or any path that does not emit coding_agent_profiles_updated)
+    // the moment the user returns to AC. The in-app edit events still refresh
+    // immediately; this is the robust catch-all for everything else.
+    window.addEventListener("focus", handleWindowFocusDriftRefresh);
+    document.addEventListener("visibilitychange", handleWindowFocusDriftRefresh);
+
     // Listen for events
     unlisteners.push(
       await onSessionCreated((session) => {
@@ -243,6 +290,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         ) {
           sessionsStore.setActiveId(session.id);
         }
+        // #592 - session_created carries profileOutdated=false (From<&Session>
+        // cannot compute drift). A session restored at boot with pre-existing
+        // drift must re-derive it from list_sessions, which would otherwise be
+        // clobbered to false by the addSession upsert. Debounced so a workgroup
+        // spawn burst collapses into one re-list.
+        scheduleProfileOutdatedRefresh();
       })
     );
 
@@ -356,9 +409,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (cleanupGeometry) cleanupGeometry();
     if (stopTeamIdleWatcher) stopTeamIdleWatcher();
     if (loopToastTimer) clearTimeout(loopToastTimer);
+    if (profileDriftRefreshTimer) clearTimeout(profileDriftRefreshTimer);
     sessionsStore.setSidebarPointerInside(false);
     document.removeEventListener("mousedown", handleRaiseTerminal);
     document.removeEventListener("contextmenu", blockContextMenu);
+    window.removeEventListener("focus", handleWindowFocusDriftRefresh);
+    document.removeEventListener("visibilitychange", handleWindowFocusDriftRefresh);
   });
 
   return (

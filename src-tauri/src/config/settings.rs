@@ -1335,9 +1335,23 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
                 ),
             )?;
             if cell.enabled && !cell.command.trim().is_empty() {
+                // #597 - the cell holds params appended to the agent base command,
+                // so validate the COMPOSED effective command. Otherwise a banned
+                // provider flag (claude --continue/-c, codex/gemini manual resume)
+                // placed in the cell params escapes the check: the provider token
+                // lives in the base, not the cell. Falls back to the cell text when
+                // the cell references an agent id that has no configured agent.
+                let base = settings
+                    .agents
+                    .iter()
+                    .find(|a| a.id == *agent_id)
+                    .map(|a| a.command.as_str())
+                    .unwrap_or("");
+                let effective =
+                    crate::config::agent_command::compose_effective_command(base, &cell.command);
                 validate_agent_command_text(
                     &format!("Coding agent profile '{}:{}'", agent_id, letter),
-                    &cell.command,
+                    &effective,
                 )?;
             }
         }
@@ -2159,6 +2173,56 @@ mod tests {
         let settings = settings_with_agents(&[("Claude", "claude --continue")]);
         let err = validate_agent_commands(&settings).unwrap_err();
         assert!(err.contains("Claude commands must not include --continue or -c"));
+    }
+
+    #[test]
+    fn validate_rejects_banned_continue_flag_in_cell_params() {
+        // #597 - the cell holds params only; the provider token (claude) lives in
+        // the base. The ban must still catch `--continue` typed in the cell, which
+        // only works if validation runs on the COMPOSED command.
+        let mut settings = settings_with_agents(&[("Claude", "claude")]);
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "--continue".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+        let err = validate_agent_commands(&settings).unwrap_err();
+        assert!(
+            err.contains("must not include --continue"),
+            "composed claude + --continue cell must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_allows_continue_flag_when_base_is_not_claude() {
+        // #597 - the --continue ban is claude-specific. With a codex base the
+        // composed `codex --continue` is allowed, proving validation keys off the
+        // composed provider token, not the raw cell text.
+        let mut settings = settings_with_agents(&[("Codex", "codex")]);
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("agent-0".to_string())
+            .or_default()
+            .insert(
+                "A".to_string(),
+                ProfileCellConfig {
+                    enabled: true,
+                    command: "--continue".to_string(),
+                    env: BTreeMap::new(),
+                    notes: String::new(),
+                },
+            );
+        assert!(validate_agent_commands(&settings).is_ok());
     }
 
     #[test]

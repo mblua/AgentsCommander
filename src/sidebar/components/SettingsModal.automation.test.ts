@@ -473,11 +473,12 @@ describe("SettingsModal automation hooks", () => {
     // base command until a command is typed).
     expect(byTestId("settings.profileCard.0.B").getAttribute("data-ac-state")).toBe("missing");
     expect(byTestId("settings.profileCard.0.B.badge").textContent).toContain("MISSING");
-    // #538: the sub-line states what the cell launches via fallback (consistent
-    // with the MISSING badge) instead of a contradictory bare "Configured".
+    // #597: the sub-line shows the agent base binary the cell params append to
+    // (here `codex`), consistent with the MISSING badge (B has no params of its
+    // own yet) instead of a contradictory bare "Configured".
     expect(
       byTestId("settings.profileCard.0.B").querySelector(".settings-profile-card-sub")?.textContent,
-    ).toBe("Launches A");
+    ).toBe("codex");
     expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B.missing"]')).toBeNull();
     expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B.add"]')).toBeNull();
     // Instead it exposes the same expand/edit affordance as every cell: a chevron

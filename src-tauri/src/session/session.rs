@@ -107,6 +107,11 @@ pub struct Session {
     pub profile_fallback_applied: bool,
     #[serde(skip)]
     pub effective_codex_home: Option<String>,
+    /// #592 - 16-hex content-hash of the profile cell this session launched
+    /// with. In-memory; the durable copy is `tooling.profileContentHash` in the
+    /// replica config. `None` for plain-shell sessions (no resolved profile).
+    #[serde(skip)]
+    pub profile_content_hash: Option<String>,
     /// Telegram bot id that should be attached whenever this session has a live PTY.
     /// None means the Telegram toggle is OFF for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,6 +220,15 @@ pub struct SessionInfo {
     pub profile_fallback_applied: bool,
     #[serde(skip)]
     pub effective_codex_home: Option<String>,
+    /// #592 - internal carrier (NOT on the wire) of the session's loaded hash,
+    /// read by the `list_sessions` command to compute `profile_outdated`.
+    #[serde(skip)]
+    pub profile_content_hash: Option<String>,
+    /// #592 - true when the loaded profile cell no longer matches the current
+    /// configuration. Computed by the `list_sessions` command (settings-aware);
+    /// `From<&Session>` cannot compute it (no settings) so it defaults false.
+    #[serde(default)]
+    pub profile_outdated: bool,
     /// Internal carrier for sessions persistence. Not part of the frontend contract;
     /// the UI uses BridgeInfo events/listing for live bridge state.
     #[serde(skip)]
@@ -255,6 +269,8 @@ impl From<&Session> for SessionInfo {
             profile_fallback_chain: s.profile_fallback_chain.clone(),
             profile_fallback_applied: s.profile_fallback_applied,
             effective_codex_home: s.effective_codex_home.clone(),
+            profile_content_hash: s.profile_content_hash.clone(),
+            profile_outdated: false,
             telegram_bot_id: s.telegram_bot_id.clone(),
             was_detached: s.was_detached,
             detached_geometry: s.detached_geometry.clone(),
@@ -292,6 +308,7 @@ mod tests {
             profile_fallback_chain: Vec::new(),
             profile_fallback_applied: false,
             effective_codex_home: None,
+            profile_content_hash: None,
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,

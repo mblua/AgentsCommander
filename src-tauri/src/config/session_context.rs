@@ -5347,7 +5347,7 @@ mod tests {
         assert!(skill.is_file());
         assert!(content.contains("role-skill-boundary-audit"));
         assert!(content.contains("Scope: Root Agent durable skills"));
-        assert!(content.contains("Audit whether governance instructions belong in Role.md"));
+        assert!(content.contains("Audit where governance instructions belong (Role.md"));
     }
 
     #[test]

@@ -141,4 +141,60 @@ describe("session workflow automation hooks", () => {
       rendered.cleanup();
     }
   });
+
+  it("#592: surfaces the Root Agent drift reload badge and relaunches on click", async () => {
+    // The Root Agent can drift too (its loaded profile cell vs current config), and
+    // its hash is persisted (a80a1a7). The banner must show the same reload badge as
+    // SessionItem / replica rows, wired to the root restart path.
+    const root = session({
+      id: "root-1",
+      name: "Agent's Commander",
+      isRootAgent: true,
+      status: "running",
+      profileOutdated: true,
+    });
+    sessionsStore.setSessions([root]);
+
+    const fake = new FakeTransport();
+    fake.resolve("restart_session", root);
+    fake.resolve("switch_session", undefined);
+
+    const rendered = renderWithFakeTransport(() => <RootAgentBanner />, fake);
+    try {
+      const badge = rendered.root.querySelector(".profile-outdated-badge");
+      expect(badge).not.toBeNull();
+
+      click(badge!);
+      await waitFor(() =>
+        expect(fake.lastCall("restart_session")?.args).toEqual({
+          id: "root-1",
+          agentId: null,
+          requestedProfile: null,
+          skipAutoResume: null,
+        })
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("#592: hides the Root Agent drift badge when the profile is current", async () => {
+    const root = session({
+      id: "root-1",
+      name: "Agent's Commander",
+      isRootAgent: true,
+      status: "running",
+      profileOutdated: false,
+    });
+    sessionsStore.setSessions([root]);
+
+    const fake = new FakeTransport();
+    const rendered = renderWithFakeTransport(() => <RootAgentBanner />, fake);
+    try {
+      expect(rendered.root.querySelector('[data-ac-testid="rootAgent.banner"]')).not.toBeNull();
+      expect(rendered.root.querySelector(".profile-outdated-badge")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });
