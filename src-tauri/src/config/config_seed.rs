@@ -235,6 +235,12 @@ fn segments_eq(a: &str, b: &str) -> bool {
 /// Best-effort, Windows-safe seed execution (H1). NEVER aborts the spawn.
 /// `unique_sfx` (the session id) keeps the temp/trash leaves unique per spawn
 /// (M3) and short (I2/MAX_PATH).
+///
+/// CONCURRENCY CONTRACT (grinch HIGH-1): callers MUST serialize this for the
+/// same replica, because step 2 sweeps ALL `<dest>.acseed-*` scratch by prefix
+/// (see [`clear_stale_seed_scratch`]) and would otherwise delete a concurrent
+/// spawn's in-flight temp/trash mid-swap. The only caller, the session spawn
+/// chokepoint, holds `RtkSweepLockState` across this call for all dests.
 pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> ConfigSeedReport {
     // 1. Pick the winning tier by source-folder presence (highest precedence first).
     let Some((tier, src)) = seed.candidates.iter().find(|(_, src)| is_readable_dir(src)) else {
@@ -340,6 +346,11 @@ fn is_readable_dir(path: &Path) -> bool {
 /// Remove every leftover seed-scratch sibling for `dest_name` (any session-id
 /// suffix), best-effort. Reclaims a temp/trash dir leaked by an earlier locked
 /// removal; the current spawn's `temp`/`trash` (same prefix) are cleared too.
+///
+/// Sweeps across ALL session ids, so it is SAFE only when the caller has
+/// serialized seeding for this replica (see [`perform_config_seed`]'s
+/// concurrency contract); otherwise it can delete a concurrent spawn's in-flight
+/// scratch (grinch HIGH-1).
 fn clear_stale_seed_scratch(parent: &Path, dest_name: &str) {
     let tmp_prefix = format!("{}.acseed-tmp-", dest_name);
     let old_prefix = format!("{}.acseed-old-", dest_name);
@@ -709,6 +720,41 @@ mod tests {
         );
         assert!(!replica.join(".claude.acseed-old-OLDID").exists());
         assert!(!replica.join(".claude.acseed-tmp-OLDID").exists());
+    }
+
+    /// grinch HIGH-1 characterization: proves WHY `perform_config_seed` must be
+    /// serialized for all dests. We reconstruct the exact mid-swap state of a
+    /// concurrent spawn A (dest already renamed to trash_A, staged temp_A
+    /// present) and run what spawn B's step-2 cleanup does for the SAME dest with
+    /// a DIFFERENT session id. The prefix-sweep deletes BOTH of A's in-flight
+    /// dirs, after which A can neither install (temp gone) nor restore (trash
+    /// gone) -> config lost. This is the data-loss the session chokepoint's
+    /// RtkSweepLockState serialization (held across the seed for ALL dests)
+    /// prevents; a regression that drops or narrows that lock re-opens it.
+    #[test]
+    fn unserialized_prefix_sweep_would_destroy_a_concurrent_inflight_swap() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = temp.path().join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+
+        // Spawn A is mid-swap on dest ".claude-amp" (the previously-unlocked path):
+        // dest has been renamed to trash_A (its ONLY surviving old copy) and
+        // temp_A holds the freshly staged new config.
+        let trash_a = replica.join(".claude-amp.acseed-old-idA");
+        let temp_a = replica.join(".claude-amp.acseed-tmp-idA");
+        write_file(&trash_a.join("keep.txt"), b"OLD");
+        write_file(&temp_a.join("f.txt"), b"NEW");
+        assert!(!replica.join(".claude-amp").exists(), "A moved dest aside");
+
+        // Spawn B (different session id) runs its step-2 prefix-sweep concurrently.
+        clear_stale_seed_scratch(&replica, ".claude-amp");
+
+        // Hazard: B deleted BOTH of A's in-flight dirs. A's later
+        // rename(temp_A->dest) and restore(trash_A->dest) would both fail,
+        // leaving the replica with NO .claude-amp -> the exact data loss the
+        // chokepoint lock serializes against.
+        assert!(!temp_a.exists(), "prefix-sweep deletes a concurrent spawn's staged temp");
+        assert!(!trash_a.exists(), "prefix-sweep deletes a concurrent spawn's only old copy");
     }
 
     // ---- copy_file_substituted (size-first, binary/UTF-8) ------------------

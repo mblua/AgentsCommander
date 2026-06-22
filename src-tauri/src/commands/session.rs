@@ -1065,20 +1065,24 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // templated config. Best-effort: never aborts the spawn. This is the single
     // execution chokepoint every real spawn funnels through (create / replica /
     // other variants, delivery / mailbox / web wakes); prevalidation never hits
-    // it because it discards the spawn. For a `.claude` dest, hold the RTK sweep
-    // lock (M2) around the seed + re-apply, then re-stamp claudeMdExcludes (if
-    // opted in) and the rtk hook (M1), mirroring
-    // entity_creation::apply_agent_matrix_settings_files. Per Q2 this runs on
-    // EVERY spawn, including loop/scheduler resume-wakes (overwrite every spawn).
+    // it because it discards the spawn. Per Q2 this runs on EVERY spawn,
+    // including loop/scheduler resume-wakes (overwrite every spawn).
     if let Some(seed) = resolved_spawn.as_ref().and_then(|s| s.seed.as_ref()) {
-        // M2: serialize against sweep_rtk_hook's read-modify-write of
-        // .claude/settings.local.json. Clone the Arc out of State first so the
-        // owned guard does not borrow a State temporary (E0716).
-        let _sweep_guard = if seed.claude_settings_reapply.is_some() {
+        // grinch HIGH-1: serialize the seed swap for ALL dests (not just
+        // `.claude`). Two same-replica spawns can run concurrently (e.g. a
+        // delivery tick + a mailbox wake) holding only `session_mgr.read()`,
+        // with no global spawn lock. Without serialization, spawn B's
+        // prefix-sweep of stale scratch (`clear_stale_seed_scratch`) could
+        // delete spawn A's in-flight temp/trash mid-swap and lose the config
+        // (breaking H1's "dest always fully-old or fully-new" + M3 isolation).
+        // Under this lock any other-id scratch is truly stale, so the
+        // leak-reclaim sweep stays safe. The same lock also gives the `.claude`
+        // re-apply its M2 serialization vs sweep_rtk_hook's settings.local.json
+        // read-modify-write. Clone the Arc out of State first so the owned guard
+        // does not borrow a State temporary (E0716).
+        let _seed_guard = {
             let lock = app.state::<crate::RtkSweepLockState>().inner().clone();
-            Some(lock.lock_owned().await)
-        } else {
-            None
+            lock.lock_owned().await
         };
 
         let report = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
