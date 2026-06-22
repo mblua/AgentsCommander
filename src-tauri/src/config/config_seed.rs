@@ -244,9 +244,29 @@ fn segments_eq(a: &str, b: &str) -> bool {
 pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> ConfigSeedReport {
     // 1. Pick the winning tier by source-folder presence (highest precedence first).
     let Some((tier, src)) = seed.candidates.iter().find(|(_, src)| is_readable_dir(src)) else {
-        log::debug!(
-            "[config-seed] no template present for dest {}; skipping",
-            seed.dest.display()
+        // #598: seeding is active but no template exists at any tier. This is a
+        // benign no-op (nothing to copy), but a SILENT one confused users who
+        // enabled the feature, created no template, and saw nothing happen. Log
+        // it at info with the exact candidate paths so they know WHERE to create
+        // a template. Only fires here, at the real spawn chokepoint (callers gate
+        // on a resolved seed), never during prevalidation/delivery builds.
+        let replica_label = seed
+            .context
+            .replica_root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?");
+        let looked_in = seed
+            .candidates
+            .iter()
+            .map(|(t, p)| format!("{:?}={}", t, p.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::info!(
+            "[config-seed] active for replica '{}' dest '{}' but no source template found at any tier; skipped (looked for: {})",
+            replica_label,
+            seed.dest.display(),
+            looked_in
         );
         return ConfigSeedReport::Skipped;
     };
@@ -328,10 +348,10 @@ pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> Confi
         log::warn!("[config-seed] {}", w);
     }
     log::info!(
-        "[config-seed] seeded {} from {} (tier={:?})",
+        "[config-seed] seeded '{}' into replica from {:?} source '{}'",
         seed.dest.display(),
-        src.display(),
-        tier
+        tier,
+        src.display()
     );
     ConfigSeedReport::Seeded
 }
