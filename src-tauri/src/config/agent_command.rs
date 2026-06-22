@@ -35,6 +35,10 @@ pub struct AgentSpawnCommand {
     pub profile_resolution: ProfileResolution,
     pub trusted_agent_id: String,
     pub trusted_agent_label: String,
+    /// #598 - resolved config-folder seed (pure path math; executed at the
+    /// session chokepoint, never here). `None` when the agent has no active seed
+    /// or the launch root is not an AC replica/root-agent.
+    pub seed: Option<crate::config::config_seed::ResolvedConfigSeed>,
 }
 
 pub fn normalize_legacy_agent_command(command: &str) -> Result<NormalizedAgentCommand, String> {
@@ -540,7 +544,8 @@ const OPENCODE_ARG_FORMS: [&str; 4] =
 /// the extension carries real signal here.
 ///
 /// Called BEFORE the `git_pull_before` wrap, so `shell` is the real command.
-fn command_runs_opencode(shell: &str, shell_args: &[String]) -> bool {
+/// `pub(crate)` so `config_seed::compute_config_dir_warning` can reuse it (#598).
+pub(crate) fn command_runs_opencode(shell: &str, shell_args: &[String]) -> bool {
     if executable_basename(shell) == "opencode" {
         return true;
     }
@@ -708,6 +713,10 @@ pub fn build_agent_spawn_command(
         log::warn!("[profiles] {}", warning);
     }
 
+    // #598 - active config-folder seed for this agent (resolved below, before the
+    // git_pull wrap). `is_active` = enabled AND non-empty dest.
+    let seed_choice = agent.config_seed.as_ref().filter(|c| c.is_active());
+
     let selected_command = if profile_resolution.cell.command.trim().is_empty() {
         agent.command.as_str()
     } else {
@@ -734,7 +743,12 @@ pub fn build_agent_spawn_command(
             .cell
             .env
             .values()
-            .any(|value| value_contains_ac_placeholder(value));
+            .any(|value| value_contains_ac_placeholder(value))
+        // #598: an active seed needs the placeholder context (for the dest, the
+        // tier candidates, and content substitution). The `launch_path.is_some()`
+        // guard keeps a configured seed from turning a no-path build (e.g.
+        // prevalidation) into a hard error at the `?` below.
+        || (seed_choice.is_some() && launch_path.is_some());
     let placeholder_context = if needs_placeholder_context {
         Some(
             launch_path
@@ -774,6 +788,45 @@ pub fn build_agent_spawn_command(
     let child_env =
         merge_env_layers(&[&agent_env, &profile_env, &computed_codex_home.generated_env]);
 
+    // #598 - resolve the config-folder seed BEFORE the git_pull wrap (L2) so the
+    // config-dir warning detects the real command (the wrap rewrites `shell` to
+    // `cmd.exe` and buries the real command in args). Pure path math plus a
+    // log-only warning string; NO filesystem is touched here. The destructive
+    // copy runs later at the single session chokepoint (create_session_inner).
+    let seed = match seed_choice {
+        Some(cfg) => {
+            let mut resolved = crate::config::config_seed::resolve_config_seed(
+                cfg,
+                &profile_resolution.effective_profile,
+                placeholder_context.as_ref(),
+            );
+            if let Some(r) = resolved.as_mut() {
+                r.config_dir_warning = crate::config::config_seed::compute_config_dir_warning(
+                    &r.dest,
+                    &shell,
+                    &shell_args,
+                    &agent_env,
+                    &profile_env,
+                    computed_codex_home.effective_codex_home.as_deref(),
+                );
+                // M1/M2: only a `.claude` dest can be re-stamped (the writers
+                // hardcode the `.claude` subdir); presence also holds the sweep
+                // lock around the seed + re-apply.
+                r.claude_settings_reapply =
+                    if r.dest.file_name().and_then(|n| n.to_str()) == Some(".claude") {
+                        Some(crate::config::config_seed::ClaudeSettingsReapply {
+                            apply_excludes: agent.exclude_global_claude_md,
+                            inject_rtk_hook: settings.inject_rtk_hook,
+                        })
+                    } else {
+                        None
+                    };
+            }
+            resolved
+        }
+        None => None,
+    };
+
     if agent.git_pull_before {
         let wrapped = wrap_git_pull_before(shell, shell_args)?;
         shell = wrapped.0;
@@ -792,6 +845,7 @@ pub fn build_agent_spawn_command(
         profile_resolution,
         trusted_agent_id: agent.id.clone(),
         trusted_agent_label: agent.label.clone(),
+        seed,
     })
 }
 
@@ -804,7 +858,8 @@ mod tests {
         resolve_target_filename, OpencodeConfigDirOutcome,
     };
     use crate::config::settings::{
-        AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ProfileCellConfig,
+        AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig,
+        ProfileCellConfig,
     };
     use std::collections::BTreeMap;
 
@@ -923,6 +978,7 @@ mod tests {
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
+            config_seed: None,
         }
     }
 
@@ -1790,5 +1846,173 @@ mod tests {
             std::path::Path::new(&expected_config).is_dir(),
             "build should have created the expanded OPENCODE_CONFIG_DIR at {expected_config}"
         );
+    }
+
+    // #598 - config-folder seed resolution wired into build_agent_spawn_command.
+
+    fn seed_replica(temp: &std::path::Path) -> std::path::PathBuf {
+        let replica = temp
+            .join(".ac")
+            .join("wg-7-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).unwrap();
+        replica
+    }
+
+    /// Mirror the builder's canonicalize + verbatim-prefix strip.
+    fn canonical_replica(replica: &std::path::Path) -> std::path::PathBuf {
+        let canonical = std::fs::canonicalize(replica).unwrap();
+        canonical
+            .to_string_lossy()
+            .strip_prefix(r"\\?\")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(canonical)
+    }
+
+    #[test]
+    fn build_spawn_resolves_active_seed_for_replica_without_touching_fs() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = seed_replica(temp.path());
+
+        let mut claude = agent("claude", "claude");
+        claude.exclude_global_claude_md = true;
+        claude.config_seed = Some(ConfigSeedConfig {
+            enabled: true,
+            dest: ".claude".to_string(),
+        });
+        let mut settings = AppSettings {
+            agents: vec![claude],
+            ..AppSettings::default()
+        };
+        settings.inject_rtk_hook = true;
+
+        let spawn =
+            build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A")).unwrap();
+        let seed = spawn.seed.expect("active seed resolves to Some");
+
+        let expected_replica = canonical_replica(&replica);
+        let workspace = expected_replica.parent().unwrap().parent().unwrap();
+        let matrix = workspace.join("_agent_dev-rust");
+        let letter = spawn.profile_resolution.effective_profile.to_ascii_lowercase();
+
+        use crate::config::config_seed::ConfigSeedTier;
+        assert_eq!(
+            seed.candidates,
+            vec![
+                (
+                    ConfigSeedTier::Profile,
+                    workspace.join(format!("default_profile_{}.claude", letter))
+                ),
+                (ConfigSeedTier::Matrix, matrix.join(".claude")),
+                (ConfigSeedTier::Base, workspace.join("default.claude")),
+            ]
+        );
+        assert_eq!(seed.dest, expected_replica.join(".claude"));
+        // Pure resolution: no template dirs were created.
+        assert!(!workspace.join("default.claude").exists());
+        // `.claude` dest -> reapply carries the agent + global flags.
+        let re = seed
+            .claude_settings_reapply
+            .expect("reapply present for .claude");
+        assert!(re.apply_excludes);
+        assert!(re.inject_rtk_hook);
+    }
+
+    #[test]
+    fn build_spawn_computes_seed_warning_before_git_pull_wrap() {
+        // L2 regression: on Windows the git_pull wrap rewrites shell -> cmd.exe,
+        // so a warning computed AFTER the wrap would misdetect to None. We compute
+        // it before, so a Claude agent with no CLAUDE_CONFIG_DIR gets the
+        // "not configured" warning even with git_pull_before on.
+        let temp = tempfile::tempdir().unwrap();
+        let replica = seed_replica(temp.path());
+
+        let mut claude = agent("claude", "claude");
+        claude.git_pull_before = true;
+        claude.config_seed = Some(ConfigSeedConfig {
+            enabled: true,
+            dest: ".claude".to_string(),
+        });
+        let settings = AppSettings {
+            agents: vec![claude],
+            ..AppSettings::default()
+        };
+
+        let spawn =
+            build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A")).unwrap();
+        let warning = spawn
+            .seed
+            .expect("seed")
+            .config_dir_warning
+            .expect("warning computed on the unwrapped command");
+        assert!(warning.contains("CLAUDE_CONFIG_DIR"), "{warning}");
+    }
+
+    #[test]
+    fn build_spawn_seed_none_for_normal_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo-thing");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let mut claude = agent("claude", "claude");
+        claude.config_seed = Some(ConfigSeedConfig {
+            enabled: true,
+            dest: ".claude".to_string(),
+        });
+        let settings = AppSettings {
+            agents: vec![claude],
+            ..AppSettings::default()
+        };
+
+        let spawn = build_agent_spawn_command(&settings, "claude", Some(&repo), Some("A")).unwrap();
+        assert!(
+            spawn.seed.is_none(),
+            "a normal (non-replica) cwd must not seed"
+        );
+    }
+
+    #[test]
+    fn build_spawn_seed_reapply_none_for_non_claude_dest() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = seed_replica(temp.path());
+
+        let mut claude = agent("claude", "claude");
+        claude.config_seed = Some(ConfigSeedConfig {
+            enabled: true,
+            dest: ".claude-amp".to_string(),
+        });
+        let settings = AppSettings {
+            agents: vec![claude],
+            ..AppSettings::default()
+        };
+
+        let spawn =
+            build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A")).unwrap();
+        let seed = spawn.seed.expect("seed");
+        assert_eq!(seed.dest.file_name().unwrap(), ".claude-amp");
+        assert!(
+            seed.claude_settings_reapply.is_none(),
+            "non-.claude dest must not trigger the .claude re-apply"
+        );
+    }
+
+    #[test]
+    fn build_spawn_seed_none_when_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = seed_replica(temp.path());
+
+        let mut claude = agent("claude", "claude");
+        claude.config_seed = Some(ConfigSeedConfig {
+            enabled: false,
+            dest: ".claude".to_string(),
+        });
+        let settings = AppSettings {
+            agents: vec![claude],
+            ..AppSettings::default()
+        };
+
+        let spawn =
+            build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A")).unwrap();
+        assert!(spawn.seed.is_none(), "disabled seed must resolve to None");
     }
 }

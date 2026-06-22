@@ -139,6 +139,26 @@ pub fn expand_placeholders_in_args(
         .collect()
 }
 
+/// Expand the 3 known AC tokens inside file CONTENT (#598 config-folder seed).
+/// Unlike [`expand_placeholders`] this does NOT fail-closed on unknown `%...%`:
+/// a seeded template may legitimately contain other `%VAR%` text the tool reads
+/// at runtime, so unknown markers are left literal. Substituted paths are
+/// forward-slash normalized (JSON/TOML safe; accepted by Node/Rust/Win32).
+pub fn expand_placeholders_in_content(value: &str, context: &PlaceholderContext) -> String {
+    let fwd = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+    let mut out = value.to_string();
+    if context.root_kind == PlaceholderRootKind::AcReplicaOrRootAgent {
+        out = out.replace(AC_REPLICA_ROOT_PLACEHOLDER, &fwd(&context.replica_root));
+    }
+    if let Some(ws) = &context.workspace_root {
+        out = out.replace(AC_WORKSPACE_ROOT_PLACEHOLDER, &fwd(ws));
+    }
+    if let Some(mx) = &context.matrix_root {
+        out = out.replace(AC_MATRIX_ROOT_PLACEHOLDER, &fwd(mx));
+    }
+    out
+}
+
 pub fn reject_unexpanded_markers(
     value: &str,
     context: &str,
@@ -340,6 +360,50 @@ mod tests {
         // No alias: a leftover %AC_ROOT% is no longer expanded and trips the backstop.
         let err = expand_placeholders(r"%AC_ROOT%\x", &ctx).unwrap_err();
         assert!(err.contains("unknown placeholder"), "{err}");
+    }
+
+    #[test]
+    fn expand_in_content_substitutes_known_tokens_forward_slashed() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = make_replica(temp.path());
+        let ctx = placeholder_context_for_launch_root(&replica).unwrap();
+
+        let expected_replica = canonical_stripped(&replica).to_string_lossy().replace('\\', "/");
+        let out = expand_placeholders_in_content(
+            "root=%AC_REPLICA_ROOT%/x and %AC_WORKSPACE_ROOT% and %AC_MATRIX_ROOT%",
+            &ctx,
+        );
+        assert!(out.contains(&format!("root={}/x", expected_replica)), "{out}");
+        // No backslashes from the substituted paths (forward-slash normalized).
+        assert!(!out.contains('\\'), "{out}");
+    }
+
+    #[test]
+    fn expand_in_content_leaves_unknown_markers_literal() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = make_replica(temp.path());
+        let ctx = placeholder_context_for_launch_root(&replica).unwrap();
+        // Unlike expand_placeholders, content expansion is lenient: unknown
+        // %...% markers survive verbatim (the template may use them at runtime).
+        let out = expand_placeholders_in_content("%UNKNOWN% and %AC_ROOT% stay", &ctx);
+        assert_eq!(out, "%UNKNOWN% and %AC_ROOT% stay");
+    }
+
+    #[test]
+    fn expand_in_content_skips_tokens_with_no_matching_root() {
+        // Normal cwd: replica token is NOT substituted (no replica root kind),
+        // and workspace/matrix are None, so all three are left literal.
+        let normal = PlaceholderContext {
+            replica_root: PathBuf::from(if cfg!(windows) { r"C:\cwd" } else { "/cwd" }),
+            root_kind: PlaceholderRootKind::NormalLaunchCwd,
+            workspace_root: None,
+            matrix_root: None,
+        };
+        let out = expand_placeholders_in_content(
+            "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT%",
+            &normal,
+        );
+        assert_eq!(out, "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT%");
     }
 
     #[test]

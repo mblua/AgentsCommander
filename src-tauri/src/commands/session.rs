@@ -1061,6 +1061,49 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         )
     });
 
+    // #598 - seed the config folder before the PTY starts so the agent sees the
+    // templated config. Best-effort: never aborts the spawn. This is the single
+    // execution chokepoint every real spawn funnels through (create / replica /
+    // other variants, delivery / mailbox / web wakes); prevalidation never hits
+    // it because it discards the spawn. For a `.claude` dest, hold the RTK sweep
+    // lock (M2) around the seed + re-apply, then re-stamp claudeMdExcludes (if
+    // opted in) and the rtk hook (M1), mirroring
+    // entity_creation::apply_agent_matrix_settings_files. Per Q2 this runs on
+    // EVERY spawn, including loop/scheduler resume-wakes (overwrite every spawn).
+    if let Some(seed) = resolved_spawn.as_ref().and_then(|s| s.seed.as_ref()) {
+        // M2: serialize against sweep_rtk_hook's read-modify-write of
+        // .claude/settings.local.json. Clone the Arc out of State first so the
+        // owned guard does not borrow a State temporary (E0716).
+        let _sweep_guard = if seed.claude_settings_reapply.is_some() {
+            let lock = app.state::<crate::RtkSweepLockState>().inner().clone();
+            Some(lock.lock_owned().await)
+        } else {
+            None
+        };
+
+        let report = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
+
+        // M1: a `.claude` seed clean-replaces the dir, wiping the AC-managed
+        // settings.local.json. Re-stamp both claudeMdExcludes (if the agent opts
+        // in) and the rtk hook (per the global toggle). `cwd` is the replica
+        // root; the writers append `.claude`, so this lands in the seeded dir.
+        if matches!(report, crate::config::config_seed::ConfigSeedReport::Seeded) {
+            if let Some(re) = &seed.claude_settings_reapply {
+                let dir = std::path::Path::new(&cwd);
+                if re.apply_excludes {
+                    if let Err(e) = crate::config::claude_settings::ensure_claude_md_excludes(dir) {
+                        log::warn!("[config-seed] re-apply claudeMdExcludes failed: {}", e);
+                    }
+                }
+                if let Err(e) =
+                    crate::config::claude_settings::ensure_rtk_pretool_hook(dir, re.inject_rtk_hook)
+                {
+                    log::warn!("[config-seed] re-apply rtk hook failed: {}", e);
+                }
+            }
+        }
+    }
+
     let spawn_result = {
         pty_mgr.lock().unwrap().spawn(
             id,
@@ -2698,6 +2741,7 @@ mod tests {
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
+                    config_seed: None,
                 },
                 AgentConfig {
                     id: "codex".to_string(),
@@ -2709,6 +2753,7 @@ mod tests {
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
+                    config_seed: None,
                 },
             ],
             ..AppSettings::default()
@@ -3256,6 +3301,7 @@ mod tests {
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
+            config_seed: None,
         });
 
         let resolved = resolve_actual_agent(
@@ -3334,6 +3380,7 @@ mod tests {
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
+            config_seed: None,
         }];
 
         let resolved = resolve_agent_from_shell("codex", &[], &settings);
