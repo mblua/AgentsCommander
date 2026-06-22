@@ -1,8 +1,15 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, emitOpenSettings } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
+import {
+  pendingCoordinatorClose,
+  setPendingCoordinatorClose,
+  confirmPendingCoordinatorClose,
+  requestCoordinatorClose,
+  registerCoordinatorCloseModalHost,
+} from "../stores/coordinator-close";
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
 import { launchErrorMessage } from "../../shared/launch-errors";
@@ -195,6 +202,11 @@ const ProjectPanel: Component = () => {
   let unlistenBranch: (() => void) | null = null;
   let unlistenClock: (() => void) | null = null;
   let unlistenAutoClose: (() => void) | null = null;
+  let unlistenManualClose: (() => void) | null = null;
+  // #588 register this ProjectPanel as the confirm-modal host for THIS window, so
+  // the shared close helper opens the modal here (sidebar / web) but falls back to
+  // a plain destroy in a window with no host (the detached terminal webview).
+  onCleanup(registerCoordinatorCloseModalHost());
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
       projectStore.updateReplicaBranch(data.replicaPath, data.branch);
@@ -207,11 +219,16 @@ const ProjectPanel: Component = () => {
     unlistenAutoClose = await onCoordinatorAutoCloseChanged((data) => {
       projectStore.updateCoordinatorAutoClosed(data.replicaPath, data.autoClosedAt);
     });
+    // #588 manually-closed pill: patch in place, same as the auto-close marker.
+    unlistenManualClose = await onCoordinatorManualCloseChanged((data) => {
+      projectStore.updateCoordinatorManuallyClosed(data.replicaPath, data.manuallyClosedAt);
+    });
   });
   onCleanup(() => {
     unlistenBranch?.();
     unlistenClock?.();
     unlistenAutoClose?.();
+    unlistenManualClose?.();
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
@@ -1249,6 +1266,16 @@ const ProjectPanel: Component = () => {
           const autoClosed = createMemo(
             () => isCoord() && !!replica.autoClosedAt && !isSessionLive(session())
           );
+          // #588 manually-closed pill. Mirrors autoClosed, but ALSO gated on
+          // !isSessionLive(session()): a dormant coordinator has no live session
+          // so the pill shows; a reopened/raised coordinator is live so the pill
+          // hides immediately, independent of marker-clear event timing (the same
+          // stale-on-raise trap #589 fixes for AUTO-CLOSED). Use INLINE
+          // isSessionLive(session()), NOT isLive() — isLive is declared later and
+          // this memo is eager (TDZ).
+          const manuallyClosed = createMemo(
+            () => isCoord() && !!replica.manuallyClosedAt && !isSessionLive(session())
+          );
           // #580 idle-badge tooltip. The auto-close clause is appended ONLY when
           // the setting is enabled: Decision 3 keeps the badge (and its red >=60
           // color) visible even when auto-close is OFF, where the team will NOT
@@ -1352,7 +1379,10 @@ const ProjectPanel: Component = () => {
           const handleClose = (e: MouseEvent) => {
             e.stopPropagation();
             const s = session();
-            if (s) SessionAPI.destroy(s.id);
+            // #588 route through the shared helper: a coordinator close marks +
+            // (settings-gated) cascades + confirms when busy; a non-coordinator
+            // is a plain destroy inside the helper (unchanged behavior).
+            if (s) void requestCoordinatorClose(s);
           };
 
           return (
@@ -1385,7 +1415,7 @@ const ProjectPanel: Component = () => {
                       row; the neutral AUTO-CLOSED pill REPLACES it when the team
                       is auto-closed (mutually exclusive — the #580 XOR gate), so
                       exactly one of the two renders first, before all others. */}
-                  <Show when={!autoClosed() && idleBadge()}>
+                  <Show when={!autoClosed() && !manuallyClosed() && idleBadge()}>
                     {(b) => (
                       <span
                         class={`ac-discovery-badge coord-idle ${b().colorClass}`}
@@ -1395,12 +1425,23 @@ const ProjectPanel: Component = () => {
                       </span>
                     )}
                   </Show>
-                  <Show when={autoClosed()}>
+                  <Show when={autoClosed() && !manuallyClosed()}>
                     <span
                       class="ac-discovery-badge coord-autoclosed"
                       title="This team was auto-closed after inactivity. Reopen it to clear."
                     >
                       AUTO-CLOSED
+                    </span>
+                  </Show>
+                  {/* #588 MANUALLY-CLOSED pill: same coord-autoclosed style as
+                      AUTO-CLOSED (pixel-identical, only the label differs). Manual
+                      wins the XOR — the AUTO-CLOSED gate above is `&& !manuallyClosed()`. */}
+                  <Show when={manuallyClosed()}>
+                    <span
+                      class="ac-discovery-badge coord-autoclosed"
+                      title="This team's coordinator was closed manually. Reopen it to clear."
+                    >
+                      MANUALLY-CLOSED
                     </span>
                   </Show>
                   <Show when={runningPeers && runningPeers()!.length > 0}>
@@ -2959,6 +3000,47 @@ const ProjectPanel: Component = () => {
         );
       }}
     </For>
+
+    {/* #588 Coordinator manual-close confirmation. Hoisted to the stable
+        ProjectPanel root (outside the projects <For>, like pendingLaunch) so a
+        background discovery refresh that re-creates each <For> row cannot tear it
+        down mid-decision. Driven by the module-level pendingCoordinatorClose
+        signal set by requestCoordinatorClose(ById) when the team is busy. */}
+    {pendingCoordinatorClose() && (
+      <Portal>
+        <div class="modal-overlay" data-ac-testid="coordinatorClose.modal">
+          <div class="agent-modal" style={{ "max-width": "380px" }}>
+            <div class="agent-modal-header">
+              <span class="agent-modal-title">Close coordinator?</span>
+            </div>
+            <div class="new-agent-form">
+              <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
+                <strong>{pendingCoordinatorClose()!.workingCount}</strong> team agent
+                {pendingCoordinatorClose()!.workingCount === 1 ? " is" : "s are"} still working.
+                Closing <strong>{pendingCoordinatorClose()!.name}</strong> will also close the team.
+              </p>
+            </div>
+            <div class="new-agent-footer">
+              <button
+                class="new-agent-cancel-btn"
+                data-ac-testid="coordinatorClose.cancel"
+                onClick={() => setPendingCoordinatorClose(null)}
+              >
+                Cancel
+              </button>
+              <button
+                class="new-agent-create-btn"
+                style={{ "background": "var(--danger, #c0392b)" }}
+                data-ac-testid="coordinatorClose.confirm"
+                onClick={() => void confirmPendingCoordinatorClose()}
+              >
+                Close team
+              </button>
+            </div>
+          </div>
+        </div>
+      </Portal>
+    )}
 
     {/* Agent picker for agents/replicas without a preferredAgentId */}
     {pendingLaunch() && (

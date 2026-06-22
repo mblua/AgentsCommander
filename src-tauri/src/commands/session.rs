@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::agent_config::{self, AgentLocalConfig};
+use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
@@ -756,9 +757,13 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             // agent_fqn_from_path returns String (teams.rs:80), not Option.
             let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
             let now = chrono::Utc::now();
-            let (seeded, cleared) = {
+            let (seeded, cleared_auto, cleared_manual) = {
                 let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
-                (g.seed_if_absent(&fqn, now), g.clear_auto_closed(&fqn))
+                (
+                    g.seed_if_absent(&fqn, now),
+                    g.clear_auto_closed(&fqn),
+                    g.clear_manually_closed(&fqn),
+                )
             };
             if seeded {
                 let _ = app.emit(
@@ -766,10 +771,16 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                     serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": now.to_rfc3339() }),
                 );
             }
-            if cleared {
+            if cleared_auto {
                 let _ = app.emit(
                     "coordinator_auto_close_changed",
                     serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
+                );
+            }
+            if cleared_manual {
+                let _ = app.emit(
+                    "coordinator_manual_close_changed",
+                    serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": null }),
                 );
             }
         }
@@ -1804,6 +1815,164 @@ pub async fn destroy_session(
     destroy_session_inner(&app, uuid).await
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoordinatorCloseOutcome {
+    /// true if the close was performed; false if confirmation is required first.
+    pub closed: bool,
+    /// number of live, working (not waiting_for_input) team members; only
+    /// meaningful when `closed == false`.
+    pub working_count: usize,
+}
+
+/// #588 Count LIVE team members that are working (not waiting_for_input). Pure so
+/// the working-gate rule is unit-testable without a live app, mirroring how
+/// `auto_close.rs` extracts `team_is_closeable`. A member counts only when it is
+/// both live (PTY-backed) and not waiting for input.
+fn count_working_members(members: &[(bool /*live*/, bool /*waiting_for_input*/)]) -> usize {
+    members
+        .iter()
+        .filter(|(live, waiting)| *live && !*waiting)
+        .count()
+}
+
+/// #588 Manually close a coordinator (and, when the cascade setting is on, its
+/// team). Sets the MANUALLY-CLOSED marker on the coordinator regardless of the
+/// cascade setting. When cascade is on and confirmation has not been given and at
+/// least one team member is working, closes NOTHING and reports `closed:false` so
+/// the FE can show the confirmation modal.
+#[tauri::command]
+pub async fn close_coordinator(
+    app: AppHandle,
+    id: String,
+    confirmed: bool,
+) -> Result<CoordinatorCloseOutcome, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+
+    // Snapshot coordinator facts BEFORE destroying (destroy removes the record).
+    let (is_coordinator, cwd) = {
+        let mgr = session_mgr.read().await;
+        let s = mgr
+            .get_session(uuid)
+            .await
+            .ok_or_else(|| "Session not found".to_string())?;
+        (s.is_coordinator, s.working_directory.clone())
+    };
+
+    // Defensive: a non-coordinator target is a plain destroy (no marker/cascade).
+    if !is_coordinator {
+        destroy_session_inner(&app, uuid).await?;
+        return Ok(CoordinatorCloseOutcome {
+            closed: true,
+            working_count: 0,
+        });
+    }
+
+    let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+    let team_key = match fqn.rsplit_once('/') {
+        Some((team, _agent)) => team.to_string(),
+        None => String::new(),
+    };
+
+    // E0716: bind the State to a local FIRST (matches auto_close.rs:115). The
+    // guard-bound-then-used-next-line form does NOT compile (the temporary State is
+    // dropped at the `;`, so the read guard dangles). `bool` is Copy.
+    let settings = app.state::<SettingsState>();
+    let cascade = settings.read().await.coordinator_cascade_close_enabled;
+    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+
+    // LIVE-PTY members of THIS team, excluding the coordinator (decision 1; mirrors
+    // auto_close.rs:136-142). agent_team_members() includes EXITED/dormant records
+    // (exited sessions persist until destroy), so we filter on has_session to a live
+    // set ONCE and share it between the working-count gate and the destroy loop;
+    // dormant rows are never reaped. The std Mutex guard is taken AFTER the tokio
+    // read await and dropped at the block end, so no lock is held across an await.
+    let live_ids: Vec<Uuid> = {
+        let mgr = session_mgr.read().await;
+        let members = mgr.agent_team_members().await;
+        let pm = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+        members
+            .into_iter()
+            .filter(|(mid, tk)| {
+                *mid != uuid && !team_key.is_empty() && *tk == team_key && pm.has_session(*mid)
+            })
+            .map(|(mid, _)| mid)
+            .collect()
+    };
+
+    // Confirmation gate: cascade ON, not yet confirmed, >=1 LIVE member working.
+    // Only the tokio read guard is held across the get_session awaits.
+    if cascade && !confirmed {
+        let mgr = session_mgr.read().await;
+        let mut member_states: Vec<(bool, bool)> = Vec::with_capacity(live_ids.len());
+        for mid in &live_ids {
+            // live_ids is pre-filtered to live PTYs, so `live` is true; the waiting
+            // flag is the authoritative session record (absent -> treat as idle so a
+            // vanished member never forces a modal).
+            let waiting = mgr
+                .get_session(*mid)
+                .await
+                .map(|s| s.waiting_for_input)
+                .unwrap_or(true);
+            member_states.push((true, waiting));
+        }
+        let working_count = count_working_members(&member_states);
+        if working_count > 0 {
+            return Ok(CoordinatorCloseOutcome {
+                closed: false,
+                working_count,
+            });
+        }
+    }
+
+    // Perform the close. Live members first (avoids intermediate auto-activation
+    // churn), coordinator last. Mirrors the auto-close destroy loop.
+    if cascade {
+        for mid in live_ids {
+            if let Err(e) = destroy_session_inner(&app, mid).await {
+                log::warn!(
+                    "[manual-close] member destroy {} failed: {}",
+                    &mid.to_string()[..8],
+                    e
+                );
+            }
+        }
+    }
+    destroy_session_inner(&app, uuid).await?;
+
+    // Set the manual marker on the coordinator FQN and persist immediately (this
+    // command is not on the auto-close tick, so flush_clocks won't run).
+    if let Some(clocks) = app.try_state::<CoordinatorClocksState>() {
+        let now = chrono::Utc::now();
+        let newly = clocks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mark_manually_closed(&fqn, now);
+        if newly {
+            let _ = app.emit(
+                "coordinator_manual_close_changed",
+                serde_json::json!({ "replicaPath": cwd, "manuallyClosedAt": now.to_rfc3339() }),
+            );
+            // also clear any stale auto-closed pill on the FE (mark_* cleared it
+            // server-side via the mutual-exclusion transition).
+            let _ = app.emit(
+                "coordinator_auto_close_changed",
+                serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
+            );
+        }
+        let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
+            log::warn!("[manual-close] clocks save failed: {}", e);
+        }
+    }
+
+    Ok(CoordinatorCloseOutcome {
+        closed: true,
+        working_count: 0,
+    })
+}
+
 /// Resolves the effective `skip_auto_resume` flag for `restart_session`.
 /// Defaults to `true` (fresh conversation) to preserve existing restart-button semantics.
 /// `Some(false)` is used by the deferred-wake path (ProjectPanel.handleReplicaClick)
@@ -2591,16 +2760,47 @@ pub async fn create_root_agent_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_existing_root, compute_profile_outdated, effective_restart_requested_profile,
-        inject_codex_resume, resolve_actual_agent, resolve_agent_command, resolve_agent_from_shell,
-        resolve_restart_selected_agent_id, resolve_root_agent_command, should_inject_continue,
-        ExistingRootAction,
+        classify_existing_root, compute_profile_outdated, count_working_members,
+        effective_restart_requested_profile, inject_codex_resume, resolve_actual_agent,
+        resolve_agent_command, resolve_agent_from_shell, resolve_restart_selected_agent_id,
+        resolve_root_agent_command, should_inject_continue, ExistingRootAction,
     };
     use crate::config::settings::{AgentConfig, AppSettings, ProfileCellConfig};
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionInfo, SessionStatus};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn count_working_members_counts_live_and_busy_only() {
+        // tuples are (live /*PTY-backed*/, waiting_for_input)
+        assert_eq!(count_working_members(&[]), 0, "empty -> 0");
+        assert_eq!(
+            count_working_members(&[(true, true), (true, true)]),
+            0,
+            "all live but idle (waiting) -> 0"
+        );
+        assert_eq!(
+            count_working_members(&[(true, false), (true, false), (true, false)]),
+            3,
+            "all live and busy -> N"
+        );
+        assert_eq!(
+            count_working_members(&[(true, true), (true, false)]),
+            1,
+            "only the live+busy member counts"
+        );
+        assert_eq!(
+            count_working_members(&[(false, false), (false, false)]),
+            0,
+            "busy but dead (no live PTY) -> 0"
+        );
+        assert_eq!(
+            count_working_members(&[(true, false), (false, false), (true, true)]),
+            1,
+            "mixed: one live+busy, one dead+busy, one live+idle -> 1"
+        );
+    }
 
     fn test_settings() -> AppSettings {
         AppSettings {

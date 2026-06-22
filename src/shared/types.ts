@@ -281,6 +281,8 @@ export interface AppSettings {
    *  fully silent for `coordinatorAutoCloseMinutes` is terminated. */
   coordinatorAutoCloseEnabled: boolean;
   coordinatorAutoCloseMinutes: number;
+  /** #588 When true, manually closing a coordinator also closes its team. */
+  coordinatorCascadeCloseEnabled: boolean;
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";
@@ -566,6 +568,18 @@ export interface AcAgentReplica {
    *  or undefined. Only meaningful when `isCoordinator`. Drives the neutral
    *  "auto-closed" pill; cleared on reopen. */
   autoClosedAt?: string;
+  /** #588 RFC3339 time this coordinator was manually closed, or undefined. Only
+   *  meaningful when `isCoordinator`. Drives the MANUALLY-CLOSED pill; cleared
+   *  on reopen. Visually identical to the auto-closed pill, different label. */
+  manuallyClosedAt?: string;
+}
+
+/** #588 Result of the `close_coordinator` command. When `closed` is false the
+ *  backend refused to cascade-close a coordinator whose team has working members
+ *  without confirmation; `workingCount` is how many are still working. */
+export interface CoordinatorCloseOutcome {
+  closed: boolean;
+  workingCount: number;
 }
 
 export interface AcWorkgroup {

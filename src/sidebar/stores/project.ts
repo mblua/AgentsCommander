@@ -239,6 +239,26 @@ export const projectStore = {
     );
   },
 
+  /** #588 patch a coordinator replica's manuallyClosedAt from the event.
+   *  A string sets the marker; `null` clears it (reopen). Matched by normalized
+   *  path, same as updateCoordinatorAutoClosed. */
+  updateCoordinatorManuallyClosed(replicaPath: string, manuallyClosedAt: string | null) {
+    const target = normalizePath(replicaPath);
+    setProjects((prev) =>
+      prev.map((proj) => ({
+        ...proj,
+        workgroups: proj.workgroups.map((wg) => ({
+          ...wg,
+          agents: wg.agents.map((a) =>
+            normalizePath(a.path) === target
+              ? { ...a, manuallyClosedAt: manuallyClosedAt ?? undefined }
+              : a
+          ),
+        })),
+      }))
+    );
+  },
+
   /** Update a workgroup's TASK.md fields from the discovery watcher. */
   updateWorkgroupTask(
     workgroupPath: string,

@@ -915,6 +915,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           configured minutes; the coordinator stays as a dormant row you can
           reopen by messaging it.
         </div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.coordinatorCascadeCloseEnabled}
+            onChange={(e) =>
+              updateField("coordinatorCascadeCloseEnabled", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.coordinatorCascadeCloseEnabled"
+          />
+          <span>Always close team members when manually closing Coordinator</span>
+        </label>
       </div>
 
       <div class="settings-section">
