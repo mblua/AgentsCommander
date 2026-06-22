@@ -232,19 +232,18 @@ fn agent_commands_by_id(settings: &AppSettings) -> BTreeMap<String, String> {
 
 fn emit_settings_draft_update_events(app: &AppHandle, events: &SettingsDraftUpdateEvents) {
     if events.profiles_changed {
-        // #592/#597 diagnostic: the SettingsModal "Save" persists profile cells AND
-        // agent base commands through save_settings_draft (NOT
-        // update_coding_agent_profiles), so THIS is the emit point the user's normal
-        // edit flow actually reaches. Logged with the same [profile-hash] prefix so
-        // the drift trace shows the refresh event firing from the real save path.
-        log::info!(
+        // #592/#597: the SettingsModal "Save" persists profile cells AND agent base
+        // commands through save_settings_draft (NOT update_coding_agent_profiles), so
+        // THIS is the emit point the user's normal edit flow actually reaches. Kept at
+        // debug to confirm the refresh fired without spamming app.log.
+        log::debug!(
             "[profile-hash] profile-save (save_settings_draft): coding-agent config changed; emitting coding_agent_profiles_updated"
         );
         let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
     }
 
     for agent_id in &events.env_agent_ids {
-        log::info!(
+        log::debug!(
             "[profile-hash] profile-save (save_settings_draft): agent env changed for {}; emitting coding_agent_env_settings_updated",
             agent_id
         );
@@ -262,12 +261,6 @@ pub async fn update_coding_agent_profiles(
     profiles: CodingAgentProfilesConfig,
 ) -> Result<(), String> {
     persist_coding_agent_profiles_update(settings.inner(), profiles).await?;
-    // #592/#597 diagnostic: confirm the in-memory settings were updated and the
-    // refresh event is emitted, so a later `list_sessions` recomputes drift
-    // against the edited cell.
-    log::info!(
-        "[profile-hash] coding agent profiles saved (in-memory updated); emitting coding_agent_profiles_updated"
-    );
     let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
     Ok(())
 }

@@ -797,11 +797,12 @@ pub fn build_agent_spawn_command(
     // drift. SUPERSEDES the #592 cell-only hash input.
     let merged_profile_env = raw_merged_profile_env(agent, &profile_resolution.cell.env);
     let profile_hash = profile_content_hash(&effective_command, &merged_profile_env);
-    // #592/#597 diagnostic: surface exactly what gets hashed at spawn so a later
-    // drift mismatch can be traced. Env VALUES are intentionally omitted (they may
-    // hold secrets); the hash already fingerprints them, and the key set + count
+    // #592/#597 - surface exactly what gets hashed at spawn so a later drift
+    // mismatch can be traced. Kept at debug for support; off the hot path (fires
+    // once per spawn). Env VALUES are intentionally omitted (they may hold
+    // secrets); the hash already fingerprints them, and the key set + count
     // reveal whether an env row participated.
-    log::info!(
+    log::debug!(
         "[profile-hash] spawn-stamp: agent={} profile={} hash={} effective_command={:?} env_keys=[{}] ({} entries)",
         agent.id,
         profile_resolution.effective_profile,
