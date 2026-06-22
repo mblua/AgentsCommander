@@ -65,6 +65,7 @@ vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
     setSoundsEnabled: vi.fn(() => Promise.resolve()),
     setThemeLight: vi.fn(() => Promise.resolve()),
+    setMainResourceMonitorAttached: vi.fn(() => Promise.resolve()),
   },
   SpecBoardAPI: {
     open: vi.fn(),
@@ -98,6 +99,10 @@ vi.mock("./SettingsModal", () => ({
 }));
 
 import ActionBar from "./ActionBar";
+import {
+  centralViewStore,
+  __resetCentralViewStoreForTests,
+} from "../../main/stores/centralView";
 
 function renderActionBar() {
   const root = document.createElement("div");
@@ -118,6 +123,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     mockState.sessions.hydrated = true;
     mockState.sessions.toggleInFlight = false;
     mockState.sessions.coordSortByActivity = false;
+    __resetCentralViewStoreForTests();
     vi.clearAllMocks();
   });
 
@@ -143,6 +149,36 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     expect(pinButton.getAttribute("aria-pressed")).toBe("false");
     expect(pinButton.getAttribute("data-ac-state")).toBe("default");
     expect(pinButton.title).not.toContain("Don't force");
+
+    dispose();
+  });
+
+  // #587 — the ▦ Resource Monitor button reflects whether RM occupies the
+  // central pane (mirrors the 🏠 Home toggle's active state).
+  it("marks the Resource Monitor button active when RM is the central view", () => {
+    centralViewStore.setInitialView("resourceMonitor");
+    const { dispose } = renderActionBar();
+    const rmButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.resourceMonitor"]'
+    );
+    if (!rmButton) throw new Error("resource monitor button not rendered");
+
+    expect(rmButton.className).toContain("active");
+    expect(rmButton.getAttribute("aria-pressed")).toBe("true");
+
+    dispose();
+  });
+
+  it("does not mark the Resource Monitor button active when the terminal is shown", () => {
+    centralViewStore.setInitialView("terminal");
+    const { dispose } = renderActionBar();
+    const rmButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.resourceMonitor"]'
+    );
+    if (!rmButton) throw new Error("resource monitor button not rendered");
+
+    expect(rmButton.className).not.toContain("active");
+    expect(rmButton.getAttribute("aria-pressed")).toBe("false");
 
     dispose();
   });

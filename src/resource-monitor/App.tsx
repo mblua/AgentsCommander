@@ -8,8 +8,15 @@ import {
   onMount,
 } from "solid-js";
 import iconUrl from "../assets/icon-16.png";
-import { ResourceMonitorAPI, SettingsAPI, WindowAPI, emitOpenSettings } from "../shared/ipc";
+import {
+  ResourceMonitorAPI,
+  SettingsAPI,
+  WindowAPI,
+  emitOpenSettings,
+  emitResourceMonitorAttach,
+} from "../shared/ipc";
 import { isTauri } from "../shared/platform";
+import { centralViewStore } from "../main/stores/centralView";
 import { resourceMonitorStore } from "../shared/stores/resourceMonitor";
 import type {
   ResourceAgentGroupSnapshot,
@@ -138,11 +145,25 @@ const toggleFilter = (
 };
 
 const Titlebar: Component = () => {
-  const handleDock = async () => {
+  // #587 - tracks the real OS maximize state so the button glyph (maximize vs
+  // restore) and its labels stay correct. Not all maximize paths route through
+  // handleMaximize: Tauri v2 also maximizes natively on data-tauri-drag-region
+  // double-click, and the OS does it on Win+Up / edge-snap. onResized below
+  // re-reads the truth after every such change.
+  const [maximized, setMaximized] = createSignal(false);
+
+  // #587 — "Attach" pulls RM back into the main window's central pane (replaces
+  // the old window-snapping "Dock"). Emit BEFORE closing so the event is queued
+  // before this webview tears down; main's listener runs showResourceMonitor().
+  const handleAttach = async () => {
     try {
-      await WindowAPI.dockResourceMonitor();
+      await emitResourceMonitorAttach();
+      if (isTauri) {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().close();
+      }
     } catch (err) {
-      console.error("Dock resource monitor failed:", err);
+      console.error("Attach resource monitor failed:", err);
     }
   };
 
@@ -152,11 +173,68 @@ const Titlebar: Component = () => {
     await getCurrentWindow().minimize();
   };
 
+  const handleMaximize = async () => {
+    if (!isTauri) return;
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const win = getCurrentWindow();
+      // Use explicit maximize()/unmaximize() rather than toggleMaximize().
+      // The app capability set (src-tauri/capabilities/default.json) grants
+      // core:window:allow-maximize, allow-unmaximize and allow-is-maximized,
+      // but NOT allow-toggle-maximize. toggleMaximize() therefore gets rejected
+      // at the Tauri v2 ACL layer at runtime, which is why the button "did
+      // nothing" in the real build (the rejection was only logged below). The
+      // drag-region double-click still maximizes because that path uses the
+      // separate allow-internal-toggle-maximize permission, which IS in
+      // core:window:default.
+      if (await win.isMaximized()) {
+        await win.unmaximize();
+      } else {
+        await win.maximize();
+      }
+      // Reflect immediately so the icon swaps without waiting for the resize
+      // event. On failure leave the glyph as-is; the onResized mirror reconciles
+      // it once the window settles.
+      setMaximized(await win.isMaximized());
+    } catch (err) {
+      console.error("Resource monitor toggle maximize failed:", err);
+    }
+  };
+
   const handleClose = async () => {
     if (!isTauri) return;
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().close();
   };
+
+  onMount(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    // Register cleanup synchronously so it binds to this component's owner; the
+    // async listener registration below fills in `unlisten` once it resolves.
+    onCleanup(() => {
+      disposed = true;
+      unlisten?.();
+    });
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        setMaximized(await win.isMaximized());
+        const stop = await win.onResized(() => {
+          void win.isMaximized().then(setMaximized).catch(() => {});
+        });
+        if (disposed) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+      } catch (err) {
+        console.error("Resource monitor maximize-state tracking failed:", err);
+      }
+    })();
+  });
 
   return (
     <div class="rm-titlebar" data-tauri-drag-region>
@@ -170,15 +248,15 @@ const Titlebar: Component = () => {
         <div class="rm-titlebar-controls">
           <button
             class="rm-titlebar-btn"
-            onClick={handleDock}
-            title="Dock"
-            aria-label="Dock Resource Monitor"
-            data-ac-testid="resourceMonitor.titlebar.dock"
+            onClick={handleAttach}
+            title="Attach"
+            aria-label="Attach Resource Monitor to main window"
+            data-ac-testid="resourceMonitor.titlebar.attach"
             data-ac-role="button"
           >
             <span
               class="rm-titlebar-btn-alias"
-              data-ac-testid="resourceMonitor.dock"
+              data-ac-testid="resourceMonitor.attach"
               data-ac-role="button"
             >
               &#x21B2;
@@ -198,6 +276,28 @@ const Titlebar: Component = () => {
               data-ac-role="button"
             >
               &#x2014;
+            </span>
+          </button>
+          <button
+            class="rm-titlebar-btn"
+            onClick={handleMaximize}
+            title={maximized() ? "Restore" : "Maximize"}
+            aria-label={
+              maximized() ? "Restore Resource Monitor" : "Maximize Resource Monitor"
+            }
+            data-ac-testid="resourceMonitor.titlebar.maximize"
+            data-ac-role="button"
+            data-ac-state={maximized() ? "maximized" : "normal"}
+          >
+            <span
+              class="rm-titlebar-btn-alias"
+              data-ac-testid="resourceMonitor.maximize"
+              data-ac-role="button"
+            >
+              {/* U+2750 = restore glyph (shown when maximized), U+25A1 = maximize
+                  glyph. Built from char codes so the source stays ASCII-only,
+                  avoiding a literal glyph or \u escape that tooling can mangle. */}
+              {maximized() ? String.fromCharCode(0x2750) : String.fromCharCode(0x25A1)}
             </span>
           </button>
           <button
@@ -222,23 +322,44 @@ const Titlebar: Component = () => {
   );
 };
 
-const ResourceMonitorApp: Component = () => {
+interface ResourceMonitorAppProps {
+  /** True when mounted inside MainApp's central pane. Suppresses the window
+   *  titlebar and skips documentElement theme init (main owns it), and shows a
+   *  "Detach" button that pops RM out into its own window (#587). */
+  embedded?: boolean;
+}
+
+const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   const [expandedGroupId, setExpandedGroupId] = createSignal<string | null>(null);
   const [killTarget, setKillTarget] =
     createSignal<ResourceAgentGroupSnapshot | null>(null);
   const [killError, setKillError] = createSignal("");
   const [killInFlight, setKillInFlight] = createSignal(false);
 
+  // #587 — pop the embedded RM out into its own OS window, then reveal the
+  // terminal in the pane (preserves the embedded-XOR-detached invariant).
+  const handleDetach = async () => {
+    try {
+      await WindowAPI.openResourceMonitor();
+      centralViewStore.showTerminal();
+    } catch (err) {
+      console.error("Detach resource monitor failed:", err);
+    }
+  };
+
   onMount(async () => {
     let resourcePreferences = DEFAULT_RESOURCE_PREFERENCES;
-    document.documentElement.classList.add("light-theme");
+    // #587 — embedded RM inherits the theme MainApp owns on documentElement; it
+    // must not add/remove the class itself (would fight main). Windowed RM still
+    // does its own optimistic light-first paint + corrective read.
+    if (!props.embedded) document.documentElement.classList.add("light-theme");
     try {
       const settings = await SettingsAPI.get();
       resourcePreferences = {
         resourceBackoffPolling: settings.resourceBackoffPolling,
         resourceKeepLastSnapshot: settings.resourceKeepLastSnapshot,
       };
-      if (!settings.themeLight) {
+      if (!props.embedded && !settings.themeLight) {
         document.documentElement.classList.remove("light-theme");
       }
     } catch (err) {
@@ -354,7 +475,9 @@ const ResourceMonitorApp: Component = () => {
       data-ac-testid="resourceMonitor.window"
       data-ac-role="surface"
     >
-      <Titlebar />
+      <Show when={!props.embedded}>
+        <Titlebar />
+      </Show>
       <main class="rm-body">
         <header class="rm-header">
           <div>
@@ -362,6 +485,17 @@ const ResourceMonitorApp: Component = () => {
             <h1>Resource Monitor</h1>
           </div>
           <div class="rm-header-actions">
+            <Show when={props.embedded}>
+              <button
+                class="rm-action-btn"
+                onClick={handleDetach}
+                title="Detach to a separate window"
+                data-ac-testid="resourceMonitor.detach"
+                data-ac-role="button"
+              >
+                Detach
+              </button>
+            </Show>
             <button
               class="rm-action-btn"
               onClick={() => resourceMonitorStore.refresh()}
