@@ -1,86 +1,63 @@
 ---
 name: role-skill-boundary-audit
-description: Audit whether governance instructions belong in Role.md, a skill, global policy, workflow docs, memory, or an agent boundary change.
-when_to_use: Use before finalizing changes that create, modify, approve, or audit agents, Role.md files, skills, role templates, workflow instructions, or Agent Matrix structure; also use for matrix hygiene, oversized roles, authority language inside skills, duplicated instructions, and proposals to split or merge agents.
+description: Audit where governance instructions belong (Role.md, skill, global policy, workflow docs, memory, or an agent-boundary change) and enforce minimal verbosity in roles and skills. Diagnostic by default.
+when_to_use: Before creating, modifying, approving, or auditing agents, Role.md files, skills, role templates, workflow instructions, or Agent Matrix structure. Also for matrix hygiene, oversized or bloated roles, authority language inside skills, duplicated instructions, and split/merge proposals.
 ---
 
 # role-skill-boundary-audit
 
 ## Purpose
 
-Use this skill to audit the boundary between roles, skills, policies, process documentation, memory, and agent shape.
+Audit the boundary between roles, skills, policies, process docs, memory, and agent shape.
 
-Core rule:
-
-```text
+```
 Roles define who is responsible.
 Skills define how to perform a reusable capability.
 ```
 
-The audit is diagnostic by default. Do not rewrite roles, skills, or agent structure unless the user or the active workflow explicitly requests that refactor.
+Diagnostic by default: recommend, do not rewrite, unless the user or active workflow asked for the refactor.
 
-## When To Apply
+## Conciseness mandate (always)
 
-Apply this skill before finalizing work that creates, modifies, approves, or audits:
+Roles and skills spend context budget every time they load, so write the minimum that changes behavior. This mandate applies to every Role.md and skill you write, recommend, or rewrite.
 
-- agents
-- `Role.md` files
-- skills
-- role templates
-- workflow instructions
-- Agent Matrix structure
+- Add only what adds value; cut the rest. Every line must earn its place.
+- Keep rationale to one line, and only where it guides a judgment the rule itself does not cover.
+- No restatement: drop "Why" / "How to apply" / examples that repeat a rule without adding information.
+- `Role.md` is the tightest surface (always loaded). Load-on-demand skills may hold more detail, but still no padding.
+- When recommending or rewriting, target the smallest, least-verbose change that restores the boundary and preserves operative meaning.
 
-Also apply it when:
+## Classification
 
-- a role grows unusually large
-- a role contains repeatable operational procedure
-- a skill contains authority or ownership language
-- similar instructions appear in multiple roles
-- someone proposes another agent for a bounded capability
-- periodic matrix hygiene or audit is requested
-
-## Classification Guide
-
-Use these categories:
-
-- Keep in `Role.md`: identity, ownership, authority, responsibilities, escalation rules, and durable boundaries for one agent.
-- Move to Skill: repeatable workflow, checklist, tool procedure, implementation pattern, or domain method that can be reused by one or more tasks.
-- Move to Global Policy: instruction that must constrain every agent or every session regardless of role.
-- Move to Workflow Docs: team process, operator guide, onboarding guide, or durable documentation that humans should browse outside agent startup context.
-- Move to Memory: project-specific fact, decision, preference, or status that should persist but is not a standing instruction.
-- Duplicate / Consolidate: same or near-same guidance appears in multiple roles, skills, or docs and should have one source of truth.
-- Split Agent: one role owns unrelated responsibilities that should be separate accountability surfaces.
-- Merge Agent: multiple agents differ mostly by wording or minor task variants and should be one role plus skills.
-- Needs Owner Decision: the placement affects authority, access, team structure, or policy and cannot be decided safely by the auditor alone.
+- Keep in Role: identity, ownership, authority, responsibilities, escalation, durable boundaries for one agent.
+- Move to Skill: repeatable workflow, checklist, tool procedure, implementation pattern, domain method.
+- Move to Global Policy: must constrain every agent or session regardless of role.
+- Move to Workflow Docs: team process, operator/onboarding guide, durable docs humans browse outside startup context.
+- Move to Memory: project fact, decision, preference, or status that persists but is not a standing instruction.
+- Duplicate / Consolidate: same guidance in multiple places; pick one source of truth.
+- Trim / Compress: content is in the right place but bloated; cut to the operative minimum.
+- Split Agent: one role owns unrelated accountability surfaces.
+- Merge Agent: agents differ mostly by wording or minor task variants.
+- Needs Owner Decision: placement touches authority, access, team structure, or policy.
 
 ## Workflow
 
 1. Identify the instruction or proposed change.
-2. Name the current location and proposed location.
-3. Classify it using the categories above.
-4. Check for authority language, reusable procedure, duplicated guidance, and agent-boundary drift.
-5. Recommend the smallest change that restores a clear boundary.
-6. If the change would rewrite files or merge or split agents, stop at the recommendation unless the user asked for the refactor.
+2. Name current vs proposed location.
+3. Classify it.
+4. Check for authority language, reusable procedure, duplicated guidance, agent-boundary drift, and verbosity.
+5. Recommend the smallest, least-verbose change that restores a clear boundary and preserves meaning.
+6. Stop at the recommendation if the change would rewrite files or split/merge agents, unless the user asked for the refactor.
 
 ## Output
 
 ```md
 ## Boundary Audit
 
-Verdict:
-- Keep in Role
-- Move to Skill
-- Move to Global Policy
-- Move to Workflow Docs
-- Move to Memory
-- Duplicate / Consolidate
-- Split Agent
-- Merge Agent
-- Needs Owner Decision
+Verdict: <one or more categories above>
 
 Findings:
 1. ...
-2. ...
 
 Recommended Changes:
 - ...
