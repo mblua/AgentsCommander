@@ -8,6 +8,7 @@ import SpecBoardApp from "./spec-board/App";
 import ResourceMonitorApp from "./resource-monitor/App";
 import MainApp from "./main/App";
 import { initAutomationBridge } from "./shared/automation-bridge";
+import { initLogLevelForWindow } from "./shared/log-level";
 
 const params = new URLSearchParams(window.location.search);
 const windowType = params.get("window");
@@ -24,6 +25,13 @@ if (!root) throw new Error("Root element not found");
 if (isTauri) {
   void initAutomationBridge();
 }
+
+// #612 Install the console log-level gate for THIS window (all 6 window roots
+// route through here). Ungated on purpose: the function's internal try/catch
+// falls back to a static Info level in non-Tauri/browser contexts where the
+// event bus is absent. Runs after the `console-capture` side-effect import (the
+// first import above) has installed the console monkey-patch this gate flips.
+void initLogLevelForWindow();
 
 // Browser mode (no Tauri): BrowserApp regardless of ?window param.
 // Remote web clients load ?window=main but still need the split-browser UX.

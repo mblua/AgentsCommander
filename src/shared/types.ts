@@ -239,6 +239,12 @@ export interface WindowGeometry {
 
 export type MainSidebarSide = "left" | "right";
 
+/** #612 LIVE log verbosity for `agentscommander*` targets. The 5 canonical
+ *  lowercase wire values shared with the Rust side (`log_level: Option<String>`)
+ *  and the `log_level_changed` event payload. Defined once here and imported by
+ *  `console-capture.ts` / `ipc.ts` / `SettingsModal.tsx`. */
+export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
+
 export interface AppSettings {
   defaultShell: string;
   defaultShellArgs: string[];
@@ -307,6 +313,8 @@ export interface AppSettings {
   /** #609 Check npm on startup (<=1x/24h) and notify when a newer published
    *  version of @mblua/agentscommander is available. Default true. */
   npmUpdateNotificationsEnabled: boolean;
+  /** #612 LIVE log level for agentscommander targets. null (legacy/unset) => "info". */
+  logLevel: LogLevel | null;
 }
 
 /** #609 "npm update available" payload. Mirrors the Rust `UpdateInfo` struct
