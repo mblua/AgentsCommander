@@ -27,11 +27,18 @@ const CONTENT_SUBSTITUTION_CAP: u64 = 5 * 1024 * 1024; // 5 MiB
 /// already skipped, so this is a belt-and-braces safety net.
 const MAX_SEED_DEPTH: u32 = 64;
 
+/// Source tiers, highest precedence first. All workspace tiers outrank all
+/// matrix tiers; within a location the profile-lettered folder outranks the
+/// base folder. The matrix's bare `<dest>` (e.g. `_agent_<role>/.claude`) is
+/// deliberately NOT a tier: that is the agent's OWN live config (the matrix dir
+/// is itself a launch root), not a template, so seeding from it would copy real
+/// config and clobber it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigSeedTier {
-    Profile,
-    Matrix,
-    Base,
+    WorkspaceProfile,
+    WorkspaceBase,
+    MatrixProfile,
+    MatrixBase,
 }
 
 /// After a successful seed of `.claude`, re-stamp the AC-managed
@@ -50,8 +57,9 @@ pub struct ClaudeSettingsReapply {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedConfigSeed {
-    /// Candidate source folders, highest precedence first (Profile, Matrix,
-    /// Base). Pure path math; no filesystem touched at resolve time.
+    /// Candidate source folders, highest precedence first: workspace profile,
+    /// workspace base, matrix profile, matrix base. Pure path math; no
+    /// filesystem touched at resolve time.
     pub candidates: Vec<(ConfigSeedTier, PathBuf)>,
     /// Absolute destination, under the replica root.
     pub dest: PathBuf,
@@ -99,20 +107,30 @@ pub fn resolve_config_seed(
     // The user's example uses a lowercase profile letter; effective_profile is UPPERCASE.
     let letter = effective_letter.to_ascii_lowercase();
 
+    // Precedence: all workspace candidates beat all matrix candidates; within a
+    // location, the profile-lettered folder beats the base folder. The matrix's
+    // bare `<dest>` is intentionally never a source (it is the agent's own live
+    // config; see ConfigSeedTier), so the matrix tiers mirror the workspace
+    // naming (`default_profile_<l><dest>` / `default<dest>`) instead.
     let mut candidates: Vec<(ConfigSeedTier, PathBuf)> = Vec::new();
     if let Some(ws) = context.workspace_root.as_ref() {
         candidates.push((
-            ConfigSeedTier::Profile,
+            ConfigSeedTier::WorkspaceProfile,
             ws.join(format!("default_profile_{}{}", letter, dest_name)),
+        ));
+        candidates.push((
+            ConfigSeedTier::WorkspaceBase,
+            ws.join(format!("default{}", dest_name)),
         ));
     }
     if let Some(mx) = context.matrix_root.as_ref() {
-        candidates.push((ConfigSeedTier::Matrix, mx.join(dest_name)));
-    }
-    if let Some(ws) = context.workspace_root.as_ref() {
         candidates.push((
-            ConfigSeedTier::Base,
-            ws.join(format!("default{}", dest_name)),
+            ConfigSeedTier::MatrixProfile,
+            mx.join(format!("default_profile_{}{}", letter, dest_name)),
+        ));
+        candidates.push((
+            ConfigSeedTier::MatrixBase,
+            mx.join(format!("default{}", dest_name)),
         ));
     }
     if candidates.is_empty() {
@@ -513,24 +531,39 @@ mod tests {
     // ---- resolve_config_seed (pure path math, fail-soft) -------------------
 
     #[test]
-    fn resolve_orders_profile_matrix_base_with_lowercased_letter() {
+    fn resolve_orders_workspace_then_matrix_each_profile_then_base_lowercased() {
         let workspace = abs(r"C:\ws", "/ws");
         let replica = workspace.join("wg-1-team").join("__agent_x");
         let matrix = workspace.join("_agent_x");
         let ctx = ctx_with(&replica, Some(&workspace), Some(&matrix));
 
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).expect("some");
-        assert_eq!(resolved.candidates.len(), 3);
-        assert_eq!(resolved.candidates[0].0, ConfigSeedTier::Profile);
+        // All workspace tiers outrank all matrix tiers; profile beats base in each.
+        assert_eq!(resolved.candidates.len(), 4);
+        assert_eq!(resolved.candidates[0].0, ConfigSeedTier::WorkspaceProfile);
         assert_eq!(
             resolved.candidates[0].1,
             workspace.join("default_profile_c.claude")
         );
-        assert_eq!(resolved.candidates[1].0, ConfigSeedTier::Matrix);
-        assert_eq!(resolved.candidates[1].1, matrix.join(".claude"));
-        assert_eq!(resolved.candidates[2].0, ConfigSeedTier::Base);
-        assert_eq!(resolved.candidates[2].1, workspace.join("default.claude"));
+        assert_eq!(resolved.candidates[1].0, ConfigSeedTier::WorkspaceBase);
+        assert_eq!(resolved.candidates[1].1, workspace.join("default.claude"));
+        assert_eq!(resolved.candidates[2].0, ConfigSeedTier::MatrixProfile);
+        assert_eq!(
+            resolved.candidates[2].1,
+            matrix.join("default_profile_c.claude")
+        );
+        assert_eq!(resolved.candidates[3].0, ConfigSeedTier::MatrixBase);
+        assert_eq!(resolved.candidates[3].1, matrix.join("default.claude"));
         assert_eq!(resolved.dest, replica.join(".claude"));
+        // Regression guard: the matrix's bare `.claude` (the agent's own live
+        // config) must NEVER be a source candidate.
+        assert!(
+            !resolved
+                .candidates
+                .iter()
+                .any(|(_, p)| *p == matrix.join(".claude")),
+            "bare matrix .claude must not be a seed source"
+        );
     }
 
     #[test]
@@ -540,8 +573,12 @@ mod tests {
         let ctx = ctx_with(&replica, Some(&workspace), None);
 
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).expect("some");
+        // Root-agent: matrix is None, so only the two workspace tiers remain.
         let tiers: Vec<_> = resolved.candidates.iter().map(|(t, _)| *t).collect();
-        assert_eq!(tiers, vec![ConfigSeedTier::Profile, ConfigSeedTier::Base]);
+        assert_eq!(
+            tiers,
+            vec![ConfigSeedTier::WorkspaceProfile, ConfigSeedTier::WorkspaceBase]
+        );
     }
 
     #[test]

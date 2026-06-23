@@ -2004,15 +2004,24 @@ mod tests {
         let letter = spawn.profile_resolution.effective_profile.to_ascii_lowercase();
 
         use crate::config::config_seed::ConfigSeedTier;
+        // Workspace tiers outrank matrix tiers; profile beats base in each. The
+        // matrix's bare `.claude` (the agent's own live config) is never a source.
         assert_eq!(
             seed.candidates,
             vec![
                 (
-                    ConfigSeedTier::Profile,
+                    ConfigSeedTier::WorkspaceProfile,
                     workspace.join(format!("default_profile_{}.claude", letter))
                 ),
-                (ConfigSeedTier::Matrix, matrix.join(".claude")),
-                (ConfigSeedTier::Base, workspace.join("default.claude")),
+                (
+                    ConfigSeedTier::WorkspaceBase,
+                    workspace.join("default.claude")
+                ),
+                (
+                    ConfigSeedTier::MatrixProfile,
+                    matrix.join(format!("default_profile_{}.claude", letter))
+                ),
+                (ConfigSeedTier::MatrixBase, matrix.join("default.claude")),
             ]
         );
         assert_eq!(seed.dest, expected_replica.join(".claude"));
