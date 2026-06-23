@@ -110,6 +110,13 @@ pub async fn save_settings_draft(
     let (saved, events) = persist_settings_draft_update(settings.inner(), draft).await?;
     purge_sessions_after_settings_update(&saved);
     emit_settings_draft_update_events(&app, &events);
+    // #612 apply the (possibly changed) log level live + broadcast so every
+    // webview re-applies its console gate. Idempotent and cheap; runs only on an
+    // explicit Settings Save. `saved` is the binding already destructured from
+    // the persist call above, so this does NOT re-persist.
+    let level = crate::logging::normalize_log_level(saved.log_level.as_deref().unwrap_or("info"))
+        .unwrap_or("info");
+    apply_and_broadcast_log_level(&app, level);
     Ok(())
 }
 
@@ -1199,6 +1206,41 @@ pub async fn set_main_resource_monitor_attached(
         candidate.main_resource_monitor_attached = value;
     })
     .await
+}
+
+/// #612 apply the runtime log level (no-op under RUST_LOG) and broadcast so
+/// every webview re-applies its own console gate. Single point that both the
+/// dedicated `set_log_level` command and the SettingsModal Save path reuse.
+fn apply_and_broadcast_log_level(app: &AppHandle, level: &str) {
+    // set_runtime_log_level returns false when the gate is not installed
+    // (RUST_LOG dev-override active): the backend stays frozen and only the
+    // frontend console gate moves. Emit one debug line so an operator reading
+    // app.log isn't confused why the backend verbosity didn't change.
+    if !crate::logging::set_runtime_log_level(level) {
+        log::debug!(
+            "[log-level] RUST_LOG override active; backend frozen, applying '{level}' to frontend only"
+        );
+    }
+    let _ = app.emit("log_level_changed", serde_json::json!({ "level": level }));
+}
+
+/// #612 canonical command to change ONLY the log level: validates, persists
+/// `logLevel`, applies live, broadcasts. Used by programmatic callers / future
+/// quick-switch; the SettingsModal uses the form Save path (`save_settings_draft`).
+#[tauri::command]
+pub async fn set_log_level(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    level: String,
+) -> Result<(), String> {
+    let normalized = crate::logging::normalize_log_level(&level)
+        .ok_or_else(|| format!("Invalid log level: {level}"))?;
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate.log_level = Some(normalized.to_string());
+    })
+    .await?;
+    apply_and_broadcast_log_level(&app, normalized);
+    Ok(())
 }
 
 /// Sweep every AC-managed agent directory and apply

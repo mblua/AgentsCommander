@@ -99,7 +99,7 @@ impl IdleDetector {
                 .lock()
                 .unwrap()
                 .insert(session_id, Instant::now());
-            log::info!(
+            log::debug!(
                 "[idle] SEEDED activity for {} at spawn (idle_threshold={}ms)",
                 &session_id.to_string()[..8],
                 tuning.idle_threshold.as_millis()
@@ -124,7 +124,7 @@ impl IdleDetector {
     /// Mark that a resize just happened for this session.
     /// PTY output within RESIZE_GRACE will be ignored (prompt repaint noise).
     pub fn record_resize(&self, session_id: Uuid) {
-        log::info!(
+        log::debug!(
             "[idle] RESIZE recorded for {}",
             &session_id.to_string()[..8]
         );
@@ -150,7 +150,7 @@ impl IdleDetector {
         if let Some(&last_resize) = self.resize_grace.lock().unwrap().get(&session_id) {
             let elapsed = last_resize.elapsed();
             if elapsed < resize_grace {
-                log::info!(
+                log::trace!(
                     "[idle] SUPPRESSED {} ({} bytes, {}ms after resize)",
                     sid,
                     byte_count,
@@ -168,7 +168,7 @@ impl IdleDetector {
             idle_set.remove(&session_id)
         };
         if was_idle {
-            log::info!(
+            log::debug!(
                 "[idle] BUSY {} ({} bytes, was idle → now busy)",
                 sid,
                 byte_count
@@ -255,7 +255,7 @@ impl IdleDetector {
                 let crossing = sessions_crossing_idle_threshold(now, &activity, &idle_set, &tuning);
                 for (session_id, elapsed) in crossing {
                     idle_set.insert(session_id);
-                    log::info!(
+                    log::debug!(
                         "[idle] IDLE {} ({}ms since last activity)",
                         &session_id.to_string()[..8],
                         elapsed.as_millis()

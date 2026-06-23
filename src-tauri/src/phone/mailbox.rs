@@ -627,7 +627,7 @@ fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) 
                 }
             }
 
-            log::info!(
+            log::debug!(
                 "[mailbox] wake: resolved WG agent path from sibling session: {}",
                 candidate
             );
@@ -1039,7 +1039,7 @@ impl MailboxPoller {
         // for response-dir lookup now sees a canonical input).
         let original_from_for_log = msg.from.clone();
         if canonicalize_msg_from_in_place(&mut msg.from, expected_from.as_deref()) {
-            log::info!(
+            log::debug!(
                 "[mailbox] canonicalized legacy msg.from '{}' → '{}'",
                 original_from_for_log,
                 msg.from
@@ -1078,7 +1078,7 @@ impl MailboxPoller {
             match crate::config::teams::resolve_agent_target(&msg.to, &paths) {
                 Ok(fqn) => {
                     if fqn != msg.to {
-                        log::info!("[mailbox] canonicalized msg.to '{}' → '{}'", msg.to, fqn);
+                        log::debug!("[mailbox] canonicalized msg.to '{}' → '{}'", msg.to, fqn);
                         msg.to = fqn;
                     }
                 }
@@ -1220,7 +1220,7 @@ impl MailboxPoller {
             if let Err(reason) = validate_root_sender_payload(&msg) {
                 return self.reject_message(path, &msg, &reason).await;
             }
-            log::info!(
+            log::debug!(
                 "[mailbox] Root Agent routing check passed: '{}' -> '{}'",
                 msg.from,
                 msg.to
@@ -1256,13 +1256,13 @@ impl MailboxPoller {
             if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
                 return self.reject_message(path, &msg, reason).await;
             }
-            log::info!(
+            log::debug!(
                 "[mailbox] Coordinator→Root routing check passed: '{}' -> '{}'",
                 msg.from,
                 msg.to
             );
         } else if is_master {
-            log::info!(
+            log::debug!(
                 "[mailbox] Master token used — bypassing team validation for {} -> {}",
                 msg.from,
                 msg.to
@@ -1279,7 +1279,7 @@ impl MailboxPoller {
                     .reject_message(path, &msg, "Sender cannot reach destination")
                     .await;
             }
-            log::info!(
+            log::debug!(
                 "[mailbox] Routing check passed: '{}' -> '{}'",
                 msg.from,
                 msg.to
@@ -1386,7 +1386,7 @@ impl MailboxPoller {
             };
 
         for &(session_id, ref status) in &candidates {
-            log::info!(
+            log::debug!(
                 "[mailbox] wake: candidate {} captured-status={:?}",
                 session_id,
                 status
@@ -1433,7 +1433,7 @@ impl MailboxPoller {
                                 .and_then(|s| s.telegram_bot_id.clone())
                         };
                         spawn_with_resume = true;
-                        log::info!(
+                        log::debug!(
                             "[mailbox] wake: deferring Exited destroy for {} (status={:?}) pending later Inject success",
                             session_id,
                             status
@@ -1459,14 +1459,14 @@ impl MailboxPoller {
             && (candidates.is_empty() && had_any_match || lost_inject_to_race)
         {
             spawn_with_resume = true;
-            log::info!(
+            log::debug!(
                 "[mailbox] wake: all CWD candidates for '{}' are phantoms or lost to race; enabling auto-resume on spawn-persistent",
                 msg.to
             );
         }
 
         if let Some(exited_id) = pending_exited_destroy {
-            log::info!(
+            log::debug!(
                 "[mailbox] wake: executing deferred destroy for Exited candidate {}",
                 exited_id
             );
@@ -2189,7 +2189,7 @@ impl MailboxPoller {
         let mgr = session_mgr.read().await;
         let sessions = mgr.list_sessions().await;
 
-        log::info!(
+        log::debug!(
             "[mailbox] find_active_session for '{}' — {} sessions: {:?}",
             agent_name,
             sessions.len(),
@@ -2213,7 +2213,7 @@ impl MailboxPoller {
             return None;
         }
 
-        log::info!(
+        log::debug!(
             "[mailbox] {} CWD matches for '{}': {:?}",
             matches.len(),
             agent_name,
@@ -2237,7 +2237,7 @@ impl MailboxPoller {
         });
 
         let best = &matches[0];
-        log::info!(
+        log::debug!(
             "[mailbox] Best match for '{}': session {} (name='{}', status={:?})",
             agent_name,
             best.id,
@@ -2325,7 +2325,7 @@ impl MailboxPoller {
             }
         }
 
-        log::info!(
+        log::debug!(
             "[mailbox] {} viable wake candidate(s) for '{}' (had_any_match={}): {:?}",
             viable.len(),
             agent_name,

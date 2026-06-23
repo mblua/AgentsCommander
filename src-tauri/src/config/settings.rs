@@ -1460,7 +1460,7 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
         match std::fs::read_to_string(path) {
             Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
                 Ok((s, migrated)) => {
-                    log::info!("Loaded settings from {:?}", path);
+                    log::debug!("Loaded settings from {:?}", path);
                     if migrated {
                         profile_migrated_to_v2 = true;
                         pre_migration_contents = Some(contents);
@@ -1603,7 +1603,7 @@ pub fn load_settings_for_cli() -> AppSettings {
         match std::fs::read_to_string(&path) {
             Ok(contents) => match parse_settings_json(&contents, &path.to_string_lossy()) {
                 Ok((s, _migrated)) => {
-                    log::info!("[cli] Loaded settings from {:?}", path);
+                    log::debug!("[cli] Loaded settings from {:?}", path);
                     s
                 }
                 Err(e) => {
@@ -1722,7 +1722,7 @@ fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), Stri
     std::fs::rename(&tmp_path, path)
         .map_err(|e| format!("Failed to rename settings file: {}", e))?;
 
-    log::info!("Saved settings to {:?}", path);
+    log::debug!("Saved settings to {:?}", path);
     Ok(())
 }
 

@@ -5,6 +5,7 @@ import type {
   AppSettings,
   AgentConfig,
   CodingAgentEnv,
+  LogLevel,
   TelegramBotConfig,
   ProfileCellConfig,
 } from "../../shared/types";
@@ -1074,6 +1075,33 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Beep when a team finishes working (all agents idle)</span>
         </label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Logging</div>
+        <label class="settings-field">
+          <span class="settings-label">Log level</span>
+          <select
+            class="settings-input"
+            value={settings.data!.logLevel ?? "info"}
+            onChange={(e) =>
+              updateField("logLevel", e.currentTarget.value as LogLevel)
+            }
+            data-ac-testid="settings.general.logLevel"
+            data-ac-role="combobox"
+          >
+            <option value="error">Error</option>
+            <option value="warn">Warn</option>
+            <option value="info">Info</option>
+            <option value="debug">Debug</option>
+            <option value="trace">Trace</option>
+          </select>
+        </label>
+        <div class="settings-hint">
+          Controls AgentsCommander log verbosity (applies immediately, no
+          restart). Higher levels are noisier. The RUST_LOG env var, if set,
+          overrides this until restart.
+        </div>
       </div>
 
     </>

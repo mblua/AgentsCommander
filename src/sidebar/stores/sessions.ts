@@ -309,7 +309,7 @@ export const sessionsStore = {
 
   setActiveId(id: string | null) {
     const prev = state.activeId;
-    console.log(`[idle-fe] setActiveId: ${id?.slice(0,8)} (prev: ${prev?.slice(0,8)})`);
+    console.debug(`[idle-fe] setActiveId: ${id?.slice(0,8)} (prev: ${prev?.slice(0,8)})`);
     setState("activeId", id);
     // Promote selected session to "active" only when its status is a runtime
     // string. Exited({ exited: N }) is preserved so dormant roots keep the
@@ -338,11 +338,11 @@ export const sessionsStore = {
     const session = state.sessions.find((s) => s.id === id);
     const wasAlreadyWaiting = session?.waitingForInput ?? false;
     const isActive = id === state.activeId;
-    console.log(`[idle-fe] setSessionWaiting: ${id.slice(0,8)} waiting=${waiting} wasAlreadyWaiting=${wasAlreadyWaiting} isActive=${isActive} pendingReview=${session?.pendingReview}`);
+    console.debug(`[idle-fe] setSessionWaiting: ${id.slice(0,8)} waiting=${waiting} wasAlreadyWaiting=${wasAlreadyWaiting} isActive=${isActive} pendingReview=${session?.pendingReview}`);
     setState("sessions", (s) => s.id === id, "waitingForInput", waiting);
     // Only set pendingReview on a real busy→idle transition, not re-detection
     if (waiting && !wasAlreadyWaiting && !isActive) {
-      console.log(`[idle-fe] >>> SETTING pendingReview=true for ${id.slice(0,8)}`);
+      console.debug(`[idle-fe] >>> SETTING pendingReview=true for ${id.slice(0,8)}`);
       setState("sessions", (s) => s.id === id, "pendingReview", true);
     }
     if (!waiting) {
