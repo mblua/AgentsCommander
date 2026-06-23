@@ -717,6 +717,82 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+  it("#614: typing in a profile env value keeps the same input focused (no <For> recreate)", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      codingAgentProfiles: {
+        schemaVersion: 2,
+        profileSlots: { A: { label: "" } },
+        defaultProfileByAgent: {},
+        profileLabelsByAgent: {},
+        profilesByAgent: {
+          codex: {
+            A: { enabled: true, command: "codex", env: { OPENAI_ORG: "ac" }, notes: "" },
+          },
+        },
+      },
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "profiles" }),
+      root,
+    );
+    await settle();
+
+    const valueInput = byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.value");
+    expect(valueInput.value).toBe("ac");
+    valueInput.focus();
+    expect(document.activeElement).toBe(valueInput);
+
+    // Two keystrokes. Pre-#614 (reference-keyed <For>), updateCellEnvRow replaced
+    // the row object on each input, disposing this <input> and mounting a new
+    // node — so focus reverted to <body> and a re-query returned a DIFFERENT
+    // element. With <Index> the node is stable, so identity + focus survive.
+    valueInput.value = "acX";
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    valueInput.value = "acXY";
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    const afterTyping = byTestId<HTMLInputElement>("settings.profileCard.0.A.envRow.0.value");
+    expect(afterTyping).toBe(valueInput); // same DOM node — not recreated
+    expect(document.activeElement).toBe(valueInput); // focus retained
+    expect(afterTyping.value).toBe("acXY"); // edit applied
+
+    dispose();
+  });
+
+  it("#614: typing in an agent-level env value also keeps focus (in-place store update)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.agentRow.0.env.add").click();
+    await settle();
+
+    const valueInput = byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.value");
+    valueInput.focus();
+    expect(document.activeElement).toBe(valueInput);
+
+    valueInput.value = "v1";
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    const afterTyping = byTestId<HTMLInputElement>("settings.agentRow.0.envRow.0.value");
+    expect(afterTyping).toBe(valueInput);
+    expect(document.activeElement).toBe(valueInput);
+    expect(afterTyping.value).toBe("v1");
+
+    dispose();
+  });
+
   it("keeps early profile cell edits when the fresh load resolves late", async () => {
     let resolveLoadedSettings: (value: AppSettings) => void = () => {};
     vi.mocked(SettingsAPI.get).mockReturnValueOnce(
