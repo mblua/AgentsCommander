@@ -883,6 +883,19 @@ const AgentPickerModal: Component<{
                       Home isolation {selectedAgent()?.isolatedHome ? "enabled" : "disabled"}
                     </div>
                   </Show>
+                  {/* #598 — read-only hint that this agent reseeds a config
+                      folder each spawn. The winning template tier needs a live
+                      FS check the picker must not do, so we only name the dest. */}
+                  <Show
+                    when={
+                      !!selectedAgent()?.configSeed?.enabled &&
+                      !!selectedAgent()?.configSeed?.dest?.trim()
+                    }
+                  >
+                    <div class="agent-projection-note">
+                      Seeds {selectedAgent()?.configSeed?.dest?.trim()} on every spawn
+                    </div>
+                  </Show>
                   <Show when={projectedCell().notes}>
                     <div class="agent-projection-note">Note: {projectedCell().notes}</div>
                   </Show>

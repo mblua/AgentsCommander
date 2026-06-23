@@ -1063,6 +1063,53 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         )
     });
 
+    // #598 - seed the config folder before the PTY starts so the agent sees the
+    // templated config. Best-effort: never aborts the spawn. This is the single
+    // execution chokepoint every real spawn funnels through (create / replica /
+    // other variants, delivery / mailbox / web wakes); prevalidation never hits
+    // it because it discards the spawn. Per Q2 this runs on EVERY spawn,
+    // including loop/scheduler resume-wakes (overwrite every spawn).
+    if let Some(seed) = resolved_spawn.as_ref().and_then(|s| s.seed.as_ref()) {
+        // grinch HIGH-1: serialize the seed swap for ALL dests (not just
+        // `.claude`). Two same-replica spawns can run concurrently (e.g. a
+        // delivery tick + a mailbox wake) holding only `session_mgr.read()`,
+        // with no global spawn lock. Without serialization, spawn B's
+        // prefix-sweep of stale scratch (`clear_stale_seed_scratch`) could
+        // delete spawn A's in-flight temp/trash mid-swap and lose the config
+        // (breaking H1's "dest always fully-old or fully-new" + M3 isolation).
+        // Under this lock any other-id scratch is truly stale, so the
+        // leak-reclaim sweep stays safe. The same lock also gives the `.claude`
+        // re-apply its M2 serialization vs sweep_rtk_hook's settings.local.json
+        // read-modify-write. Clone the Arc out of State first so the owned guard
+        // does not borrow a State temporary (E0716).
+        let _seed_guard = {
+            let lock = app.state::<crate::RtkSweepLockState>().inner().clone();
+            lock.lock_owned().await
+        };
+
+        let report = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
+
+        // M1: a `.claude` seed clean-replaces the dir, wiping the AC-managed
+        // settings.local.json. Re-stamp both claudeMdExcludes (if the agent opts
+        // in) and the rtk hook (per the global toggle). `cwd` is the replica
+        // root; the writers append `.claude`, so this lands in the seeded dir.
+        if matches!(report, crate::config::config_seed::ConfigSeedReport::Seeded) {
+            if let Some(re) = &seed.claude_settings_reapply {
+                let dir = std::path::Path::new(&cwd);
+                if re.apply_excludes {
+                    if let Err(e) = crate::config::claude_settings::ensure_claude_md_excludes(dir) {
+                        log::warn!("[config-seed] re-apply claudeMdExcludes failed: {}", e);
+                    }
+                }
+                if let Err(e) =
+                    crate::config::claude_settings::ensure_rtk_pretool_hook(dir, re.inject_rtk_hook)
+                {
+                    log::warn!("[config-seed] re-apply rtk hook failed: {}", e);
+                }
+            }
+        }
+    }
+
     let spawn_result = {
         pty_mgr.lock().unwrap().spawn(
             id,
@@ -2777,6 +2824,7 @@ mod tests {
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
+                    config_seed: None,
                 },
                 AgentConfig {
                     id: "codex".to_string(),
@@ -2788,6 +2836,7 @@ mod tests {
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
+                    config_seed: None,
                 },
             ],
             ..AppSettings::default()
@@ -3473,6 +3522,7 @@ mod tests {
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
+            config_seed: None,
         });
 
         let resolved = resolve_actual_agent(
@@ -3551,6 +3601,7 @@ mod tests {
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
+            config_seed: None,
         }];
 
         let resolved = resolve_agent_from_shell("codex", &[], &settings);

@@ -2691,6 +2691,7 @@ mod tests {
                 envs: Vec::new(),
                 isolated_home: false,
                 instructions_filename: None,
+                config_seed: None,
             },
             crate::config::settings::AgentConfig {
                 id: "claude".to_string(),
@@ -2702,6 +2703,7 @@ mod tests {
                 envs: Vec::new(),
                 isolated_home: false,
                 instructions_filename: None,
+                config_seed: None,
             },
         ];
 

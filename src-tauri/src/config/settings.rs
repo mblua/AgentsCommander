@@ -33,6 +33,11 @@ pub struct AgentConfig {
     /// `instructionsFilename`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions_filename: Option<String>,
+    /// #598 - optional config-folder seed (e.g. `.claude`) copied from a
+    /// convention-chosen template into the replica at spawn. `None`/inactive
+    /// means no seeding. Serialized as `configSeed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_seed: Option<ConfigSeedConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,6 +109,26 @@ pub struct ProfileCellConfig {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub notes: String,
+}
+
+/// Optional config-folder seed for a coding agent. When active, AC copies a
+/// template config folder (chosen by convention across profile > matrix >
+/// coding-agent-base; see `config_seed.rs`) into the replica at spawn. `dest` is
+/// the destination folder NAME under `%AC_REPLICA_ROOT%/` (e.g. ".claude"). No
+/// `source` field: the template locations are derived by naming convention.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigSeedConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub dest: String,
+}
+
+impl ConfigSeedConfig {
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.dest.trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1213,6 +1238,53 @@ pub fn merge_protected_coding_agent_settings(
     incoming
 }
 
+/// A config-seed `dest` must be a single, relative folder NAME under the replica
+/// root. The convention prefixes (`default`, `default_profile_<letter>`) are
+/// concatenated onto this name for the workspace-root tiers, so it must be a
+/// single path segment and a legal Windows directory name.
+pub fn validate_config_seed_dest(dest: &str) -> Result<(), String> {
+    let d = dest.trim();
+    if d.is_empty() {
+        return Err("config seed destination must not be empty".to_string());
+    }
+    if d.contains('/') || d.contains('\\') {
+        return Err(
+            "config seed destination must be a single folder name (no path separators)".to_string(),
+        );
+    }
+    if d == "." || d == ".." || d.contains("..") {
+        return Err("config seed destination must not contain '..'".to_string());
+    }
+    if Path::new(d).is_absolute() {
+        return Err("config seed destination must be relative".to_string());
+    }
+    // M5: ':' makes "C:foo" drive-relative (is_absolute()==false) or "x:y" an ADS.
+    if d.contains(':') {
+        return Err("config seed destination must not contain ':'".to_string());
+    }
+    if d.contains('%') || d.contains('$') {
+        return Err("config seed destination must not contain placeholder markers".to_string());
+    }
+    // M5: reject a trailing dot (Windows strips it, causing target drift). A
+    // trailing space cannot reach here: `d` was trimmed above.
+    if d.ends_with('.') {
+        return Err("config seed destination must not end with a dot".to_string());
+    }
+    // M5: reject Windows reserved device names (case-insensitive, before any extension).
+    let stem = d.split('.').next().unwrap_or(d).to_ascii_uppercase();
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if RESERVED.contains(&stem.as_str()) {
+        return Err(format!(
+            "config seed destination '{}' is a reserved Windows device name",
+            d
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
     for agent in &settings.agents {
         validate_agent_command_text(&format!("Agent \"{}\"", agent.label), &agent.command)?;
@@ -1232,6 +1304,17 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
                     "Agent \"{}\" instructions filename is invalid: must be a bare .md filename with no path separators",
                     agent.label
                 ));
+            }
+        }
+
+        // #598: reject a bad config-seed dest at save so the user gets a clear
+        // IPC error here, not a silent fail-soft skip at launch. Inactive
+        // (disabled or empty dest) is allowed (means "no seeding").
+        if let Some(seed) = agent.config_seed.as_ref() {
+            if seed.is_active() {
+                validate_config_seed_dest(&seed.dest).map_err(|e| {
+                    format!("Agent \"{}\" config seed is invalid: {}", agent.label, e)
+                })?;
             }
         }
     }
@@ -1719,10 +1802,105 @@ mod tests {
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
+                    config_seed: None,
                 })
                 .collect(),
             ..AppSettings::default()
         }
+    }
+
+    #[test]
+    fn validate_config_seed_dest_accepts_dotfile_names() {
+        for ok in [".claude", ".claude-amp", ".codex", ".opencode", "config"] {
+            assert!(
+                super::validate_config_seed_dest(ok).is_ok(),
+                "should accept {ok:?}"
+            );
+        }
+        // Leading/trailing whitespace is trimmed before validation.
+        assert!(super::validate_config_seed_dest("  .claude  ").is_ok());
+    }
+
+    #[test]
+    fn validate_config_seed_dest_rejects_unsafe_names() {
+        let bad = [
+            "",                // empty
+            "   ",             // whitespace only
+            ".config/opencode", // forward separator (nested)
+            ".config\\x",      // backslash separator
+            "..",              // parent
+            "a..b",            // contains ..
+            "C:foo",           // drive-relative colon
+            "x:y",             // ADS colon
+            "%AC_REPLICA_ROOT%", // placeholder marker
+            "$HOME",           // shell marker
+            ".claude.",        // trailing dot (trim does NOT strip dots)
+            "CON",             // reserved device
+            "nul",             // reserved device (case-insensitive)
+            "COM1",            // reserved device
+            "lpt9.claude",     // reserved device before first dot
+        ];
+        for name in bad {
+            assert!(
+                super::validate_config_seed_dest(name).is_err(),
+                "should reject {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_seed_is_active_requires_enabled_and_nonempty_dest() {
+        use super::ConfigSeedConfig;
+        assert!(ConfigSeedConfig {
+            enabled: true,
+            dest: ".claude".to_string()
+        }
+        .is_active());
+        assert!(!ConfigSeedConfig {
+            enabled: false,
+            dest: ".claude".to_string()
+        }
+        .is_active());
+        assert!(!ConfigSeedConfig {
+            enabled: true,
+            dest: "   ".to_string()
+        }
+        .is_active());
+    }
+
+    #[test]
+    fn config_seed_serde_round_trips_camel_case_and_omits_when_absent() {
+        use super::AgentConfig;
+        // Present -> serializes as nested `configSeed { enabled, dest }`.
+        let mut agent = AgentConfig {
+            id: "claude".to_string(),
+            label: "Claude".to_string(),
+            command: "claude".to_string(),
+            color: "#fff".to_string(),
+            git_pull_before: false,
+            exclude_global_claude_md: false,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: Some(super::ConfigSeedConfig {
+                enabled: true,
+                dest: ".claude".to_string(),
+            }),
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        assert!(json.contains("\"configSeed\""), "{json}");
+        assert!(json.contains("\"dest\":\".claude\""), "{json}");
+        let back: AgentConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.config_seed.as_ref().map(|c| c.dest.as_str()), Some(".claude"));
+
+        // Absent -> key omitted (skip_serializing_if), and old files deserialize to None.
+        agent.config_seed = None;
+        let json = serde_json::to_string(&agent).unwrap();
+        assert!(!json.contains("configSeed"), "{json}");
+        let back: AgentConfig =
+            serde_json::from_str(r##"{"id":"x","label":"X","command":"claude","color":"#000"}"##)
+                .unwrap();
+        assert!(back.config_seed.is_none());
     }
 
     #[test]
