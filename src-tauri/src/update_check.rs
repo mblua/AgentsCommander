@@ -160,9 +160,15 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 }
 
 /// Pull `dist-tags.latest` out of the registry JSON body. Fail-silent.
+/// An empty `latest` (e.g. a malformed `{"latest":""}`) is treated as no result
+/// (FIX-2) so we re-check next boot instead of caching `""` and anchoring the
+/// 24h throttle on junk.
 fn parse_latest(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    v.get("latest")?.as_str().map(|s| s.to_string())
+    v.get("latest")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 fn upgrade_command() -> String {
@@ -296,22 +302,49 @@ async fn fetch_latest(app: &AppHandle) -> Option<String> {
 
 // ---- Phase 2 (in this PR per O1): CLI cache-only notice -------------------
 
-/// Cache-only check for the CLI startup line. No network, no settings read.
-/// Returns a one-line notice if the cached latest is newer than the running
-/// build, else None. Safe to call synchronously from `main.rs`.
+/// Pure: format the CLI notice from the loaded cache + running version + toggle.
+/// Returns the one-line string ONLY when notifications are enabled AND a newer
+/// version is cached. Kept I/O-free so the toggle-OFF and not-newer paths are
+/// unit-testable (mirrors the `plan_check`/`resolve_latest` split);
+/// `read_cached_notice` is the thin shell that loads the cache + setting.
+fn cli_notice(cache: &UpdateCache, current: &str, enabled: bool) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    if !is_newer(&cache.latest_version, current) {
+        return None;
+    }
+    Some(format!(
+        "Update available: v{} (you have v{}). Run: {}",
+        cache.latest_version,
+        current,
+        upgrade_command()
+    ))
+}
+
+/// Cache-first check for the CLI startup line. No network. Returns a one-line
+/// notice when the cached latest is newer than the running build AND the user
+/// has not disabled `npm_update_notifications_enabled`. Safe to call
+/// synchronously from `main.rs`.
+///
+/// FIX-1 (tech-lead): the single opt-out must silence BOTH the GUI toast and
+/// this CLI line. This intentionally OVERRIDES plan §5's "no settings read":
+/// opt-out consistency wins. To keep the read off every other CLI verb, we load
+/// the setting ONLY after confirming a newer version is actually cached (the
+/// caller in `main.rs` has already confirmed an interactive stderr). We use the
+/// read-only `load_settings_for_cli` loader so the CLI never writes settings.json
+/// (the GUI `load_settings` would auto-gen root_token + save, violating the
+/// read-only-CLI contract).
 pub fn read_cached_notice() -> Option<String> {
     let cache = read_cache()?;
     let current = env!("CARGO_PKG_VERSION");
-    if is_newer(&cache.latest_version, current) {
-        Some(format!(
-            "Update available: v{} (you have v{}). Run: {}",
-            cache.latest_version,
-            current,
-            upgrade_command()
-        ))
-    } else {
-        None
+    // Cheap path: bail before any settings read when nothing newer is cached.
+    if !is_newer(&cache.latest_version, current) {
+        return None;
     }
+    let enabled =
+        crate::config::settings::load_settings_for_cli().npm_update_notifications_enabled;
+    cli_notice(&cache, current, enabled)
 }
 
 #[cfg(test)]
@@ -348,6 +381,28 @@ mod tests {
         );
         assert_eq!(parse_latest(r#"{"no-latest":"x"}"#), None);
         assert_eq!(parse_latest("not json"), None);
+        // FIX-2: an empty `latest` is treated as no-result, not cached as "".
+        assert_eq!(parse_latest(r#"{"latest":""}"#), None);
+    }
+
+    #[test]
+    fn cli_notice_honors_toggle_and_version() {
+        let newer = UpdateCache {
+            last_checked_at: "2026-06-23T06:00:00Z".parse().unwrap(),
+            latest_version: "0.9.20".into(),
+        };
+        let same = UpdateCache {
+            last_checked_at: "2026-06-23T06:00:00Z".parse().unwrap(),
+            latest_version: "0.9.16".into(),
+        };
+        // Enabled + newer -> notice carrying the version + upgrade command.
+        let notice = cli_notice(&newer, "0.9.16", true).expect("expected a notice");
+        assert!(notice.contains("0.9.20"));
+        assert!(notice.contains("npm i -g @mblua/agentscommander"));
+        // FIX-1: toggle OFF -> silent even with a newer cache.
+        assert_eq!(cli_notice(&newer, "0.9.16", false), None);
+        // Enabled but not newer -> silent.
+        assert_eq!(cli_notice(&same, "0.9.16", true), None);
     }
 
     #[test]
