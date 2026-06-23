@@ -896,7 +896,7 @@ pub fn discover_teams() -> Vec<DiscoveredTeam> {
         }
     }
 
-    log::info!(
+    log::debug!(
         "[teams] discovered {} team(s) across {} project path(s)",
         teams.len(),
         settings.project_paths.len()
@@ -946,16 +946,16 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
         let raw = match std::fs::read_to_string(&config_path) {
             Ok(s) => s,
             Err(e) => {
-                // #280 §3.4 — NotFound is an expected state for half-installed
+                // #280 §3.4: NotFound is an expected state for half-installed
                 // team dirs (`_team_foo/` created but no `config.json` yet).
-                // Logging WARN at every discovery sweep spams app.log; downgrade
-                // NotFound to DEBUG and emit a one-shot INFO per (project,
-                // team_dir) per process so the operator still sees the visit.
-                // Unexpected IO errors stay at WARN.
+                // Logging WARN at every discovery sweep spams app.log, so both
+                // the one-shot per-(project, team_dir) visit record and the
+                // per-drop record below are DEBUG (#612 downgraded the prior
+                // one-shot INFO). Unexpected IO errors stay at WARN.
                 match e.kind() {
                     std::io::ErrorKind::NotFound => {
                         if note_missing_team_config(&project_folder, dir_name) {
-                            log::info!(
+                            log::debug!(
                                 "[teams] team config missing (logged once per startup) — project='{}' team_dir='{}' path='{}'",
                                 project_folder,
                                 dir_name,

@@ -241,7 +241,7 @@ pub fn run(
     let handle_for_busy = Arc::clone(&app_handle_lock);
     let idle_detector = IdleDetector::new(
         move |id| {
-            log::info!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
+            log::debug!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_idle.get() {
                 let _ = tauri::Emitter::emit(
                     app,
@@ -267,7 +267,7 @@ pub fn run(
             }
         },
         move |id| {
-            log::info!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
+            log::debug!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_busy.get() {
                 let _ = tauri::Emitter::emit(
                     app,
