@@ -304,6 +304,18 @@ export interface AppSettings {
   coordinatorAutoCloseMinutes: number;
   /** #588 When true, manually closing a coordinator also closes its team. */
   coordinatorCascadeCloseEnabled: boolean;
+  /** #609 Check npm on startup (<=1x/24h) and notify when a newer published
+   *  version of @mblua/agentscommander is available. Default true. */
+  npmUpdateNotificationsEnabled: boolean;
+}
+
+/** #609 "npm update available" payload. Mirrors the Rust `UpdateInfo` struct
+ *  (serde camelCase): carried by the `npm_update_available` event and returned
+ *  by `get_update_status` (null when up-to-date / not yet checked / disabled). */
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  upgradeCommand: string;
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";

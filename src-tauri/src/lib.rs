@@ -12,6 +12,7 @@ pub mod session;
 pub mod shutdown;
 pub mod telegram;
 pub mod testability;
+pub mod update_check;
 pub mod voice;
 pub mod web;
 
@@ -56,6 +57,11 @@ pub type RtkSweepLockState = Arc<tokio::sync::Mutex<()>>;
 /// boot decision instead of recomputing from post-side-effect state
 /// (which would mismatch the listener for the `auto-disabled` mode).
 pub type RtkStartupModeState = Arc<std::sync::OnceLock<String>>;
+
+// Issue #609 - cached "npm update available" result. Set ONCE by the startup
+// check task; read by `get_update_status` so a late-mounting sidebar still
+// sees a pending update (mirrors RtkStartupModeState).
+pub type UpdateCheckState = Arc<std::sync::OnceLock<update_check::UpdateInfo>>;
 
 /// Floating spec/Mermaid board document state.
 pub type SpecBoardState = Arc<tokio::sync::RwLock<commands::spec_board::SpecBoardManager>>;
@@ -326,6 +332,11 @@ pub fn run(
     let rtk_startup_mode: RtkStartupModeState = Arc::new(std::sync::OnceLock::new());
     let rtk_startup_mode_for_setup = Arc::clone(&rtk_startup_mode);
 
+    // Issue #609 - cached "npm update available" result, set ONCE by the
+    // detached startup check below and read by `get_update_status`.
+    let update_check_state: UpdateCheckState = Arc::new(std::sync::OnceLock::new());
+    let update_check_state_for_setup = Arc::clone(&update_check_state);
+
     let shutdown_for_setup = shutdown_signal.clone();
     let shutdown_for_exit = shutdown_signal.clone();
     let tg_mgr_for_exit = tg_mgr.clone();
@@ -354,6 +365,7 @@ pub fn run(
         .manage(WebServerHandle::default())
         .manage(rtk_sweep_lock)
         .manage(rtk_startup_mode)
+        .manage(update_check_state)
         .manage(ui_automation_state)
         .manage(shutdown_signal)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
@@ -541,6 +553,16 @@ pub fn run(
                         prompt_dismissed,
                         inform_when_installed
                     );
+                });
+            }
+
+            // Issue #609 - detached "npm update available" check. Fully fail-silent;
+            // detached so startup is never blocked or delayed (acceptance criterion).
+            {
+                let app_handle_for_update = app.handle().clone();
+                let update_cache = Arc::clone(&update_check_state_for_setup);
+                tauri::async_runtime::spawn(async move {
+                    crate::update_check::run_startup_check(app_handle_for_update, update_cache).await;
                 });
             }
 
@@ -1716,6 +1738,7 @@ pub fn run(
             commands::config::set_main_resource_monitor_attached,
             commands::config::sweep_rtk_hook,
             commands::config::get_rtk_startup_status,
+            commands::config::get_update_status,
             commands::repos::search_repos,
             commands::telegram::telegram_attach,
             commands::telegram::telegram_detach,

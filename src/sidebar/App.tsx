@@ -27,6 +27,7 @@ import {
   onCodingAgentEnvSettingsUpdated,
   onCodingAgentProfileSelectionUpdated,
   onLoopEvent,
+  onNpmUpdateAvailable,
 } from "../shared/ipc";
 import { taskFirstLine } from "../shared/markdown";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
@@ -47,6 +48,7 @@ import OnboardingModal from "./components/OnboardingModal";
 import ToastHost from "../shared/components/ToastHost";
 import { handleProjectRefreshRequested } from "./project-refresh-handler";
 import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
+import { createUpdateToaster } from "./update-toast";
 import "./styles/sidebar.css";
 import "../shared/styles/toast.css";
 
@@ -107,6 +109,10 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     }, 3000);
   };
 
+  // #609 — sticky "npm update available" toaster. Per-mount dedup state so the
+  // startup event + the getUpdateStatus snapshot never double-toast a version.
+  const showUpdateToast = createUpdateToaster();
+
   // #592 - pull the backend-computed drift flag and surgically patch each
   // session. Uses setProfileOutdated (never setSessions) so the frontend-only
   // pendingReview field is preserved. list_sessions recomputes profileOutdated
@@ -163,6 +169,21 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         void refreshProfileOutdated();
       })
     );
+    // #609 npm update notification. Subscribe BEFORE snapshotting so a startup
+    // emit fired during mount is never dropped; showUpdateToast dedups on
+    // version (mirrors RtkBanner's subscribe-then-snapshot order). The snapshot
+    // is fire-and-forget so its IPC round-trip never delays the listener
+    // registrations that follow in this onMount.
+    unlisteners.push(
+      await onNpmUpdateAvailable((info) => showUpdateToast(info))
+    );
+    void SettingsAPI.getUpdateStatus()
+      .then((pending) => {
+        if (pending) showUpdateToast(pending);
+      })
+      .catch((err) => {
+        console.error("[update-check] getUpdateStatus failed:", err);
+      });
     unlisteners.push(
       await onCodingAgentEnvSettingsUpdated(() => {
         settingsStore.refresh();

@@ -951,6 +951,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Always close team members when manually closing Coordinator</span>
         </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.npmUpdateNotificationsEnabled}
+            onChange={(e) =>
+              updateField("npmUpdateNotificationsEnabled", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.npmUpdateNotificationsEnabled"
+          />
+          <span>Notify me when a new version is available</span>
+        </label>
       </div>
 
       <div class="settings-section">

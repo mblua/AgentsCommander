@@ -7,6 +7,7 @@ import type {
   SessionRepo,
   PtyOutputEvent,
   AppSettings,
+  UpdateInfo,
   CodingAgentEnv,
   CodingAgentProfilesConfig,
   RepoMatch,
@@ -301,6 +302,8 @@ export const SettingsAPI = {
     transport.invoke<RtkSweepResult>("sweep_rtk_hook", { enabled }),
   getRtkStartupStatus: () =>
     transport.invoke<RtkStartupMode>("get_rtk_startup_status"),
+  getUpdateStatus: () =>
+    transport.invoke<UpdateInfo | null>("get_update_status"),
 };
 
 export const ReposAPI = {
@@ -865,6 +868,14 @@ export function onRtkStartupStatus(
   return transport.listen<{ mode: RtkStartupMode }>(
     "rtk_startup_status",
     (data) => callback(data.mode)
+  );
+}
+
+export function onNpmUpdateAvailable(
+  callback: (info: UpdateInfo) => void
+): Promise<UnlistenFn> {
+  return transport.listen<UpdateInfo>("npm_update_available", (info) =>
+    callback(info)
   );
 }
 

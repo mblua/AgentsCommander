@@ -52,6 +52,28 @@ fn main() {
                         // GATED on `cli.command.is_some()` so the GUI branch
                         // below initializes via `lib::run()` exactly once.
                         agentscommander_lib::logging::init_logger();
+
+                        // Issue #609 Phase 2 - one-line "update available" notice for
+                        // terminal runs. Cache-only (no network, no blocking). M1: gate
+                        // on an INTERACTIVE stderr, not the AC_MACHINE_OUTPUT allowlist -
+                        // that allowlist (above) covers only ListPeers/ListPeersLean/
+                        // ListSessions/AgencyTemplates/Ui*, so `send`, `task`,
+                        // `window-info`, and any future machine verb would get stderr
+                        // spam for up to 24h while an update is pending. `is_terminal()`
+                        // is the future-proof gate: a human at a terminal sees the
+                        // notice; agents, scripts, and piped/redirected runs (stderr is
+                        // not a tty) stay silent.
+                        {
+                            use std::io::IsTerminal;
+                            if std::io::stderr().is_terminal() {
+                                if let Some(notice) =
+                                    agentscommander_lib::update_check::read_cached_notice()
+                                {
+                                    eprintln!("{}", notice);
+                                }
+                            }
+                        }
+
                         let code = agentscommander_lib::cli::handle_cli(cmd);
                         std::process::exit(code);
                     }
