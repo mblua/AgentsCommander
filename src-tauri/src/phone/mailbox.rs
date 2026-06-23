@@ -529,6 +529,44 @@ pub(crate) fn is_viable_root_recipient(status: &SessionStatus, has_pty: bool) ->
     }
 }
 
+/// One tick of the #611 sustained-idle gate for a freshly spawned wake session.
+///
+/// A cold-starting agent (notably Claude) can hit a quiet window longer than the
+/// idle threshold mid-startup and be marked `waiting_for_input` before its TUI
+/// input/paste state is stable. Injecting then leaves the body in the input box
+/// but the submit `\r` can be dropped, so the message is written yet never sent.
+/// `wait_for_spawned_wake_idle` therefore requires idle to hold continuously for
+/// a settle window before injecting; the existing double-Enter in `pty/inject.rs`
+/// then submits reliably once the agent is stable.
+///
+/// Pure so the settle/reset policy is unit-testable without timers. Threads
+/// `idle_since` (the instant the session was first seen continuously idle, or
+/// `None` if it is currently busy / has not yet been observed idle) and returns
+/// the next `idle_since` plus whether idle has now held for `settle`:
+/// - busy (`waiting_for_input == false`) resets the clock to `None`: a late
+///   startup render restarts the settle window.
+/// - idle starts (or keeps) the clock; once `now - idle_since >= settle` the
+///   caller may inject.
+pub(crate) fn next_sustained_idle_state(
+    waiting_for_input: bool,
+    idle_since: Option<std::time::Instant>,
+    now: std::time::Instant,
+    settle: std::time::Duration,
+) -> (Option<std::time::Instant>, bool) {
+    if !waiting_for_input {
+        return (None, false);
+    }
+    let since = idle_since.unwrap_or(now);
+    // checked_duration_since guards against a non-monotonic `now` (parity with
+    // idle_detector's threshold check); treat an unexpected backwards clock as
+    // "not yet settled" rather than panicking.
+    let settled = now
+        .checked_duration_since(since)
+        .map(|elapsed| elapsed >= settle)
+        .unwrap_or(false);
+    (Some(since), settled)
+}
+
 /// Substring sniff for the `AppError::SessionNotFound` formatted message that
 /// bubbles up through `pty::inject::inject_text_into_session` as a `String`.
 ///
@@ -1803,41 +1841,70 @@ impl MailboxPoller {
             return Ok(());
         }
 
+        // #611: require SUSTAINED idle before injecting. A freshly spawned agent
+        // (notably Claude) can hit a quiet window > idle_threshold mid-startup and
+        // be marked idle before its TUI input/paste state is stable. Injecting
+        // then lands the body in the box but the submit \r can be dropped, so the
+        // message is written yet never sent. Waiting for idle to hold for a settle
+        // window lets late startup renders finish first; the existing double-Enter
+        // in pty/inject.rs then submits reliably. This adds ~settle latency ONLY on
+        // the cold-spawn path (wake-active via WakeAction::Inject never calls this).
         let max_wait = std::time::Duration::from_secs(90);
         let poll = std::time::Duration::from_millis(500);
+        let settle = std::time::Duration::from_millis(2000);
         let start = std::time::Instant::now();
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+
+        // Instant the session was first observed continuously idle; reset to None
+        // whenever it flips back to busy (a late startup render). Threaded through
+        // the pure `next_sustained_idle_state` so the settle/reset policy is tested.
+        let mut idle_since: Option<std::time::Instant> = None;
 
         loop {
             if start.elapsed() >= max_wait {
                 log::warn!(
-                    "[mailbox] wake: timeout waiting for session {} to become idle",
+                    "[mailbox] wake: timeout waiting for session {} to reach sustained idle; injecting anyway",
                     session_id
                 );
                 break; // inject anyway as fallback
             }
             tokio::time::sleep(poll).await;
 
-            let mgr = session_mgr.read().await;
-            let sessions = mgr.list_sessions().await;
-            match sessions.iter().find(|s| s.id == session_id.to_string()) {
-                Some(s) if s.waiting_for_input => {
-                    log::info!(
-                        "[mailbox] wake: session {} is idle, injecting message",
-                        session_id
-                    );
-                    drop(mgr);
-                    break;
+            // Read the flag under a short-lived lock; never hold it across the
+            // pure-decision call below.
+            let waiting = {
+                let mgr = session_mgr.read().await;
+                let sessions = mgr.list_sessions().await;
+                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    Some(s) => s.waiting_for_input,
+                    None => {
+                        return Err(format!(
+                            "Session {} was destroyed before message injection",
+                            session_id
+                        ));
+                    }
                 }
-                Some(_) => {} // still booting
-                None => {
-                    return Err(format!(
-                        "Session {} was destroyed before message injection",
-                        session_id
-                    ));
-                }
+            };
+
+            let was_settling = idle_since.is_some();
+            let (next_idle_since, should_inject) =
+                next_sustained_idle_state(waiting, idle_since, std::time::Instant::now(), settle);
+            idle_since = next_idle_since;
+
+            if should_inject {
+                log::info!(
+                    "[mailbox] wake: session {} idle sustained for >={}ms, injecting message",
+                    session_id,
+                    settle.as_millis()
+                );
+                break;
             }
-            drop(mgr);
+            if was_settling && !waiting {
+                log::info!(
+                    "[mailbox] wake: session {} went busy during settle; re-waiting for sustained idle",
+                    session_id
+                );
+            }
         }
         Ok(())
     }
@@ -4413,6 +4480,119 @@ mod tests {
         // status=Running + has_pty=true → viable, even if the child is secretly dead.
         // The router relies on `#223-fu1` to keep status in sync with reality.
         assert!(is_viable_wake_candidate(&SessionStatus::Running, true));
+    }
+
+    // ── next_sustained_idle_state tests (#611 sustained-idle gate) ──
+
+    #[test]
+    fn sustained_idle_busy_resets_clock_and_never_injects() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_millis(2000);
+        // Previously settling, now busy (a late startup render) → clock cleared.
+        let (next, inject) = next_sustained_idle_state(
+            false,
+            Some(base),
+            base + std::time::Duration::from_millis(500),
+            settle,
+        );
+        assert_eq!(next, None, "busy must reset idle_since to None");
+        assert!(!inject, "busy must never trigger inject");
+    }
+
+    #[test]
+    fn sustained_idle_busy_when_never_idle_stays_none() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_millis(2000);
+        let (next, inject) = next_sustained_idle_state(false, None, base, settle);
+        assert_eq!(next, None);
+        assert!(!inject);
+    }
+
+    #[test]
+    fn sustained_idle_first_idle_starts_clock_without_injecting() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_millis(2000);
+        let (next, inject) = next_sustained_idle_state(true, None, base, settle);
+        assert_eq!(
+            next,
+            Some(base),
+            "first idle observation seeds idle_since=now"
+        );
+        assert!(!inject, "must not inject on the very first idle tick");
+    }
+
+    #[test]
+    fn sustained_idle_within_window_keeps_clock_and_waits() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_millis(2000);
+        // Idle observed earlier; only 1500ms elapsed (< 2000ms settle).
+        let now = base + std::time::Duration::from_millis(1500);
+        let (next, inject) = next_sustained_idle_state(true, Some(base), now, settle);
+        assert_eq!(next, Some(base), "idle_since preserved while settling");
+        assert!(!inject, "must keep waiting until the full settle window elapses");
+    }
+
+    #[test]
+    fn sustained_idle_at_or_past_window_injects() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_millis(2000);
+        // Exactly at the threshold; the boundary is inclusive (>=).
+        let (next_at, inject_at) =
+            next_sustained_idle_state(true, Some(base), base + settle, settle);
+        assert_eq!(next_at, Some(base));
+        assert!(inject_at, "idle sustained for exactly settle must inject");
+        // Past the threshold.
+        let past = base + std::time::Duration::from_millis(2500);
+        let (_, inject_past) = next_sustained_idle_state(true, Some(base), past, settle);
+        assert!(inject_past, "idle sustained beyond settle must inject");
+    }
+
+    #[test]
+    fn sustained_idle_restarts_after_a_busy_flip() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_millis(2000);
+        // Tick 1: idle starts the clock.
+        let (s1, i1) = next_sustained_idle_state(true, None, base, settle);
+        assert_eq!(s1, Some(base));
+        assert!(!i1);
+        // Tick 2: busy (late render) clears the clock.
+        let (s2, i2) = next_sustained_idle_state(
+            false,
+            s1,
+            base + std::time::Duration::from_millis(500),
+            settle,
+        );
+        assert_eq!(s2, None);
+        assert!(!i2);
+        // Tick 3: idle again, clock restarts from the NEW now, so the earlier
+        // 500ms does NOT count toward the settle window.
+        let t3 = base + std::time::Duration::from_millis(1000);
+        let (s3, i3) = next_sustained_idle_state(true, s2, t3, settle);
+        assert_eq!(
+            s3,
+            Some(t3),
+            "idle after a busy flip restarts idle_since at the new now"
+        );
+        assert!(!i3, "pre-busy idle time must not count toward settle");
+        // Tick 4: only 1000ms after the restart (< 2000ms) → still waiting,
+        // proving the window genuinely restarted rather than carrying over.
+        let t4 = base + std::time::Duration::from_millis(2000);
+        let (_, i4) = next_sustained_idle_state(true, s3, t4, settle);
+        assert!(!i4, "must not inject until settle elapses from the RESTART point");
+    }
+
+    #[test]
+    fn sustained_idle_backwards_clock_is_not_treated_as_settled() {
+        // Defensive: if `now` is somehow before `idle_since` (a non-monotonic
+        // clock), checked_duration_since returns None and the helper must treat
+        // it as "not settled" rather than panicking or wrongly injecting.
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_millis(2000);
+        let since = base + std::time::Duration::from_millis(1000);
+        // now (= base) is strictly before since.
+        let (next, inject) = next_sustained_idle_state(true, Some(since), base, settle);
+        assert_eq!(next, Some(since), "idle_since must be preserved");
+        assert!(!inject, "a backwards clock must never be treated as settled");
     }
 
     // ── err_is_pty_session_missing tests (issue #223) ──
