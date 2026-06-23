@@ -66,7 +66,7 @@ Steps:
 
 Expected Result:
 
-The settings surface opens from `Agents Commander [TESTEABLE]`, is visually readable, and can be closed without mutating settings.
+The settings surface opens from `AC [TESTEABLE]`, is visually readable, and can be closed without mutating settings.
 
 Evidence Required:
 
@@ -133,7 +133,7 @@ Steps:
 
 1. Capture the project/workgroup list before restart.
 2. Save any available settings or project registration snapshot for the testable identity.
-3. Close `Agents Commander [TESTEABLE]` normally.
+3. Close `AC [TESTEABLE]` normally.
 4. Relaunch `agentscommander_testeable.exe --app` with deterministic placement.
 5. Run `agentscommander_testeable.exe window-info` and save the output.
 6. Capture the project/workgroup list after restart.
@@ -203,7 +203,7 @@ Verify that `test-reset --confirm-testeable` is used only while the GUI is close
 Preconditions:
 
 - The testable GUI is closed.
-- The tester can prove no `Agents Commander [TESTEABLE]` window is active.
+- The tester can prove no `AC [TESTEABLE]` window is active.
 - Disposable testable identity directories exist or their absence can be recorded.
 - The tester will not manually delete or edit settings outside `.agentscommander_testeable` and `agentscommander_testeable`.
 

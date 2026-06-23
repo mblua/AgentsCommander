@@ -273,7 +273,7 @@ Preconditions:
 Steps:
 
 1. Capture the pre-restart workgroup list, selected workgroup, participants, sessions, and peer JSON.
-2. Close `Agents Commander [TESTEABLE]` normally.
+2. Close `AC [TESTEABLE]` normally.
 3. Relaunch `agentscommander_testeable.exe --app` with deterministic placement.
 4. Run `agentscommander_testeable.exe window-info` and capture the relaunched target.
 5. Capture the post-restart workgroup list and selected/active workgroup.
