@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, createEffect, For, Index, Show, onMount, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { isTauri } from "../../shared/platform";
 import type {
@@ -1837,56 +1837,64 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             data-ac-testid={`${cardId}.env`}
             data-ac-role="surface"
           >
-            <For each={cellEnvRows(agent.id, letter)}>
+            {/* #614 — <Index> (keyed by position) not <For> (keyed by row-object
+                reference): updateCellEnvRow replaces the row object on every
+                keystroke, so a reference-keyed <For> would dispose+recreate the
+                edited <input> and drop focus after one character. <Index> keeps a
+                stable DOM node per index and only updates the row signal. */}
+            <Index each={cellEnvRows(agent.id, letter)}>
               {(row, rowIndex) => (
                 <div
                   class="settings-profile-env-row"
-                  data-ac-testid={`${cardId}.envRow.${rowIndex()}`}
+                  data-ac-testid={`${cardId}.envRow.${rowIndex}`}
                   data-ac-role="row"
                 >
                   <input
                     class="settings-input settings-env-key"
-                    value={row.key}
-                    onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex(), "key", e.currentTarget.value)}
+                    value={row().key}
+                    onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex, "key", e.currentTarget.value)}
                     placeholder="KEY"
-                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.key`}
+                    data-ac-testid={`${cardId}.envRow.${rowIndex}.key`}
                     data-ac-role="textbox"
                   />
                   <input
                     class="settings-input settings-env-value"
-                    value={row.value}
-                    onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex(), "value", e.currentTarget.value)}
+                    value={row().value}
+                    onInput={(e) => updateCellEnvRow(agent.id, letter, rowIndex, "value", e.currentTarget.value)}
                     placeholder="value"
-                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.value`}
+                    data-ac-testid={`${cardId}.envRow.${rowIndex}.value`}
                     data-ac-role="textbox"
                   />
                   {(() => {
-                    const origin = profileEnvOrigin(row.key, row.value);
+                    // Accessor (not a once-computed const): <Index> keeps the row
+                    // scope alive across edits, so the origin label must re-read
+                    // row() to stay live as the user types.
+                    const origin = () => profileEnvOrigin(row().key, row().value);
                     return (
                       <span
-                        class={`settings-env-origin ${origin}`}
-                        data-ac-testid={`${cardId}.envRow.${rowIndex()}.origin`}
+                        class={`settings-env-origin ${origin()}`}
+                        data-ac-testid={`${cardId}.envRow.${rowIndex}.origin`}
                         data-ac-role="status"
-                        data-ac-env-origin={origin}
-                        title={`Env value origin: ${ENV_ORIGIN_LABEL[origin]}`}
+                        data-ac-env-origin={origin()}
+                        title={`Env value origin: ${ENV_ORIGIN_LABEL[origin()]}`}
                       >
-                        {ENV_ORIGIN_LABEL[origin]}
+                        {ENV_ORIGIN_LABEL[origin()]}
                       </span>
                     );
                   })()}
                   <button
                     class="settings-env-delete"
-                    onClick={() => removeCellEnvRow(agent.id, letter, rowIndex())}
+                    onClick={() => removeCellEnvRow(agent.id, letter, rowIndex)}
                     title="Delete environment row"
-                    data-ac-testid={`${cardId}.envRow.${rowIndex()}.delete`}
+                    data-ac-testid={`${cardId}.envRow.${rowIndex}.delete`}
                     data-ac-role="button"
                   >
                     &#x2715;
                   </button>
-                  <Show when={hasAcPlaceholder(row.value)}>
+                  <Show when={hasAcPlaceholder(row().value)}>
                     <div
                       class="settings-profile-ph-preview"
-                      data-ac-testid={`${cardId}.envRow.${rowIndex()}.placeholder`}
+                      data-ac-testid={`${cardId}.envRow.${rowIndex}.placeholder`}
                       data-ac-role="status"
                     >
                       <span class="arrow">&rarr;</span>
@@ -1895,7 +1903,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   </Show>
                 </div>
               )}
-            </For>
+            </Index>
             <Show when={cellEnvError(agent.id, letter)}>
               <div
                 class="settings-profile-cell-error"
