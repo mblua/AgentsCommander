@@ -42,7 +42,7 @@ export class WsTransport implements Transport {
         }
         this.connected = true;
         this.reconnectDelay = 1000;
-        console.log("[ws-transport] Connected");
+        console.debug("[ws-transport] Connected");
       };
 
       socket.onmessage = (event) => {
@@ -86,7 +86,7 @@ export class WsTransport implements Transport {
       ) {
         return;
       }
-      console.log(
+      console.debug(
         `[ws-transport] Reconnecting after ${delay}ms...`
       );
       this.connect();

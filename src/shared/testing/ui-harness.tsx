@@ -160,6 +160,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     coordinatorAutoCloseMinutes: 60,
     coordinatorCascadeCloseEnabled: true,
     npmUpdateNotificationsEnabled: true,
+    logLevel: null,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
   };

@@ -15,10 +15,106 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 static INIT: OnceLock<()> = OnceLock::new();
+
+/// #612 runtime-adjustable verbosity for our own targets (`agentscommander*`),
+/// stored as `log::Level as u8` (Error=1 .. Trace=5). Installed ONLY on the
+/// no-RUST_LOG path (see `init_logger_inner`); the RUST_LOG dev-override path
+/// keeps env_logger frozen and leaves this unset.
+static RUNTIME_LEVEL: OnceLock<Arc<AtomicU8>> = OnceLock::new();
+
+/// #612 fixed inner filter for the gated path: third-party crates pinned at
+/// `warn`; our own targets opened to `trace` so the runtime atomic (not
+/// env_logger) is the sole gate for `agentscommander*`.
+const GATE_INNER_FILTER: &str = "warn,agentscommander=trace";
+
+/// #612 lenient string -> Level for the runtime gate. None / legacy full-filter
+/// string / typo all fall back to Info (the historical default).
+fn level_from_str(s: &str) -> log::Level {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "error" => log::Level::Error,
+        "warn" => log::Level::Warn,
+        "info" => log::Level::Info,
+        "debug" => log::Level::Debug,
+        "trace" => log::Level::Trace,
+        _ => log::Level::Info,
+    }
+}
+
+/// #612 strict normalize for the command boundary: returns the canonical
+/// lowercase string for a valid level, else None (so `set_log_level` rejects
+/// junk instead of silently persisting it).
+pub fn normalize_log_level(s: &str) -> Option<&'static str> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "error" => Some("error"),
+        "warn" => Some("warn"),
+        "info" => Some("info"),
+        "debug" => Some("debug"),
+        "trace" => Some("trace"),
+        _ => None,
+    }
+}
+
+/// #612 global `max_level` for the gated path. Clamped to at least Warn so
+/// third-party `warn!` stays visible even when the user picks Error for our own
+/// targets; raising it to the selected level lets the `log!` macro short-circuit
+/// suppressed debug!/trace! on hot paths BEFORE they reach the gate (the PTY
+/// read-loop trace! is the motivating case).
+fn max_filter_for(level: log::Level) -> log::LevelFilter {
+    std::cmp::max(level.to_level_filter(), log::LevelFilter::Warn)
+}
+
+/// #612 thin `log::Log` wrapper: consults the runtime atomic for
+/// `agentscommander*` targets and delegates everything else to a fixed inner
+/// `env_logger::Logger` (third-party crates pinned by `GATE_INNER_FILTER`).
+/// Lets the level change with no restart while reusing the inner logger's
+/// format closure (timestamp + secret scrub + #264 sink + rotation) unchanged.
+struct LevelGateLogger {
+    inner: env_logger::Logger,
+    level: Arc<AtomicU8>,
+}
+
+impl log::Log for LevelGateLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        if metadata.target().starts_with("agentscommander") {
+            (metadata.level() as u8) <= self.level.load(Ordering::Relaxed)
+        } else {
+            // Third-party: defer to the inner env_logger's fixed warn filter.
+            self.inner.enabled(metadata)
+        }
+    }
+
+    fn log(&self, record: &log::Record) {
+        // Re-check per the log::Log contract: the global max_level may admit
+        // records this gate rejects. Delegating to inner reuses the existing
+        // format closure unchanged (scrub + #264 sink + rotation).
+        if self.enabled(record.metadata()) {
+            self.inner.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.inner.flush();
+    }
+}
+
+/// #612 update runtime verbosity for `agentscommander*`. Returns false (no-op)
+/// when the gate is not installed (RUST_LOG override active, or called before
+/// `init_logger`), so callers can tell whether the backend stayed frozen.
+pub fn set_runtime_log_level(level: &str) -> bool {
+    let lvl = level_from_str(level);
+    match RUNTIME_LEVEL.get() {
+        Some(atomic) => {
+            atomic.store(lvl as u8, Ordering::Relaxed);
+            log::set_max_level(max_filter_for(lvl));
+            true
+        }
+        None => false,
+    }
+}
 
 /// #280 §2 — size cap per `app.log` file. Above this, the file is rotated.
 /// 50 MB chosen so a single file is still grep-able in a text editor while
@@ -215,6 +311,54 @@ pub fn init_logger() {
     INIT.get_or_init(init_logger_inner);
 }
 
+/// #612 apply the shared format closure (timestamp + universal secret scrub +
+/// #264 error-sink tee + 50MB rotation) to `builder`. The body is the EXACT
+/// closure that was inline in `init_logger_inner`; only the captured `log_state`
+/// moves to this parameter, so both the RUST_LOG path and the runtime-gated
+/// path build on one definition. Do NOT reorder: the #264 capture stays BEFORE
+/// the buf/file writes (M1) so a failing write cannot skip error capture.
+fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<AppLogFile>>>) {
+    builder.format(move |buf, record| {
+        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let line = format!(
+            "{} [{}] {} — {}\n",
+            ts,
+            record.level(),
+            record.target(),
+            record.args()
+        );
+        // #280 — universal secret scrub before the line reaches
+        // stderr or app.log. Defends against new call sites and
+        // third-party crate errors that may have bypassed api.rs's
+        // and voice.rs's redaction. Near-zero cost when the line
+        // contains no "/bot" or "key=" substring (early-return
+        // inside redact()).
+        let line = crate::telegram::redact::redact(&line);
+        // #264 — tee ERROR-level entries from AgentsCommander's own
+        // targets into the process-wide sink for the UI error modal.
+        // Placed BEFORE the `?` writes below so a failing stderr/app.log
+        // write cannot skip capture (M1). MUST NOT call any log::* macro
+        // — this runs inside the logger and would recurse.
+        if should_capture(record) {
+            error_sink().capture(ErrorLogEntry::from_record(ts.to_string(), record));
+        }
+        if !machine_output_enabled() {
+            buf.write_all(line.as_bytes())?;
+        }
+        if let Some(ref state) = *log_state {
+            if let Ok(mut f) = state.file.lock() {
+                let _ = f.write_all(line.as_bytes());
+            }
+            let new_total = state.bytes.fetch_add(line.len() as u64, Ordering::Relaxed)
+                + line.len() as u64;
+            if new_total >= APP_LOG_MAX_BYTES {
+                rotate(state);
+            }
+        }
+        Ok(())
+    });
+}
+
 fn init_logger_inner() {
     let log_state: Option<Arc<AppLogFile>> = crate::config::config_dir().and_then(|dir| {
         let _ = std::fs::create_dir_all(&dir);
@@ -247,66 +391,50 @@ fn init_logger_inner() {
     }
     let log_state = Arc::new(log_state);
 
-    // #93 precedence: RUST_LOG env > settings.logLevel > "agentscommander=info" default.
-    // - read_log_level_only is read-only and side-effect-free: does NOT trigger
-    //   migrations, auto-token-gen, or save_settings, so all log calls inside the
-    //   full load_settings() flow re-fire on the post-init SettingsState construction
-    //   call and are captured.
-    // - from_env(Env::default()) preserves RUST_LOG_STYLE handling (color output).
-    // - No floor is applied: if `resolved_filter` is malformed (e.g. user typo in
-    //   settings.json::logLevel), parse_filters produces no matching directives for
-    //   agentscommander* targets, and all logs from those targets are suppressed.
-    //   The user-facing recovery is to fix the typo.
-    let resolved_filter = std::env::var("RUST_LOG")
-        .ok()
-        .or_else(crate::config::settings::read_log_level_only)
-        .unwrap_or_else(|| "agentscommander=info".to_string());
+    // #612 precedence (was #93): RUST_LOG env > settings.logLevel > Info default.
+    //
+    // RUST_LOG is the dev override and wins. When set, keep the original frozen
+    // env_logger path with NO runtime gate: a dev who exports RUST_LOG wants
+    // exactly that filter (including third-party verbosity) for the whole
+    // session, so the UI selector cannot change the backend level until a
+    // restart without RUST_LOG. read_log_level_only is read-only and
+    // side-effect-free (no migration / token-gen / save), so log calls inside
+    // the later full load_settings() flow still reach this sink.
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
+        builder.parse_filters(&rust_log);
+        install_format(&mut builder, Arc::clone(&log_state));
+        builder.init();
+        return;
+    }
 
-    env_logger::Builder::from_env(env_logger::Env::default())
-        .parse_filters(&resolved_filter)
-        .format({
-            let log_state = Arc::clone(&log_state);
-            move |buf, record| {
-                let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-                let line = format!(
-                    "{} [{}] {} — {}\n",
-                    ts,
-                    record.level(),
-                    record.target(),
-                    record.args()
-                );
-                // #280 — universal secret scrub before the line reaches
-                // stderr or app.log. Defends against new call sites and
-                // third-party crate errors that may have bypassed api.rs's
-                // and voice.rs's redaction. Near-zero cost when the line
-                // contains no "/bot" or "key=" substring (early-return
-                // inside redact()).
-                let line = crate::telegram::redact::redact(&line);
-                // #264 — tee ERROR-level entries from AgentsCommander's own
-                // targets into the process-wide sink for the UI error modal.
-                // Placed BEFORE the `?` writes below so a failing stderr/app.log
-                // write cannot skip capture (M1). MUST NOT call any log::* macro
-                // — this runs inside the logger and would recurse.
-                if should_capture(record) {
-                    error_sink().capture(ErrorLogEntry::from_record(ts.to_string(), record));
-                }
-                if !machine_output_enabled() {
-                    buf.write_all(line.as_bytes())?;
-                }
-                if let Some(ref state) = *log_state {
-                    if let Ok(mut f) = state.file.lock() {
-                        let _ = f.write_all(line.as_bytes());
-                    }
-                    let new_total = state.bytes.fetch_add(line.len() as u64, Ordering::Relaxed)
-                        + line.len() as u64;
-                    if new_total >= APP_LOG_MAX_BYTES {
-                        rotate(state);
-                    }
-                }
-                Ok(())
-            }
-        })
-        .init();
+    // No RUST_LOG: install the runtime-gated logger. The initial level comes
+    // from settings.logLevel (canonical 5-value string; None / legacy filter /
+    // typo all fall back to Info via level_from_str). from_env(Env::default())
+    // contributes nothing to the filter here (RUST_LOG is unset) but preserves
+    // RUST_LOG_STYLE color handling, matching the prior behavior; the fixed
+    // GATE_INNER_FILTER then pins third-party crates at warn and opens our own
+    // targets to trace so the runtime atomic is the sole gate for them.
+    let initial = level_from_str(
+        crate::config::settings::read_log_level_only()
+            .as_deref()
+            .unwrap_or("info"),
+    );
+    let atomic = Arc::new(AtomicU8::new(initial as u8));
+    let _ = RUNTIME_LEVEL.set(Arc::clone(&atomic));
+
+    let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
+    builder.parse_filters(GATE_INNER_FILTER);
+    install_format(&mut builder, Arc::clone(&log_state));
+    let inner = builder.build(); // build(), NOT init(): we wrap it below
+
+    let gate = LevelGateLogger {
+        inner,
+        level: atomic,
+    };
+    if log::set_boxed_logger(Box::new(gate)).is_ok() {
+        log::set_max_level(max_filter_for(initial));
+    }
 }
 
 // ===========================================================================
@@ -447,6 +575,9 @@ pub fn spawn_error_emit_task(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // #612 the gate's enabled()/log() are `log::Log` trait methods; bring the
+    // trait into scope so the tests can call them on a `LevelGateLogger` value.
+    use log::Log;
 
     /// Build an `ErrorLogEntry` carrying `message`; the other fields are fixed.
     fn entry(message: &str) -> ErrorLogEntry {
@@ -766,6 +897,176 @@ mod tests {
         assert!(
             read_marker(tmp.path(), "app.log.2").is_none(),
             "no second-slot file should exist after idempotent second rotation"
+        );
+    }
+
+    // ── #612 runtime log-level gate tests ───────────────────────────
+
+    /// Build the fixed inner `env_logger::Logger` for the gate WITHOUT reading
+    /// RUST_LOG (hermetic): `Builder::new()` + the exact production filter, so a
+    /// dev with RUST_LOG exported in their shell cannot perturb these tests.
+    fn gate_inner() -> env_logger::Logger {
+        let mut builder = env_logger::Builder::new();
+        builder.parse_filters(GATE_INNER_FILTER);
+        builder.build()
+    }
+
+    /// A gate at `level` over a fresh hermetic inner logger.
+    fn gate_at(level: log::Level) -> LevelGateLogger {
+        LevelGateLogger {
+            inner: gate_inner(),
+            level: Arc::new(AtomicU8::new(level as u8)),
+        }
+    }
+
+    fn admits(gate: &LevelGateLogger, level: log::Level, target: &str) -> bool {
+        gate.enabled(&log::Metadata::builder().level(level).target(target).build())
+    }
+
+    #[test]
+    fn level_from_str_maps_five_levels_and_falls_back_to_info() {
+        assert_eq!(level_from_str("error"), log::Level::Error);
+        assert_eq!(level_from_str("warn"), log::Level::Warn);
+        assert_eq!(level_from_str("info"), log::Level::Info);
+        assert_eq!(level_from_str("debug"), log::Level::Debug);
+        assert_eq!(level_from_str("trace"), log::Level::Trace);
+        // Case-insensitive + trimmed.
+        assert_eq!(level_from_str("  INFO  "), log::Level::Info);
+        assert_eq!(level_from_str("Debug"), log::Level::Debug);
+        // None-equivalent / empty / legacy full-filter string / typo -> Info.
+        assert_eq!(level_from_str(""), log::Level::Info);
+        assert_eq!(
+            level_from_str("info,agentscommander_lib::config::teams=debug"),
+            log::Level::Info
+        );
+        assert_eq!(level_from_str("verbose"), log::Level::Info);
+    }
+
+    #[test]
+    fn normalize_log_level_accepts_valid_rejects_junk() {
+        assert_eq!(normalize_log_level("error"), Some("error"));
+        assert_eq!(normalize_log_level("WARN"), Some("warn"));
+        assert_eq!(normalize_log_level(" info "), Some("info"));
+        assert_eq!(normalize_log_level("debug"), Some("debug"));
+        assert_eq!(normalize_log_level("trace"), Some("trace"));
+        // Junk / empty / legacy full-filter string -> None (command rejects it).
+        assert_eq!(normalize_log_level(""), None);
+        assert_eq!(normalize_log_level("verbose"), None);
+        assert_eq!(
+            normalize_log_level("info,agentscommander_lib::config::teams=debug"),
+            None
+        );
+    }
+
+    #[test]
+    fn max_filter_for_clamps_to_at_least_warn() {
+        // Error/Warn both floor at Warn so third-party warn! stays visible even
+        // when the user selects Error for our own targets.
+        assert_eq!(max_filter_for(log::Level::Error), log::LevelFilter::Warn);
+        assert_eq!(max_filter_for(log::Level::Warn), log::LevelFilter::Warn);
+        // Info/Debug/Trace map through unchanged.
+        assert_eq!(max_filter_for(log::Level::Info), log::LevelFilter::Info);
+        assert_eq!(max_filter_for(log::Level::Debug), log::LevelFilter::Debug);
+        assert_eq!(max_filter_for(log::Level::Trace), log::LevelFilter::Trace);
+    }
+
+    #[test]
+    fn level_gate_at_info_suppresses_our_debug_keeps_thirdparty_warn() {
+        let gate = gate_at(log::Level::Info);
+        // Our own targets: trace/debug suppressed; info/warn/error admitted.
+        assert!(!admits(&gate, log::Level::Trace, "agentscommander_lib::x"));
+        assert!(!admits(&gate, log::Level::Debug, "agentscommander_lib::x"));
+        assert!(admits(&gate, log::Level::Info, "agentscommander_lib::x"));
+        assert!(admits(&gate, log::Level::Warn, "agentscommander_lib::x"));
+        assert!(admits(&gate, log::Level::Error, "agentscommander_lib::x"));
+        // Third-party: info suppressed, warn admitted (fixed warn filter).
+        assert!(!admits(&gate, log::Level::Info, "hyper::client"));
+        assert!(admits(&gate, log::Level::Warn, "hyper::client"));
+    }
+
+    #[test]
+    fn level_gate_at_error_admits_only_error_for_our_targets() {
+        let gate = gate_at(log::Level::Error);
+        assert!(admits(&gate, log::Level::Error, "agentscommander_lib::foo"));
+        assert!(!admits(&gate, log::Level::Warn, "agentscommander_lib::foo"));
+        assert!(!admits(&gate, log::Level::Info, "agentscommander_lib::foo"));
+        // Third-party warn is independent of the atomic: still admitted at Error.
+        assert!(admits(&gate, log::Level::Warn, "hyper::client"));
+    }
+
+    #[test]
+    fn level_gate_at_trace_admits_all_ours_but_not_thirdparty_trace() {
+        let gate = gate_at(log::Level::Trace);
+        for lvl in [
+            log::Level::Error,
+            log::Level::Warn,
+            log::Level::Info,
+            log::Level::Debug,
+            log::Level::Trace,
+        ] {
+            assert!(
+                admits(&gate, lvl, "agentscommander_lib::x"),
+                "{lvl} should be admitted for our targets at Trace"
+            );
+        }
+        // Third-party stays pinned at warn even when WE are at Trace.
+        assert!(!admits(&gate, log::Level::Trace, "hyper::client"));
+        assert!(!admits(&gate, log::Level::Debug, "hyper::client"));
+        assert!(admits(&gate, log::Level::Warn, "hyper::client"));
+    }
+
+    #[test]
+    fn level_gate_atomic_flip_changes_verdict_at_runtime() {
+        let atomic = Arc::new(AtomicU8::new(log::Level::Info as u8));
+        let gate = LevelGateLogger {
+            inner: gate_inner(),
+            level: Arc::clone(&atomic),
+        };
+        // At Info, our debug is suppressed.
+        assert!(!admits(&gate, log::Level::Debug, "agentscommander_lib::x"));
+        // Flip the atomic (what set_runtime_log_level does) -> now admitted.
+        atomic.store(log::Level::Debug as u8, Ordering::Relaxed);
+        assert!(admits(&gate, log::Level::Debug, "agentscommander_lib::x"));
+        // Flip back down to Error -> debug suppressed again.
+        atomic.store(log::Level::Error as u8, Ordering::Relaxed);
+        assert!(!admits(&gate, log::Level::Debug, "agentscommander_lib::x"));
+    }
+
+    /// R2 (grinch): the #264 error-sink now sits BEHIND the new gate plumbing.
+    /// Prove an ERROR record is NOT dropped by the gate at the STRICTEST
+    /// selectable level (Error) and still reaches `error_sink()` through the
+    /// reused format closure (`install_format`'s #264 tee). `error_sink()` is a
+    /// process-wide global, so assert our unique message was captured (a delta
+    /// check) rather than an absolute count, to stay robust under the parallel
+    /// test runner. This crate's only unit-test global-sink drainer is this
+    /// test, so the entry cannot be stolen between log() and drain().
+    #[test]
+    fn error_record_survives_gate_at_strictest_level_and_reaches_264_sink() {
+        let mut builder = env_logger::Builder::new();
+        builder.parse_filters(GATE_INNER_FILTER);
+        // No app.log file: an empty log_state makes the closure's file branch a
+        // no-op; the #264 tee path is independent of the file sink.
+        install_format(&mut builder, Arc::new(None::<Arc<AppLogFile>>));
+        let gate = LevelGateLogger {
+            inner: builder.build(),
+            level: Arc::new(AtomicU8::new(log::Level::Error as u8)),
+        };
+
+        // Clear pre-existing entries so the delta is clean, then push an ERROR
+        // for one of our own targets through the gate at the strictest level.
+        let _ = error_sink().drain();
+        let needle = "synthetic #612 gate-264 probe";
+        gate.log(
+            &log::Record::builder()
+                .level(log::Level::Error)
+                .target("agentscommander_lib::commands::probe_612")
+                .args(format_args!("{needle}"))
+                .build(),
+        );
+        let captured = error_sink().drain();
+        assert!(
+            captured.iter().any(|e| e.message.contains(needle)),
+            "ERROR did not reach the #264 sink through the gate at Error; captured={captured:?}"
         );
     }
 }

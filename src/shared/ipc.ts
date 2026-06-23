@@ -7,6 +7,7 @@ import type {
   SessionRepo,
   PtyOutputEvent,
   AppSettings,
+  LogLevel,
   UpdateInfo,
   CodingAgentEnv,
   CodingAgentProfilesConfig,
@@ -254,6 +255,12 @@ export const SettingsAPI = {
   // round-trip racing SettingsModal.
   setMainResourceMonitorAttached: (value: boolean) =>
     transport.invoke<void>("set_main_resource_monitor_attached", { value }),
+  // #612 — canonical command to change ONLY the log level: validates, persists
+  // logLevel, applies live + broadcasts `log_level_changed`. The SettingsModal
+  // uses the form Save path (save_settings_draft) instead; this is for
+  // programmatic / future quick-switch callers.
+  setLogLevel: (level: LogLevel) =>
+    transport.invoke<void>("set_log_level", { level }),
   updateCodingAgentProfiles: (profiles: CodingAgentProfilesConfig) =>
     transport.invoke<void>("update_coding_agent_profiles", { profiles }),
   updateCodingAgentEnvSettings: (

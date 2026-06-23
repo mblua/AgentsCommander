@@ -494,7 +494,7 @@ impl PtyManager {
                         if has_printable {
                             idle_detector.record_activity_with_bytes(id, n);
                         } else {
-                            log::info!(
+                            log::trace!(
                                 "[idle] SKIPPED activity for {} ({} bytes, escape-only output)",
                                 &id.to_string()[..8],
                                 n
