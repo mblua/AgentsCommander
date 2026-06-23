@@ -1736,6 +1736,7 @@ pub fn run(
             commands::config::set_sounds_enabled,
             commands::config::set_theme_light,
             commands::config::set_main_resource_monitor_attached,
+            commands::config::set_log_level,
             commands::config::sweep_rtk_hook,
             commands::config::get_rtk_startup_status,
             commands::config::get_update_status,
