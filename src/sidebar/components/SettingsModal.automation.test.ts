@@ -132,6 +132,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     coordinatorAutoCloseEnabled: true,
     coordinatorAutoCloseMinutes: 60,
     coordinatorCascadeCloseEnabled: true,
+    npmUpdateNotificationsEnabled: true,
     ...overrides,
   };
 }
@@ -1143,6 +1144,37 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.coordinatorCascadeCloseEnabled).toBe(false);
+
+    dispose();
+  });
+
+  it("round-trips npmUpdateNotificationsEnabled through the General update-notify checkbox (#609)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>("settings.general.npmUpdateNotificationsEnabled");
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "Notify me when a new version is available",
+    );
+    // Loaded default is true (the seeded settings have it on).
+    expect(checkbox.checked).toBe(true);
+
+    // Toggle OFF and save -> the persisted draft carries the new value, proving
+    // updateField accepts the new AppSettings key end to end.
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.npmUpdateNotificationsEnabled).toBe(false);
 
     dispose();
   });
