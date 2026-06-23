@@ -233,7 +233,7 @@ Preconditions:
 
 - Depends on TPL-001 and TPL-002.
 - The current testable identity has known local template or agency status evidence.
-- The tester can close and relaunch only `Agents Commander [TESTEABLE]`.
+- The tester can close and relaunch only `AC [TESTEABLE]`.
 
 Steps:
 

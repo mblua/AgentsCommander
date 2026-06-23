@@ -31,7 +31,7 @@ Tester: ac-cli-tester
 
 App under test: `C:\Users\maria\0_mmb\0_AC\agentscommander_standalone_wg-1.exe --app`
 
-Target window: `Agents Commander [STANDALONE_WG-1]`
+Target window: `AC [STANDALONE_WG-1]`
 
 Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-1-dev-team\__agent_ac-cli-tester\evidence\testing-phase-1`
 
@@ -70,7 +70,7 @@ Verify that the workgroup-specific app instance is running, visually identifiabl
 Preconditions:
 
 - App wg-1 is open or launchable with `C:\Users\maria\0_mmb\0_AC\agentscommander_standalone_wg-1.exe --app`.
-- Window title `Agents Commander [STANDALONE_WG-1]` is detectable.
+- Window title `AC [STANDALONE_WG-1]` is detectable.
 - Window is maximized on the monitor designated by the user for visual validation.
 - Initial capture is saved as evidence.
 - If the window is not maximized or is on a different monitor, the case must report `BLOCKED`/`PARTIAL` or move/maximize the window if the test plan permits, leaving evidence.
@@ -78,7 +78,7 @@ Preconditions:
 Steps:
 
 1. Start the app if it is not already running.
-2. Enumerate visible AgentsCommander windows and select only the one whose title is `Agents Commander [STANDALONE_WG-1]`.
+2. Enumerate visible AgentsCommander windows and select only the one whose title is `AC [STANDALONE_WG-1]`.
 3. Record PID, HWND, executable path, window rectangle, maximized state, and capture method.
 4. Save a screenshot of the target window.
 5. Confirm the header shows the `STANDALONE_WG-1` badge and the main/sidebar UI is readable.
@@ -175,7 +175,7 @@ Preconditions:
 Steps:
 
 1. Capture the sidebar state with the disposable project visible.
-2. Close the target `Agents Commander [STANDALONE_WG-1]` window normally.
+2. Close the target `AC [STANDALONE_WG-1]` window normally.
 3. Relaunch `C:\Users\maria\0_mmb\0_AC\agentscommander_standalone_wg-1.exe --app`.
 4. Detect and maximize the target window again.
 5. Capture the sidebar state after relaunch.

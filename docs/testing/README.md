@@ -12,7 +12,7 @@ This directory is the product regression map for acceptance testing. Every user-
 
 - The app under test should be `agentscommander_testeable.exe` for deterministic GUI regression runs.
 - The testable app uses a disposable config directory next to the binary: `.agentscommander_testeable`.
-- The target window title for the testable app is `Agents Commander [TESTEABLE]`.
+- The target window title for the testable app is `AC [TESTEABLE]`.
 - If multiple AgentsCommander windows are open, never assume the active window is the target. Select the window whose title matches the workgroup under test.
 - For GUI and human-style checks, launch the app at the monitor rectangle designated by the user for visual validation.
 - Current visual-test baseline:

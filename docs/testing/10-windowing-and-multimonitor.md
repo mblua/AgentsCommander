@@ -66,7 +66,7 @@ Steps:
 
 Expected Result:
 
-The testable app launches as `Agents Commander [TESTEABLE]`, `window-info` reports the testable executable path, and the rectangle/maximized state matches the requested monitor placement within expected DPI variance.
+The testable app launches as `AC [TESTEABLE]`, `window-info` reports the testable executable path, and the rectangle/maximized state matches the requested monitor placement within expected DPI variance.
 
 Evidence Required:
 
@@ -206,7 +206,7 @@ Steps:
 
 1. Capture pre-restart `window-info` and target screenshot.
 2. If testing manual persistence, move or resize the testable window and capture changed `window-info`.
-3. Close `Agents Commander [TESTEABLE]` normally.
+3. Close `AC [TESTEABLE]` normally.
 4. Relaunch `agentscommander_testeable.exe --app` with the same placement method or documented no-placement condition.
 5. Run `window-info` immediately after relaunch.
 6. Capture the relaunched window.

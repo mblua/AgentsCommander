@@ -56,16 +56,18 @@ pub fn config_dir_name() -> &'static str {
 }
 
 /// Application title for the sidebar window.
-/// Runtime suffix: "Agents Commander [SUFFIX]" (uppercased).
+/// Runtime suffix: "AC [SUFFIX]" (uppercased).
 /// No suffix: falls back to BUILD_PROFILE behaviour.
+/// The short "AC" prefix keeps the OS taskbar tooltip compact (issue #606);
+/// only this literal prefix changed, the suffix-derivation logic is unchanged.
 pub fn app_title() -> &'static str {
     static TITLE: OnceLock<String> = OnceLock::new();
     TITLE.get_or_init(|| match binary_suffix() {
-        Some(suffix) => format!("Agents Commander [{}]", suffix.to_uppercase()),
+        Some(suffix) => format!("AC [{}]", suffix.to_uppercase()),
         None => match BUILD_PROFILE {
-            "dev" => "Agents Commander".to_string(),
-            "stage" => "Agents Commander [STAGE]".to_string(),
-            _ => "Agents Commander".to_string(),
+            "dev" => "AC".to_string(),
+            "stage" => "AC [STAGE]".to_string(),
+            _ => "AC".to_string(),
         },
     })
 }
