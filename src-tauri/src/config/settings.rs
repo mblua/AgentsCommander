@@ -438,6 +438,10 @@ pub struct AppSettings {
     /// agents (cascade). When false, only the coordinator closes. Default true.
     #[serde(default = "default_true")]
     pub coordinator_cascade_close_enabled: bool,
+    /// #609 When true, check npm on startup (<=1x/24h) and notify in-app when
+    /// a newer published version is available. Default true.
+    #[serde(default = "default_true")]
+    pub npm_update_notifications_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -622,6 +626,7 @@ impl Default for AppSettings {
             coordinator_auto_close_enabled: true,
             coordinator_auto_close_minutes: default_coord_auto_close_minutes(),
             coordinator_cascade_close_enabled: true,
+            npm_update_notifications_enabled: true,
         }
     }
 }

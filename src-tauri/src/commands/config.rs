@@ -1287,6 +1287,18 @@ pub async fn get_rtk_startup_status(
         .unwrap_or_else(|| "silent".to_string()))
 }
 
+/// Issue #609 - return the pending "npm update available" info, or null if the
+/// running build is current / the check has not finished / it is disabled.
+/// Pure read of the cached `UpdateCheckState` (set by the startup task in
+/// `update_check::run_startup_check`). The sidebar queries this on mount to
+/// cover the case where the startup emit fired before its listener registered.
+#[tauri::command]
+pub async fn get_update_status(
+    cache: State<'_, crate::UpdateCheckState>,
+) -> Result<Option<crate::update_check::UpdateInfo>, String> {
+    Ok(cache.get().cloned())
+}
+
 /// Fetch the Home screen Markdown source from the public docs URL.
 /// Returns the raw Markdown body as a String.
 /// Errors are returned as user-facing strings; the frontend renders them in
