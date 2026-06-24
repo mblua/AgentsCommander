@@ -1,6 +1,6 @@
 # Concepts
 
-For developers reading the docs for the first time. Eight terms — once these click, the rest of the docs make sense.
+For developers reading the docs for the first time. Nine terms. Once these click, the rest of the docs make sense.
 
 ## Agent
 
@@ -15,6 +15,12 @@ An agent does not run by itself. It comes alive when you launch a session with a
 The CLI process that does the actual LLM work: Claude Code, Codex, or Gemini. AgentsCommander is **not** a coding agent. It spawns coding agent processes and lets you watch and coordinate them.
 
 You pick the coding agent **per session**. The same agent directory can be launched with Claude one day and Codex the next.
+
+## Profile
+
+A named launch variant (`A`, `B`, `C`, ...) of a coding agent: extra command parameters plus environment variables, layered on top of the agent's base command. You set a default profile per agent and override it per session, so one `claude` entry can launch as "max effort" in one session and "cheap" in another.
+
+See [Coding Agent Profiles](features/coding-agent-profiles.md).
 
 ## Session
 

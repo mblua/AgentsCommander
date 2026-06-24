@@ -46,6 +46,14 @@ Per-replica directories where an agent receives (`inbox/`) and stages outbound (
 
 A renamed copy of `agentscommander.exe` (with an `_<suffix>` like `agentscommander_team-a.exe`) that runs fully isolated: its own config directory, its own mutex, its own web port.
 
+## Profile
+
+A lettered launch variant (`A`, `B`, `C`, ...) of a coding agent: extra command parameters and environment variables layered on its base command. Resolved per agent and per session. See [Coding Agent Profiles](features/coding-agent-profiles.md). Distinct from a tuned `CodingAgentKind` integration and from path placeholders, which also use the word "profile".
+
+## Profile matrix
+
+The grid of profiles: one row per coding agent, one column per letter, each cell holding that variant's params, env, and notes. Stored in `settings.json` under `codingAgentProfiles`.
+
 ## Project (AC project)
 
 A folder containing a Project AC Root (`.ac/`). AC manages all agents, teams, and workgroups under that root.

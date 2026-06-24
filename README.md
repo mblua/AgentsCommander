@@ -136,7 +136,7 @@ These are not accidents.
 - [Quickstart](docs/quickstart.md): 60-second install to first running agent
 - [Concepts](docs/concepts.md): agent, team, workgroup, coordinator, brief
 - [Teams and workgroups](docs/agents/teams-and-workgroups.md): coordinators, members, briefs, messaging
-- [Features](docs/features/): Telegram bridge with image and screenshot sends, voice-to-text, portable instances, RTK integration
+- [Features](docs/features/): Coding Agent Profiles, Telegram bridge with image and screenshot sends, voice-to-text, portable instances, RTK integration
 - [Reference](docs/reference/): full CLI, `settings.json` schema, architecture, log filtering
 - [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Docs style guide](docs/style-guide.md)
 
