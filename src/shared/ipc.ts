@@ -108,6 +108,13 @@ export interface CreateSessionOptions {
   agentId?: string;
   requestedProfile?: string | null;
   gitRepos?: SessionRepoInput[];
+  /**
+   * #599 R1. Forwarded to `create_session`. Omit (or pass `true`) for a
+   * genuinely fresh create — no provider auto-resume. Pass `false` only when
+   * reopening a coordinator that was destroyed by auto-close (#552/#580) or
+   * manual close (#588) so the prior Claude conversation continues.
+   */
+  skipAutoResume?: boolean;
 }
 
 export interface RestartSessionOptions {
@@ -163,6 +170,7 @@ export const SessionAPI = {
       agentId: opts?.agentId ?? null,
       requestedProfile: opts?.requestedProfile ?? null,
       gitRepos: opts?.gitRepos ?? null,
+      skipAutoResume: opts?.skipAutoResume ?? null,
     }),
 
   destroy: (id: string) => transport.invoke<void>("destroy_session", { id }),
