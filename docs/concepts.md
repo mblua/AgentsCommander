@@ -18,7 +18,7 @@ You pick the coding agent **per session**. The same agent directory can be launc
 
 ## Profile
 
-A named launch variant (`A`, `B`, `C`, ...) of a coding agent: extra command parameters plus environment variables, layered on top of the agent's base command. You set a default profile per agent and override it per session, so one `claude` entry can launch as "max effort" in one session and "cheap" in another.
+A lettered launch variant (`A`, `B`, `C`, ...) of a coding agent: extra command parameters plus environment variables, layered on top of the agent's base command. You set a default profile per agent and override it per session, so one `claude` entry can launch as "max effort" in one session and "cheap" in another.
 
 See [Coding Agent Profiles](features/coding-agent-profiles.md).
 

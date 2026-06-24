@@ -4,6 +4,8 @@ For developers who want more than one way to launch the same coding agent: a che
 
 After this page you can define a `claude` "max effort" variant and a "cheap" variant, set one agent to default to one of them, and switch a single session to the other without editing any command by hand.
 
+> **Upgrading from a pre-#597 config?** See [the breaking change](#the-effective-launch-command) before you launch: a profile cell now holds parameters, not a full command.
+
 ## What a profile is
 
 A **profile** is a lettered launch variant (`A`, `B`, `C`, ...) of a coding agent. Each profile holds extra command parameters plus environment variables. You assign a profile to an agent or to a single session; at launch AC composes the agent's base command with the profile's parameters and starts the session with the result.
@@ -43,7 +45,17 @@ A cell holds four fields:
 The matrix is keyed by **coding-agent id** (the row). Which *letter* a given agent or session uses is a separate assignment, resolved by the ranking below.
 
 > **Out of the box only `A` exists.** You add `B`, `C`, and so on in **Settings -> Coding Agents**. Letters are single characters `A` through `Z`. The `A`/`B`/`C` examples on this page are illustrative, not a fixed set.
-<!-- VERIFY-FE: "Settings -> Coding Agents" navigation and the per-cell editor (params input, env rows, notes, enabled toggle) per SettingsModal.tsx renderProfileCard (~line 1690-1790). The cell editor shows the hint "Runs <base command> then your params:" (SettingsModal.tsx:1778-1780, class settings-profile-command-base). Confirm against the build. -->
+
+## Quick walkthrough
+
+This runs the scenario from the top of the page end to end. It assumes a `claude` Coding Agent is already configured.
+
+1. Open **Settings -> Coding Agents** and find the `claude` row.
+2. Add profile **B** and set its params to `--effort max` (your "max effort" variant).
+3. Add profile **C** and set its params to a cheaper variant, for example `--model <small-model-id>`.
+4. On an agent, use **Set default** and pick **B**. New sessions for that agent now start on B.
+5. Launch a session for that agent. It runs `claude --effort max`.
+6. To switch only that session to C, open the launch picker, pick profile **C**, and assign it to the replica. The session relaunches as the cheaper variant. You never edited a command by hand.
 
 ## How a profile is chosen
 
@@ -55,11 +67,13 @@ AC picks the requested letter from the first source that has one, highest priori
 
 | Tier | Source | Set by |
 |---|---|---|
-| 1. Instance override | The replica's `tooling.profile` in its own `config.json` | A per-session assignment (highest, wins over everything) |
+| 1. Instance override | The replica's `tooling.profile` in its own `config.json` | Assigned to the replica; persists across future launches |
 | 2. Explicit request | The letter you pick for this one launch | The launch picker, for this launch only |
 | 3. Origin default | The agent matrix's `tooling.defaultProfile` | The "Set default" action (per agent) |
 | 4. Agent default | `codingAgentProfiles.defaultProfileByAgent[<agent>]` in `settings.json` | Rarely set by hand; see note below |
 | Floor | `A` | Always available when nothing else resolves |
+
+Tier 1 outranks tier 2 on purpose: a profile you deliberately assigned to a replica should survive future launches, so it beats an ephemeral letter picked for a single launch.
 
 > **Naming trap:** the "Set default" action writes the **origin default** (tier 3), the per-agent-matrix `tooling.defaultProfile`. It does **not** write tier 4. Tier 4 (`defaultProfileByAgent`) has no dedicated button; in practice it is populated only by an inherited/migrated config or by hand-editing `settings.json`.
 
@@ -77,13 +91,9 @@ When the cell that wins is not the letter that was requested, AC marks the resul
 
 ## Assigning and defaulting a profile
 
-<!-- VERIFY-FE: this entire section's UI labels and navigation are dev-webpage-ui's authority. Confirm each step against the build. Anchors below are best-effort from source. -->
-
 **Set a default profile for an agent (tier 3).** Use the "Set default" action on the agent. This writes the origin matrix's `tooling.defaultProfile`, so every new session for that agent starts on that letter unless a higher tier overrides it.
-<!-- VERIFY-FE: "Set default" action label/location; backed by the set_agent_default_profile command (commands/config.rs) which writes tooling.defaultProfile. -->
 
 **Override the profile for one replica/session (tier 1).** In the launch picker, pick the Coding Agent and Profile, then assign it to the replica. This writes the replica's `tooling.profile` (the instance override), which beats the agent default. The picker previews the exact composed command before you launch.
-<!-- VERIFY-FE: launch picker = AgentPickerModal.tsx. It shows a Coding Agent + Profile selector, a composed-command preview (composeEffectiveCommand), an "Assign to this replica" action, and a MATCH pill when the selection equals the current one. Confirm labels against the build. -->
 
 **Pick a profile for a single launch (tier 2).** Choosing a different letter at launch time, without assigning it to the replica, applies only to that launch.
 
@@ -97,10 +107,10 @@ effective = "<agent base command> <profile cell params>"
 
 The base command (the binary, plus any fixed args) comes from the Coding Agent entry in `settings.json`. The cell holds only the extra params. An empty side contributes nothing, and if both are empty the launch fails with `agent command is empty`.
 
-**Example.** Base command `claude-amp`, profile `B` params `--effort max --model some-model`:
+**Example.** Base command `claude-amp`, profile `B` params `--effort max --model <model-id>`:
 
 ```
-claude-amp --effort max --model some-model
+claude-amp --effort max --model <model-id>
 ```
 
 Environment variables merge in layers: the agent's base env first, then the profile cell's env on top (profile wins on a clashing key), then any AC-generated env (such as an isolated `CODEX_HOME`). Path placeholders like `%AC_REPLICA_ROOT%` are allowed in either the base command or the cell and expand at launch; see [Agent Matrix conventions §5](../agent-matrix-conventions.md#5-profile-path-placeholders).
@@ -117,9 +127,7 @@ When the configuration drifts from what a session launched with, that session sh
 - **Tooltip:** "Loaded profile no longer matches its configuration. Reload to relaunch with the current profile."
 - **Click it** to relaunch the session with the current configuration. The relaunch clears the badge.
 
-<!-- VERIFY-FE: badge label "⟳ outdated" and tooltip are source-verified at ProfileOutdatedBadge.tsx:23,30. The badge is shared by SessionItem, the ProjectPanel replica rows, and RootAgentBanner (the Root Agent). Confirm placement/behavior against the build. -->
-
-Drift is **manual**: AC never auto-reloads. The check covers an edit to the base command, the cell params, the base env, or the cell env. It survives an AC restart (the fingerprint is persisted per replica). Plain-shell sessions and sessions in a non-replica directory never drift, because they have no resolved profile.
+Drift is **manual**: AC never auto-reloads. The check covers an edit to the base command, the cell params, the base env, or the cell env. It survives an AC restart (the fingerprint is persisted per replica). Plain-shell sessions (sessions with no coding agent) never drift. In a directory that is not an agent replica the fingerprint is not persisted, so any drift is not retained across an AC restart.
 
 ## Where profiles are stored
 
@@ -134,8 +142,7 @@ Profiles live in two places: the global `settings.json` (the matrix and defaults
 | Instance override (tier 1) | replica `__agent_<name>/config.json` | `tooling.profile` (legacy `tooling.instanceProfileOverride`) |
 | Drift fingerprint | replica/matrix `config.json` | `tooling.profileContentHash` |
 
-The full `codingAgentProfiles` schema (including `schemaVersion`) is in the [settings reference](../reference/settings.md). The matrix uses schema version 2; an older version-1 config is migrated on load.
-<!-- VERIFY: the v1 -> v2 migration is automatic on settings load (migrate_profiles_object_to_v2, config/settings.rs). Confirm the user-visible effect (silent on-load upgrade, rewritten on next save) before publishing. -->
+The full `codingAgentProfiles` schema (including `schemaVersion`) is in the [settings reference](../reference/settings.md#coding-agent-profiles). The matrix uses schema version 2; a version-1 config is upgraded and persisted on load, after a one-time v1 backup.
 
 ## There is no CLI for profiles
 
@@ -153,7 +160,7 @@ You configure profiles in **Settings** or by editing `settings.json` and the per
 
 ## See also
 
-- [Settings reference](../reference/settings.md) - the full `codingAgentProfiles` schema
+- [Settings reference](../reference/settings.md#coding-agent-profiles) - the full `codingAgentProfiles` schema
 - [Coding agents](../integrations/coding-agents.md) - the coding-agent catalog and tuned `CodingAgentKind` integrations
 - [Agent Matrix conventions §5](../agent-matrix-conventions.md#5-profile-path-placeholders) - path placeholders usable inside a profile cell
 - [Glossary](../glossary.md) - profile, profile matrix, profile cell
