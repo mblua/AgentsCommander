@@ -39,8 +39,6 @@ function codexAgent(): AgentConfig {
     label: "Codex",
     command: "codex",
     color: "#10b981",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: true,
     envs: [],
     isolatedHome: false,
   };

@@ -1,7 +1,7 @@
 import { Component, createSignal, Show, For, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { Session, SessionStatus, TelegramBotConfig, RepoMatch } from "../../shared/types";
-import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI, AgentCreatorAPI, emitOpenSettings } from "../../shared/ipc";
+import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI, emitOpenSettings } from "../../shared/ipc";
 import { extractProjectName } from "../../shared/path-extractors";
 import { isTauri } from "../../shared/platform";
 import { bridgesStore } from "../stores/bridges";
@@ -178,12 +178,6 @@ const SessionItem: Component<{
     void requestCoordinatorClose(props.session);
   };
 
-  /** True if any configured coding agent is Claude-based */
-  const hasClaude = () =>
-    (settingsStore.current?.agents ?? []).some((a) =>
-      a.command.toLowerCase().includes("claude")
-    );
-
   let dismissContextMenu: (() => void) | null = null;
 
   const cleanupContextMenu = () => {
@@ -257,16 +251,6 @@ const SessionItem: Component<{
     setShowContextMenu(false);
     cleanupContextMenu();
     setShowCodingAgentPicker(true);
-  };
-
-  const handleExcludeClaudeMd = async (e: MouseEvent) => {
-    e.stopPropagation();
-    setShowContextMenu(false);
-    try {
-      await AgentCreatorAPI.writeClaudeSettingsLocal(props.session.workingDirectory);
-    } catch (err) {
-      console.error("Failed to write claude settings:", err);
-    }
   };
 
   const isInactive = () => props.session.id.startsWith("inactive-");
@@ -544,12 +528,6 @@ const SessionItem: Component<{
             >
               {isDetached() ? "Re-attach to main" : "Open in new window"}
             </button>
-            <Show when={hasClaude()}>
-              <div class="context-separator" />
-              <button class="session-context-option" onClick={handleExcludeClaudeMd}>
-                Exclude global CLAUDE.md
-              </button>
-            </Show>
           </div>
         </Portal>
       )}

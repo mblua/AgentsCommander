@@ -1250,9 +1250,8 @@ pub async fn set_log_level(
 /// disk-read race against `save_settings`).
 ///
 /// Acquires `RtkSweepLockState` for the entire loop — eliminates the
-/// in-process race vs. concurrent `ensure_claude_md_excludes` /
-/// `ensure_rtk_pretool_hook` calls from `entity_creation` /
-/// `agent_creator` (issue #120, grinch M8). Cross-process races (two AC
+/// in-process race vs. concurrent `ensure_rtk_pretool_hook` calls from
+/// `entity_creation` (issue #120, grinch M8). Cross-process races (two AC
 /// instances) remain documented in the plan §7.4.
 #[tauri::command]
 pub async fn sweep_rtk_hook(
@@ -1410,8 +1409,6 @@ mod tests {
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
                 color: "#000000".to_string(),
-                git_pull_before: false,
-                exclude_global_claude_md: false,
                 envs: Vec::new(),
                 isolated_home: false,
                 instructions_filename: None,

@@ -67,14 +67,6 @@ const NewAgentModal: Component<{ onClose: () => void }> = (props) => {
 
   const handleLaunch = async (selection: AgentPickerSelection) => {
     const agent = selection.agent;
-    // Auto-generate .claude/settings.local.json if the agent has the flag
-    if (agent.excludeGlobalClaudeMd && createdPath()) {
-      try {
-        await AgentCreatorAPI.writeClaudeSettingsLocal(createdPath());
-      } catch (e) {
-        console.warn("Failed to write .claude/settings.local.json:", e);
-      }
-    }
 
     // #516 — create first; only hide Home / close the modal once the session
     // exists. If create rejects (e.g. the Resource Monitor cap), the rejection

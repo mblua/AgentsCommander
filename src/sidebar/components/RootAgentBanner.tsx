@@ -6,7 +6,6 @@ import {
   SettingsAPI,
   TelegramAPI,
   WindowAPI,
-  AgentCreatorAPI,
   emitOpenSettings,
 } from "../../shared/ipc";
 import { sessionsStore } from "../stores/sessions";
@@ -97,11 +96,6 @@ const RootAgentBanner: Component = () => {
     const r = rootSession();
     return !!r && sessionsStore.isDetached(r.id);
   };
-  const hasClaude = () =>
-    (settingsStore.current?.agents ?? []).some((a) =>
-      a.command.toLowerCase().includes("claude")
-    );
-
   const focusTerminal = async (sessionId: string) => {
     if (!isTauri) return;
     const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -347,19 +341,6 @@ const RootAgentBanner: Component = () => {
     // than removing the session record (see destroy_session_inner_with_options
     // in commands/session.rs). The banner stays visible and can re-wake.
     SessionAPI.destroy(r.id);
-  };
-
-  const handleExcludeClaudeMd = async (e: MouseEvent) => {
-    e.stopPropagation();
-    setShowContextMenu(false);
-    cleanupContextMenu();
-    const r = rootSession();
-    if (!r) return;
-    try {
-      await AgentCreatorAPI.writeClaudeSettingsLocal(r.workingDirectory);
-    } catch (err) {
-      console.error("Failed to write claude settings:", err);
-    }
   };
 
   return (
@@ -610,12 +591,6 @@ const RootAgentBanner: Component = () => {
                   data-ac-state={isDetached() ? "detached" : "attached"}
                 >
                   {isDetached() ? "Re-attach to main" : "Open in new window"}
-                </button>
-              </Show>
-              <Show when={hasClaude()}>
-                <div class="context-separator" />
-                <button class="session-context-option" onClick={handleExcludeClaudeMd}>
-                  Exclude global CLAUDE.md
                 </button>
               </Show>
             </Show>

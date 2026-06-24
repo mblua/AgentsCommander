@@ -547,7 +547,6 @@ const OPENCODE_ARG_FORMS: [&str; 4] =
 /// `opencode`). An arg cannot be a bare-stem executable the way a shell can, so
 /// the extension carries real signal here.
 ///
-/// Called BEFORE the `git_pull_before` wrap, so `shell` is the real command.
 /// `pub(crate)` so `config_seed::compute_config_dir_warning` can reuse it (#598).
 pub(crate) fn command_runs_opencode(shell: &str, shell_args: &[String]) -> bool {
     if executable_basename(shell) == "opencode" {
@@ -637,60 +636,6 @@ fn merge_env_layers(layers: &[&BTreeMap<String, String>]) -> Vec<(String, String
         }
     }
     by_normalized.into_values().collect()
-}
-
-#[cfg(windows)]
-fn cmd_quote_token(token: &str) -> Result<String, String> {
-    if token.contains('\0') || token.contains('\n') || token.contains('\r') {
-        return Err("gitPullBefore command tokens must not contain NUL or newline".to_string());
-    }
-    if token.contains('%') || token.contains('!') {
-        return Err(
-            "gitPullBefore command tokens must not contain percent or delayed-expansion markers"
-                .to_string(),
-        );
-    }
-    if token.contains('"') {
-        return Err(
-            "gitPullBefore command tokens with double quotes are not supported".to_string(),
-        );
-    }
-    let escaped = token.replace('^', "^^");
-    if escaped.is_empty() {
-        return Ok("\"\"".to_string());
-    }
-    if escaped
-        .chars()
-        .any(|ch| ch.is_ascii_whitespace() || matches!(ch, '&' | '|' | '<' | '>' | '(' | ')'))
-    {
-        Ok(format!("\"{}\"", escaped))
-    } else {
-        Ok(escaped)
-    }
-}
-
-#[cfg(windows)]
-fn wrap_git_pull_before(
-    shell: String,
-    shell_args: Vec<String>,
-) -> Result<(String, Vec<String>), String> {
-    let mut parts = Vec::with_capacity(shell_args.len() + 1);
-    parts.push(cmd_quote_token(&shell)?);
-    for arg in &shell_args {
-        parts.push(cmd_quote_token(arg)?);
-    }
-    Ok((
-        "cmd.exe".to_string(),
-        vec!["/K".to_string(), format!("git pull && {}", parts.join(" "))],
-    ))
-}
-
-#[cfg(not(windows))]
-fn wrap_git_pull_before(
-    shell: String,
-    shell_args: Vec<String>,
-) -> Result<(String, Vec<String>), String> {
-    Ok((shell, shell_args))
 }
 
 /// #597 - the effective launch command: the agent base command (the binary,
@@ -788,8 +733,8 @@ pub fn build_agent_spawn_command(
         log::warn!("[profiles] {}", warning);
     }
 
-    // #598 - active config-folder seed for this agent (resolved below, before the
-    // git_pull wrap). `is_active` = enabled AND non-empty dest.
+    // #598 - active config-folder seed for this agent (resolved below).
+    // `is_active` = enabled AND non-empty dest.
     let seed_choice = agent.config_seed.as_ref().filter(|c| c.is_active());
 
     // #597 - the effective command CONCATENATES the agent base command (the
@@ -872,8 +817,8 @@ pub fn build_agent_spawn_command(
     let Some((shell, shell_args)) = expanded_command_tokens.split_first() else {
         return Err("agent command is empty".to_string());
     };
-    let mut shell = shell.clone();
-    let mut shell_args = shell_args.to_vec();
+    let shell = shell.clone();
+    let shell_args = shell_args.to_vec();
 
     let agent_env = collect_agent_env(agent, placeholder_context.as_ref())?;
     let profile_env = collect_profile_env(
@@ -886,16 +831,13 @@ pub fn build_agent_spawn_command(
         compute_codex_home(agent, &shell, &shell_args, &agent_env, &profile_env)?;
     // #576 follow-up: opencode exits 1 if OPENCODE_CONFIG_DIR is missing, so
     // create it before spawn. Best-effort (never aborts the build); see fn docs.
-    // Runs before the git_pull_before wrap so `shell` is still the real command.
     ensure_opencode_config_dir(&shell, &shell_args, &agent_env, &profile_env);
     let child_env =
         merge_env_layers(&[&agent_env, &profile_env, &computed_codex_home.generated_env]);
 
-    // #598 - resolve the config-folder seed BEFORE the git_pull wrap (L2) so the
-    // config-dir warning detects the real command (the wrap rewrites `shell` to
-    // `cmd.exe` and buries the real command in args). Pure path math plus a
-    // log-only warning string; NO filesystem is touched here. The destructive
-    // copy runs later at the single session chokepoint (create_session_inner).
+    // #598 - resolve the config-folder seed. Pure path math plus a log-only
+    // warning string; NO filesystem is touched here. The destructive copy runs
+    // later at the single session chokepoint (create_session_inner).
     let seed = match seed_choice {
         Some(cfg) => {
             let mut resolved = crate::config::config_seed::resolve_config_seed(
@@ -933,7 +875,6 @@ pub fn build_agent_spawn_command(
                     .unwrap_or(false);
                 r.claude_settings_reapply = if dest_is_dot_claude {
                     Some(crate::config::config_seed::ClaudeSettingsReapply {
-                        apply_excludes: agent.exclude_global_claude_md,
                         inject_rtk_hook: settings.inject_rtk_hook,
                     })
                 } else {
@@ -944,12 +885,6 @@ pub fn build_agent_spawn_command(
         }
         None => None,
     };
-
-    if agent.git_pull_before {
-        let wrapped = wrap_git_pull_before(shell, shell_args)?;
-        shell = wrapped.0;
-        shell_args = wrapped.1;
-    }
 
     Ok(AgentSpawnCommand {
         shell,
@@ -1092,8 +1027,6 @@ mod tests {
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
-            git_pull_before: false,
-            exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
@@ -1483,37 +1416,6 @@ mod tests {
         let err = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap_err();
 
         assert!(err.contains("duplicate env keys"), "{err}");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn git_pull_before_wraps_tokens_without_raw_concatenation() {
-        let mut codex = agent("codex", "codex --config effort=low");
-        codex.git_pull_before = true;
-        let settings = AppSettings {
-            agents: vec![codex],
-            ..AppSettings::default()
-        };
-
-        let spawn = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap();
-
-        assert_eq!(spawn.shell, "cmd.exe");
-        assert_eq!(spawn.shell_args[0], "/K");
-        assert_eq!(spawn.shell_args[1], "git pull && codex --config effort=low");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn git_pull_before_rejects_expansion_tokens() {
-        let mut codex = agent("codex", "codex --config %USERPROFILE%");
-        codex.git_pull_before = true;
-        let settings = AppSettings {
-            agents: vec![codex],
-            ..AppSettings::default()
-        };
-
-        let err = build_agent_spawn_command(&settings, "codex", None, Some("A")).unwrap_err();
-        assert!(err.contains("unknown placeholder"), "{err}");
     }
 
     // #529 - instructions filename resolver + safety validation.
@@ -1983,7 +1885,6 @@ mod tests {
         let replica = seed_replica(temp.path());
 
         let mut claude = agent("claude", "claude");
-        claude.exclude_global_claude_md = true;
         claude.config_seed = Some(ConfigSeedConfig {
             enabled: true,
             dest: ".claude".to_string(),
@@ -2027,25 +1928,21 @@ mod tests {
         assert_eq!(seed.dest, expected_replica.join(".claude"));
         // Pure resolution: no template dirs were created.
         assert!(!workspace.join("default.claude").exists());
-        // `.claude` dest -> reapply carries the agent + global flags.
+        // `.claude` dest -> reapply carries the global rtk flag.
         let re = seed
             .claude_settings_reapply
             .expect("reapply present for .claude");
-        assert!(re.apply_excludes);
         assert!(re.inject_rtk_hook);
     }
 
     #[test]
-    fn build_spawn_computes_seed_warning_before_git_pull_wrap() {
-        // L2 regression: on Windows the git_pull wrap rewrites shell -> cmd.exe,
-        // so a warning computed AFTER the wrap would misdetect to None. We compute
-        // it before, so a Claude agent with no CLAUDE_CONFIG_DIR gets the
-        // "not configured" warning even with git_pull_before on.
+    fn build_spawn_computes_seed_config_dir_warning() {
+        // A Claude agent with no CLAUDE_CONFIG_DIR gets the "not configured"
+        // warning, computed at build time from the real launch command.
         let temp = tempfile::tempdir().unwrap();
         let replica = seed_replica(temp.path());
 
         let mut claude = agent("claude", "claude");
-        claude.git_pull_before = true;
         claude.config_seed = Some(ConfigSeedConfig {
             enabled: true,
             dest: ".claude".to_string(),
@@ -2061,7 +1958,7 @@ mod tests {
             .seed
             .expect("seed")
             .config_dir_warning
-            .expect("warning computed on the unwrapped command");
+            .expect("warning computed for the launch command");
         assert!(warning.contains("CLAUDE_CONFIG_DIR"), "{warning}");
     }
 

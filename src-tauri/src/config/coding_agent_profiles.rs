@@ -790,8 +790,6 @@ mod tests {
             label: "Codex".to_string(),
             command: "codex".to_string(),
             color: "#000000".to_string(),
-            git_pull_before: false,
-            exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,

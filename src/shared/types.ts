@@ -107,8 +107,6 @@ export interface AgentConfig {
   label: string;
   command: string;
   color: string;
-  gitPullBefore: boolean;
-  excludeGlobalClaudeMd: boolean;
   envs: CodingAgentEnv[];
   /**
    * v2 (#384): renamed from `isolateCodexHome`. Until adapters support other

@@ -37,9 +37,7 @@ On startup AC reads `settings.json → agents[]`. Each entry has:
   "id": "claude",
   "label": "Claude Code",
   "command": "claude",
-  "color": "#E87B35",
-  "gitPullBefore": false,
-  "excludeGlobalClaudeMd": false
+  "color": "#E87B35"
 }
 ```
 
@@ -49,8 +47,6 @@ On startup AC reads `settings.json → agents[]`. Each entry has:
 | `label` | Display name in the launcher dropdown. |
 | `command` | The binary to spawn. Resolved against `PATH` unless absolute. |
 | `color` | Sidebar accent color for sessions launched with this agent. |
-| `gitPullBefore` | If true, run `git pull` in the working directory before launching. |
-| `excludeGlobalClaudeMd` | Claude-specific: auto-generate `.claude/settings.local.json` with `claudeMdExcludes` set. |
 
 The default `settings.json` ships with one entry per supported agent.
 
@@ -93,7 +89,7 @@ AC does not store coding-agent credentials. Each CLI manages its own:
 | Codex | `~/.codex/` |
 | Gemini | `~/.gemini/` |
 
-If you use the AC-managed agent directories, AC may write minimal `.claude/settings.local.json` files (for RTK integration, `claudeMdExcludes`) — these contain configuration only, not credentials.
+If you use the AC-managed agent directories, AC may write minimal `.claude/settings.local.json` files (for RTK integration); these contain configuration only, not credentials.
 
 ## See also
 

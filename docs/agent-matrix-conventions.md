@@ -294,9 +294,7 @@ Located at `.ac/project-settings.json`. Defines the coding agent configurations 
       "id": "agent_TIMESTAMP_N",
       "label": "Claude Code",
       "command": "claude --dangerously-skip-permissions --effort max",
-      "color": "#d97706",
-      "gitPullBefore": false,
-      "excludeGlobalClaudeMd": true
+      "color": "#d97706"
     }
   ]
 }
@@ -308,8 +306,6 @@ Located at `.ac/project-settings.json`. Defines the coding agent configurations 
 | `label` | Display name in the UI |
 | `command` | CLI command to launch this coding agent |
 | `color` | UI color for this agent type |
-| `gitPullBefore` | Whether to `git pull` before starting a session |
-| `excludeGlobalClaudeMd` | Whether to exclude the user's global CLAUDE.md from context |
 
 ---
 

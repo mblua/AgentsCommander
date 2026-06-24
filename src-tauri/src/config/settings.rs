@@ -15,12 +15,6 @@ pub struct AgentConfig {
     pub label: String,
     pub command: String,
     pub color: String,
-    /// If true, run `git pull` before launching the agent
-    #[serde(default)]
-    pub git_pull_before: bool,
-    /// If true, auto-generate .claude/settings.local.json with claudeMdExcludes on agent creation
-    #[serde(default)]
-    pub exclude_global_claude_md: bool,
     /// Base environment rows applied to every launch of this coding agent.
     #[serde(default)]
     pub envs: Vec<CodingAgentEnv>,
@@ -1802,8 +1796,6 @@ mod tests {
                     label: (*label).to_string(),
                     command: (*command).to_string(),
                     color: "#000000".to_string(),
-                    git_pull_before: false,
-                    exclude_global_claude_md: false,
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
@@ -1882,8 +1874,6 @@ mod tests {
             label: "Claude".to_string(),
             command: "claude".to_string(),
             color: "#fff".to_string(),
-            git_pull_before: false,
-            exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,

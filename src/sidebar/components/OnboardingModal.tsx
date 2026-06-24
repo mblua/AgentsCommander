@@ -14,8 +14,6 @@ const CUSTOM_PRESET: AgentPreset = {
     label: "",
     command: "",
     color: "#6366f1",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: true,
     envs: [],
     isolatedHome: false,
   },
@@ -71,8 +69,6 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
           label: customLabel().trim(),
           command: customCommand().trim(),
           color: preset.config.color,
-          gitPullBefore: false,
-          excludeGlobalClaudeMd: true,
           envs: [],
           isolatedHome: false,
         };
