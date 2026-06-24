@@ -34,22 +34,19 @@ A minimal `settings.json`:
       "id": "claude",
       "label": "Claude Code",
       "command": "claude",
-      "color": "#E87B35",
-      "gitPullBefore": false
+      "color": "#E87B35"
     },
     {
       "id": "codex",
       "label": "Codex",
       "command": "codex",
-      "color": "#10A37F",
-      "gitPullBefore": false
+      "color": "#10A37F"
     },
     {
       "id": "gemini",
       "label": "Gemini",
       "command": "gemini",
-      "color": "#4285F4",
-      "gitPullBefore": false
+      "color": "#4285F4"
     }
   ],
   "telegramBots": [],
@@ -87,8 +84,6 @@ A minimal `settings.json`:
 | `label` | string | — | Display name in the launcher dropdown. |
 | `command` | string | — | Binary to spawn. Resolved against PATH unless absolute. |
 | `color` | string | — | CSS hex color for sidebar accent. |
-| `gitPullBefore` | bool | `false` | Run `git pull` in the working directory before launching. |
-| `excludeGlobalClaudeMd` | bool | `false` | Claude-specific: auto-write `.claude/settings.local.json` with `claudeMdExcludes` on agent creation. |
 
 ### Projects
 

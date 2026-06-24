@@ -44,13 +44,10 @@ pub enum ConfigSeedTier {
 /// After a successful seed of `.claude`, re-stamp the AC-managed
 /// `.claude/settings.local.json` (M1). Presence ALSO signals "hold the sweep
 /// lock around the seed + re-apply" (M2). `None` for any non-`.claude` dest,
-/// because `ensure_claude_md_excludes`/`ensure_rtk_pretool_hook` hardcode the
-/// `.claude` subdir (the `.claude-amp` limitation is documented in the plan §8.2,
-/// follow-up F4).
+/// because `ensure_rtk_pretool_hook` hardcodes the `.claude` subdir (the
+/// `.claude-amp` limitation is documented in the plan §8.2, follow-up F4).
 #[derive(Debug, Clone)]
 pub struct ClaudeSettingsReapply {
-    /// `agent.exclude_global_claude_md`.
-    pub apply_excludes: bool,
     /// Global `inject_rtk_hook` toggle, sampled at build time.
     pub inject_rtk_hook: bool,
 }
@@ -66,7 +63,7 @@ pub struct ResolvedConfigSeed {
     /// Carried for CONTENT substitution at copy time.
     pub context: PlaceholderContext,
     /// Heuristic, log-only warning about a dest vs config-dir-env mismatch
-    /// (computed before the git_pull wrap; emitted once at execution).
+    /// (computed at build time; emitted once at execution).
     pub config_dir_warning: Option<String>,
     /// Set only when dest is `.claude` (drives the M1 re-apply + M2 lock).
     pub claude_settings_reapply: Option<ClaudeSettingsReapply>,
@@ -152,8 +149,8 @@ pub fn resolve_config_seed(
 /// tool's ACTIVE config dir every spawn). Never blocks; may warn spuriously if a
 /// config-dir env is injected by a path this does not inspect.
 ///
-/// Called BEFORE the `git_pull_before` wrap so `shell`/`shell_args` are still the
-/// real command (the wrap rewrites them to `cmd.exe /K ...`).
+/// Receives the real launch `shell`/`shell_args` (the agent command) so the
+/// coding-agent kind is detected from the actual command.
 pub fn compute_config_dir_warning(
     dest: &Path,
     shell: &str,

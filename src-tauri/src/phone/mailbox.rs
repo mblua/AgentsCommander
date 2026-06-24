@@ -3508,8 +3508,6 @@ mod tests {
             label: label.into(),
             command: command.into(),
             color: "#10b981".into(),
-            git_pull_before: false,
-            exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,

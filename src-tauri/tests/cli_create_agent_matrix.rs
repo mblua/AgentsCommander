@@ -756,8 +756,7 @@ fn create_agent_matrix_honors_settings_flags() {
                 "id": "claude",
                 "label": "Claude",
                 "command": "claude",
-                "color": "#ffffff",
-                "excludeGlobalClaudeMd": true
+                "color": "#ffffff"
             }],
             "injectRtkHook": true,
             "projectPaths": [tmp.path().to_string_lossy().to_string()]
@@ -791,7 +790,6 @@ fn create_agent_matrix_honors_settings_flags() {
         .join(".claude")
         .join("settings.local.json");
     let settings = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(settings.contains("claudeMdExcludes"));
     assert!(settings.contains("PreToolUse"));
 }
 
