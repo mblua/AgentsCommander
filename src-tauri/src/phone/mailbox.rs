@@ -417,6 +417,22 @@ struct RetryState {
 const MAX_DELIVERY_ATTEMPTS: u32 = 10;
 const ERR_UNRESOLVABLE_AGENT: &str = "Could not resolve inbox for agent";
 
+/// #617 - sustained-idle window the deferred /clear waits for. `pub(crate)` so the
+/// CLI prose and the response JSON single-source the value (no drift across the
+/// gate, the response `settle_secs`, and the CLI's conditional wording).
+pub(crate) const SELF_CLEAR_SETTLE_SECS: u64 = 30;
+// The next three are consumed only by the `#[cfg(not(test))]` spawn in
+// `handle_self_clear`; test builds drive `run_self_clear_after_sustained_idle`
+// with explicit durations, so they are dead under `cfg(test)`.
+#[cfg_attr(test, allow(dead_code))]
+const SELF_CLEAR_SETTLE: std::time::Duration = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+#[cfg_attr(test, allow(dead_code))]
+const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+/// Safety cap so a never-idle session cannot leave a task polling forever.
+/// Generous: any normal agent hits a 30s-idle window well within it.
+#[cfg_attr(test, allow(dead_code))]
+const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// §DR5 anti-spoof accept rule. Outbox-sender check passes when `msg_from`
 /// equals `expected_from` exactly, OR when `msg_from` is unqualified (legacy)
 /// AND its local part matches `expected_from`'s local part. Qualified-but-
@@ -565,6 +581,47 @@ pub(crate) fn next_sustained_idle_state(
         .map(|elapsed| elapsed >= settle)
         .unwrap_or(false);
     (Some(since), settled)
+}
+
+/// #617 - one decision of the self-clear deferral gate. `session_present == false`
+/// means the session was destroyed between polls. Folds destroyed + MAX_DEFER expiry
+/// onto the #611 `next_sustained_idle_state` settle/reset core.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SelfClearGateStep {
+    /// Keep polling; carry this `idle_since` forward.
+    Wait(Option<std::time::Instant>),
+    /// Idle held >= settle: inject `/clear`.
+    Inject,
+    /// Stop without injecting (session gone or cap reached); &str is the log reason.
+    Abandon(&'static str),
+}
+
+/// #617 - pure gate decider. Same "pure decision, thin timer loop" pattern as
+/// `next_sustained_idle_state` (#611), so the reset/settle/destroyed/expiry policy
+/// is unit-testable WITHOUT timers, locks, or a PTY. The thin driver
+/// `run_self_clear_after_sustained_idle` polls and acts on this.
+pub(crate) fn self_clear_gate_step(
+    session_present: bool,
+    waiting_for_input: bool,
+    idle_since: Option<std::time::Instant>,
+    elapsed_total: std::time::Duration,
+    now: std::time::Instant,
+    settle: std::time::Duration,
+    max_defer: std::time::Duration,
+) -> SelfClearGateStep {
+    if !session_present {
+        return SelfClearGateStep::Abandon("session destroyed before sustained idle");
+    }
+    if elapsed_total >= max_defer {
+        return SelfClearGateStep::Abandon("never reached sustained idle within MAX_DEFER cap");
+    }
+    let (next_idle_since, settled) =
+        next_sustained_idle_state(waiting_for_input, idle_since, now, settle);
+    if settled {
+        SelfClearGateStep::Inject
+    } else {
+        SelfClearGateStep::Wait(next_idle_since)
+    }
 }
 
 /// Substring sniff for the `AppError::SessionNotFound` formatted message that
@@ -1187,6 +1244,17 @@ impl MailboxPoller {
                         .await;
                 }
             }
+        }
+
+        // ── #617 self-clear: token-authorized self-operation ──
+        // Dispatched BEFORE the team-routing chain below. self-clear clears the
+        // CALLER'S OWN context; it is authorized solely by session-token ownership
+        // (proved just above: find_by_token + from==session_name anti-spoof), not by
+        // "can A reach B" team rules. Routing it through can_communicate would wrongly
+        // reject valid callers in no shared team. close-session stays in the
+        // post-routing action block because it IS a cross-agent operation.
+        if msg.action.as_deref() == Some("self-clear") {
+            return self.handle_self_clear(app, path, &msg, is_app_outbox).await;
         }
 
         if root_agent_claim {
@@ -2742,6 +2810,262 @@ impl MailboxPoller {
         self.move_to_delivered(path, msg).await
     }
 
+    /// #617 - queue a deferred self-clear for the session that owns `msg.token`.
+    /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
+    /// poll loop is never blocked. Idempotent: a second request while one is
+    /// pending is a no-op ("already_queued").
+    async fn handle_self_clear<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
+        // 1. Resolve the caller's OWN session from the token (the sole authority).
+        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
+            Some(u) => u,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-clear requires a valid session token; restart or respawn the session",
+                    )
+                    .await;
+            }
+        };
+        let session = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.find_by_token(token_uuid).await
+        };
+        let session = match session {
+            Some(s) => s,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-clear: no live session owns this token; restart or respawn the session",
+                    )
+                    .await;
+            }
+        };
+        let session_id = match Uuid::parse_str(&session.id) {
+            Ok(u) => u,
+            Err(_) => {
+                return self
+                    .reject_message(path, msg, "self-clear: internal error resolving session id")
+                    .await;
+            }
+        };
+
+        // 1b. MED-2 - daemon-side Root Agent exclusion. The CLI guard
+        //     (self_clear_blocked_for_root) is bypassable by a crafted outbox write; the
+        //     mailbox is the authoritative gate, same convention as handle_close_session
+        //     (#224). The Root Agent is user-launched and cleared from the UI.
+        if session.is_root_agent
+            || crate::config::root_agent::is_root_agent_path(&session.working_directory)
+        {
+            return self
+                .reject_message(path, msg, "self-clear is not available for the Root Agent")
+                .await;
+        }
+
+        // 2. Shell guard - /clear is only meaningful on a coding-agent CLI, and the
+        //    injector only sends explicit Enter for those shells. Same constraint as
+        //    send --command clear (cmd/pwsh wrappers tracked under #233-followup-cmd-wrapper).
+        if !crate::pty::inject::needs_explicit_enter(&session.shell) {
+            return self
+                .reject_message(
+                    path,
+                    msg,
+                    &format!(
+                        "self-clear: session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini); /clear is not supported here",
+                        session.shell
+                    ),
+                )
+                .await;
+        }
+
+        // 3. Idempotency - atomic check-and-set. insert() returns false if already present.
+        let newly_inserted = {
+            let pending = app.state::<Arc<crate::PendingSelfClear>>();
+            let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
+            set.insert(session_id)
+        };
+        let status = if newly_inserted {
+            "queued"
+        } else {
+            "already_queued"
+        };
+
+        // 4. Spawn the deferred sustained-idle gate (detached; never blocks the poller).
+        //    MED-4: gated under #[cfg(not(test))] so handle_self_clear unit tests assert
+        //    queue + idempotency WITHOUT launching a live 500ms poll task. The gate's
+        //    decision policy is covered separately by the pure `self_clear_gate_step` tests.
+        //    Durations are passed in so a future integration test can drive it fast.
+        if newly_inserted {
+            #[cfg(not(test))]
+            {
+                let app_clone = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    Self::run_self_clear_after_sustained_idle(
+                        &app_clone,
+                        session_id,
+                        SELF_CLEAR_SETTLE,
+                        SELF_CLEAR_POLL,
+                        SELF_CLEAR_MAX_DEFER,
+                    )
+                    .await;
+                });
+            }
+            log::info!(
+                "[mailbox] self-clear queued for session {} (from '{}')",
+                session_id,
+                msg.from
+            );
+        } else {
+            log::info!(
+                "[mailbox] self-clear already pending for session {} (from '{}')",
+                session_id,
+                msg.from
+            );
+        }
+
+        // 5. Write the queue-ack response, then move the message to delivered/.
+        self.write_self_clear_response(app, path, msg, session_id, status, is_app_outbox)
+            .await
+    }
+
+    /// #617 - thin timer driver around `self_clear_gate_step`. Fire-and-forget.
+    /// Polls every `poll`, reuses the pure decider, injects `/clear` on settle, and
+    /// ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or never-idle
+    /// session is never cleared (the user-approved "30s sustained idle" semantic).
+    #[cfg_attr(test, allow(dead_code))]
+    async fn run_self_clear_after_sustained_idle<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        session_id: Uuid,
+        settle: std::time::Duration,
+        poll: std::time::Duration,
+        max_defer: std::time::Duration,
+    ) {
+        let start = std::time::Instant::now();
+        let mut idle_since: Option<std::time::Instant> = None;
+
+        loop {
+            tokio::time::sleep(poll).await;
+
+            // Presence + waiting flag under a short-lived lock; never held across .await.
+            let (present, waiting) = {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                let sessions = mgr.list_sessions().await;
+                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    Some(s) => (true, s.waiting_for_input),
+                    None => (false, false),
+                }
+            };
+
+            match self_clear_gate_step(
+                present,
+                waiting,
+                idle_since,
+                start.elapsed(),
+                std::time::Instant::now(),
+                settle,
+                max_defer,
+            ) {
+                SelfClearGateStep::Wait(next) => {
+                    idle_since = next;
+                    continue;
+                }
+                SelfClearGateStep::Inject => {
+                    log::info!(
+                        "[mailbox] self-clear: session {} held idle >={}s; injecting /clear",
+                        session_id,
+                        settle.as_secs()
+                    );
+                    // TOCTOU between settle and the final \r is accepted, identical to the
+                    // existing send --command clear path.
+                    if let Err(e) =
+                        crate::pty::inject::inject_text_into_session(app, session_id, "/clear").await
+                    {
+                        log::warn!(
+                            "[mailbox] self-clear: /clear injection failed for session {}: {}",
+                            session_id,
+                            e
+                        );
+                    }
+                    break;
+                }
+                SelfClearGateStep::Abandon(reason) => {
+                    // MED-3: greppable abandon line so a silently-dropped clear is diagnosable.
+                    // The CLI already warned the caller it is best-effort.
+                    log::warn!(
+                        "[mailbox] self-clear ABANDONED for session {}: {} (no /clear injected; agent may re-issue)",
+                        session_id,
+                        reason
+                    );
+                    break;
+                }
+            }
+        }
+
+        // Always de-register (inject / destroy / cap-expiry all land here).
+        let pending = app.state::<Arc<crate::PendingSelfClear>>();
+        pending
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
+    }
+
+    /// #617 - write the self-clear queue-ack response, then move the message to
+    /// delivered/. Mirrors the close-session dual-write (self-contained copy; the
+    /// landed close-session block is intentionally left untouched, blast radius 0).
+    async fn write_self_clear_response<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        session_id: Uuid,
+        status: &str,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
+        if let Some(ref rid) = msg.request_id {
+            let response = serde_json::json!({
+                "action": "self-clear",
+                "status": status,                 // "queued" | "already_queued"
+                "session_id": session_id.to_string(),
+                "settle_secs": SELF_CLEAR_SETTLE_SECS,   // single-sourced const
+                "requested_by": msg.from,
+            });
+            if let Ok(json) = serde_json::to_string_pretty(&response) {
+                // (1) outbox-relative <ac_dir>/responses/<rid>.json - skip for app-outbox.
+                if !is_app_outbox {
+                    if let Some(responses_dir) = path
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .map(|ac| ac.join("responses"))
+                    {
+                        let _ = std::fs::create_dir_all(&responses_dir);
+                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    }
+                }
+                // (2) resolved-sender path (best-effort).
+                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
+                    let responses_dir = std::path::PathBuf::from(sender_path)
+                        .join(crate::config::agent_local_dir_name())
+                        .join("responses");
+                    let _ = std::fs::create_dir_all(&responses_dir);
+                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                }
+            }
+        }
+        self.move_to_delivered(path, msg).await
+    }
+
     /// Force-close a session immediately via destroy_session_inner.
     async fn force_close_session<R: tauri::Runtime>(
         &self,
@@ -3560,6 +3884,7 @@ mod tests {
             )))
             .manage(Arc::new(Mutex::new(HashSet::<Uuid>::new())))
             .manage(Arc::new(crate::RestoreInProgress(AtomicBool::new(false))))
+            .manage(Arc::new(crate::PendingSelfClear::default()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mailbox test app")
     }
@@ -4591,6 +4916,441 @@ mod tests {
         let (next, inject) = next_sustained_idle_state(true, Some(since), base, settle);
         assert_eq!(next, Some(since), "idle_since must be preserved");
         assert!(!inject, "a backwards clock must never be treated as settled");
+    }
+
+    #[test]
+    fn sustained_idle_30s_window_documents_self_clear_settle() {
+        // #617 documentation scenario: the self-clear gate uses settle=30s.
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        // 29.9s of idle -> not yet settled.
+        let (_, i1) = next_sustained_idle_state(
+            true,
+            Some(base),
+            base + std::time::Duration::from_millis(29_900),
+            settle,
+        );
+        assert!(!i1, "29.9s must not settle a 30s window");
+        // exactly 30.0s -> settled (boundary inclusive).
+        let (_, i2) = next_sustained_idle_state(true, Some(base), base + settle, settle);
+        assert!(i2, "30.0s must settle a 30s window");
+        // a busy tick mid-window resets idle_since to None.
+        let (n3, i3) = next_sustained_idle_state(
+            false,
+            Some(base),
+            base + std::time::Duration::from_secs(10),
+            settle,
+        );
+        assert_eq!(n3, None, "busy mid-window resets the clock");
+        assert!(!i3);
+    }
+
+    // ── #617 self_clear_gate_step pure decider tests (no timers / locks / PTY) ──
+
+    #[test]
+    fn gate_step_session_destroyed_abandons_even_when_idle() {
+        let now = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // session_present == false wins over everything, even waiting_for_input == true.
+        let step = self_clear_gate_step(
+            false,
+            true,
+            Some(now),
+            std::time::Duration::from_secs(1),
+            now,
+            settle,
+            max,
+        );
+        assert!(matches!(step, SelfClearGateStep::Abandon(_)));
+    }
+
+    #[test]
+    fn gate_step_max_defer_abandons_even_when_idle_and_not_settled() {
+        let now = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // present + idle but elapsed_total >= max_defer (boundary inclusive) -> Abandon.
+        let step = self_clear_gate_step(true, true, None, max, now, settle, max);
+        assert!(matches!(step, SelfClearGateStep::Abandon(_)));
+    }
+
+    #[test]
+    fn gate_step_busy_waits_with_reset_clock() {
+        let now = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // busy (waiting_for_input == false) -> Wait(None): the clock is reset.
+        let step = self_clear_gate_step(
+            true,
+            false,
+            Some(now),
+            std::time::Duration::from_secs(5),
+            now,
+            settle,
+            max,
+        );
+        assert_eq!(step, SelfClearGateStep::Wait(None));
+    }
+
+    #[test]
+    fn gate_step_first_idle_starts_clock_without_injecting() {
+        let now = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // idle, clock not yet started -> Wait(Some(now)), NOT Inject.
+        let step = self_clear_gate_step(
+            true,
+            true,
+            None,
+            std::time::Duration::from_secs(1),
+            now,
+            settle,
+            max,
+        );
+        assert_eq!(step, SelfClearGateStep::Wait(Some(now)));
+    }
+
+    #[test]
+    fn gate_step_idle_held_past_settle_injects() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // idle held for >= settle -> Inject.
+        let step = self_clear_gate_step(
+            true,
+            true,
+            Some(base),
+            std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS),
+            base + settle,
+            settle,
+            max,
+        );
+        assert_eq!(step, SelfClearGateStep::Inject);
+    }
+
+    #[test]
+    fn gate_step_idle_busy_idle_restarts_the_window() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // Tick 1: idle starts the clock.
+        let s1 = self_clear_gate_step(
+            true,
+            true,
+            None,
+            std::time::Duration::from_secs(1),
+            base,
+            settle,
+            max,
+        );
+        assert_eq!(s1, SelfClearGateStep::Wait(Some(base)));
+        // Tick 2: busy clears the clock.
+        let s2 = self_clear_gate_step(
+            true,
+            false,
+            Some(base),
+            std::time::Duration::from_secs(5),
+            base + std::time::Duration::from_secs(5),
+            settle,
+            max,
+        );
+        assert_eq!(s2, SelfClearGateStep::Wait(None));
+        // Tick 3: idle again restarts the clock at the NEW now.
+        let t3 = base + std::time::Duration::from_secs(10);
+        let s3 = self_clear_gate_step(
+            true,
+            true,
+            None,
+            std::time::Duration::from_secs(10),
+            t3,
+            settle,
+            max,
+        );
+        assert_eq!(s3, SelfClearGateStep::Wait(Some(t3)));
+        // Tick 4: 20s after the restart (< 30s) the pre-busy idle time does NOT
+        // count, so still Wait even though 30s of total elapsed_total has passed.
+        let t4 = base + std::time::Duration::from_secs(30);
+        let s4 = self_clear_gate_step(
+            true,
+            true,
+            Some(t3),
+            std::time::Duration::from_secs(30),
+            t4,
+            settle,
+            max,
+        );
+        assert_eq!(
+            s4,
+            SelfClearGateStep::Wait(Some(t3)),
+            "the busy step must restart the window; pre-busy idle does not carry over"
+        );
+    }
+
+    #[test]
+    fn pending_self_clear_set_is_idempotent() {
+        let pending = crate::PendingSelfClear::default();
+        let id = Uuid::new_v4();
+        {
+            let mut g = pending.0.lock().unwrap();
+            assert!(g.insert(id), "first insert is newly-inserted");
+            assert!(!g.insert(id), "second insert collapses (already_queued)");
+            assert_eq!(g.len(), 1);
+        }
+        {
+            let mut g = pending.0.lock().unwrap();
+            assert!(g.remove(&id));
+            assert!(g.insert(id), "re-issue after removal queues again");
+        }
+    }
+
+    // ── #617 handle_self_clear harness tests (#[cfg(not(test))] spawn gate ⇒ no live poller) ──
+
+    async fn seed_self_clear_session(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        cwd: &str,
+        shell: &str,
+    ) -> (Uuid, Uuid) {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let session = mgr
+            .create_session(
+                shell.into(),
+                vec![],
+                cwd.to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        (session.id, session.token)
+    }
+
+    fn build_self_clear_message(
+        cwd: &Path,
+        msg_id: &str,
+        request_id: &str,
+        token: Option<String>,
+    ) -> (PathBuf, OutboxMessage) {
+        let outbox_dir = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let path = outbox_dir.join(format!("{}.json", msg_id));
+        let msg = OutboxMessage {
+            id: msg_id.into(),
+            token,
+            from: "proj-a:wg-1-dev-team/dev-rust".into(),
+            to: String::new(),
+            body: String::new(),
+            mode: String::new(),
+            get_output: false,
+            request_id: Some(request_id.into()),
+            sender_agent: None,
+            preferred_agent: String::new(),
+            priority: "normal".into(),
+            timestamp: "2026-06-24T00:00:00Z".into(),
+            command: None,
+            action: Some("self-clear".into()),
+            target: None,
+            force: None,
+            timeout_secs: None,
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
+        (path, msg)
+    }
+
+    fn read_self_clear_response_status(cwd: &Path, request_id: &str) -> Option<String> {
+        let resp = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("responses")
+            .join(format!("{}.json", request_id));
+        let content = std::fs::read_to_string(&resp).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+        v.get("status").and_then(|s| s.as_str()).map(String::from)
+    }
+
+    async fn pending_self_clear_len(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> usize {
+        let pending = app.state::<Arc<crate::PendingSelfClear>>();
+        let g = pending.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.len()
+    }
+
+    async fn pending_self_clear_contains(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        id: Uuid,
+    ) -> bool {
+        let pending = app.state::<Arc<crate::PendingSelfClear>>();
+        let g = pending.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.contains(&id)
+    }
+
+    #[tokio::test]
+    async fn handle_self_clear_valid_token_queues() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (session_id, token) =
+            seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+
+        let (path, msg) =
+            build_self_clear_message(&cwd, "msg-sc-1", "rid-sc-1", Some(token.to_string()));
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_clear(&app, &path, &msg, false)
+            .await
+            .expect("handle_self_clear should succeed");
+
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sc-1").as_deref(),
+            Some("queued")
+        );
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        // message moved to delivered/, original removed.
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn handle_self_clear_second_request_is_already_queued() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (session_id, token) =
+            seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+
+        let (path1, msg1) =
+            build_self_clear_message(&cwd, "msg-sc-a", "rid-sc-a", Some(token.to_string()));
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_clear(&app, &path1, &msg1, false)
+            .await
+            .unwrap();
+
+        let (path2, msg2) =
+            build_self_clear_message(&cwd, "msg-sc-b", "rid-sc-b", Some(token.to_string()));
+        poller
+            .handle_self_clear(&app, &path2, &msg2, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sc-a").as_deref(),
+            Some("queued")
+        );
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sc-b").as_deref(),
+            Some("already_queued")
+        );
+        // Still exactly one pending id (no stacking).
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+    }
+
+    #[tokio::test]
+    async fn handle_self_clear_invalid_token_is_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        // No session seeded; a random UUID token resolves to no session.
+        let (path, msg) = build_self_clear_message(
+            &cwd,
+            "msg-sc-bad",
+            "rid-sc-bad",
+            Some(Uuid::new_v4().to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_clear(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        // Rejected: reason file written, nothing queued.
+        let reason = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-sc-bad.reason.txt");
+        assert!(reason.exists(), "reject reason file should be written");
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_self_clear_non_coding_shell_is_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (_session_id, token) =
+            seed_self_clear_session(&app, &cwd.to_string_lossy(), "powershell.exe").await;
+
+        let (path, msg) = build_self_clear_message(
+            &cwd,
+            "msg-sc-shell",
+            "rid-sc-shell",
+            Some(token.to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_clear(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let reason = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-sc-shell.reason.txt");
+        assert!(reason.exists(), "non-coding shell must be rejected");
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_self_clear_root_agent_is_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (session_id, token) =
+            seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+        // MED-2: mark the session as the Root Agent; the daemon gate must reject.
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.set_is_root_agent(session_id, true).await;
+        }
+
+        let (path, msg) = build_self_clear_message(
+            &cwd,
+            "msg-sc-root",
+            "rid-sc-root",
+            Some(token.to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_clear(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let reason = std::fs::read_to_string(
+            cwd.join(crate::config::agent_local_dir_name())
+                .join("outbox")
+                .join("rejected")
+                .join("msg-sc-root.reason.txt"),
+        )
+        .expect("root self-clear must be rejected with a reason file");
+        assert!(reason.contains("Root Agent"));
+        assert_eq!(pending_self_clear_len(&app).await, 0);
     }
 
     // ── err_is_pty_session_missing tests (issue #223) ──
