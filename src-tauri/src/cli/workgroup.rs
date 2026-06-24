@@ -269,6 +269,21 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
     ))? {
         RemoveRefreshDecision::EmitWorkgroupRemoved => {}
     }
+    // (#621) Drop the workgroup's coordinator_clocks keys. CLI is its own process,
+    // so load+save the on-disk map directly (the startup prune backstops the
+    // GUI-running-concurrently race).
+    if let Some(project_name) = project_path.file_name().and_then(|n| n.to_str()) {
+        match crate::config::coordinator_clocks::remove_workgroup_on_disk(
+            project_name,
+            &args.workgroup,
+        ) {
+            Ok(n) if n > 0 => {
+                log::info!("[workgroup-remove] dropped {} clock key(s) for {}", n, args.workgroup)
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("[workgroup-remove] clock cleanup failed: {}", e),
+        }
+    }
     write_refresh(&project_path, &wg_dir, &args.workgroup, "workgroupRemoved");
     if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
         print_json(&serde_json::json!({

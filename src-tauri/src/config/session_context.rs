@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 pub const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str = "Context.AgentsCommander.md";
 const LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
@@ -1768,6 +1769,79 @@ pub fn materialize_agent_context_file(
     is_coordinator: bool,
 ) -> Result<Option<String>, String> {
     materialize_agent_context_file_with_filename(cwd, target.filename(), &[], is_coordinator)
+}
+
+// ── Context-cache GC (#621) ───────────────────────────────────────────────
+
+/// (#621) Retention window for generated context-cache files. A live agent
+/// re-writes its cache on every launch (fresh mtime), so anything untouched this
+/// long is an orphan (removed workgroup / renamed replica dir). 30 days is
+/// generous enough never to drop the cache of an agent the user simply has not
+/// launched recently, while still capping the directory. Internal GC knob,
+/// intentionally a const (not a user setting); promote to settings later if needed.
+const CONTEXT_CACHE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// (#621) Startup entry point: GC the context-cache dir with the default
+/// retention. No-op (logs) when no config dir resolves. Never returns an error;
+/// housekeeping must not break startup. This pass is BOTH the orphan cleanup for
+/// removed workgroups (their cache ages out) AND the cap for the unbounded-growth
+/// secondary finding.
+pub fn sweep_context_cache_at_startup() {
+    let Some(context_dir) = super::config_dir().map(|d| d.join("context-cache")) else {
+        log::warn!("[context-cache] no config dir; skipping startup sweep");
+        return;
+    };
+    let removed = sweep_context_cache_dir(&context_dir, SystemTime::now(), CONTEXT_CACHE_RETENTION);
+    if removed > 0 {
+        log::info!("[context-cache] startup sweep removed {} stale cache file(s)", removed);
+    }
+}
+
+/// (#621) Testable core: unlink every generated context file in `context_dir`
+/// whose mtime is older than `retention` relative to `now`. Returns the count
+/// removed. Only touches the three known generated prefixes ending in `.md`, so an
+/// unrelated file dropped in the dir is never deleted. A file whose mtime cannot be
+/// read (or is in the future) is KEPT (conservative). A missing dir is a no-op.
+pub fn sweep_context_cache_dir(context_dir: &Path, now: SystemTime, retention: Duration) -> usize {
+    let entries = match std::fs::read_dir(context_dir) {
+        Ok(e) => e,
+        Err(_) => return 0, // first run / missing dir
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_generated_context_filename(name) {
+            continue;
+        }
+        // Keep on any uncertainty (no metadata / no mtime / clock skew).
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        let Ok(age) = now.duration_since(mtime) else { continue }; // mtime in the future -> keep
+        if age > retention {
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(e) => {
+                    log::warn!("[context-cache] failed to remove stale {}: {}", path.display(), e)
+                }
+            }
+        }
+    }
+    removed
+}
+
+/// (#621) True for the three generated context-cache filename shapes
+/// (`ac-context-*.md`, `replica-context-*.md`, `matrix-context-*.md`).
+fn is_generated_context_filename(name: &str) -> bool {
+    name.ends_with(".md")
+        && (name.starts_with("ac-context-")
+            || name.starts_with("replica-context-")
+            || name.starts_with("matrix-context-"))
 }
 
 /// Simple deterministic hash for a string (for temp file naming).
@@ -5442,5 +5516,76 @@ mod tests {
                 .expect("read existing prompt"),
             existing_context
         );
+    }
+
+    // ── #621 context-cache GC sweep tests ────────────────────────────────────
+
+    #[test]
+    fn sweep_removes_stale_keeps_fresh_and_non_cache() {
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dir = tmp.path();
+
+        let old = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60); // 40d
+        let mk = |name: &str, backdate: bool| {
+            let p = dir.join(name);
+            std::fs::write(&p, "x").unwrap();
+            if backdate {
+                let f = std::fs::File::options().write(true).open(&p).unwrap();
+                f.set_modified(old).unwrap();
+            }
+            p
+        };
+
+        let stale_replica = mk("replica-context-111.md", true);
+        let stale_matrix = mk("matrix-context-222.md", true);
+        let stale_global = mk("ac-context-333.md", true);
+        let fresh_replica = mk("replica-context-444.md", false); // live agent, just launched
+        let other_md = mk("notes.md", true); // not a context prefix
+        let other_txt = mk("replica-context-555.txt", true); // wrong extension
+
+        let removed =
+            sweep_context_cache_dir(dir, SystemTime::now(), Duration::from_secs(30 * 24 * 60 * 60));
+
+        assert_eq!(removed, 3, "the three stale generated files are removed");
+        assert!(!stale_replica.exists());
+        assert!(!stale_matrix.exists());
+        assert!(!stale_global.exists());
+        assert!(fresh_replica.exists(), "a freshly-written cache survives");
+        assert!(other_md.exists(), "non-context .md is never touched");
+        assert!(other_txt.exists(), "non-.md is never touched");
+    }
+
+    #[test]
+    fn sweep_missing_dir_is_noop() {
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let missing = tmp.path().join("does-not-exist");
+        assert_eq!(sweep_context_cache_dir(&missing, SystemTime::now(), Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn sweep_keeps_file_with_future_mtime() {
+        // (#621 LOW-3d) clock skew: a file whose mtime is AHEAD of `now` makes
+        // `now.duration_since(mtime)` return Err -> KEEP (never delete on skew).
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let p = tmp.path().join("replica-context-future.md");
+        std::fs::write(&p, "x").unwrap();
+        let future = SystemTime::now() + Duration::from_secs(10 * 24 * 60 * 60);
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(future).unwrap();
+        // Even with a zero retention, a future mtime must not be deleted.
+        assert_eq!(sweep_context_cache_dir(tmp.path(), SystemTime::now(), Duration::ZERO), 0);
+        assert!(p.exists(), "future-mtime file kept");
+    }
+
+    #[test]
+    fn is_generated_context_filename_matches_three_prefixes_only() {
+        assert!(is_generated_context_filename("ac-context-1.md"));
+        assert!(is_generated_context_filename("replica-context-1.md"));
+        assert!(is_generated_context_filename("matrix-context-1.md"));
+        assert!(!is_generated_context_filename("ac-context-1.txt"));
+        assert!(!is_generated_context_filename("random.md"));
+        assert!(!is_generated_context_filename("context-1.md"));
     }
 }
