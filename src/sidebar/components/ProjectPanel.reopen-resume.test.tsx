@@ -45,8 +45,6 @@ function claudeAgent(): AgentConfig {
     label: "Claude Code",
     command: "claude",
     color: "#d97706",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: false,
     envs: [],
     isolatedHome: false,
   };
