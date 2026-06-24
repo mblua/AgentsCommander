@@ -48,6 +48,8 @@ interface PendingLaunch {
   currentAgentId?: string;
   currentRequestedProfile?: string | null;
   scopeContext?: AgentPickerScopeContext;
+  /** #599 R1: reopening a coordinator destroyed by auto/manual close — resume. */
+  resumeOnLaunch?: boolean;
 }
 
 /** #545: the broom has nothing to clear when the workgroup task title is
@@ -340,8 +342,16 @@ const ProjectPanel: Component = () => {
       return;
     }
 
-    // Not instantiated — create session in-place
+    // Not instantiated — create session in-place.
+    // #599 R1: a coordinator that was auto-closed (#552/#580) or manually closed
+    // (#588) is DESTROYED, so its reopen has no live/exited record and lands here
+    // instead of the restart-with-resume branch above. Both close markers are set
+    // only when AC tore down a coordinator that had been running, so their
+    // presence is the discriminator "reopen of an already-run replica" vs
+    // "genuinely fresh first launch". Carry a resume intent so the eventual
+    // create injects --continue (Claude still disk-gates it via claude_project_exists).
     const gitRepos = buildGitRepos(replica);
+    const resumeOnLaunch = !!(replica.autoClosedAt || replica.manuallyClosedAt);
 
     setPendingLaunch({
       path: replica.path,
@@ -350,6 +360,7 @@ const ProjectPanel: Component = () => {
       currentAgentId: replica.currentCodingAgentId ?? replica.preferredAgentId,
       currentRequestedProfile: replica.currentProfile ?? null,
       scopeContext: replicaScopeContext(wg, replica),
+      resumeOnLaunch,
     });
   };
 
@@ -3059,6 +3070,9 @@ const ProjectPanel: Component = () => {
               agentId: selection.agent.id,
               requestedProfile: selection.requestedProfile,
               gitRepos: pending.gitRepos,
+              // #599 R1: resume the prior conversation when reopening a closed
+              // coordinator; omit (default skip) for a genuinely fresh launch.
+              skipAutoResume: pending.resumeOnLaunch ? false : undefined,
             });
             await SessionAPI.switch(newSession.id);
             if (isTauri) {
