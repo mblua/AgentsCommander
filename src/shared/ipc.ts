@@ -811,9 +811,6 @@ export const AgentCreatorAPI = {
 
   createFolder: (parentPath: string, agentName: string) =>
     transport.invoke<string>("create_agent_folder", { parentPath, agentName }),
-
-  writeClaudeSettingsLocal: (agentPath: string) =>
-    transport.invoke<void>("write_claude_settings_local", { agentPath }),
 };
 
 // Guide window

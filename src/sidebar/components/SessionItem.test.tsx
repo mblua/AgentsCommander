@@ -19,8 +19,6 @@ function agentConfig(id: string, label: string, command: string): AgentConfig {
     label,
     command,
     color: "#888888",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: false,
     envs: [],
     isolatedHome: false,
   };
