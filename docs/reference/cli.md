@@ -49,7 +49,7 @@ agentscommander agency-templates update --ref main
 agentscommander agency-templates list --pretty
 ```
 
-`update` resolves the ref to a commit and publishes `<config-dir>/agency-agents_templates` under a single-writer lock. The updater uses `git`, so `git` must be installed and available on `PATH`. `list`, `status`, and `create-agent-matrix --role-template agency:<id>` operate offline on the validated cache.
+`update` resolves the ref to a commit and publishes `<config-dir>/agency-agents_templates` under a single-writer lock. The updater uses `git`, so `git` must be installed and available on `PATH`. `list`, `status`, and [`create-agent-matrix`](#create-agent-matrix) `--role-template agency:<id>` operate offline on the validated cache.
 
 Status reasons include `missing`, `locked`, `manifestMissing`, `manifestMalformed`, `invalidCommit`, `templateCountMismatch`, and `cacheInvalid`.
 
@@ -334,30 +334,61 @@ The command refuses to remove the current coordinator and refuses live sessions 
 
 ## `create-agent`
 
-Create an agent directory with a `CLAUDE.md` role prompt; optionally launch it.
+Create a full Agent Matrix (`_agent_<id>/` with a `Role.md`) in a registered AC project; optionally launch it. A near-alias of [`create-agent-matrix`](#create-agent-matrix): identical flags and JSON output, differing only in that `create-agent` trims `--description` and rejects it when empty.
 
 ```bash
-agentscommander create-agent --parent "C:\path\to\folder" --name " MyAgent "
-agentscommander create-agent --parent "C:\path\to\folder" --name " MyAgent " --launch claude
+agentscommander create-agent --project MyProject --name "QA Bot" --description "Runs the integration suite and reports failures."
+agentscommander create-agent --project MyProject --name "QA Bot" --description "Runs the integration suite." --role-template agency:dev-rust --launch claude
 ```
 
 | Flag | Required | Description |
 |---|---|---|
-| `--parent` | Yes | Existing parent directory; the agent folder is created inside it. |
-| `--name` | Yes | Agent name (trimmed). Cannot contain `/`, `\`, or NUL. |
-| `--launch` | No | Coding agent id to launch (`claude`, `codex`, `gemini`). Must match an entry in `settings.json → agents[]`. |
-| `--root` | No | Caller's root directory (logging context). |
-| `--token` | No | Session token (auth context). |
+| `--project` | Yes | Registered AC project folder name from `settings.projectPaths`. Paths are not accepted; the project must contain `.ac`. |
+| `--name` | Yes | Display/input name, sanitized into a lower-case `_agent_<id>` folder id (the same backend as the New Agent UI). |
+| `--description` | Yes | Written into the `Role.md` frontmatter and body. Trimmed; rejected when empty after trim. |
+| `--role-template` | No | Role template id from the New Agent picker source, e.g. `agency:dev-rust` or `local:my-template`. An invalid id fails before any directory is created. |
+| `--launch` | No | Coding agent to launch after creation. Matches an `id`, `label`, or command prefix in `settings.json → agents[]`. |
+| `--root` | No | Accepted for parity with `create-agent-matrix`; ignored by the handler. |
+| `--token` | No | Accepted for parity with `create-agent-matrix`; ignored by the handler. |
 
 Behaviour:
 
-1. Creates `<parent>/<trimmed-name>/`.
-2. Writes `CLAUDE.md` with `You are the agent <parentFolder>/<trimmed-name>`.
-3. If `--launch` is set, writes a session request that the running AC app picks up within ~3s.
+1. Resolves `--project` to a registered project path (paths are rejected).
+2. Creates `<project>/.ac/_agent_<id>/` with the matrix layout (`memory/`, `plans/`, `skills/`, `inbox/`, `outbox/`) and writes `Role.md`. A picked role template's body becomes a `## Role Profile` section, and its `skills/` are copied in.
+3. Applies the RTK `PreToolUse` hook when the global `injectRtkHook` setting is on.
+4. Requests a sidebar refresh in the running AC app.
+5. If `--launch` is set, writes a session request the running AC app picks up within ~3s.
 
-Output (stdout, JSON): `{ agentPath, agentName, claudeMd, launched, launchAgent }`.
+Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchAgent }`.
 
 See [Creating agents](../agents/creating-agents.md) for richer agent layouts.
+
+---
+
+## `create-agent-matrix`
+
+Create a full Agent Matrix in a registered AC project from a role template; optionally launch it. The sibling of [`create-agent`](#create-agent): same on-disk result, same JSON output, same flags. The only behavioral difference is that `create-agent` trims and rejects an empty `--description`, while `create-agent-matrix` passes `--description` through as given.
+
+```bash
+agentscommander create-agent-matrix --project MyProject --name "dev-rust" --description "Implements the Rust backend."
+agentscommander create-agent-matrix --project MyProject --name "dev-rust" --description "Implements the Rust backend." --role-template agency:dev-rust --launch claude
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project` | Yes | Registered AC project folder name from `settings.projectPaths`. Paths are not accepted; the project must contain `.ac`. |
+| `--name` | Yes | Display/input name, sanitized into a lower-case `_agent_<id>` folder id (the same backend as the New Agent UI). |
+| `--description` | Yes | Written into the `Role.md` frontmatter and body. Passed through as given (no trim, no empty check in the handler). |
+| `--role-template` | No | Role template id from the New Agent picker source, e.g. `agency:dev-rust` or `local:my-template`. An invalid id fails before any directory is created. |
+| `--launch` | No | Coding agent to launch after creation. Matches an `id`, `label`, or command prefix in `settings.json → agents[]`. |
+| `--root` | No | Accepted for parity with `create-agent`; ignored by the handler. |
+| `--token` | No | Accepted for parity with `create-agent`; ignored by the handler. |
+
+Behaviour is identical to [`create-agent`](#create-agent) above, minus the `--description` trim and empty-check.
+
+Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchAgent }`.
+
+> The CLI verb `create-agent-matrix` is distinct from the in-app New Agent command of the same name. The GUI command shares the same on-disk core but never launches a session and returns only `{ path }`.
 
 ---
 
