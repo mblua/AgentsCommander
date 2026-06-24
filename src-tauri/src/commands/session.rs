@@ -1090,17 +1090,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         let report = crate::config::config_seed::perform_config_seed(seed, &id.to_string());
 
         // M1: a `.claude` seed clean-replaces the dir, wiping the AC-managed
-        // settings.local.json. Re-stamp both claudeMdExcludes (if the agent opts
-        // in) and the rtk hook (per the global toggle). `cwd` is the replica
-        // root; the writers append `.claude`, so this lands in the seeded dir.
+        // settings.local.json. Re-stamp the rtk hook (per the global toggle).
+        // `cwd` is the replica root; the writer appends `.claude`, so this lands
+        // in the seeded dir.
         if matches!(report, crate::config::config_seed::ConfigSeedReport::Seeded) {
             if let Some(re) = &seed.claude_settings_reapply {
                 let dir = std::path::Path::new(&cwd);
-                if re.apply_excludes {
-                    if let Err(e) = crate::config::claude_settings::ensure_claude_md_excludes(dir) {
-                        log::warn!("[config-seed] re-apply claudeMdExcludes failed: {}", e);
-                    }
-                }
                 if let Err(e) =
                     crate::config::claude_settings::ensure_rtk_pretool_hook(dir, re.inject_rtk_hook)
                 {
@@ -2819,8 +2814,6 @@ mod tests {
                     label: "Claude Code".to_string(),
                     command: "claude".to_string(),
                     color: "#d97706".to_string(),
-                    git_pull_before: false,
-                    exclude_global_claude_md: false,
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
@@ -2831,8 +2824,6 @@ mod tests {
                     label: "Codex".to_string(),
                     command: "codex".to_string(),
                     color: "#10b981".to_string(),
-                    git_pull_before: false,
-                    exclude_global_claude_md: false,
                     envs: Vec::new(),
                     isolated_home: false,
                     instructions_filename: None,
@@ -3517,8 +3508,6 @@ mod tests {
             label: "Codex Yolo".to_string(),
             command: "codex --yolo".to_string(),
             color: "#10b981".to_string(),
-            git_pull_before: false,
-            exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
@@ -3596,8 +3585,6 @@ mod tests {
             label: "Broken Codex".to_string(),
             command: "codex \"unterminated".to_string(),
             color: "#10b981".to_string(),
-            git_pull_before: false,
-            exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,

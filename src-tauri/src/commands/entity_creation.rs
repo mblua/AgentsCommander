@@ -6,7 +6,6 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
-use crate::config::claude_settings::ensure_claude_md_excludes;
 use crate::config::replica_identity::{
     expected_wg_replica_identity, normalize_wg_replica_context_entries,
     repair_wg_replica_config_value, ROLE_MD_FILENAME, WG_REPLICA_REQUIRED_CONTEXT,
@@ -387,14 +386,12 @@ fn build_role_content(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AgentMatrixSettingsFlags {
-    pub exclude_global_claude_md: bool,
     pub inject_rtk_hook: bool,
 }
 
 impl AgentMatrixSettingsFlags {
     pub(crate) fn from_settings(settings: &AppSettings) -> Self {
         Self {
-            exclude_global_claude_md: settings.agents.iter().any(|a| a.exclude_global_claude_md),
             inject_rtk_hook: settings.inject_rtk_hook,
         }
     }
@@ -559,18 +556,6 @@ pub(crate) fn apply_agent_matrix_settings_files(
     flags: AgentMatrixSettingsFlags,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
-
-    if flags.exclude_global_claude_md {
-        if let Err(e) = ensure_claude_md_excludes(agent_dir) {
-            let warning = format!(
-                "Failed to write .claude/settings.local.json for {}: {}",
-                agent_dir.display(),
-                e
-            );
-            log::warn!("[entity_creation] {}", warning);
-            warnings.push(warning);
-        }
-    }
 
     if let Err(e) =
         crate::config::claude_settings::ensure_rtk_pretool_hook(agent_dir, flags.inject_rtk_hook)
@@ -878,15 +863,6 @@ pub(crate) fn create_or_update_replica_on_disk(
         _ => format!("Failed to create {} for {}: {}", sub, agent_name, e),
     })?;
 
-    if args.settings_flags.exclude_global_claude_md {
-        if let Err(e) = ensure_claude_md_excludes(&replica_dir) {
-            log::warn!(
-                "[entity_creation] Failed to write .claude/settings.local.json for replica {}: {}",
-                replica_dir.display(),
-                e
-            );
-        }
-    }
     if let Err(e) = crate::config::claude_settings::ensure_rtk_pretool_hook(
         &replica_dir,
         args.settings_flags.inject_rtk_hook,
@@ -1272,18 +1248,13 @@ pub async fn create_workgroup(
         }
     }
 
-    // Issue #84 — snapshot gate ONCE before the loop. Deliberate: all replicas
-    // in this workgroup creation must use the same gate value. Mid-loop
-    // toggles via update_settings are intentionally ignored — half-applied
-    // workgroups would be worse than a stale snapshot.
-    //
-    // Issue #120 — also snapshot `inject_rtk_hook` here for the same reason.
-    let (exclude_claude_md, inject_rtk_hook) = {
+    // Issue #120 - snapshot `inject_rtk_hook` ONCE before the loop. Deliberate:
+    // all replicas in this workgroup creation must use the same value. Mid-loop
+    // toggles via update_settings are intentionally ignored; a half-applied
+    // workgroup would be worse than a stale snapshot.
+    let inject_rtk_hook = {
         let s = settings.read().await;
-        (
-            s.agents.iter().any(|a| a.exclude_global_claude_md),
-            s.inject_rtk_hook,
-        )
+        s.inject_rtk_hook
     };
 
     // Create __agent_*/ replica dirs
@@ -1299,21 +1270,11 @@ pub async fn create_workgroup(
             _ => format!("Failed to create {} for {}: {}", sub, agent_name, e),
         })?;
 
-        // Issue #84 / #120 — write .claude/settings.local.json if any agent has
-        // the flag, and apply the rtk hook based on the global toggle. Per-replica
+        // Issue #120 - apply the rtk hook based on the global toggle. Per-replica
         // RtkSweepLock guard keeps the critical section short while still
         // serializing per-file work against any concurrent sweep.
         {
             let _guard = sweep_lock.lock().await;
-            if exclude_claude_md {
-                if let Err(e) = ensure_claude_md_excludes(&replica_dir) {
-                    log::warn!(
-                        "[entity_creation] Failed to write .claude/settings.local.json for replica {}: {}",
-                        replica_dir.display(),
-                        e
-                    );
-                }
-            }
             if let Err(e) = crate::config::claude_settings::ensure_rtk_pretool_hook(
                 &replica_dir,
                 inject_rtk_hook,
@@ -2686,8 +2647,6 @@ mod tests {
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
                 color: "#000000".to_string(),
-                git_pull_before: false,
-                exclude_global_claude_md: false,
                 envs: Vec::new(),
                 isolated_home: false,
                 instructions_filename: None,
@@ -2698,8 +2657,6 @@ mod tests {
                 label: "Claude".to_string(),
                 command: "claude".to_string(),
                 color: "#ffffff".to_string(),
-                git_pull_before: false,
-                exclude_global_claude_md: true,
                 envs: Vec::new(),
                 isolated_home: false,
                 instructions_filename: None,
@@ -2709,7 +2666,6 @@ mod tests {
 
         let flags = AgentMatrixSettingsFlags::from_settings(&settings);
 
-        assert!(flags.exclude_global_claude_md);
         assert!(flags.inject_rtk_hook);
     }
 
@@ -2722,7 +2678,6 @@ mod tests {
         let warnings = apply_agent_matrix_settings_files(
             &agent_dir,
             AgentMatrixSettingsFlags {
-                exclude_global_claude_md: true,
                 inject_rtk_hook: true,
             },
         );
@@ -2730,7 +2685,6 @@ mod tests {
         assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
         let settings_path = agent_dir.join(".claude").join("settings.local.json");
         let json = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-        assert!(json.contains("claudeMdExcludes"));
         assert!(json.contains("PreToolUse"));
     }
 
@@ -2859,7 +2813,6 @@ mod tests {
             agent_path: matrix_dir.to_string_lossy().to_string(),
             team_repos: Vec::new(),
             settings_flags: AgentMatrixSettingsFlags {
-                exclude_global_claude_md: false,
                 inject_rtk_hook: false,
             },
         })
@@ -2974,7 +2927,6 @@ mod tests {
             agent_path: stale_agent_ref,
             team_repos: Vec::new(),
             settings_flags: AgentMatrixSettingsFlags {
-                exclude_global_claude_md: false,
                 inject_rtk_hook: false,
             },
         })
@@ -3008,7 +2960,6 @@ mod tests {
             agent_path: "_agent_tech-lead".to_string(),
             team_repos: Vec::new(),
             settings_flags: AgentMatrixSettingsFlags {
-                exclude_global_claude_md: false,
                 inject_rtk_hook: false,
             },
         })

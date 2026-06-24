@@ -8,8 +8,6 @@ function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
     label: "Agent",
     command: "claude",
     color: "#000000",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: false,
     envs: [],
     isolatedHome: false,
     ...overrides,

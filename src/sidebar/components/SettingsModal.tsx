@@ -487,8 +487,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           label: "",
           command: "",
           color: "#6366f1",
-          gitPullBefore: false,
-          excludeGlobalClaudeMd: true,
           envs: [],
           isolatedHome: false,
           instructionsFilename: "AGENTS.md",
@@ -1447,30 +1445,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   data-ac-role="textbox"
                 />
               </div>
-            </label>
-            <label class="settings-checkbox-field">
-              <input
-                type="checkbox"
-                class="settings-checkbox"
-                checked={agent.gitPullBefore}
-                onChange={(e) => updateAgent(i(), "gitPullBefore", e.currentTarget.checked)}
-                data-ac-testid={`settings.agentRow.${i()}.gitPullBefore`}
-                data-ac-role="checkbox"
-                data-ac-state={agent.gitPullBefore ? "checked" : "unchecked"}
-              />
-              <span>Run git pull before launch</span>
-            </label>
-            <label class="settings-checkbox-field">
-              <input
-                type="checkbox"
-                class="settings-checkbox"
-                checked={agent.excludeGlobalClaudeMd}
-                onChange={(e) => updateAgent(i(), "excludeGlobalClaudeMd", e.currentTarget.checked)}
-                data-ac-testid={`settings.agentRow.${i()}.excludeGlobalClaudeMd`}
-                data-ac-role="checkbox"
-                data-ac-state={agent.excludeGlobalClaudeMd ? "checked" : "unchecked"}
-              />
-              <span>Exclude global CLAUDE.md on agent creation</span>
             </label>
             {renderAgentEnvEditor(agent, i())}
           </div>

@@ -153,8 +153,6 @@ mod tests {
             label: label.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
-            git_pull_before: false,
-            exclude_global_claude_md: false,
             envs: Vec::new(),
             isolated_home: false,
             instructions_filename: None,
@@ -211,28 +209,6 @@ mod tests {
 
         assert!(find_launch_agent(&settings, "").is_none());
         assert!(find_launch_agent(&settings, "   \t  ").is_none());
-    }
-
-    #[test]
-    fn build_session_request_leaves_git_pull_before_for_backend_builder() {
-        let mut launch_agent = agent("codex", "Codex", "codex --ask-for-approval never");
-        launch_agent.git_pull_before = true;
-
-        let request = build_session_request(
-            "C:/repo/.ac/_agent_architect".to_string(),
-            "repo/architect".to_string(),
-            &launch_agent,
-        )
-        .expect("request");
-
-        assert_eq!(request.cwd, "C:/repo/.ac/_agent_architect");
-        assert_eq!(request.session_name, "repo/architect");
-        assert_eq!(request.agent_id, "codex");
-        assert_eq!(request.shell, "codex");
-        assert_eq!(
-            request.shell_args,
-            vec!["--ask-for-approval".to_string(), "never".to_string()]
-        );
     }
 
     #[test]

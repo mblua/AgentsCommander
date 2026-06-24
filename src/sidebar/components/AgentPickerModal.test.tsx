@@ -52,8 +52,6 @@ function agent(overrides: Partial<AgentConfig>): AgentConfig {
     label: "Codex",
     command: "codex",
     color: "#10b981",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: true,
     envs: [],
     isolatedHome: false,
     ...overrides,
@@ -117,7 +115,6 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
         label: "Claude Code",
         command: "claude",
         color: "#d97706",
-        excludeGlobalClaudeMd: false,
       }),
     ],
     codingAgentProfiles: {

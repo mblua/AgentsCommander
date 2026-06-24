@@ -1,13 +1,13 @@
-// Callers of `ensure_claude_md_excludes` and `ensure_rtk_pretool_hook` (must be
-// kept in sync with any new agent-creation flow — see issue #84 for the original
-// `ensure_claude_md_excludes` miss and issue #120 for the rtk extension):
-//   - commands/agent_creator.rs::write_claude_settings_local (Tauri cmd; frontend: NewAgentModal.tsx + SessionItem.tsx ctx-menu)
-//   - cli/create_agent.rs (CLI `create-agent --launch <id>`)
-//   - commands/entity_creation.rs::create_agent_matrix
-//   - commands/entity_creation.rs::create_workgroup (per-replica)
+// Callers of `ensure_rtk_pretool_hook` (keep in sync with any new
+// agent-creation flow; see issue #120 for the rtk extension):
+//   - commands/entity_creation.rs::apply_agent_matrix_settings_files (matrix)
+//   - commands/entity_creation.rs::create_or_update_replica_on_disk (per-replica)
+//   - commands/entity_creation.rs::create_workgroup (per-replica loop)
+//   - commands/session.rs config-seed `.claude` re-apply (#598)
 //
 // The retroactive sweep (issue #120) is `commands/config.rs::sweep_rtk_hook`,
-// which reuses `enumerate_managed_agent_dirs` below.
+// which reuses `enumerate_managed_agent_dirs` below; the startup auto-disable
+// and active-recovery sweeps live in `lib.rs::run`.
 
 /// Immutable substring embedded in every AC-injected rewriter command.
 /// OFF-sweep removes any PreToolUse hook whose `command` contains this
@@ -52,67 +52,6 @@ pub const RTK_LEGACY_MARKERS: &[&str] = &["@ac-rtk-marker-v1"];
 pub const RTK_REWRITER_COMMAND: &str = r#"node -e "'@ac-rtk-marker-v2';const s=JSON.parse(require('fs').readFileSync(0,'utf8'));const c=s?.tool_input?.command;if(!c){process.exit(0)}if(/^rtk\s/.test(c)||/&&\s*rtk\s/.test(c)){process.exit(0)}const skip=/^(cd |mkdir |echo |cat <<|source |export |\.|set )/.test(c);if(skip){process.exit(0)}const parts=c.split(/\s*(&&|\|\||;)\s*/);const out=parts.map((p,i)=>{if(i%2===1)return p;if(/^rtk\s/.test(p))return p;return 'rtk '+p}).join(' ');if(out!==c){console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',updatedInput:{...s.tool_input,command:out}}}))}else{process.exit(0)}""#;
 
 use std::path::Path;
-
-/// Ensures `.claude/settings.local.json` in `dir` contains a `claudeMdExcludes`
-/// entry pointing to `~/.claude/CLAUDE.md`.
-///
-/// - Creates `.claude/` if missing.
-/// - Merges into an existing file (preserves other keys).
-/// - Resolves the home directory dynamically.
-pub fn ensure_claude_md_excludes(dir: &Path) -> Result<(), String> {
-    if !dir.exists() {
-        return Err(format!("Directory does not exist: {}", dir.display()));
-    }
-
-    let claude_dir = dir.join(".claude");
-    std::fs::create_dir_all(&claude_dir)
-        .map_err(|e| format!("Failed to create .claude directory: {}", e))?;
-
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let home_str = home.to_string_lossy().replace('\\', "/");
-    let exclude_path = format!("{}/.claude/CLAUDE.md", home_str);
-
-    let settings_path = claude_dir.join("settings.local.json");
-
-    // Merge into existing file if present; treat parse errors and non-objects as empty
-    let mut obj = if settings_path.exists() {
-        let existing = std::fs::read_to_string(&settings_path)
-            .map_err(|e| format!("Failed to read existing settings.local.json: {}", e))?;
-        match serde_json::from_str::<serde_json::Value>(&existing) {
-            Ok(v) if v.is_object() => v,
-            _ => serde_json::json!({}),
-        }
-    } else {
-        serde_json::json!({})
-    };
-
-    // guaranteed to be an object by the match above
-    let map = obj.as_object_mut().unwrap();
-
-    // Preserve existing array entries, just ensure our path is present
-    let mut excludes: Vec<serde_json::Value> = map
-        .get("claudeMdExcludes")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let exclude_val = serde_json::Value::String(exclude_path.clone());
-    if !excludes.contains(&exclude_val) {
-        excludes.push(exclude_val);
-    }
-
-    map.insert(
-        "claudeMdExcludes".to_string(),
-        serde_json::Value::Array(excludes),
-    );
-
-    let content = serde_json::to_string_pretty(&obj)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    std::fs::write(&settings_path, format!("{}\n", content))
-        .map_err(|e| format!("Failed to write settings.local.json: {}", e))?;
-
-    Ok(())
-}
 
 /// Merges (`enabled=true`) or removes (`enabled=false`) the RTK PreToolUse
 /// rewriter hook in `<dir>/.claude/settings.local.json`. Issue #120.

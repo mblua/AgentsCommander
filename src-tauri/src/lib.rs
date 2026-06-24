@@ -44,7 +44,7 @@ pub type WebServerHandle = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>
 ///
 /// Acquired by `commands::config::sweep_rtk_hook`, the startup auto-disable
 /// and active-recovery sweeps in `setup`, and every in-process call site that
-/// invokes `ensure_claude_md_excludes` + `ensure_rtk_pretool_hook` (see plan
+/// invokes `ensure_rtk_pretool_hook` (see plan
 /// §7.5). Cross-process races (CLI / second AC instance) are documented and
 /// out of scope for #120.
 pub type RtkSweepLockState = Arc<tokio::sync::Mutex<()>>;
@@ -1789,7 +1789,6 @@ pub fn run(
             commands::config::fetch_home_markdown,
             commands::agent_creator::pick_folder,
             commands::agent_creator::create_agent_folder,
-            commands::agent_creator::write_claude_settings_local,
             commands::ac_discovery::discover_ac_agents,
             commands::ac_discovery::check_project_path,
             commands::ac_discovery::create_ac_project,
@@ -1965,8 +1964,6 @@ mod tests {
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
                 color: "#10b981".to_string(),
-                git_pull_before: false,
-                exclude_global_claude_md: false,
                 envs: Vec::new(),
                 isolated_home: false,
                 instructions_filename: None,

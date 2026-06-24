@@ -136,8 +136,6 @@ function agentConfig(
 ): AgentConfig {
   return {
     color: "#888888",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: false,
     envs: [],
     isolatedHome: false,
     ...fields,
