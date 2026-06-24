@@ -85,6 +85,35 @@ A minimal `settings.json`:
 | `command` | string | — | Binary to spawn. Resolved against PATH unless absolute. |
 | `color` | string | — | CSS hex color for sidebar accent. |
 
+### Coding agent profiles
+
+Lettered launch variants (`A`, `B`, `C`, ...) per coding agent. See [Coding Agent Profiles](../features/coding-agent-profiles.md) for the feature; this is the `settings.json` schema.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `codingAgentProfiles` | `CodingAgentProfilesConfig` | See below | The profile matrix and its defaults. |
+
+`CodingAgentProfilesConfig`:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `schemaVersion` | number | `2` | Schema version. A version-1 object is upgraded and persisted on load, after a one-time v1 backup. |
+| `profileSlots` | `{ <LETTER>: { label: string } }` | `{ "A": { "label": "" } }` | The defined profile letters. Alias: `letters`. |
+| `defaultProfileByAgent` | `{ <agent>: <LETTER> }` | `{}` | Tier-4 fallback letter per agent matrix. Alias: `agentDefaults`. Rarely set by hand. |
+| `profilesByAgent` | `{ <coding-agent-id>: { <LETTER>: ProfileCellConfig } }` | `{}` | The matrix: per coding agent, the cell for each letter. Alias: `matrix`. |
+| `profileLabelsByAgent` | `{ <coding-agent-id>: { <LETTER>: string } }` | `{}` | Optional per-(agent, letter) label override. Empty inherits. |
+
+`ProfileCellConfig` (one cell of `profilesByAgent`):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Whether the cell participates in resolution. |
+| `command` | string | `""` | Parameters appended to the agent's base command (not the binary). |
+| `env` | `{ string: string }` | `{}` | Per-cell env, overlaid on the agent env (profile wins on a key clash). |
+| `notes` | string | `""` | Free text. |
+
+The per-agent and per-replica assignments do **not** live here. They are stored in each agent's `config.json` under `tooling`: the origin default (`tooling.defaultProfile`), the instance override (`tooling.profile`, legacy `tooling.instanceProfileOverride`), and the drift fingerprint (`tooling.profileContentHash`).
+
 ### Projects
 
 | Field | Type | Default | Description |
