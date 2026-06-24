@@ -352,6 +352,93 @@ fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
     }
 }
 
+/// Single-pass expansion of `%NAME%` (cmd) and `$env:NAME` (PowerShell)
+/// environment-variable references against `std::env::var`. Unknown names
+/// are preserved literally, so a downstream `is_dir()` check returns
+/// false rather than silently mis-resolving. Names must be ASCII
+/// alphanumeric or `_`; anything else terminates the name.
+///
+/// Limitations (acceptable for real-world wrappers):
+///   - No nested expansion: `%A%` whose value contains `%B%` is not re-expanded.
+///   - No escape syntax (cmd's `^%`, PowerShell's backtick); wrappers don't use these.
+///
+/// (#599 R2) Lifted to module scope (was nested in `resolve_claude_projects_dir`)
+/// so `claude_projects_dir_for_config_dir` can reuse it for the env-layer probe.
+fn expand_env_var_refs(input: &str) -> String {
+    // Pass 1: %NAME% (cmd-style).
+    let mut buf = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find('%') {
+        buf.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) => {
+                let name = &after[..end];
+                let valid = !name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if valid {
+                    if let Ok(v) = std::env::var(name) {
+                        buf.push_str(&v);
+                    } else {
+                        buf.push('%');
+                        buf.push_str(name);
+                        buf.push('%');
+                    }
+                } else {
+                    // Not a valid var name (e.g. "100%" literal); preserve.
+                    buf.push('%');
+                    buf.push_str(name);
+                    buf.push('%');
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                buf.push('%');
+                buf.push_str(after);
+                rest = "";
+                break;
+            }
+        }
+    }
+    buf.push_str(rest);
+
+    // Pass 2: $env:NAME (PowerShell-style). Case-insensitive prefix; name
+    // terminates at the first byte that is not [A-Za-z0-9_].
+    let mut out = String::with_capacity(buf.len());
+    let bytes = buf.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let remaining = &buf[i..];
+        if remaining.len() >= 5 && remaining.as_bytes()[..5].eq_ignore_ascii_case(b"$env:") {
+            let name_start = i + 5;
+            let mut name_end = name_start;
+            while name_end < bytes.len() {
+                let c = bytes[name_end];
+                if c.is_ascii_alphanumeric() || c == b'_' {
+                    name_end += 1;
+                } else {
+                    break;
+                }
+            }
+            if name_end > name_start {
+                let name = &buf[name_start..name_end];
+                if let Ok(v) = std::env::var(name) {
+                    out.push_str(&v);
+                } else {
+                    out.push_str(&buf[i..name_end]);
+                }
+                i = name_end;
+                continue;
+            }
+        }
+        // Default: copy one full UTF-8 char.
+        let ch = buf[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Resolve the directory where Claude Code stores its project transcripts for
 /// `cwd`, taking `CLAUDE_CONFIG_DIR` overrides set by `.cmd`/`.bat`/`.ps1`/`.sh`
 /// wrapper scripts into account.
@@ -395,90 +482,6 @@ pub(crate) fn resolve_claude_projects_dir(
         } else {
             None
         }
-    }
-
-    /// Single-pass expansion of `%NAME%` (cmd) and `$env:NAME` (PowerShell)
-    /// environment-variable references against `std::env::var`. Unknown names
-    /// are preserved literally, so a downstream `is_dir()` check returns
-    /// false rather than silently mis-resolving. Names must be ASCII
-    /// alphanumeric or `_`; anything else terminates the name.
-    ///
-    /// Limitations (acceptable for real-world wrappers):
-    ///   - No nested expansion: `%A%` whose value contains `%B%` is not re-expanded.
-    ///   - No escape syntax (cmd's `^%`, PowerShell's backtick) — wrappers don't use these.
-    fn expand_env_vars(input: &str) -> String {
-        // Pass 1: %NAME% (cmd-style).
-        let mut buf = String::with_capacity(input.len());
-        let mut rest = input;
-        while let Some(start) = rest.find('%') {
-            buf.push_str(&rest[..start]);
-            let after = &rest[start + 1..];
-            match after.find('%') {
-                Some(end) => {
-                    let name = &after[..end];
-                    let valid = !name.is_empty()
-                        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                    if valid {
-                        if let Ok(v) = std::env::var(name) {
-                            buf.push_str(&v);
-                        } else {
-                            buf.push('%');
-                            buf.push_str(name);
-                            buf.push('%');
-                        }
-                    } else {
-                        // Not a valid var name (e.g. "100%" literal); preserve.
-                        buf.push('%');
-                        buf.push_str(name);
-                        buf.push('%');
-                    }
-                    rest = &after[end + 1..];
-                }
-                None => {
-                    buf.push('%');
-                    buf.push_str(after);
-                    rest = "";
-                    break;
-                }
-            }
-        }
-        buf.push_str(rest);
-
-        // Pass 2: $env:NAME (PowerShell-style). Case-insensitive prefix; name
-        // terminates at the first byte that is not [A-Za-z0-9_].
-        let mut out = String::with_capacity(buf.len());
-        let bytes = buf.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            let remaining = &buf[i..];
-            if remaining.len() >= 5 && remaining.as_bytes()[..5].eq_ignore_ascii_case(b"$env:") {
-                let name_start = i + 5;
-                let mut name_end = name_start;
-                while name_end < bytes.len() {
-                    let c = bytes[name_end];
-                    if c.is_ascii_alphanumeric() || c == b'_' {
-                        name_end += 1;
-                    } else {
-                        break;
-                    }
-                }
-                if name_end > name_start {
-                    let name = &buf[name_start..name_end];
-                    if let Ok(v) = std::env::var(name) {
-                        out.push_str(&v);
-                    } else {
-                        out.push_str(&buf[i..name_end]);
-                    }
-                    i = name_end;
-                    continue;
-                }
-            }
-            // Default: copy one full UTF-8 char.
-            let ch = buf[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-        out
     }
 
     fn parse_config_dir_from_wrapper(path: &Path) -> Option<PathBuf> {
@@ -548,7 +551,7 @@ pub(crate) fn resolve_claude_projects_dir(
             if unquoted.is_empty() {
                 return None;
             }
-            let expanded = expand_env_vars(unquoted);
+            let expanded = expand_env_var_refs(unquoted);
             return Some(PathBuf::from(expanded));
         }
         None
@@ -620,12 +623,29 @@ pub(crate) fn resolve_claude_projects_dir(
     default_base().map(|base| base.join("projects").join(&mangled))
 }
 
+/// (#599 R2) Claude `projects/<mangled-cwd>` dir for an explicit
+/// `CLAUDE_CONFIG_DIR` taken from the profile/agent env layer. That layer is
+/// what the spawned Claude actually sees: the env approach launches a plain
+/// `claude`, so `resolve_claude_projects_dir` short-circuits to `~/.claude`
+/// (its `file_stem == "claude"` fast path) and misses env-relocated
+/// transcripts. The value is already AC-placeholder-expanded by the spawn
+/// builder; `expand_env_var_refs` additionally resolves any residual
+/// `%VAR%` / `$env:VAR` for parity with the wrapper path.
+fn claude_projects_dir_for_config_dir(config_dir: &str, cwd: &str) -> std::path::PathBuf {
+    let base = std::path::PathBuf::from(expand_env_var_refs(config_dir));
+    let mangled = crate::session::session::mangle_cwd_for_claude(cwd);
+    base.join("projects").join(mangled)
+}
+
 /// Decide whether to auto-inject `--continue` for a Claude session.
 /// Pure function: no filesystem access. Caller is responsible for resolving
 /// `claude_project_exists` (typically `~/.claude/projects/<mangled-cwd>/.is_dir()`).
 ///
 /// Callers should compute `claude_project_exists` via `resolve_claude_projects_dir`
-/// to honor wrapper-set `CLAUDE_CONFIG_DIR`. Note: a wrapper named exactly
+/// to honor wrapper-set `CLAUDE_CONFIG_DIR`. (#599 R2) The caller additionally
+/// honors the profile/agent env-layer `CLAUDE_CONFIG_DIR` first via
+/// `claude_projects_dir_for_config_dir`; this function itself is unchanged.
+/// Note: a wrapper named exactly
 /// `claude.cmd` / `claude.exe` / `claude.ps1` that overrides `CLAUDE_CONFIG_DIR`
 /// is intentionally NOT honored — the resolver short-circuits when the file_stem
 /// equals `claude`. Users who need wrapper overrides should rename to
@@ -884,9 +904,23 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // call sites pass `skip_auto_resume = true` for fresh creates).
     // Issue #186: honor `CLAUDE_CONFIG_DIR` overrides set by `.cmd`/`.bat`/`.ps1`/`.sh`
     // wrappers (e.g. `claude-mb`) so the probe locates the real transcript store.
-    let claude_project_exists = resolve_claude_projects_dir(&shell, &shell_args, &cwd)
-        .map(|p| p.is_dir())
-        .unwrap_or(false);
+    // #599 R2 - also honor the profile/agent env layer's CLAUDE_CONFIG_DIR. The env
+    // approach launches a plain `claude`, so resolve_claude_projects_dir would
+    // short-circuit to ~/.claude and miss env-relocated transcripts. When the
+    // resolved spawn carries CLAUDE_CONFIG_DIR, probe <that>/projects/<mangled>;
+    // otherwise keep the wrapper-aware default resolution.
+    let claude_config_dir_override = resolved_spawn.as_ref().and_then(|s| {
+        s.child_env
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR"))
+            .map(|(_, v)| v.clone())
+    });
+    let claude_project_exists = match claude_config_dir_override {
+        Some(ref dir) => claude_projects_dir_for_config_dir(dir, &cwd).is_dir(),
+        None => resolve_claude_projects_dir(&shell, &shell_args, &cwd)
+            .map(|p| p.is_dir())
+            .unwrap_or(false),
+    };
     if should_inject_continue(
         agent_kind == Some(CodingAgentKind::Claude),
         skip_auto_resume,
@@ -1381,6 +1415,7 @@ pub async fn create_session(
     agent_id: Option<String>,
     requested_profile: Option<String>,
     git_repos: Option<Vec<SessionRepo>>,
+    skip_auto_resume: Option<bool>,
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
 
@@ -1435,7 +1470,9 @@ pub async fn create_session(
         agent_label,
         false, // persist tooling
         git_repos.unwrap_or_default(),
-        true, // skip_auto_resume = true → fresh create, no `--continue` injection
+        // #599 R1: default true (fresh create); reopen of a closed coordinator
+        // passes Some(false) so the prior conversation resumes.
+        effective_create_skip_auto_resume(skip_auto_resume),
         resolved_spawn,
     )
     .await?;
@@ -1987,6 +2024,18 @@ pub async fn close_coordinator(
 /// `Some(false)` is used by the deferred-wake path (ProjectPanel.handleReplicaClick)
 /// to allow provider auto-resume and continue the prior conversation.
 fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
+    requested.unwrap_or(true)
+}
+
+/// (#599) Resolves the effective `skip_auto_resume` for the `create_session`
+/// command. Defaults to `true` (fresh conversation) so every existing
+/// create-in-place / new-agent / open-agent / CLI / web call site keeps its
+/// intentional "no --continue on a fresh create" semantics. The
+/// reopen-of-a-closed-coordinator path (ProjectPanel.handleReplicaClick) passes
+/// `Some(false)` to resume the prior conversation. Mirror of
+/// `effective_restart_skip_auto_resume` so both create and restart routes share
+/// the same default.
+fn effective_create_skip_auto_resume(requested: Option<bool>) -> bool {
     requested.unwrap_or(true)
 }
 
@@ -3629,6 +3678,65 @@ mod tests {
         // Explicit true still works (future-proof against a caller that
         // wants to be explicit rather than rely on the default).
         assert!(super::effective_restart_skip_auto_resume(Some(true)));
+    }
+
+    // ── #599 R1 effective_create_skip_auto_resume tests ──
+
+    #[test]
+    fn effective_create_skip_auto_resume_defaults_to_true_for_none() {
+        // No explicit value: legacy fresh-create default used by create-in-place,
+        // new-agent, open-agent, CLI, and web call sites (no --continue).
+        assert!(super::effective_create_skip_auto_resume(None));
+    }
+
+    #[test]
+    fn effective_create_skip_auto_resume_respects_explicit_false() {
+        // #599 R1: reopening a coordinator destroyed by auto-close (#552/#580)
+        // or manual close (#588) opts in to resume; --continue is then injected
+        // (still subject to the claude_project_exists disk gate downstream).
+        assert!(!super::effective_create_skip_auto_resume(Some(false)));
+    }
+
+    #[test]
+    fn effective_create_skip_auto_resume_respects_explicit_true() {
+        // Explicit true still skips resume (parity with the restart helper).
+        assert!(super::effective_create_skip_auto_resume(Some(true)));
+    }
+
+    // ── #599 R2 claude_projects_dir_for_config_dir tests ──
+
+    #[test]
+    fn claude_projects_dir_for_config_dir_joins_projects_and_mangled() {
+        // An explicit CLAUDE_CONFIG_DIR (already AC-expanded) maps to
+        // <base>/projects/<mangled-cwd>, mirroring the wrapper resolver output.
+        let base = if cfg!(windows) {
+            "C:\\Users\\maria\\.claude-env"
+        } else {
+            "/home/maria/.claude-env"
+        };
+        let cwd = if cfg!(windows) { "C:\\x" } else { "/home/x" };
+        let resolved = super::claude_projects_dir_for_config_dir(base, cwd);
+        let expected = std::path::PathBuf::from(base)
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude(cwd));
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn claude_projects_dir_for_config_dir_expands_percent_envvar_in_base() {
+        // Directly covers the lifted expand_env_var_refs: a %VAR% ref in the
+        // config dir resolves against the process env before the projects join.
+        let var = "AC_TEST_599_CONFIG_DIR";
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_base = tmp.path().join(".claude-env");
+        // SAFETY: env state is process-global; unique name avoids cross-test races.
+        std::env::set_var(var, custom_base.to_str().unwrap());
+        let resolved = super::claude_projects_dir_for_config_dir(&format!("%{}%", var), "C:\\x");
+        std::env::remove_var(var);
+        let expected = custom_base
+            .join("projects")
+            .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));
+        assert_eq!(resolved, expected);
     }
 
     // ── should_inject_continue tests (issue #82, plan §8.1) ──
