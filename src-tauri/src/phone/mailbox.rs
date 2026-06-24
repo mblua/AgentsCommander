@@ -2860,18 +2860,6 @@ impl MailboxPoller {
             }
         };
 
-        // 1b. MED-2 - daemon-side Root Agent exclusion. The CLI guard
-        //     (self_clear_blocked_for_root) is bypassable by a crafted outbox write; the
-        //     mailbox is the authoritative gate, same convention as handle_close_session
-        //     (#224). The Root Agent is user-launched and cleared from the UI.
-        if session.is_root_agent
-            || crate::config::root_agent::is_root_agent_path(&session.working_directory)
-        {
-            return self
-                .reject_message(path, msg, "self-clear is not available for the Root Agent")
-                .await;
-        }
-
         // 2. Shell guard - /clear is only meaningful on a coding-agent CLI, and the
         //    injector only sends explicit Enter for those shells. Same constraint as
         //    send --command clear (cmd/pwsh wrappers tracked under #233-followup-cmd-wrapper).
@@ -5315,7 +5303,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_self_clear_root_agent_is_rejected() {
+    async fn handle_self_clear_root_agent_is_allowed() {
         let temp = tempfile::TempDir::new().unwrap();
         let app_struct = make_mailbox_app(temp.path());
         let app = app_handle(&app_struct);
@@ -5323,7 +5311,10 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
-        // MED-2: mark the session as the Root Agent; the daemon gate must reject.
+        // #617 follow-up: the Root Agent exclusion was removed. A token-authorized
+        // self-clear from the Root must now queue like any other coding-agent
+        // session. Identity is still resolved solely by find_by_token, so this can
+        // only ever clear the session that owns the presented token.
         {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
@@ -5342,15 +5333,23 @@ mod tests {
             .await
             .unwrap();
 
-        let reason = std::fs::read_to_string(
-            cwd.join(crate::config::agent_local_dir_name())
-                .join("outbox")
-                .join("rejected")
-                .join("msg-sc-root.reason.txt"),
-        )
-        .expect("root self-clear must be rejected with a reason file");
-        assert!(reason.contains("Root Agent"));
-        assert_eq!(pending_self_clear_len(&app).await, 0);
+        // Queued, not rejected: the response is "queued", exactly one id is pending,
+        // and no reject reason file was written for the Root session.
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sc-root").as_deref(),
+            Some("queued")
+        );
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        let reason = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-sc-root.reason.txt");
+        assert!(
+            !reason.exists(),
+            "root self-clear must NOT be rejected anymore"
+        );
     }
 
     // ── err_is_pty_session_missing tests (issue #223) ──

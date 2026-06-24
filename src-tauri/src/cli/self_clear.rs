@@ -20,16 +20,6 @@ fn interpret_self_clear_response_exit_code(content: &str) -> i32 {
     }
 }
 
-/// Pure: self-clear is not available for the Root Agent (user-launched, never
-/// auto-managed; the user clears it from the UI). Returns the error message if blocked.
-fn self_clear_blocked_for_root(is_root_agent: bool) -> Option<&'static str> {
-    if is_root_agent {
-        Some("self-clear is not available for the Root Agent")
-    } else {
-        None
-    }
-}
-
 #[derive(Args)]
 #[command(after_help = "\
 Requests a /clear of the CALLER'S OWN agent context. The clear is DEFERRED: it executes only \
@@ -66,15 +56,6 @@ pub fn execute(args: SelfClearArgs) -> i32 {
             return 1;
         }
     };
-
-    // Root Agent is excluded at the CLI for fast feedback (the daemon re-checks
-    // authoritatively in handle_self_clear; the CLI guard alone is bypassable).
-    if let Some(reason) =
-        self_clear_blocked_for_root(crate::config::root_agent::is_root_agent_path(&root))
-    {
-        eprintln!("Error: {}", reason);
-        return 1;
-    }
 
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_t, r)) => r,
@@ -279,18 +260,6 @@ mod tests {
         assert_eq!(interpret_self_clear_response_exit_code("\"queued\""), 2);
         assert_eq!(interpret_self_clear_response_exit_code("42"), 2);
         assert_eq!(interpret_self_clear_response_exit_code("true"), 2);
-    }
-
-    // ── self_clear_blocked_for_root ──
-
-    #[test]
-    fn blocked_for_root_true_returns_message() {
-        assert!(self_clear_blocked_for_root(true).is_some());
-    }
-
-    #[test]
-    fn blocked_for_root_false_returns_none() {
-        assert!(self_clear_blocked_for_root(false).is_none());
     }
 
     // ── clap parse smoke ──
