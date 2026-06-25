@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
 use crate::config::replica_identity::{
@@ -1399,6 +1399,8 @@ pub async fn delete_team(
         .map_err(|e| format!("Failed to delete team directory: {}", e))?;
     log::info!("[entity_creation] Deleted team: {}", team_name);
 
+    // (#621) Count clock keys removed across the cascade; persist once after the loop.
+    let mut team_clock_removed = 0usize;
     // Then delete workgroups
     for wg_dir in &wg_dirs {
         let wg_name = wg_dir.file_name().unwrap_or_default().to_string_lossy();
@@ -1410,6 +1412,30 @@ pub async fn delete_team(
             );
         } else {
             log::info!("[entity_creation] Deleted workgroup: {}", wg_name);
+            // (#621) Drop this workgroup's coordinator_clocks keys (in-memory only;
+            // one persist after the loop, see below).
+            if let Some(project_name) = Path::new(&project_path).file_name().and_then(|n| n.to_str())
+            {
+                if let Some(clocks) =
+                    app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+                {
+                    team_clock_removed += clocks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove_workgroup(project_name, wg_name.as_ref());
+                }
+            }
+        }
+    }
+    // (#621 MED-2) Single persist for the whole cascade (avoids N concurrent saves).
+    if team_clock_removed > 0 {
+        if let Some(clocks) =
+            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        {
+            let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+            if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
+                log::warn!("[delete-team] clocks save failed: {}", e);
+            }
         }
     }
     emit_coordinator_refresh(&app, session_mgr.inner()).await;
@@ -1461,6 +1487,19 @@ pub async fn delete_workgroup(
     // and we run the diagnostic on the still-intact tree. On success the dir is
     // re-parented to a sentinel name and removed; the user-visible WG is gone.
     delete_workgroup_dir_backend(&wg_dir, &workgroup_name, session_mgr.inner()).await?;
+    // (#621) Drop the workgroup's coordinator_clocks keys from the in-memory store
+    // and persist immediately (this command is not on the auto-close flush tick).
+    if let Some(project_name) = Path::new(&project_path).file_name().and_then(|n| n.to_str()) {
+        if let Some(clocks) =
+            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        {
+            crate::config::coordinator_clocks::remove_workgroup_in_state(
+                clocks.inner(),
+                project_name,
+                &workgroup_name,
+            );
+        }
+    }
     log::info!(
         "[entity_creation] Deleted workgroup: {} (force={})",
         workgroup_name,
@@ -3813,5 +3852,124 @@ mod tests {
 
         assert!(err.contains("lowercase slug"), "unexpected error: {}", err);
         assert!(!workspace.join("_agent_Tech Lead").exists());
+    }
+
+    // ── #621 workgroup-delete clock + cache cleanup (integration) ─────────────
+
+    #[test]
+    fn workgroup_removal_clears_clock_key_and_cache_sibling_intact() {
+        use crate::config::coordinator_clocks::CoordinatorClocks;
+        use crate::config::session_context::sweep_context_cache_dir;
+        use std::time::{Duration, SystemTime};
+
+        // (#621 E4) inline timestamp; no helper exists in this module.
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let proj = tmp.path().join("Proj");
+        let ac = proj.join(".ac");
+        let wg1 = ac.join("wg-1-team");
+        let wg2 = ac.join("wg-2-team");
+        std::fs::create_dir_all(&wg1).unwrap();
+        std::fs::create_dir_all(&wg2).unwrap();
+
+        // Seed clocks: target wg, sibling wg, origin agent.
+        let mut clocks = CoordinatorClocks::default();
+        clocks.note_user_message("Proj:wg-1-team/coord", ts);
+        clocks.note_user_message("Proj:wg-2-team/coord", ts);
+        clocks.seed_if_absent("Proj/architect", ts);
+
+        // Seed cache: a stale file for the removed wg's replica + a fresh sibling.
+        let cache = tmp.path().join("context-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
+        let stale = cache.join("replica-context-aaa.md");
+        std::fs::write(&stale, "x").unwrap();
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(old).unwrap();
+        let fresh = cache.join("replica-context-bbb.md");
+        std::fs::write(&fresh, "x").unwrap();
+
+        // Remove wg-1: dir + clock key (cache via the age sweep).
+        assert!(matches!(try_atomic_delete_wg(&wg1), WgDeleteOutcome::Deleted));
+        assert_eq!(clocks.remove_workgroup("Proj", "wg-1-team"), 1);
+        let swept =
+            sweep_context_cache_dir(&cache, SystemTime::now(), Duration::from_secs(30 * 24 * 60 * 60));
+
+        assert!(!wg1.exists() && wg2.exists(), "only wg-1 dir removed");
+        assert_eq!(clocks.last_user_message_at("Proj:wg-1-team/coord"), None);
+        assert!(
+            clocks.last_user_message_at("Proj:wg-2-team/coord").is_some(),
+            "sibling clock intact"
+        );
+        assert!(clocks.last_user_message_at("Proj/architect").is_some(), "origin clock intact");
+        assert_eq!(swept, 1);
+        assert!(!stale.exists() && fresh.exists(), "stale cache gone, fresh kept");
+    }
+
+    #[test]
+    fn team_cascade_clears_each_wg_clock_keeps_others() {
+        // (#621 LOW-3b) delete_team loops its wg-N-<team> dirs; each removal drops that
+        // wg's keys. A non-team wg and an origin agent survive. Mirrors the §3.3 loop's
+        // per-wg `remove_workgroup` over multiple wgs (accumulator semantics).
+        use crate::config::coordinator_clocks::CoordinatorClocks;
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let mut clocks = CoordinatorClocks::default();
+        for k in [
+            "Proj:wg-1-squad/coord",
+            "Proj:wg-2-squad/coord",
+            "Proj:wg-2-squad/dev",   // second agent in a team wg
+            "Proj:wg-9-other/coord", // a DIFFERENT team's wg, must survive
+        ] {
+            clocks.note_user_message(k, ts);
+        }
+        clocks.seed_if_absent("Proj/architect", ts); // origin, survives
+
+        // Simulate the cascade over the "squad" team's wgs.
+        let mut total = 0usize;
+        for wg in ["wg-1-squad", "wg-2-squad"] {
+            total += clocks.remove_workgroup("Proj", wg);
+        }
+        assert_eq!(total, 3, "wg-1 (1) + wg-2 (2 agents) keys removed");
+        assert_eq!(clocks.last_user_message_at("Proj:wg-1-squad/coord"), None);
+        assert_eq!(clocks.last_user_message_at("Proj:wg-2-squad/coord"), None);
+        assert_eq!(clocks.last_user_message_at("Proj:wg-2-squad/dev"), None);
+        assert!(
+            clocks.last_user_message_at("Proj:wg-9-other/coord").is_some(),
+            "other team wg intact"
+        );
+        assert!(clocks.last_user_message_at("Proj/architect").is_some(), "origin intact");
+    }
+
+    #[test]
+    fn failed_wg_delete_keeps_clock_key() {
+        // (#621 LOW-3c) the clock cleanup is gated on a SUCCESSFUL dir delete (delete_workgroup
+        // via `?` early-return; delete_team via the `else` success branch). Force a failed
+        // remove and assert, applying that exact gate, that the key survives.
+        use crate::config::coordinator_clocks::CoordinatorClocks;
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let wg = tmp.path().join("wg-1-team");
+        std::fs::create_dir_all(&wg).unwrap();
+        let mut clocks = CoordinatorClocks::default();
+        clocks.note_user_message("Proj:wg-1-team/coord", ts);
+
+        // Force the remove step to fail (rename succeeds, remove_dir_all errors -> Partial).
+        let outcome = try_atomic_delete_wg_with_remove(&wg, |_p| {
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "blocked"))
+        });
+        // The production gate: clean the clock ONLY on Deleted.
+        if matches!(outcome, WgDeleteOutcome::Deleted) {
+            clocks.remove_workgroup("Proj", "wg-1-team");
+        }
+        assert!(
+            !matches!(outcome, WgDeleteOutcome::Deleted),
+            "forced failure is not a Deleted outcome"
+        );
+        assert!(
+            clocks.last_user_message_at("Proj:wg-1-team/coord").is_some(),
+            "a failed delete must keep the clock key"
+        );
     }
 }

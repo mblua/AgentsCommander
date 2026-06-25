@@ -432,6 +432,13 @@ const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(50
 /// Generous: any normal agent hits a 30s-idle window well within it.
 #[cfg_attr(test, allow(dead_code))]
 const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
+/// #629 - grace delay after the Phase-2 handoff prompt is injected before `self-handoff.md` is renamed
+/// to `self-handoff_<ts>.md`. 3 minutes is ample for the resumed agent to read the file; archiving it
+/// then keeps a stale `self-handoff.md` from false-triggering the NEXT cycle's existence gate (which
+/// only checks the file's presence). In-memory only: a daemon restart inside the window leaves the file
+/// (accepted, rare). Consumed only by the `cfg(not(test))`-spawned driver, so dead under `cfg(test)`.
+#[cfg_attr(test, allow(dead_code))]
+const SELF_HANDOFF_ARCHIVE_DELAY: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// #626 - the OutboxMessage `action` value for self-clear-and-handoff. Single-sourced so the CLI emit,
 /// the early-dispatch match, and the response body cannot drift (a drift would make early dispatch
@@ -702,27 +709,29 @@ pub(crate) fn self_clear_gate_advance(
     }
 }
 
-/// #626 - archive `<root>/FORGET.md` to `<root>/FORGET_<timestamp>.md`. No-op (`Ok(None)`) if FORGET.md
-/// is absent. `timestamp` is supplied by the caller so this is deterministic in tests. Returns the
-/// archived path on success. `std::fs::rename` is atomic within the same filesystem (the agent root).
-/// On Windows a FORGET.md held open without FILE_SHARE_DELETE yields ERROR_SHARING_VIOLATION (os error
-/// 32); the caller treats any `Err` as a non-fatal warn (no clobber, FORGET.md stays, next cycle
-/// archives it). NO retries (a retry loop would block the poller).
-fn archive_forget_md(
+/// #626/#629 - archive `<root>/<stem>.md` to `<root>/<stem>_<timestamp>.md`. No-op (`Ok(None)`) if
+/// `<stem>.md` is absent. `timestamp` is supplied by the caller so this is deterministic in tests.
+/// Returns the archived path on success. `std::fs::rename` is atomic within the same filesystem (the
+/// agent root). On Windows a source held open without FILE_SHARE_DELETE yields ERROR_SHARING_VIOLATION
+/// (os error 32); the caller treats any `Err` as a non-fatal warn (no clobber, the source stays, next
+/// cycle archives it). NO retries (a retry loop would block the caller). Consumers: FORGET.md at queue
+/// time (#626) and self-handoff.md after the post-handoff grace delay (#629).
+fn archive_root_md(
     root: &std::path::Path,
+    stem: &str,
     timestamp: &str,
 ) -> std::io::Result<Option<std::path::PathBuf>> {
-    let src = root.join("FORGET.md");
+    let src = root.join(format!("{}.md", stem));
     if !src.is_file() {
         return Ok(None); // no-op when absent
     }
-    let dst = root.join(format!("FORGET_{}.md", timestamp));
+    let dst = root.join(format!("{}_{}.md", stem, timestamp));
     if dst.exists() {
         // Same-second collision (effectively impossible: archiving happens once per >=60s cycle).
-        // Refuse to clobber an existing archive; leave FORGET.md in place.
+        // Refuse to clobber an existing archive; leave the source in place.
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
-            "FORGET archive target already exists",
+            "archive target already exists",
         ));
     }
     std::fs::rename(&src, &dst)?;
@@ -3028,7 +3037,7 @@ impl MailboxPoller {
             // success (queue-time): an abandoned cycle leaves FORGET archived but uncleared; content is
             // preserved in FORGET_<ts>.md, re-issue continues normally.
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-            match archive_forget_md(std::path::Path::new(&session.working_directory), &ts) {
+            match archive_root_md(std::path::Path::new(&session.working_directory), "FORGET", &ts) {
                 Ok(Some(p)) => log::info!(
                     "[mailbox] self-clear-and-handoff: archived FORGET.md -> {}",
                     p.display()
@@ -3051,6 +3060,7 @@ impl MailboxPoller {
                         SELF_CLEAR_SETTLE,
                         SELF_CLEAR_POLL,
                         SELF_CLEAR_MAX_DEFER,
+                        SELF_HANDOFF_ARCHIVE_DELAY,
                     )
                     .await;
                 });
@@ -3084,6 +3094,7 @@ impl MailboxPoller {
         settle: std::time::Duration,
         poll: std::time::Duration,
         max_defer: std::time::Duration,
+        archive_delay: std::time::Duration,
     ) {
         let mut state = SelfClearGateState::new(std::time::Instant::now());
 
@@ -3139,18 +3150,61 @@ impl MailboxPoller {
                         session_id,
                         settle.as_secs()
                     );
-                    if let Err(e) = crate::pty::inject::inject_text_into_session(
+                    // #629 - on a SUCCESSFUL inject the resume prompt is now in, so the handoff file has
+                    // served its purpose. Spawn a detached timer that renames self-handoff.md ->
+                    // self-handoff_<ts>.md after a grace delay, so a stale handoff file cannot false-trigger
+                    // the NEXT cycle's existence gate (which only checks presence). Detached (not inline) so
+                    // the de-register below is not delayed by the wait. In-memory only: a daemon restart
+                    // inside the window leaves the file (accepted). On inject failure we do NOT archive: the
+                    // prompt never reached the agent, so its notes stay at the canonical name for a retry.
+                    match crate::pty::inject::inject_text_into_session(
                         app,
                         session_id,
                         SELF_CLEAR_HANDOFF_PROMPT,
                     )
                     .await
                     {
-                        log::warn!(
+                        Ok(_) => {
+                            let root = {
+                                let session_mgr =
+                                    app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                                let mgr = session_mgr.read().await;
+                                mgr.list_sessions()
+                                    .await
+                                    .iter()
+                                    .find(|s| s.id == session_id.to_string())
+                                    .map(|s| s.working_directory.clone())
+                            };
+                            if let Some(root) = root {
+                                tauri::async_runtime::spawn(async move {
+                                    tokio::time::sleep(archive_delay).await;
+                                    let ts =
+                                        chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+                                    // Best-effort: a rename failure is a non-fatal warn (mirrors the
+                                    // FORGET.md archive at queue time).
+                                    match archive_root_md(
+                                        std::path::Path::new(&root),
+                                        "self-handoff",
+                                        &ts,
+                                    ) {
+                                        Ok(Some(p)) => log::info!(
+                                            "[mailbox] self-clear-and-handoff: archived self-handoff.md -> {}",
+                                            p.display()
+                                        ),
+                                        Ok(None) => {} // already gone (agent moved/removed it)
+                                        Err(e) => log::warn!(
+                                            "[mailbox] self-clear-and-handoff: self-handoff.md archive failed (non-fatal): {}",
+                                            e
+                                        ),
+                                    }
+                                });
+                            }
+                        }
+                        Err(e) => log::warn!(
                             "[mailbox] self-clear-and-handoff: handoff prompt injection failed for session {}: {}",
                             session_id,
                             e
-                        );
+                        ),
                     }
                     break;
                 }
@@ -5329,23 +5383,23 @@ mod tests {
         assert_eq!(SELF_CLEAR_ACTION, "self-clear-and-handoff");
     }
 
-    // ── #626 archive_forget_md unit tests (tempdir, deterministic timestamp) ──
+    // ── #626/#629 archive_root_md unit tests (tempdir, deterministic timestamp) ──
 
     #[test]
-    fn archive_forget_md_absent_is_noop() {
+    fn archive_root_md_forget_absent_is_noop() {
         let temp = tempfile::TempDir::new().unwrap();
-        let res = archive_forget_md(temp.path(), "20260101_000000").unwrap();
+        let res = archive_root_md(temp.path(), "FORGET", "20260101_000000").unwrap();
         assert!(res.is_none(), "absent FORGET.md is a no-op (Ok(None))");
         let count = std::fs::read_dir(temp.path()).unwrap().count();
         assert_eq!(count, 0, "no file is created when FORGET.md is absent");
     }
 
     #[test]
-    fn archive_forget_md_present_renames_and_preserves_content() {
+    fn archive_root_md_forget_present_renames_and_preserves_content() {
         let temp = tempfile::TempDir::new().unwrap();
         let src = temp.path().join("FORGET.md");
         std::fs::write(&src, "old topic 1\nold topic 2").unwrap();
-        let dst = archive_forget_md(temp.path(), "20260102_030405")
+        let dst = archive_root_md(temp.path(), "FORGET", "20260102_030405")
             .unwrap()
             .expect("present FORGET.md must be archived");
         assert_eq!(dst, temp.path().join("FORGET_20260102_030405.md"));
@@ -5358,13 +5412,13 @@ mod tests {
     }
 
     #[test]
-    fn archive_forget_md_target_exists_errs_without_clobber() {
+    fn archive_root_md_forget_target_exists_errs_without_clobber() {
         let temp = tempfile::TempDir::new().unwrap();
         let src = temp.path().join("FORGET.md");
         std::fs::write(&src, "fresh").unwrap();
         let dst = temp.path().join("FORGET_20260102_030405.md");
         std::fs::write(&dst, "existing archive").unwrap();
-        let err = archive_forget_md(temp.path(), "20260102_030405").unwrap_err();
+        let err = archive_root_md(temp.path(), "FORGET", "20260102_030405").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(src.exists(), "FORGET.md must stay in place when the target exists");
         assert_eq!(
@@ -5372,6 +5426,37 @@ mod tests {
             "existing archive",
             "the pre-existing archive must not be clobbered"
         );
+    }
+
+    #[test]
+    fn archive_root_md_self_handoff_present_renames_and_preserves_content() {
+        // #629 - the new consumer: self-handoff.md is archived with the same helper + timestamp format.
+        let temp = tempfile::TempDir::new().unwrap();
+        let src = temp.path().join("self-handoff.md");
+        std::fs::write(&src, "resume: finish step 4\nthen run gates").unwrap();
+        let dst = archive_root_md(temp.path(), "self-handoff", "20260301_121314")
+            .unwrap()
+            .expect("present self-handoff.md must be archived");
+        assert_eq!(dst, temp.path().join("self-handoff_20260301_121314.md"));
+        assert!(
+            !src.exists(),
+            "self-handoff.md must be gone after the rename (so it cannot re-trigger the gate)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dst).unwrap(),
+            "resume: finish step 4\nthen run gates",
+            "content must be preserved across the rename"
+        );
+    }
+
+    #[test]
+    fn archive_root_md_self_handoff_absent_is_noop() {
+        // #629 - if the agent already moved or removed self-handoff.md, the delayed archive is a no-op.
+        let temp = tempfile::TempDir::new().unwrap();
+        let res = archive_root_md(temp.path(), "self-handoff", "20260301_121314").unwrap();
+        assert!(res.is_none(), "absent self-handoff.md is a no-op (Ok(None))");
+        let count = std::fs::read_dir(temp.path()).unwrap().count();
+        assert_eq!(count, 0, "no file is created when self-handoff.md is absent");
     }
 
     #[test]

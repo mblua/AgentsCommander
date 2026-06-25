@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
@@ -9,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// coordinator. Keystroke bursts inside this window are coalesced to one
 /// update so we do not emit/persist per keystroke.
 const COALESCE_SECS: i64 = 10;
+
+/// (#621 MED-2) Monotonic suffix so concurrent `save_map_to` calls in one process
+/// (auto-close tick + off-tick workgroup-remove saves) never share a temp path.
+static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Persisted per-coordinator state, keyed by the coordinator FQN
 /// (`<project>:<wg>/<agent>`). One entry holds the persisted facts behind the
@@ -214,6 +219,45 @@ impl CoordinatorClocks {
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
     }
+
+    /// (#621) Remove every key for one workgroup: all FQNs prefixed
+    /// `"<project>:<wg>/"`. Returns the number of keys removed; dirties the store
+    /// iff any were removed. The prefix is reconstructed exactly from the on-disk
+    /// project folder name + workgroup dir name (no hashing), so it is precise and
+    /// can never touch another workgroup. The trailing '/' stops a short wg name
+    /// from matching a longer sibling (`wg-1/` must not match `wg-12/coord`).
+    /// (#621 LOW-1) The compare is case-INSENSITIVE: the key carries the spawn
+    /// `working_directory` case while the caller passes `project_path.file_name()`,
+    /// and the prune + Windows FS are case-insensitive; an exact match would
+    /// `Ok(0)`-silently miss a case-drifted project. Case-insensitive project+wg
+    /// identity IS the FS identity, so this still cannot touch another workgroup.
+    pub fn remove_workgroup(&mut self, project: &str, wg: &str) -> usize {
+        let prefix = format!("{}:{}/", project, wg);
+        self.retain_keys(|k| !key_has_prefix_ignore_ascii_case(k, &prefix))
+    }
+
+    /// (#621) Retain only keys for which `keep` returns true. Returns the number
+    /// removed; dirties the store iff any were removed. Backbone for
+    /// `remove_workgroup` and the startup prune.
+    pub fn retain_keys<F: FnMut(&str) -> bool>(&mut self, mut keep: F) -> usize {
+        let before = self.map.len();
+        self.map.retain(|k, _| keep(k));
+        let removed = before - self.map.len();
+        if removed > 0 {
+            self.dirty = true;
+        }
+        removed
+    }
+}
+
+/// (#621 LOW-1) ASCII-case-insensitive prefix test that never panics on a non-char
+/// boundary (`get(..n)` returns None) and never allocates. `eq_ignore_ascii_case`
+/// matches Windows FS / project-resolution case-insensitivity; project + wg names
+/// are ASCII in practice, and a non-ASCII boundary simply yields "no match" (keep),
+/// which the case-insensitive startup prune still backstops.
+fn key_has_prefix_ignore_ascii_case(key: &str, prefix: &str) -> bool {
+    key.get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 pub type CoordinatorClocksState = std::sync::Arc<Mutex<CoordinatorClocks>>;
@@ -264,13 +308,147 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    // (#621 MED-2) Unique temp per write: two concurrent saves in one process
+    // (auto-close tick + off-tick workgroup-remove) must not share a temp path,
+    // or interleaved writes produce a corrupt file that the next load() wipes.
+    let tmp = path.with_extension(format!(
+        "json.{}.{}.tmp",
+        std::process::id(),
+        SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
     // Reuse sessions_persistence::rename_with_retry for the Windows AV/indexer
     // hold retry (#280/#291). Discard the rich diagnostics on error.
     crate::config::sessions_persistence::rename_with_retry(&tmp, path)
         .map_err(|(msg, _diag)| msg)?;
     Ok(())
+}
+
+/// (#621) GUI-path helper: remove a workgroup's keys from the in-memory store
+/// (authoritative for the running app) and persist iff something changed. Returns
+/// keys removed. Used by `delete_workgroup` and `delete_team`.
+pub fn remove_workgroup_in_state(state: &CoordinatorClocksState, project: &str, wg: &str) -> usize {
+    let removed = {
+        let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
+        g.remove_workgroup(project, wg)
+    };
+    if removed > 0 {
+        let snap = { state.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        if let Err(e) = save_map(&snap) {
+            log::warn!("[coordinator-clocks] workgroup-remove save failed: {}", e);
+        }
+    }
+    removed
+}
+
+/// (#621) CLI-path helper: the CLI runs in its own process with no in-memory
+/// store, so load -> remove -> save the on-disk map directly. Best-effort; returns
+/// Ok(0) when no config dir resolves. NOTE: if the GUI is running concurrently it
+/// owns the in-memory map and may re-persist the key on its next flush; the
+/// startup prune is the backstop for that race (see `prune_orphaned_workgroups_and_persist`).
+pub fn remove_workgroup_on_disk(project: &str, wg: &str) -> Result<usize, String> {
+    let mut clocks = load();
+    let removed = clocks.remove_workgroup(project, wg);
+    if removed > 0 {
+        save_map(&clocks.snapshot())?;
+    }
+    Ok(removed)
+}
+
+/// (#621) Conservative startup backstop: drop clock keys whose workgroup dir is
+/// CONFIRMED gone on disk, EXCEPT any key that belongs to a persisted session.
+/// Locks `state`, prunes, persists iff anything changed. Never fails startup
+/// (logs on save error). Cleans historical orphans + anything a concurrent/
+/// standalone CLI remove left behind.
+///
+/// (#621 MED-1) The `live_fqns` keep-set is built from `sessions.json` BEFORE the
+/// lock and makes the prune immune to FQN homonyms + temporarily-unregistered
+/// projects: a clock key is NEVER pruned while a session with that FQN is
+/// persisted. This literally enforces the issue's "never delete state of a live
+/// workgroup" constraint. The prune runs in `lib.rs` before the restore, but
+/// `load_sessions_raw()` is a read-only snapshot, safe to read here.
+///
+/// (#621 I4) The std `Mutex` is held across the per-key `is_dir` fs-IO inside
+/// `prune_with`/`should_keep_clock_key`. Benign: this runs single-threaded in
+/// `run()` BEFORE `.manage(coordinator_clocks)` and `.setup()`, so nothing else
+/// touches the store yet. Do NOT relocate this onto a hot path / shared-state tick
+/// without moving the fs work out from under the lock.
+pub fn prune_orphaned_workgroups_and_persist(
+    state: &CoordinatorClocksState,
+    project_paths: &[String],
+) {
+    let candidates =
+        crate::config::projects::enumerate_registered_project_candidates(project_paths);
+    let live_fqns = persisted_session_fqns();
+    let removed = {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        prune_with(&mut guard, &candidates, &live_fqns)
+    };
+    if removed > 0 {
+        let snap = { state.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        if let Err(e) = save_map(&snap) {
+            log::warn!("[coordinator-clocks] startup prune save failed: {}", e);
+        }
+        log::info!(
+            "[coordinator-clocks] startup prune removed {} orphaned workgroup key(s)",
+            removed
+        );
+    }
+}
+
+/// (#621) FQN keep-set from the persisted session snapshot (read-only). Same
+/// function (`agent_fqn_from_path`) + same input (`working_directory`) that seeds
+/// the clock keys, so a live coordinator's session maps to exactly its clock key.
+/// Member sessions add harmless extra entries (their FQNs never equal a clock key).
+fn persisted_session_fqns() -> HashSet<String> {
+    crate::config::sessions_persistence::load_sessions_raw()
+        .iter()
+        .map(|s| crate::config::teams::agent_fqn_from_path(&s.working_directory))
+        .collect()
+}
+
+/// (#621) Testable prune core: returns keys removed. A key is KEPT iff it belongs
+/// to a persisted session (MED-1) OR `should_keep_clock_key` keeps it. Split out so
+/// tests can inject `candidates` + `live_fqns` without touching real sessions.json.
+pub fn prune_with(
+    clocks: &mut CoordinatorClocks,
+    candidates: &[crate::config::projects::ProjectResolution],
+    live_fqns: &HashSet<String>,
+) -> usize {
+    clocks.retain_keys(|key| live_fqns.contains(key) || should_keep_clock_key(key, candidates))
+}
+
+/// (#621) Keep-decision for one clock key during the startup prune. CONSERVATIVE:
+/// returns true (KEEP) on ANY uncertainty. Returns false (PRUNE) only when the key
+/// is a WG-replica FQN whose project resolves to EXACTLY ONE registered project,
+/// that project's workspace dir exists, and the specific `<wg>` dir under it is
+/// confirmed absent.
+fn should_keep_clock_key(
+    key: &str,
+    candidates: &[crate::config::projects::ProjectResolution],
+) -> bool {
+    // Origin-agent keys ("<project>/<agent>", no ':') are never workgroup-scoped.
+    let Some((project, rest)) = key.split_once(':') else {
+        return true;
+    };
+    // Malformed (no "<wg>/<agent>") -> keep.
+    let Some((wg, _agent)) = rest.split_once('/') else {
+        return true;
+    };
+    // Resolve the project folder name to EXACTLY ONE registered candidate
+    // (case-insensitive, matching resolve_project_reference). 0 or >1 -> keep.
+    let mut matches = candidates
+        .iter()
+        .filter(|c| c.folder_name.eq_ignore_ascii_case(project));
+    let (Some(resolved), None) = (matches.next(), matches.next()) else {
+        return true;
+    };
+    // Workspace dir missing/unreadable -> cannot confirm absence -> keep.
+    let Some(workspace) = crate::config::workspace::existing_workspace_dir(&resolved.path) else {
+        return true;
+    };
+    // Keep iff the workgroup dir still exists; prune only on CONFIRMED absence.
+    workspace.join(wg).is_dir()
 }
 
 /// Path-explicit load for unit tests, symmetric with `save_map_to`.
@@ -285,6 +463,7 @@ pub fn load_from(path: &Path) -> CoordinatorClocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::projects::enumerate_registered_project_candidates;
     use chrono::Duration;
 
     fn ts(secs: i64) -> DateTime<Utc> {
@@ -588,5 +767,140 @@ mod tests {
         assert_eq!(loaded.last_activity_at("proj:wg-2-team/coord"), None);
         assert_eq!(loaded.auto_closed_at("proj:wg-2-team/coord"), None);
         assert_eq!(loaded.manually_closed_at("proj:wg-2-team/coord"), None);
+    }
+
+    // ── #621 targeted-removal + startup-prune tests ──────────────────────────
+
+    #[test]
+    fn remove_workgroup_drops_only_target_prefix() {
+        let mut clocks = CoordinatorClocks::default();
+        for k in [
+            "proj:wg-1-team/coord",
+            "proj:wg-1-team/dev",    // same wg, second agent
+            "proj:wg-2-team/coord",  // sibling wg
+            "other:wg-1-team/coord", // different project, same wg name
+        ] {
+            clocks.note_user_message(k, ts(0));
+        }
+        clocks.seed_if_absent("proj/architect", ts(0)); // origin agent, no ':'
+        let _ = clocks.take_dirty();
+
+        let removed = clocks.remove_workgroup("proj", "wg-1-team");
+        assert_eq!(removed, 2, "only the two proj:wg-1-team/ keys are dropped");
+        assert!(clocks.take_dirty(), "a real removal dirties the store");
+        assert_eq!(clocks.last_user_message_at("proj:wg-1-team/coord"), None);
+        assert_eq!(clocks.last_user_message_at("proj:wg-1-team/dev"), None);
+        assert!(clocks.last_user_message_at("proj:wg-2-team/coord").is_some());
+        assert!(clocks.last_user_message_at("other:wg-1-team/coord").is_some());
+        assert!(clocks.last_user_message_at("proj/architect").is_some());
+    }
+
+    #[test]
+    fn remove_workgroup_trailing_slash_guards_sibling_prefix() {
+        let mut clocks = CoordinatorClocks::default();
+        clocks.note_user_message("proj:wg-1/coord", ts(0));
+        clocks.note_user_message("proj:wg-12/coord", ts(0)); // wg-1 is a string prefix of wg-12
+        assert_eq!(clocks.remove_workgroup("proj", "wg-1"), 1);
+        assert_eq!(clocks.last_user_message_at("proj:wg-1/coord"), None);
+        assert!(
+            clocks.last_user_message_at("proj:wg-12/coord").is_some(),
+            "trailing '/' must stop wg-1 from matching wg-12"
+        );
+    }
+
+    #[test]
+    fn remove_workgroup_absent_is_noop_and_clean() {
+        let mut clocks = CoordinatorClocks::default();
+        clocks.note_user_message("proj:wg-2-team/coord", ts(0));
+        let _ = clocks.take_dirty();
+        assert_eq!(clocks.remove_workgroup("proj", "wg-1-team"), 0);
+        assert!(!clocks.take_dirty(), "removing nothing must not dirty the store");
+    }
+
+    #[test]
+    fn remove_workgroup_is_case_insensitive() {
+        let mut clocks = CoordinatorClocks::default();
+        clocks.note_user_message("MyProj:WG-1-Team/coord", ts(0)); // key carries spawn case
+        // Caller passes a different case (e.g. project resolved as a read_dir child).
+        assert_eq!(clocks.remove_workgroup("myproj", "wg-1-team"), 1);
+        assert_eq!(clocks.last_user_message_at("MyProj:WG-1-Team/coord"), None);
+    }
+
+    #[test]
+    fn should_keep_clock_key_policy() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let proj = tmp.path().join("MyProj");
+        std::fs::create_dir_all(proj.join(".ac").join("wg-1-live")).unwrap();
+        // wg-2-gone deliberately not created.
+        let project_paths = vec![proj.to_string_lossy().to_string()];
+        let candidates = enumerate_registered_project_candidates(&project_paths);
+
+        // Live wg dir present -> KEEP.
+        assert!(should_keep_clock_key("MyProj:wg-1-live/coord", &candidates));
+        // Wg dir confirmed absent -> PRUNE.
+        assert!(!should_keep_clock_key("MyProj:wg-2-gone/coord", &candidates));
+        // Origin agent (no ':') -> KEEP.
+        assert!(should_keep_clock_key("MyProj/architect", &candidates));
+        // Unknown/unregistered project -> KEEP (cannot confirm).
+        assert!(should_keep_clock_key("Unregistered:wg-1/coord", &candidates));
+        // Project name resolves case-insensitively (matches resolve_project_reference).
+        assert!(!should_keep_clock_key("myproj:wg-2-gone/coord", &candidates));
+    }
+
+    #[test]
+    fn should_keep_clock_key_keeps_when_project_unenumerable() {
+        // (#621 E1) A project whose `.ac` does not exist yields ZERO candidates
+        // (enumerate requires `.ac`), so the key is kept by the 0-match branch, NOT
+        // by the `existing_workspace_dir` guard (which is only a TOCTOU belt).
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let proj = tmp.path().join("NoAc");
+        std::fs::create_dir_all(&proj).unwrap(); // project exists, but no .ac/
+        let candidates =
+            enumerate_registered_project_candidates(&[proj.to_string_lossy().to_string()]);
+        assert!(candidates.is_empty(), "no .ac -> not a candidate");
+        assert!(should_keep_clock_key("NoAc:wg-1/coord", &candidates));
+    }
+
+    #[test]
+    fn should_keep_clock_key_keeps_ambiguous_homonym_project() {
+        // (#621 E3 / LOW-3a) Two registered projects share a folder_name; one lacks
+        // the wg. >1 match -> cannot confirm -> KEEP (mirrors resolve_project_reference
+        // Ambiguous). This is the conservative guard that backs MED-1.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let a = tmp.path().join("a").join("app");
+        let b = tmp.path().join("b").join("app"); // same folder_name "app", different parent
+        std::fs::create_dir_all(a.join(".ac").join("wg-1-team")).unwrap(); // a HAS the wg
+        std::fs::create_dir_all(b.join(".ac")).unwrap(); // b lacks wg-1-team
+        let candidates = enumerate_registered_project_candidates(&[
+            a.to_string_lossy().to_string(),
+            b.to_string_lossy().to_string(),
+        ]);
+        // Even though `b` lacks wg-1-team, the homonym makes "app" ambiguous -> KEEP.
+        assert!(should_keep_clock_key("app:wg-1-team/coord", &candidates));
+    }
+
+    #[test]
+    fn prune_with_never_drops_a_persisted_session_key() {
+        // (#621 MED-1) The cardinal-sin guard: a live coordinator of a temporarily
+        // UNREGISTERED homonym project must keep its clock even though the prune would
+        // otherwise resolve the name to the registered homonym and find the wg absent.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let registered = tmp.path().join("work").join("app"); // registered, lacks wg-5
+        std::fs::create_dir_all(registered.join(".ac")).unwrap();
+        let candidates =
+            enumerate_registered_project_candidates(&[registered.to_string_lossy().to_string()]);
+
+        // Control: with NO keep-set the key WOULD be pruned (one match, wg-5 absent).
+        let empty: HashSet<String> = HashSet::new();
+        let mut probe = CoordinatorClocks::default();
+        probe.note_user_message("app:wg-5-team/coord", ts(0));
+        assert_eq!(prune_with(&mut probe, &candidates, &empty), 1, "unprotected -> pruned");
+
+        // With the persisted-session keep-set the live key survives.
+        let mut clocks = CoordinatorClocks::default();
+        clocks.note_user_message("app:wg-5-team/coord", ts(0)); // live coord of the OTHER "app"
+        let live: HashSet<String> = HashSet::from(["app:wg-5-team/coord".to_string()]);
+        assert_eq!(prune_with(&mut clocks, &candidates, &live), 0, "live key protected");
+        assert!(clocks.last_user_message_at("app:wg-5-team/coord").is_some());
     }
 }

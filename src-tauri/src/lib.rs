@@ -340,12 +340,21 @@ pub fn run(
         TelegramBridgeManager::new(output_senders),
     ));
 
-    let settings: SettingsState =
-        Arc::new(tokio::sync::RwLock::new(config::settings::load_settings()));
+    let loaded_settings = config::settings::load_settings();
+    // (#621) Snapshot registered project paths for the startup orphan-clock prune
+    // below (taken before the value is moved into the RwLock).
+    let startup_project_paths = loaded_settings.project_paths.clone();
+    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(loaded_settings));
     // #552 persisted coordinator badge clock + auto-closed marker store (loaded
     // once at startup; flushed by the auto-close tick and on app exit).
     let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
         Arc::new(Mutex::new(crate::config::coordinator_clocks::load()));
+    // (#621) Conservative backstop: drop clock keys for workgroups confirmed gone
+    // on disk (historical orphans + CLI-removed wgs). Keep-on-any-doubt.
+    crate::config::coordinator_clocks::prune_orphaned_workgroups_and_persist(
+        &coordinator_clocks,
+        &startup_project_paths,
+    );
     let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
     let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
     let settings_for_web = Arc::clone(&settings);
@@ -429,6 +438,12 @@ pub fn run(
 
             // #271 — seed `<config_dir>/agent-templates/` + README on startup.
             crate::commands::role_templates::ensure_default_templates_dir_at_config();
+
+            // (#621) GC the context-cache: unlink generated *-context-*.md files
+            // older than the retention window. Cleans orphans from removed
+            // workgroups AND caps the unbounded-growth secondary finding. Robust +
+            // self-healing: live agents re-write their cache every launch.
+            crate::config::session_context::sweep_context_cache_at_startup();
 
             // Git branch watcher: polls git branch for each session every 5s
             let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
