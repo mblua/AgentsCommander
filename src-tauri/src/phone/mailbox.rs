@@ -5122,32 +5122,15 @@ mod tests {
         request_id: &str,
         token: Option<String>,
     ) -> (PathBuf, OutboxMessage) {
-        let outbox_dir = cwd
-            .join(crate::config::agent_local_dir_name())
-            .join("outbox");
-        std::fs::create_dir_all(&outbox_dir).unwrap();
-        let path = outbox_dir.join(format!("{}.json", msg_id));
-        let msg = OutboxMessage {
-            id: msg_id.into(),
+        // Delegate to the parameterized builder with the fixed dev-rust sender, so the
+        // OutboxMessage literal lives in exactly one place.
+        build_self_clear_message_with_from(
+            cwd,
+            msg_id,
+            request_id,
             token,
-            from: "proj-a:wg-1-dev-team/dev-rust".into(),
-            to: String::new(),
-            body: String::new(),
-            mode: String::new(),
-            get_output: false,
-            request_id: Some(request_id.into()),
-            sender_agent: None,
-            preferred_agent: String::new(),
-            priority: "normal".into(),
-            timestamp: "2026-06-24T00:00:00Z".into(),
-            command: None,
-            action: Some("self-clear".into()),
-            target: None,
-            force: None,
-            timeout_secs: None,
-        };
-        std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
-        (path, msg)
+            "proj-a:wg-1-dev-team/dev-rust",
+        )
     }
 
     fn read_self_clear_response_status(cwd: &Path, request_id: &str) -> Option<String> {
@@ -5349,6 +5332,226 @@ mod tests {
         assert!(
             !reason.exists(),
             "root self-clear must NOT be rejected anymore"
+        );
+    }
+
+    /// Build a self-clear outbox message with an explicit `from`, written under
+    /// `<cwd>/<local-dir>/outbox/`. The canonical OutboxMessage literal for the
+    /// self-clear tests lives here; `build_self_clear_message` delegates with the
+    /// fixed dev-rust sender, and the Root e2e tests pass either the corrected
+    /// sender (ROOT_AGENT_SENDER) or the buggy path-derived value. Returns the
+    /// on-disk path and the message; the `process_message` driver reads the message
+    /// back from disk and ignores the returned struct.
+    fn build_self_clear_message_with_from(
+        cwd: &Path,
+        msg_id: &str,
+        request_id: &str,
+        token: Option<String>,
+        from: &str,
+    ) -> (PathBuf, OutboxMessage) {
+        let outbox_dir = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let path = outbox_dir.join(format!("{}.json", msg_id));
+        let msg = OutboxMessage {
+            id: msg_id.into(),
+            token,
+            from: from.into(),
+            to: String::new(),
+            body: String::new(),
+            mode: String::new(),
+            get_output: false,
+            request_id: Some(request_id.into()),
+            sender_agent: None,
+            preferred_agent: String::new(),
+            priority: "normal".into(),
+            timestamp: "2026-06-24T00:00:00Z".into(),
+            command: None,
+            action: Some("self-clear".into()),
+            target: None,
+            force: None,
+            timeout_secs: None,
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
+        (path, msg)
+    }
+
+    /// Best-effort removal of one msg-id's outbox artifacts so the Root e2e tests are
+    /// idempotent across runs. They must write under the process-global
+    /// `root_agent_dir()` (a fixed path, NOT a throwaway TempDir - see the test docs
+    /// for why), so stale delivered/rejected/response files from a prior run could
+    /// otherwise skew assertions. Each test uses a unique msg-id, so this is safe
+    /// even when the two tests run in parallel.
+    fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
+        let outbox = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        let _ = std::fs::remove_file(outbox.join(format!("{}.json", msg_id)));
+        let _ = std::fs::remove_file(outbox.join("delivered").join(format!("{}.json", msg_id)));
+        let _ = std::fs::remove_file(
+            outbox
+                .join("rejected")
+                .join(format!("{}.reason.txt", msg_id)),
+        );
+        let _ = std::fs::remove_file(outbox.join("rejected").join(format!("{}.json", msg_id)));
+        let _ = std::fs::remove_file(
+            cwd.join(crate::config::agent_local_dir_name())
+                .join("responses")
+                .join(format!("{}.json", request_id)),
+        );
+    }
+
+    /// #617 HIGH-1 e2e (production-faithful): a token-authorized Root self-clear
+    /// travels the FULL `process_message` agent-outbox path (NOT `handle_self_clear`
+    /// directly) and ENQUEUES.
+    ///
+    /// Fidelity, verified against the code (not assumed):
+    /// - A real Root Agent runs `self-clear --token <session-UUID>`. That UUID is
+    ///   neither the root_token nor the master token, so `validate_cli_token`
+    ///   (cli/mod.rs) returns is_root=false and `self_clear::execute` writes to the
+    ///   Root's AGENT outbox; the poller processes agent outboxes with
+    ///   `is_app_outbox=false`. So this test passes `false` and BOTH anti-spoof gates
+    ///   run, exactly like production. (An earlier draft used `true`, which skips the
+    ///   outbox-sender gate and is NOT the real path.)
+    /// - With the Root cwd both gates derive ROOT_AGENT_SENDER (outbox-sender via
+    ///   `sender_name_for_session_cwd`, token-root via the root-flagged variant), so
+    ///   the corrected sender passes both. The cwd MUST be the process-global
+    ///   `root_agent_dir()` so `is_root_agent_path` returns true; `config_dir()` /
+    ///   `root_agent_dir()` are OnceLock-cached, so a throwaway TempDir cannot stand
+    ///   in. Under `cargo test`, `root_agent_dir()` resolves beneath the test
+    ///   binary's target dir (never a real install) and the flow only ADDS files, so
+    ///   it is isolated and non-destructive.
+    /// - `from` is computed by `resolve_self_clear_sender` - the SAME helper
+    ///   `execute` uses - so this is a genuine gate: revert the fix and the helper
+    ///   yields the path FQN, the daemon rejects it, and the enqueue assertion fails.
+    #[tokio::test]
+    async fn process_message_root_self_clear_with_canonical_sender_queues() {
+        let root_cwd = PathBuf::from(
+            crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"),
+        );
+        std::fs::create_dir_all(&root_cwd).unwrap();
+        clear_root_self_clear_artifacts(&root_cwd, "msg-sc-root-e2e-pos", "rid-sc-root-e2e-pos");
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let (session_id, token) =
+            seed_self_clear_session(&app, &root_cwd.to_string_lossy(), "claude").await;
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.set_is_root_agent(session_id, true).await;
+        }
+
+        // The exact `from` the corrected CLI stamps for the Root cwd.
+        let canonical_from =
+            crate::cli::self_clear::resolve_self_clear_sender(&root_cwd.to_string_lossy());
+        assert_eq!(
+            canonical_from,
+            crate::config::root_agent::ROOT_AGENT_SENDER,
+            "fix precondition: the CLI must stamp ROOT_AGENT_SENDER for the Root cwd"
+        );
+
+        let (path, _msg) = build_self_clear_message_with_from(
+            &root_cwd,
+            "msg-sc-root-e2e-pos",
+            "rid-sc-root-e2e-pos",
+            Some(token.to_string()),
+            &canonical_from,
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .process_message(&app, &path, false)
+            .await
+            .expect("process_message should succeed");
+
+        // Enqueued: the queue-ack response is "queued", exactly one id is pending, and
+        // no reject reason file was written by either anti-spoof gate.
+        assert_eq!(
+            read_self_clear_response_status(&root_cwd, "rid-sc-root-e2e-pos").as_deref(),
+            Some("queued")
+        );
+        assert!(
+            pending_self_clear_contains(&app, session_id).await,
+            "canonical Root sender must enqueue the self-clear"
+        );
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        let reason = root_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-sc-root-e2e-pos.reason.txt");
+        assert!(
+            !reason.exists(),
+            "canonical Root sender must NOT be rejected by either anti-spoof gate"
+        );
+        assert!(!path.exists(), "message must be consumed (moved to delivered/)");
+    }
+
+    /// #617 HIGH-1 e2e negative (production-faithful): the EXACT buggy sender the old
+    /// CLI produced - `agent_name_from_root(<Root cwd>)`, a path-derived FQN, not
+    /// ROOT_AGENT_SENDER - is REJECTED on the same full `process_message` agent-outbox
+    /// path, so nothing queues. This is why the capability was dead in production
+    /// before the fix. In the agent-outbox path the outbox-sender gate is the first to
+    /// fire (the buggy `from` does not match the Root-derived outbox owner); the
+    /// token-root gate would reject it too. Proves the `from` value is load-bearing.
+    #[tokio::test]
+    async fn process_message_root_self_clear_with_buggy_sender_is_rejected() {
+        let root_cwd = PathBuf::from(
+            crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"),
+        );
+        std::fs::create_dir_all(&root_cwd).unwrap();
+        clear_root_self_clear_artifacts(&root_cwd, "msg-sc-root-e2e-neg", "rid-sc-root-e2e-neg");
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let (session_id, token) =
+            seed_self_clear_session(&app, &root_cwd.to_string_lossy(), "claude").await;
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.set_is_root_agent(session_id, true).await;
+        }
+
+        // Reproduce the EXACT value the pre-fix CLI stamped for the Root cwd.
+        let buggy_from = crate::cli::send::agent_name_from_root(&root_cwd.to_string_lossy());
+        assert_ne!(
+            buggy_from,
+            crate::config::root_agent::ROOT_AGENT_SENDER,
+            "precondition: the pre-fix sender must differ from the canonical Root sender"
+        );
+
+        let (path, _msg) = build_self_clear_message_with_from(
+            &root_cwd,
+            "msg-sc-root-e2e-neg",
+            "rid-sc-root-e2e-neg",
+            Some(token.to_string()),
+            &buggy_from,
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .process_message(&app, &path, false)
+            .await
+            .expect("process_message returns Ok even when it rejects");
+
+        // Rejected by an anti-spoof gate (mismatch); nothing queued.
+        let reason_path = root_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-sc-root-e2e-neg.reason.txt");
+        let reason = std::fs::read_to_string(&reason_path)
+            .expect("buggy Root sender must be rejected with a reason file");
+        assert!(
+            reason.contains("mismatch"),
+            "expected an anti-spoof mismatch rejection, got: {reason}"
+        );
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+        assert!(
+            !pending_self_clear_contains(&app, session_id).await,
+            "buggy Root sender must not enqueue anything"
         );
     }
 

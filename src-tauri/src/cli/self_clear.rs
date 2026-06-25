@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::phone::types::OutboxMessage;
 
-use super::send::agent_name_from_root;
+use super::send::sender_for_root;
 
 /// Pure: map the daemon's self-clear response body to a CLI exit code.
 /// 0 = queued | already_queued. 2 = unparseable / missing / unknown status
@@ -48,6 +48,22 @@ pub struct SelfClearArgs {
     pub timeout: u64,
 }
 
+/// Derive the `from` for a self-clear outbox message. Mirrors `send`'s sender
+/// derivation (send.rs:218+:235): the Root Agent MUST send as `ROOT_AGENT_SENDER`,
+/// not the path-derived FQN that `agent_name_from_root` returns for the Root cwd.
+///
+/// The daemon's anti-spoof gates derive the Root session's name as
+/// `ROOT_AGENT_SENDER` (mailbox.rs: the outbox-sender gate via
+/// `sender_name_for_session_cwd`, and the token-root gate via
+/// `sender_name_for_session_cwd_with_root_flag`). If the CLI stamps anything else,
+/// the Root's self-clear is rejected before it ever reaches `handle_self_clear`, so
+/// the capability is dead in production. Single source of truth: both `execute` and
+/// the daemon e2e tests call this, so reverting it surfaces as a test failure.
+pub(crate) fn resolve_self_clear_sender(root: &str) -> String {
+    let root_is_root_agent = crate::config::root_agent::is_root_agent_path(root);
+    sender_for_root(root, root_is_root_agent)
+}
+
 pub fn execute(args: SelfClearArgs) -> i32 {
     let root = match args.root {
         Some(ref r) => r.clone(),
@@ -65,7 +81,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
         }
     };
 
-    let sender = agent_name_from_root(&root);
+    let sender = resolve_self_clear_sender(&root);
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
     let msg_id = Uuid::new_v4().to_string();
@@ -309,5 +325,33 @@ mod tests {
             crate::cli::Commands::SelfClear(args) => assert_eq!(args.timeout, 42),
             _ => panic!("expected SelfClear subcommand"),
         }
+    }
+
+    // ── #617 HIGH-1: Root self-clear sender derivation (the actual fix) ──
+
+    /// The Root Agent's self-clear must send as the reserved `ROOT_AGENT_SENDER`,
+    /// NOT the path-derived FQN. This is the discriminating gate for the fix: on the
+    /// pre-fix code (`agent_name_from_root` on the Root cwd) this returns a path-like
+    /// FQN and the assertion fails; with `sender_for_root` it returns the reserved
+    /// constant. `is_root_agent_path` recognizes the canonical `root_agent_dir()` by
+    /// string-equality even when the directory is absent, so no filesystem setup is
+    /// needed.
+    #[test]
+    fn self_clear_sender_for_root_agent_uses_reserved_constant() {
+        let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
+        assert_eq!(
+            resolve_self_clear_sender(&root),
+            crate::config::root_agent::ROOT_AGENT_SENDER,
+            "Root self-clear must send as ROOT_AGENT_SENDER so the daemon anti-spoof accepts it"
+        );
+    }
+
+    /// A non-Root agent's self-clear is unaffected by the fix: it still resolves to
+    /// the path FQN, never the reserved Root URI. Guards against over-reach.
+    #[test]
+    fn self_clear_sender_for_non_root_is_path_fqn() {
+        let sender = resolve_self_clear_sender("C:/proj/.ac/wg-1-team/__agent_dev-rust");
+        assert_ne!(sender, crate::config::root_agent::ROOT_AGENT_SENDER);
+        assert_eq!(sender, "proj:wg-1-team/dev-rust");
     }
 }
