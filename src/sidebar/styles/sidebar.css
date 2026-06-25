@@ -588,10 +588,14 @@ html, body, #root {
 }
 
 /* #624 - spacing for the coding-agent badge inside the inline root subtitle
-   (the badge itself only carries color/size via .agent-badge). */
+   (the badge itself only carries color/size via .agent-badge).
+   text-transform:none overrides the uppercase inherited from
+   .root-agent-subtitle so the badge reads mixed-case (e.g. "Claude Code AMP"),
+   matching the session/coordinator rows. */
 .root-agent-badge {
   margin-left: 6px;
   vertical-align: middle;
+  text-transform: none;
 }
 
 /* Show inactive toggle */
