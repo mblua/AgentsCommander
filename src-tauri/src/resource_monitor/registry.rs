@@ -744,6 +744,12 @@ impl ResourceMonitorState {
         // live child a racy snapshot momentarily missed (which would weaken the no-job
         // reaper fallback). A clean tree always contains the root, so the root is
         // retained.
+        //
+        // KNOWN RESIDUAL (#637): a still-alive grandchild whose intermediate parent
+        // exited is unreachable from the root in this BFS (Windows does not reparent)
+        // yet the sample still looks clean, so it is pruned here. Harmless for jobbed
+        // sessions (the Job Object kills the whole tree regardless of reachability);
+        // for a job-less session it extends the MED-2 reaper-only orphan residual.
         if root_alive && sample_clean {
             group
                 .observed_processes
