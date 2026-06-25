@@ -119,7 +119,7 @@ pub struct Cli {
 pub enum Commands {
     /// Send a message to another agent
     Send(send::SendArgs),
-    /// Clear the calling agent's OWN context, then hand off to self-handoff.md
+    /// Clear the calling agent's OWN context, then hand off to SELF-HANDOFF.md
     /// (two-phase, deferred: clear after 30s sustained idle, then resume-prompt after a fresh 30s)
     #[command(name = "self-clear-and-handoff")]
     SelfClear(self_clear::SelfClearArgs),

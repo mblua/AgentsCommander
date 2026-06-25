@@ -25,12 +25,12 @@ fn interpret_self_clear_response_exit_code(content: &str) -> i32 {
 Clears the CALLER'S OWN agent context and then resumes it from a handoff file. Two deferred phases:\n\n\
   Phase 1 (clear): waits until this session is continuously idle for 30s, then injects /clear.\n\
   Phase 2 (handoff): after the clear, waits a FRESH 30s of sustained idle, then injects a prompt \
-telling you to read self-handoff.md in your own root and resume.\n\n\
-BEFORE invoking, write self-handoff.md in your own root with the notes you need to resume (EXCLUDING \
-anything already recorded in FORGET.md). If self-handoff.md is missing, the command refuses (clearing \
+telling you to read SELF-HANDOFF.md in your own root and resume.\n\n\
+BEFORE invoking, write SELF-HANDOFF.md in your own root with the notes you need to resume (EXCLUDING \
+anything already recorded in SELF-FORGET.md). If SELF-HANDOFF.md is missing, the command refuses (clearing \
 with nothing to resume from would wipe your context).\n\n\
-On invocation the command archives FORGET.md -> FORGET_<timestamp>.md in your root (no-op if absent), \
-so your next cycle starts with a fresh FORGET.md.\n\n\
+On invocation the command archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md in your root \
+(no-op if absent), so your next cycle starts with a fresh SELF-FORGET.md.\n\n\
 IDENTITY: the session is resolved from --token (find_by_token). You can only clear the session that \
 owns the token you present.\n\n\
 BEST-EFFORT: neither phase is guaranteed. A perpetually busy session that never reaches 30s sustained \
@@ -198,7 +198,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
                         Some("queued") => crate::cli_println!(
                             "self-clear-and-handoff requested. Phase 1 injects /clear only after this session is \
                              continuously idle for {0}s; Phase 2 then waits a fresh {0}s of post-clear idle and \
-                             injects a prompt to read self-handoff.md and resume. Best-effort and NOT guaranteed \
+                             injects a prompt to read SELF-HANDOFF.md and resume. Best-effort and NOT guaranteed \
                              (a busy session or a daemon restart drops it). If your context is still present later, \
                              re-issue.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
