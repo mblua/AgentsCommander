@@ -102,6 +102,18 @@ impl MasterToken {
 /// "restore loop hasn't reached this session yet — retry briefly."
 pub struct RestoreInProgress(pub AtomicBool);
 
+/// (#617) Sessions with a self-clear request awaiting their 30s sustained-idle
+/// window. Insert on queue; remove when the deferred task injects `/clear`, the
+/// session dies, or the safety cap expires. A session_id already present means a
+/// repeat self-clear is a no-op ("already_queued") - requests never stack.
+/// In-memory only: a daemon restart drops pending requests (accepted, best-effort).
+///
+/// Newtype is mandatory: `DetachedSessionsState` (lib.rs:38) is already a managed
+/// bare `Arc<Mutex<HashSet<Uuid>>>`, and Tauri keys managed state by Rust type, so
+/// a second bare alias would collide. Mirrors `RestoreInProgress`.
+#[derive(Default)]
+pub struct PendingSelfClear(pub Mutex<HashSet<uuid::Uuid>>);
+
 /// Instance-private outbox directory. Only this app instance polls it.
 /// Created at startup, path printed to stdout alongside master token.
 pub struct AppOutbox(String);
@@ -369,6 +381,7 @@ pub fn run(
         .manage(ui_automation_state)
         .manage(shutdown_signal)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
+        .manage(Arc::new(PendingSelfClear::default()))
         .setup(move |app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
