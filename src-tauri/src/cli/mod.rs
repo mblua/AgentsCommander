@@ -9,6 +9,7 @@ pub mod loop_cmd;
 pub mod new_project;
 pub mod open_project;
 pub mod role_experiment;
+pub mod self_clear;
 pub mod send;
 pub mod session_safety;
 pub mod task_append_body;
@@ -118,6 +119,10 @@ pub struct Cli {
 pub enum Commands {
     /// Send a message to another agent
     Send(send::SendArgs),
+    /// Clear the calling agent's OWN context, then hand off to self-handoff.md
+    /// (two-phase, deferred: clear after 30s sustained idle, then resume-prompt after a fresh 30s)
+    #[command(name = "self-clear-and-handoff")]
+    SelfClear(self_clear::SelfClearArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
     ListPeers(list_peers::ListPeersArgs),
     /// List reachable peers (lean JSON — name, working, sessionStatus, reachable, teams)
@@ -276,6 +281,7 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
 pub fn handle_cli(cmd: Commands) -> i32 {
     let code = match cmd {
         Commands::Send(args) => send::execute(args),
+        Commands::SelfClear(args) => self_clear::execute(args),
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
