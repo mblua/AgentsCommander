@@ -433,6 +433,21 @@ const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(50
 #[cfg_attr(test, allow(dead_code))]
 const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// #626 - the OutboxMessage `action` value for self-clear-and-handoff. Single-sourced so the CLI emit,
+/// the early-dispatch match, and the response body cannot drift (a drift would make early dispatch
+/// silently not fire and the command would be lost with no agent-visible error). `pub(crate)` so
+/// `cli/self_clear.rs` reaches it as `crate::phone::mailbox::SELF_CLEAR_ACTION`.
+pub(crate) const SELF_CLEAR_ACTION: &str = "self-clear-and-handoff";
+
+/// #626 - stand-alone prompt injected in Phase 2 after the post-clear sustained-idle window. Must be a
+/// SINGLE line (an embedded newline would submit early) and self-contained (the agent's context was just
+/// wiped). `pub(crate)` so a test can assert it is non-empty, single-line, em-dash-free, and names the
+/// file. The `\`-newline continuations collapse to one physical line with single spaces (no `\n`).
+pub(crate) const SELF_CLEAR_HANDOFF_PROMPT: &str =
+    "Your context was just cleared by the self-clear-and-handoff command. To resume, read the file \
+     self-handoff.md in your own agent root (your current working directory) and continue the work \
+     described there. If self-handoff.md is missing or empty, wait for new instructions instead of guessing.";
+
 /// §DR5 anti-spoof accept rule. Outbox-sender check passes when `msg_from`
 /// equals `expected_from` exactly, OR when `msg_from` is unqualified (legacy)
 /// AND its local part matches `expected_from`'s local part. Qualified-but-
@@ -583,45 +598,135 @@ pub(crate) fn next_sustained_idle_state(
     (Some(since), settled)
 }
 
-/// #617 - one decision of the self-clear deferral gate. `session_present == false`
-/// means the session was destroyed between polls. Folds destroyed + MAX_DEFER expiry
-/// onto the #611 `next_sustained_idle_state` settle/reset core.
+/// #626 - which leg of the self-clear-and-handoff gate we are in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelfClearPhase {
+    /// Waiting for sustained idle to inject `/clear`.
+    Clear,
+    /// `/clear` already injected; waiting for a FRESH sustained idle POST-clear to inject the
+    /// stand-alone handoff prompt.
+    Handoff,
+}
+
+/// #626 - gate state threaded by the driver across polls. Pure-function in/out, so the whole
+/// two-stage policy (settle, reset, phase transition, per-phase cap, destroyed) is unit-testable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SelfClearGateState {
+    pub phase: SelfClearPhase,
+    /// Instant the session was first seen continuously idle in the CURRENT phase, or None.
+    pub idle_since: Option<std::time::Instant>,
+    /// Start of the CURRENT phase, for the per-phase MAX_DEFER cap.
+    pub phase_started: std::time::Instant,
+}
+
+impl SelfClearGateState {
+    /// Initial state: Phase 1 (Clear), no idle observed yet, phase clock starts at `now`.
+    pub(crate) fn new(now: std::time::Instant) -> Self {
+        Self {
+            phase: SelfClearPhase::Clear,
+            idle_since: None,
+            phase_started: now,
+        }
+    }
+}
+
+/// #626 - the action the driver must take after one decider step.
 #[derive(Debug, PartialEq)]
-pub(crate) enum SelfClearGateStep {
-    /// Keep polling; carry this `idle_since` forward.
-    Wait(Option<std::time::Instant>),
-    /// Idle held >= settle: inject `/clear`.
-    Inject,
-    /// Stop without injecting (session gone or cap reached); &str is the log reason.
+pub(crate) enum SelfClearGateAction {
+    /// Keep polling; the driver adopts the returned state and carries it forward.
+    Wait,
+    /// Phase 1 settle: inject `/clear`. The returned state is already advanced to Phase 2 with the
+    /// idle clock reset, so the driver just injects and keeps looping.
+    InjectClear,
+    /// Phase 2 settle: inject the handoff prompt, then stop.
+    InjectHandoff,
+    /// Stop without injecting (session gone or per-phase cap reached); &str is the log reason.
     Abandon(&'static str),
 }
 
-/// #617 - pure gate decider. Same "pure decision, thin timer loop" pattern as
-/// `next_sustained_idle_state` (#611), so the reset/settle/destroyed/expiry policy
-/// is unit-testable WITHOUT timers, locks, or a PTY. The thin driver
-/// `run_self_clear_after_sustained_idle` polls and acts on this.
-pub(crate) fn self_clear_gate_step(
+/// #626 - pure two-stage gate step. Returns (next_state, action). `session_present == false` means
+/// the session vanished between polls. The Clear->Handoff transition RESETS `idle_since` to None and
+/// `phase_started` to `now`, so the Phase 2 window can NOT be satisfied by pre-clear idle. Same
+/// "pure decision, thin timer loop" pattern as #617's `self_clear_gate_step` (replaced here), reusing
+/// the #611 `next_sustained_idle_state` settle/reset core. Unit-testable WITHOUT timers, locks, or PTY.
+pub(crate) fn self_clear_gate_advance(
+    state: SelfClearGateState,
     session_present: bool,
     waiting_for_input: bool,
-    idle_since: Option<std::time::Instant>,
-    elapsed_total: std::time::Duration,
     now: std::time::Instant,
     settle: std::time::Duration,
     max_defer: std::time::Duration,
-) -> SelfClearGateStep {
+) -> (SelfClearGateState, SelfClearGateAction) {
     if !session_present {
-        return SelfClearGateStep::Abandon("session destroyed before sustained idle");
+        return (
+            state,
+            SelfClearGateAction::Abandon("session destroyed before sustained idle"),
+        );
     }
-    if elapsed_total >= max_defer {
-        return SelfClearGateStep::Abandon("never reached sustained idle within MAX_DEFER cap");
+    // Per-phase cap so each leg independently bounds a never-idle session.
+    let phase_elapsed = now
+        .checked_duration_since(state.phase_started)
+        .unwrap_or_default();
+    if phase_elapsed >= max_defer {
+        let reason = match state.phase {
+            SelfClearPhase::Clear => "never reached sustained idle within MAX_DEFER cap (clear leg)",
+            SelfClearPhase::Handoff => {
+                "never reached sustained idle within MAX_DEFER cap (handoff leg)"
+            }
+        };
+        return (state, SelfClearGateAction::Abandon(reason));
     }
     let (next_idle_since, settled) =
-        next_sustained_idle_state(waiting_for_input, idle_since, now, settle);
+        next_sustained_idle_state(waiting_for_input, state.idle_since, now, settle);
     if settled {
-        SelfClearGateStep::Inject
+        match state.phase {
+            SelfClearPhase::Clear => {
+                // Advance to Handoff and RESET both clocks: pre-clear idle does not count.
+                let next = SelfClearGateState {
+                    phase: SelfClearPhase::Handoff,
+                    idle_since: None,
+                    phase_started: now,
+                };
+                (next, SelfClearGateAction::InjectClear)
+            }
+            SelfClearPhase::Handoff => (state, SelfClearGateAction::InjectHandoff),
+        }
     } else {
-        SelfClearGateStep::Wait(next_idle_since)
+        (
+            SelfClearGateState {
+                idle_since: next_idle_since,
+                ..state
+            },
+            SelfClearGateAction::Wait,
+        )
     }
+}
+
+/// #626 - archive `<root>/FORGET.md` to `<root>/FORGET_<timestamp>.md`. No-op (`Ok(None)`) if FORGET.md
+/// is absent. `timestamp` is supplied by the caller so this is deterministic in tests. Returns the
+/// archived path on success. `std::fs::rename` is atomic within the same filesystem (the agent root).
+/// On Windows a FORGET.md held open without FILE_SHARE_DELETE yields ERROR_SHARING_VIOLATION (os error
+/// 32); the caller treats any `Err` as a non-fatal warn (no clobber, FORGET.md stays, next cycle
+/// archives it). NO retries (a retry loop would block the poller).
+fn archive_forget_md(
+    root: &std::path::Path,
+    timestamp: &str,
+) -> std::io::Result<Option<std::path::PathBuf>> {
+    let src = root.join("FORGET.md");
+    if !src.is_file() {
+        return Ok(None); // no-op when absent
+    }
+    let dst = root.join(format!("FORGET_{}.md", timestamp));
+    if dst.exists() {
+        // Same-second collision (effectively impossible: archiving happens once per >=60s cycle).
+        // Refuse to clobber an existing archive; leave FORGET.md in place.
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "FORGET archive target already exists",
+        ));
+    }
+    std::fs::rename(&src, &dst)?;
+    Ok(Some(dst))
 }
 
 /// Substring sniff for the `AppError::SessionNotFound` formatted message that
@@ -1253,7 +1358,7 @@ impl MailboxPoller {
         // "can A reach B" team rules. Routing it through can_communicate would wrongly
         // reject valid callers in no shared team. close-session stays in the
         // post-routing action block because it IS a cross-agent operation.
-        if msg.action.as_deref() == Some("self-clear") {
+        if msg.action.as_deref() == Some(SELF_CLEAR_ACTION) {
             return self.handle_self_clear(app, path, &msg, is_app_outbox).await;
         }
 
@@ -2876,6 +2981,28 @@ impl MailboxPoller {
                 .await;
         }
 
+        // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing with
+        //     no self-handoff.md would wipe context with no way to resume (the agent would post-clear
+        //     read a nonexistent file = blank). Queue-time intent guard (not transactional): the real
+        //     read-time safety net is SELF_CLEAR_HANDOFF_PROMPT's "if missing or empty, wait". Use
+        //     .is_file() so a stray directory named self-handoff.md does not pass. Runs BEFORE the
+        //     idempotency insert and the archive, so nothing is queued/archived with nothing to resume.
+        let handoff_path =
+            std::path::Path::new(&session.working_directory).join("self-handoff.md");
+        if !handoff_path.is_file() {
+            return self
+                .reject_message(
+                    path,
+                    msg,
+                    &format!(
+                        "self-clear-and-handoff: self-handoff.md not found in your root ({}); write it before \
+                         requesting self-clear-and-handoff.",
+                        session.working_directory
+                    ),
+                )
+                .await;
+        }
+
         // 3. Idempotency - atomic check-and-set. insert() returns false if already present.
         let newly_inserted = {
             let pending = app.state::<Arc<crate::PendingSelfClear>>();
@@ -2888,12 +3015,32 @@ impl MailboxPoller {
             "already_queued"
         };
 
-        // 4. Spawn the deferred sustained-idle gate (detached; never blocks the poller).
+        // 4. Spawn the deferred two-phase sustained-idle gate (detached; never blocks the poller).
         //    MED-4: gated under #[cfg(not(test))] so handle_self_clear unit tests assert
         //    queue + idempotency WITHOUT launching a live 500ms poll task. The gate's
-        //    decision policy is covered separately by the pure `self_clear_gate_step` tests.
+        //    decision policy is covered separately by the pure `self_clear_gate_advance` tests.
         //    Durations are passed in so a future integration test can drive it fast.
         if newly_inserted {
+            // #626 - archive FORGET.md so the next cycle starts fresh. Best-effort: a failure must not
+            // block the clear/handoff. The agent already wrote self-handoff.md (existence-gated above),
+            // so FORGET.md is present iff the agent kept one. FOLD-3: runs in ALL cfgs (NOT inside the
+            // cfg(not(test)) spawn) so the harness archive assertion can pass. Decoupled from clear
+            // success (queue-time): an abandoned cycle leaves FORGET archived but uncleared; content is
+            // preserved in FORGET_<ts>.md, re-issue continues normally.
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+            match archive_forget_md(std::path::Path::new(&session.working_directory), &ts) {
+                Ok(Some(p)) => log::info!(
+                    "[mailbox] self-clear-and-handoff: archived FORGET.md -> {}",
+                    p.display()
+                ),
+                Ok(None) => {} // no FORGET.md; nothing to archive
+                Err(e) => log::warn!(
+                    "[mailbox] self-clear-and-handoff: FORGET.md archive failed for session {} (non-fatal): {}",
+                    session_id,
+                    e
+                ),
+            }
+
             #[cfg(not(test))]
             {
                 let app_clone = app.clone();
@@ -2909,13 +3056,13 @@ impl MailboxPoller {
                 });
             }
             log::info!(
-                "[mailbox] self-clear queued for session {} (from '{}')",
+                "[mailbox] self-clear-and-handoff queued for session {} (from '{}')",
                 session_id,
                 msg.from
             );
         } else {
             log::info!(
-                "[mailbox] self-clear already pending for session {} (from '{}')",
+                "[mailbox] self-clear-and-handoff already pending for session {} (from '{}')",
                 session_id,
                 msg.from
             );
@@ -2926,10 +3073,10 @@ impl MailboxPoller {
             .await
     }
 
-    /// #617 - thin timer driver around `self_clear_gate_step`. Fire-and-forget.
-    /// Polls every `poll`, reuses the pure decider, injects `/clear` on settle, and
-    /// ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or never-idle
-    /// session is never cleared (the user-approved "30s sustained idle" semantic).
+    /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives BOTH phases
+    /// on the stable `session_id` (the PTY and id survive `/clear`), injecting `/clear` then the
+    /// handoff prompt, and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or
+    /// never-idle session is never cleared (the user-approved "30s sustained idle" semantic).
     #[cfg_attr(test, allow(dead_code))]
     async fn run_self_clear_after_sustained_idle<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>,
@@ -2938,8 +3085,7 @@ impl MailboxPoller {
         poll: std::time::Duration,
         max_defer: std::time::Duration,
     ) {
-        let start = std::time::Instant::now();
-        let mut idle_since: Option<std::time::Instant> = None;
+        let mut state = SelfClearGateState::new(std::time::Instant::now());
 
         loop {
             tokio::time::sleep(poll).await;
@@ -2955,22 +3101,21 @@ impl MailboxPoller {
                 }
             };
 
-            match self_clear_gate_step(
+            let (next, action) = self_clear_gate_advance(
+                state,
                 present,
                 waiting,
-                idle_since,
-                start.elapsed(),
                 std::time::Instant::now(),
                 settle,
                 max_defer,
-            ) {
-                SelfClearGateStep::Wait(next) => {
-                    idle_since = next;
-                    continue;
-                }
-                SelfClearGateStep::Inject => {
+            );
+            state = next; // adopt the advanced state (the Clear->Handoff reset is already applied)
+
+            match action {
+                SelfClearGateAction::Wait => continue,
+                SelfClearGateAction::InjectClear => {
                     log::info!(
-                        "[mailbox] self-clear: session {} held idle >={}s; injecting /clear",
+                        "[mailbox] self-clear-and-handoff: session {} idle >={}s; injecting /clear (phase 1)",
                         session_id,
                         settle.as_secs()
                     );
@@ -2980,18 +3125,40 @@ impl MailboxPoller {
                         crate::pty::inject::inject_text_into_session(app, session_id, "/clear").await
                     {
                         log::warn!(
-                            "[mailbox] self-clear: /clear injection failed for session {}: {}",
+                            "[mailbox] self-clear-and-handoff: /clear injection failed for session {}: {}",
+                            session_id,
+                            e
+                        );
+                        break; // abandon the handoff if the clear could not even be sent
+                    }
+                    continue; // state is already Phase 2 with reset clocks
+                }
+                SelfClearGateAction::InjectHandoff => {
+                    log::info!(
+                        "[mailbox] self-clear-and-handoff: session {} idle >={}s post-clear; injecting handoff prompt (phase 2)",
+                        session_id,
+                        settle.as_secs()
+                    );
+                    if let Err(e) = crate::pty::inject::inject_text_into_session(
+                        app,
+                        session_id,
+                        SELF_CLEAR_HANDOFF_PROMPT,
+                    )
+                    .await
+                    {
+                        log::warn!(
+                            "[mailbox] self-clear-and-handoff: handoff prompt injection failed for session {}: {}",
                             session_id,
                             e
                         );
                     }
                     break;
                 }
-                SelfClearGateStep::Abandon(reason) => {
-                    // MED-3: greppable abandon line so a silently-dropped clear is diagnosable.
+                SelfClearGateAction::Abandon(reason) => {
+                    // Greppable abandon line so a silently-dropped clear/handoff is diagnosable.
                     // The CLI already warned the caller it is best-effort.
                     log::warn!(
-                        "[mailbox] self-clear ABANDONED for session {}: {} (no /clear injected; agent may re-issue)",
+                        "[mailbox] self-clear-and-handoff ABANDONED for session {}: {} (agent may re-issue)",
                         session_id,
                         reason
                     );
@@ -3000,7 +3167,7 @@ impl MailboxPoller {
             }
         }
 
-        // Always de-register (inject / destroy / cap-expiry all land here).
+        // Always de-register (handoff injected / destroy / cap-expiry / clear-inject-fail all land here).
         let pending = app.state::<Arc<crate::PendingSelfClear>>();
         pending
             .0
@@ -3023,7 +3190,7 @@ impl MailboxPoller {
     ) -> Result<(), String> {
         if let Some(ref rid) = msg.request_id {
             let response = serde_json::json!({
-                "action": "self-clear",
+                "action": SELF_CLEAR_ACTION,
                 "status": status,                 // "queued" | "already_queued"
                 "session_id": session_id.to_string(),
                 "settle_secs": SELF_CLEAR_SETTLE_SECS,   // single-sourced const
@@ -4933,145 +5100,276 @@ mod tests {
         assert!(!i3);
     }
 
-    // ── #617 self_clear_gate_step pure decider tests (no timers / locks / PTY) ──
+    // ── #626 self_clear_gate_advance two-stage decider tests (no timers / locks / PTY) ──
 
     #[test]
-    fn gate_step_session_destroyed_abandons_even_when_idle() {
-        let now = std::time::Instant::now();
-        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
-        let max = std::time::Duration::from_secs(3600);
-        // session_present == false wins over everything, even waiting_for_input == true.
-        let step = self_clear_gate_step(
-            false,
-            true,
-            Some(now),
-            std::time::Duration::from_secs(1),
-            now,
-            settle,
-            max,
-        );
-        assert!(matches!(step, SelfClearGateStep::Abandon(_)));
-    }
-
-    #[test]
-    fn gate_step_max_defer_abandons_even_when_idle_and_not_settled() {
-        let now = std::time::Instant::now();
-        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
-        let max = std::time::Duration::from_secs(3600);
-        // present + idle but elapsed_total >= max_defer (boundary inclusive) -> Abandon.
-        let step = self_clear_gate_step(true, true, None, max, now, settle, max);
-        assert!(matches!(step, SelfClearGateStep::Abandon(_)));
-    }
-
-    #[test]
-    fn gate_step_busy_waits_with_reset_clock() {
-        let now = std::time::Instant::now();
-        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
-        let max = std::time::Duration::from_secs(3600);
-        // busy (waiting_for_input == false) -> Wait(None): the clock is reset.
-        let step = self_clear_gate_step(
-            true,
-            false,
-            Some(now),
-            std::time::Duration::from_secs(5),
-            now,
-            settle,
-            max,
-        );
-        assert_eq!(step, SelfClearGateStep::Wait(None));
-    }
-
-    #[test]
-    fn gate_step_first_idle_starts_clock_without_injecting() {
-        let now = std::time::Instant::now();
-        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
-        let max = std::time::Duration::from_secs(3600);
-        // idle, clock not yet started -> Wait(Some(now)), NOT Inject.
-        let step = self_clear_gate_step(
-            true,
-            true,
-            None,
-            std::time::Duration::from_secs(1),
-            now,
-            settle,
-            max,
-        );
-        assert_eq!(step, SelfClearGateStep::Wait(Some(now)));
-    }
-
-    #[test]
-    fn gate_step_idle_held_past_settle_injects() {
+    fn gate_advance_session_destroyed_abandons_even_when_idle() {
         let base = std::time::Instant::now();
         let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
         let max = std::time::Duration::from_secs(3600);
-        // idle held for >= settle -> Inject.
-        let step = self_clear_gate_step(
+        // session_present == false wins over everything, even waiting_for_input == true, in BOTH phases.
+        let clear = SelfClearGateState {
+            phase: SelfClearPhase::Clear,
+            idle_since: Some(base),
+            phase_started: base,
+        };
+        let (_n, a) = self_clear_gate_advance(
+            clear,
+            false,
             true,
-            true,
-            Some(base),
-            std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS),
-            base + settle,
+            base + std::time::Duration::from_secs(1),
             settle,
             max,
         );
-        assert_eq!(step, SelfClearGateStep::Inject);
+        assert!(matches!(a, SelfClearGateAction::Abandon(_)));
+        let handoff = SelfClearGateState {
+            phase: SelfClearPhase::Handoff,
+            idle_since: Some(base),
+            phase_started: base,
+        };
+        let (_n, a) = self_clear_gate_advance(
+            handoff,
+            false,
+            true,
+            base + std::time::Duration::from_secs(1),
+            settle,
+            max,
+        );
+        assert!(matches!(a, SelfClearGateAction::Abandon(_)));
     }
 
     #[test]
-    fn gate_step_idle_busy_idle_restarts_the_window() {
+    fn gate_advance_max_defer_abandons_with_phase_specific_reason() {
         let base = std::time::Instant::now();
         let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
         let max = std::time::Duration::from_secs(3600);
-        // Tick 1: idle starts the clock.
-        let s1 = self_clear_gate_step(
-            true,
-            true,
-            None,
-            std::time::Duration::from_secs(1),
-            base,
-            settle,
-            max,
-        );
-        assert_eq!(s1, SelfClearGateStep::Wait(Some(base)));
-        // Tick 2: busy clears the clock.
-        let s2 = self_clear_gate_step(
+        let now = base + max; // phase_elapsed == max_defer (boundary inclusive) -> Abandon.
+        let clear = SelfClearGateState::new(base);
+        let (_n, a) = self_clear_gate_advance(clear, true, true, now, settle, max);
+        match a {
+            SelfClearGateAction::Abandon(r) => {
+                assert!(r.contains("clear leg"), "clear-leg reason, got: {r}")
+            }
+            other => panic!("expected Abandon, got {other:?}"),
+        }
+        let handoff = SelfClearGateState {
+            phase: SelfClearPhase::Handoff,
+            idle_since: None,
+            phase_started: base,
+        };
+        let (_n, a) = self_clear_gate_advance(handoff, true, true, now, settle, max);
+        match a {
+            SelfClearGateAction::Abandon(r) => {
+                assert!(r.contains("handoff leg"), "handoff-leg reason, got: {r}")
+            }
+            other => panic!("expected Abandon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_advance_clear_busy_waits_with_reset_clock() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // busy (waiting_for_input == false) -> Wait, idle clock reset to None.
+        let state = SelfClearGateState {
+            phase: SelfClearPhase::Clear,
+            idle_since: Some(base),
+            phase_started: base,
+        };
+        let (next, action) = self_clear_gate_advance(
+            state,
             true,
             false,
-            Some(base),
-            std::time::Duration::from_secs(5),
             base + std::time::Duration::from_secs(5),
             settle,
             max,
         );
-        assert_eq!(s2, SelfClearGateStep::Wait(None));
+        assert_eq!(action, SelfClearGateAction::Wait);
+        assert_eq!(next.idle_since, None);
+        assert_eq!(next.phase, SelfClearPhase::Clear);
+    }
+
+    #[test]
+    fn gate_advance_clear_first_idle_starts_clock_without_injecting() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        let now = base + std::time::Duration::from_secs(1);
+        // idle, clock not yet started -> Wait with idle_since = Some(now), still Clear, NOT InjectClear.
+        let (next, action) =
+            self_clear_gate_advance(SelfClearGateState::new(base), true, true, now, settle, max);
+        assert_eq!(action, SelfClearGateAction::Wait);
+        assert_eq!(next.idle_since, Some(now));
+        assert_eq!(next.phase, SelfClearPhase::Clear);
+    }
+
+    #[test]
+    fn gate_advance_clear_idle_held_injects_clear_and_resets_to_handoff() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        let inject_now = base + settle;
+        let state = SelfClearGateState {
+            phase: SelfClearPhase::Clear,
+            idle_since: Some(base),
+            phase_started: base,
+        };
+        // idle held >= settle in Clear -> InjectClear AND state advanced to Handoff with BOTH clocks reset.
+        let (next, action) = self_clear_gate_advance(state, true, true, inject_now, settle, max);
+        assert_eq!(action, SelfClearGateAction::InjectClear);
+        assert_eq!(next.phase, SelfClearPhase::Handoff);
+        assert_eq!(next.idle_since, None, "idle clock reset for the fresh Phase 2 window");
+        assert_eq!(next.phase_started, inject_now, "phase clock restarts at the clear instant");
+    }
+
+    #[test]
+    fn gate_advance_no_pre_clear_idle_leak_into_handoff() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // Drive the Clear settle to get the post-clear Handoff state.
+        let inject_now = base + settle;
+        let clear = SelfClearGateState {
+            phase: SelfClearPhase::Clear,
+            idle_since: Some(base),
+            phase_started: base,
+        };
+        let (handoff_state, a0) = self_clear_gate_advance(clear, true, true, inject_now, settle, max);
+        assert_eq!(a0, SelfClearGateAction::InjectClear);
+
+        // Immediately feed idle just after the transition: must NOT inject handoff; the fresh window
+        // only just started (idle_since was reset to None, so this poll merely starts the clock).
+        let epsilon = std::time::Duration::from_millis(1);
+        let (s2, a2) =
+            self_clear_gate_advance(handoff_state, true, true, inject_now + epsilon, settle, max);
+        assert_eq!(a2, SelfClearGateAction::Wait, "pre-clear idle must not satisfy Phase 2");
+        assert_eq!(s2.idle_since, Some(inject_now + epsilon));
+        assert_eq!(s2.phase, SelfClearPhase::Handoff);
+
+        // Only after a FULL fresh settle from the post-clear window does it inject the handoff.
+        let (_s3, a3) =
+            self_clear_gate_advance(s2, true, true, inject_now + epsilon + settle, settle, max);
+        assert_eq!(a3, SelfClearGateAction::InjectHandoff);
+    }
+
+    #[test]
+    fn gate_advance_handoff_idle_held_injects_handoff() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        let state = SelfClearGateState {
+            phase: SelfClearPhase::Handoff,
+            idle_since: Some(base),
+            phase_started: base,
+        };
+        let (_n, action) = self_clear_gate_advance(state, true, true, base + settle, settle, max);
+        assert_eq!(action, SelfClearGateAction::InjectHandoff);
+    }
+
+    #[test]
+    fn gate_advance_clear_idle_busy_idle_restarts_the_window() {
+        let base = std::time::Instant::now();
+        let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+        let max = std::time::Duration::from_secs(3600);
+        // Tick 1: idle starts the clock (Clear).
+        let (s1, a1) = self_clear_gate_advance(SelfClearGateState::new(base), true, true, base, settle, max);
+        assert_eq!(a1, SelfClearGateAction::Wait);
+        assert_eq!(s1.idle_since, Some(base));
+        // Tick 2: busy clears the clock.
+        let (s2, a2) = self_clear_gate_advance(
+            s1,
+            true,
+            false,
+            base + std::time::Duration::from_secs(5),
+            settle,
+            max,
+        );
+        assert_eq!(a2, SelfClearGateAction::Wait);
+        assert_eq!(s2.idle_since, None);
         // Tick 3: idle again restarts the clock at the NEW now.
         let t3 = base + std::time::Duration::from_secs(10);
-        let s3 = self_clear_gate_step(
-            true,
-            true,
-            None,
-            std::time::Duration::from_secs(10),
-            t3,
-            settle,
-            max,
-        );
-        assert_eq!(s3, SelfClearGateStep::Wait(Some(t3)));
-        // Tick 4: 20s after the restart (< 30s) the pre-busy idle time does NOT
-        // count, so still Wait even though 30s of total elapsed_total has passed.
+        let (s3, a3) = self_clear_gate_advance(s2, true, true, t3, settle, max);
+        assert_eq!(a3, SelfClearGateAction::Wait);
+        assert_eq!(s3.idle_since, Some(t3));
+        // Tick 4: 20s after the restart (< 30s) the pre-busy idle does NOT count, so still Wait
+        // even though 30s of wall-clock has passed since `base`.
         let t4 = base + std::time::Duration::from_secs(30);
-        let s4 = self_clear_gate_step(
-            true,
-            true,
-            Some(t3),
-            std::time::Duration::from_secs(30),
-            t4,
-            settle,
-            max,
-        );
+        let (s4, a4) = self_clear_gate_advance(s3, true, true, t4, settle, max);
+        assert_eq!(a4, SelfClearGateAction::Wait);
         assert_eq!(
-            s4,
-            SelfClearGateStep::Wait(Some(t3)),
+            s4.idle_since,
+            Some(t3),
             "the busy step must restart the window; pre-busy idle does not carry over"
+        );
+        assert_eq!(s4.phase, SelfClearPhase::Clear, "no settle yet, still Phase 1");
+    }
+
+    #[test]
+    fn self_clear_handoff_prompt_is_single_line_self_contained() {
+        assert!(!SELF_CLEAR_HANDOFF_PROMPT.is_empty());
+        assert!(
+            !SELF_CLEAR_HANDOFF_PROMPT.contains('\n'),
+            "an embedded newline would submit the handoff prompt early"
+        );
+        assert!(
+            !SELF_CLEAR_HANDOFF_PROMPT.contains('\u{2014}'),
+            "handoff prompt must stay em-dash-free"
+        );
+        assert!(
+            SELF_CLEAR_HANDOFF_PROMPT.contains("self-handoff.md"),
+            "the prompt must name the file to read"
+        );
+    }
+
+    #[test]
+    fn self_clear_action_const_pins_wire_value() {
+        // FOLD-2: the single-sourced action value. A rename here is a deliberate, test-visible change.
+        assert_eq!(SELF_CLEAR_ACTION, "self-clear-and-handoff");
+    }
+
+    // ── #626 archive_forget_md unit tests (tempdir, deterministic timestamp) ──
+
+    #[test]
+    fn archive_forget_md_absent_is_noop() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let res = archive_forget_md(temp.path(), "20260101_000000").unwrap();
+        assert!(res.is_none(), "absent FORGET.md is a no-op (Ok(None))");
+        let count = std::fs::read_dir(temp.path()).unwrap().count();
+        assert_eq!(count, 0, "no file is created when FORGET.md is absent");
+    }
+
+    #[test]
+    fn archive_forget_md_present_renames_and_preserves_content() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let src = temp.path().join("FORGET.md");
+        std::fs::write(&src, "old topic 1\nold topic 2").unwrap();
+        let dst = archive_forget_md(temp.path(), "20260102_030405")
+            .unwrap()
+            .expect("present FORGET.md must be archived");
+        assert_eq!(dst, temp.path().join("FORGET_20260102_030405.md"));
+        assert!(!src.exists(), "FORGET.md must be gone after the rename");
+        assert_eq!(
+            std::fs::read_to_string(&dst).unwrap(),
+            "old topic 1\nold topic 2",
+            "content must be preserved across the rename"
+        );
+    }
+
+    #[test]
+    fn archive_forget_md_target_exists_errs_without_clobber() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let src = temp.path().join("FORGET.md");
+        std::fs::write(&src, "fresh").unwrap();
+        let dst = temp.path().join("FORGET_20260102_030405.md");
+        std::fs::write(&dst, "existing archive").unwrap();
+        let err = archive_forget_md(temp.path(), "20260102_030405").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(src.exists(), "FORGET.md must stay in place when the target exists");
+        assert_eq!(
+            std::fs::read_to_string(&dst).unwrap(),
+            "existing archive",
+            "the pre-existing archive must not be clobbered"
         );
     }
 
@@ -5114,6 +5412,29 @@ mod tests {
             .await
             .unwrap();
         (session.id, session.token)
+    }
+
+    /// #626 - seed the agent's `self-handoff.md` so the existence gate passes. The gate (§4.2) rejects
+    /// any self-clear-and-handoff whose root has no `self-handoff.md`, so every test that expects a
+    /// "queued"/"already_queued" outcome must seed it first.
+    fn seed_self_handoff(cwd: &Path) {
+        std::fs::write(cwd.join("self-handoff.md"), "resume notes for the test").unwrap();
+    }
+
+    /// #626 - count `FORGET_*.md` archive files in `cwd` (prefix match; the wall-clock timestamp in the
+    /// real archive name is unpredictable, so the harness asserts by prefix, not exact name).
+    fn count_forget_archives(cwd: &Path) -> usize {
+        std::fs::read_dir(cwd)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with("FORGET_")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     fn build_self_clear_message(
@@ -5167,6 +5488,9 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+        // #626: self-handoff.md must exist (existence gate) and FORGET.md is archived on queue.
+        seed_self_handoff(&cwd);
+        std::fs::write(cwd.join("FORGET.md"), "topic to forget").unwrap();
 
         let (path, msg) =
             build_self_clear_message(&cwd, "msg-sc-1", "rid-sc-1", Some(token.to_string()));
@@ -5182,6 +5506,16 @@ mod tests {
         );
         assert!(pending_self_clear_contains(&app, session_id).await);
         assert_eq!(pending_self_clear_len(&app).await, 1);
+        // #626: FORGET.md archived to exactly one FORGET_*.md (prefix match), original gone.
+        assert!(
+            !cwd.join("FORGET.md").is_file(),
+            "FORGET.md must be archived away on queue"
+        );
+        assert_eq!(
+            count_forget_archives(&cwd),
+            1,
+            "exactly one FORGET_<ts>.md archive must exist after queue"
+        );
         // message moved to delivered/, original removed.
         assert!(!path.exists());
     }
@@ -5195,6 +5529,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+        seed_self_handoff(&cwd); // existence gate
+        std::fs::write(cwd.join("FORGET.md"), "topic to forget").unwrap();
 
         let (path1, msg1) =
             build_self_clear_message(&cwd, "msg-sc-a", "rid-sc-a", Some(token.to_string()));
@@ -5203,6 +5539,10 @@ mod tests {
             .handle_self_clear(&app, &path1, &msg1, false)
             .await
             .unwrap();
+        // The first (queued) request archived FORGET.md. Re-create one to prove the second request
+        // does NOT re-archive (already_queued skips the newly_inserted block).
+        assert_eq!(count_forget_archives(&cwd), 1, "first request archives FORGET.md");
+        std::fs::write(cwd.join("FORGET.md"), "a new forget written mid-cycle").unwrap();
 
         let (path2, msg2) =
             build_self_clear_message(&cwd, "msg-sc-b", "rid-sc-b", Some(token.to_string()));
@@ -5222,6 +5562,98 @@ mod tests {
         // Still exactly one pending id (no stacking).
         assert!(pending_self_clear_contains(&app, session_id).await);
         assert_eq!(pending_self_clear_len(&app).await, 1);
+        // The already_queued second request did NOT re-archive: still exactly one archive, and the
+        // freshly re-created FORGET.md is left in place.
+        assert_eq!(count_forget_archives(&cwd), 1, "already_queued must not re-archive");
+        assert!(
+            cwd.join("FORGET.md").is_file(),
+            "the re-created FORGET.md must survive an already_queued request"
+        );
+    }
+
+    /// #626 - the existence gate REFUSES when self-handoff.md is absent: nothing is queued, the id is
+    /// NOT inserted, and no FORGET archive is created (the gate runs before the insert + archive).
+    #[tokio::test]
+    async fn handle_self_clear_missing_self_handoff_is_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (session_id, token) =
+            seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+        // No self-handoff.md seeded. Seed a FORGET.md to prove it is NOT archived on a refuse.
+        std::fs::write(cwd.join("FORGET.md"), "must not be archived").unwrap();
+
+        let (path, msg) = build_self_clear_message(
+            &cwd,
+            "msg-sc-nohandoff",
+            "rid-sc-nohandoff",
+            Some(token.to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_clear(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let reason = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-sc-nohandoff.reason.txt");
+        assert!(
+            reason.exists(),
+            "missing self-handoff.md must be rejected with a reason file"
+        );
+        assert!(
+            !pending_self_clear_contains(&app, session_id).await,
+            "a refused request must not insert the id"
+        );
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+        // The archive runs only after the gate passes; a refuse must not touch FORGET.md.
+        assert!(
+            cwd.join("FORGET.md").is_file(),
+            "FORGET.md must NOT be archived when the request is refused"
+        );
+        assert_eq!(count_forget_archives(&cwd), 0);
+    }
+
+    /// #626 - self-handoff.md present but no FORGET.md: queues normally, archive is a no-op (no error,
+    /// no FORGET_* created).
+    #[tokio::test]
+    async fn handle_self_clear_no_forget_md_still_queues() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (session_id, token) =
+            seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+        seed_self_handoff(&cwd); // no FORGET.md
+
+        let (path, msg) = build_self_clear_message(
+            &cwd,
+            "msg-sc-noforget",
+            "rid-sc-noforget",
+            Some(token.to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_clear(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sc-noforget").as_deref(),
+            Some("queued")
+        );
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(
+            count_forget_archives(&cwd),
+            0,
+            "no FORGET.md means no archive (no-op), no error"
+        );
     }
 
     #[tokio::test]
@@ -5294,6 +5726,7 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+        seed_self_handoff(&cwd); // #626 existence gate
         // #617 follow-up: the Root Agent exclusion was removed. A token-authorized
         // self-clear from the Root must now queue like any other coding-agent
         // session. Identity is still resolved solely by find_by_token, so this can
@@ -5368,7 +5801,7 @@ mod tests {
             priority: "normal".into(),
             timestamp: "2026-06-24T00:00:00Z".into(),
             command: None,
-            action: Some("self-clear".into()),
+            action: Some(SELF_CLEAR_ACTION.into()),
             target: None,
             force: None,
             timeout_secs: None,
@@ -5383,6 +5816,14 @@ mod tests {
     /// for why), so stale delivered/rejected/response files from a prior run could
     /// otherwise skew assertions. Each test uses a unique msg-id, so this is safe
     /// even when the two tests run in parallel.
+    ///
+    /// #626 NOTE: this helper deliberately does NOT touch `self-handoff.md`. That file is a single
+    /// SHARED (non-msg-id-scoped) name; if this start-of-test cleanup removed it, the negative e2e
+    /// (which rejects at anti-spoof and never seeds it) could delete the positive e2e's freshly-seeded
+    /// handoff file mid-flight when the two run in parallel - a flaky failure. The positive e2e owns
+    /// `self-handoff.md` end-to-end instead (seed before, remove after), so no other test races it.
+    /// `FORGET_*.md` is glob-removed defensively (the e2e tests never seed FORGET.md, so the archive is
+    /// a no-op and nothing is normally created - this only guards against a stale file from a crash).
     fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
         let outbox = cwd
             .join(crate::config::agent_local_dir_name())
@@ -5400,6 +5841,19 @@ mod tests {
                 .join("responses")
                 .join(format!("{}.json", request_id)),
         );
+        // Defensive: drop any stale FORGET_<ts>.md archive in the shared root (none is created in the
+        // normal e2e flow since neither test seeds FORGET.md).
+        if let Ok(rd) = std::fs::read_dir(cwd) {
+            for entry in rd.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("FORGET_")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
     }
 
     /// #617 HIGH-1 e2e (production-faithful): a token-authorized Root self-clear
@@ -5432,6 +5886,11 @@ mod tests {
         );
         std::fs::create_dir_all(&root_cwd).unwrap();
         clear_root_self_clear_artifacts(&root_cwd, "msg-sc-root-e2e-pos", "rid-sc-root-e2e-pos");
+        // #626 existence gate: seed self-handoff.md so the positive path still queues. This test OWNS
+        // self-handoff.md in the shared root_agent_dir (the negative e2e never touches it), so seeding
+        // here and removing at the end is race-free even with parallel test execution. NOTE: deliberately
+        // do NOT seed FORGET.md here (keep the archive a no-op so no timestamped litter in the shared dir).
+        seed_self_handoff(&root_cwd);
 
         let temp = tempfile::TempDir::new().unwrap();
         let app_struct = make_mailbox_app(temp.path());
@@ -5487,6 +5946,9 @@ mod tests {
             "canonical Root sender must NOT be rejected by either anti-spoof gate"
         );
         assert!(!path.exists(), "message must be consumed (moved to delivered/)");
+
+        // #626: this test owns self-handoff.md in the shared root; remove it so it does not linger.
+        let _ = std::fs::remove_file(root_cwd.join("self-handoff.md"));
     }
 
     /// #617 HIGH-1 e2e negative (production-faithful): the EXACT buggy sender the old

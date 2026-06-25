@@ -22,17 +22,21 @@ fn interpret_self_clear_response_exit_code(content: &str) -> i32 {
 
 #[derive(Args)]
 #[command(after_help = "\
-Requests a /clear of the CALLER'S OWN agent context. The clear is DEFERRED: it executes only \
-after the session has been continuously idle for 30 seconds. If the session goes busy again \
-during the window, the 30s timer restarts. Returns as soon as the request is queued; it does \
-NOT block until the clear runs.\n\n\
-IDENTITY: the session to clear is resolved from --token (find_by_token). You can only clear the \
-session that owns the token you present; there is no way to clear another agent.\n\n\
-BEST-EFFORT: the deferred clear is NOT guaranteed. A perpetually busy/chatty session that never \
-reaches 30s sustained idle, or a daemon restart before the window completes, drops the request \
-(a greppable warn line is logged on abandon). Re-issue self-clear if your context is still \
-present later.\n\n\
-SCOPE: only the `clear` command, and only coding-agent CLIs (Claude / Codex / Gemini).")]
+Clears the CALLER'S OWN agent context and then resumes it from a handoff file. Two deferred phases:\n\n\
+  Phase 1 (clear): waits until this session is continuously idle for 30s, then injects /clear.\n\
+  Phase 2 (handoff): after the clear, waits a FRESH 30s of sustained idle, then injects a prompt \
+telling you to read self-handoff.md in your own root and resume.\n\n\
+BEFORE invoking, write self-handoff.md in your own root with the notes you need to resume (EXCLUDING \
+anything already recorded in FORGET.md). If self-handoff.md is missing, the command refuses (clearing \
+with nothing to resume from would wipe your context).\n\n\
+On invocation the command archives FORGET.md -> FORGET_<timestamp>.md in your root (no-op if absent), \
+so your next cycle starts with a fresh FORGET.md.\n\n\
+IDENTITY: the session is resolved from --token (find_by_token). You can only clear the session that \
+owns the token you present.\n\n\
+BEST-EFFORT: neither phase is guaranteed. A perpetually busy session that never reaches 30s sustained \
+idle, or a daemon restart mid-cycle, drops the remainder (a greppable warn line is logged). Re-issue \
+if your context is still present later.\n\n\
+SCOPE: only coding-agent CLIs (Claude / Codex / Gemini).")]
 pub struct SelfClearArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
@@ -102,7 +106,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
         priority: "normal".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         command: None,
-        action: Some("self-clear".to_string()),
+        action: Some(crate::phone::mailbox::SELF_CLEAR_ACTION.to_string()),
         target: None,
         force: None,
         timeout_secs: None,
@@ -192,14 +196,17 @@ pub fn execute(args: SelfClearArgs) -> i32 {
                         .as_deref()
                     {
                         Some("queued") => crate::cli_println!(
-                            "self-clear requested. It runs ONLY after this session is continuously idle for {}s; \
-                             it is best-effort and NOT guaranteed (a busy/chatty session or a daemon restart drops it). \
-                             If your context is still present later, re-issue self-clear.",
+                            "self-clear-and-handoff requested. Phase 1 injects /clear only after this session is \
+                             continuously idle for {0}s; Phase 2 then waits a fresh {0}s of post-clear idle and \
+                             injects a prompt to read self-handoff.md and resume. Best-effort and NOT guaranteed \
+                             (a busy session or a daemon restart drops it). If your context is still present later, \
+                             re-issue.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
                         ),
                         Some("already_queued") => crate::cli_println!(
-                            "self-clear already pending for this session (or a clear is in flight); \
-                             it runs after {}s sustained idle. Best-effort; re-issue later if needed.",
+                            "self-clear-and-handoff already pending for this session (or a clear/handoff is in \
+                             flight); Phase 1 runs after {}s sustained idle, then Phase 2 after a fresh window. \
+                             Best-effort; re-issue later if needed.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
                         ),
                         _ => {}
@@ -231,20 +238,20 @@ mod tests {
 
     #[test]
     fn queued_status_returns_zero() {
-        let resp = r#"{"action":"self-clear","status":"queued","session_id":"s","settle_secs":30}"#;
+        let resp = r#"{"action":"self-clear-and-handoff","status":"queued","session_id":"s","settle_secs":30}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 0);
     }
 
     #[test]
     fn already_queued_status_returns_zero() {
         let resp =
-            r#"{"action":"self-clear","status":"already_queued","session_id":"s","settle_secs":30}"#;
+            r#"{"action":"self-clear-and-handoff","status":"already_queued","session_id":"s","settle_secs":30}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 0);
     }
 
     #[test]
     fn unknown_status_returns_two() {
-        let resp = r#"{"status":"weird_new_state","action":"self-clear"}"#;
+        let resp = r#"{"status":"weird_new_state","action":"self-clear-and-handoff"}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 2);
     }
 
@@ -257,13 +264,13 @@ mod tests {
 
     #[test]
     fn missing_status_field_returns_two() {
-        let resp = r#"{"action":"self-clear","session_id":"s"}"#;
+        let resp = r#"{"action":"self-clear-and-handoff","session_id":"s"}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 2);
     }
 
     #[test]
     fn non_string_status_returns_two() {
-        let resp = r#"{"status":42,"action":"self-clear"}"#;
+        let resp = r#"{"status":42,"action":"self-clear-and-handoff"}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 2);
     }
 
@@ -285,13 +292,13 @@ mod tests {
         use clap::Parser;
         let parsed = crate::cli::Cli::try_parse_from([
             "agentscommander",
-            "self-clear",
+            "self-clear-and-handoff",
             "--token",
             "11111111-1111-1111-1111-111111111111",
             "--root",
             "anything",
         ])
-        .expect("clap should accept self-clear with token + root");
+        .expect("clap should accept self-clear-and-handoff with token + root");
         let cmd = parsed.command.expect("subcommand present");
         match cmd {
             crate::cli::Commands::SelfClear(args) => {
@@ -311,7 +318,7 @@ mod tests {
         use clap::Parser;
         let parsed = crate::cli::Cli::try_parse_from([
             "agentscommander",
-            "self-clear",
+            "self-clear-and-handoff",
             "--token",
             "11111111-1111-1111-1111-111111111111",
             "--root",
@@ -325,6 +332,26 @@ mod tests {
             crate::cli::Commands::SelfClear(args) => assert_eq!(args.timeout, 42),
             _ => panic!("expected SelfClear subcommand"),
         }
+    }
+
+    /// #626 rename: the old `self-clear` subcommand name no longer exists. clap must
+    /// REJECT it (the variant is renamed via `#[command(name = "self-clear-and-handoff")]`),
+    /// so a stale invocation fails loudly rather than silently doing nothing.
+    #[test]
+    fn old_self_clear_subcommand_name_is_rejected() {
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "agentscommander",
+            "self-clear",
+            "--token",
+            "11111111-1111-1111-1111-111111111111",
+            "--root",
+            "anything",
+        ]);
+        assert!(
+            parsed.is_err(),
+            "the old `self-clear` name must be rejected after the #626 rename"
+        );
     }
 
     // ── #617 HIGH-1: Root self-clear sender derivation (the actual fix) ──
