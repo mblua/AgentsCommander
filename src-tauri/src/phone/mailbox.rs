@@ -3958,6 +3958,7 @@ mod tests {
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
+            start_fresh_on_restore: false,
         }
     }
 

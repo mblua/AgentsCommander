@@ -134,6 +134,16 @@ pub struct Session {
     /// (including the Phase 3 restore path).
     #[serde(default)]
     pub detached_geometry: Option<WindowGeometry>,
+    /// (#630/#631) Durable per-session resume intent for the next app restart.
+    /// `true` => the user explicitly started this session fresh ("Restart Session")
+    /// and that intent must survive the restart, so the restore path passes
+    /// `skip_auto_resume = true` and injects no `--continue`. `false` (default)
+    /// => resume the prior conversation. Re-armed to `false` on the first real
+    /// user message (`note_user_message_to_session`) so a fresh-then-used session
+    /// resumes its NEW conversation next time. Durable copy lives in
+    /// `PersistedSession`; carried (off the wire) through `SessionInfo`.
+    #[serde(default)]
+    pub start_fresh_on_restore: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -240,6 +250,12 @@ pub struct SessionInfo {
     /// second lock round-trip through `SessionManager::get_session`.
     #[serde(skip)]
     pub detached_geometry: Option<WindowGeometry>,
+    /// (#630/#631) Not serialized to the frontend: internal carrier for
+    /// `snapshot_sessions` so persistence can read the durable resume intent
+    /// without a second lock round-trip. Mirrors `detached_geometry`: `#[serde(skip)]`
+    /// keeps it off the IPC wire, so the frontend contract is unchanged.
+    #[serde(skip)]
+    pub start_fresh_on_restore: bool,
 }
 
 impl From<&Session> for SessionInfo {
@@ -274,6 +290,7 @@ impl From<&Session> for SessionInfo {
             telegram_bot_id: s.telegram_bot_id.clone(),
             was_detached: s.was_detached,
             detached_geometry: s.detached_geometry.clone(),
+            start_fresh_on_restore: s.start_fresh_on_restore,
         }
     }
 }
@@ -312,6 +329,7 @@ mod tests {
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
+            start_fresh_on_restore: false,
         }
     }
 

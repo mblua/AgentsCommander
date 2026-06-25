@@ -915,18 +915,33 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             .find(|(k, _)| k.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR"))
             .map(|(_, v)| v.clone())
     });
-    let claude_project_exists = match claude_config_dir_override {
-        Some(ref dir) => claude_projects_dir_for_config_dir(dir, &cwd).is_dir(),
-        None => resolve_claude_projects_dir(&shell, &shell_args, &cwd)
-            .map(|p| p.is_dir())
-            .unwrap_or(false),
+    let resolved_claude_projects_dir = match claude_config_dir_override {
+        Some(ref dir) => Some(claude_projects_dir_for_config_dir(dir, &cwd)),
+        None => resolve_claude_projects_dir(&shell, &shell_args, &cwd),
     };
-    if should_inject_continue(
-        agent_kind == Some(CodingAgentKind::Claude),
-        skip_auto_resume,
-        claude_project_exists,
-        &full_cmd,
-    ) {
+    let claude_project_exists = resolved_claude_projects_dir
+        .as_ref()
+        .map(|p| p.is_dir())
+        .unwrap_or(false);
+    let is_claude = agent_kind == Some(CodingAgentKind::Claude);
+    let will_inject_continue =
+        should_inject_continue(is_claude, skip_auto_resume, claude_project_exists, &full_cmd);
+    // (#630/#631) Resume-decision trace. Widened beyond Claude: codex/gemini ride
+    // the same `skip_auto_resume` axis (below) and were equally invisible. INFO
+    // during the stabilization window; demote later.
+    if agent_kind.is_some() {
+        log::info!(
+            "[session] resume-decision {} agent={:?} cwd={:?} projects_dir={:?} exists={} skip_auto_resume={} -> inject_continue={}",
+            &id.to_string()[..8],
+            agent_kind,
+            cwd,
+            resolved_claude_projects_dir,
+            claude_project_exists,
+            skip_auto_resume,
+            will_inject_continue
+        );
+    }
+    if will_inject_continue {
         // #260 — Claude's resume flag from the CodingAgentProfile. resume_tokens
         // is a 1-element const for Claude, so [0] is provably in bounds.
         let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
@@ -2022,6 +2037,20 @@ fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
     requested.unwrap_or(true)
 }
 
+/// (#630/#631) Compose the restart path's effective fresh intent: fresh on an
+/// explicit "Restart Session" (`requested` defaults to `true`), OR if the session
+/// still carries an unconsumed durable fresh intent (`stored_start_fresh`). A
+/// deferred member reopened via Branch A passes `Some(false)`, but its persisted
+/// intent wins, so it stays fresh; a normal member (`false || false`) resumes,
+/// unchanged. Named so the composition is unit-tested; the call site is guarded
+/// against a silent revert by the `dead_code` lint under `-D warnings` (CI runs
+/// `cargo clippy --all-targets -- -D warnings`), which fails the build if
+/// reverting to the inline expression leaves this function unused. Mirrors
+/// `lib::skip_auto_resume_for_restore`.
+fn restart_skip_auto_resume_with_intent(stored_start_fresh: bool, requested: Option<bool>) -> bool {
+    stored_start_fresh || effective_restart_skip_auto_resume(requested)
+}
+
 /// (#599) Resolves the effective `skip_auto_resume` for the `create_session`
 /// command. Defaults to `true` (fresh conversation) so every existing
 /// create-in-place / new-agent / open-agent / CLI / web call site keeps its
@@ -2141,6 +2170,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         is_root_agent,
         telegram_bot_id,
         stored_requested_profile,
+        stored_start_fresh,
     ) = {
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
@@ -2156,6 +2186,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
                 || crate::config::root_agent::is_root_agent_path(&session.working_directory),
             session.telegram_bot_id.clone(),
             session.requested_profile.clone(),
+            session.start_fresh_on_restore, // (#630/#631) honor an unconsumed durable fresh intent
         )
     };
 
@@ -2217,6 +2248,14 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         destroy_session_inner(app, uuid).await?;
     }
 
+    // (#630/#631) Fresh on an explicit "Restart Session" (None -> true), OR if the
+    // session still carries an unconsumed durable fresh intent. Root agents are
+    // scoped out (separate restore path ignores the marker, §8): they are never
+    // stamped below, so `stored_start_fresh` is false for root and this reduces to
+    // today's `effective_restart_skip_auto_resume`.
+    let restart_start_fresh =
+        restart_skip_auto_resume_with_intent(stored_start_fresh, skip_auto_resume);
+
     // 4. Create new session with same config, or switch to the selected coding agent.
     let session_info = create_session_inner(
         app,
@@ -2230,12 +2269,22 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         agent_label,
         false, // skip_tooling_save
         git_repos,
-        effective_restart_skip_auto_resume(skip_auto_resume),
+        restart_start_fresh,
         resolved_spawn,
     )
     .await?;
 
     let new_uuid = Uuid::parse_str(&session_info.id).map_err(|e| e.to_string())?;
+
+    // (#630/#631) Stamp the honored fresh intent onto the recreated session so it
+    // survives the next app restart. Skipped for root agents (scoped out, §8): the
+    // root restore path ignores the marker, so we do not persist a field we ignore.
+    // The `persist_current_state` in step 7 below writes it durably.
+    if !is_root_agent {
+        let mgr = session_mgr.read().await;
+        mgr.set_start_fresh_on_restore(new_uuid, restart_start_fresh).await;
+    }
+
     if activate_after {
         // 5. Explicitly activate the new session.
         //    destroy_session_inner may have auto-activated a sibling.
@@ -3093,6 +3142,7 @@ mod tests {
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
+            start_fresh_on_restore: false,
         }
     }
 
@@ -3665,6 +3715,35 @@ mod tests {
         // Explicit true still works (future-proof against a caller that
         // wants to be explicit rather than rely on the default).
         assert!(super::effective_restart_skip_auto_resume(Some(true)));
+    }
+
+    // ── (#630/#631) restart_skip_auto_resume_with_intent: the call site uses this
+    //    exact composition to decide resume-vs-fresh on a restart. ──
+
+    #[test]
+    fn restart_intent_explicit_restart_button_is_fresh() {
+        // "Restart Session" (None) on a session with no stored intent => fresh.
+        assert!(super::restart_skip_auto_resume_with_intent(false, None));
+    }
+
+    #[test]
+    fn restart_intent_normal_member_reopen_resumes() {
+        // Branch A reopen of a NORMAL member (no stored intent, Some(false))
+        // => resume, unchanged from today.
+        assert!(!super::restart_skip_auto_resume_with_intent(false, Some(false)));
+    }
+
+    #[test]
+    fn restart_intent_deferred_fresh_member_reopen_stays_fresh() {
+        // #631 closure: a "Restart Session"-then-app-restart member defers, then
+        // reopens via Branch A (Some(false)), but its persisted fresh intent wins.
+        assert!(super::restart_skip_auto_resume_with_intent(true, Some(false)));
+    }
+
+    #[test]
+    fn restart_intent_stored_fresh_with_restart_button_is_fresh() {
+        // Stored fresh AND an explicit restart => still fresh (no regression).
+        assert!(super::restart_skip_auto_resume_with_intent(true, None));
     }
 
     // ── #599 R1 effective_create_skip_auto_resume tests ──
