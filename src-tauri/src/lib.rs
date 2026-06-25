@@ -159,6 +159,31 @@ pub(crate) fn should_wake_on_restore(
     }
 }
 
+/// (#630) Resolve coordinator status for a restore decision, backstopping a
+/// transient empty `discover_teams()` with the snapshot's persisted
+/// `is_coordinator`. When live discovery returned teams we trust it. Only when
+/// discovery came back EMPTY do we fall back, so a real coordinator is not
+/// silently downgraded to "deferred" because project paths were not ready at
+/// cold start. The woken session's `is_coordinator` is recomputed in
+/// `create_session_inner`, so a stale backstop cannot poison identity.
+pub(crate) fn resolve_is_coord_for_restore(
+    live_is_coord: bool,
+    teams_empty: bool,
+    persisted_is_coord: bool,
+) -> bool {
+    live_is_coord || (teams_empty && persisted_is_coord)
+}
+
+/// (#630/#631) Bridge the persisted `start_fresh_on_restore` intent into the
+/// restore wake path's `skip_auto_resume` argument. The two are value-identical
+/// (both `true` => start fresh / suppress `--continue`); this is the single
+/// named seam the wake path reads, so the read is unit-tested and a future
+/// refactor cannot silently revert it to a hardcoded value without breaking
+/// `wake_path_passes_persisted_fresh_intent` (which references this function).
+pub(crate) fn skip_auto_resume_for_restore(start_fresh_on_restore: bool) -> bool {
+    start_fresh_on_restore
+}
+
 pub(crate) fn should_wake_root_agent_on_restore(
     persisted_status: Option<&crate::session::session::SessionStatus>,
 ) -> bool {
@@ -1405,7 +1430,15 @@ pub fn run(
                         // team membership and coordinator checks. Strict `is_coordinator`
                         // (§AR2-strict) requires the FQN to avoid cross-project flag leaks.
                         let agent_name = crate::config::teams::agent_fqn_from_path(&ps.working_directory);
-                        let is_coord = crate::config::teams::is_any_coordinator(&agent_name, &teams);
+                        let live_is_coord = crate::config::teams::is_any_coordinator(&agent_name, &teams);
+                        // (#630) Backstop a transient empty discover_teams() with the snapshot's
+                        // persisted is_coordinator so a real coordinator is not silently downgraded
+                        // to "deferred" when project paths were not ready at cold start.
+                        let is_coord = resolve_is_coord_for_restore(
+                            live_is_coord,
+                            teams.is_empty(),
+                            ps.is_coordinator,
+                        );
                         let wake = should_wake_on_restore(setting_on, is_coord, ps.status.as_ref());
 
                         if !wake {
@@ -1437,6 +1470,13 @@ pub fn run(
                                     }
                                     if let Some(ref prompt) = ps.last_prompt {
                                         mgr.set_last_prompt(session.id, prompt.clone()).await;
+                                    }
+                                    // (#630/#631) Carry the durable fresh intent onto the dormant
+                                    // record so a "Restart Session"-then-app-restart member keeps it
+                                    // while deferred, and the Branch-A reopen (restart path) honors
+                                    // it. Order vs mark_exited is irrelevant (different field).
+                                    if ps.start_fresh_on_restore {
+                                        mgr.set_start_fresh_on_restore(session.id, true).await;
                                     }
                                     commands::session::preserve_deferred_telegram_intent_if_valid(
                                         &mgr,
@@ -1532,7 +1572,7 @@ pub fn run(
                             agent_label,
                             false, // Persist tooling on restore
                             ps.git_repos.clone(),
-                            false, // skip_auto_resume = false → restore path; allow `--continue`
+                            skip_auto_resume_for_restore(ps.start_fresh_on_restore), // (#630/#631) resume unless restarted fresh
                             resolved_spawn,
                         ).await {
                             Ok(info) => {
@@ -1540,6 +1580,22 @@ pub fn run(
                                     active_id = Some(info.id.clone());
                                 }
                                 n_woken += 1;
+                                // (#630/#631) Re-inherit the durable fresh intent onto the woken
+                                // live session so it persists again across further restarts until
+                                // the user engages (note_user_message_to_session re-arms it). The
+                                // create_session_inner above does not persist, so this lands before
+                                // any write (no false-then-true crash window).
+                                if ps.start_fresh_on_restore {
+                                    if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                        let mgr = session_mgr_clone.read().await;
+                                        mgr.set_start_fresh_on_restore(uuid, true).await;
+                                    }
+                                }
+                                // (#630/#631) Restore-decision trace (INFO during stabilization).
+                                log::info!(
+                                    "[restore] woke '{}' (is_coord={}, live_is_coord={}, start_fresh_on_restore={})",
+                                    ps.name, is_coord, live_is_coord, ps.start_fresh_on_restore
+                                );
                                 if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
                                     commands::session::attach_persisted_telegram_if_configured(
                                         &app_handle,
@@ -1964,8 +2020,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        should_auto_create_root_agent_on_first_restore, should_wake_on_restore,
-        should_wake_root_agent_on_restore,
+        resolve_is_coord_for_restore, should_auto_create_root_agent_on_first_restore,
+        should_wake_on_restore, should_wake_root_agent_on_restore, skip_auto_resume_for_restore,
     };
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
@@ -2074,6 +2130,30 @@ mod tests {
         assert!(!should_auto_create_root_agent_on_first_restore(
             &settings, None
         ));
+    }
+
+    // (#630) Backstop truth table: a real coordinator survives a transient empty
+    // discover_teams(); a healthy non-empty discovery is trusted as-is.
+    #[test]
+    fn resolve_is_coord_for_restore_truth_table() {
+        // Empty discovery + persisted coord => backstop wakes the real coord.
+        assert!(resolve_is_coord_for_restore(false, true, true));
+        // Healthy discovery (non-empty) that no longer lists this agent => trust it.
+        assert!(!resolve_is_coord_for_restore(false, false, true));
+        // Live discovery already says coord => trust it regardless of the rest.
+        assert!(resolve_is_coord_for_restore(true, false, false));
+        assert!(resolve_is_coord_for_restore(true, true, false));
+        // Empty discovery + not a persisted coord => stays deferred.
+        assert!(!resolve_is_coord_for_restore(false, true, false));
+    }
+
+    // (#630/#631) The wake path passes the persisted fresh intent straight through
+    // as create_session_inner's skip_auto_resume. Guards the lib.rs read seam: if
+    // this identity is ever broken, restore stops honoring "Restart Session".
+    #[test]
+    fn wake_path_passes_persisted_fresh_intent() {
+        assert!(skip_auto_resume_for_restore(true)); // restarted fresh => suppress --continue
+        assert!(!skip_auto_resume_for_restore(false)); // default => resume
     }
 
     #[test]

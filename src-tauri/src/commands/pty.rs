@@ -57,6 +57,26 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         idle.touch_silence(session_id);
     }
 
+    // (#630/#631) Re-arm resume intent on the FIRST real user message. This is
+    // the unified user-input choke point (xterm/Telegram/web); injection and
+    // auto-resume never call it, so a restarted-fresh session stays fresh until
+    // the user actually engages. One-shot: persist only on the true->false flip.
+    // MUST run before the coordinator-only early return below so non-coordinator
+    // members re-arm too.
+    {
+        let mgr =
+            app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let cleared = mgr
+            .read()
+            .await
+            .clear_start_fresh_on_restore_if_set(session_id)
+            .await;
+        if cleared {
+            let m = mgr.read().await;
+            crate::config::sessions_persistence::persist_current_state(&m).await;
+        }
+    }
+
     // (b) badge: reset only when the typed-to session is a coordinator.
     let cwd = {
         let mgr = app

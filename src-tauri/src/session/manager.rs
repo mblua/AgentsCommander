@@ -80,6 +80,7 @@ impl SessionManager {
             telegram_bot_id: None,
             was_detached: false,
             detached_geometry: None,
+            start_fresh_on_restore: false,
         };
 
         self.sessions.write().await.insert(id, session.clone());
@@ -415,6 +416,34 @@ impl SessionManager {
         }
     }
 
+    /// (#630/#631) Stamp the durable resume intent. Used by the restart path and
+    /// the restore wake/defer paths.
+    pub async fn set_start_fresh_on_restore(&self, id: Uuid, value: bool) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.start_fresh_on_restore = value;
+        }
+    }
+
+    /// (#630/#631) Re-arm on first real user message: clear the fresh intent.
+    /// Returns true ONLY on the `true -> false` transition, so the caller persists
+    /// exactly once (not on every subsequent keystroke).
+    pub async fn clear_start_fresh_on_restore_if_set(&self, id: Uuid) -> bool {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            if s.start_fresh_on_restore {
+                log::info!(
+                    "[session-state] {} '{}': start_fresh_on_restore true -> false (user message, re-armed)",
+                    &id.to_string()[..8],
+                    s.name
+                );
+                s.start_fresh_on_restore = false;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Set the resolved coding-agent identity. Called once by
     /// `create_session_inner` immediately after `CodingAgentKind::detect`.
     pub async fn set_agent_kind(&self, id: Uuid, kind: Option<CodingAgentKind>) {
@@ -658,6 +687,62 @@ mod tests {
         mgr.set_effective_shell_args(missing, vec!["--continue".to_string()])
             .await;
         assert!(mgr.get_session(missing).await.is_none());
+    }
+
+    // (#630/#631) Re-arm on first user message: a fresh session clears its intent
+    // exactly once (true -> false), and a second call is a no-op (one-shot gate).
+    #[tokio::test]
+    async fn clear_start_fresh_on_restore_is_one_shot() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude-mb".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        // Constructor default is the resume intent (false).
+        assert!(!session.start_fresh_on_restore);
+
+        // Stamp the durable fresh intent (as the restart path would).
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        let stamped = mgr
+            .get_session(session.id)
+            .await
+            .expect("session should still exist");
+        assert!(stamped.start_fresh_on_restore);
+
+        // First user message clears it and reports the true -> false transition.
+        assert!(
+            mgr.clear_start_fresh_on_restore_if_set(session.id).await,
+            "first clear must report the transition so the caller persists once"
+        );
+        let cleared = mgr
+            .get_session(session.id)
+            .await
+            .expect("session should still exist");
+        assert!(!cleared.start_fresh_on_restore);
+
+        // Second message is a no-op: no transition, so the caller does not re-persist.
+        assert!(
+            !mgr.clear_start_fresh_on_restore_if_set(session.id).await,
+            "second clear must be a no-op (one-shot)"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_start_fresh_on_restore_no_op_on_missing_session() {
+        let mgr = SessionManager::new();
+        assert!(
+            !mgr.clear_start_fresh_on_restore_if_set(Uuid::new_v4())
+                .await
+        );
     }
 
     #[tokio::test]

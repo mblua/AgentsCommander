@@ -217,6 +217,14 @@ pub struct PersistedSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detached_geometry: Option<WindowGeometry>,
 
+    /// (#630/#631) Durable resume intent. `true` => start fresh on restore
+    /// ("Restart Session"); `false` => resume. `#[serde(default)]` so pre-existing
+    /// records deserialize to `false` = resume (polarity is deliberate: the safe
+    /// serde/Default value must mean "resume"). No `skip_serializing_if`: always
+    /// written so the on-disk record is explicit after the first save.
+    #[serde(default)]
+    pub start_fresh_on_restore: bool,
+
     // ── Legacy fields — read-only, consumed by the upgrade pass in load_sessions. ──
     // `skip_serializing_if = "Option::is_none"` means snapshot_sessions never writes them
     // back, and the first save after upgrade retires them from disk.
@@ -786,6 +794,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             was_detached: s.was_detached,
             last_prompt: s.last_prompt.clone(),
             detached_geometry: s.detached_geometry.clone(),
+            start_fresh_on_restore: s.start_fresh_on_restore,
             // Legacy fields are always None on new saves; skip_serializing_if elides them.
             git_branch_source: None,
             git_branch_prefix: None,
@@ -1206,6 +1215,7 @@ mod tests {
             status: Some(SessionStatus::Idle),
             waiting_for_input: Some(true),
             created_at: Some("2026-05-15T00:00:00Z".into()),
+            ..Default::default()
         };
 
         let clean = sanitize_failed_recoverable(&ps);
@@ -1257,6 +1267,7 @@ mod tests {
             status: None,
             waiting_for_input: None,
             created_at: None,
+            ..Default::default()
         };
         let once = sanitize_failed_recoverable(&ps);
         let twice = sanitize_failed_recoverable(&once);
@@ -1298,6 +1309,43 @@ mod tests {
         assert_eq!(back.telegram_bot_id.as_deref(), Some("bot-1"));
     }
 
+    // (#630 fleet-safety) A pre-existing sessions.json record that predates this
+    // field must deserialize to `false` = resume, so no existing user is silently
+    // flipped to "start fresh" on upgrade. Polarity guard for §3.1.
+    #[test]
+    fn start_fresh_on_restore_defaults_false_for_legacy_json() {
+        let json = r#"{
+            "name": "legacy",
+            "shell": "cmd",
+            "shellArgs": [],
+            "workingDirectory": "C:/x"
+        }"#;
+
+        let back: PersistedSession = serde_json::from_str(json).expect("deserialize");
+        assert!(!back.start_fresh_on_restore);
+    }
+
+    // (#631) The durable fresh intent survives a serialize -> deserialize round-trip
+    // in both polarities, so "Restart Session" persists across an app restart. The
+    // field has no `skip_serializing_if`, so it is always written explicitly.
+    #[test]
+    fn start_fresh_on_restore_round_trips() {
+        for fresh in [true, false] {
+            let ps = PersistedSession {
+                name: "round-trip".into(),
+                shell: "claude".into(),
+                shell_args: vec![],
+                working_directory: "C:/x".into(),
+                start_fresh_on_restore: fresh,
+                ..Default::default()
+            };
+            let json = serde_json::to_value(&ps).expect("serialize");
+            assert_eq!(json["startFreshOnRestore"], fresh);
+            let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
+            assert_eq!(back.start_fresh_on_restore, fresh);
+        }
+    }
+
     #[tokio::test]
     async fn snapshot_sessions_preserves_telegram_bot_id() {
         let mgr = SessionManager::new();
@@ -1321,6 +1369,37 @@ mod tests {
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    // (#630/#631) The durable fresh intent flows Session -> SessionInfo carrier ->
+    // PersistedSession through the real snapshot path, so a restart-fresh session's
+    // intent reaches disk (and is not lost at the SessionInfo boundary).
+    #[tokio::test]
+    async fn snapshot_sessions_preserves_start_fresh_on_restore() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude-mb".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        // Default snapshots as resume (false).
+        let before = snapshot_sessions(&mgr).await;
+        assert_eq!(before.len(), 1);
+        assert!(!before[0].start_fresh_on_restore);
+
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+
+        let after = snapshot_sessions(&mgr).await;
+        assert_eq!(after.len(), 1);
+        assert!(after[0].start_fresh_on_restore);
     }
 
     #[tokio::test]
@@ -1751,6 +1830,7 @@ mod tests {
             status: None,
             waiting_for_input: None,
             created_at: None,
+            ..Default::default()
         };
 
         // Mimic the upgrade pass in load_sessions (single-repo branch).
@@ -1804,6 +1884,7 @@ mod tests {
                 status: Some(status.clone()),
                 waiting_for_input: Some(false),
                 created_at: Some("2026-05-17T00:00:00Z".into()),
+                ..Default::default()
             };
             let json = serde_json::to_string(&ps).expect("serialize");
             let back: PersistedSession = serde_json::from_str(&json).expect("deserialize");
@@ -1868,6 +1949,7 @@ mod tests {
             status: None,
             waiting_for_input: None,
             created_at: None,
+            ..Default::default()
         };
 
         if ps.git_repos.is_empty() {
