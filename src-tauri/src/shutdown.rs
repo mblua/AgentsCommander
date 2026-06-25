@@ -52,3 +52,54 @@ impl ShutdownSignal {
         self.flag.load(Ordering::SeqCst)
     }
 }
+
+/// #632 - run `f` on a scratch thread and wait up to `budget`. Returns `Ok(result)`
+/// if it finished in time, `Err(Timeout)` if the budget elapsed (the thread is
+/// abandoned and the OS reclaims it at process exit), or `Err(Disconnected)` if the
+/// closure PANICKED (the worker dropped the sender without sending).
+///
+/// Distinguishing timeout from panic lets the caller log a slow reaper differently
+/// from a crashed one (LOW-3). Bounds shutdown cleanup so the UI thread cannot block
+/// for minutes. Abandoning the work is safe ONLY for sessions that got a Job Object;
+/// see the caller's job-less warning (MED-2).
+pub fn run_time_boxed<T, F>(
+    budget: std::time::Duration,
+    f: F,
+) -> Result<T, std::sync::mpsc::RecvTimeoutError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(budget)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_time_boxed;
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    #[test]
+    fn ok_when_work_finishes_in_budget() {
+        assert_eq!(run_time_boxed(Duration::from_secs(5), || 42), Ok(42));
+    }
+
+    #[test]
+    fn timeout_when_work_exceeds_budget() {
+        let r = run_time_boxed(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_millis(500));
+            42
+        });
+        assert_eq!(r, Err(RecvTimeoutError::Timeout));
+    }
+
+    #[test]
+    fn disconnected_when_closure_panics() {
+        let r: Result<i32, _> = run_time_boxed(Duration::from_secs(5), || panic!("boom"));
+        assert_eq!(r, Err(RecvTimeoutError::Disconnected));
+    }
+}
