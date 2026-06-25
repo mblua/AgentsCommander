@@ -2042,8 +2042,11 @@ fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
 /// still carries an unconsumed durable fresh intent (`stored_start_fresh`). A
 /// deferred member reopened via Branch A passes `Some(false)`, but its persisted
 /// intent wins, so it stays fresh; a normal member (`false || false`) resumes,
-/// unchanged. Named so the call-site composition is unit-tested and cannot be
-/// silently reverted (mirrors `lib::skip_auto_resume_for_restore`).
+/// unchanged. Named so the composition is unit-tested; the call site is guarded
+/// against a silent revert by the `dead_code` lint under `-D warnings` (CI runs
+/// `cargo clippy --all-targets -- -D warnings`), which fails the build if
+/// reverting to the inline expression leaves this function unused. Mirrors
+/// `lib::skip_auto_resume_for_restore`.
 fn restart_skip_auto_resume_with_intent(stored_start_fresh: bool, requested: Option<bool>) -> bool {
     stored_start_fresh || effective_restart_skip_auto_resume(requested)
 }

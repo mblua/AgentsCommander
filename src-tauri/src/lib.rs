@@ -177,9 +177,11 @@ pub(crate) fn resolve_is_coord_for_restore(
 /// (#630/#631) Bridge the persisted `start_fresh_on_restore` intent into the
 /// restore wake path's `skip_auto_resume` argument. The two are value-identical
 /// (both `true` => start fresh / suppress `--continue`); this is the single
-/// named seam the wake path reads, so the read is unit-tested and a future
-/// refactor cannot silently revert it to a hardcoded value without breaking
-/// `wake_path_passes_persisted_fresh_intent` (which references this function).
+/// named seam the wake path reads. Anti-revert guard: CI runs
+/// `cargo clippy --all-targets -- -D warnings`, so reverting the call site to a
+/// hardcoded value leaves this function unused and the `dead_code` lint fails the
+/// build. The unit test `wake_path_passes_persisted_fresh_intent` pins this
+/// bridge's own behavior but would not, by itself, catch a reverted call site.
 pub(crate) fn skip_auto_resume_for_restore(start_fresh_on_restore: bool) -> bool {
     start_fresh_on_restore
 }
