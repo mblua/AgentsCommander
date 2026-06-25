@@ -587,6 +587,13 @@ html, body, #root {
   vertical-align: middle;
 }
 
+/* #624 - spacing for the coding-agent badge inside the inline root subtitle
+   (the badge itself only carries color/size via .agent-badge). */
+.root-agent-badge {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 /* Show inactive toggle */
 .show-categories-btn {
   font-size: 14px;

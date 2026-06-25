@@ -71,6 +71,16 @@ const RootAgentBanner: Component = () => {
     const r = rootSession();
     return r ? sessionProfileBadge(r) : null;
   });
+  // #624 - mirror SessionItem's coding-agent resolver so the Root Agent row
+  // shows the same `[Coding Agent]` badge: prefer the session's own label, else
+  // resolve the configured agent's label from settings by id.
+  const agentLabel = createMemo(() => {
+    const r = rootSession();
+    if (!r) return null;
+    if (r.agentLabel) return r.agentLabel;
+    if (!r.agentId) return null;
+    return settingsStore.current?.agents?.find((a) => a.id === r.agentId)?.label ?? null;
+  });
 
   const bridge = () => {
     const r = rootSession();
@@ -399,6 +409,21 @@ const RootAgentBanner: Component = () => {
           <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
             <span class="root-agent-subtitle">
               {subtitle()}
+              {/* #624 - coding-agent badge, mirroring SessionItem. Non-running
+                  styling falls out of hasLivePty() so a dormant/exited root still
+                  shows the badge (no `running` class). data-agent drives the same
+                  per-agent coloring as the session rows; custom labels fall back
+                  to the base .agent-badge. */}
+              <Show when={agentLabel()}>
+                {(label) => (
+                  <span
+                    class={`agent-badge root-agent-badge ${hasLivePty() ? "running" : ""}`}
+                    data-agent={label()}
+                  >
+                    {label()}
+                  </span>
+                )}
+              </Show>
               <Show when={profileBadge()}>
                 {(badge) => <span class="profile-badge root-profile-badge">{badge()}</span>}
               </Show>
