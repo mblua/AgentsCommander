@@ -53,9 +53,9 @@ This runs the scenario from the top of the page end to end. It assumes a `claude
 1. Open **Settings -> Coding Agents** and find the `claude` row.
 2. Add profile **B** and set its params to `--effort max` (your "max effort" variant).
 3. Add profile **C** and set its params to a cheaper variant, for example `--model <small-model-id>`.
-4. On an agent, use **Set default** and pick **B**. New sessions for that agent now start on B.
+4. Open the launch picker for that agent, pick profile **B**, and choose **Assign to this replica**. New sessions for that replica now start on B.
 5. Launch a session for that agent. It runs `claude --effort max`.
-6. To switch only that session to C, open the launch picker, pick profile **C**, and assign it to the replica. The session relaunches as the cheaper variant. You never edited a command by hand.
+6. To switch only that session to C, open the launch picker, pick profile **C**, and launch it without assigning to the replica. That choice applies to this launch only (tier 2), so the replica keeps B. You never edited a command by hand.
 
 ## How a profile is chosen
 
@@ -69,13 +69,13 @@ AC picks the requested letter from the first source that has one, highest priori
 |---|---|---|
 | 1. Instance override | The replica's `tooling.profile` in its own `config.json` | Assigned to the replica; persists across future launches |
 | 2. Explicit request | The letter you pick for this one launch | The launch picker, for this launch only |
-| 3. Origin default | The agent matrix's `tooling.defaultProfile` | The "Set default" action (per agent) |
+| 3. Origin default | The agent matrix's `tooling.defaultProfile` | Hand-edited in the matrix `config.json`, or inherited (no UI control) |
 | 4. Agent default | `codingAgentProfiles.defaultProfileByAgent[<agent>]` in `settings.json` | Rarely set by hand; see note below |
 | Floor | `A` | Always available when nothing else resolves |
 
 Tier 1 outranks tier 2 on purpose: a profile you deliberately assigned to a replica should survive future launches, so it beats an ephemeral letter picked for a single launch.
 
-> **Naming trap:** the "Set default" action writes the **origin default** (tier 3), the per-agent-matrix `tooling.defaultProfile`. It does **not** write tier 4. Tier 4 (`defaultProfileByAgent`) has no dedicated button; in practice it is populated only by an inherited/migrated config or by hand-editing `settings.json`.
+> **No per-agent "default" button.** Neither the origin default (tier 3, the per-agent-matrix `tooling.defaultProfile`) nor tier 4 (`defaultProfileByAgent` in `settings.json`) has a UI control. Tier 3 is set only by hand-editing the matrix `config.json` or by inheritance; tier 4 only by an inherited or migrated config or by hand-editing `settings.json`. The closest thing to a default in the UI is an instance override (tier 1), assigned through the launch picker as described below.
 
 ### Step 2: walk down to the nearest enabled cell
 
@@ -91,11 +91,11 @@ When the cell that wins is not the letter that was requested, AC marks the resul
 
 ## Assigning and defaulting a profile
 
-**Set a default profile for an agent (tier 3).** Use the "Set default" action on the agent. This writes the origin matrix's `tooling.defaultProfile`, so every new session for that agent starts on that letter unless a higher tier overrides it.
-
-**Override the profile for one replica/session (tier 1).** In the launch picker, pick the Coding Agent and Profile, then assign it to the replica. This writes the replica's `tooling.profile` (the instance override), which beats the agent default. The picker previews the exact composed command before you launch.
+**Make a profile the one new sessions start on (tier 1 — the practical default).** In the launch picker, pick the Coding Agent and Profile, then choose **Assign to this replica**. This writes the replica's `tooling.profile` (the instance override), which beats the lower default tiers, so new sessions on that replica start on that letter until you change it. The picker previews the exact composed command before you launch. From a workgroup replica, the picker's **Apply to** control widens the same write to more replicas: **This replica**, **All replicas of this kind**, or **Entire workgroup** (each target replica gets its own instance override).
 
 **Pick a profile for a single launch (tier 2).** Choosing a different letter at launch time, without assigning it to the replica, applies only to that launch.
+
+**The per-agent origin default (tier 3) has no UI control.** To set the agent matrix's `tooling.defaultProfile`, hand-edit that matrix's `config.json` (or let it be inherited). Any instance override you assign (tier 1) outranks it.
 
 ## The effective launch command
 
