@@ -12,7 +12,7 @@ AgentsCommander is **not** a coding agent. It spawns coding-agent processes and 
 | **Codex** | `codex` | `resume --last` | OpenAI's coding agent CLI. |
 | **Gemini** | `gemini` | `--resume latest` | Google's CLI. |
 
-> **OpenCode** runs today through the custom coding-agent path (see [Adding a custom coding-agent profile](#adding-a-custom-coding-agent-profile)). OpenCode is provider-agnostic, so you can point it at any provider or model, including OpenRouter Fusion. It does not yet have a first-class tuned profile (resume tokens, idle tuning); that work is tracked as [#315](https://github.com/mblua/AgentsCommander/issues/315).
+> **OpenCode** runs today through the custom coding-agent path (see [Adding a custom coding agent](#adding-a-custom-coding-agent)). OpenCode is provider-agnostic, so you can point it at any provider or model, including OpenRouter Fusion. It does not yet have a first-class tuned integration (resume tokens, idle tuning); that work is tracked as [#315](https://github.com/mblua/AgentsCommander/issues/315).
 
 Detection rule: AC inspects the shell command + args, takes each token's executable basename (lowercased, `.exe` stripped), and matches by **prefix** with precedence Claude > Codex > Gemini. Wrappers named `claude-foo` or `codex-bar` match automatically. Anything else falls through to the plain-shell behavior (no resume tokens, generic idle tuning).
 
@@ -56,6 +56,10 @@ When you launch a session AC shows a dropdown listing every entry in `agents[]`.
 
 You can change the choice for a session later: right-click → **Launch with…** → pick a different agent.
 
+## Profiles: launch variants per coding agent
+
+Each coding agent can have several **profiles** (lettered launch variants: a cheap one, a max-effort one, an isolated-config one). A profile adds parameters and env vars on top of the agent's base command, and you assign one per agent or per session. This is a separate feature from the tuned `CodingAgentKind` integration above. See [Coding Agent Profiles](../features/coding-agent-profiles.md).
+
 ## Role-template picker
 
 When you create a new agent through the UI you can pick a role template. The picker shows two sources:
@@ -67,7 +71,7 @@ Each template provides metadata (name, description, category, accent color) and 
 
 > AC's role-template picker can use a downloaded cache of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). If you author a new role and want it discoverable in AC by default, submit it upstream to the agency-agents catalog, then refresh the cache with `agency-templates update`.
 
-## Adding a custom coding-agent profile
+## Adding a custom coding agent
 
 To make AC recognise a new CLI (e.g. a custom wrapper) under the **Coding Agents** dropdown:
 
@@ -77,7 +81,9 @@ To make AC recognise a new CLI (e.g. a custom wrapper) under the **Coding Agents
 
 The new entry appears in the launcher dropdown immediately. AC will spawn the binary as-is — no resume tokens are injected unless the binary's basename starts with `claude`, `codex`, or `gemini`.
 
-For deeper integration (a new `CodingAgentKind` with its own resume tokens and idle tuning), you need to add a profile to `src-tauri/src/session/profile.rs` and rebuild. OpenCode already runs through the custom-agent steps above; its first-class tuned profile is tracked on the [roadmap](../../ROADMAP.md) ([#315](https://github.com/mblua/AgentsCommander/issues/315)) as the canonical example of how a new `CodingAgentKind` is added.
+For deeper integration (a new `CodingAgentKind` with its own resume tokens and idle tuning), you need to add a variant to `src-tauri/src/session/profile.rs` and rebuild. OpenCode already runs through the custom-agent steps above; its first-class tuned integration is tracked on the [roadmap](../../ROADMAP.md) ([#315](https://github.com/mblua/AgentsCommander/issues/315)) as the canonical example of how a new `CodingAgentKind` is added.
+
+> **"Profile" here does not mean the profile matrix.** A tuned `CodingAgentKind` is how AC drives one CLI (resume tokens, idle tuning). The lettered launch variants (A/B/C) are a separate feature: see [Coding Agent Profiles](../features/coding-agent-profiles.md).
 
 ## Authentication and secrets
 
@@ -93,7 +99,8 @@ If you use the AC-managed agent directories, AC may write minimal `.claude/setti
 
 ## See also
 
+- [Coding Agent Profiles](../features/coding-agent-profiles.md): lettered launch variants (A/B/C) per coding agent
 - [Creating agents](../agents/creating-agents.md) — make a new agent dir
 - [Settings reference](../reference/settings.md) — full schema for `agents[]`
 - [RTK integration](../features/rtk-integration.md) — Claude Code Bash-tool compression
-- [Roadmap: coding agents](../../ROADMAP.md): OpenCode first-class profile, Nvidia agent, more
+- [Roadmap: coding agents](../../ROADMAP.md): OpenCode first-class integration, Nvidia agent, more
