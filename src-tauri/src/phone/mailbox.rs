@@ -432,9 +432,9 @@ const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(50
 /// Generous: any normal agent hits a 30s-idle window well within it.
 #[cfg_attr(test, allow(dead_code))]
 const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
-/// #629 - grace delay after the Phase-2 handoff prompt is injected before `self-handoff.md` is renamed
-/// to `self-handoff_<ts>.md`. 3 minutes is ample for the resumed agent to read the file; archiving it
-/// then keeps a stale `self-handoff.md` from false-triggering the NEXT cycle's existence gate (which
+/// #629 - grace delay after the Phase-2 handoff prompt is injected before `SELF-HANDOFF.md` is archived
+/// to `self-clear/<ts>_SELF-HANDOFF.md`. 3 minutes is ample for the resumed agent to read the file;
+/// archiving it then keeps a stale `SELF-HANDOFF.md` from false-triggering the NEXT cycle's existence gate (which
 /// only checks the file's presence). In-memory only: a daemon restart inside the window leaves the file
 /// (accepted, rare). Consumed only by the `cfg(not(test))`-spawned driver, so dead under `cfg(test)`.
 #[cfg_attr(test, allow(dead_code))]
@@ -452,8 +452,8 @@ pub(crate) const SELF_CLEAR_ACTION: &str = "self-clear-and-handoff";
 /// file. The `\`-newline continuations collapse to one physical line with single spaces (no `\n`).
 pub(crate) const SELF_CLEAR_HANDOFF_PROMPT: &str =
     "Your context was just cleared by the self-clear-and-handoff command. To resume, read the file \
-     self-handoff.md in your own agent root (your current working directory) and continue the work \
-     described there. If self-handoff.md is missing or empty, wait for new instructions instead of guessing.";
+     SELF-HANDOFF.md in your own agent root (your current working directory) and continue the work \
+     described there. If SELF-HANDOFF.md is missing or empty, wait for new instructions instead of guessing.";
 
 /// §DR5 anti-spoof accept rule. Outbox-sender check passes when `msg_from`
 /// equals `expected_from` exactly, OR when `msg_from` is unqualified (legacy)
@@ -709,13 +709,14 @@ pub(crate) fn self_clear_gate_advance(
     }
 }
 
-/// #626/#629 - archive `<root>/<stem>.md` to `<root>/<stem>_<timestamp>.md`. No-op (`Ok(None)`) if
-/// `<stem>.md` is absent. `timestamp` is supplied by the caller so this is deterministic in tests.
-/// Returns the archived path on success. `std::fs::rename` is atomic within the same filesystem (the
-/// agent root). On Windows a source held open without FILE_SHARE_DELETE yields ERROR_SHARING_VIOLATION
+/// #626/#629/#636 - archive `<root>/<stem>.md` to `<root>/self-clear/<timestamp>_<stem>.md`. No-op
+/// (`Ok(None)`) if `<stem>.md` is absent. Creates the `self-clear/` subdir on demand. `timestamp` is
+/// supplied by the caller so this is deterministic in tests. Returns the archived path on success.
+/// `std::fs::rename` is atomic within the same filesystem (the agent root and its `self-clear/` child
+/// share it). On Windows a source held open without FILE_SHARE_DELETE yields ERROR_SHARING_VIOLATION
 /// (os error 32); the caller treats any `Err` as a non-fatal warn (no clobber, the source stays, next
-/// cycle archives it). NO retries (a retry loop would block the caller). Consumers: FORGET.md at queue
-/// time (#626) and self-handoff.md after the post-handoff grace delay (#629).
+/// cycle archives it). NO retries (a retry loop would block the caller). Consumers: SELF-FORGET.md at
+/// queue time (#626) and SELF-HANDOFF.md after the post-handoff grace delay (#629).
 fn archive_root_md(
     root: &std::path::Path,
     stem: &str,
@@ -725,7 +726,8 @@ fn archive_root_md(
     if !src.is_file() {
         return Ok(None); // no-op when absent
     }
-    let dst = root.join(format!("{}_{}.md", stem, timestamp));
+    let archive_dir = root.join("self-clear");
+    let dst = archive_dir.join(format!("{}_{}.md", timestamp, stem));
     if dst.exists() {
         // Same-second collision (effectively impossible: archiving happens once per >=60s cycle).
         // Refuse to clobber an existing archive; leave the source in place.
@@ -734,6 +736,7 @@ fn archive_root_md(
             "archive target already exists",
         ));
     }
+    std::fs::create_dir_all(&archive_dir)?;
     std::fs::rename(&src, &dst)?;
     Ok(Some(dst))
 }
@@ -2991,20 +2994,20 @@ impl MailboxPoller {
         }
 
         // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing with
-        //     no self-handoff.md would wipe context with no way to resume (the agent would post-clear
+        //     no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
         //     read a nonexistent file = blank). Queue-time intent guard (not transactional): the real
         //     read-time safety net is SELF_CLEAR_HANDOFF_PROMPT's "if missing or empty, wait". Use
-        //     .is_file() so a stray directory named self-handoff.md does not pass. Runs BEFORE the
+        //     .is_file() so a stray directory named SELF-HANDOFF.md does not pass. Runs BEFORE the
         //     idempotency insert and the archive, so nothing is queued/archived with nothing to resume.
         let handoff_path =
-            std::path::Path::new(&session.working_directory).join("self-handoff.md");
+            std::path::Path::new(&session.working_directory).join("SELF-HANDOFF.md");
         if !handoff_path.is_file() {
             return self
                 .reject_message(
                     path,
                     msg,
                     &format!(
-                        "self-clear-and-handoff: self-handoff.md not found in your root ({}); write it before \
+                        "self-clear-and-handoff: SELF-HANDOFF.md not found in your root ({}); write it before \
                          requesting self-clear-and-handoff.",
                         session.working_directory
                     ),
@@ -3030,21 +3033,25 @@ impl MailboxPoller {
         //    decision policy is covered separately by the pure `self_clear_gate_advance` tests.
         //    Durations are passed in so a future integration test can drive it fast.
         if newly_inserted {
-            // #626 - archive FORGET.md so the next cycle starts fresh. Best-effort: a failure must not
-            // block the clear/handoff. The agent already wrote self-handoff.md (existence-gated above),
-            // so FORGET.md is present iff the agent kept one. FOLD-3: runs in ALL cfgs (NOT inside the
+            // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure must
+            // not block the clear/handoff. The agent already wrote SELF-HANDOFF.md (existence-gated above),
+            // so SELF-FORGET.md is present iff the agent kept one. FOLD-3: runs in ALL cfgs (NOT inside the
             // cfg(not(test)) spawn) so the harness archive assertion can pass. Decoupled from clear
-            // success (queue-time): an abandoned cycle leaves FORGET archived but uncleared; content is
-            // preserved in FORGET_<ts>.md, re-issue continues normally.
+            // success (queue-time): an abandoned cycle leaves SELF-FORGET archived but uncleared; content is
+            // preserved in self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-            match archive_root_md(std::path::Path::new(&session.working_directory), "FORGET", &ts) {
+            match archive_root_md(
+                std::path::Path::new(&session.working_directory),
+                "SELF-FORGET",
+                &ts,
+            ) {
                 Ok(Some(p)) => log::info!(
-                    "[mailbox] self-clear-and-handoff: archived FORGET.md -> {}",
+                    "[mailbox] self-clear-and-handoff: archived SELF-FORGET.md -> {}",
                     p.display()
                 ),
-                Ok(None) => {} // no FORGET.md; nothing to archive
+                Ok(None) => {} // no SELF-FORGET.md; nothing to archive
                 Err(e) => log::warn!(
-                    "[mailbox] self-clear-and-handoff: FORGET.md archive failed for session {} (non-fatal): {}",
+                    "[mailbox] self-clear-and-handoff: SELF-FORGET.md archive failed for session {} (non-fatal): {}",
                     session_id,
                     e
                 ),
@@ -3151,9 +3158,9 @@ impl MailboxPoller {
                         settle.as_secs()
                     );
                     // #629 - on a SUCCESSFUL inject the resume prompt is now in, so the handoff file has
-                    // served its purpose. Spawn a detached timer that renames self-handoff.md ->
-                    // self-handoff_<ts>.md after a grace delay, so a stale handoff file cannot false-trigger
-                    // the NEXT cycle's existence gate (which only checks presence). Detached (not inline) so
+                    // served its purpose. Spawn a detached timer that archives SELF-HANDOFF.md ->
+                    // self-clear/<ts>_SELF-HANDOFF.md after a grace delay, so a stale handoff file cannot
+                    // false-trigger the NEXT cycle's existence gate (which only checks presence). Detached (not inline) so
                     // the de-register below is not delayed by the wait. In-memory only: a daemon restart
                     // inside the window leaves the file (accepted). On inject failure we do NOT archive: the
                     // prompt never reached the agent, so its notes stay at the canonical name for a retry.
@@ -3181,19 +3188,19 @@ impl MailboxPoller {
                                     let ts =
                                         chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
                                     // Best-effort: a rename failure is a non-fatal warn (mirrors the
-                                    // FORGET.md archive at queue time).
+                                    // SELF-FORGET.md archive at queue time).
                                     match archive_root_md(
                                         std::path::Path::new(&root),
-                                        "self-handoff",
+                                        "SELF-HANDOFF",
                                         &ts,
                                     ) {
                                         Ok(Some(p)) => log::info!(
-                                            "[mailbox] self-clear-and-handoff: archived self-handoff.md -> {}",
+                                            "[mailbox] self-clear-and-handoff: archived SELF-HANDOFF.md -> {}",
                                             p.display()
                                         ),
                                         Ok(None) => {} // already gone (agent moved/removed it)
                                         Err(e) => log::warn!(
-                                            "[mailbox] self-clear-and-handoff: self-handoff.md archive failed (non-fatal): {}",
+                                            "[mailbox] self-clear-and-handoff: SELF-HANDOFF.md archive failed (non-fatal): {}",
                                             e
                                         ),
                                     }
@@ -5372,7 +5379,7 @@ mod tests {
             "handoff prompt must stay em-dash-free"
         );
         assert!(
-            SELF_CLEAR_HANDOFF_PROMPT.contains("self-handoff.md"),
+            SELF_CLEAR_HANDOFF_PROMPT.contains("SELF-HANDOFF.md"),
             "the prompt must name the file to read"
         );
     }
@@ -5388,39 +5395,57 @@ mod tests {
     #[test]
     fn archive_root_md_forget_absent_is_noop() {
         let temp = tempfile::TempDir::new().unwrap();
-        let res = archive_root_md(temp.path(), "FORGET", "20260101_000000").unwrap();
-        assert!(res.is_none(), "absent FORGET.md is a no-op (Ok(None))");
+        let res = archive_root_md(temp.path(), "SELF-FORGET", "20260101_000000").unwrap();
+        assert!(res.is_none(), "absent SELF-FORGET.md is a no-op (Ok(None))");
         let count = std::fs::read_dir(temp.path()).unwrap().count();
-        assert_eq!(count, 0, "no file is created when FORGET.md is absent");
+        assert_eq!(
+            count, 0,
+            "no file or self-clear/ dir is created when SELF-FORGET.md is absent"
+        );
     }
 
     #[test]
-    fn archive_root_md_forget_present_renames_and_preserves_content() {
+    fn archive_root_md_forget_present_moves_to_self_clear_with_prefixed_name() {
+        // #636 - the archive now lands in <root>/self-clear/<ts>_SELF-FORGET.md (timestamp prefixed).
         let temp = tempfile::TempDir::new().unwrap();
-        let src = temp.path().join("FORGET.md");
+        let src = temp.path().join("SELF-FORGET.md");
         std::fs::write(&src, "old topic 1\nold topic 2").unwrap();
-        let dst = archive_root_md(temp.path(), "FORGET", "20260102_030405")
+        let dst = archive_root_md(temp.path(), "SELF-FORGET", "20260102_030405")
             .unwrap()
-            .expect("present FORGET.md must be archived");
-        assert_eq!(dst, temp.path().join("FORGET_20260102_030405.md"));
-        assert!(!src.exists(), "FORGET.md must be gone after the rename");
+            .expect("present SELF-FORGET.md must be archived");
+        assert_eq!(
+            dst,
+            temp.path()
+                .join("self-clear")
+                .join("20260102_030405_SELF-FORGET.md")
+        );
+        assert!(
+            temp.path().join("self-clear").is_dir(),
+            "the self-clear/ subdir must be created on demand"
+        );
+        assert!(!src.exists(), "SELF-FORGET.md must be gone after the move");
         assert_eq!(
             std::fs::read_to_string(&dst).unwrap(),
             "old topic 1\nold topic 2",
-            "content must be preserved across the rename"
+            "content must be preserved across the move"
         );
     }
 
     #[test]
     fn archive_root_md_forget_target_exists_errs_without_clobber() {
         let temp = tempfile::TempDir::new().unwrap();
-        let src = temp.path().join("FORGET.md");
+        let src = temp.path().join("SELF-FORGET.md");
         std::fs::write(&src, "fresh").unwrap();
-        let dst = temp.path().join("FORGET_20260102_030405.md");
+        let archive_dir = temp.path().join("self-clear");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        let dst = archive_dir.join("20260102_030405_SELF-FORGET.md");
         std::fs::write(&dst, "existing archive").unwrap();
-        let err = archive_root_md(temp.path(), "FORGET", "20260102_030405").unwrap_err();
+        let err = archive_root_md(temp.path(), "SELF-FORGET", "20260102_030405").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert!(src.exists(), "FORGET.md must stay in place when the target exists");
+        assert!(
+            src.exists(),
+            "SELF-FORGET.md must stay in place when the target exists"
+        );
         assert_eq!(
             std::fs::read_to_string(&dst).unwrap(),
             "existing archive",
@@ -5429,34 +5454,42 @@ mod tests {
     }
 
     #[test]
-    fn archive_root_md_self_handoff_present_renames_and_preserves_content() {
-        // #629 - the new consumer: self-handoff.md is archived with the same helper + timestamp format.
+    fn archive_root_md_self_handoff_present_moves_to_self_clear_with_prefixed_name() {
+        // #629/#636 - the new consumer: SELF-HANDOFF.md is archived into self-clear/ with the same helper.
         let temp = tempfile::TempDir::new().unwrap();
-        let src = temp.path().join("self-handoff.md");
+        let src = temp.path().join("SELF-HANDOFF.md");
         std::fs::write(&src, "resume: finish step 4\nthen run gates").unwrap();
-        let dst = archive_root_md(temp.path(), "self-handoff", "20260301_121314")
+        let dst = archive_root_md(temp.path(), "SELF-HANDOFF", "20260301_121314")
             .unwrap()
-            .expect("present self-handoff.md must be archived");
-        assert_eq!(dst, temp.path().join("self-handoff_20260301_121314.md"));
+            .expect("present SELF-HANDOFF.md must be archived");
+        assert_eq!(
+            dst,
+            temp.path()
+                .join("self-clear")
+                .join("20260301_121314_SELF-HANDOFF.md")
+        );
         assert!(
             !src.exists(),
-            "self-handoff.md must be gone after the rename (so it cannot re-trigger the gate)"
+            "SELF-HANDOFF.md must be gone after the move (so it cannot re-trigger the gate)"
         );
         assert_eq!(
             std::fs::read_to_string(&dst).unwrap(),
             "resume: finish step 4\nthen run gates",
-            "content must be preserved across the rename"
+            "content must be preserved across the move"
         );
     }
 
     #[test]
     fn archive_root_md_self_handoff_absent_is_noop() {
-        // #629 - if the agent already moved or removed self-handoff.md, the delayed archive is a no-op.
+        // #629 - if the agent already moved or removed SELF-HANDOFF.md, the delayed archive is a no-op.
         let temp = tempfile::TempDir::new().unwrap();
-        let res = archive_root_md(temp.path(), "self-handoff", "20260301_121314").unwrap();
-        assert!(res.is_none(), "absent self-handoff.md is a no-op (Ok(None))");
+        let res = archive_root_md(temp.path(), "SELF-HANDOFF", "20260301_121314").unwrap();
+        assert!(res.is_none(), "absent SELF-HANDOFF.md is a no-op (Ok(None))");
         let count = std::fs::read_dir(temp.path()).unwrap().count();
-        assert_eq!(count, 0, "no file is created when self-handoff.md is absent");
+        assert_eq!(
+            count, 0,
+            "no file or self-clear/ dir is created when SELF-HANDOFF.md is absent"
+        );
     }
 
     #[test]
@@ -5500,23 +5533,24 @@ mod tests {
         (session.id, session.token)
     }
 
-    /// #626 - seed the agent's `self-handoff.md` so the existence gate passes. The gate (§4.2) rejects
-    /// any self-clear-and-handoff whose root has no `self-handoff.md`, so every test that expects a
+    /// #626 - seed the agent's `SELF-HANDOFF.md` so the existence gate passes. The gate (§4.2) rejects
+    /// any self-clear-and-handoff whose root has no `SELF-HANDOFF.md`, so every test that expects a
     /// "queued"/"already_queued" outcome must seed it first.
     fn seed_self_handoff(cwd: &Path) {
-        std::fs::write(cwd.join("self-handoff.md"), "resume notes for the test").unwrap();
+        std::fs::write(cwd.join("SELF-HANDOFF.md"), "resume notes for the test").unwrap();
     }
 
-    /// #626 - count `FORGET_*.md` archive files in `cwd` (prefix match; the wall-clock timestamp in the
-    /// real archive name is unpredictable, so the harness asserts by prefix, not exact name).
+    /// #626/#636 - count archived SELF-FORGET files in `cwd/self-clear/` (suffix match; the wall-clock
+    /// timestamp prefix in the real archive name is unpredictable, so the harness asserts by suffix, not
+    /// exact name). Returns 0 if `self-clear/` does not exist (read_dir errors -> unwrap_or(0)).
     fn count_forget_archives(cwd: &Path) -> usize {
-        std::fs::read_dir(cwd)
+        std::fs::read_dir(cwd.join("self-clear"))
             .map(|rd| {
                 rd.filter_map(|e| e.ok())
                     .filter(|e| {
                         e.file_name()
                             .to_string_lossy()
-                            .starts_with("FORGET_")
+                            .ends_with("_SELF-FORGET.md")
                     })
                     .count()
             })
@@ -5574,9 +5608,9 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
-        // #626: self-handoff.md must exist (existence gate) and FORGET.md is archived on queue.
+        // #626: SELF-HANDOFF.md must exist (existence gate) and SELF-FORGET.md is archived on queue.
         seed_self_handoff(&cwd);
-        std::fs::write(cwd.join("FORGET.md"), "topic to forget").unwrap();
+        std::fs::write(cwd.join("SELF-FORGET.md"), "topic to forget").unwrap();
 
         let (path, msg) =
             build_self_clear_message(&cwd, "msg-sc-1", "rid-sc-1", Some(token.to_string()));
@@ -5592,15 +5626,15 @@ mod tests {
         );
         assert!(pending_self_clear_contains(&app, session_id).await);
         assert_eq!(pending_self_clear_len(&app).await, 1);
-        // #626: FORGET.md archived to exactly one FORGET_*.md (prefix match), original gone.
+        // #626/#636: SELF-FORGET.md archived to exactly one self-clear/<ts>_SELF-FORGET.md, original gone.
         assert!(
-            !cwd.join("FORGET.md").is_file(),
-            "FORGET.md must be archived away on queue"
+            !cwd.join("SELF-FORGET.md").is_file(),
+            "SELF-FORGET.md must be archived away on queue"
         );
         assert_eq!(
             count_forget_archives(&cwd),
             1,
-            "exactly one FORGET_<ts>.md archive must exist after queue"
+            "exactly one self-clear/<ts>_SELF-FORGET.md archive must exist after queue"
         );
         // message moved to delivered/, original removed.
         assert!(!path.exists());
@@ -5616,7 +5650,7 @@ mod tests {
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
         seed_self_handoff(&cwd); // existence gate
-        std::fs::write(cwd.join("FORGET.md"), "topic to forget").unwrap();
+        std::fs::write(cwd.join("SELF-FORGET.md"), "topic to forget").unwrap();
 
         let (path1, msg1) =
             build_self_clear_message(&cwd, "msg-sc-a", "rid-sc-a", Some(token.to_string()));
@@ -5625,10 +5659,14 @@ mod tests {
             .handle_self_clear(&app, &path1, &msg1, false)
             .await
             .unwrap();
-        // The first (queued) request archived FORGET.md. Re-create one to prove the second request
+        // The first (queued) request archived SELF-FORGET.md. Re-create one to prove the second request
         // does NOT re-archive (already_queued skips the newly_inserted block).
-        assert_eq!(count_forget_archives(&cwd), 1, "first request archives FORGET.md");
-        std::fs::write(cwd.join("FORGET.md"), "a new forget written mid-cycle").unwrap();
+        assert_eq!(
+            count_forget_archives(&cwd),
+            1,
+            "first request archives SELF-FORGET.md"
+        );
+        std::fs::write(cwd.join("SELF-FORGET.md"), "a new forget written mid-cycle").unwrap();
 
         let (path2, msg2) =
             build_self_clear_message(&cwd, "msg-sc-b", "rid-sc-b", Some(token.to_string()));
@@ -5649,16 +5687,16 @@ mod tests {
         assert!(pending_self_clear_contains(&app, session_id).await);
         assert_eq!(pending_self_clear_len(&app).await, 1);
         // The already_queued second request did NOT re-archive: still exactly one archive, and the
-        // freshly re-created FORGET.md is left in place.
+        // freshly re-created SELF-FORGET.md is left in place.
         assert_eq!(count_forget_archives(&cwd), 1, "already_queued must not re-archive");
         assert!(
-            cwd.join("FORGET.md").is_file(),
-            "the re-created FORGET.md must survive an already_queued request"
+            cwd.join("SELF-FORGET.md").is_file(),
+            "the re-created SELF-FORGET.md must survive an already_queued request"
         );
     }
 
-    /// #626 - the existence gate REFUSES when self-handoff.md is absent: nothing is queued, the id is
-    /// NOT inserted, and no FORGET archive is created (the gate runs before the insert + archive).
+    /// #626 - the existence gate REFUSES when SELF-HANDOFF.md is absent: nothing is queued, the id is
+    /// NOT inserted, and no SELF-FORGET archive is created (the gate runs before the insert + archive).
     #[tokio::test]
     async fn handle_self_clear_missing_self_handoff_is_rejected() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -5668,8 +5706,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
-        // No self-handoff.md seeded. Seed a FORGET.md to prove it is NOT archived on a refuse.
-        std::fs::write(cwd.join("FORGET.md"), "must not be archived").unwrap();
+        // No SELF-HANDOFF.md seeded. Seed a SELF-FORGET.md to prove it is NOT archived on a refuse.
+        std::fs::write(cwd.join("SELF-FORGET.md"), "must not be archived").unwrap();
 
         let (path, msg) = build_self_clear_message(
             &cwd,
@@ -5690,23 +5728,23 @@ mod tests {
             .join("msg-sc-nohandoff.reason.txt");
         assert!(
             reason.exists(),
-            "missing self-handoff.md must be rejected with a reason file"
+            "missing SELF-HANDOFF.md must be rejected with a reason file"
         );
         assert!(
             !pending_self_clear_contains(&app, session_id).await,
             "a refused request must not insert the id"
         );
         assert_eq!(pending_self_clear_len(&app).await, 0);
-        // The archive runs only after the gate passes; a refuse must not touch FORGET.md.
+        // The archive runs only after the gate passes; a refuse must not touch SELF-FORGET.md.
         assert!(
-            cwd.join("FORGET.md").is_file(),
-            "FORGET.md must NOT be archived when the request is refused"
+            cwd.join("SELF-FORGET.md").is_file(),
+            "SELF-FORGET.md must NOT be archived when the request is refused"
         );
         assert_eq!(count_forget_archives(&cwd), 0);
     }
 
-    /// #626 - self-handoff.md present but no FORGET.md: queues normally, archive is a no-op (no error,
-    /// no FORGET_* created).
+    /// #626 - SELF-HANDOFF.md present but no SELF-FORGET.md: queues normally, archive is a no-op (no
+    /// error, no self-clear/<ts>_SELF-FORGET.md created).
     #[tokio::test]
     async fn handle_self_clear_no_forget_md_still_queues() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -5716,7 +5754,7 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
-        seed_self_handoff(&cwd); // no FORGET.md
+        seed_self_handoff(&cwd); // no SELF-FORGET.md
 
         let (path, msg) = build_self_clear_message(
             &cwd,
@@ -5738,7 +5776,7 @@ mod tests {
         assert_eq!(
             count_forget_archives(&cwd),
             0,
-            "no FORGET.md means no archive (no-op), no error"
+            "no SELF-FORGET.md means no archive (no-op), no error"
         );
     }
 
@@ -5903,13 +5941,14 @@ mod tests {
     /// otherwise skew assertions. Each test uses a unique msg-id, so this is safe
     /// even when the two tests run in parallel.
     ///
-    /// #626 NOTE: this helper deliberately does NOT touch `self-handoff.md`. That file is a single
+    /// #626 NOTE: this helper deliberately does NOT touch `SELF-HANDOFF.md`. That file is a single
     /// SHARED (non-msg-id-scoped) name; if this start-of-test cleanup removed it, the negative e2e
     /// (which rejects at anti-spoof and never seeds it) could delete the positive e2e's freshly-seeded
     /// handoff file mid-flight when the two run in parallel - a flaky failure. The positive e2e owns
-    /// `self-handoff.md` end-to-end instead (seed before, remove after), so no other test races it.
-    /// `FORGET_*.md` is glob-removed defensively (the e2e tests never seed FORGET.md, so the archive is
-    /// a no-op and nothing is normally created - this only guards against a stale file from a crash).
+    /// `SELF-HANDOFF.md` end-to-end instead (seed before, remove after), so no other test races it.
+    /// `self-clear/*_SELF-FORGET.md` is glob-removed defensively (the e2e tests never seed SELF-FORGET.md,
+    /// so the archive is a no-op and nothing is normally created - this only guards against a stale file
+    /// from a crash).
     fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
         let outbox = cwd
             .join(crate::config::agent_local_dir_name())
@@ -5927,14 +5966,14 @@ mod tests {
                 .join("responses")
                 .join(format!("{}.json", request_id)),
         );
-        // Defensive: drop any stale FORGET_<ts>.md archive in the shared root (none is created in the
-        // normal e2e flow since neither test seeds FORGET.md).
-        if let Ok(rd) = std::fs::read_dir(cwd) {
+        // Defensive: drop any stale <ts>_SELF-FORGET.md archive under the shared root's self-clear/ (none
+        // is created in the normal e2e flow since neither test seeds SELF-FORGET.md).
+        if let Ok(rd) = std::fs::read_dir(cwd.join("self-clear")) {
             for entry in rd.flatten() {
                 if entry
                     .file_name()
                     .to_string_lossy()
-                    .starts_with("FORGET_")
+                    .ends_with("_SELF-FORGET.md")
                 {
                     let _ = std::fs::remove_file(entry.path());
                 }
@@ -5972,10 +6011,10 @@ mod tests {
         );
         std::fs::create_dir_all(&root_cwd).unwrap();
         clear_root_self_clear_artifacts(&root_cwd, "msg-sc-root-e2e-pos", "rid-sc-root-e2e-pos");
-        // #626 existence gate: seed self-handoff.md so the positive path still queues. This test OWNS
-        // self-handoff.md in the shared root_agent_dir (the negative e2e never touches it), so seeding
+        // #626 existence gate: seed SELF-HANDOFF.md so the positive path still queues. This test OWNS
+        // SELF-HANDOFF.md in the shared root_agent_dir (the negative e2e never touches it), so seeding
         // here and removing at the end is race-free even with parallel test execution. NOTE: deliberately
-        // do NOT seed FORGET.md here (keep the archive a no-op so no timestamped litter in the shared dir).
+        // do NOT seed SELF-FORGET.md here (keep the archive a no-op so no timestamped litter in the shared dir).
         seed_self_handoff(&root_cwd);
 
         let temp = tempfile::TempDir::new().unwrap();
@@ -6033,8 +6072,8 @@ mod tests {
         );
         assert!(!path.exists(), "message must be consumed (moved to delivered/)");
 
-        // #626: this test owns self-handoff.md in the shared root; remove it so it does not linger.
-        let _ = std::fs::remove_file(root_cwd.join("self-handoff.md"));
+        // #626: this test owns SELF-HANDOFF.md in the shared root; remove it so it does not linger.
+        let _ = std::fs::remove_file(root_cwd.join("SELF-HANDOFF.md"));
     }
 
     /// #617 HIGH-1 e2e negative (production-faithful): the EXACT buggy sender the old
