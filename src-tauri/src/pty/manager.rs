@@ -17,6 +17,9 @@ struct PtyInstance {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    /// #632 - Job Object the child (and its descendant tree) is assigned to, when
+    /// the OS allowed it. `None` falls back to the identity reaper for cleanup.
+    job: Option<crate::pty::job::JobObject>,
 }
 
 /// Tracks active response marker watchers per session.
@@ -385,6 +388,14 @@ impl PtyManager {
             id,
             child.process_id()
         );
+
+        // #632 - assign the child (and the descendant tree it spawns after this
+        // point) to a Job Object with KILL_ON_JOB_CLOSE, so session-destroy and
+        // app-exit can kill the whole tree atomically via the job handle. Created
+        // before the resource registration so the early-return error paths below
+        // drop `job` and let KILL_ON_JOB_CLOSE reap the child too.
+        let job = child.process_id().and_then(crate::pty::job::JobObject::for_child);
+
         if let Some(registration) = resource_registration.as_mut() {
             let Some(pid) = child.process_id() else {
                 let _ = child.kill();
@@ -425,6 +436,7 @@ impl PtyManager {
             master: Arc::new(Mutex::new(pair.master)),
             writer: Arc::new(Mutex::new(writer)),
             child: Some(child),
+            job,
         };
 
         self.ptys.lock().unwrap().insert(id, instance);
@@ -613,6 +625,15 @@ impl PtyManager {
         };
 
         if let Some(mut instance) = instance {
+            // #632 - kill the whole descendant tree via the Job Object first. This
+            // catches descendants the identity reaper's #543 gate refuses to
+            // terminate (recycled / elevated PIDs) and any spawn-race escapee, with
+            // no snapshot walk and no 2s waits. The child handling below then reaps
+            // the (now-dead) direct child's exit status as before.
+            if let Some(job) = instance.job.take() {
+                job.terminate();
+                // job drops here -> handle closed (KILL_ON_JOB_CLOSE backstop)
+            }
             if let Some(mut child) = instance.child.take() {
                 let pid = child.process_id();
                 match child.try_wait() {
@@ -670,6 +691,31 @@ impl PtyManager {
         }
 
         Ok(())
+    }
+
+    /// #632 - terminate every live agent's Job Object at app shutdown. Atomically
+    /// kills each session's whole descendant tree via the job handle (immune to PID
+    /// reuse / ACCESS_DENIED, no snapshot walking, no per-process waits). Returns
+    /// `(jobs_terminated, jobless_sessions)` so the caller can detect the MED-2
+    /// case: a session with no Job Object is reaper-only and can orphan if the
+    /// time-boxed reaper does not finish. Does NOT remove the PtyInstances; the
+    /// process is exiting and the OS reclaims the rest. No-op on non-Windows (jobs
+    /// are always `None`, so it returns `(0, live_session_count)`).
+    pub fn kill_all_jobs(&self) -> (usize, usize) {
+        let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+        let mut terminated = 0;
+        let mut jobless = 0;
+        for (id, instance) in ptys.iter() {
+            match instance.job.as_ref() {
+                Some(job) => {
+                    job.terminate();
+                    terminated += 1;
+                    log::info!("[pty] terminated job object for session {id} at shutdown");
+                }
+                None => jobless += 1,
+            }
+        }
+        (terminated, jobless)
     }
 
     /// Get a screen snapshot for replay to late-joining WS clients.

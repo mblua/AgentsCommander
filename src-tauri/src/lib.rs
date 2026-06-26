@@ -66,6 +66,13 @@ pub type UpdateCheckState = Arc<std::sync::OnceLock<update_check::UpdateInfo>>;
 /// Floating spec/Mermaid board document state.
 pub type SpecBoardState = Arc<tokio::sync::RwLock<commands::spec_board::SpecBoardManager>>;
 
+/// #632 - hard ceiling on the shutdown reaper cleanup. For jobbed sessions the Job
+/// Object kill already prevented orphans, so exceeding this just stops the
+/// best-effort accounting reaper. For a job-less session (assign failed) this bound
+/// CAN abandon a still-dying tree, so the Exit handler warns when that is possible
+/// (MED-2).
+const SHUTDOWN_CLEANUP_BUDGET_SECS: u64 = 5;
+
 /// Master token generated at app startup. Allows bypassing team validation (can_reach).
 /// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See #34.
 /// Field is private — use `matches()` for constant-time comparison.
@@ -1985,20 +1992,66 @@ pub fn run(
                         shutdown.abort_now();
                     }
 
-                    for result in resource_monitor_for_exit
-                        .kill_all_owned_groups(resource_monitor::ResourceKillReason::AppShutdown)
-                    {
-                        if result.quarantined {
-                            log::warn!(
-                                "[shutdown] resource group {} quarantined during cleanup: {}",
-                                result.session_id,
-                                result.message
-                            );
-                        }
-                    }
-
+                    // #632 B1 - trigger background-task shutdown FIRST so the resource
+                    // watchdog stops dispatching NEW ticks and the idle detectors stop.
+                    // (An already-dispatched spawn_blocking kill_group still runs;
+                    // safety there rests on B2b's bounded set + kill_group's
+                    // Terminating/Terminated idempotency guard, not on trigger().)
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
+
+                    // #632 A - kill every agent's Job Object: atomically terminates
+                    // each jobbed session's whole descendant tree via the job handle.
+                    // This is the durable, orphan-free guarantee for jobbed sessions.
+                    let (jobs_killed, jobless_sessions) = {
+                        let pty_mgr = app_handle.state::<Arc<Mutex<PtyManager>>>();
+                        let guard = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.kill_all_jobs()
+                    };
+                    log::info!(
+                        "[shutdown] terminated {jobs_killed} agent job object(s); {jobless_sessions} session(s) had no job"
+                    );
+
+                    // #632 B2+B4 - run the identity reaper for accounting and as the
+                    // backstop for job-less sessions, TIME-BOXED. Fresh-only targets
+                    // (B2a) make it near-instant for jobbed sessions (their live tree is
+                    // already dead). Abandoning it on timeout is safe for jobbed
+                    // sessions; the job-less warning below covers the MED-2 residual.
+                    let rm_for_cleanup = resource_monitor_for_exit.clone();
+                    let cleanup = crate::shutdown::run_time_boxed(
+                        std::time::Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS),
+                        move || {
+                            rm_for_cleanup.kill_all_owned_groups(
+                                resource_monitor::ResourceKillReason::AppShutdown,
+                            )
+                        },
+                    );
+                    match &cleanup {
+                        Ok(results) => {
+                            for result in results {
+                                if result.quarantined {
+                                    log::warn!(
+                                        "[shutdown] resource group {} quarantined during cleanup: {}",
+                                        result.session_id,
+                                        result.message
+                                    );
+                                }
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => log::warn!(
+                            "[shutdown] resource cleanup exceeded {SHUTDOWN_CLEANUP_BUDGET_SECS}s budget; proceeding to exit (job objects already terminated jobbed trees)"
+                        ),
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => log::error!(
+                            "[shutdown] resource cleanup thread panicked before completing; jobbed trees were still terminated by the job kill"
+                        ),
+                    }
+                    // #632 MED-2 - job-less sessions are reaper-only; if the reaper did
+                    // not finish, their trees may be orphaned. Make it visible.
+                    if cleanup.is_err() && jobless_sessions > 0 {
+                        log::warn!(
+                            "[shutdown] {jobless_sessions} session(s) had no Job Object and the reaper did not finish in budget; their process trees may be orphaned"
+                        );
+                    }
 
                     log::info!("[shutdown] Persisting session state...");
                     let mgr_clone = session_mgr_for_exit.clone();
