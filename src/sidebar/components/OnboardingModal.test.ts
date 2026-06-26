@@ -90,6 +90,8 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     coordinatorAutoCloseMinutes: 60,
     coordinatorCascadeCloseEnabled: true,
     npmUpdateNotificationsEnabled: true,
+    autoSelfClearEnabled: true,
+    autoSelfClearByAgent: {},
     logLevel: null,
     ...overrides,
   };

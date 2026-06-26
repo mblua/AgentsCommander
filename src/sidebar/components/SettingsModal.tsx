@@ -962,6 +962,21 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Notify me when a new version is available</span>
         </label>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.autoSelfClearEnabled}
+            onChange={(e) =>
+              updateField("autoSelfClearEnabled", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.autoSelfClearEnabled"
+          />
+          <span>
+            Auto-clear and hand off context after 3 closed topics (on for
+            coordinators and Root; other agents opt in per agent)
+          </span>
+        </label>
       </div>
 
       <div class="settings-section">
