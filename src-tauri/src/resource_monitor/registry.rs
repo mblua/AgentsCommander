@@ -377,6 +377,21 @@ impl ResourceMonitorState {
         session_id: Uuid,
         reason: ResourceKillReason,
     ) -> Result<ResourceKillResult, String> {
+        self.kill_group_inner(session_id, reason, false)
+    }
+
+    /// #632 B2a - shared kill implementation. `fresh_targets_only` controls only the
+    /// target SEED, never the verification: when true (app-shutdown bulk cleanup) the
+    /// accumulated `observed_processes` set is skipped and only the fresh `observe_tree`
+    /// is targeted, so the reaper does not walk hundreds of stale-dead PIDs (each of
+    /// which would force a full toolhelp snapshot). The Job Object kill already
+    /// terminated the live tree at shutdown, so the fresh set is normally empty.
+    fn kill_group_inner(
+        &self,
+        session_id: Uuid,
+        reason: ResourceKillReason,
+        fresh_targets_only: bool,
+    ) -> Result<ResourceKillResult, String> {
         let kill_started = Instant::now();
         let (root_identity, previous_targets) = {
             let mut inner = self
@@ -417,11 +432,18 @@ impl ResourceMonitorState {
             group.kill_started_at = Some(Instant::now());
             (
                 group.root_identity,
-                group
-                    .observed_processes
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>(),
+                if fresh_targets_only {
+                    // #632 B2a - at shutdown, ignore the accumulated set entirely;
+                    // target only the fresh live tree captured below. The Job Object
+                    // kill already terminated the tree, so this is normally empty.
+                    Vec::new()
+                } else {
+                    group
+                        .observed_processes
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                },
             )
         };
 
@@ -606,6 +628,12 @@ impl ResourceMonitorState {
         })
     }
 
+    /// #632 - app-shutdown bulk cleanup. Uses fresh-tree-only targets
+    /// (`kill_group_inner` with `fresh_targets_only = true`). Its only caller is the
+    /// app-exit handler. Fresh-only avoids re-introducing the #632 hang: after the
+    /// Job Object kill the live tree is empty, and walking the accumulated stale set
+    /// here would pay one full toolhelp snapshot per dead PID. Per-session kills keep
+    /// the union behavior, which stays bounded via the B2b sampling prune.
     pub fn kill_all_owned_groups(&self, reason: ResourceKillReason) -> Vec<ResourceKillResult> {
         let ids = self
             .inner
@@ -613,7 +641,7 @@ impl ResourceMonitorState {
             .map(|inner| inner.groups.keys().copied().collect::<Vec<_>>())
             .unwrap_or_default();
         ids.into_iter()
-            .filter_map(|id| self.kill_group(id, reason).ok())
+            .filter_map(|id| self.kill_group_inner(id, reason, true).ok())
             .collect()
     }
 
@@ -697,8 +725,36 @@ impl ResourceMonitorState {
             .iter()
             .any(|p| p.identity == group.root_identity);
 
+        // #632 B2b - capture the live identity set and whether the sample is CLEAN
+        // before merge_observed consumes the tree. "Clean" = no enumeration errors at
+        // all (no missing root, no per-pid "identity unavailable" placeholder), so a
+        // partial/racy toolhelp snapshot can never drop a live descendant.
+        let live_identities: BTreeSet<ProcessIdentity> =
+            tree.processes.iter().map(|p| p.identity).collect();
+        let sample_clean = tree.errors.is_empty();
+
         group.descendants_observed |= tree.processes.len() > 1;
         merge_observed(&mut group.observed_processes, tree.processes);
+
+        // #632 B2b - on a CLEAN sample with the root observed alive, the fresh tree is
+        // the authoritative live set, so drop entries no longer present. Gated on
+        // `root_alive && sample_clean` (MED-3): a missing-root, partial, or
+        // ACCESS_DENIED-placeholder sample keeps the last-known set - that case is
+        // owned by the #559 strike/reap logic below, and keeping it avoids dropping a
+        // live child a racy snapshot momentarily missed (which would weaken the no-job
+        // reaper fallback). A clean tree always contains the root, so the root is
+        // retained.
+        //
+        // KNOWN RESIDUAL (#637): a still-alive grandchild whose intermediate parent
+        // exited is unreachable from the root in this BFS (Windows does not reparent)
+        // yet the sample still looks clean, so it is pruned here. Harmless for jobbed
+        // sessions (the Job Object kills the whole tree regardless of reachability);
+        // for a job-less session it extends the MED-2 reaper-only orphan residual.
+        if root_alive && sample_clean {
+            group
+                .observed_processes
+                .retain(|identity, _| live_identities.contains(identity));
+        }
         let joined = join_errors(tree.errors);
         if joined.is_some() {
             group.last_error = joined.clone();
@@ -2130,5 +2186,162 @@ mod tests {
         let snap = state.snapshot(limits(100));
         assert_eq!(snap.groups.len(), MAX_TERMINATED_RETAINED);
         assert_eq!(state.active_agent_groups(), 0);
+    }
+
+    // #632 B2a - the app-shutdown bulk path (kill_all_owned_groups -> fresh_targets_only)
+    // targets only the fresh live tree, NOT the accumulated observed_processes. A child
+    // that left the live tree but is still alive must therefore NOT be killed here.
+    #[test]
+    fn kill_all_owned_groups_uses_fresh_tree_only() {
+        let (state, backend) = state_with_fake();
+        let root = identity(90, 90);
+        let child = identity(91, 91);
+        backend.add_tree(
+            root,
+            vec![observed(90, 90, None, 0), observed(91, 91, Some(90), 1)],
+        );
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .unwrap();
+
+        // register seeded observed_processes with {root, child}. The child now leaves
+        // the live tree (fresh observe_tree is root-only) but stays alive.
+        backend.replace_tree(root, vec![observed(90, 90, None, 0)], Vec::new());
+        backend.mark_present(child);
+
+        let results = state.kill_all_owned_groups(ResourceKillReason::AppShutdown);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].quarantined);
+        assert!(backend.terminated().contains(&root));
+        assert!(
+            !backend.terminated().contains(&child),
+            "fresh-only shutdown kill must not target the accumulated child"
+        );
+    }
+
+    // #632 B2a contrast - the per-session union path (kill_group, fresh_targets_only =
+    // false) DOES target the accumulated child. Same setup as the fresh-only test;
+    // proves the flag is the only difference.
+    #[test]
+    fn kill_group_union_still_targets_accumulated_child() {
+        let (state, backend) = state_with_fake();
+        let root = identity(92, 92);
+        let child = identity(93, 93);
+        backend.add_tree(
+            root,
+            vec![observed(92, 92, None, 0), observed(93, 93, Some(92), 1)],
+        );
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .unwrap();
+
+        backend.replace_tree(root, vec![observed(92, 92, None, 0)], Vec::new());
+        backend.mark_present(child);
+
+        let result = state
+            .kill_group(id, ResourceKillReason::SessionDestroy)
+            .unwrap();
+        assert!(!result.quarantined);
+        assert!(backend.terminated().contains(&root));
+        assert!(
+            backend.terminated().contains(&child),
+            "union kill must still target the accumulated child"
+        );
+    }
+
+    // #632 B2b - a CLEAN sample (root alive, no errors) prunes a descendant that has
+    // exited, so observed_processes tracks the live set instead of accumulating.
+    #[test]
+    fn clean_sample_prunes_exited_descendant() {
+        let (state, backend) = state_with_fake();
+        let root = identity(94, 94);
+        let child = identity(95, 95);
+        backend.add_tree(
+            root,
+            vec![observed(94, 94, None, 0), observed(95, 95, Some(94), 1)],
+        );
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .unwrap();
+        let snap = state.snapshot(limits(1));
+        assert_eq!(snap.groups[0].process_count, 2);
+
+        // Child exits; a clean root-only sample prunes it.
+        backend.replace_tree(root, vec![observed(94, 94, None, 0)], Vec::new());
+        backend.mark_gone(child);
+        let snap = state.snapshot(limits(1));
+        assert_eq!(snap.groups[0].process_count, 1);
+    }
+
+    // #632 B2b guard - a missing-root sample (empty tree + missing-root error) must NOT
+    // prune; the last-known set is owned by the #559 strike/reap path.
+    #[test]
+    fn missing_root_sample_retains_last_known_set() {
+        let (state, backend) = state_with_fake();
+        let root = identity(96, 96);
+        backend.add_tree(
+            root,
+            vec![observed(96, 96, None, 0), observed(97, 97, Some(96), 1)],
+        );
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .unwrap();
+        let snap = state.snapshot(limits(1));
+        assert_eq!(snap.groups[0].process_count, 2);
+
+        backend.replace_tree(
+            root,
+            Vec::new(),
+            vec![format!("root pid {} was not in process snapshot", root.pid)],
+        );
+        backend.mark_gone(root);
+        let snap = state.snapshot(limits(1));
+        assert_eq!(
+            snap.groups[0].process_count, 2,
+            "missing-root sample must retain the last-known set"
+        );
+    }
+
+    // #632 B2b guard (MED-3) - a root-alive but ERRORED sample (e.g. a transient
+    // "identity unavailable" for a child) must NOT prune, so a racy/partial snapshot
+    // can never drop a still-live descendant.
+    #[test]
+    fn errored_sample_does_not_prune() {
+        let (state, backend) = state_with_fake();
+        let root = identity(98, 98);
+        let child = identity(99, 99);
+        backend.add_tree(
+            root,
+            vec![observed(98, 98, None, 0), observed(99, 99, Some(98), 1)],
+        );
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .unwrap();
+        let snap = state.snapshot(limits(1));
+        assert_eq!(snap.groups[0].process_count, 2);
+
+        // Root-only fresh tree, but the sample carries an enumeration error: root_alive
+        // is true yet sample_clean is false, so MED-3 keeps the live child.
+        backend.replace_tree(
+            root,
+            vec![observed(98, 98, None, 0)],
+            vec![format!("identity unavailable for pid {}", child.pid)],
+        );
+        backend.mark_present(child);
+        let snap = state.snapshot(limits(1));
+        assert_eq!(
+            snap.groups[0].process_count, 2,
+            "errored sample must not prune the live child"
+        );
     }
 }
