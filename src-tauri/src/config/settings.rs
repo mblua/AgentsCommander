@@ -436,10 +436,37 @@ pub struct AppSettings {
     /// a newer published version is available. Default true.
     #[serde(default = "default_true")]
     pub npm_update_notifications_enabled: bool,
+    /// #640 Global master for auto self-clear-and-handoff. Absolute kill switch:
+    /// false => off for every agent. When true, the class-aware default applies
+    /// (ON for coordinator/Root, OFF for specialists), subject to per-agent
+    /// overrides in `auto_self_clear_by_agent`.
+    #[serde(default = "default_true")]
+    pub auto_self_clear_enabled: bool,
+    /// #640 Per-agent override of the class default, keyed by agent name (same
+    /// key as `coding_agent_profiles.default_profile_by_agent`). Applies only
+    /// while the global master is on; absent = use the class default.
+    #[serde(default)]
+    pub auto_self_clear_by_agent: std::collections::BTreeMap<String, bool>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// #640 Resolve the effective auto-self-clear flag for an agent.
+/// Precedence: the global master `auto_self_clear_enabled` is an absolute kill
+/// switch (off => off for all); else an explicit per-agent override
+/// (`auto_self_clear_by_agent[name]`) wins; else the class-aware default
+/// (`default_on` = true for coordinator/Root, false for specialists), computed
+/// at the call site. Master-first so one toggle reliably disables everything.
+pub fn resolve_auto_self_clear(settings: &AppSettings, agent_name: &str, default_on: bool) -> bool {
+    if !settings.auto_self_clear_enabled {
+        return false; // global master kill switch wins
+    }
+    if let Some(explicit) = settings.auto_self_clear_by_agent.get(agent_name) {
+        return *explicit; // explicit per-agent override wins while enabled
+    }
+    default_on // class-aware default
 }
 
 fn default_profiles_schema_version() -> u32 {
@@ -621,6 +648,8 @@ impl Default for AppSettings {
             coordinator_auto_close_minutes: default_coord_auto_close_minutes(),
             coordinator_cascade_close_enabled: true,
             npm_update_notifications_enabled: true,
+            auto_self_clear_enabled: true,
+            auto_self_clear_by_agent: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -2645,6 +2674,77 @@ mod tests {
         assert_eq!(back.coordinator_auto_close_minutes, 60);
         assert_eq!(back.coordinator_idle_badge_yellow_minutes, 30);
         assert_eq!(back.coordinator_idle_badge_red_minutes, 60);
+    }
+
+    #[test]
+    fn resolve_auto_self_clear_precedence_table() {
+        // #640 §5 resolution table. Master-first kill switch, then per-agent
+        // override, then the class-aware default computed at the call site.
+        let mut s = AppSettings::default();
+
+        // master ON, no override, class default ON (coordinator/Root) -> ON.
+        assert!(super::resolve_auto_self_clear(&s, "tech-lead", true));
+        // master ON, no override, class default OFF (specialist) -> OFF.
+        assert!(!super::resolve_auto_self_clear(&s, "dev-rust", false));
+
+        // explicit per-agent opt-in overrides a specialist's OFF class default.
+        s.auto_self_clear_by_agent
+            .insert("dev-rust".to_string(), true);
+        assert!(super::resolve_auto_self_clear(&s, "dev-rust", false));
+        // explicit per-agent opt-out overrides a coordinator's ON class default.
+        s.auto_self_clear_by_agent
+            .insert("tech-lead".to_string(), false);
+        assert!(!super::resolve_auto_self_clear(&s, "tech-lead", true));
+
+        // master OFF is an absolute kill switch: off for everyone, and it wins
+        // even over a per-agent opt-in.
+        s.auto_self_clear_enabled = false;
+        assert!(!super::resolve_auto_self_clear(&s, "tech-lead", true));
+        assert!(!super::resolve_auto_self_clear(&s, "dev-rust", true));
+    }
+
+    #[test]
+    fn resolve_auto_self_clear_empty_name_uses_class_default() {
+        // #640 L1: the Root derives to an empty name (no `_agent_`/`__agent_`
+        // prefix); with no "" key it falls through to the class default. Same
+        // path covers any name-derivation failure.
+        let s = AppSettings::default();
+        assert!(super::resolve_auto_self_clear(&s, "", true));
+        assert!(!super::resolve_auto_self_clear(&s, "", false));
+    }
+
+    #[test]
+    fn auto_self_clear_defaults_when_keys_absent() {
+        // #640: an old settings.json (no auto-self-clear keys) must deserialize
+        // to the documented defaults: master ON + empty per-agent map.
+        let mut value =
+            serde_json::to_value(AppSettings::default()).expect("serialize default to value");
+        let obj = value.as_object_mut().expect("settings serializes to an object");
+        obj.remove("autoSelfClearEnabled");
+        obj.remove("autoSelfClearByAgent");
+
+        let back: AppSettings = serde_json::from_value(value).expect("deserialize without keys");
+        assert!(back.auto_self_clear_enabled);
+        assert!(back.auto_self_clear_by_agent.is_empty());
+    }
+
+    #[test]
+    fn auto_self_clear_round_trips_through_serde() {
+        let mut s = AppSettings {
+            auto_self_clear_enabled: false,
+            ..AppSettings::default()
+        };
+        s.auto_self_clear_by_agent
+            .insert("dev-rust".to_string(), true);
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"autoSelfClearEnabled\":false"));
+        assert!(json.contains("\"autoSelfClearByAgent\":{\"dev-rust\":true}"));
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(!back.auto_self_clear_enabled);
+        assert_eq!(
+            back.auto_self_clear_by_agent.get("dev-rust"),
+            Some(&true)
+        );
     }
 
     #[test]

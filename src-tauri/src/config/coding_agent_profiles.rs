@@ -306,7 +306,7 @@ pub fn validate_profile_selection_agent_path(
     ))
 }
 
-fn agent_name_from_dir(path: &Path) -> Option<String> {
+pub(crate) fn agent_name_from_dir(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     name.strip_prefix("_agent_")
         .or_else(|| name.strip_prefix("__agent_"))

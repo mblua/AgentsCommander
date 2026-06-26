@@ -986,7 +986,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     // configured agent's filename for cleanup. Computed under a single settings
     // read guard that is dropped before any filesystem I/O (no guard across the
     // materialize call).
-    let (target_filename, managed_filenames): (Option<String>, Vec<String>) = {
+    let (target_filename, managed_filenames, auto_self_clear): (Option<String>, Vec<String>, bool) = {
         let settings_state = app.state::<SettingsState>();
         let cfg = settings_state.read().await;
         let managed = crate::config::agent_command::managed_instructions_filenames(&cfg);
@@ -995,7 +995,21 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             &cfg,
             context_target,
         );
-        (target, managed)
+        // #640 resolve under the same guard; no second lock, dropped before I/O.
+        // Class-aware default: ON for coordinator/Root, OFF for specialists,
+        // unless a per-agent override is set. Gated to coding-agent sessions.
+        let class_default_on =
+            is_coordinator || crate::config::root_agent::is_root_agent_dir_name(&cwd);
+        let auto_self_clear = agent_kind.is_some()
+            && crate::config::settings::resolve_auto_self_clear(
+                &cfg,
+                &crate::config::coding_agent_profiles::agent_name_from_dir(std::path::Path::new(
+                    &cwd,
+                ))
+                .unwrap_or_default(),
+                class_default_on,
+            );
+        (target, managed, auto_self_clear)
     };
 
     let materialized_context_path = if let Some(ref target_filename) = target_filename {
@@ -1004,6 +1018,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             target_filename,
             &managed_filenames,
             is_coordinator,
+            auto_self_clear,
         ) {
             Ok(context) => context,
             Err(e) => {

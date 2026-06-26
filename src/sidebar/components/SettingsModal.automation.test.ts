@@ -131,6 +131,8 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     coordinatorAutoCloseMinutes: 60,
     coordinatorCascadeCloseEnabled: true,
     npmUpdateNotificationsEnabled: true,
+    autoSelfClearEnabled: true,
+    autoSelfClearByAgent: {},
     logLevel: null,
     ...overrides,
   };
@@ -1224,6 +1226,37 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.npmUpdateNotificationsEnabled).toBe(false);
+
+    dispose();
+  });
+
+  it("round-trips autoSelfClearEnabled through the General auto-self-clear checkbox (#640)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const checkbox = byTestId<HTMLInputElement>("settings.general.autoSelfClearEnabled");
+    expect(checkbox.closest("label")?.textContent).toContain(
+      "Auto-clear and hand off context after 3 closed topics",
+    );
+    // Loaded default is true (the global master defaults on).
+    expect(checkbox.checked).toBe(true);
+
+    // Toggle OFF and save -> the persisted draft carries the new value, proving
+    // updateField accepts the new AppSettings key end to end.
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.autoSelfClearEnabled).toBe(false);
 
     dispose();
   });
