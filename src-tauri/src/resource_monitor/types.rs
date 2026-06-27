@@ -185,6 +185,12 @@ pub struct ResourceKillResult {
     pub killed_processes: Vec<ProcessIdentity>,
     pub quarantined: bool,
     pub message: String,
+    /// #647 D: true when the kill quarantined AND ANY failure carried the exact
+    /// ACCESS_DENIED code (`win32 error 5`), i.e. a security product is stripping
+    /// PROCESS_TERMINATE. The per-PID detail stays in `message`; this only ADDS the
+    /// AV-exclusion guidance in the UI, so a non-security failure is never hidden.
+    #[serde(default)]
+    pub blocked_by_security: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

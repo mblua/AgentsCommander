@@ -693,6 +693,24 @@ impl PtyManager {
         Ok(())
     }
 
+    /// #647 A: fire the Job Object tree-kill for a session WITHOUT tearing the
+    /// session down. Pure: no `ptys.remove`, no child reap, no idle/git/watcher
+    /// teardown, and the job handle is RETAINED so a Force/Retry can re-fire it.
+    /// Returns true if a live job was present and `terminate()` was called.
+    /// `TerminateJobObject` is idempotent, so repeated calls on a dead tree are safe.
+    /// On non-Windows builds the job is always `None`, so this returns false and the
+    /// caller falls back to the per-process reaper.
+    pub fn terminate_job_for_session(&self, id: Uuid) -> bool {
+        let ptys = self.ptys.lock().unwrap();
+        match ptys.get(&id).and_then(|inst| inst.job.as_ref()) {
+            Some(job) => {
+                job.terminate();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// #632 - terminate every live agent's Job Object at app shutdown. Atomically
     /// kills each session's whole descendant tree via the job handle (immune to PID
     /// reuse / ACCESS_DENIED, no snapshot walking, no per-process waits). Returns

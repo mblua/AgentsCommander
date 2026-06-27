@@ -405,6 +405,7 @@ impl ResourceMonitorState {
                     killed_processes: Vec::new(),
                     quarantined: false,
                     message: "resource group not registered".to_string(),
+                    blocked_by_security: false,
                 });
             };
             match group.state {
@@ -415,6 +416,7 @@ impl ResourceMonitorState {
                         killed_processes: Vec::new(),
                         quarantined: false,
                         message: "resource group is already terminating".to_string(),
+                        blocked_by_security: false,
                     });
                 }
                 ResourceGroupState::Terminated => {
@@ -424,6 +426,7 @@ impl ResourceMonitorState {
                         killed_processes: Vec::new(),
                         quarantined: false,
                         message: "resource group already terminated".to_string(),
+                        blocked_by_security: false,
                     });
                 }
                 ResourceGroupState::Running | ResourceGroupState::Quarantined => {}
@@ -573,11 +576,24 @@ impl ResourceMonitorState {
                         session_id
                     );
                 }
-                Ok(Some(_)) | Err(_) => errors.push(error),
+                Ok(Some(_)) | Err(_) => {
+                    // #647 D: per-PID diagnostic so future AV-block repros are
+                    // conclusive from the log (the error already begins with `pid <n>:`).
+                    log::warn!(
+                        "[resource-monitor] kill-failed session={} reason={} error={}",
+                        session_id,
+                        reason.as_log_reason(),
+                        error
+                    );
+                    errors.push(error);
+                }
             }
         }
 
         let quarantined = !errors.is_empty();
+        // #647 D: flag an AV/EDR ACCESS_DENIED (exact `win32 error 5`) so the UI can
+        // add the exclusion guidance; the per-PID detail stays in `message`.
+        let blocked_by_security = quarantined && has_access_denied_signature(&errors);
         let state = if quarantined {
             ResourceGroupState::Quarantined
         } else {
@@ -625,6 +641,7 @@ impl ResourceMonitorState {
             killed_processes: killed,
             quarantined,
             message,
+            blocked_by_security,
         })
     }
 
@@ -670,9 +687,15 @@ impl ResourceMonitorState {
                     .groups
                     .iter()
                     .filter_map(|(id, group)| {
+                        // #647 C: include Quarantined so its process list is
+                        // re-observed each snapshot (unfreezes the display for the
+                        // root-alive / EDR-residual case). Reap-safe: merge_sample
+                        // only strike-counts/nominates Running groups.
                         matches!(
                             group.state,
-                            ResourceGroupState::Running | ResourceGroupState::Terminating
+                            ResourceGroupState::Running
+                                | ResourceGroupState::Terminating
+                                | ResourceGroupState::Quarantined
                         )
                         .then_some((*id, group.root_identity))
                     })
@@ -905,6 +928,19 @@ const MAX_TERMINATED_RETAINED: usize = 16;
 
 /// #559 - minimum interval between cleanup retries for a single quarantine.
 const QUARANTINE_RETRY_BACKOFF: Duration = Duration::from_secs(15);
+
+/// #647 D: true if any error carries the EXACT ACCESS_DENIED code (`win32 error 5`),
+/// so "win32 error 50/53/567" do NOT match. Errors are formatted "...win32 error {code}".
+fn has_access_denied_signature(errors: &[String]) -> bool {
+    errors.iter().any(|e| {
+        e.split("win32 error ").skip(1).any(|tail| {
+            tail.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                == "5"
+        })
+    })
+}
 
 fn is_missing_root_cleanup_error(error: &str, root_identity: ProcessIdentity) -> bool {
     error == format!("root pid {} was not in process snapshot", root_identity.pid)
@@ -2136,7 +2172,8 @@ mod tests {
         );
     }
 
-    // (T3) H1 never races H2: a Quarantined group is never sampled, so it is never reaped.
+    // (T3) H1 never races H2: a Quarantined group IS sampled (#647 C) but merge_sample
+    // only strike-counts/nominates Running groups, so it is still never reaped.
     #[test]
     fn reap_never_touches_quarantined_group() {
         let (state, backend) = state_with_fake();
@@ -2155,14 +2192,92 @@ mod tests {
         let result = state.kill_group(id, ResourceKillReason::User).unwrap();
         assert!(result.quarantined);
 
-        // Even with a missing-root signal + confirmed-gone root, sample_running_groups
-        // skips Quarantined, so H1 never reaps it to Terminated.
+        // Even with a missing-root signal + confirmed-gone root, merge_sample only
+        // strike-counts/nominates Running groups, so H1 never reaps Quarantined to
+        // Terminated (even though #647 C now re-samples it).
         backend.replace_tree(root, Vec::new(), missing_root_error(root));
         backend.mark_gone(root);
         state.snapshot(limits(1));
         state.snapshot(limits(1));
         assert_eq!(state.test_state(id), Some(ResourceGroupState::Quarantined));
         assert_eq!(state.active_agent_groups(), 1);
+    }
+
+    // #647 C: a Quarantined group IS included in sample_running_groups so its process
+    // list is re-observed each snapshot (unfreezing the display). Pairs with
+    // reap_never_touches_quarantined_group, which proves sampling it stays reap-safe.
+    #[test]
+    fn quarantined_group_is_resampled() {
+        let (state, backend) = state_with_fake();
+        let root = identity(81, 81);
+        let child = identity(82, 82);
+        backend.add_tree(
+            root,
+            vec![observed(81, 81, None, 0), observed(82, 82, Some(81), 1)],
+        );
+        backend.mark_stubborn(child);
+        let permit = state.try_reserve_agent_slot(limits(1)).unwrap().unwrap();
+        let id = Uuid::new_v4();
+        state
+            .register_group(permit, id, "agent".into(), None, None, None, None, None, root)
+            .unwrap();
+        let result = state.kill_group(id, ResourceKillReason::User).unwrap();
+        assert!(result.quarantined);
+
+        let sampled = state.sample_running_groups();
+        assert!(
+            sampled.iter().any(|(sid, _)| *sid == id),
+            "Quarantined group must be re-sampled (#647 C)"
+        );
+    }
+
+    // #647 D / E1: the ACCESS_DENIED signature must match the EXACT win32 code 5, so
+    // unrelated codes that merely start with the digit 5 (50/53/567) never trip it.
+    #[test]
+    fn access_denied_signature_matches_exact_code_5_only() {
+        assert!(has_access_denied_signature(&[
+            "pid 1: TerminateProcess failed: win32 error 5".to_string()
+        ]));
+        assert!(!has_access_denied_signature(&[
+            "pid 1: OpenProcess(1) failed: win32 error 50".to_string()
+        ]));
+        assert!(!has_access_denied_signature(&[
+            "pid 1: win32 error 53".to_string()
+        ]));
+        assert!(!has_access_denied_signature(&[
+            "pid 1: win32 error 567".to_string()
+        ]));
+        assert!(!has_access_denied_signature(&[
+            "pid 1: timed out waiting for pid 1 to exit".to_string()
+        ]));
+        // `any` policy (E2): a mixed set with one error-5 still flags. HIGH-2 keeps the
+        // per-PID detail in `message`, so this only ADDS the AV hint, never hides a failure.
+        assert!(has_access_denied_signature(&[
+            "pid 1: win32 error 5".to_string(),
+            "pid 2: timed out".to_string(),
+        ]));
+    }
+
+    // #647 D: blocked_by_security serializes as camelCase and, being serde(default),
+    // a legacy payload without the field deserializes to false.
+    #[test]
+    fn kill_result_blocked_by_security_round_trips_and_defaults() {
+        let result = ResourceKillResult {
+            session_id: "s".to_string(),
+            state: ResourceGroupState::Quarantined,
+            killed_processes: Vec::new(),
+            quarantined: true,
+            message: "pid 1: win32 error 5".to_string(),
+            blocked_by_security: false,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"blockedBySecurity\":false"));
+
+        // Strip the field to simulate a pre-#647 payload; serde(default) -> false.
+        let legacy = json.replace(",\"blockedBySecurity\":false", "");
+        assert!(!legacy.contains("blockedBySecurity"));
+        let parsed: ResourceKillResult = serde_json::from_str(&legacy).unwrap();
+        assert!(!parsed.blocked_by_security);
     }
 
     // (T4) H3 - retained Terminated rows are bounded by MAX_TERMINATED_RETAINED.
