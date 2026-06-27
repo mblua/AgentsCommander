@@ -38,10 +38,11 @@ const ActionBar: Component = () => {
   // pre-write value until fire-and-forget refresh() resolves, so clicks 2+ in
   // a quick burst would all flip from the same stale state). createEffect
   // syncs in when the store loads or changes externally (SettingsModal, the
-  // peer window's theme_changed event, etc.). Default true mirrors
-  // AppSettings::default for the brief window before load() resolves on mount.
+  // peer window's theme_changed event, etc.). Default false mirrors
+  // AppSettings::default (dark) for the brief window before load() resolves on
+  // mount.
   const [localThemeLight, setLocalThemeLight] = createSignal(
-    settingsStore.current?.themeLight ?? true,
+    settingsStore.current?.themeLight ?? false,
   );
   createEffect(() => {
     const t = settingsStore.current?.themeLight;

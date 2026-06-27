@@ -15,7 +15,7 @@ const mockState = vi.hoisted(() => ({
     soundsEnabled: true,
     themeLight: true,
     specBoardEnabled: false,
-  },
+  } as { soundsEnabled: boolean; themeLight: boolean; specBoardEnabled: boolean } | null,
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -123,6 +123,11 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     mockState.sessions.hydrated = true;
     mockState.sessions.toggleInFlight = false;
     mockState.sessions.coordSortByActivity = false;
+    mockState.settings = {
+      soundsEnabled: true,
+      themeLight: true,
+      specBoardEnabled: false,
+    };
     __resetCentralViewStoreForTests();
     vi.clearAllMocks();
   });
@@ -179,6 +184,26 @@ describe("ActionBar selected workgroup visibility toggle", () => {
 
     expect(rmButton.className).not.toContain("active");
     expect(rmButton.getAttribute("aria-pressed")).toBe("false");
+
+    dispose();
+  });
+
+  // #289 / dark-default — before settings load, settingsStore.current is null,
+  // so the theme glyph falls back to AppSettings::default. That default is now
+  // dark (themeLight: false), so the pre-load glyph must be the moon, not the
+  // legacy sun.
+  it("falls back to the dark theme glyph before settings load", () => {
+    mockState.settings = null;
+    const { dispose } = renderActionBar();
+    const themeButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.theme"]'
+    );
+    if (!themeButton) throw new Error("theme button not rendered");
+
+    // 🌙 = moon (dark glyph); ☀ = sun (legacy light glyph).
+    expect(themeButton.textContent).toContain("🌙");
+    expect(themeButton.textContent).not.toContain("☀");
+    expect(themeButton.getAttribute("data-ac-state")).toBe("disabled");
 
     dispose();
   });

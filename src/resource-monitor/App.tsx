@@ -395,17 +395,17 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   onMount(async () => {
     let resourcePreferences = DEFAULT_RESOURCE_PREFERENCES;
     // #587 — embedded RM inherits the theme MainApp owns on documentElement; it
-    // must not add/remove the class itself (would fight main). Windowed RM still
-    // does its own optimistic light-first paint + corrective read.
-    if (!props.embedded) document.documentElement.classList.add("light-theme");
+    // must not add/remove the class itself (would fight main). Windowed RM does
+    // its own corrective read below; dark is the CSS base, so first paint is
+    // dark with no optimistic class.
     try {
       const settings = await SettingsAPI.get();
       resourcePreferences = {
         resourceBackoffPolling: settings.resourceBackoffPolling,
         resourceKeepLastSnapshot: settings.resourceKeepLastSnapshot,
       };
-      if (!props.embedded && !settings.themeLight) {
-        document.documentElement.classList.remove("light-theme");
+      if (!props.embedded) {
+        document.documentElement.classList.toggle("light-theme", settings.themeLight);
       }
     } catch (err) {
       console.error("Failed to load resource-monitor settings:", err);

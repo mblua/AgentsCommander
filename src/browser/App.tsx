@@ -23,10 +23,8 @@ const BrowserApp: Component = () => {
 
   onMount(async () => {
     // BrowserApp owns the document theme because its children are embedded to
-    // suppress titlebars/window geometry. Match MainApp's optimistic light
-    // first paint, then correct from persisted settings.
-    applyTheme(true);
-
+    // suppress titlebars/window geometry. Dark is the CSS base, so first paint
+    // is dark with no optimistic class; correct from persisted settings below.
     const unlisten = await onThemeChanged(({ light }) => {
       applyTheme(light);
     });
