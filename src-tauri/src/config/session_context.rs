@@ -1957,15 +1957,37 @@ fn render_agent_context_template_inner(
     let rendered =
         default_context_dynamic_values(agent_root, matrix_root, skills_section, is_root_agent);
     let mut template = template.to_string();
+    let signals = TemplateTokenSignals::capture(&template);
     for placeholder in MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS {
-        if !template.contains(placeholder) {
-            log::warn!(
-                "Global context template is missing mandatory placeholder {}; appending fallback block",
+        if template.contains(placeholder) {
+            // Token present: the replace chain below fills it in place.
+            continue;
+        }
+        // #658: a legacy template wrote this section's prose without its coarse
+        // token. Skip the append (dedup) only when the inline heading is present
+        // AND deduping is SAFE for this agent/template shape (the per-token
+        // dedup-safety invariant). coarse_section_dedup_safe is false for the
+        // Root Golden Rule (HIGH-1), for a baked legacy inline copy (stale
+        // foreign paths), and for skills/workspace lists; in those cases we fall
+        // through and append the CURRENT block instead of trusting the inline.
+        if mandatory_section_present_inline(&template, placeholder)
+            && coarse_section_dedup_safe(placeholder, is_root_agent, &signals)
+        {
+            log::debug!(
+                "Global context template lacks placeholder {} but its section is present inline and safe to dedup; skipping fallback append to avoid duplication",
                 placeholder
             );
-            template.push_str("\n\n");
-            template.push_str(placeholder);
+            continue;
         }
+        // Genuinely-absent section, OR an inline copy that is not safe to trust
+        // (Root Golden Rule / baked legacy / dynamic list): append the fallback
+        // so the agent receives this mandatory governance with current content.
+        log::warn!(
+            "Global context template is missing mandatory placeholder {}; appending fallback block",
+            placeholder
+        );
+        template.push_str("\n\n");
+        template.push_str(placeholder);
     }
 
     template
@@ -2067,6 +2089,116 @@ const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
     "{{WORKSPACE_REPOS}}",
     "{{DELEGATED_TASK_REPORTING}}",
 ];
+
+/// The unique top-level Markdown heading that each mandatory coarse placeholder's
+/// rendered block emits. Used by the append-fallback to detect a legacy *inline*
+/// template (section written without its coarse token) so the fallback does not
+/// emit a second copy (#658). Returns `None` for anything not in the mandatory
+/// set. The headings were verified against each block's source; none collides
+/// with another token's section.
+fn mandatory_section_heading(placeholder: &str) -> Option<&'static str> {
+    Some(match placeholder {
+        "{{WRITE_RESTRICTIONS}}" => "## GOLDEN RULE",
+        "{{INTER_AGENT_MESSAGING}}" => "## Inter-Agent Messaging",
+        "{{SESSION_CREDENTIALS}}" => "## Session credentials",
+        "{{CLI_CONTEXT}}" => "## CLI executable",
+        "{{SKILLS_SECTION}}" => "## Skills",
+        "{{WORKSPACE_REPOS}}" => "# Workspace Repos",
+        "{{DELEGATED_TASK_REPORTING}}" => "## Delegated Task Reporting",
+        _ => return None,
+    })
+}
+
+/// True when `template` already contains the section that `placeholder` would
+/// render, detected by a LINE-ANCHORED heading match (a trimmed line), never a
+/// raw substring. The substring form is unsafe: e.g. a legacy hybrid template's
+/// Self-discovery prose references "`## Inter-Agent Messaging`" inside backticks
+/// mid-line, so a raw `contains` would false-positive and skip a genuinely-
+/// missing messaging section. A truly-incomplete template (section heading
+/// absent) returns false here, so the safety-net append still fires (#658).
+///
+/// `## GOLDEN RULE` is matched by prefix because its rendered heading carries a
+/// trailing descriptor; every other heading is matched exactly.
+fn mandatory_section_present_inline(template: &str, placeholder: &str) -> bool {
+    let Some(heading) = mandatory_section_heading(placeholder) else {
+        return false;
+    };
+    template.lines().map(str::trim).any(|line| {
+        if heading == "## GOLDEN RULE" {
+            line.starts_with(heading)
+        } else {
+            line == heading
+        }
+    })
+}
+
+/// Tokenization signals captured ONCE from the ORIGINAL template BEFORE the
+/// append loop runs (the loop's own `push_str(placeholder)` re-introduces `{{`
+/// coarse tokens mid-iteration, which would corrupt `has_any_placeholder`).
+/// Used by `coarse_section_dedup_safe` to decide whether an inline copy is
+/// current for THIS agent (#658 round-3).
+struct TemplateTokenSignals {
+    /// The original template carried at least one `{{placeholder}}` => it is a
+    /// tokenized template (current default or the #658 inline hybrid), NOT a
+    /// fully-baked legacy-rendered template whose inline copies hold another
+    /// agent's literal values.
+    has_any_placeholder: bool,
+    /// `{{AGENT_ROOT}}` present => the inline Golden Rule is tokenized (its write
+    /// paths are refilled by the replace chain), not baked. Unique to the
+    /// write-restrictions section; absent from the coarse default and any baked
+    /// template.
+    has_agent_root: bool,
+    /// `{{PEER_NAME_FORMAT}}` / `{{SEND_MESSAGE_INSTRUCTIONS}}` present => the
+    /// inline Inter-Agent Messaging section is tokenized, not baked. Unique to
+    /// that section.
+    has_messaging_tokens: bool,
+}
+
+impl TemplateTokenSignals {
+    fn capture(template: &str) -> Self {
+        Self {
+            has_any_placeholder: template.contains("{{"),
+            has_agent_root: template.contains("{{AGENT_ROOT}}"),
+            has_messaging_tokens: template.contains("{{PEER_NAME_FORMAT}}")
+                || template.contains("{{SEND_MESSAGE_INSTRUCTIONS}}"),
+        }
+    }
+}
+
+/// Whether the append-fallback may DEDUP (skip appending) `placeholder` when its
+/// section heading is already present inline. Encodes the dedup-safety invariant
+/// (#658, section 3): dedup only when the inline copy is guaranteed current for
+/// THIS agent. A genuinely-baked or Root-sensitive section returns false here so
+/// the current block is re-appended instead of trusting the stale inline copy.
+fn coarse_section_dedup_safe(
+    placeholder: &str,
+    is_root_agent: bool,
+    signals: &TemplateTokenSignals,
+) -> bool {
+    match placeholder {
+        // Static blocks: no AGENT-specific content, so an inline copy is never
+        // stale FOR THIS AGENT (it may differ from the current default wording;
+        // preserving the inline copy is the accepted tradeoff, matching the
+        // edited-legacy preservation behavior). Gated on `has_any_placeholder` so
+        // a fully-baked legacy template renders exactly as today (no dedup;
+        // everything appends).
+        "{{CLI_CONTEXT}}" | "{{SESSION_CREDENTIALS}}" | "{{DELEGATED_TASK_REPORTING}}" => {
+            signals.has_any_placeholder
+        }
+        // Golden Rule: never on the Root path (root-only baked sub-sections,
+        // HIGH-1); otherwise only when the inline Golden Rule is tokenized so its
+        // write paths are refilled.
+        "{{WRITE_RESTRICTIONS}}" => !is_root_agent && signals.has_agent_root,
+        // Messaging: only when the inline section is tokenized (peer/path bits
+        // refilled).
+        "{{INTER_AGENT_MESSAGING}}" => signals.has_messaging_tokens,
+        // Coarse dynamic lists: reaching the append branch means the coarse token
+        // is absent, so any inline copy is a baked/stale list -> never dedup,
+        // always append the current block.
+        "{{SKILLS_SECTION}}" | "{{WORKSPACE_REPOS}}" => false,
+        _ => false,
+    }
+}
 
 const DEFAULT_CLI_CONTEXT: &str = r#"## CLI executable
 
@@ -2976,6 +3108,358 @@ mod tests {
             count_context_occurrences(out, "## Inter-Agent Messaging"),
             1
         );
+    }
+
+    // ---- #658 presence-aware append-fallback tests ----------------------------
+
+    /// Compact mirror of the real stale-hybrid `Context.AgentsCommander.md`: the
+    /// governance sections written INLINE with fine-grained tokens, but WITHOUT
+    /// the coarse `{{...}}` tokens the current renderer expects, and without an
+    /// inline `# Workspace Repos` section. The Golden Rule heading carries a
+    /// trailing descriptor (exercises the prefix match) and the Self-discovery
+    /// prose carries the realistic backtick reference to `## Inter-Agent
+    /// Messaging` (exercises line-anchoring over `contains`).
+    const STALE_HYBRID_TEMPLATE: &str = r#"# AgentsCommander Context
+
+You are running inside an AgentsCommander session.
+
+## GOLDEN RULE - Repository Write Restrictions
+
+You may ONLY modify files in the entries listed below:
+
+1. Repositories whose root folder name starts with `repo-`.
+2. Your own agent replica directory:
+   ```
+   {{AGENT_ROOT}}
+   ```
+
+{{MATRIX_SECTION}}{{MESSAGING_EXCEPTION}}Anything outside the allowed entries is READ-ONLY.
+
+- **Allowed**: Read-only operations on ANY path
+- **Allowed**: Full read/write inside your own replica root ({{AGENT_ROOT}})
+{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}- **FORBIDDEN**: Any write operation outside {{FORBIDDEN_SCOPE}}.
+
+**Clarification on git operations:** {{GIT_SCOPE}}
+
+## Delegated Task Reporting
+
+When finishing a delegated task or getting blocked, reply with a concrete artifact.
+
+{{SKILLS_SECTION}}
+
+## CLI executable
+
+Your AgentsCommander credentials are in environment variables.
+
+## Self-discovery via --help
+
+For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference.
+
+## Session credentials
+
+Your session credentials are delivered only through the `AGENTSCOMMANDER_*` environment variables.
+
+## Inter-Agent Messaging
+
+### Send a message to another agent
+
+Resolve the exact agent name via `list-peers-lean`.
+
+**Peer name format**:
+
+{{PEER_NAME_FORMAT}}
+
+{{SEND_MESSAGE_INSTRUCTIONS}}
+
+### List available peers
+
+Run list-peers-lean.
+"#;
+
+    /// Render a raw global-context template through the function under change,
+    /// with an explicit `is_root_agent` flag. A temp-dir round trip cannot force
+    /// `is_root_agent` (it keys on `is_root_agent_path` vs the real config dir),
+    /// so the behavior is tested by calling the renderer directly (mirrors the
+    /// existing `default_context_as_root` helper).
+    fn render_global_template_for_test(template: &str, agent_root: &str, is_root_agent: bool) -> String {
+        render_agent_context_template_inner(
+            template,
+            agent_root,
+            None,
+            &no_skill_section(),
+            Path::new(agent_root),
+            None,
+            is_root_agent,
+        )
+    }
+
+    /// Count real section HEADING LINES (a trimmed line, prefix-matched for the
+    /// Golden Rule descriptor, exact for the rest), NOT raw substrings. A raw
+    /// substring count over-counts the legitimate mid-line backtick reference
+    /// `` `## Inter-Agent Messaging` `` in the Self-discovery prose; this counts
+    /// only true headings, mirroring `mandatory_section_present_inline`.
+    fn count_section_headings(out: &str, heading: &str) -> usize {
+        out.lines()
+            .map(str::trim)
+            .filter(|line| {
+                if heading == "## GOLDEN RULE" {
+                    line.starts_with(heading)
+                } else {
+                    *line == heading
+                }
+            })
+            .count()
+    }
+
+    #[test]
+    fn legacy_inline_template_does_not_double() {
+        // Case i: a non-root (replica) render of the stale-hybrid template must
+        // NOT emit a second copy of any inline governance section.
+        let out = render_global_template_for_test(
+            STALE_HYBRID_TEMPLATE,
+            "C:/fake/__agent_dev-rust",
+            false,
+        );
+        assert_eq!(count_section_headings(&out, "## GOLDEN RULE"), 1, "{out}");
+        assert_eq!(count_section_headings(&out, "## CLI executable"), 1);
+        assert_eq!(count_section_headings(&out, "## Session credentials"), 1);
+        assert_eq!(count_section_headings(&out, "## Inter-Agent Messaging"), 1);
+        assert_eq!(count_section_headings(&out, "## Delegated Task Reporting"), 1);
+        // The fine-grained tokens inside the inline copy are still filled.
+        assert_no_raw_template_placeholders(&out);
+        // {{WORKSPACE_REPOS}} had neither token nor inline section, so the safety
+        // net must still append it exactly once.
+        assert_eq!(count_section_headings(&out, "# Workspace Repos"), 1);
+    }
+
+    #[test]
+    fn incomplete_template_still_gets_section_appended() {
+        // Case ii (SAFETY NET): a genuinely-missing section is still appended
+        // even though another section is present inline.
+        let missing_session = r#"# AgentsCommander Context
+
+## CLI executable
+
+Credentials are in environment variables.
+
+{{SKILLS_SECTION}}
+"#;
+        let out = render_global_template_for_test(missing_session, "C:/fake/__agent_dev-rust", false);
+        // `## CLI executable` was inline -> deduped to one copy.
+        assert_eq!(count_section_headings(&out, "## CLI executable"), 1);
+        // `## Session credentials` was absent -> the safety net appended it once.
+        assert_eq!(
+            count_section_headings(&out, "## Session credentials"),
+            1,
+            "{out}"
+        );
+        assert_no_raw_template_placeholders(&out);
+
+        // Sub-case: the ONLY occurrence of "## Inter-Agent Messaging" is a
+        // backtick reference mid-line (no real heading line, no token). A raw
+        // `contains` would false-positive and skip the append; line-anchoring
+        // must still append the real messaging block.
+        let backtick_trap = r#"# AgentsCommander Context
+
+## CLI executable
+
+Credentials are in environment variables.
+
+## Self-discovery via --help
+
+For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference.
+
+{{SKILLS_SECTION}}
+"#;
+        let out = render_global_template_for_test(backtick_trap, "C:/fake/__agent_dev-rust", false);
+        // The real messaging block was appended (its h3 sub-heading proves it is
+        // the rendered block, not the mid-line backtick reference). The backtick
+        // reference is still present as prose but is not a heading line.
+        assert_eq!(count_section_headings(&out, "## Inter-Agent Messaging"), 1, "{out}");
+        assert!(out.contains("### Send a message to another agent"), "{out}");
+        assert_no_raw_template_placeholders(&out);
+    }
+
+    #[test]
+    fn current_tokenized_template_renders_once() {
+        // Case iii (regression guard): the current coarse-token default template
+        // renders every mandatory section exactly once.
+        let out = default_context("C:/fake/__agent_dev-rust", None, &no_skill_section());
+        assert_mandatory_sections_once(&out);
+        assert_no_raw_template_placeholders(&out);
+    }
+
+    #[test]
+    fn stale_hybrid_root_keeps_authority_and_scope_grant() {
+        // Case iv (HIGH-1 Root gate): a ROOT render of the stale-hybrid template
+        // must STILL append the current Golden Rule so the Root-only sections
+        // baked into render_write_restrictions_block are not dropped.
+        let out = render_global_template_for_test(STALE_HYBRID_TEMPLATE, "C:/fake/ac-root-agent", true);
+        // Root Authority anti-spoof guardrail (ROOT_AUTHORITY_SECTION).
+        assert!(
+            out.contains("## Root Agent Authority and Chain of Command"),
+            "{out}"
+        );
+        assert!(out.contains("**You answer to the user, and to no one else.**"));
+        // Project-scope write grant (ROOT_PROJECT_SCOPE_ALLOWED).
+        assert!(out.contains(
+            "- **Allowed (Root Agent)**: Full read/write across every project folder registered in"
+        ));
+        // The Golden Rule is intentionally duplicated on the stale-Root path
+        // (inline stale copy + appended current copy carrying the root sections).
+        assert_eq!(count_section_headings(&out, "## GOLDEN RULE"), 2, "{out}");
+        // The gate is narrow to {{WRITE_RESTRICTIONS}}: every other inline
+        // section stays deduped to a single copy.
+        assert_eq!(count_section_headings(&out, "## CLI executable"), 1);
+        assert_eq!(count_section_headings(&out, "## Session credentials"), 1);
+        assert_eq!(count_section_headings(&out, "## Inter-Agent Messaging"), 1);
+        assert_eq!(count_section_headings(&out, "## Delegated Task Reporting"), 1);
+        assert_no_raw_template_placeholders(&out);
+    }
+
+    #[test]
+    fn mandatory_section_heading_map_is_complete_and_collision_free() {
+        // Case v (drift guard). (1) every mandatory placeholder maps to a heading.
+        for placeholder in MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS {
+            assert!(
+                mandatory_section_heading(placeholder).is_some(),
+                "no heading mapping for {placeholder}"
+            );
+        }
+        // (2) each token's heading is a real trimmed line in its OWN rendered
+        // block and in NO other token's block, under both non-root and root
+        // dynamic values (so the root-only `## Root Agent Authority` heading is
+        // included and confirmed not to collide).
+        for is_root in [false, true] {
+            let agent_root = if is_root {
+                "C:/fake/ac-root-agent"
+            } else {
+                "C:/fake/__agent_dev-rust"
+            };
+            let matrix_root = if is_root {
+                None
+            } else {
+                Some("C:/fake/_agent_dev-rust")
+            };
+            let rendered = default_context_dynamic_values(
+                agent_root,
+                matrix_root,
+                &no_skill_section(),
+                is_root,
+            );
+            let blocks: Vec<(&str, String)> = vec![
+                (
+                    "{{WRITE_RESTRICTIONS}}",
+                    render_write_restrictions_block(agent_root, &rendered),
+                ),
+                (
+                    "{{INTER_AGENT_MESSAGING}}",
+                    render_inter_agent_messaging_block(&rendered),
+                ),
+                (
+                    "{{SESSION_CREDENTIALS}}",
+                    DEFAULT_SESSION_CREDENTIALS.to_string(),
+                ),
+                ("{{CLI_CONTEXT}}", DEFAULT_CLI_CONTEXT.to_string()),
+                ("{{SKILLS_SECTION}}", no_skill_section()),
+                (
+                    "{{WORKSPACE_REPOS}}",
+                    render_workspace_repos_string(Path::new(agent_root), None),
+                ),
+                (
+                    "{{DELEGATED_TASK_REPORTING}}",
+                    DEFAULT_DELEGATED_TASK_REPORTING.to_string(),
+                ),
+            ];
+            for (token, block) in &blocks {
+                assert!(
+                    mandatory_section_present_inline(block, token),
+                    "heading for {token} missing from its own block (is_root={is_root})"
+                );
+                for (other, _) in &blocks {
+                    if other == token {
+                        continue;
+                    }
+                    assert!(
+                        !mandatory_section_present_inline(block, other),
+                        "heading for {other} collides inside {token}'s block (is_root={is_root})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stale_hybrid_fixture_keeps_signature_tokens_in_their_sections() {
+        // N3 drift guard: the per-token gate relies on `{{AGENT_ROOT}}` being the
+        // unique signature of the Golden Rule and the messaging tokens being
+        // unique to the messaging section. If a future fixture edit moves a
+        // signature token into another section, fail loudly here rather than let
+        // the gate silently mis-classify.
+        let gr_start = STALE_HYBRID_TEMPLATE
+            .find("## GOLDEN RULE")
+            .expect("golden rule heading");
+        // The Golden Rule region runs to the next top-level section heading.
+        let gr_end = STALE_HYBRID_TEMPLATE[gr_start..]
+            .find("## Delegated Task Reporting")
+            .map(|i| gr_start + i)
+            .expect("delegated heading after golden rule");
+        let golden_region = &STALE_HYBRID_TEMPLATE[gr_start..gr_end];
+        assert!(golden_region.contains("{{AGENT_ROOT}}"));
+        assert_eq!(
+            STALE_HYBRID_TEMPLATE.matches("{{AGENT_ROOT}}").count(),
+            golden_region.matches("{{AGENT_ROOT}}").count(),
+            "AGENT_ROOT signature token must appear only inside the Golden Rule region"
+        );
+
+        let msg_start = STALE_HYBRID_TEMPLATE
+            .find("## Inter-Agent Messaging")
+            .expect("messaging heading");
+        let messaging_region = &STALE_HYBRID_TEMPLATE[msg_start..];
+        for token in ["{{PEER_NAME_FORMAT}}", "{{SEND_MESSAGE_INSTRUCTIONS}}"] {
+            assert!(messaging_region.contains(token), "missing {token} in messaging region");
+            assert_eq!(
+                STALE_HYBRID_TEMPLATE.matches(token).count(),
+                messaging_region.matches(token).count(),
+                "messaging signature token must appear only inside the messaging region"
+            );
+        }
+    }
+
+    #[test]
+    fn baked_legacy_inline_reappends_current_paths() {
+        // Case 6 (dedup-safety invariant): a FULLY-BAKED legacy template (inline
+        // governance carrying an OLD agent's literal path, NO {{ tokens anywhere)
+        // rendered for a NEW agent must RE-APPEND the current block so the NEW
+        // agent receives ITS OWN write path, not the stale baked one.
+        let baked = "# AgentsCommander Context\n\n\
+## GOLDEN RULE - Repository Write Restrictions\n\n\
+You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n\
+## CLI executable\n\nCredentials are in environment variables.\n";
+        let new_root = "C:/NEW/__agent_dev-rust";
+        let out = render_global_template_for_test(baked, new_root, false);
+        // Append fired (no dedup, since the template carries no {{ tokens), so the
+        // CURRENT Golden Rule block carries the NEW agent's path.
+        assert!(out.contains(new_root), "{out}");
+        assert_no_raw_template_placeholders(&out);
+    }
+
+    #[test]
+    fn mixed_baked_golden_rule_reappends_current() {
+        // Mixed template: a BAKED Golden Rule (OLD path, no {{AGENT_ROOT}}) plus an
+        // unrelated {{SKILLS_SECTION}} token. The per-token {{AGENT_ROOT}}
+        // signature (not a whole-template contains("{{")) must still force the
+        // Golden Rule to re-append with the NEW agent's path.
+        let mixed = "# AgentsCommander Context\n\n\
+## GOLDEN RULE - Repository Write Restrictions\n\n\
+You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n\
+{{SKILLS_SECTION}}\n";
+        let new_root = "C:/NEW/__agent_dev-rust";
+        let out = render_global_template_for_test(mixed, new_root, false);
+        assert!(out.contains(new_root), "{out}");
+        // Stale inline copy + appended current copy = two Golden Rule headings.
+        assert_eq!(count_section_headings(&out, "## GOLDEN RULE"), 2, "{out}");
+        assert_no_raw_template_placeholders(&out);
     }
 
     fn seed_stale_managed_context_files(agent_root: &Path) {
