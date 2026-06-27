@@ -118,7 +118,7 @@ The Gemini transcription model is `gemini-2.5-flash` by default. Switch to `gemi
 If something fails and you cannot tell why, raise the log level. Pick a level in **Settings -> General -> Logging** (it applies live, no restart), set `logLevel` in `settings.json`, or set `RUST_LOG` before launching for per-module filtering from a terminal:
 
 ```bash
-RUST_LOG=agentscommander=trace agentscommander.exe
+RUST_LOG=agentscommander_lib=trace agentscommander.exe
 ```
 
 See [Log filtering](reference/log-filtering.md) for the five levels, the live selector, and precedence rules.
@@ -129,4 +129,4 @@ Still stuck? Open an [issue](https://github.com/mblua/AgentsCommander/issues) wi
 
 - Your platform and version (`agentscommander --version`)
 - The exact error message
-- A copy of `~/.agentscommander/debug-logs.txt` (export via **Help → Save debug logs**)
+- A copy of `<config-dir>/app.log` (the persistent log next to the binary; see [Log filtering](reference/log-filtering.md#where-logs-go))
