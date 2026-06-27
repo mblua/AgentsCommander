@@ -167,7 +167,6 @@ fn root_help_lists_public_subcommands() {
         "agency-templates",
         "create-agent",
         "create-agent-matrix",
-        "role-experiment",
         "close-session",
         "task-set-title",
         "task-append-body",
@@ -177,12 +176,19 @@ fn root_help_lists_public_subcommands() {
         "workgroup",
         "team",
         "harness",
-        "test-reset",
-        "window-info",
     ] {
         assert!(
             stdout.contains(command),
             "root help missing {command}:\n{stdout}"
+        );
+    }
+    // #654 (`d20f5ea`) hid these internal verbs from `--help` via `hide = true`.
+    // They must NOT appear in root help. (#657 test-debt fix: the expected list
+    // above still required them after #654 landed, leaving this test red on main.)
+    for hidden in ["role-experiment", "test-reset", "window-info"] {
+        assert!(
+            !stdout.contains(hidden),
+            "root help must not list hidden verb {hidden}:\n{stdout}"
         );
     }
 }
