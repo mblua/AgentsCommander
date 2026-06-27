@@ -30,4 +30,4 @@ Use the AgentsCommander CLI from `AGENTSCOMMANDER_BINARY_PATH`:
 
 `update` refreshes the local cache from the source repo (`--ref` selects the git ref, default `main`). `status` reports whether a cache is present and its repo, ref, and commit. `list` prints each cached template's real `id` and 1-line `description`.
 
-Then present the candidate template(s), each with its real 1-line description from `agency-templates list`, and create with `create-agent-matrix --role-template <id>`. Use only the IDs and descriptions that command returns; never invent template IDs or descriptions.
+Then present the candidate template(s) and create with `create-agent-matrix --role-template <id>`. Use only the IDs and descriptions that command returns; never invent template IDs or descriptions.
