@@ -1068,6 +1068,15 @@ fn replace_existing_file_windows(temp_path: &Path, role_path: &Path) -> Result<(
     Ok(())
 }
 
+/// #664: shared atomic replace-existing primitive. Delegates to the vetted
+/// role-file replace path (plain rename on Unix; rename-if-absent else
+/// `ReplaceFileW(REPLACEFILE_WRITE_THROUGH)` on Windows). The CALLER is
+/// responsible for creating, writing, fsyncing, dropping the temp handle, and
+/// cleaning up `temp`; this only publishes `temp` -> `dest`.
+pub(crate) fn atomic_replace_existing(temp: &Path, dest: &Path) -> Result<(), String> {
+    replace_role_file(temp, dest)
+}
+
 fn normalize_role_text(text: &str) -> String {
     text.replace("\r\n", "\n").trim().to_string()
 }

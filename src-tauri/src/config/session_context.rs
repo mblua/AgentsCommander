@@ -2062,13 +2062,16 @@ fn resolve_agent_context(
         skills_section,
     ) {
         LegacyRenderedDefaultContext::Current => Ok(template),
-        LegacyRenderedDefaultContext::StaleGenerated => Ok(render_default_agent_context(
-            agent_root,
-            matrix_root,
-            skills_section,
-            cwd_path,
-            config,
-        )),
+        LegacyRenderedDefaultContext::StaleGenerated => {
+            heal_stale_global_context_template(agent_root, matrix_root, skills_section);
+            Ok(render_default_agent_context(
+                agent_root,
+                matrix_root,
+                skills_section,
+                cwd_path,
+                config,
+            ))
+        }
         LegacyRenderedDefaultContext::NotLegacy => Ok(render_agent_context_template(
             &template,
             agent_root,
@@ -2078,6 +2081,148 @@ fn resolve_agent_context(
             config,
         )),
     }
+}
+
+/// Best-effort on-disk self-heal (#664). The caller has already classified the
+/// workspace global-context template as `StaleGenerated`, i.e. a provably
+/// UNMODIFIED generated legacy default for these paths. Rewrite it to the
+/// current tokenized default so future sessions read a clean template and
+/// classify `NotLegacy` (normal token substitution, no recognition cost).
+///
+/// Safety:
+/// - Re-validates the on-disk content under the SAME exact classifier
+///   immediately before the swap. This NARROWS the read->write TOCTOU window to
+///   a microsecond re-validate->publish gap; it does NOT close it (a user save
+///   landing inside that residual gap is still clobbered, which is irreducible
+///   without an OS file lock or a compare-and-swap publish, neither of which
+///   `ReplaceFileW` provides). Residual risk accepted: identical-content write
+///   to a single recognized-default target. If a user edited the file before
+///   the re-check, it no longer returns `StaleGenerated` and we abort, never
+///   clobbering the edit.
+/// - Atomic replace (temp + fsync + drop-handle + rename/ReplaceFileW + dir
+///   fsync).
+/// - Any failure logs a warning and returns; the caller's in-memory render is
+///   already correct, so a heal failure never breaks the session. The safe
+///   failure mode is to do nothing. There is no backoff and no tried-once
+///   marker, so a workspace that cannot be healed (read-only dir, AV lock on
+///   the temp or dest) re-attempts on every resolve and re-pays the doubled
+///   classify cost; this is an accepted best-effort tradeoff, never a failure
+///   that reaches the agent.
+fn heal_stale_global_context_template(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    skills_section: &str,
+) {
+    let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
+        return;
+    };
+    let path = context_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+
+    // TOCTOU re-validation: re-read with the RAW reader (no migrate, no
+    // create-if-missing side effects) and re-classify under the exact contract.
+    let current = match read_context_template(agent_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME) {
+        Ok(Some(content)) => content,
+        Ok(None) => return, // vanished under us; nothing to heal
+        Err(e) => {
+            log::warn!("#664 self-heal: cannot re-read {}: {}", path.display(), e);
+            return;
+        }
+    };
+    if !matches!(
+        classify_legacy_rendered_default_context(&current, agent_root, matrix_root, skills_section),
+        LegacyRenderedDefaultContext::StaleGenerated
+    ) {
+        // Changed under us, or no longer recognized as a generated legacy
+        // default: preserve whatever is there, do nothing.
+        return;
+    }
+
+    if let Err(e) = atomically_replace_context_template(&path, get_default_agent_template()) {
+        log::warn!(
+            "#664 self-heal: failed to regenerate stale global context template {}: {}",
+            path.display(),
+            e
+        );
+        return;
+    }
+    log::info!(
+        "#664 self-heal: regenerated stale global context template {} to the current default",
+        path.display()
+    );
+}
+
+/// Atomically replace `path` with `content`: write a unique temp file in the
+/// SAME directory, fsync it, drop the handle, then publish via the shared
+/// `root_agent::atomic_replace_existing` primitive (plain rename on Unix;
+/// rename-if-absent else `ReplaceFileW(REPLACEFILE_WRITE_THROUGH)` on Windows).
+/// The temp file is cleaned up on every failure path.
+fn atomically_replace_context_template(path: &Path, content: &str) -> Result<(), String> {
+    let temp = unique_context_template_temp_path(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|e| {
+            format!(
+                "Failed to create temporary context template {}: {}",
+                temp.display(),
+                e
+            )
+        })?;
+
+    if let Err(e) = file.write_all(content.as_bytes()) {
+        drop(file);
+        cleanup_failed_context_template(&temp);
+        return Err(format!(
+            "Failed to write temporary context template {}: {}",
+            temp.display(),
+            e
+        ));
+    }
+    if let Err(e) = file.flush() {
+        drop(file);
+        cleanup_failed_context_template(&temp);
+        return Err(format!(
+            "Failed to flush temporary context template {}: {}",
+            temp.display(),
+            e
+        ));
+    }
+    if let Err(e) = file.sync_all() {
+        drop(file);
+        cleanup_failed_context_template(&temp);
+        return Err(format!(
+            "Failed to sync temporary context template {}: {}",
+            temp.display(),
+            e
+        ));
+    }
+    // CRITICAL (G1): drop the temp handle on the SUCCESS path BEFORE the publish.
+    // On Windows, ReplaceFileW (and std::fs::rename) over a still-open source
+    // fails with a sharing violation, so the heal would return Err on every
+    // attempt and silently never converge on the primary platform. Mirrors
+    // `root_agent::atomic_write_role`, which drops at root_agent.rs:696 before
+    // `replace_role_file`.
+    drop(file);
+
+    if let Err(e) = super::root_agent::atomic_replace_existing(&temp, path) {
+        cleanup_failed_context_template(&temp);
+        return Err(e);
+    }
+
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            if let Err(e) = dir.sync_all() {
+                log::warn!(
+                    "#664 self-heal: failed to sync context template directory {}: {}",
+                    parent.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
@@ -4477,8 +4622,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         let edited =
             format!("{legacy}\n\n## Project Rules\n\nKEEP_CUSTOM_PROJECT_RULES_IN_CONTEXT\n");
-        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
-            .expect("write edited rendered legacy template");
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &edited).expect("write edited rendered legacy template");
 
         let materialized = materialize_agent_context_file(
             &path_string(&new_replica),
@@ -4494,6 +4639,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_contains_canonical_path(&content, &new_matrix);
         assert!(content.contains("## GOLDEN RULE"));
         assert!(content.contains("## Inter-Agent Messaging"));
+        // #664: this template is NotLegacy (unknown `## Project Rules` heading),
+        // so the heal must NOT touch it. The on-disk bytes are unchanged.
+        let on_disk = std::fs::read_to_string(&template_path).expect("read template");
+        assert_eq!(on_disk, edited);
     }
 
     #[test]
@@ -4528,8 +4677,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "Your agent root is your current working directory.\n\nKEEP_INLINE_CUSTOM_RULE_IN_CONTEXT",
         );
         assert_ne!(edited, legacy);
-        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
-            .expect("write inline edited rendered legacy template");
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &edited).expect("write inline edited rendered legacy template");
 
         let materialized = materialize_agent_context_file(
             &path_string(&new_replica),
@@ -4545,6 +4694,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_contains_canonical_path(&content, &new_matrix);
         assert!(content.contains("## GOLDEN RULE"));
         assert!(content.contains("## Inter-Agent Messaging"));
+        // #664: this template is NotLegacy via reconstruction inequality (no
+        // unknown heading), the stronger preserve guard. The heal must NOT touch
+        // it: the on-disk bytes are unchanged.
+        let on_disk = std::fs::read_to_string(&template_path).expect("read template");
+        assert_eq!(on_disk, edited);
     }
 
     #[test]
@@ -4582,6 +4736,356 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(!content.contains(&canonical_display_path(&old_matrix)));
         assert_mandatory_sections_once(&content);
         assert_no_raw_template_placeholders(&content);
+    }
+
+    // #664 self-heal tests --------------------------------------------------
+
+    /// Assert no `.Context.AgentsCommander.md.<pid>.<n>.tmp` scratch file was
+    /// left behind by an atomic replace in `dir`.
+    fn assert_no_context_template_temp_leftover(dir: &Path) {
+        for entry in std::fs::read_dir(dir).expect("read context dir") {
+            let name = entry.expect("dir entry").file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !(name.starts_with(".Context.AgentsCommander.md") && name.ends_with(".tmp")),
+                "stray temp template left behind: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_generated_legacy_default_heals_on_disk_and_converges() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let new_matrix = workspace_dir.join("_agent_tech-lead");
+        let old_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&new_matrix).expect("create new matrix");
+        std::fs::create_dir_all(&old_replica).expect("create old replica");
+        std::fs::create_dir_all(&new_replica).expect("create new replica");
+
+        // Bake the legacy with the matrix-owner skills section so the
+        // reconstruction recognizer (which re-derives the owner from the file's
+        // extracted paths) classifies it as StaleGenerated, mirroring the
+        // existing stale-generated tests.
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica),
+            Some(&path_string(&old_matrix)),
+            &old_skills_section,
+        );
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &legacy).expect("write stale generated default");
+
+        let new_replica_root = path_string(&new_replica);
+        let new_matrix_root = path_string(&new_matrix);
+
+        // First resolve: classifies StaleGenerated, returns the current render
+        // for the NEW agent AND heals the on-disk template as a side effect.
+        let rendered = resolve_agent_context(
+            &new_replica_root,
+            Some(&new_matrix_root),
+            &no_skill_section(),
+            &new_replica,
+            None,
+        )
+        .expect("resolve context");
+
+        // (a) the returned render is the healthy current default for the NEW
+        // agent: sections once, no placeholders, the new path baked in, the old
+        // path gone.
+        assert_mandatory_sections_once(&rendered);
+        assert_no_raw_template_placeholders(&rendered);
+        assert!(rendered.contains(&new_replica_root));
+        assert!(!rendered.contains(&path_string(&old_replica)));
+
+        // (b) the on-disk template is healed to the current tokenized default,
+        // byte-for-byte. This assertion runs on Windows (G6): it is the guard
+        // for the success-path drop-before-replace (G1) and the ReplaceFileW
+        // publish.
+        let healed = std::fs::read_to_string(&template_path).expect("read healed template");
+        assert_eq!(healed, get_default_agent_template());
+
+        // (d) no scratch temp file is left behind.
+        assert_no_context_template_temp_leftover(&workspace_dir);
+
+        // (c) a SECOND resolve reads the healed file, classifies NotLegacy, and
+        // returns the same correct render (convergence in exactly one heal).
+        let rendered_again = resolve_agent_context(
+            &new_replica_root,
+            Some(&new_matrix_root),
+            &no_skill_section(),
+            &new_replica,
+            None,
+        )
+        .expect("resolve context again");
+        assert_eq!(rendered_again, rendered);
+        let after_second = std::fs::read_to_string(&template_path).expect("read template again");
+        assert_eq!(after_second, get_default_agent_template());
+    }
+
+    #[test]
+    fn current_tokenized_default_on_disk_is_not_rewritten() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let replica_root = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, get_default_agent_template())
+            .expect("write tokenized default");
+
+        let rendered = resolve_agent_context(
+            &path_string(&replica_root),
+            Some(&path_string(&matrix_root)),
+            &no_skill_section(),
+            &replica_root,
+            None,
+        )
+        .expect("resolve context");
+        assert_mandatory_sections_once(&rendered);
+        assert_no_raw_template_placeholders(&rendered);
+
+        // The tokenized default is NotLegacy (it carries `{{` tokens), so the
+        // NotLegacy arm renders without ever rewriting the on-disk template.
+        let on_disk = std::fs::read_to_string(&template_path).expect("read template");
+        assert_eq!(on_disk, get_default_agent_template());
+        assert_no_context_template_temp_leftover(&workspace_dir);
+    }
+
+    #[test]
+    fn stale_generated_legacy_default_heals_on_disk_for_root_agent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Two distinct installs, each with an `ac-root-agent` child. The baked
+        // legacy is for a DIFFERENT absolute root than the resolving agent, so
+        // it classifies StaleGenerated (not Current). Neither path has a `.ac`
+        // ancestor, so the context dir resolves via the root-agent parent
+        // fallback in `resolve_workspace_context_dir`.
+        let resolving_root = temp.path().join("install_a").join("ac-root-agent");
+        let baked_root = temp.path().join("install_b").join("ac-root-agent");
+        std::fs::create_dir_all(&resolving_root).expect("create resolving root");
+        std::fs::create_dir_all(&baked_root).expect("create baked root");
+
+        // A Root agent has no replica matrix, so matrix_root is None. Bake the
+        // skills section against the root's own skills owner so the
+        // reconstruction recognizer (resolve_skill_owner_root => the root dir
+        // for a None-matrix root-named agent) re-derives the same section.
+        let baked_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&baked_root))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&baked_root),
+            None,
+            &baked_skills_section,
+        );
+        let context_dir = resolving_root.parent().expect("install_a dir");
+        let template_path = context_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &legacy).expect("write stale generated root default");
+
+        let resolving_root_str = path_string(&resolving_root);
+
+        // The name-based recognizer classifies a root-named baked legacy as
+        // StaleGenerated even though the path-based renderer would not treat the
+        // tempdir as the real Root agent.
+        assert!(matches!(
+            classify_legacy_rendered_default_context(
+                &legacy,
+                &resolving_root_str,
+                None,
+                &no_skill_section(),
+            ),
+            LegacyRenderedDefaultContext::StaleGenerated
+        ));
+
+        // (4a) resolving as the root-named agent heals the on-disk template to
+        // the tokenized default. The resolve output itself is the non-root
+        // render in a tempdir (root authority is keyed on the real config dir),
+        // so it is intentionally not asserted here.
+        resolve_agent_context(
+            &resolving_root_str,
+            None,
+            &no_skill_section(),
+            &resolving_root,
+            None,
+        )
+        .expect("resolve context");
+        let healed = std::fs::read_to_string(&template_path).expect("read healed root template");
+        assert_eq!(healed, get_default_agent_template());
+
+        // (4b) the healed bytes rendered AS ROOT still emit the Root authority
+        // section and project-scope grant. Root authority is a render-time
+        // property baked from the root-agnostic default template, so the heal
+        // cannot lose it.
+        let as_root = default_context_as_root(&resolving_root_str, None, &no_skill_section());
+        assert!(as_root.contains("## Root Agent Authority and Chain of Command"));
+        assert!(as_root.contains("**You answer to the user, and to no one else.**"));
+        assert!(as_root.contains(
+            "- **Allowed (Root Agent)**: Full read/write across every project folder registered in"
+        ));
+    }
+
+    #[test]
+    fn stale_generated_legacy_default_heals_after_hard_link_migration() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let new_matrix = workspace_dir.join("_agent_tech-lead");
+        let old_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&new_matrix).expect("create new matrix");
+        std::fs::create_dir_all(&old_replica).expect("create old replica");
+        std::fs::create_dir_all(&new_replica).expect("create new replica");
+
+        // Seed ONLY the legacy-named template (G5). The resolve path migrates it
+        // via hard-link to the current name, then the heal replaces that
+        // (single-link) file. The healed bytes and the absence of any stray
+        // legacy-named file are both asserted.
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica),
+            Some(&path_string(&old_matrix)),
+            &old_skills_section,
+        );
+        let legacy_path = workspace_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&legacy_path, &legacy).expect("write legacy-named template");
+
+        let rendered = resolve_agent_context(
+            &path_string(&new_replica),
+            Some(&path_string(&new_matrix)),
+            &no_skill_section(),
+            &new_replica,
+            None,
+        )
+        .expect("resolve context");
+        assert_mandatory_sections_once(&rendered);
+        assert_no_raw_template_placeholders(&rendered);
+
+        let new_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let healed = std::fs::read_to_string(&new_path).expect("read healed template");
+        assert_eq!(healed, get_default_agent_template());
+        assert!(
+            !legacy_path.exists(),
+            "stray legacy-named template left in play after heal"
+        );
+        assert_no_context_template_temp_leftover(&workspace_dir);
+    }
+
+    #[test]
+    fn atomically_replace_context_template_writes_absent_and_existing_dest() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+
+        // Absent destination: plain create + rename publish.
+        atomically_replace_context_template(&path, "first contents")
+            .expect("replace over absent dest");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read first"),
+            "first contents"
+        );
+
+        // Existing destination: exercises the Windows ReplaceFileW branch.
+        atomically_replace_context_template(&path, "second contents")
+            .expect("replace over existing dest");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read second"),
+            "second contents"
+        );
+
+        assert_no_context_template_temp_leftover(temp.path());
+    }
+
+    #[test]
+    fn atomically_replace_context_template_errors_without_leaving_temp() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // The parent directory does not exist, so the temp create fails: the
+        // helper returns Err and never creates the directory or a temp file.
+        let missing_dir = temp.path().join("does-not-exist");
+        let path = missing_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let result = atomically_replace_context_template(&path, get_default_agent_template());
+        assert!(result.is_err(), "expected Err when the parent dir is missing");
+        assert!(
+            !missing_dir.exists(),
+            "the helper must not create the missing directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn heal_failure_is_non_fatal_and_preserves_render() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join(".ac");
+        let old_matrix = workspace_dir.join("_agent_dev-rust");
+        let new_matrix = workspace_dir.join("_agent_tech-lead");
+        let old_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let new_replica = workspace_dir
+            .join("wg-19-dev-team")
+            .join("__agent_tech-lead");
+        std::fs::create_dir_all(&old_matrix).expect("create old matrix");
+        std::fs::create_dir_all(&new_matrix).expect("create new matrix");
+        std::fs::create_dir_all(&old_replica).expect("create old replica");
+        std::fs::create_dir_all(&new_replica).expect("create new replica");
+
+        let old_skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&old_matrix))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&old_replica),
+            Some(&path_string(&old_matrix)),
+            &old_skills_section,
+        );
+        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, &legacy).expect("write stale generated default");
+
+        // Make the context dir read-only so the atomic temp-create fails and the
+        // heal cannot publish.
+        let mut perms = std::fs::metadata(&workspace_dir)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&workspace_dir, perms).expect("set read-only");
+
+        let rendered = resolve_agent_context(
+            &path_string(&new_replica),
+            Some(&path_string(&new_matrix)),
+            &no_skill_section(),
+            &new_replica,
+            None,
+        );
+
+        // Restore write perms before any assertion so tempdir cleanup works.
+        let mut perms = std::fs::metadata(&workspace_dir)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&workspace_dir, perms).expect("restore perms");
+
+        // The heal failed, but resolve still returns the correct in-memory
+        // render (best-effort, never propagated).
+        let rendered = rendered.expect("resolve must succeed even when heal fails");
+        assert_mandatory_sections_once(&rendered);
+        assert_no_raw_template_placeholders(&rendered);
+        // The on-disk template is left as the stale legacy, unchanged.
+        let on_disk = std::fs::read_to_string(&template_path).expect("read template");
+        assert_eq!(on_disk, legacy);
     }
 
     #[test]
