@@ -311,7 +311,7 @@ export interface AppSettings {
   /** #609 Check npm on startup (<=1x/24h) and notify when a newer published
    *  version of @mblua/agentscommander is available. Default true. */
   npmUpdateNotificationsEnabled: boolean;
-  /** #640 Global master for auto self-clear-and-handoff. ON => class default
+  /** #640 Global master for auto self-handoff-and-clear. ON => class default
    *  applies (coordinator/Root on, specialists off). Per-agent overrides in
    *  autoSelfClearByAgent. */
   autoSelfClearEnabled: boolean;
