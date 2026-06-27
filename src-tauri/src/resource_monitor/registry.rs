@@ -406,6 +406,7 @@ impl ResourceMonitorState {
                     quarantined: false,
                     message: "resource group not registered".to_string(),
                     blocked_by_security: false,
+                    finalized: false,
                 });
             };
             match group.state {
@@ -417,6 +418,7 @@ impl ResourceMonitorState {
                         quarantined: false,
                         message: "resource group is already terminating".to_string(),
                         blocked_by_security: false,
+                        finalized: false,
                     });
                 }
                 ResourceGroupState::Terminated => {
@@ -427,6 +429,7 @@ impl ResourceMonitorState {
                         quarantined: false,
                         message: "resource group already terminated".to_string(),
                         blocked_by_security: false,
+                        finalized: false,
                     });
                 }
                 ResourceGroupState::Running | ResourceGroupState::Quarantined => {}
@@ -642,6 +645,9 @@ impl ResourceMonitorState {
             quarantined,
             message,
             blocked_by_security,
+            // #647: kill_group only accounts/verifies; the command finalizes the
+            // session (PTY teardown + Exited tile), so this is always false here.
+            finalized: false,
         })
     }
 
@@ -2269,9 +2275,11 @@ mod tests {
             quarantined: true,
             message: "pid 1: win32 error 5".to_string(),
             blocked_by_security: false,
+            finalized: false,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"blockedBySecurity\":false"));
+        assert!(json.contains("\"finalized\":false"));
 
         // Strip the field to simulate a pre-#647 payload; serde(default) -> false.
         let legacy = json.replace(",\"blockedBySecurity\":false", "");
