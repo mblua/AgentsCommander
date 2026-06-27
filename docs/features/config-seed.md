@@ -79,6 +79,16 @@ These are the same tokens documented in [Agent Matrix conventions, section 5](..
 - CRLF line endings and a UTF-8 byte-order mark survive the copy; only the known token substrings change.
 - Symlinks and Windows junctions in the template are skipped.
 
+## Verifying it worked
+
+A successful seed logs one `info`-level line. With `logLevel` at `info` (the default) or lower, look in `<config-dir>/app.log` for a line like:
+
+```text
+[config-seed] seeded 'C:\tools\.ac\wg-1-team\__agent_claude\.claude' into replica from WorkspaceBase source 'C:\tools\.ac\default.claude'
+```
+
+The tier in the message (`WorkspaceProfile`, `WorkspaceBase`, `MatrixProfile`, or `MatrixBase`) tells you which template won. If you see no `[config-seed]` line at all, the seed did not run; see [Troubleshooting](#troubleshooting). See [Log filtering](../reference/log-filtering.md#where-logs-go) for where `app.log` lives and how to raise the log level.
+
 ## What it does not do
 
 Config seed copies the template and, for `.claude`, re-applies the RTK hook. That is all. In particular:
