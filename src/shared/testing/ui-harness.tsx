@@ -144,7 +144,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     informWhenRtkInstalled: true,
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
-    themeLight: true,
+    themeLight: false,
     specBoardEnabled: false,
     resourceMonitorEnabled: true,
     maxConcurrentAgentProcesses: 3,
