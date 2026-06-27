@@ -481,6 +481,20 @@ button {
   white-space: nowrap;
 }
 
+/* #647 C: live "Verifying..." indicator under the group identity while a kill /
+   re-sample is in flight (terminating | quarantined). */
+.rm-group-verifying {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--status-pending);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rm-group-state {
   color: var(--sidebar-fg-dim);
   text-transform: capitalize;
@@ -528,6 +542,15 @@ button {
   background: rgba(255, 59, 92, 0.12);
 }
 
+/* #647 C: the Force-kill variant on a quarantined row reads as a stronger
+   affordance (the re-fire of the durable Job Object kill). Smaller weight-heavy
+   text keeps the longer label inside the fixed-width button. */
+.rm-kill-btn-force {
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .rm-process-list {
   clear: both;
   padding: 0 var(--spacing-sm) var(--spacing-sm) 32px;
@@ -569,6 +592,20 @@ button {
 .rm-process-error,
 .rm-warning-line {
   color: var(--status-pending);
+}
+
+/* #647 D: AV/security guidance — shown beside (never replacing) the per-PID
+   detail, using the danger accent so it reads as an actionable callout. */
+.rm-security-hint {
+  color: var(--status-exited);
+  font-weight: 700;
+}
+
+/* Separate the hint from the per-PID detail it sits above (modal banner) or
+   below (expanded row). */
+.rm-security-hint + div,
+.rm-process-error + .rm-security-hint {
+  margin-top: 6px;
 }
 
 .rm-modal-backdrop {

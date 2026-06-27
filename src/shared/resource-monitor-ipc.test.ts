@@ -39,6 +39,7 @@ describe("resource monitor IPC", () => {
       killedProcesses: [],
       quarantined: true,
       message: "queued",
+      blockedBySecurity: false,
     });
 
     await ResourceMonitorAPI.killGroup({
@@ -54,5 +55,29 @@ describe("resource monitor IPC", () => {
       },
     });
     expect(JSON.stringify(args).toLowerCase()).not.toContain("pid");
+  });
+
+  // #647 D: the result carries blockedBySecurity alongside the per-PID message;
+  // the FE shows the AV-exclusion guidance only when the flag is set, never
+  // replacing the per-PID detail.
+  it("surfaces blockedBySecurity and the per-PID message from the kill result", async () => {
+    const fake = useFakeTransport();
+    fake.resolve("kill_resource_group", {
+      sessionId: "session-1",
+      state: "quarantined",
+      killedProcesses: [],
+      quarantined: true,
+      message: "resource group cleanup incomplete: pid 4242: win32 error 5",
+      blockedBySecurity: true,
+    });
+
+    const result = await ResourceMonitorAPI.killGroup({
+      sessionId: "session-1",
+      reason: "user",
+    });
+
+    expect(result.quarantined).toBe(true);
+    expect(result.blockedBySecurity).toBe(true);
+    expect(result.message).toContain("win32 error 5");
   });
 });

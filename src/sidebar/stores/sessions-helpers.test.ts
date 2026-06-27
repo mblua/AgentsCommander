@@ -173,6 +173,18 @@ describe("upsertSessionList (#274 banner-reuse hydration)", () => {
     expect(next[0].agentLabel).toBe("new");
   });
 
+  // #647 (test 7, E5): a verified RM Kill makes the backend emit session_created
+  // carrying the Exited SessionInfo for the SAME id. The sidebar's listener
+  // routes it through addSession -> upsertSessionList, which must UPDATE the
+  // existing tile's status to Exited (not append a duplicate) so the flip renders.
+  it("flips an existing running session to Exited on a verified-kill session_created (E5)", () => {
+    const sessions = [mkSession("agent-1", "running")];
+    const next = upsertSessionList(sessions, mkSession("agent-1", { exited: 0 }));
+    expect(next).toHaveLength(1);
+    expect(next[0].id).toBe("agent-1");
+    expect(next[0].status).toEqual({ exited: 0 });
+  });
+
   it("returns a new array reference on every call so SolidJS reactivity triggers", () => {
     const sessions = [mkSession("a", "idle")];
     const next = upsertSessionList(sessions, mkSession("a", "running"));

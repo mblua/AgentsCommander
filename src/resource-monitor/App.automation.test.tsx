@@ -76,6 +76,18 @@ const nullIdentitySnapshot = (): ResourceSnapshot => {
   return snapshot;
 };
 
+// #647 C/D: a quarantined group — the kill was not verified dead (an AV is
+// stripping PROCESS_TERMINATE). It must stay killable (Force-kill) and carry the
+// per-PID detail in lastError.
+const quarantinedSnapshot = (): ResourceSnapshot => {
+  const snapshot = activeSnapshot();
+  snapshot.overallState = "critical";
+  snapshot.groups[0].state = "quarantined";
+  snapshot.groups[0].lastError =
+    "resource group cleanup incomplete: pid 4242: win32 error 5";
+  return snapshot;
+};
+
 // #566 - multiple groups spanning projects / workgroups / roles / states so the
 // filter dimensions visibly change the rendered row count.
 const multiGroupSnapshot = (): ResourceSnapshot => {
@@ -125,6 +137,7 @@ function setupResourceMonitor(fake: FakeTransport, snapshot: ResourceSnapshot): 
     state: "terminating",
     quarantined: false,
     message: "terminating",
+    blockedBySecurity: false,
   });
 }
 
@@ -493,6 +506,7 @@ describe("ResourceMonitorApp automation hooks", () => {
       state: "terminating",
       quarantined: false,
       message: "terminating",
+      blockedBySecurity: false,
     });
     // A controllable snapshot handler: returns rows normally, but once `hang` is
     // set the next call stays pending so the store's `loading` flag stays true.
@@ -563,6 +577,93 @@ describe("ResourceMonitorApp automation hooks", () => {
       } finally {
         rendered.cleanup();
       }
+    }
+  });
+
+  // #647 (test 6): a quarantined group is killable again (Force-kill), and a
+  // quarantined kill result keeps the confirm modal open showing the per-PID
+  // detail AND the English security guidance (the latter ADDS to, never replaces,
+  // the former).
+  it("exposes Force-kill on a quarantined group and surfaces the per-PID detail + security hint without auto-closing", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.onInvoke("get_resource_snapshot", () => quarantinedSnapshot());
+    fake.resolve("kill_resource_group", {
+      sessionId: "session-1",
+      state: "quarantined",
+      quarantined: true,
+      message: "resource group cleanup incomplete: pid 4242: win32 error 5",
+      blockedBySecurity: true,
+    });
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      // The quarantined row's kill button is enabled and reads "Force-kill".
+      await waitFor(() => {
+        const killBtn = rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.group.session-1.kill"]'
+        ) as HTMLButtonElement | null;
+        expect(killBtn).not.toBeNull();
+        expect(killBtn!.disabled).toBe(false);
+        expect(killBtn!.textContent).toContain("Force-kill");
+      });
+
+      // The row shows the live "Verifying..." indicator.
+      expect(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.group.session-1.verifying"]'
+        )
+      ).not.toBeNull();
+
+      // Open the confirm modal and fire the force-kill.
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.group.session-1.kill"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.killConfirm.confirm"]'
+          )
+        ).not.toBeNull();
+      });
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.killConfirm.confirm"]'
+        )!
+      );
+
+      // The quarantined result surfaces the per-PID message AND the security hint.
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.killConfirm.quarantined"]'
+          )
+        ).not.toBeNull();
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.killConfirm.message"]'
+          )?.textContent
+        ).toContain("win32 error 5");
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.killConfirm.securityHint"]'
+          )?.textContent
+        ).toContain("security software");
+      });
+
+      // The modal stays open (not auto-closed) so the user can read it / Retry.
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.killConfirm"]')
+      ).not.toBeNull();
+      expect(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.killConfirm.confirm"]'
+        )?.textContent
+      ).toContain("Retry");
+    } finally {
+      rendered.cleanup();
     }
   });
 });

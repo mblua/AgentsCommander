@@ -427,6 +427,15 @@ export interface ResourceKillResult {
   killedPids?: number[];
   quarantined: boolean;
   message: string;
+  /**
+   * #647 D: true when the kill quarantined AND a failure carried the exact
+   * ACCESS_DENIED code (`win32 error 5`) — a security product is stripping
+   * PROCESS_TERMINATE. The per-PID detail stays in `message`; this only ADDS
+   * the AV-exclusion guidance in the UI, so a non-security failure is never
+   * hidden. Mirrors Rust `ResourceKillResult.blocked_by_security` (serde
+   * camelCase). `#[serde(default)]` backend-side, so always present on the wire.
+   */
+  blockedBySecurity: boolean;
 }
 
 export type UiAutomationAction =
