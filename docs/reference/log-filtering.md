@@ -54,6 +54,8 @@ RUST_LOG=info,agentscommander_lib::config::teams=trace agentscommander.exe
 
 You should see normal log lines on stderr, plus trace output from the one module you targeted.
 
+The target `agentscommander` is a broad prefix: by env_logger's prefix matching it covers every AC module (all `agentscommander_lib::*`), so `RUST_LOG=agentscommander=trace` raises everything AC logs. Add `::<module>` to scope it to a single subsystem, as in the example above.
+
 `RUST_LOG` takes precedence over `logLevel`, and it behaves differently in two ways:
 
 - It is a full filter expression, not a single level: the same per-module syntax env_logger has always used.
