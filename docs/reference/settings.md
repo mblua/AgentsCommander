@@ -84,6 +84,16 @@ A minimal `settings.json`:
 | `label` | string | — | Display name in the launcher dropdown. |
 | `command` | string | — | Binary to spawn. Resolved against PATH unless absolute. |
 | `color` | string | — | CSS hex color for sidebar accent. |
+| `configSeed` | `ConfigSeedConfig` \| absent | absent | Optional config-folder seed copied into each replica at spawn. Absent (the default) means no seeding. See [Config seed](../features/config-seed.md). |
+
+`ConfigSeedConfig` (one optional object on a coding agent):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Whether seeding runs for this agent. |
+| `dest` | string | `""` | Destination folder name under the replica root (for example `.claude`). Validated as a safe name, no path separators or traversal. |
+
+Seeding is active only when `enabled` is true and `dest` is non-empty. See [Config seed](../features/config-seed.md) for template precedence and token substitution.
 
 ### Coding agent profiles
 
@@ -144,6 +154,17 @@ The per-agent and per-replica assignments do **not** live here. They are stored 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `restoreCoordinatorWakeState` | bool | `false` | On app start, wake coordinators whose PTY was awake at shutdown. Non-coordinators always stay asleep until clicked. |
+
+### Session auto-close
+
+Idle teams (coordinators plus agent-owned sessions) close themselves after a timeout. Ad-hoc shells are never auto-closed. See [Session auto-close](../features/session-auto-close.md).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `coordinatorAutoCloseEnabled` | bool | `true` | Master switch for auto-close. When false, idle teams are never closed (the idle badge still shows). |
+| `coordinatorAutoCloseMinutes` | u32 | `60` | Idle minutes before a team is auto-closed. `0` also disables auto-close. |
+| `coordinatorIdleBadgeYellowMinutes` | u32 | `30` | Idle minutes at which the coordinator idle badge turns yellow. |
+| `coordinatorIdleBadgeRedMinutes` | u32 | `60` | Idle minutes at which the coordinator idle badge turns red. |
 
 ### Voice-to-text
 
@@ -211,7 +232,7 @@ See [RTK integration](../features/rtk-integration.md).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `logLevel` | string \| null | `null` | Filter expression. Applied at startup if `RUST_LOG` is unset. Standard `env_logger` syntax (e.g. `info,agentscommander_lib::config::teams=trace`). |
+| `logLevel` | string \| null | `null` | One of `error`, `warn`, `info`, `debug`, `trace`. Applied live, no restart. An invalid value, a legacy filter string, or `null` falls back to `info`. The `RUST_LOG` env var, if set, overrides this and freezes the live selector until restart. |
 
 See [Log filtering](log-filtering.md).
 

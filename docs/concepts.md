@@ -32,7 +32,7 @@ One running process bound to one agent directory, running inside a real PTY (Con
 - red — exited (clean or crash; detail in the row tooltip)
 - gray — idle (no recent activity)
 
-You can detach a session into its own window, attach a Telegram bot to it, or talk to it by voice.
+You can detach a session into its own window, attach a Telegram bot to it, or talk to it by voice. Idle teams can close their own sessions after a timeout; see [Session auto-close](features/session-auto-close.md).
 
 ## Team
 
