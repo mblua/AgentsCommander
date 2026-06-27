@@ -18,6 +18,10 @@ The plain-language description of a workgroup's goal. Lives at `<workgroup>/TASK
 
 The CLI process that runs the LLM work: Claude Code, Codex, or Gemini. AC is **not** a coding agent.
 
+## Config seed
+
+A per-coding-agent option that copies a template config folder (for example `.claude`) into each replica at spawn, with AC path tokens substituted. See [Config seed](features/config-seed.md).
+
 ## ConPTY
 
 Windows' native PTY API. AC uses ConPTY via [portable-pty](https://github.com/wez/wezterm/tree/main/pty) on Windows; Unix PTYs on Linux/macOS.
