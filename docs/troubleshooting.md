@@ -115,13 +115,13 @@ The Gemini transcription model is `gemini-2.5-flash` by default. Switch to `gemi
 
 ## Logs
 
-If something fails and you cannot tell why, raise the log level. Set `RUST_LOG` before launching or set `logLevel` in `settings.json`:
+If something fails and you cannot tell why, raise the log level. Pick a level in **Settings -> General -> Logging** (it applies live, no restart), set `logLevel` in `settings.json`, or set `RUST_LOG` before launching for per-module filtering from a terminal:
 
 ```bash
 RUST_LOG=agentscommander=trace agentscommander.exe
 ```
 
-See [Log filtering](reference/log-filtering.md) for the full filter syntax and precedence rules.
+See [Log filtering](reference/log-filtering.md) for the five levels, the live selector, and precedence rules.
 
 ---
 
