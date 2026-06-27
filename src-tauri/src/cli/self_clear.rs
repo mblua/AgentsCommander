@@ -22,7 +22,7 @@ fn interpret_self_clear_response_exit_code(content: &str) -> i32 {
 
 #[derive(Args)]
 #[command(after_help = "\
-Clears the CALLER'S OWN agent context and then resumes it from a handoff file. Two deferred phases:\n\n\
+Hands off, then clears the CALLER'S OWN agent context and resumes from the handoff file. Two deferred phases:\n\n\
   Phase 1 (clear): waits until this session is continuously idle for 30s, then injects /clear.\n\
   Phase 2 (handoff): after the clear, waits a FRESH 30s of sustained idle, then injects a prompt \
 telling you to read SELF-HANDOFF.md in your own root and resume.\n\n\
@@ -196,7 +196,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
                         .as_deref()
                     {
                         Some("queued") => crate::cli_println!(
-                            "self-clear-and-handoff requested. Phase 1 injects /clear only after this session is \
+                            "self-handoff-and-clear requested. Phase 1 injects /clear only after this session is \
                              continuously idle for {0}s; Phase 2 then waits a fresh {0}s of post-clear idle and \
                              injects a prompt to read SELF-HANDOFF.md and resume. Best-effort and NOT guaranteed \
                              (a busy session or a daemon restart drops it). If your context is still present later, \
@@ -204,7 +204,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
                         ),
                         Some("already_queued") => crate::cli_println!(
-                            "self-clear-and-handoff already pending for this session (or a clear/handoff is in \
+                            "self-handoff-and-clear already pending for this session (or a clear/handoff is in \
                              flight); Phase 1 runs after {}s sustained idle, then Phase 2 after a fresh window. \
                              Best-effort; re-issue later if needed.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
@@ -238,20 +238,20 @@ mod tests {
 
     #[test]
     fn queued_status_returns_zero() {
-        let resp = r#"{"action":"self-clear-and-handoff","status":"queued","session_id":"s","settle_secs":30}"#;
+        let resp = r#"{"action":"self-handoff-and-clear","status":"queued","session_id":"s","settle_secs":30}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 0);
     }
 
     #[test]
     fn already_queued_status_returns_zero() {
         let resp =
-            r#"{"action":"self-clear-and-handoff","status":"already_queued","session_id":"s","settle_secs":30}"#;
+            r#"{"action":"self-handoff-and-clear","status":"already_queued","session_id":"s","settle_secs":30}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 0);
     }
 
     #[test]
     fn unknown_status_returns_two() {
-        let resp = r#"{"status":"weird_new_state","action":"self-clear-and-handoff"}"#;
+        let resp = r#"{"status":"weird_new_state","action":"self-handoff-and-clear"}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 2);
     }
 
@@ -264,13 +264,13 @@ mod tests {
 
     #[test]
     fn missing_status_field_returns_two() {
-        let resp = r#"{"action":"self-clear-and-handoff","session_id":"s"}"#;
+        let resp = r#"{"action":"self-handoff-and-clear","session_id":"s"}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 2);
     }
 
     #[test]
     fn non_string_status_returns_two() {
-        let resp = r#"{"status":42,"action":"self-clear-and-handoff"}"#;
+        let resp = r#"{"status":42,"action":"self-handoff-and-clear"}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 2);
     }
 
@@ -292,13 +292,13 @@ mod tests {
         use clap::Parser;
         let parsed = crate::cli::Cli::try_parse_from([
             "agentscommander",
-            "self-clear-and-handoff",
+            "self-handoff-and-clear",
             "--token",
             "11111111-1111-1111-1111-111111111111",
             "--root",
             "anything",
         ])
-        .expect("clap should accept self-clear-and-handoff with token + root");
+        .expect("clap should accept self-handoff-and-clear with token + root");
         let cmd = parsed.command.expect("subcommand present");
         match cmd {
             crate::cli::Commands::SelfClear(args) => {
@@ -318,7 +318,7 @@ mod tests {
         use clap::Parser;
         let parsed = crate::cli::Cli::try_parse_from([
             "agentscommander",
-            "self-clear-and-handoff",
+            "self-handoff-and-clear",
             "--token",
             "11111111-1111-1111-1111-111111111111",
             "--root",
@@ -335,7 +335,7 @@ mod tests {
     }
 
     /// #626 rename: the old `self-clear` subcommand name no longer exists. clap must
-    /// REJECT it (the variant is renamed via `#[command(name = "self-clear-and-handoff")]`),
+    /// REJECT it (the variant is renamed via `#[command(name = "self-handoff-and-clear")]`),
     /// so a stale invocation fails loudly rather than silently doing nothing.
     #[test]
     fn old_self_clear_subcommand_name_is_rejected() {

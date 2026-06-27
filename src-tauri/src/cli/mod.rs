@@ -119,9 +119,9 @@ pub struct Cli {
 pub enum Commands {
     /// Send a message to another agent
     Send(send::SendArgs),
-    /// Clear the calling agent's OWN context, then hand off to SELF-HANDOFF.md
+    /// Hand off via SELF-HANDOFF.md, then clear the calling agent's OWN context and resume from it
     /// (two-phase, deferred: clear after 30s sustained idle, then resume-prompt after a fresh 30s)
-    #[command(name = "self-clear-and-handoff")]
+    #[command(name = "self-handoff-and-clear")]
     SelfClear(self_clear::SelfClearArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
     ListPeers(list_peers::ListPeersArgs),
