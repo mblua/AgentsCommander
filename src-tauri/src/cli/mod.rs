@@ -88,27 +88,27 @@ pub struct Cli {
     pub app: bool,
 
     /// Test-only GUI placement: virtual-desktop X coordinate in physical pixels
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(long, allow_hyphen_values = true, hide = true)]
     pub window_x: Option<f64>,
 
     /// Test-only GUI placement: virtual-desktop Y coordinate in physical pixels
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(long, allow_hyphen_values = true, hide = true)]
     pub window_y: Option<f64>,
 
     /// Test-only GUI placement: window width in physical pixels
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(long, allow_hyphen_values = true, hide = true)]
     pub window_width: Option<f64>,
 
     /// Test-only GUI placement: window height in physical pixels
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(long, allow_hyphen_values = true, hide = true)]
     pub window_height: Option<f64>,
 
     /// Test-only GUI placement: maximize after applying the requested rectangle
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub window_maximized: bool,
 
     /// Test-only GUI automation bridge opt-in
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub ui_automation: bool,
 
     #[command(subcommand)]
@@ -136,6 +136,7 @@ pub enum Commands {
     /// Create a full Agent Matrix in an AC project, optionally from a role template
     CreateAgentMatrix(create_agent_matrix::CreateAgentMatrixArgs),
     /// Manage Role.md variant experiments
+    #[command(hide = true)]
     RoleExperiment(role_experiment::RoleExperimentArgs),
     /// Close all sessions for a target agent (coordinator authorization required)
     CloseSession(close_session::CloseSessionArgs),
@@ -158,22 +159,31 @@ pub enum Commands {
     /// Execute commands through the policy harness
     Harness(harness::HarnessArgs),
     /// Delete only the disposable testable app state
+    #[command(hide = true)]
     TestReset(crate::testability::reset::TestResetArgs),
     /// Inspect running AgentsCommander GUI windows for this binary identity
+    #[command(hide = true)]
     WindowInfo(crate::testability::window_info::WindowInfoArgs),
     /// Query a WebView automation target by data-ac-testid
+    #[command(hide = true)]
     UiQuery(crate::testability::ui_automation::UiQueryArgs),
     /// Click a WebView automation target by data-ac-testid
+    #[command(hide = true)]
     UiClick(crate::testability::ui_automation::UiClickArgs),
     /// Dispatch a WebView contextmenu event on an automation target by data-ac-testid
+    #[command(hide = true)]
     UiContextClick(crate::testability::ui_automation::UiContextClickArgs),
     /// Set an input/select WebView automation target by data-ac-testid
+    #[command(hide = true)]
     UiSet(crate::testability::ui_automation::UiSetArgs),
     /// Type text into a WebView automation target by data-ac-testid
+    #[command(hide = true)]
     UiType(crate::testability::ui_automation::UiTypeArgs),
     /// Execute a Rust-handled automation hook
+    #[command(hide = true)]
     UiBackend(crate::testability::ui_automation::UiBackendArgs),
     /// Wait until a WebView automation target is available by data-ac-testid
+    #[command(hide = true)]
     UiWait(crate::testability::ui_automation::UiWaitArgs),
 }
 
@@ -372,5 +382,102 @@ mod tests {
             "after_help missing TOKEN VALIDATION MODEL block: {}",
             after
         );
+    }
+
+    /// #654: internal `role-experiment` + the test/automation verbs and the
+    /// test-only top-level flags must NOT clutter `--help`. `hide = true` is a
+    /// display-only attribute, so each must remain a registered subcommand/arg
+    /// (the test harness still invokes them by name).
+    #[test]
+    fn internal_verbs_and_test_flags_are_hidden_from_help() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let help = cmd.render_long_help().to_string();
+
+        let hidden_verbs = [
+            "role-experiment",
+            "test-reset",
+            "window-info",
+            "ui-query",
+            "ui-click",
+            "ui-context-click",
+            "ui-set",
+            "ui-type",
+            "ui-backend",
+            "ui-wait",
+        ];
+        for name in hidden_verbs {
+            assert!(
+                !help.contains(name),
+                "hidden verb `{}` must not appear in --help:\n{}",
+                name,
+                help
+            );
+            let sub = cmd
+                .get_subcommands()
+                .find(|c| c.get_name() == name)
+                .unwrap_or_else(|| panic!("`{}` must still be a registered subcommand", name));
+            assert!(sub.is_hide_set(), "`{}` should be marked hidden", name);
+        }
+
+        for flag in [
+            "--window-x",
+            "--window-y",
+            "--window-width",
+            "--window-height",
+            "--window-maximized",
+            "--ui-automation",
+        ] {
+            assert!(
+                !help.contains(flag),
+                "hidden flag `{}` must not appear in --help:\n{}",
+                flag,
+                help
+            );
+        }
+
+        // Sanity: a normal public verb is still listed.
+        assert!(
+            help.contains("send"),
+            "public verbs should still appear in --help:\n{}",
+            help
+        );
+    }
+
+    #[test]
+    fn hidden_internal_verb_still_parses_by_name() {
+        use clap::Parser;
+        let parsed = Cli::try_parse_from(["agentscommander", "window-info"])
+            .expect("hidden `window-info` verb must still parse by name");
+        assert!(
+            matches!(parsed.command, Some(Commands::WindowInfo(_))),
+            "expected WindowInfo subcommand"
+        );
+    }
+
+    #[test]
+    fn hidden_test_only_flags_still_parse() {
+        use clap::Parser;
+        let parsed = Cli::try_parse_from([
+            "agentscommander",
+            "--window-x",
+            "100",
+            "--window-y",
+            "200",
+            "--window-width",
+            "800",
+            "--window-height",
+            "600",
+            "--window-maximized",
+            "--ui-automation",
+        ])
+        .expect("hidden test-only flags must still parse");
+        assert_eq!(parsed.window_x, Some(100.0));
+        assert_eq!(parsed.window_y, Some(200.0));
+        assert_eq!(parsed.window_width, Some(800.0));
+        assert_eq!(parsed.window_height, Some(600.0));
+        assert!(parsed.window_maximized);
+        assert!(parsed.ui_automation);
+        assert!(parsed.command.is_none());
     }
 }
