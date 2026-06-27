@@ -440,18 +440,18 @@ const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs
 #[cfg_attr(test, allow(dead_code))]
 const SELF_HANDOFF_ARCHIVE_DELAY: std::time::Duration = std::time::Duration::from_secs(180);
 
-/// #626 - the OutboxMessage `action` value for self-clear-and-handoff. Single-sourced so the CLI emit,
+/// #626 - the OutboxMessage `action` value for self-handoff-and-clear. Single-sourced so the CLI emit,
 /// the early-dispatch match, and the response body cannot drift (a drift would make early dispatch
 /// silently not fire and the command would be lost with no agent-visible error). `pub(crate)` so
 /// `cli/self_clear.rs` reaches it as `crate::phone::mailbox::SELF_CLEAR_ACTION`.
-pub(crate) const SELF_CLEAR_ACTION: &str = "self-clear-and-handoff";
+pub(crate) const SELF_CLEAR_ACTION: &str = "self-handoff-and-clear";
 
 /// #626 - stand-alone prompt injected in Phase 2 after the post-clear sustained-idle window. Must be a
 /// SINGLE line (an embedded newline would submit early) and self-contained (the agent's context was just
 /// wiped). `pub(crate)` so a test can assert it is non-empty, single-line, em-dash-free, and names the
 /// file. The `\`-newline continuations collapse to one physical line with single spaces (no `\n`).
 pub(crate) const SELF_CLEAR_HANDOFF_PROMPT: &str =
-    "Your context was just cleared by the self-clear-and-handoff command. To resume, read the file \
+    "Your context was just cleared by the self-handoff-and-clear command. To resume, read the file \
      SELF-HANDOFF.md in your own agent root (your current working directory) and continue the work \
      described there. If SELF-HANDOFF.md is missing or empty, wait for new instructions instead of guessing.";
 
@@ -605,7 +605,7 @@ pub(crate) fn next_sustained_idle_state(
     (Some(since), settled)
 }
 
-/// #626 - which leg of the self-clear-and-handoff gate we are in.
+/// #626 - which leg of the self-handoff-and-clear gate we are in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelfClearPhase {
     /// Waiting for sustained idle to inject `/clear`.
@@ -3007,8 +3007,8 @@ impl MailboxPoller {
                     path,
                     msg,
                     &format!(
-                        "self-clear-and-handoff: SELF-HANDOFF.md not found in your root ({}); write it before \
-                         requesting self-clear-and-handoff.",
+                        "self-handoff-and-clear: SELF-HANDOFF.md not found in your root ({}); write it before \
+                         requesting self-handoff-and-clear.",
                         session.working_directory
                     ),
                 )
@@ -3046,12 +3046,12 @@ impl MailboxPoller {
                 &ts,
             ) {
                 Ok(Some(p)) => log::info!(
-                    "[mailbox] self-clear-and-handoff: archived SELF-FORGET.md -> {}",
+                    "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
                     p.display()
                 ),
                 Ok(None) => {} // no SELF-FORGET.md; nothing to archive
                 Err(e) => log::warn!(
-                    "[mailbox] self-clear-and-handoff: SELF-FORGET.md archive failed for session {} (non-fatal): {}",
+                    "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session {} (non-fatal): {}",
                     session_id,
                     e
                 ),
@@ -3073,13 +3073,13 @@ impl MailboxPoller {
                 });
             }
             log::info!(
-                "[mailbox] self-clear-and-handoff queued for session {} (from '{}')",
+                "[mailbox] self-handoff-and-clear queued for session {} (from '{}')",
                 session_id,
                 msg.from
             );
         } else {
             log::info!(
-                "[mailbox] self-clear-and-handoff already pending for session {} (from '{}')",
+                "[mailbox] self-handoff-and-clear already pending for session {} (from '{}')",
                 session_id,
                 msg.from
             );
@@ -3133,7 +3133,7 @@ impl MailboxPoller {
                 SelfClearGateAction::Wait => continue,
                 SelfClearGateAction::InjectClear => {
                     log::info!(
-                        "[mailbox] self-clear-and-handoff: session {} idle >={}s; injecting /clear (phase 1)",
+                        "[mailbox] self-handoff-and-clear: session {} idle >={}s; injecting /clear (phase 1)",
                         session_id,
                         settle.as_secs()
                     );
@@ -3143,7 +3143,7 @@ impl MailboxPoller {
                         crate::pty::inject::inject_text_into_session(app, session_id, "/clear").await
                     {
                         log::warn!(
-                            "[mailbox] self-clear-and-handoff: /clear injection failed for session {}: {}",
+                            "[mailbox] self-handoff-and-clear: /clear injection failed for session {}: {}",
                             session_id,
                             e
                         );
@@ -3153,7 +3153,7 @@ impl MailboxPoller {
                 }
                 SelfClearGateAction::InjectHandoff => {
                     log::info!(
-                        "[mailbox] self-clear-and-handoff: session {} idle >={}s post-clear; injecting handoff prompt (phase 2)",
+                        "[mailbox] self-handoff-and-clear: session {} idle >={}s post-clear; injecting handoff prompt (phase 2)",
                         session_id,
                         settle.as_secs()
                     );
@@ -3195,12 +3195,12 @@ impl MailboxPoller {
                                         &ts,
                                     ) {
                                         Ok(Some(p)) => log::info!(
-                                            "[mailbox] self-clear-and-handoff: archived SELF-HANDOFF.md -> {}",
+                                            "[mailbox] self-handoff-and-clear: archived SELF-HANDOFF.md -> {}",
                                             p.display()
                                         ),
                                         Ok(None) => {} // already gone (agent moved/removed it)
                                         Err(e) => log::warn!(
-                                            "[mailbox] self-clear-and-handoff: SELF-HANDOFF.md archive failed (non-fatal): {}",
+                                            "[mailbox] self-handoff-and-clear: SELF-HANDOFF.md archive failed (non-fatal): {}",
                                             e
                                         ),
                                     }
@@ -3208,7 +3208,7 @@ impl MailboxPoller {
                             }
                         }
                         Err(e) => log::warn!(
-                            "[mailbox] self-clear-and-handoff: handoff prompt injection failed for session {}: {}",
+                            "[mailbox] self-handoff-and-clear: handoff prompt injection failed for session {}: {}",
                             session_id,
                             e
                         ),
@@ -3219,7 +3219,7 @@ impl MailboxPoller {
                     // Greppable abandon line so a silently-dropped clear/handoff is diagnosable.
                     // The CLI already warned the caller it is best-effort.
                     log::warn!(
-                        "[mailbox] self-clear-and-handoff ABANDONED for session {}: {} (agent may re-issue)",
+                        "[mailbox] self-handoff-and-clear ABANDONED for session {}: {} (agent may re-issue)",
                         session_id,
                         reason
                     );
@@ -5387,7 +5387,7 @@ mod tests {
     #[test]
     fn self_clear_action_const_pins_wire_value() {
         // FOLD-2: the single-sourced action value. A rename here is a deliberate, test-visible change.
-        assert_eq!(SELF_CLEAR_ACTION, "self-clear-and-handoff");
+        assert_eq!(SELF_CLEAR_ACTION, "self-handoff-and-clear");
     }
 
     // ── #626/#629 archive_root_md unit tests (tempdir, deterministic timestamp) ──
@@ -5534,7 +5534,7 @@ mod tests {
     }
 
     /// #626 - seed the agent's `SELF-HANDOFF.md` so the existence gate passes. The gate (§4.2) rejects
-    /// any self-clear-and-handoff whose root has no `SELF-HANDOFF.md`, so every test that expects a
+    /// any self-handoff-and-clear whose root has no `SELF-HANDOFF.md`, so every test that expects a
     /// "queued"/"already_queued" outcome must seed it first.
     fn seed_self_handoff(cwd: &Path) {
         std::fs::write(cwd.join("SELF-HANDOFF.md"), "resume notes for the test").unwrap();

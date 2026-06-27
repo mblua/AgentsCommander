@@ -148,11 +148,11 @@ const MainApp: Component = () => {
   };
 
   onMount(async () => {
-    // #289 — optimistic light-mode first paint (legacy default); the
-    // SettingsAPI.get() block below overrides to dark for users who chose it.
-    // The embedded SidebarApp + TerminalApp each run their own corrective
-    // step on the same documentElement — idempotent overlap is fine.
-    document.documentElement.classList.add("light-theme");
+    // #289 / dark-default — dark is the base CSS, so the first frame is dark
+    // with no optimistic class; the SettingsAPI.get() block below opts into
+    // light only when the persisted preference says so. The embedded
+    // SidebarApp + TerminalApp each run their own corrective step on the same
+    // documentElement — idempotent overlap is fine.
 
     // Main window owns zoom + geometry persistence. Embedded Sidebar+Terminal
     // skip these initializers per DW.2.
@@ -162,9 +162,7 @@ const MainApp: Component = () => {
     // Load splitter width + always-on-top from settings.
     try {
       const settings = await SettingsAPI.get();
-      if (!settings.themeLight) {
-        document.documentElement.classList.remove("light-theme");
-      }
+      document.documentElement.classList.toggle("light-theme", settings.themeLight);
       const saved = settings.mainSidebarWidth ?? DEFAULT_MAIN_SIDEBAR_WIDTH;
       setSidebarWidth(clampMainSidebarWidth(saved, window.innerWidth));
       setSidebarSide(settings.mainSidebarSide === "left" ? "left" : DEFAULT_SIDEBAR_SIDE);

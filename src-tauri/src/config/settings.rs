@@ -394,9 +394,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub agent_templates_path: Option<String>,
     /// When true, the app uses the light theme; when false, the dark theme.
-    /// Defaults to `true` so existing settings files without the field stay on
-    /// the legacy light-mode behavior. Issue #289.
-    #[serde(default = "default_true")]
+    /// Defaults to `false` so fresh and missing values use dark mode.
+    #[serde(default)]
     pub theme_light: bool,
     /// When true, show the Spec Board toolbar button. Defaults off because the
     /// board is an opt-in feature enabled manually from settings.json.
@@ -436,7 +435,7 @@ pub struct AppSettings {
     /// a newer published version is available. Default true.
     #[serde(default = "default_true")]
     pub npm_update_notifications_enabled: bool,
-    /// #640 Global master for auto self-clear-and-handoff. Absolute kill switch:
+    /// #640 Global master for auto self-handoff-and-clear. Absolute kill switch:
     /// false => off for every agent. When true, the class-aware default applies
     /// (ON for coordinator/Root, OFF for specialists), subject to per-agent
     /// overrides in `auto_self_clear_by_agent`.
@@ -632,7 +631,7 @@ impl Default for AppSettings {
             inform_when_rtk_installed: false,
             auto_generate_task_title: true,
             agent_templates_path: None,
-            theme_light: true,
+            theme_light: false,
             spec_board_enabled: false,
             resource_monitor_enabled: default_resource_monitor_enabled(),
             max_concurrent_agent_processes: default_max_concurrent_agent_processes(),
@@ -2534,19 +2533,17 @@ mod tests {
     #[test]
     fn theme_light_round_trips_through_serde() {
         let mut s = AppSettings::default();
-        assert!(s.theme_light);
-        s.theme_light = false;
+        assert!(!s.theme_light);
+        s.theme_light = true;
         let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains("\"themeLight\":false"));
+        assert!(json.contains("\"themeLight\":true"));
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(!back.theme_light);
+        assert!(back.theme_light);
     }
 
     #[test]
-    fn theme_light_defaults_true_when_missing_from_json() {
-        // Old settings.json without the new field must deserialize with
-        // theme_light = true so existing users stay on the legacy light-mode
-        // behavior until they explicitly switch to dark.
+    fn theme_light_defaults_false_when_missing_from_json() {
+        // Settings without themeLight now open dark by default.
         let json = r#"{
             "defaultShell": "bash",
             "defaultShellArgs": [],
@@ -2581,13 +2578,13 @@ mod tests {
             "coordSortByActivity": false
         }"#;
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
-        assert!(s.theme_light);
+        assert!(!s.theme_light);
     }
 
     #[test]
     fn theme_light_explicit_false_survives_round_trip() {
         // Once a user explicitly disables light mode, the value must survive
-        // serialize/deserialize without reverting to the `default_true` default.
+        // serialize/deserialize without being altered by the serde default.
         let json = r#"{
             "defaultShell": "bash",
             "defaultShellArgs": [],

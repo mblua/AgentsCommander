@@ -219,9 +219,11 @@ describe("BrowserApp workflow", () => {
     }
   });
 
-  it("removes optimistic light theme for persisted dark setting", async () => {
+  it("corrects a stale light theme to the persisted dark setting", async () => {
     const fake = new FakeTransport();
     setupBrowserTransport(fake, { themeLight: false });
+    // Simulate a leftover light-theme class (e.g. HMR / prior state). The
+    // corrective read after settings load must drive it back to dark.
     document.documentElement.classList.add("light-theme");
 
     const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
@@ -229,6 +231,21 @@ describe("BrowserApp workflow", () => {
       await waitFor(() =>
         expect(document.documentElement.classList.contains("light-theme")).toBe(false)
       );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("paints dark on first mount without an optimistic light flash", async () => {
+    const fake = new FakeTransport();
+    // Dark default: no manual class add. BrowserApp must NOT optimistically
+    // paint light before (or after) settings resolve.
+    setupBrowserTransport(fake, { themeLight: false });
+
+    const rendered = renderWithFakeTransport(() => <BrowserApp />, fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("get_settings").length).toBeGreaterThan(0));
+      expect(document.documentElement.classList.contains("light-theme")).toBe(false);
     } finally {
       rendered.cleanup();
     }

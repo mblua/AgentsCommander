@@ -149,15 +149,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   };
 
   onMount(async () => {
-    // #289 — optimistically paint in light mode (the historic default and the
-    // AppSettings default) to keep first paint flash-free for the common case.
-    // The persisted-preference check after SettingsAPI.get() below overrides
-    // back to dark for users who chose it last session. Guarded with
-    // !props.embedded because MainApp owns the documentElement classList when
-    // this is mounted inside the unified layout — same pattern as zoom/geometry.
-    if (!props.embedded) {
-      document.documentElement.classList.add("light-theme");
-    }
+    // #289 / dark-default — dark is the base CSS, so first paint is dark with
+    // no optimistic class; the persisted-preference check after
+    // SettingsAPI.get() below opts into light only for users who chose it last
+    // session. Guarded with !props.embedded because MainApp owns the
+    // documentElement classList when this is mounted inside the unified layout
+    // — same pattern as zoom/geometry.
     unlisteners.push(
       await onAcProjectRefreshRequested((data) => {
         handleProjectRefreshRequested(data);
@@ -227,8 +224,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
     // Apply window settings
     const appSettings = await SettingsAPI.get();
-    if (!props.embedded && !appSettings.themeLight) {
-      document.documentElement.classList.remove("light-theme");
+    if (!props.embedded) {
+      document.documentElement.classList.toggle("light-theme", appSettings.themeLight);
     }
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
     sessionsStore.setCoordSortByActivity(appSettings.coordSortByActivity ?? false);
