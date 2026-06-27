@@ -3412,10 +3412,27 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
             "AGENT_ROOT signature token must appear only inside the Golden Rule region"
         );
 
+        // Anchor on the heading LINE (newline-bounded), NOT the bare substring:
+        // the FIRST "## Inter-Agent Messaging" occurrence in the fixture is the
+        // mid-line backtick reference inside the Self-discovery prose, which would
+        // start the region too early (spanning Self-discovery + Session
+        // credentials) and so fail to catch a messaging token wrongly moved into
+        // that span.
         let msg_start = STALE_HYBRID_TEMPLATE
-            .find("## Inter-Agent Messaging")
-            .expect("messaging heading");
+            .find("\n## Inter-Agent Messaging\n")
+            .expect("messaging heading line");
         let messaging_region = &STALE_HYBRID_TEMPLATE[msg_start..];
+        // Region-bound sanity: starting at the real heading excludes the
+        // preceding Self-discovery and Session credentials sections, so a token
+        // moved into either of them is now outside the region and caught below.
+        assert!(
+            !messaging_region.contains("## Self-discovery via --help"),
+            "messaging region must not include the Self-discovery section"
+        );
+        assert!(
+            !messaging_region.contains("## Session credentials"),
+            "messaging region must not include the Session credentials section"
+        );
         for token in ["{{PEER_NAME_FORMAT}}", "{{SEND_MESSAGE_INSTRUCTIONS}}"] {
             assert!(messaging_region.contains(token), "missing {token} in messaging region");
             assert_eq!(
