@@ -30,6 +30,10 @@ The single agent in a team that can send messages to any team member, edit the t
 
 A session popped out of the main window into its own dedicated terminal window. Useful for long-running sessions you want to keep visible while doing other work.
 
+## Idle badge
+
+The `Nm` badge on a coordinator row showing whole minutes since the team was last active. Turns yellow, then red, as idle time grows. See [Session auto-close](features/session-auto-close.md).
+
 ## Idle detector
 
 The PTY component that flags a session as idle after a configurable silence threshold (2.5 seconds by default). Drives the green-dot indicator in the sidebar.
@@ -85,6 +89,10 @@ A CLI proxy that compresses verbose command outputs to cut LLM token consumption
 ## Session
 
 A running process bound to one agent directory and one coding-agent CLI. Sessions live in the sidebar with status dots: green waiting (ready for your input), blue running, amber pending, red exited, gray idle.
+
+## Session auto-close
+
+Automatic shutdown of an idle team (coordinator plus agent-owned sessions) after a timeout (60 minutes by default). Ad-hoc shells are never auto-closed. See [Session auto-close](features/session-auto-close.md).
 
 ## Settings tab
 
