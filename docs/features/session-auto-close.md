@@ -19,7 +19,11 @@ A session counts as a team member only if it is a coordinator or has a coding ag
 Two more conditions gate an actual close:
 
 - The session must have a **live PTY**. A deferred or not-yet-spawned session has nothing to terminate and is skipped.
-- The team must be **established**: at least one member alive for more than 30 seconds. A team you just opened, or one that just woke on restore, is visible for at least that long before anything can close it.
+- The team must be **established**: at least one member alive for 30 seconds or more. A team you just opened, or one that just woke on restore, is visible for at least that long before anything can close it.
+
+## Two badges, two meanings
+
+This page describes two separate sidebar badges. The **idle badge** (`Nm`) counts how long a team has been idle. The **AUTO-CLOSED badge** marks a coordinator that auto-close has already shut down. The next two sections cover each one.
 
 ## The idle badge
 
@@ -95,7 +99,9 @@ When you reopen an abandoned team, the session replays its scrollback for a seco
 
 The watcher checks teams once every 60 seconds. A team that has crossed its timeout is closed on the next tick, so a close can trail the threshold by up to a minute. This is also why a team is not closed the instant you walk away.
 
-## How the badge value reaches the UI (backend contract)
+## Internals: how the badge value reaches the UI
+
+> **Skip this section** unless you are debugging the UI or building on AC's events. Everything above is all you need to use auto-close.
 
 There is **no idle field on the session object**. The anchor reaches the frontend out of band, on a Tauri event:
 
@@ -110,7 +116,7 @@ The frontend computes `Nm` from that timestamp. The clocks themselves persist pe
 
 **"My ad-hoc shell got closed."** It should not have. Auto-close only targets coordinators and agent-owned sessions; a plain shell with no coding agent is never a candidate. If you saw a shell close, it was not auto-close. Check the row tooltip for the real exit reason.
 
-**"My team did not close after the timeout."** Confirm `coordinatorAutoCloseEnabled` is true and `coordinatorAutoCloseMinutes` is non-zero. Then remember the team must be established (a member alive more than 30 seconds) and have a live PTY, and the close happens on the next 60-second tick. A team you just reopened restarts from fresh activity.
+**"My team did not close after the timeout."** Confirm `coordinatorAutoCloseEnabled` is true and `coordinatorAutoCloseMinutes` is non-zero. Then remember the team must be established (a member alive 30 seconds or more) and have a live PTY, and the close happens on the next 60-second tick. A team you just reopened restarts from fresh activity.
 
 **"The idle badge never reaches red."** Something is resetting the anchor. Any PTY output (an agent still working, a watchdog, a stray log) or any input counts as activity. Watch the `Nm` value: if it keeps dropping back to a low number, the team is not actually idle.
 
