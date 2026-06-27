@@ -31,13 +31,22 @@ const DEFAULT_RESOURCE_PREFERENCES = {
   resourceKeepLastSnapshot: true,
 };
 
+// #647 C: a `quarantined` group is now killable again — the Force-kill / Retry
+// affordance re-fires the durable Job Object kill (it was wrongly disabled,
+// stranding agents the AV kept alive). `terminating` stays non-killable (a kill
+// is already in flight); `terminated` is done; `failedCleanup` /
+// `unknownOwnership` are never emitted by the 4-variant backend state.
 const NON_KILLABLE_GROUP_STATES = new Set<ResourceGroupState>([
   "terminating",
   "terminated",
-  "quarantined",
   "failedCleanup",
   "unknownOwnership",
 ]);
+
+// #647 D: English guidance shown (ADDED to, never replacing, the per-PID detail)
+// when a kill is blocked by a security product stripping PROCESS_TERMINATE.
+const SECURITY_BLOCK_HINT =
+  "The OS or security software is blocking process termination. Add an exclusion for AgentsCommander and the agent binaries.";
 
 const formatBytes = (value?: number | null): string => {
   if (typeof value !== "number" || !Number.isFinite(value)) return "Unknown";
@@ -94,6 +103,11 @@ const groupOrigin = (group: ResourceAgentGroupSnapshot): string =>
 
 const canKillGroup = (group: ResourceAgentGroupSnapshot): boolean =>
   group.killAllowed !== false && !NON_KILLABLE_GROUP_STATES.has(group.state);
+
+// #647 C: a quarantined group is killable but its button re-fires the durable
+// kill, so it reads "Force-kill" rather than "Kill".
+const killActionLabel = (group: ResourceAgentGroupSnapshot): string =>
+  group.state === "quarantined" ? "Force-kill" : "Kill";
 
 const groupSeverity = (group: ResourceAgentGroupSnapshot): string => {
   if (group.state === "quarantined" || group.state === "failedCleanup") {
@@ -335,6 +349,37 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     createSignal<ResourceAgentGroupSnapshot | null>(null);
   const [killError, setKillError] = createSignal("");
   const [killInFlight, setKillInFlight] = createSignal(false);
+  // #647: the outcome of the last kill attempt that did NOT finalize (a verified
+  // success clears it). Carries `state` to distinguish a blocked `quarantined`
+  // result (show per-PID + security hint) from an unsettled `terminating` one
+  // (a concurrent kill is still settling — show "Verifying...", offer Retry).
+  // Keyed by sessionId so the detail attaches to the right row/modal. Held in the
+  // FE because blockedBySecurity is a per-attempt flag, not on the group snapshot.
+  const [killResult, setKillResult] = createSignal<{
+    sessionId: string;
+    state: ResourceGroupState;
+    message: string;
+    blockedBySecurity: boolean;
+  } | null>(null);
+
+  const openKillModal = (group: ResourceAgentGroupSnapshot) => {
+    setKillError("");
+    setKillResult(null);
+    setKillTarget(group);
+  };
+
+  const closeKillModal = () => {
+    setKillTarget(null);
+    setKillError("");
+  };
+
+  // #647 C (Step-7 narrowing): show "Verifying..." only where a kill is genuinely
+  // in flight — a group the backend is actively terminating, or the group whose
+  // Force-kill/Retry we are awaiting right now. A group merely sitting in
+  // `quarantined` with no attempt running is NOT verifying (it needs Force-kill).
+  const isVerifying = (group: ResourceAgentGroupSnapshot): boolean =>
+    group.state === "terminating" ||
+    (killInFlight() && killTarget()?.sessionId === group.sessionId);
 
   // #587 — pop the embedded RM out into its own OS window, then reveal the
   // terminal in the pane (preserves the embedded-XOR-detached invariant).
@@ -456,11 +501,30 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     setKillError("");
     setKillInFlight(true);
     try {
-      await ResourceMonitorAPI.killGroup({
+      const result = await ResourceMonitorAPI.killGroup({
         sessionId: target.sessionId,
         reason: "user",
       });
-      setKillTarget(null);
+      if (result.finalized) {
+        // #647 (Step 7): verified dead AND finalized by the backend — it tore the
+        // tree down and emitted session_created carrying the Exited SessionInfo
+        // (the sidebar tile flips via the addSession upsert, E5). Close + refresh.
+        // NB: success keys off `finalized`, NOT `!quarantined` — a `terminating`
+        // early-return reports `quarantined === false` yet is not a real success.
+        setKillResult(null);
+        setKillTarget(null);
+      } else {
+        // NOT finalized — keep the modal open. The agent may still be alive
+        // (`quarantined`) or a concurrent kill is still settling (`terminating`);
+        // the durable job is preserved backend-side for a Force/Retry. `state`
+        // drives whether we show the per-PID detail (+ hint) or "Verifying...".
+        setKillResult({
+          sessionId: result.sessionId,
+          state: result.state,
+          message: result.message,
+          blockedBySecurity: result.blockedBySecurity,
+        });
+      }
       await resourceMonitorStore.refresh();
     } catch (err) {
       setKillError(err instanceof Error ? err.message : String(err));
@@ -822,6 +886,15 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                         >
                           {groupOrigin(group)}
                         </span>
+                        <Show when={isVerifying(group)}>
+                          <span
+                            class="rm-group-verifying"
+                            data-ac-testid={`resourceMonitor.group.${group.sessionId}.verifying`}
+                            data-ac-role="status"
+                          >
+                            Verifying...
+                          </span>
+                        </Show>
                       </span>
                       <span
                         class="rm-group-state"
@@ -867,16 +940,16 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                     </button>
                     <button
                       class="rm-kill-btn"
-                      disabled={!canKillGroup(group)}
-                      onClick={() => {
-                        setKillError("");
-                        setKillTarget(group);
+                      classList={{
+                        "rm-kill-btn-force": group.state === "quarantined",
                       }}
+                      disabled={!canKillGroup(group)}
+                      onClick={() => openKillModal(group)}
                       data-ac-testid={`resourceMonitor.group.${group.sessionId}.kill`}
                       data-ac-role="button"
                       data-ac-state={canKillGroup(group) ? "ready" : "disabled"}
                     >
-                      Kill
+                      {killActionLabel(group)}
                     </button>
 
                     <Show when={expandedGroupId() === group.sessionId}>
@@ -961,6 +1034,25 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                             {group.lastError}
                           </div>
                         </Show>
+                        {/* #647 D: ADD the security guidance below the per-PID
+                            detail (never replacing it) when the last kill on this
+                            still-quarantined group was blocked by a security
+                            product. */}
+                        <Show
+                          when={
+                            group.state === "quarantined" &&
+                            killResult()?.sessionId === group.sessionId &&
+                            killResult()?.blockedBySecurity
+                          }
+                        >
+                          <div
+                            class="rm-process-error rm-security-hint"
+                            data-ac-testid={`resourceMonitor.group.${group.sessionId}.securityHint`}
+                            data-ac-role="status"
+                          >
+                            {SECURITY_BLOCK_HINT}
+                          </div>
+                        </Show>
                       </div>
                     </Show>
                   </div>
@@ -994,7 +1086,9 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
         {(target) => (
           <div class="rm-modal-backdrop" data-ac-testid="resourceMonitor.killConfirm">
             <div class="rm-modal" role="dialog" aria-modal="true">
-              <h2>Kill agent</h2>
+              <h2>
+                {target.state === "quarantined" ? "Force-kill agent" : "Kill agent"}
+              </h2>
               <p
                 class="rm-modal-target"
                 title={groupOrigin(target)}
@@ -1011,8 +1105,48 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                 {target.name}
               </p>
               <p class="rm-modal-detail">
-                Session {target.sessionId} will be terminated by the backend resource watchdog.
+                Session {target.sessionId} and its entire process tree will be
+                force-terminated via its Job Object.
               </p>
+              {/* #647 (Step 7): a non-finalized result keeps the modal open. A
+                  `terminating` result means a concurrent kill is still settling
+                  (show "Verifying...", offer Retry); otherwise it is blocked
+                  (`quarantined`) — show the per-PID detail, with the AV-exclusion
+                  hint PREPENDED above it (never replacing it) when blocked by a
+                  security product. */}
+              <Show when={killResult()} keyed>
+                {(res) =>
+                  res.state === "terminating" ? (
+                    <div
+                      class="rm-banner rm-banner-muted"
+                      data-ac-testid="resourceMonitor.killConfirm.verifying"
+                      data-ac-role="status"
+                    >
+                      Verifying... a concurrent kill is still settling. Click Retry
+                      to confirm.
+                    </div>
+                  ) : (
+                    <div
+                      class="rm-banner rm-banner-error"
+                      data-ac-testid="resourceMonitor.killConfirm.quarantined"
+                      data-ac-role="status"
+                    >
+                      <Show when={res.blockedBySecurity}>
+                        <div
+                          class="rm-security-hint"
+                          data-ac-testid="resourceMonitor.killConfirm.securityHint"
+                          data-ac-role="status"
+                        >
+                          {SECURITY_BLOCK_HINT}
+                        </div>
+                      </Show>
+                      <div data-ac-testid="resourceMonitor.killConfirm.message">
+                        {res.message}
+                      </div>
+                    </div>
+                  )
+                }
+              </Show>
               <Show when={killError()}>
                 <div class="rm-banner rm-banner-error">{killError()}</div>
               </Show>
@@ -1020,11 +1154,11 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                 <button
                   class="rm-action-btn"
                   disabled={killInFlight()}
-                  onClick={() => setKillTarget(null)}
+                  onClick={closeKillModal}
                   data-ac-testid="resourceMonitor.killConfirm.cancel"
                   data-ac-role="button"
                 >
-                  Cancel
+                  {killResult() ? "Close" : "Cancel"}
                 </button>
                 <button
                   class="rm-action-btn rm-action-danger"
@@ -1033,7 +1167,13 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                   data-ac-testid="resourceMonitor.killConfirm.confirm"
                   data-ac-role="button"
                 >
-                  {killInFlight() ? "Killing..." : "Kill Agent"}
+                  {killInFlight()
+                    ? "Verifying..."
+                    : killResult()
+                      ? "Retry"
+                      : target.state === "quarantined"
+                        ? "Force-kill"
+                        : "Kill Agent"}
                 </button>
               </div>
             </div>

@@ -185,6 +185,21 @@ pub struct ResourceKillResult {
     pub killed_processes: Vec<ProcessIdentity>,
     pub quarantined: bool,
     pub message: String,
+    /// #647 D: true when the kill quarantined AND ANY failure carried the exact
+    /// ACCESS_DENIED code (`win32 error 5`), i.e. a security product is stripping
+    /// PROCESS_TERMINATE. The per-PID detail stays in `message`; this only ADDS the
+    /// AV-exclusion guidance in the UI, so a non-security failure is never hidden.
+    #[serde(default)]
+    pub blocked_by_security: bool,
+    /// #647 (Step 7): true ONLY when `kill_resource_group` itself finalized the kill,
+    /// i.e. it verified the tree dead, tore down the PTY/job, and flipped the session
+    /// tile to `Exited`. The FE keys success off THIS, not `!quarantined`: a
+    /// `Terminating` early-return (a concurrent kill still settling) reports
+    /// `quarantined == false` but is not a finalized success. `kill_group` (incl. the
+    /// watchdog path) never finalizes, so it always reports `false`; only the command
+    /// sets it `true`.
+    #[serde(default)]
+    pub finalized: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

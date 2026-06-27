@@ -427,6 +427,24 @@ export interface ResourceKillResult {
   killedPids?: number[];
   quarantined: boolean;
   message: string;
+  /**
+   * #647 D: true when the kill quarantined AND a failure carried the exact
+   * ACCESS_DENIED code (`win32 error 5`) — a security product is stripping
+   * PROCESS_TERMINATE. The per-PID detail stays in `message`; this only ADDS
+   * the AV-exclusion guidance in the UI, so a non-security failure is never
+   * hidden. Mirrors Rust `ResourceKillResult.blocked_by_security` (serde
+   * camelCase). `#[serde(default)]` backend-side, so always present on the wire.
+   */
+  blockedBySecurity: boolean;
+  /**
+   * #647 (Step 7): true ONLY when `kill_resource_group` verified the tree dead,
+   * tore down the PTY/job, and flipped the tile to Exited. Success keys off THIS,
+   * NOT `!quarantined`: a `Terminating` early-return (a concurrent kill still
+   * settling) reports `quarantined === false` but is NOT a finalized success, so
+   * treating it as one would close the modal over a still-Running zombie tile.
+   * Mirrors Rust `ResourceKillResult.finalized` (`#[serde(default)]`).
+   */
+  finalized: boolean;
 }
 
 export type UiAutomationAction =
