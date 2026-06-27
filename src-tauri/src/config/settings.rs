@@ -435,7 +435,7 @@ pub struct AppSettings {
     /// a newer published version is available. Default true.
     #[serde(default = "default_true")]
     pub npm_update_notifications_enabled: bool,
-    /// #640 Global master for auto self-clear-and-handoff. Absolute kill switch:
+    /// #640 Global master for auto self-handoff-and-clear. Absolute kill switch:
     /// false => off for every agent. When true, the class-aware default applies
     /// (ON for coordinator/Root, OFF for specialists), subject to per-agent
     /// overrides in `auto_self_clear_by_agent`.
