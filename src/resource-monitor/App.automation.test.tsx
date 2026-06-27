@@ -88,6 +88,15 @@ const quarantinedSnapshot = (): ResourceSnapshot => {
   return snapshot;
 };
 
+// #647 C: a group the backend is actively terminating (a kill in flight). Its row
+// shows the "Verifying..." indicator and its kill button is disabled.
+const terminatingSnapshot = (): ResourceSnapshot => {
+  const snapshot = activeSnapshot();
+  snapshot.overallState = "enforcing";
+  snapshot.groups[0].state = "terminating";
+  return snapshot;
+};
+
 // #566 - multiple groups spanning projects / workgroups / roles / states so the
 // filter dimensions visibly change the rendered row count.
 const multiGroupSnapshot = (): ResourceSnapshot => {
@@ -134,10 +143,11 @@ function setupResourceMonitor(fake: FakeTransport, snapshot: ResourceSnapshot): 
   fake.onInvoke("get_resource_snapshot", () => snapshot);
   fake.resolve("kill_resource_group", {
     sessionId: "session-1",
-    state: "terminating",
+    state: "terminated",
     quarantined: false,
-    message: "terminating",
+    message: "resource group terminated and verified",
     blockedBySecurity: false,
+    finalized: true,
   });
 }
 
@@ -503,10 +513,11 @@ describe("ResourceMonitorApp automation hooks", () => {
     fake.resolve("get_settings", baseSettings());
     fake.resolve("kill_resource_group", {
       sessionId: "session-1",
-      state: "terminating",
+      state: "terminated",
       quarantined: false,
-      message: "terminating",
+      message: "resource group terminated and verified",
       blockedBySecurity: false,
+      finalized: true,
     });
     // A controllable snapshot handler: returns rows normally, but once `hang` is
     // set the next call stays pending so the store's `loading` flag stays true.
@@ -581,9 +592,10 @@ describe("ResourceMonitorApp automation hooks", () => {
   });
 
   // #647 (test 6): a quarantined group is killable again (Force-kill), and a
-  // quarantined kill result keeps the confirm modal open showing the per-PID
-  // detail AND the English security guidance (the latter ADDS to, never replaces,
-  // the former).
+  // non-finalized quarantined result keeps the confirm modal open showing the
+  // per-PID detail AND the English security guidance (the latter ADDS to, never
+  // replaces, the former). The narrowed "Verifying..." indicator does NOT show on
+  // an idle quarantined row.
   it("exposes Force-kill on a quarantined group and surfaces the per-PID detail + security hint without auto-closing", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_settings", baseSettings());
@@ -594,6 +606,7 @@ describe("ResourceMonitorApp automation hooks", () => {
       quarantined: true,
       message: "resource group cleanup incomplete: pid 4242: win32 error 5",
       blockedBySecurity: true,
+      finalized: false,
     });
 
     const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
@@ -608,12 +621,13 @@ describe("ResourceMonitorApp automation hooks", () => {
         expect(killBtn!.textContent).toContain("Force-kill");
       });
 
-      // The row shows the live "Verifying..." indicator.
+      // Narrowing: an idle quarantined row (no kill in flight) does NOT show the
+      // "Verifying..." indicator.
       expect(
         rendered.root.querySelector(
           '[data-ac-testid="resourceMonitor.group.session-1.verifying"]'
         )
-      ).not.toBeNull();
+      ).toBeNull();
 
       // Open the confirm modal and fire the force-kill.
       click(
@@ -634,7 +648,8 @@ describe("ResourceMonitorApp automation hooks", () => {
         )!
       );
 
-      // The quarantined result surfaces the per-PID message AND the security hint.
+      // The non-finalized quarantined result surfaces the per-PID message AND the
+      // security hint, and the modal stays open (not auto-closed) for a Retry.
       await waitFor(() => {
         expect(
           rendered.root.querySelector(
@@ -653,7 +668,154 @@ describe("ResourceMonitorApp automation hooks", () => {
         ).toContain("security software");
       });
 
-      // The modal stays open (not auto-closed) so the user can read it / Retry.
+      expect(
+        rendered.root.querySelector('[data-ac-testid="resourceMonitor.killConfirm"]')
+      ).not.toBeNull();
+      expect(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.killConfirm.confirm"]'
+        )?.textContent
+      ).toContain("Retry");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #647 (Step 7): success keys off `finalized`. A finalized kill closes the modal
+  // (the tile flips to Exited via the backend session_created emit, E5).
+  it("closes the kill modal when the result is finalized (verified success)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.onInvoke("get_resource_snapshot", () => activeSnapshot());
+    fake.resolve("kill_resource_group", {
+      sessionId: "session-1",
+      state: "terminated",
+      quarantined: false,
+      message: "resource group terminated and verified",
+      blockedBySecurity: false,
+      finalized: true,
+    });
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      // Wait until THIS test's (running) snapshot has loaded — the store is a
+      // module singleton, so a prior test's snapshot can linger for a tick.
+      await waitFor(() => {
+        const killBtn = rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.group.session-1.kill"]'
+        ) as HTMLButtonElement | null;
+        expect(killBtn).not.toBeNull();
+        expect(killBtn!.disabled).toBe(false);
+        expect(killBtn!.textContent?.trim()).toBe("Kill");
+      });
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.group.session-1.kill"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.killConfirm.confirm"]'
+          )
+        ).not.toBeNull();
+      });
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.killConfirm.confirm"]'
+        )!
+      );
+
+      // Finalized => the modal closes as success.
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector('[data-ac-testid="resourceMonitor.killConfirm"]')
+        ).toBeNull();
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #647 C: a group the backend is actively terminating shows the "Verifying..."
+  // indicator and its kill button stays disabled (a kill is already in flight).
+  it("shows the Verifying indicator and disables Kill on a terminating group", async () => {
+    const fake = new FakeTransport();
+    setupResourceMonitor(fake, terminatingSnapshot());
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.group.session-1.verifying"]'
+          )
+        ).not.toBeNull();
+      });
+      const killBtn = rendered.root.querySelector(
+        '[data-ac-testid="resourceMonitor.group.session-1.kill"]'
+      ) as HTMLButtonElement | null;
+      expect(killBtn).not.toBeNull();
+      expect(killBtn!.disabled).toBe(true);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #647 (Step 7): a non-finalized `terminating` result (a concurrent kill still
+  // settling) must keep the modal open with a "Verifying..." banner and a Retry,
+  // NOT close as a false success — the zombie-tile race grinch found.
+  it("keeps the modal open with a Verifying banner when the result is terminating and not finalized", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.onInvoke("get_resource_snapshot", () => quarantinedSnapshot());
+    fake.resolve("kill_resource_group", {
+      sessionId: "session-1",
+      state: "terminating",
+      quarantined: false,
+      message: "resource group cleanup pending",
+      blockedBySecurity: false,
+      finalized: false,
+    });
+
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    try {
+      // Wait until THIS test's quarantined snapshot has loaded (enabled Force-kill),
+      // not a prior test's lingering snapshot (singleton store).
+      await waitFor(() => {
+        const killBtn = rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.group.session-1.kill"]'
+        ) as HTMLButtonElement | null;
+        expect(killBtn).not.toBeNull();
+        expect(killBtn!.disabled).toBe(false);
+        expect(killBtn!.textContent).toContain("Force-kill");
+      });
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.group.session-1.kill"]'
+        )!
+      );
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.killConfirm.confirm"]'
+          )
+        ).not.toBeNull();
+      });
+      click(
+        rendered.root.querySelector(
+          '[data-ac-testid="resourceMonitor.killConfirm.confirm"]'
+        )!
+      );
+
+      // NOT finalized => modal stays open with the Verifying banner + Retry.
+      await waitFor(() => {
+        expect(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.killConfirm.verifying"]'
+          )
+        ).not.toBeNull();
+      });
       expect(
         rendered.root.querySelector('[data-ac-testid="resourceMonitor.killConfirm"]')
       ).not.toBeNull();

@@ -43,13 +43,6 @@ const NON_KILLABLE_GROUP_STATES = new Set<ResourceGroupState>([
   "unknownOwnership",
 ]);
 
-// #647 C: states where the backend is still working the kill (now re-sampled
-// every snapshot), so the row shows a "Verifying..." indicator.
-const VERIFYING_GROUP_STATES = new Set<ResourceGroupState>([
-  "terminating",
-  "quarantined",
-]);
-
 // #647 D: English guidance shown (ADDED to, never replacing, the per-PID detail)
 // when a kill is blocked by a security product stripping PROCESS_TERMINATE.
 const SECURITY_BLOCK_HINT =
@@ -115,9 +108,6 @@ const canKillGroup = (group: ResourceAgentGroupSnapshot): boolean =>
 // kill, so it reads "Force-kill" rather than "Kill".
 const killActionLabel = (group: ResourceAgentGroupSnapshot): string =>
   group.state === "quarantined" ? "Force-kill" : "Kill";
-
-const isVerifying = (group: ResourceAgentGroupSnapshot): boolean =>
-  VERIFYING_GROUP_STATES.has(group.state);
 
 const groupSeverity = (group: ResourceAgentGroupSnapshot): string => {
   if (group.state === "quarantined" || group.state === "failedCleanup") {
@@ -359,12 +349,15 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     createSignal<ResourceAgentGroupSnapshot | null>(null);
   const [killError, setKillError] = createSignal("");
   const [killInFlight, setKillInFlight] = createSignal(false);
-  // #647 D: the outcome of the last kill attempt that quarantined (verified-dead
-  // kills clear it). Keyed by sessionId so the per-PID detail + security hint
-  // attach to the right row and modal. Held in the FE because blockedBySecurity
-  // is a per-attempt result flag, not part of the persisted group snapshot.
+  // #647: the outcome of the last kill attempt that did NOT finalize (a verified
+  // success clears it). Carries `state` to distinguish a blocked `quarantined`
+  // result (show per-PID + security hint) from an unsettled `terminating` one
+  // (a concurrent kill is still settling — show "Verifying...", offer Retry).
+  // Keyed by sessionId so the detail attaches to the right row/modal. Held in the
+  // FE because blockedBySecurity is a per-attempt flag, not on the group snapshot.
   const [killResult, setKillResult] = createSignal<{
     sessionId: string;
+    state: ResourceGroupState;
     message: string;
     blockedBySecurity: boolean;
   } | null>(null);
@@ -379,6 +372,14 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     setKillTarget(null);
     setKillError("");
   };
+
+  // #647 C (Step-7 narrowing): show "Verifying..." only where a kill is genuinely
+  // in flight — a group the backend is actively terminating, or the group whose
+  // Force-kill/Retry we are awaiting right now. A group merely sitting in
+  // `quarantined` with no attempt running is NOT verifying (it needs Force-kill).
+  const isVerifying = (group: ResourceAgentGroupSnapshot): boolean =>
+    group.state === "terminating" ||
+    (killInFlight() && killTarget()?.sessionId === group.sessionId);
 
   // #587 — pop the embedded RM out into its own OS window, then reveal the
   // terminal in the pane (preserves the embedded-XOR-detached invariant).
@@ -504,21 +505,25 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
         sessionId: target.sessionId,
         reason: "user",
       });
-      if (result.quarantined) {
-        // #647 A: NOT verified dead — the agent may still be alive. Keep the
-        // modal open so the user can read the per-PID detail (+ AV-exclusion
-        // hint when blocked) and Retry; the durable job is preserved backend-side.
+      if (result.finalized) {
+        // #647 (Step 7): verified dead AND finalized by the backend — it tore the
+        // tree down and emitted session_created carrying the Exited SessionInfo
+        // (the sidebar tile flips via the addSession upsert, E5). Close + refresh.
+        // NB: success keys off `finalized`, NOT `!quarantined` — a `terminating`
+        // early-return reports `quarantined === false` yet is not a real success.
+        setKillResult(null);
+        setKillTarget(null);
+      } else {
+        // NOT finalized — keep the modal open. The agent may still be alive
+        // (`quarantined`) or a concurrent kill is still settling (`terminating`);
+        // the durable job is preserved backend-side for a Force/Retry. `state`
+        // drives whether we show the per-PID detail (+ hint) or "Verifying...".
         setKillResult({
           sessionId: result.sessionId,
+          state: result.state,
           message: result.message,
           blockedBySecurity: result.blockedBySecurity,
         });
-      } else {
-        // #647 A: verified dead — the backend emitted session_created carrying
-        // the Exited SessionInfo (the sidebar tile flips via the addSession
-        // upsert, E5). Close the modal and refresh the snapshot.
-        setKillResult(null);
-        setKillTarget(null);
       }
       await resourceMonitorStore.refresh();
     } catch (err) {
@@ -1103,30 +1108,44 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                 Session {target.sessionId} and its entire process tree will be
                 force-terminated via its Job Object.
               </p>
-              {/* #647 D: a quarantined (not-verified-dead) result keeps the modal
-                  open and shows the per-PID detail; the AV-exclusion hint is
-                  PREPENDED above it when the kill was blocked by security. */}
+              {/* #647 (Step 7): a non-finalized result keeps the modal open. A
+                  `terminating` result means a concurrent kill is still settling
+                  (show "Verifying...", offer Retry); otherwise it is blocked
+                  (`quarantined`) — show the per-PID detail, with the AV-exclusion
+                  hint PREPENDED above it (never replacing it) when blocked by a
+                  security product. */}
               <Show when={killResult()} keyed>
-                {(res) => (
-                  <div
-                    class="rm-banner rm-banner-error"
-                    data-ac-testid="resourceMonitor.killConfirm.quarantined"
-                    data-ac-role="status"
-                  >
-                    <Show when={res.blockedBySecurity}>
-                      <div
-                        class="rm-security-hint"
-                        data-ac-testid="resourceMonitor.killConfirm.securityHint"
-                        data-ac-role="status"
-                      >
-                        {SECURITY_BLOCK_HINT}
-                      </div>
-                    </Show>
-                    <div data-ac-testid="resourceMonitor.killConfirm.message">
-                      {res.message}
+                {(res) =>
+                  res.state === "terminating" ? (
+                    <div
+                      class="rm-banner rm-banner-muted"
+                      data-ac-testid="resourceMonitor.killConfirm.verifying"
+                      data-ac-role="status"
+                    >
+                      Verifying... a concurrent kill is still settling. Click Retry
+                      to confirm.
                     </div>
-                  </div>
-                )}
+                  ) : (
+                    <div
+                      class="rm-banner rm-banner-error"
+                      data-ac-testid="resourceMonitor.killConfirm.quarantined"
+                      data-ac-role="status"
+                    >
+                      <Show when={res.blockedBySecurity}>
+                        <div
+                          class="rm-security-hint"
+                          data-ac-testid="resourceMonitor.killConfirm.securityHint"
+                          data-ac-role="status"
+                        >
+                          {SECURITY_BLOCK_HINT}
+                        </div>
+                      </Show>
+                      <div data-ac-testid="resourceMonitor.killConfirm.message">
+                        {res.message}
+                      </div>
+                    </div>
+                  )
+                }
               </Show>
               <Show when={killError()}>
                 <div class="rm-banner rm-banner-error">{killError()}</div>

@@ -40,6 +40,7 @@ describe("resource monitor IPC", () => {
       quarantined: true,
       message: "queued",
       blockedBySecurity: false,
+      finalized: false,
     });
 
     await ResourceMonitorAPI.killGroup({
@@ -69,6 +70,7 @@ describe("resource monitor IPC", () => {
       quarantined: true,
       message: "resource group cleanup incomplete: pid 4242: win32 error 5",
       blockedBySecurity: true,
+      finalized: false,
     });
 
     const result = await ResourceMonitorAPI.killGroup({
@@ -79,5 +81,29 @@ describe("resource monitor IPC", () => {
     expect(result.quarantined).toBe(true);
     expect(result.blockedBySecurity).toBe(true);
     expect(result.message).toContain("win32 error 5");
+  });
+
+  // #647 (Step 7): success keys off `finalized`, not `!quarantined`. The wire
+  // result carries the flag so the FE can distinguish a verified teardown from a
+  // `terminating` early-return that also reports `quarantined === false`.
+  it("round-trips the finalized flag from the kill result", async () => {
+    const fake = useFakeTransport();
+    fake.resolve("kill_resource_group", {
+      sessionId: "session-1",
+      state: "terminated",
+      killedProcesses: [],
+      quarantined: false,
+      message: "resource group terminated and verified",
+      blockedBySecurity: false,
+      finalized: true,
+    });
+
+    const result = await ResourceMonitorAPI.killGroup({
+      sessionId: "session-1",
+      reason: "user",
+    });
+
+    expect(result.finalized).toBe(true);
+    expect(result.quarantined).toBe(false);
   });
 });
