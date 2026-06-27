@@ -146,9 +146,15 @@ AgentsCommander does not:
 - Discover standalone local `skills/` folders without canonical Agent Matrix
   state.
 
-## Root Agent Governance Skill
+## Root Agent Default Skills
 
-Fresh Root Agent directories include `skills/role-skill-boundary-audit/SKILL.md`.
-This is a review lens for deciding whether instructions belong in a role, skill,
-global policy, workflow docs, memory, or an agent boundary change. It is not a
-separate governance agent and it does not automatically rewrite roles or skills.
+Fresh Root Agent directories include two seeded skills:
+
+- `skills/role-skill-boundary-audit/SKILL.md`: a review lens for deciding whether
+  instructions belong in a role, skill, global policy, workflow docs, memory, or
+  an agent boundary change. It is not a separate governance agent and it does not
+  automatically rewrite roles or skills.
+- `skills/agency-agents-roles/SKILL.md`: how the Root Agent offers tested Agency
+  Agents role templates before creating any specialist agent. It identifies
+  Agency Agents from real local data (its source repo and the templates the
+  `agency-templates` CLI caches) rather than an invented description.
