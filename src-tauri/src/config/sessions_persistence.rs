@@ -809,10 +809,12 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
     deduplicate(all)
 }
 
-/// Strip auto-injected provider args from saved shell arguments.
-/// Removes Claude's `--continue` / `--append-system-prompt-file <path>` and Codex's
-/// `resume --last`, which are auto-injected at session creation time (see commands/session.rs).
-/// These must not be baked into the saved "recipe" — otherwise they self-perpetuate
+/// Strip AC-managed provider args from saved shell arguments.
+/// Current launch-time injections are Claude's `--continue`, Codex's
+/// `resume --last`, and Gemini's `--resume latest`. Also strips Claude's old
+/// `--append-system-prompt-file <path>` argument as legacy cleanup for saved
+/// recipes created by older builds.
+/// These must not be baked into the saved "recipe" because they self-perpetuate
 /// across app restarts (or session restarts) even when the conditions change.
 ///
 /// Handles two injection modes:
@@ -851,10 +853,10 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     }
 
     fn strip_claude_tokens(tokens: &mut Vec<String>, start: usize) {
-        // #260 — Claude's resume flag from the CodingAgentProfile. resume_tokens
+        // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
         // is a 1-element const for Claude, so [0] is provably in bounds. The
-        // `--append-system-prompt-file` flag below is the context-file flag,
-        // NOT a resume token — intentionally kept as a literal.
+        // `--append-system-prompt-file` flag below is legacy context-file
+        // cleanup, NOT a resume token, so it stays as a literal.
         let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
         let mut idx = start;
         while idx < tokens.len() {
@@ -1654,7 +1656,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_auto_injected_args_removes_direct_claude_context_file() {
+    fn strip_auto_injected_args_removes_legacy_direct_claude_context_file() {
         let stripped = strip_auto_injected_args(
             "claude",
             &[
@@ -1667,7 +1669,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_auto_injected_args_removes_embedded_claude_context_file_with_spaces() {
+    fn strip_auto_injected_args_removes_legacy_embedded_claude_context_file_with_spaces() {
         let stripped = strip_auto_injected_args(
             "cmd.exe",
             &[
