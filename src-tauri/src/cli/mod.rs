@@ -8,6 +8,7 @@ pub mod list_sessions;
 pub mod loop_cmd;
 pub mod new_project;
 pub mod open_project;
+pub mod raise_hand;
 pub mod role_experiment;
 pub mod self_clear;
 pub mod self_switch;
@@ -127,6 +128,9 @@ pub enum Commands {
     /// Hand off via SELF-HANDOFF.md, switch or hard-reset the caller, then resume from it
     #[command(name = "self-handoff-and-switch")]
     SelfSwitch(self_switch::SelfSwitchArgs),
+    /// Show this session's raised-hand communication indicator in the Sidebar coordinator row
+    #[command(name = "raise-hand")]
+    RaiseHand(raise_hand::RaiseHandArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
     ListPeers(list_peers::ListPeersArgs),
     /// List reachable peers (lean JSON — name, working, sessionStatus, reachable, teams)
@@ -297,6 +301,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::Send(args) => send::execute(args),
         Commands::SelfClear(args) => self_clear::execute(args),
         Commands::SelfSwitch(args) => self_switch::execute(args),
+        Commands::RaiseHand(args) => raise_hand::execute(args),
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),

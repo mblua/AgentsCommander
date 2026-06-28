@@ -4,6 +4,7 @@ import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
   Session,
+  SessionCommunication,
   SessionRepo,
   PtyOutputEvent,
   PtyScreenSnapshot,
@@ -362,6 +363,15 @@ export function onSessionRenamed(
 ): Promise<UnlistenFn> {
   return transport.listen<{ id: string; name: string }>(
     "session_renamed",
+    callback
+  );
+}
+
+export function onSessionCommunicationChanged(
+  callback: (data: { sessionId: string; communication: SessionCommunication | null }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ sessionId: string; communication: SessionCommunication | null }>(
+    "session_communication_changed",
     callback
   );
 }

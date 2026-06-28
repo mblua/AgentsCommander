@@ -36,3 +36,74 @@ describe("sessionsStore.setProfileOutdated (#592)", () => {
     expect(sessionsStore.sessions.find((s) => s.id === "s2")?.profileOutdated).toBe(true);
   });
 });
+
+describe("sessionsStore.setCommunication (#676)", () => {
+  beforeEach(() => {
+    sessionsStore.setSessions([]);
+  });
+  afterEach(() => {
+    sessionsStore.setSessions([]);
+  });
+
+  it("sets and clears communication on the targeted session", () => {
+    sessionsStore.setSessions([
+      session({ id: "s1", communication: null }),
+      session({ id: "s2", communication: null }),
+    ]);
+
+    sessionsStore.setCommunication("s2", {
+      kind: "raiseHand",
+      visible: true,
+      updatedAt: "2026-06-28T17:00:00.000Z",
+    });
+
+    expect(sessionsStore.sessions.find((s) => s.id === "s1")?.communication).toBeNull();
+    expect(sessionsStore.sessions.find((s) => s.id === "s2")?.communication).toEqual({
+      kind: "raiseHand",
+      visible: true,
+      updatedAt: "2026-06-28T17:00:00.000Z",
+    });
+
+    sessionsStore.setCommunication("s2", null);
+
+    expect(sessionsStore.sessions.find((s) => s.id === "s2")?.communication).toBeNull();
+  });
+
+  it("preserves frontend-only fields while patching communication", () => {
+    sessionsStore.setSessions([
+      session({
+        id: "s1",
+        communication: null,
+        pendingReview: true,
+        profileOutdated: true,
+      }),
+    ]);
+
+    sessionsStore.setCommunication("s1", {
+      kind: "raiseHand",
+      visible: true,
+      updatedAt: "2026-06-28T17:00:00.000Z",
+    });
+
+    const updated = sessionsStore.sessions.find((s) => s.id === "s1");
+    expect(updated?.communication?.kind).toBe("raiseHand");
+    expect(updated?.pendingReview).toBe(true);
+    expect(updated?.profileOutdated).toBe(true);
+  });
+
+  it("ignores an unknown session id", () => {
+    sessionsStore.setSessions([
+      session({ id: "s1", communication: null }),
+    ]);
+
+    sessionsStore.setCommunication("missing", {
+      kind: "raiseHand",
+      visible: true,
+      updatedAt: "2026-06-28T17:00:00.000Z",
+    });
+
+    expect(sessionsStore.sessions).toEqual([
+      expect.objectContaining({ id: "s1", communication: null }),
+    ]);
+  });
+});

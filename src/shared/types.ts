@@ -4,6 +4,14 @@ export interface SessionRepo {
   branch: string | null;
 }
 
+export type SessionCommunicationKind = "raiseHand";
+
+export interface SessionCommunication {
+  kind: SessionCommunicationKind;
+  visible: boolean;
+  updatedAt: string;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -14,6 +22,7 @@ export interface Session {
   workingDirectory: string;
   status: SessionStatus;
   waitingForInput: boolean;
+  communication?: SessionCommunication | null;
   pendingReview: boolean;
   lastPrompt: string | null;
   agentId: string | null;

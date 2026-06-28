@@ -42,6 +42,20 @@ pub struct SessionRepo {
     pub branch: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionCommunicationKind {
+    RaiseHand,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCommunication {
+    pub kind: SessionCommunicationKind,
+    pub visible: bool,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
@@ -62,6 +76,8 @@ pub struct Session {
     pub working_directory: String,
     pub status: SessionStatus,
     pub waiting_for_input: bool,
+    #[serde(skip)]
+    pub communication: Option<SessionCommunication>,
     /// Frontend-only: true when agent finished but user hasn't focused yet
     #[serde(default)]
     pub pending_review: bool,
@@ -202,6 +218,8 @@ pub struct SessionInfo {
     pub working_directory: String,
     pub status: SessionStatus,
     pub waiting_for_input: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub communication: Option<SessionCommunication>,
     #[serde(default)]
     pub pending_review: bool,
     pub last_prompt: Option<String>,
@@ -270,6 +288,7 @@ impl From<&Session> for SessionInfo {
             working_directory: s.working_directory.clone(),
             status: s.status.clone(),
             waiting_for_input: s.waiting_for_input,
+            communication: s.communication.clone(),
             pending_review: false,
             last_prompt: s.last_prompt.clone(),
             agent_id: s.agent_id.clone(),
@@ -310,6 +329,7 @@ mod tests {
             working_directory: "C:\\tmp".to_string(),
             status: SessionStatus::Running,
             waiting_for_input: false,
+            communication: None,
             pending_review: false,
             last_prompt: None,
             agent_id: None,
@@ -361,6 +381,18 @@ mod tests {
         let s = sample_session(Some(Vec::new()));
         let info = SessionInfo::from(&s);
         assert_eq!(info.effective_shell_args, Some(Vec::new()));
+    }
+
+    #[test]
+    fn session_info_from_session_copies_communication() {
+        let mut s = sample_session(None);
+        s.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: "2026-06-28T17:00:00+00:00".to_string(),
+        });
+        let info = SessionInfo::from(&s);
+        assert_eq!(info.communication, s.communication);
     }
 
     #[test]
