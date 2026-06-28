@@ -11,6 +11,7 @@ import {
 } from "../../shared/ipc";
 import { isBrowser, isTauri } from "../../shared/platform";
 import { terminalStore } from "../stores/terminal";
+import type { PtyOutputEvent } from "../../shared/types";
 import type { UnlistenFn } from "../../shared/transport";
 import { updatePromptCapture } from "./prompt-input-capture";
 import { createTerminalOptions } from "./terminal-options";
@@ -26,6 +27,8 @@ interface SessionTerminal {
   snapshotResizeSuppressed: boolean;
   hasRenderedOutput: boolean;
   replayStatus: HTMLDivElement;
+  pendingSnapshotEvents: PtyOutputEvent[];
+  lastAppliedSequence: number | null;
 }
 
 interface TerminalViewProps {
@@ -122,28 +125,65 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.terminal.write(data);
   };
 
-  const writeLiveTerminalBytes = (entry: SessionTerminal, data: Uint8Array) => {
-    if (entry.snapshotReplayPending) {
-      // The backend parser may already include these live bytes in the
-      // in-flight snapshot. Let live output win and ignore that replay.
-      entry.snapshotReplayPending = false;
+  const eventSequence = (event: PtyOutputEvent): number | null =>
+    typeof event.sequence === "number" ? event.sequence : null;
+
+  const shouldDropAlreadyAppliedEvent = (
+    entry: SessionTerminal,
+    sequence: number | null
+  ) =>
+    sequence !== null &&
+    entry.lastAppliedSequence !== null &&
+    sequence <= entry.lastAppliedSequence;
+
+  const markAppliedSequence = (entry: SessionTerminal, sequence: number | null) => {
+    if (sequence === null) {
+      return;
     }
 
-    writeTerminalBytes(entry, data);
+    entry.lastAppliedSequence =
+      entry.lastAppliedSequence === null
+        ? sequence
+        : Math.max(entry.lastAppliedSequence, sequence);
   };
 
-  const claimPendingSnapshotReplay = (sessionId: string, entry: SessionTerminal) => {
-    if (terminals.get(sessionId) !== entry || !entry.snapshotReplayPending) {
-      return false;
+  const writeLivePtyOutput = (entry: SessionTerminal, event: PtyOutputEvent) => {
+    const sequence = eventSequence(event);
+
+    if (entry.snapshotReplayPending) {
+      entry.pendingSnapshotEvents.push(event);
+      return;
     }
 
-    if (entry.hasRenderedOutput) {
-      entry.snapshotReplayPending = false;
-      return false;
+    if (shouldDropAlreadyAppliedEvent(entry, sequence)) {
+      return;
+    }
+
+    writeTerminalBytes(entry, new Uint8Array(event.data));
+    markAppliedSequence(entry, sequence);
+  };
+
+  const finishPendingSnapshotReplay = (
+    sessionId: string,
+    entry: SessionTerminal
+  ): PtyOutputEvent[] | null => {
+    if (terminals.get(sessionId) !== entry || !entry.snapshotReplayPending) {
+      return null;
     }
 
     entry.snapshotReplayPending = false;
-    return true;
+    const pendingEvents = entry.pendingSnapshotEvents;
+    entry.pendingSnapshotEvents = [];
+    return pendingEvents;
+  };
+
+  const flushPendingEvents = (
+    entry: SessionTerminal,
+    events: PtyOutputEvent[]
+  ) => {
+    for (const event of events) {
+      writeLivePtyOutput(entry, event);
+    }
   };
 
   const resizeTerminalForSnapshot = (
@@ -166,14 +206,17 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     entry.snapshotReplayRequested = true;
     entry.snapshotReplayPending = true;
+    entry.pendingSnapshotEvents = [];
 
     void PtyAPI.getScreenSnapshot(sessionId)
       .then((snapshot) => {
-        if (!claimPendingSnapshotReplay(sessionId, entry)) {
+        const pendingEvents = finishPendingSnapshotReplay(sessionId, entry);
+        if (!pendingEvents) {
           return;
         }
 
         if (!snapshot || snapshot.data.length === 0) {
+          flushPendingEvents(entry, pendingEvents);
           if (!entry.hasRenderedOutput) {
             setReplayStatus(
               entry,
@@ -192,17 +235,21 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         }
 
         writeTerminalBytes(entry, new Uint8Array(snapshot.data));
+        markAppliedSequence(entry, snapshot.sequence);
+        flushPendingEvents(entry, pendingEvents);
 
         if (sessionId === activeSessionId) {
           scheduleViewportSync(sessionId);
         }
       })
       .catch((err) => {
-        if (!claimPendingSnapshotReplay(sessionId, entry)) {
+        const pendingEvents = finishPendingSnapshotReplay(sessionId, entry);
+        if (!pendingEvents) {
           return;
         }
 
         console.warn("[terminal] snapshot replay failed:", err);
+        flushPendingEvents(entry, pendingEvents);
 
         if (!entry.hasRenderedOutput) {
           setReplayStatus(
@@ -260,6 +307,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       snapshotResizeSuppressed: false,
       hasRenderedOutput: false,
       replayStatus,
+      pendingSnapshotEvents: [],
+      lastAppliedSequence: null,
     };
 
     // Per-terminal keyboard shortcuts. Match keys via event.key (layout-aware,
@@ -394,7 +443,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
     resizeObserver.observe(hostRef);
 
-    unlistenPtyOutput = await onPtyOutput(({ sessionId, data }) => {
+    unlistenPtyOutput = await onPtyOutput((event) => {
+      const { sessionId } = event;
       const entry =
         terminals.get(sessionId) ?? (sessionId === activeSessionId
           ? createSessionTerminal(sessionId)
@@ -404,7 +454,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return;
       }
 
-      writeLiveTerminalBytes(entry, new Uint8Array(data));
+      writeLivePtyOutput(entry, event);
     });
 
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {

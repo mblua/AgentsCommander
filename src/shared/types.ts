@@ -89,6 +89,7 @@ export interface TerminalConfig {
 export interface PtyOutputEvent {
   sessionId: string;
   data: number[];
+  sequence?: number;
 }
 
 export interface PtyScreenSnapshot {
@@ -96,6 +97,7 @@ export interface PtyScreenSnapshot {
   data: number[];
   rows: number | null;
   cols: number | null;
+  sequence: number;
 }
 
 /**

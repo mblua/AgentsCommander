@@ -315,6 +315,7 @@ describe("TerminalApp workflow", () => {
         data: [83, 78, 65, 80],
         rows: 30,
         cols: 120,
+        sequence: 0,
       });
 
       const terminal = xterm.instances[0];
@@ -332,7 +333,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("renders live output immediately when it beats the first native snapshot", async () => {
+  it("replays buffered live output when the first native snapshot excludes it", async () => {
     const fake = new FakeTransport();
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
@@ -354,27 +355,29 @@ describe("TerminalApp workflow", () => {
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
         data: liveOutput,
+        sequence: 1,
       });
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
+      await flushPromises();
+      expect(terminal.writes).toHaveLength(0);
 
       snapshot.resolve({
         sessionId: "session-1",
         data: [83, 78, 65, 80],
         rows: null,
         cols: null,
+        sequence: 0,
       });
 
-      await flushPromises();
-      expect(terminal.writes).toHaveLength(1);
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
+      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([83, 78, 65, 80]);
+      expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual(liveOutput);
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("ignores a delayed native snapshot that already includes live output", async () => {
+  it("drops buffered live output when the first native snapshot already includes it", async () => {
     const fake = new FakeTransport();
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
@@ -396,21 +399,114 @@ describe("TerminalApp workflow", () => {
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
         data: liveOutput,
+        sequence: 1,
       });
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
+      await flushPromises();
+      expect(terminal.writes).toHaveLength(0);
 
       snapshot.resolve({
         sessionId: "session-1",
         data: [83, 78, 65, 80, 76, 73, 86, 69],
         rows: null,
         cols: null,
+        sequence: 1,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([
+        83, 78, 65, 80, 76, 73, 86, 69,
+      ]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("drops delayed live output already covered by the first native snapshot", async () => {
+    const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
+    setupTerminalTransport(fake, [
+      session({
+        id: "session-1",
+        name: "wg-1-dev-team/architect",
+        workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
+      }),
+    ]);
+    fake.onInvoke("get_screen_snapshot", () => snapshot.promise);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
+
+      const terminal = xterm.instances[0];
+      snapshot.resolve({
+        sessionId: "session-1",
+        data: [83, 78, 65, 80, 76, 73, 86, 69],
+        rows: null,
+        cols: null,
+        sequence: 1,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+
+      fake.emitFromBackend("pty_output", {
+        sessionId: "session-1",
+        data: [76, 73, 86, 69],
+        sequence: 1,
       });
 
       await flushPromises();
       expect(terminal.writes).toHaveLength(1);
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
+
+      fake.emitFromBackend("pty_output", {
+        sessionId: "session-1",
+        data: [78, 69, 87],
+        sequence: 2,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+      expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual([78, 69, 87]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("writes unsequenced live output after the first native snapshot", async () => {
+    const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
+    setupTerminalTransport(fake, [
+      session({
+        id: "session-1",
+        name: "wg-1-dev-team/architect",
+        workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
+      }),
+    ]);
+    fake.onInvoke("get_screen_snapshot", () => snapshot.promise);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
+
+      const terminal = xterm.instances[0];
+      snapshot.resolve({
+        sessionId: "session-1",
+        data: [83, 78, 65, 80],
+        rows: null,
+        cols: null,
+        sequence: 1,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+
+      fake.emitFromBackend("pty_output", {
+        sessionId: "session-1",
+        data: [79, 75],
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+      expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual([79, 75]);
     } finally {
       rendered.cleanup();
     }
@@ -436,6 +532,7 @@ describe("TerminalApp workflow", () => {
       data: sessionId === "session-1" ? [49] : [50],
       rows: null,
       cols: null,
+      sequence: 0,
     }));
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -484,14 +581,15 @@ describe("TerminalApp workflow", () => {
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
         data: liveOutput,
+        sequence: 1,
       });
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
+      await flushPromises();
+      expect(terminal.writes).toHaveLength(0);
 
       snapshot.resolve(null);
 
-      await flushPromises();
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
       expect(terminal.writes).toHaveLength(1);
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
@@ -526,14 +624,15 @@ describe("TerminalApp workflow", () => {
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
         data: liveOutput,
+        sequence: 1,
       });
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
+      await flushPromises();
+      expect(terminal.writes).toHaveLength(0);
 
       snapshot.reject("missing parser");
 
-      await flushPromises();
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
       expect(terminal.writes).toHaveLength(1);
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
@@ -572,6 +671,7 @@ describe("TerminalApp workflow", () => {
       fake.emitFromBackend("pty_output", {
         sessionId: "session-2",
         data: [68, 82, 79, 80],
+        sequence: 1,
       });
 
       expect(xterm.instances).toHaveLength(1);
@@ -588,6 +688,7 @@ describe("TerminalApp workflow", () => {
               data: [82, 69, 80, 76, 65, 89],
               rows: null,
               cols: null,
+              sequence: 1,
             }
           : null
       );
