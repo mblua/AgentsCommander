@@ -1812,6 +1812,7 @@ pub fn run(
             commands::task::task_clean_at,
                         commands::pty::pty_write,
             commands::pty::pty_resize,
+            commands::pty::get_screen_snapshot,
             commands::config::get_settings,
             commands::config::update_settings,
             commands::resource_monitor::get_resource_snapshot,

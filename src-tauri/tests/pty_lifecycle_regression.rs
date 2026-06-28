@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use agentscommander_lib::commands::pty::{get_screen_snapshot, PtyScreenSnapshotPayload};
 use agentscommander_lib::commands::session::{
     create_session_inner, destroy_session_inner, restart_session_inner,
 };
@@ -280,8 +281,43 @@ fn make_test_app(
 }
 
 #[test]
+fn pty_screen_snapshot_payload_serializes_camel_case_bytes_and_optional_size() {
+    let value = serde_json::to_value(PtyScreenSnapshotPayload {
+        session_id: "session-1".to_string(),
+        data: vec![27, 91, 72],
+        rows: Some(30),
+        cols: Some(120),
+    })
+    .expect("serialize snapshot payload");
+
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "sessionId": "session-1",
+            "data": [27, 91, 72],
+            "rows": 30,
+            "cols": 120,
+        })
+    );
+    assert!(value.get("session_id").is_none());
+}
+
+#[test]
 fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup() {
     let mut fixture = make_lifecycle_fixture();
+    assert!(get_screen_snapshot(
+        fixture.app.state::<Arc<Mutex<PtyManager>>>(),
+        "not-a-uuid".to_string(),
+    )
+    .is_err());
+
+    let missing = get_screen_snapshot(
+        fixture.app.state::<Arc<Mutex<PtyManager>>>(),
+        Uuid::nil().to_string(),
+    )
+    .expect("missing session lookup should not fail");
+    assert!(missing.is_none());
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -308,6 +344,23 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
                     fixture.dump("Phase A", &[id_a], std::slice::from_ref(&pid_a))
                 )
             });
+        {
+            let snapshot = get_screen_snapshot(
+                fixture.app.state::<Arc<Mutex<PtyManager>>>(),
+                session_a.id.clone(),
+            )
+            .expect("snapshot command succeeds")
+            .expect("screen snapshot exists after PTY output");
+            let snapshot_text = String::from_utf8_lossy(&snapshot.data);
+            assert_eq!(snapshot.session_id, session_a.id);
+            assert!(snapshot.rows.is_some(), "Phase A snapshot rows missing");
+            assert!(snapshot.cols.is_some(), "Phase A snapshot cols missing");
+            assert!(
+                snapshot_text.contains("AC_READY"),
+                "Phase A snapshot missing AC_READY; snapshot={snapshot_text:?}\n{}",
+                fixture.dump("Phase A snapshot", &[id_a], std::slice::from_ref(&pid_a))
+            );
+        }
         let pid_a_value = wait_for_pid_file(&pid_a, PID_TIMEOUT)
             .await
             .unwrap_or_else(|e| {
@@ -492,6 +545,27 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
                     )
                 )
             });
+        {
+            let snapshot = get_screen_snapshot(
+                fixture.app.state::<Arc<Mutex<PtyManager>>>(),
+                restarted.id.clone(),
+            )
+            .expect("restarted snapshot command succeeds")
+            .expect("restarted screen snapshot exists after PTY output");
+            let snapshot_text = String::from_utf8_lossy(&snapshot.data);
+            assert_eq!(snapshot.session_id, restarted.id);
+            assert!(snapshot.rows.is_some(), "Phase F snapshot rows missing");
+            assert!(snapshot.cols.is_some(), "Phase F snapshot cols missing");
+            assert!(
+                snapshot_text.contains("AC_READY"),
+                "Phase F snapshot missing AC_READY; snapshot={snapshot_text:?}\n{}",
+                fixture.dump(
+                    "Phase F snapshot",
+                    &[restart_new_id],
+                    std::slice::from_ref(&pid_restart)
+                )
+            );
+        }
         assert_no_pty(&fixture.pty_mgr, restart_old_id, "Phase F", &fixture);
         assert_has_pty(&fixture.pty_mgr, restart_new_id, "Phase F", &fixture);
         assert_active_session(&fixture.session_mgr, restart_new_id).await;
