@@ -14,6 +14,7 @@ import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
   composeEffectiveCommand,
+  effectiveEnvProjection,
   expandAcPlaceholdersPreview,
   isAcAgentPath,
   isWgReplicaPath,
@@ -267,7 +268,7 @@ const AgentPickerModal: Component<{
         composeEffectiveCommand(agent.command, profileCellCommandText(cell)),
         acRoot(),
       );
-      const envEntries = profileEnvEntries(cell);
+      const envEntries = effectiveEnvProjection(agent.envs, cell.env, acRoot());
       const status = command.trim().length === 0
         ? "missing"
         : preview.fallbackApplied
@@ -938,7 +939,7 @@ const AgentPickerModal: Component<{
                         <span class="agent-comparison-env-count">{envCountText(row.envEntries.length)}</span>
                         <Show
                           when={row.envEntries.length > 0}
-                          fallback={<span class="agent-comparison-env-muted">No profile env declared</span>}
+                          fallback={<span class="agent-comparison-env-muted">No launch env declared</span>}
                         >
                           <span class="agent-comparison-env-preview">
                             {row.envEntries[0].key}={row.envEntries[0].value}
@@ -950,22 +951,18 @@ const AgentPickerModal: Component<{
                 </For>
               </div>
 
-              <Show when={selectedAgent()}>
+              <Show when={effectivePreview().fallbackApplied || hasBackendWarnings()}>
                 <div
                   class="agent-profile-warning-strip agent-projection-status"
-                  classList={{ visible: effectivePreview().fallbackApplied || hasBackendWarnings() }}
+                  classList={{ visible: true }}
                   data-component="Coding Agent profile fallback explanation"
-                  {...automationAttrs(
-                    "agentPicker.fallback",
-                    "status",
-                    effectivePreview().fallbackApplied || hasBackendWarnings() ? "warning" : "neutral"
-                  )}
+                  {...automationAttrs("agentPicker.fallback", "status", "warning")}
                 >
-                  <span>
-                    {effectivePreview().fallbackApplied
-                      ? `${profileLabel(effectivePreview().requestedProfile)} is not configured for ${selectedAgent()?.label ?? "the selected coding agent"}; launch resolves through ${profileLabel(effectivePreview().effectiveProfile)}. A remains the final fallback.`
-                      : `${selectedAgent()?.label ?? "Selected coding agent"} launches with configured ${profileLabel(selectedProfile())} parameters.`}
-                  </span>
+                  <Show when={effectivePreview().fallbackApplied}>
+                    <span>
+                      {`${profileLabel(effectivePreview().requestedProfile)} is not configured for ${selectedAgent()?.label ?? "the selected coding agent"}; launch resolves through ${profileLabel(effectivePreview().effectiveProfile)}. A remains the final fallback.`}
+                    </span>
+                  </Show>
                   <Show when={hasBackendWarnings()}>
                     <span>Profile warning: {backendWarnings().join(" ")}</span>
                   </Show>

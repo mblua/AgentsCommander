@@ -451,10 +451,13 @@ describe("AgentPickerModal", () => {
     expect(text("agentPicker.profile.B.env")).toContain("Declared env");
     expect(text("agentPicker.profile.B.env")).toContain("CODEX_PROFILE");
     expect(text("agentPicker.profile.B.env")).toContain("fast");
+    expect(text("agentPicker.comparison.row.codex")).toContain("2 env vars");
+    expect(text("agentPicker.comparison.row.codex")).toContain("CODEX_PROFILE=fast");
     expect(target("agentPicker.comparison").querySelector("[data-ac-profile-letter]")).toBeNull();
     expect(text("agentPicker.comparison")).toContain("Same Profile In Other Agents");
     expect(text("agentPicker.comparison")).not.toContain("Effective Projection");
     expect(text("agentPicker.comparison")).not.toContain("Chosen pair");
+    expect(maybe("agentPicker.fallback")).toBeNull();
 
     dispose();
   });
@@ -858,6 +861,7 @@ describe("AgentPickerModal", () => {
     await settle();
 
     expect(text("agentPicker.fallback")).toContain("Profile warning: invalid persisted override ignored");
+    expect(text("agentPicker.fallback")).not.toContain("launches with configured");
     expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
 
     dispose();
