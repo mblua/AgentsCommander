@@ -3584,7 +3584,7 @@ html.light-theme .settings-hint-warning {
 
 .agent-comparison-agent-name,
 .agent-comparison-agent-sub,
-.agent-comparison-resolution,
+.agent-comparison-resolution {
   overflow-wrap: anywhere;
 }
 
