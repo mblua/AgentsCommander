@@ -478,6 +478,25 @@ html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
   inset: 0;
 }
 
+.terminal-replay-status {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-md);
+  color: var(--statusbar-fg);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.terminal-replay-status[hidden] {
+  display: none;
+}
+
 .terminal-automation-input {
   position: absolute;
   left: 0;

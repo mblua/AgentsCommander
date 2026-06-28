@@ -300,11 +300,31 @@ async fn handle_binary_message(state: &WsState, data: &[u8]) {
     let pty_data = &data[36..];
     // Write FIRST (the std Mutex guard is dropped at the end of this statement,
     // never held across the await below), then record the user message (#552).
-    let _ = state.pty_mgr.lock().unwrap().write(uuid, pty_data);
+    let write_result = state.pty_mgr.lock().unwrap().write(uuid, pty_data);
+    if !binary_pty_write_succeeded(write_result, uuid) {
+        return;
+    }
 
     // #552 web UI keystrokes (binary frame) are the real web input path and a
     // genuine user message: reset the badge clock + auto-close silence.
     crate::commands::pty::note_user_message_to_session(&state.app_handle, uuid).await;
+}
+
+fn binary_pty_write_succeeded(
+    result: Result<(), crate::errors::AppError>,
+    uuid: uuid::Uuid,
+) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(err) => {
+            log::warn!(
+                "[web-server] PTY binary write failed for session {}: {}",
+                uuid,
+                err
+            );
+            false
+        }
+    }
 }
 
 /// Resolve the dist/ directory for static file serving.
@@ -351,4 +371,23 @@ fn resolve_dist_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::errors::AppError;
+
+    #[test]
+    fn binary_pty_write_success_allows_user_message_note() {
+        assert!(binary_pty_write_succeeded(Ok(()), uuid::Uuid::new_v4()));
+    }
+
+    #[test]
+    fn binary_pty_write_failure_blocks_user_message_note() {
+        let uuid = uuid::Uuid::new_v4();
+        let result = Err(AppError::SessionNotFound(uuid.to_string()));
+
+        assert!(!binary_pty_write_succeeded(result, uuid));
+    }
 }
