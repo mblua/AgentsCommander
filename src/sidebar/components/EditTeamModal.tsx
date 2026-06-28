@@ -2,11 +2,11 @@ import { Component, createSignal, createMemo, For, Show, onMount, onCleanup } fr
 import { EntityAPI } from "../../shared/ipc";
 import { AC_WORKSPACE_DIR } from "../../shared/constants";
 import { projectStore } from "../stores/project";
-import type { AcTeam, TeamWizardAgentEntry, TeamWizardRepoEntry, TeamWizardStep } from "../../shared/types";
+import type { TeamWizardAgentEntry, TeamWizardRepoEntry, TeamWizardStep } from "../../shared/types";
 
 const EditTeamModal: Component<{
   projectPath: string;
-  team: AcTeam;
+  teamName: string;
   onClose: () => void;
 }> = (props) => {
   const [step, setStep] = createSignal<TeamWizardStep>(1);
@@ -69,7 +69,7 @@ const EditTeamModal: Component<{
       const paths = projectStore.projects.map((p) => p.path);
       const [agentList, teamConfig] = await Promise.all([
         EntityAPI.listAllAgents(paths),
-        EntityAPI.getTeamConfig(props.projectPath, props.team.name),
+        EntityAPI.getTeamConfig(props.projectPath, props.teamName),
       ]);
 
       const entries: TeamWizardAgentEntry[] = agentList.map((a) => ({
@@ -204,7 +204,7 @@ const EditTeamModal: Component<{
       }));
       await EntityAPI.updateTeam(
         props.projectPath,
-        props.team.name,
+        props.teamName,
         Array.from(selectedAgents()).map(portableAgentRef),
         portableAgentRef(coordinator()),
         repoData
@@ -230,7 +230,7 @@ const EditTeamModal: Component<{
     <div class="modal-overlay">
       <div class="agent-modal entity-wizard-modal">
         <div class="agent-modal-header">
-          <span class="agent-modal-title">Edit Team: {props.team.name}</span>
+          <span class="agent-modal-title">Edit Team: {props.teamName}</span>
           <span class="wizard-step-indicator">Step {step()} of 3</span>
         </div>
 
@@ -248,7 +248,7 @@ const EditTeamModal: Component<{
                 <label class="new-agent-label">Team name</label>
                 <input
                   class="agent-search-input"
-                  value={props.team.name}
+                  value={props.teamName}
                   disabled
                 />
               </div>
