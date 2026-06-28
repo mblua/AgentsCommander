@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
 use crate::resource_monitor::types::{
-    ResourceGroupState, ResourceKillReason, ResourceKillRequest, ResourceKillResult, ResourceLimits,
-    ResourceSnapshot,
+    ResourceGroupState, ResourceKillReason, ResourceKillRequest, ResourceKillResult,
+    ResourceLimits, ResourceSnapshot,
 };
 use crate::resource_monitor::ResourceMonitorState;
 
@@ -49,7 +49,12 @@ pub async fn kill_resource_group(
 
     // Fire the Job Object FIRST (pure: keeps the instance/job for a Retry). The
     // std-Mutex guard is dropped before any await.
-    let job_fired = { pty_mgr.lock().unwrap().terminate_job_for_session(session_id) };
+    let job_fired = {
+        pty_mgr
+            .lock()
+            .unwrap()
+            .terminate_job_for_session(session_id)
+    };
     log::info!(
         "[resource-monitor] job-fire session={} job_present={}",
         session_id,
@@ -57,9 +62,14 @@ pub async fn kill_resource_group(
     );
 
     // Verify + account, settling past a concurrent kill's transient `Terminating`.
-    let mut result =
-        verify_kill_settled(Arc::clone(&monitor), session_id, reason, SETTLE_BUDGET, SETTLE_POLL)
-            .await?;
+    let mut result = verify_kill_settled(
+        Arc::clone(&monitor),
+        session_id,
+        reason,
+        SETTLE_BUDGET,
+        SETTLE_POLL,
+    )
+    .await?;
 
     if should_finalize_kill(result.state) {
         // Verified dead: full PTY cleanup (drops the job handle = KILL_ON_JOB_CLOSE
@@ -69,7 +79,17 @@ pub async fn kill_resource_group(
             let _ = pty_mgr.lock().unwrap().kill(session_id);
         }
         let mgr = session_mgr.read().await;
-        mgr.mark_exited(session_id, 0).await;
+        let cleared_raise_hand = mgr.mark_exited(session_id, 0).await;
+        if cleared_raise_hand {
+            let _ = tauri::Emitter::emit(
+                &app,
+                "session_communication_changed",
+                serde_json::json!({
+                    "sessionId": session_id.to_string(),
+                    "communication": null,
+                }),
+            );
+        }
         mgr.clear_active_if(session_id).await;
         if let Some(updated) = mgr.get_session(session_id).await {
             let info = crate::session::session::SessionInfo::from(&updated);
@@ -266,7 +286,10 @@ mod tests {
     }
 
     fn register_running(state: &ResourceMonitorState, id: Uuid, root: ProcessIdentity) {
-        let permit = state.try_reserve_agent_slot(test_limits()).unwrap().unwrap();
+        let permit = state
+            .try_reserve_agent_slot(test_limits())
+            .unwrap()
+            .unwrap();
         let mut reg = ResourceLaunchRegistration::new(
             state.clone(),
             permit,

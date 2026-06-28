@@ -15,6 +15,8 @@ use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 #[cfg(test)]
+use crate::session::session::SessionCommunicationKind;
+#[cfg(test)]
 use crate::session::session::SessionRepo;
 use crate::session::session::{SessionInfo, SessionStatus};
 use crate::{AppOutbox, MasterToken};
@@ -425,7 +427,8 @@ pub(crate) const SELF_CLEAR_SETTLE_SECS: u64 = 30;
 // `handle_self_clear`; test builds drive `run_self_clear_after_sustained_idle`
 // with explicit durations, so they are dead under `cfg(test)`.
 #[cfg_attr(test, allow(dead_code))]
-const SELF_CLEAR_SETTLE: std::time::Duration = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
+const SELF_CLEAR_SETTLE: std::time::Duration =
+    std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
 #[cfg_attr(test, allow(dead_code))]
 const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 /// Safety cap so a never-idle session cannot leave a task polling forever.
@@ -445,6 +448,8 @@ const SELF_HANDOFF_ARCHIVE_DELAY: std::time::Duration = std::time::Duration::fro
 /// silently not fire and the command would be lost with no agent-visible error). `pub(crate)` so
 /// `cli/self_clear.rs` reaches it as `crate::phone::mailbox::SELF_CLEAR_ACTION`.
 pub(crate) const SELF_CLEAR_ACTION: &str = "self-handoff-and-clear";
+
+pub(crate) const RAISE_HAND_ACTION: &str = "raise-hand";
 
 /// #626 - stand-alone prompt injected in Phase 2 after the post-clear sustained-idle window. Must be a
 /// SINGLE line (an embedded newline would submit early) and self-contained (the agent's context was just
@@ -845,7 +850,9 @@ pub(crate) fn self_clear_gate_advance(
         .unwrap_or_default();
     if phase_elapsed >= max_defer {
         let reason = match state.phase {
-            SelfClearPhase::Clear => "never reached sustained idle within MAX_DEFER cap (clear leg)",
+            SelfClearPhase::Clear => {
+                "never reached sustained idle within MAX_DEFER cap (clear leg)"
+            }
             SelfClearPhase::Handoff => {
                 "never reached sustained idle within MAX_DEFER cap (handoff leg)"
             }
@@ -1546,6 +1553,9 @@ impl MailboxPoller {
             return self
                 .handle_self_handoff_switch(app, path, &msg, is_app_outbox)
                 .await;
+        }
+        if msg.action.as_deref() == Some(RAISE_HAND_ACTION) {
+            return self.handle_raise_hand(app, path, &msg, is_app_outbox).await;
         }
 
         if root_agent_claim {
@@ -3173,8 +3183,7 @@ impl MailboxPoller {
         //     read-time safety net is SELF_CLEAR_HANDOFF_PROMPT's "if missing or empty, wait". Use
         //     .is_file() so a stray directory named SELF-HANDOFF.md does not pass. Runs BEFORE the
         //     idempotency insert and the archive, so nothing is queued/archived with nothing to resume.
-        let handoff_path =
-            std::path::Path::new(&session.working_directory).join("SELF-HANDOFF.md");
+        let handoff_path = std::path::Path::new(&session.working_directory).join("SELF-HANDOFF.md");
         if !handoff_path.is_file() {
             return self
                 .reject_message(
@@ -3261,6 +3270,99 @@ impl MailboxPoller {
 
         // 5. Write the queue-ack response, then move the message to delivered/.
         self.write_self_clear_response(app, path, msg, session_id, status, is_app_outbox)
+            .await
+    }
+
+    fn session_has_visible_raise_hand_slot(session: &SessionInfo) -> bool {
+        if !session.is_coordinator || matches!(&session.status, SessionStatus::Exited(_)) {
+            return false;
+        }
+        let Some(task_path) =
+            crate::session::session::find_workgroup_task_path_for_cwd(&session.working_directory)
+        else {
+            return false;
+        };
+        let Ok(content) = std::fs::read_to_string(task_path) else {
+            return false;
+        };
+        crate::commands::entity_creation::parse_task_title(&content).is_some()
+    }
+
+    async fn handle_raise_hand<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
+        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
+            Some(u) => u,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "raise-hand requires a valid session token; restart or respawn the session",
+                    )
+                    .await;
+            }
+        };
+        let mgr = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = session_mgr.read().await;
+            guard.clone()
+        };
+        let Some(session) = mgr.find_by_token(token_uuid).await else {
+            return self
+                .reject_message(
+                    path,
+                    msg,
+                    "raise-hand: no live session owns this token; restart or respawn the session",
+                )
+                .await;
+        };
+        let session_id = match Uuid::parse_str(&session.id) {
+            Ok(u) => u,
+            Err(_) => {
+                return self
+                    .reject_message(path, msg, "raise-hand: internal error resolving session id")
+                    .await;
+            }
+        };
+
+        if !Self::session_has_visible_raise_hand_slot(&session) {
+            return self
+                .write_raise_hand_response(
+                    app,
+                    path,
+                    msg,
+                    session_id,
+                    false,
+                    "not_visible",
+                    is_app_outbox,
+                )
+                .await;
+        }
+
+        let outcome = mgr.raise_hand(session_id, chrono::Utc::now()).await;
+        let (raised, status, changed_communication) = match outcome {
+            Some((true, communication)) => (true, "raised", Some(communication)),
+            Some((false, _communication)) => (true, "already_visible", None),
+            None => (false, "not_visible", None),
+        };
+
+        if let Some(communication) = changed_communication {
+            let _ = tauri::Emitter::emit(
+                app,
+                "session_communication_changed",
+                serde_json::json!({
+                    "sessionId": session_id.to_string(),
+                    "communication": communication,
+                }),
+            );
+        }
+
+        self.write_raise_hand_response(app, path, msg, session_id, raised, status, is_app_outbox)
             .await
     }
 
@@ -3932,6 +4034,48 @@ impl MailboxPoller {
         self.move_to_delivered(path, msg).await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn write_raise_hand_response<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        session_id: Uuid,
+        raised: bool,
+        status: &str,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
+        if let Some(ref rid) = msg.request_id {
+            let response = serde_json::json!({
+                "action": RAISE_HAND_ACTION,
+                "status": status,
+                "raised": raised,
+                "session_id": session_id.to_string(),
+                "requested_by": msg.from,
+            });
+            if let Ok(json) = serde_json::to_string_pretty(&response) {
+                if !is_app_outbox {
+                    if let Some(responses_dir) = path
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .map(|ac| ac.join("responses"))
+                    {
+                        let _ = std::fs::create_dir_all(&responses_dir);
+                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    }
+                }
+                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
+                    let responses_dir = std::path::PathBuf::from(sender_path)
+                        .join(crate::config::agent_local_dir_name())
+                        .join("responses");
+                    let _ = std::fs::create_dir_all(&responses_dir);
+                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                }
+            }
+        }
+        self.move_to_delivered(path, msg).await
+    }
+
     /// Force-close a session immediately via destroy_session_inner.
     async fn force_close_session<R: tauri::Runtime>(
         &self,
@@ -4573,6 +4717,7 @@ mod tests {
     use crate::telegram::manager::TelegramBridgeManager;
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use tauri::Listener;
 
     // ── §224 D.5a — wait_for_restore_or_session unit tests ──
 
@@ -4595,6 +4740,7 @@ mod tests {
             working_directory: cwd.into(),
             status,
             waiting_for_input,
+            communication: None,
             pending_review: false,
             last_prompt: None,
             agent_id: None,
@@ -6067,6 +6213,11 @@ mod tests {
     }
 
     #[test]
+    fn raise_hand_action_const_pins_wire_value() {
+        assert_eq!(RAISE_HAND_ACTION, "raise-hand");
+    }
+
+    #[test]
     fn self_switch_handoff_prompt_is_single_line_self_contained() {
         assert!(!SELF_SWITCH_HANDOFF_PROMPT.is_empty());
         assert!(!SELF_SWITCH_HANDOFF_PROMPT.contains('\n'));
@@ -6430,6 +6581,91 @@ mod tests {
         serde_json::from_str(&content).ok()
     }
 
+    async fn seed_raise_hand_session(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        cwd: &Path,
+        is_coordinator: bool,
+        status: SessionStatus,
+    ) -> (Uuid, Uuid) {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let session = mgr
+            .create_session(
+                "codex".into(),
+                vec![],
+                cwd.to_string_lossy().to_string(),
+                Some("codex".into()),
+                Some("Codex".into()),
+                Vec::new(),
+                is_coordinator,
+            )
+            .await
+            .unwrap();
+        match status {
+            SessionStatus::Active => {
+                mgr.switch_session(session.id).await.unwrap();
+            }
+            SessionStatus::Running => {}
+            SessionStatus::Idle => {
+                mgr.mark_idle(session.id).await;
+            }
+            SessionStatus::Exited(code) => {
+                mgr.mark_exited(session.id, code).await;
+            }
+        }
+        (session.id, session.token)
+    }
+
+    fn write_raise_hand_task_title(cwd: &Path, title: &str) {
+        let task_path =
+            crate::session::session::find_workgroup_task_path_for_cwd(&cwd.to_string_lossy())
+                .expect("raise-hand test cwd should be inside a workgroup");
+        std::fs::write(task_path, format!("---\ntitle: {}\n---\n\nbody", title)).unwrap();
+    }
+
+    fn build_raise_hand_message(
+        cwd: &Path,
+        msg_id: &str,
+        request_id: &str,
+        token: Option<String>,
+    ) -> (PathBuf, OutboxMessage) {
+        let outbox_dir = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let path = outbox_dir.join(format!("{}.json", msg_id));
+        let msg = OutboxMessage {
+            id: msg_id.into(),
+            token,
+            from: sender_name_for_session_cwd(&cwd.to_string_lossy()),
+            to: String::new(),
+            body: String::new(),
+            mode: String::new(),
+            get_output: false,
+            request_id: Some(request_id.into()),
+            sender_agent: None,
+            preferred_agent: String::new(),
+            priority: "normal".into(),
+            timestamp: "2026-06-28T00:00:00Z".into(),
+            command: None,
+            action: Some(RAISE_HAND_ACTION.into()),
+            target: None,
+            force: None,
+            timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
+        (path, msg)
+    }
+
+    fn raise_hand_delivered_path(cwd: &Path, msg_id: &str) -> PathBuf {
+        cwd.join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("delivered")
+            .join(format!("{}.json", msg_id))
+    }
+
     fn read_self_clear_response_status(cwd: &Path, request_id: &str) -> Option<String> {
         let v = read_response_json(cwd, request_id)?;
         v.get("status").and_then(|s| s.as_str()).map(String::from)
@@ -6448,6 +6684,267 @@ mod tests {
         let pending = app.state::<Arc<crate::PendingSelfClear>>();
         let g = pending.0.lock().unwrap_or_else(|e| e.into_inner());
         g.contains(&id)
+    }
+
+    #[tokio::test]
+    async fn raise_hand_process_message_coordinator_with_task_title_sets_state_and_event() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let (session_id, token) =
+            seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running).await;
+        write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&events);
+        fixture
+            .app
+            .listen_any("session_communication_changed", move |event| {
+                captured.lock().unwrap().push(event.payload().to_string());
+            });
+
+        let (path, _msg) = build_raise_hand_message(
+            &fixture.sender_cwd,
+            "msg-rh-1",
+            "rid-rh-1",
+            Some(token.to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .process_message(&app, &path, false)
+            .await
+            .expect("raise-hand process_message should succeed");
+
+        let response = read_response_json(&fixture.sender_cwd, "rid-rh-1").unwrap();
+        assert_eq!(response["action"], RAISE_HAND_ACTION);
+        assert_eq!(response["status"], "raised");
+        assert_eq!(response["raised"], true);
+        assert_eq!(response["session_id"], session_id.to_string());
+        assert!(raise_hand_delivered_path(&fixture.sender_cwd, "msg-rh-1").exists());
+        assert!(!path.exists());
+        let mgr = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = session_mgr.read().await;
+            guard.clone()
+        };
+        let stored = mgr.get_session(session_id).await.unwrap();
+        let communication = stored.communication.expect("raise-hand state stored");
+        assert_eq!(communication.kind, SessionCommunicationKind::RaiseHand);
+        assert!(communication.visible);
+
+        let captured = events.lock().unwrap().clone();
+        assert_eq!(captured.len(), 1, "raise-hand should emit one event");
+        let event: serde_json::Value = serde_json::from_str(&captured[0]).unwrap();
+        assert_eq!(event["sessionId"], session_id.to_string());
+        assert_eq!(event["communication"]["kind"], "raiseHand");
+        assert_eq!(event["communication"]["visible"], true);
+    }
+
+    #[tokio::test]
+    async fn raise_hand_process_message_second_request_reports_already_visible() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let (_session_id, token) =
+            seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running).await;
+        write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&events);
+        fixture
+            .app
+            .listen_any("session_communication_changed", move |event| {
+                captured.lock().unwrap().push(event.payload().to_string());
+            });
+
+        let (first_path, _first_msg) = build_raise_hand_message(
+            &fixture.sender_cwd,
+            "msg-rh-2a",
+            "rid-rh-2a",
+            Some(token.to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .process_message(&app, &first_path, false)
+            .await
+            .expect("first raise-hand should succeed");
+        let (second_path, _second_msg) = build_raise_hand_message(
+            &fixture.sender_cwd,
+            "msg-rh-2b",
+            "rid-rh-2b",
+            Some(token.to_string()),
+        );
+        poller
+            .process_message(&app, &second_path, false)
+            .await
+            .expect("second raise-hand should succeed");
+
+        let response = read_response_json(&fixture.sender_cwd, "rid-rh-2b").unwrap();
+        assert_eq!(response["raised"], true);
+        assert_eq!(response["status"], "already_visible");
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "idempotent raise-hand should not emit a duplicate change event"
+        );
+    }
+
+    #[tokio::test]
+    async fn raise_hand_process_message_without_visible_title_slot_returns_false() {
+        for (idx, task_contents) in [
+            (0, None),
+            (1, Some("body only\n")),
+            (2, Some("---\ntitle: \n---\n\nbody")),
+        ] {
+            let fixture = make_mailbox_fixture();
+            let app = app_handle(&fixture.app);
+            let (session_id, token) =
+                seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running)
+                    .await;
+            if let Some(contents) = task_contents {
+                let task_path = crate::session::session::find_workgroup_task_path_for_cwd(
+                    &fixture.sender_cwd.to_string_lossy(),
+                )
+                .unwrap();
+                std::fs::write(task_path, contents).unwrap();
+            }
+            let events = Arc::new(Mutex::new(Vec::<String>::new()));
+            let captured = Arc::clone(&events);
+            fixture
+                .app
+                .listen_any("session_communication_changed", move |event| {
+                    captured.lock().unwrap().push(event.payload().to_string());
+                });
+
+            let msg_id = format!("msg-rh-noslot-{idx}");
+            let rid = format!("rid-rh-noslot-{idx}");
+            let (path, _msg) = build_raise_hand_message(
+                &fixture.sender_cwd,
+                &msg_id,
+                &rid,
+                Some(token.to_string()),
+            );
+            let poller = MailboxPoller::new();
+            poller
+                .process_message(&app, &path, false)
+                .await
+                .expect("raise-hand no-slot message should be processed");
+
+            let response = read_response_json(&fixture.sender_cwd, &rid).unwrap();
+            assert_eq!(response["raised"], false);
+            assert_eq!(response["status"], "not_visible");
+            assert!(events.lock().unwrap().is_empty());
+            let mgr = {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = session_mgr.read().await;
+                guard.clone()
+            };
+            assert!(mgr
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .communication
+                .is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn raise_hand_process_message_non_coordinator_returns_false() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let (session_id, token) =
+            seed_raise_hand_session(&app, &fixture.sender_cwd, false, SessionStatus::Running).await;
+        write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
+
+        let (path, _msg) = build_raise_hand_message(
+            &fixture.sender_cwd,
+            "msg-rh-noncoord",
+            "rid-rh-noncoord",
+            Some(token.to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .process_message(&app, &path, false)
+            .await
+            .expect("non-coordinator raise-hand should be processed");
+
+        let response = read_response_json(&fixture.sender_cwd, "rid-rh-noncoord").unwrap();
+        assert_eq!(response["raised"], false);
+        assert_eq!(response["status"], "not_visible");
+        let mgr = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = session_mgr.read().await;
+            guard.clone()
+        };
+        assert!(mgr
+            .get_session(session_id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn raise_hand_process_message_exited_coordinator_returns_false() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let (session_id, token) =
+            seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Exited(0))
+                .await;
+        write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
+
+        let (path, _msg) = build_raise_hand_message(
+            &fixture.sender_cwd,
+            "msg-rh-exited",
+            "rid-rh-exited",
+            Some(token.to_string()),
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .process_message(&app, &path, false)
+            .await
+            .expect("exited coordinator raise-hand should be processed");
+
+        let response = read_response_json(&fixture.sender_cwd, "rid-rh-exited").unwrap();
+        assert_eq!(response["raised"], false);
+        assert_eq!(response["status"], "not_visible");
+        let mgr = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let guard = session_mgr.read().await;
+            guard.clone()
+        };
+        assert!(mgr
+            .get_session(session_id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn raise_hand_process_message_bad_tokens_are_rejected_not_false() {
+        for (idx, token) in [
+            (0, "not-a-uuid".to_string()),
+            (1, Uuid::new_v4().to_string()),
+        ] {
+            let fixture = make_mailbox_fixture();
+            let app = app_handle(&fixture.app);
+            write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
+            let msg_id = format!("msg-rh-bad-token-{idx}");
+            let rid = format!("rid-rh-bad-token-{idx}");
+            let (path, _msg) =
+                build_raise_hand_message(&fixture.sender_cwd, &msg_id, &rid, Some(token));
+            let poller = MailboxPoller::new();
+            poller
+                .process_message(&app, &path, false)
+                .await
+                .expect("bad-token raise-hand should reject cleanly");
+
+            assert!(
+                read_reject_reason(&fixture.sender_cwd, &msg_id).is_some(),
+                "bad token should write a rejection reason"
+            );
+            assert!(
+                read_response_json(&fixture.sender_cwd, &rid).is_none(),
+                "bad token must not be converted into a false response"
+            );
+        }
     }
 
     #[tokio::test]
