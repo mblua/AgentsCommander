@@ -109,10 +109,10 @@ impl MasterToken {
 /// "restore loop hasn't reached this session yet — retry briefly."
 pub struct RestoreInProgress(pub AtomicBool);
 
-/// (#617) Sessions with a self-clear request awaiting their 30s sustained-idle
-/// window. Insert on queue; remove when the deferred task injects `/clear`, the
-/// session dies, or the safety cap expires. A session_id already present means a
-/// repeat self-clear is a no-op ("already_queued") - requests never stack.
+/// (#617/#668) Sessions with a self context operation awaiting their sustained-idle
+/// window. Insert on queue; remove when the deferred task completes, the session
+/// dies, or the safety cap expires. A session_id already present means a repeat
+/// self operation is a no-op ("already_queued") - requests never stack.
 /// In-memory only: a daemon restart drops pending requests (accepted, best-effort).
 ///
 /// Newtype is mandatory: `DetachedSessionsState` (lib.rs:38) is already a managed
