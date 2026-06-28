@@ -180,8 +180,20 @@ pub struct PtyManager {
     pub response_watchers: ResponseWatcherMap,
     /// Optional WS broadcaster for remote access
     ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-    /// VT100 screen state per session for replay to late-joining WS clients
-    screen_parsers: Arc<Mutex<HashMap<Uuid, vt100::Parser>>>,
+    /// VT100 screen state and native output watermark per session.
+    screen_parsers: Arc<Mutex<HashMap<Uuid, ScreenReplayState>>>,
+}
+
+pub struct PtyScreenSnapshot {
+    pub data: Vec<u8>,
+    pub rows: u16,
+    pub cols: u16,
+    pub sequence: u64,
+}
+
+struct ScreenReplayState {
+    parser: vt100::Parser,
+    output_sequence: u64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -189,6 +201,8 @@ pub struct PtyManager {
 struct PtyOutputPayload {
     session_id: String,
     data: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence: Option<u64>,
 }
 
 /// Strip ANSI escape sequences so that marker detection is not fooled
@@ -446,10 +460,13 @@ impl PtyManager {
         // evaluated by the watcher. Must run before the read loop starts.
         self.idle_detector.register_session(id, idle_tuning);
 
-        // Initialize vt100 screen parser for this session (for WS replay)
+        // Initialize vt100 screen parser and output watermark for replay.
         {
-            let parser = vt100::Parser::new(rows, cols, 0);
-            self.screen_parsers.lock().unwrap().insert(id, parser);
+            let replay = ScreenReplayState {
+                parser: vt100::Parser::new(rows, cols, 0),
+                output_sequence: 0,
+            };
+            self.screen_parsers.lock().unwrap().insert(id, replay);
         }
 
         // Spawn read loop that emits PTY output to the frontend,
@@ -521,14 +538,21 @@ impl PtyManager {
                             }
                         }
 
-                        // Feed vt100 screen parser for WS replay
-                        if let Ok(mut parsers) = screen_parsers.lock() {
-                            if let Some(parser) = parsers.get_mut(&id) {
-                                parser.process(&data);
+                        // Feed vt100 screen parser and assign the event watermark.
+                        let sequence = if let Ok(mut parsers) = screen_parsers.lock() {
+                            if let Some(state) = parsers.get_mut(&id) {
+                                state.parser.process(&data);
+                                state.output_sequence = state.output_sequence.saturating_add(1);
+                                Some(state.output_sequence)
+                            } else {
+                                None
                             }
-                        }
+                        } else {
+                            None
+                        };
 
-                        // Broadcast to WebSocket clients (non-blocking)
+                        // Broadcast to WebSocket clients (non-blocking).
+                        // Keep the binary WS frame unchanged: UUID prefix + raw bytes.
                         if let Some(ref bc) = ws_broadcaster {
                             bc.broadcast_pty_output(&session_id_str, &data);
                         }
@@ -536,6 +560,7 @@ impl PtyManager {
                         let payload = PtyOutputPayload {
                             session_id: session_id_str.clone(),
                             data,
+                            sequence,
                         };
                         let _ = app_handle.emit("pty_output", payload);
                     }
@@ -596,10 +621,10 @@ impl PtyManager {
             })
             .map_err(|e| AppError::PtyError(e.to_string()))?;
 
-        // Keep the vt100 screen parser in sync so snapshots match the new size
+        // Keep the vt100 screen parser in sync so snapshots match the new size.
         if let Ok(mut parsers) = self.screen_parsers.lock() {
-            if let Some(parser) = parsers.get_mut(&id) {
-                parser.set_size(rows, cols);
+            if let Some(state) = parsers.get_mut(&id) {
+                state.parser.set_size(rows, cols);
             }
         }
 
@@ -736,20 +761,26 @@ impl PtyManager {
         (terminated, jobless)
     }
 
-    /// Get a screen snapshot for replay to late-joining WS clients.
-    /// Returns the visible screen content as raw bytes that can be written to xterm.js.
-    pub fn get_screen_snapshot(&self, id: Uuid) -> Option<Vec<u8>> {
+    /// Get a screen snapshot for replay to late-joining clients.
+    /// The returned sequence is the latest PTY output sequence included in data.
+    pub fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
         let parsers = self.screen_parsers.lock().ok()?;
-        let parser = parsers.get(&id)?;
-        let screen = parser.screen();
-        Some(screen.contents_formatted())
+        let state = parsers.get(&id)?;
+        let screen = state.parser.screen();
+        let (rows, cols) = screen.size();
+        Some(PtyScreenSnapshot {
+            data: screen.contents_formatted(),
+            rows,
+            cols,
+            sequence: state.output_sequence,
+        })
     }
 
     /// Get the current PTY dimensions (rows, cols) from the vt100 parser.
     pub fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
         let parsers = self.screen_parsers.lock().ok()?;
-        let parser = parsers.get(&id)?;
-        Some(parser.screen().size())
+        let state = parsers.get(&id)?;
+        Some(state.parser.screen().size())
     }
 
     pub fn register_response_watcher(

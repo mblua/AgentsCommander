@@ -12,6 +12,7 @@ pub struct PtyScreenSnapshotPayload {
     pub data: Vec<u8>,
     pub rows: Option<u16>,
     pub cols: Option<u16>,
+    pub sequence: u64,
 }
 
 #[tauri::command]
@@ -147,29 +148,22 @@ pub fn get_screen_snapshot(
 ) -> Result<Option<PtyScreenSnapshotPayload>, String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-    let (snapshot, size) = {
+    let snapshot = {
         let pty_mgr = pty_mgr
             .lock()
             .map_err(|_| "PtyManager lock poisoned".to_string())?;
-        (
-            pty_mgr.get_screen_snapshot(uuid),
-            pty_mgr.get_pty_size(uuid),
-        )
+        pty_mgr.get_screen_snapshot(uuid)
     };
 
-    let Some(data) = snapshot else {
+    let Some(snapshot) = snapshot else {
         return Ok(None);
-    };
-
-    let (rows, cols) = match size {
-        Some((rows, cols)) => (Some(rows), Some(cols)),
-        None => (None, None),
     };
 
     Ok(Some(PtyScreenSnapshotPayload {
         session_id,
-        data,
-        rows,
-        cols,
+        data: snapshot.data,
+        rows: Some(snapshot.rows),
+        cols: Some(snapshot.cols),
+        sequence: snapshot.sequence,
     }))
 }

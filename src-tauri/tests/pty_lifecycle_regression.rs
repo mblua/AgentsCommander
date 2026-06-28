@@ -48,6 +48,7 @@ type PtyCleanupEntries = Arc<Mutex<Vec<(Arc<Mutex<PtyManager>>, Uuid)>>>;
 struct TestPtyOutputPayload {
     session_id: String,
     data: Vec<u8>,
+    sequence: Option<u64>,
 }
 
 struct TestConfigEnvGuard {
@@ -121,6 +122,7 @@ struct LifecycleFixture {
     script_path: PathBuf,
     pid_files: Vec<PathBuf>,
     captured_output: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    captured_sequences: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     listener_errors: Arc<Mutex<Vec<String>>>,
     app: tauri::App,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
@@ -155,11 +157,13 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
     run_powershell_preflight();
 
     let captured_output = Arc::new(Mutex::new(HashMap::new()));
+    let captured_sequences = Arc::new(Mutex::new(HashMap::new()));
     let listener_errors = Arc::new(Mutex::new(Vec::new()));
     let cleanup = LifecycleCleanup::new();
     let (app, session_mgr, pty_mgr) = make_test_app(
         &repo_root,
         &captured_output,
+        &captured_sequences,
         &listener_errors,
         &cleanup,
         None,
@@ -176,6 +180,7 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
         script_path,
         pid_files: Vec::new(),
         captured_output,
+        captured_sequences,
         listener_errors,
         app,
         session_mgr,
@@ -186,6 +191,7 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
 fn make_test_app(
     repo_root: &Path,
     captured_output: &Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    captured_sequences: &Arc<Mutex<HashMap<String, Vec<u64>>>>,
     listener_errors: &Arc<Mutex<Vec<String>>>,
     _cleanup: &LifecycleCleanup,
     session_mgr_override: Option<Arc<tokio::sync::RwLock<SessionManager>>>,
@@ -232,6 +238,7 @@ fn make_test_app(
     let shutdown_signal = ShutdownSignal::new();
 
     let captured = Arc::clone(captured_output);
+    let captured_sequences = Arc::clone(captured_sequences);
     let listener_errors = Arc::clone(listener_errors);
     let app = tauri::Builder::default()
         .any_thread()
@@ -267,9 +274,22 @@ fn make_test_app(
                 captured
                     .lock()
                     .unwrap()
-                    .entry(payload.session_id)
+                    .entry(payload.session_id.clone())
                     .or_default()
                     .extend(payload.data);
+
+                match payload.sequence {
+                    Some(sequence) => captured_sequences
+                        .lock()
+                        .unwrap()
+                        .entry(payload.session_id)
+                        .or_default()
+                        .push(sequence),
+                    None => listener_errors
+                        .lock()
+                        .unwrap()
+                        .push(format!("pty_output payload missing sequence; raw={raw}")),
+                }
             }
             Err(err) => listener_errors.lock().unwrap().push(format!(
                 "failed to parse pty_output payload: {err}; raw={raw}"
@@ -287,6 +307,7 @@ fn pty_screen_snapshot_payload_serializes_camel_case_bytes_and_optional_size() {
         data: vec![27, 91, 72],
         rows: Some(30),
         cols: Some(120),
+        sequence: 7,
     })
     .expect("serialize snapshot payload");
 
@@ -297,6 +318,7 @@ fn pty_screen_snapshot_payload_serializes_camel_case_bytes_and_optional_size() {
             "data": [27, 91, 72],
             "rows": 30,
             "cols": 120,
+            "sequence": 7,
         })
     );
     assert!(value.get("session_id").is_none());
@@ -345,6 +367,8 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
                 )
             });
         {
+            let last_event_sequence =
+                last_strictly_increasing_sequence(&fixture, &session_a.id, "Phase A");
             let snapshot = get_screen_snapshot(
                 fixture.app.state::<Arc<Mutex<PtyManager>>>(),
                 session_a.id.clone(),
@@ -355,6 +379,12 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             assert_eq!(snapshot.session_id, session_a.id);
             assert!(snapshot.rows.is_some(), "Phase A snapshot rows missing");
             assert!(snapshot.cols.is_some(), "Phase A snapshot cols missing");
+            assert!(
+                snapshot.sequence >= last_event_sequence,
+                "Phase A snapshot sequence {} should cover last event sequence {}",
+                snapshot.sequence,
+                last_event_sequence
+            );
             assert!(
                 snapshot_text.contains("AC_READY"),
                 "Phase A snapshot missing AC_READY; snapshot={snapshot_text:?}\n{}",
@@ -546,6 +576,8 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
                 )
             });
         {
+            let last_event_sequence =
+                last_strictly_increasing_sequence(&fixture, &restarted.id, "Phase F");
             let snapshot = get_screen_snapshot(
                 fixture.app.state::<Arc<Mutex<PtyManager>>>(),
                 restarted.id.clone(),
@@ -556,6 +588,12 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             assert_eq!(snapshot.session_id, restarted.id);
             assert!(snapshot.rows.is_some(), "Phase F snapshot rows missing");
             assert!(snapshot.cols.is_some(), "Phase F snapshot cols missing");
+            assert!(
+                snapshot.sequence >= last_event_sequence,
+                "Phase F snapshot sequence {} should cover last event sequence {}",
+                snapshot.sequence,
+                last_event_sequence
+            );
             assert!(
                 snapshot_text.contains("AC_READY"),
                 "Phase F snapshot missing AC_READY; snapshot={snapshot_text:?}\n{}",
@@ -665,10 +703,12 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             .expect("persisted recipe row");
         let second_session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let second_captured = Arc::clone(&fixture.captured_output);
+        let second_sequences = Arc::clone(&fixture.captured_sequences);
         let second_errors = Arc::clone(&fixture.listener_errors);
         let (second_app, second_mgr, second_pty_mgr) = make_test_app(
             &fixture.repo_root,
             &second_captured,
+            &second_sequences,
             &second_errors,
             &fixture.cleanup,
             Some(second_session_mgr),
@@ -795,6 +835,14 @@ impl LifecycleFixture {
             .map(|(id, bytes)| format!("{id}: {}", String::from_utf8_lossy(bytes)))
             .collect::<Vec<_>>()
             .join("\n");
+        let captured_sequences = self
+            .captured_sequences
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, sequences)| format!("{id}: {sequences:?}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let listener_errors = self.listener_errors.lock().unwrap().join("\n");
         let pid_info = pid_files
             .iter()
@@ -824,7 +872,7 @@ impl LifecycleFixture {
             .collect::<Vec<_>>()
             .join("\n");
         format!(
-            "phase={phase}\nconfig_dir={}\nrepo_root={}\nsession_cwd={}\nsessions_json={sessions_json}\npids=\n{pid_info}\npty=\n{pty_info}\nlistener_errors=\n{listener_errors}\ncaptured=\n{captured}",
+            "phase={phase}\nconfig_dir={}\nrepo_root={}\nsession_cwd={}\nsessions_json={sessions_json}\npids=\n{pid_info}\npty=\n{pty_info}\nlistener_errors=\n{listener_errors}\ncaptured_sequences=\n{captured_sequences}\ncaptured=\n{captured}",
             self.config_dir.display(),
             self.repo_root.display(),
             self.session_cwd.display()
@@ -911,6 +959,31 @@ async fn wait_for_output(
     Err(format!(
         "timeout waiting for output marker '{marker}' in session {session_id}"
     ))
+}
+
+fn last_strictly_increasing_sequence(
+    fixture: &LifecycleFixture,
+    session_id: &str,
+    phase: &str,
+) -> u64 {
+    let sequences = fixture
+        .captured_sequences
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !sequences.is_empty(),
+        "{phase}: expected at least one pty_output sequence for {session_id}"
+    );
+    for pair in sequences.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "{phase}: sequences must be strictly increasing: {sequences:?}"
+        );
+    }
+    *sequences.last().unwrap()
 }
 
 async fn wait_for_pid_file(path: &Path, timeout: Duration) -> Result<u32, String> {
