@@ -9,7 +9,7 @@ use tauri::Manager;
 use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
-use crate::config::settings::{AgentConfig, SettingsState};
+use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
@@ -454,6 +454,175 @@ pub(crate) const SELF_CLEAR_HANDOFF_PROMPT: &str =
     "Your context was just cleared by the self-handoff-and-clear command. To resume, read the file \
      SELF-HANDOFF.md in your own agent root (your current working directory) and continue the work \
      described there. If SELF-HANDOFF.md is missing or empty, wait for new instructions instead of guessing.";
+
+/// #668 - the OutboxMessage `action` value for self-handoff-and-switch.
+pub(crate) const SELF_SWITCH_ACTION: &str = "self-handoff-and-switch";
+
+/// #668 - prompt injected in Phase 2 after the switched session settles.
+pub(crate) const SELF_SWITCH_HANDOFF_PROMPT: &str =
+    "Your session was just switched by the self-handoff-and-switch command. To resume, read the file \
+     SELF-HANDOFF.md in your own agent root (your current working directory) and continue the work \
+     described there. If SELF-HANDOFF.md is missing or empty, wait for new instructions instead of guessing.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelfSwitchTargets {
+    coding_agent: String,
+    profile: String,
+}
+
+fn trimmed_nonempty(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_switch_profile_request(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = trimmed_nonempty(raw) else {
+        return Ok(None);
+    };
+    crate::config::settings::normalize_profile_letter(&value)
+        .map(Some)
+        .ok_or_else(|| {
+            "self-handoff-and-switch: profile must be a single letter A through Z".to_string()
+        })
+}
+
+fn normalize_switch_profile_fallback(raw: Option<&str>) -> Option<String> {
+    let value = trimmed_nonempty(raw)?;
+    crate::config::settings::normalize_profile_letter(&value)
+}
+
+fn coding_agent_configured(settings: &AppSettings, id: &str) -> bool {
+    settings.agents.iter().any(|agent| agent.id == id)
+}
+
+fn configured_coding_agent_choices(settings: &AppSettings) -> String {
+    if settings.agents.is_empty() {
+        return "<none configured>".to_string();
+    }
+    settings
+        .agents
+        .iter()
+        .map(|agent| format!("{} ({})", agent.id, agent.label))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn unknown_coding_agent_message(settings: &AppSettings, id: &str) -> String {
+    format!(
+        "self-handoff-and-switch: coding agent '{}' is not configured. Configured coding agents: {}",
+        id,
+        configured_coding_agent_choices(settings)
+    )
+}
+
+fn resolve_switch_targets(
+    settings: &AppSettings,
+    cwd: &Path,
+    req_agent: Option<&str>,
+    req_profile: Option<&str>,
+    session_agent: Option<&str>,
+    session_effective_profile: Option<&str>,
+    session_requested_profile: Option<&str>,
+) -> Result<SelfSwitchTargets, String> {
+    let coding_agent = if let Some(requested) = trimmed_nonempty(req_agent) {
+        if !coding_agent_configured(settings, &requested) {
+            return Err(unknown_coding_agent_message(settings, &requested));
+        }
+        Some(requested)
+    } else if let Some(live) = trimmed_nonempty(session_agent) {
+        Some(live)
+    } else {
+        crate::config::coding_agent_profiles::read_replica_current_coding_agent(cwd)
+            .and_then(|value| trimmed_nonempty(Some(value.as_str())))
+            .filter(|value| coding_agent_configured(settings, value))
+    };
+    let coding_agent = coding_agent.ok_or_else(|| {
+        format!(
+            "self-handoff-and-switch: no target coding agent could be resolved. Pass --coding-agent <id>. Configured coding agents: {}",
+            configured_coding_agent_choices(settings)
+        )
+    })?;
+
+    let profile = normalize_switch_profile_request(req_profile)?
+        .or_else(|| normalize_switch_profile_fallback(session_effective_profile))
+        .or_else(|| normalize_switch_profile_fallback(session_requested_profile))
+        .or_else(|| crate::config::coding_agent_profiles::read_replica_profile(cwd))
+        .unwrap_or_else(|| "A".to_string());
+
+    Ok(SelfSwitchTargets {
+        coding_agent,
+        profile,
+    })
+}
+
+fn validate_self_switch_wg_replica(settings: &AppSettings, cwd: &Path) -> Result<PathBuf, String> {
+    let name = cwd.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
+        format!(
+            "self-handoff-and-switch is only supported from a WG replica (__agent_* under wg-*); '{}' has no valid final path component",
+            cwd.display()
+        )
+    })?;
+    if !name.starts_with("__agent_") {
+        return Err(format!(
+            "self-handoff-and-switch is only supported from a WG replica (__agent_* under wg-*); got '{}'",
+            cwd.display()
+        ));
+    }
+    let validated =
+        crate::config::coding_agent_profiles::validate_profile_selection_agent_path(settings, cwd)
+            .map_err(|e| {
+                format!(
+                    "self-handoff-and-switch is only supported from a configured WG replica: {}",
+                    e
+                )
+            })?;
+    let validated_name = validated
+        .launch_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !validated_name.starts_with("__agent_") {
+        return Err(format!(
+            "self-handoff-and-switch is only supported from a WG replica; validated target was '{}'",
+            validated.launch_path.display()
+        ));
+    }
+    Ok(validated.launch_path)
+}
+
+fn validate_self_switch_spawn(
+    settings: &AppSettings,
+    cwd: &Path,
+    targets: &SelfSwitchTargets,
+) -> Result<(), String> {
+    if !coding_agent_configured(settings, &targets.coding_agent) {
+        return Err(unknown_coding_agent_message(
+            settings,
+            &targets.coding_agent,
+        ));
+    }
+    let profile =
+        crate::config::settings::normalize_profile_letter(&targets.profile).ok_or_else(|| {
+            "self-handoff-and-switch: profile must be a single letter A through Z".to_string()
+        })?;
+    crate::config::agent_command::build_agent_spawn_command(
+        settings,
+        &targets.coding_agent,
+        Some(cwd),
+        Some(&profile),
+    )
+    .map(|_| ())
+    .map_err(|e| {
+        format!(
+            "self-handoff-and-switch: target coding agent '{}' profile '{}' is not launchable from '{}': {}",
+            targets.coding_agent,
+            profile,
+            cwd.display(),
+            e
+        )
+    })
+}
 
 /// §DR5 anti-spoof accept rule. Outbox-sender check passes when `msg_from`
 /// equals `expected_from` exactly, OR when `msg_from` is unqualified (legacy)
@@ -1372,6 +1541,11 @@ impl MailboxPoller {
         // post-routing action block because it IS a cross-agent operation.
         if msg.action.as_deref() == Some(SELF_CLEAR_ACTION) {
             return self.handle_self_clear(app, path, &msg, is_app_outbox).await;
+        }
+        if msg.action.as_deref() == Some(SELF_SWITCH_ACTION) {
+            return self
+                .handle_self_handoff_switch(app, path, &msg, is_app_outbox)
+                .await;
         }
 
         if root_agent_claim {
@@ -3090,6 +3264,178 @@ impl MailboxPoller {
             .await
     }
 
+    /// #668 - queue a deferred self switch for the session that owns `msg.token`.
+    /// It shares the self context pending set with self-clear, so clear and switch
+    /// requests cannot stack on the same live session.
+    async fn handle_self_handoff_switch<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
+        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
+            Some(u) => u,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-handoff-and-switch requires a valid session token; restart or respawn the session",
+                    )
+                    .await;
+            }
+        };
+        let session = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.find_by_token(token_uuid).await
+        };
+        let session = match session {
+            Some(s) => s,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-handoff-and-switch: no live session owns this token; restart or respawn the session",
+                    )
+                    .await;
+            }
+        };
+        let session_id = match Uuid::parse_str(&session.id) {
+            Ok(u) => u,
+            Err(_) => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-handoff-and-switch: internal error resolving session id",
+                    )
+                    .await;
+            }
+        };
+
+        if !crate::pty::inject::needs_explicit_enter(&session.shell) {
+            return self
+                .reject_message(
+                    path,
+                    msg,
+                    &format!(
+                        "self-handoff-and-switch: session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini); switch is not supported here",
+                        session.shell
+                    ),
+                )
+                .await;
+        }
+
+        let settings_snapshot = {
+            let settings = app.state::<SettingsState>();
+            let snapshot = settings.read().await.clone();
+            snapshot
+        };
+        let session_cwd = PathBuf::from(&session.working_directory);
+        let replica_path = match validate_self_switch_wg_replica(&settings_snapshot, &session_cwd) {
+            Ok(path) => path,
+            Err(reason) => return self.reject_message(path, msg, &reason).await,
+        };
+        let targets = match resolve_switch_targets(
+            &settings_snapshot,
+            &replica_path,
+            msg.switch_coding_agent.as_deref(),
+            msg.switch_profile.as_deref(),
+            session.agent_id.as_deref(),
+            session.effective_profile.as_deref(),
+            session.requested_profile.as_deref(),
+        ) {
+            Ok(targets) => targets,
+            Err(reason) => return self.reject_message(path, msg, &reason).await,
+        };
+        if let Err(reason) = validate_self_switch_spawn(&settings_snapshot, &replica_path, &targets)
+        {
+            return self.reject_message(path, msg, &reason).await;
+        }
+
+        let handoff_path = replica_path.join("SELF-HANDOFF.md");
+        if !handoff_path.is_file() {
+            return self
+                .reject_message(
+                    path,
+                    msg,
+                    &format!(
+                        "self-handoff-and-switch: SELF-HANDOFF.md not found in your root ({}); write it before requesting self-handoff-and-switch.",
+                        replica_path.display()
+                    ),
+                )
+                .await;
+        }
+
+        let newly_inserted = {
+            let pending = app.state::<Arc<crate::PendingSelfClear>>();
+            let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
+            set.insert(session_id)
+        };
+        let status = if newly_inserted {
+            "queued"
+        } else {
+            "already_queued"
+        };
+
+        if newly_inserted {
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+            match archive_root_md(&replica_path, "SELF-FORGET", &ts) {
+                Ok(Some(p)) => log::info!(
+                    "[mailbox] self-handoff-and-switch: archived SELF-FORGET.md -> {}",
+                    p.display()
+                ),
+                Ok(None) => {}
+                Err(e) => log::warn!(
+                    "[mailbox] self-handoff-and-switch: SELF-FORGET.md archive failed for session {} (non-fatal): {}",
+                    session_id,
+                    e
+                ),
+            }
+
+            #[cfg(not(test))]
+            {
+                let app_clone = app.clone();
+                let target_agent = targets.coding_agent.clone();
+                let target_profile = targets.profile.clone();
+                let replica_path = replica_path.clone();
+                tauri::async_runtime::spawn(async move {
+                    Self::run_self_switch_after_sustained_idle(
+                        &app_clone,
+                        session_id,
+                        replica_path,
+                        target_agent,
+                        target_profile,
+                        SELF_CLEAR_SETTLE,
+                        SELF_CLEAR_POLL,
+                        SELF_CLEAR_MAX_DEFER,
+                        SELF_HANDOFF_ARCHIVE_DELAY,
+                    )
+                    .await;
+                });
+            }
+            log::info!(
+                "[mailbox] self-handoff-and-switch queued for session {} target coding agent '{}' profile '{}' (from '{}')",
+                session_id,
+                targets.coding_agent,
+                targets.profile,
+                msg.from
+            );
+        } else {
+            log::info!(
+                "[mailbox] self-handoff-and-switch already pending for session {} (from '{}')",
+                session_id,
+                msg.from
+            );
+        }
+
+        self.write_self_switch_response(app, path, msg, session_id, status, &targets, is_app_outbox)
+            .await
+    }
+
     /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives BOTH phases
     /// on the stable `session_id` (the PTY and id survive `/clear`), injecting `/clear` then the
     /// handoff prompt, and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or
@@ -3140,7 +3486,8 @@ impl MailboxPoller {
                     // TOCTOU between settle and the final \r is accepted, identical to the
                     // existing send --command clear path.
                     if let Err(e) =
-                        crate::pty::inject::inject_text_into_session(app, session_id, "/clear").await
+                        crate::pty::inject::inject_text_into_session(app, session_id, "/clear")
+                            .await
                     {
                         log::warn!(
                             "[mailbox] self-handoff-and-clear: /clear injection failed for session {}: {}",
@@ -3237,6 +3584,265 @@ impl MailboxPoller {
             .remove(&session_id);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(test, allow(dead_code))]
+    async fn run_self_switch_after_sustained_idle<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        original_session_id: Uuid,
+        cwd: PathBuf,
+        target_agent: String,
+        target_profile: String,
+        settle: std::time::Duration,
+        poll: std::time::Duration,
+        max_defer: std::time::Duration,
+        archive_delay: std::time::Duration,
+    ) {
+        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+
+        let app_for_state = app.clone();
+        let session_state = move |session_id: Uuid| {
+            let app = app_for_state.clone();
+            async move {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                let sessions = mgr.list_sessions().await;
+                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    Some(s) => (true, s.waiting_for_input),
+                    None => (false, false),
+                }
+            }
+        };
+
+        let app_for_persist = app.clone();
+        let persist = move |cwd: PathBuf, agent: String, profile: String| {
+            let app = app_for_persist.clone();
+            async move {
+                let settings_snapshot = {
+                    let settings = app.state::<SettingsState>();
+                    let snapshot = settings.read().await.clone();
+                    snapshot
+                };
+                crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+                    &settings_snapshot,
+                    &cwd,
+                    &agent,
+                    &profile,
+                )
+            }
+        };
+
+        let app_for_restart = app.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let app = app_for_restart.clone();
+            async move {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+                let settings = app.state::<SettingsState>();
+                crate::commands::session::restart_session_inner_with_activation(
+                    &app,
+                    session_mgr.inner(),
+                    pty_mgr.inner(),
+                    settings.inner(),
+                    session_id,
+                    Some(agent),
+                    Some(profile),
+                    Some(true),
+                    true,
+                )
+                .await
+                .map(|info| info.id)
+            }
+        };
+
+        let app_for_inject = app.clone();
+        let inject = move |session_id: Uuid, prompt: &'static str| {
+            let app = app_for_inject.clone();
+            async move { crate::pty::inject::inject_text_into_session(&app, session_id, prompt).await }
+        };
+
+        let archive = move |root: PathBuf, delay: std::time::Duration| {
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(delay).await;
+                let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+                match archive_root_md(&root, "SELF-HANDOFF", &ts) {
+                    Ok(Some(p)) => log::info!(
+                        "[mailbox] self-handoff-and-switch: archived SELF-HANDOFF.md -> {}",
+                        p.display()
+                    ),
+                    Ok(None) => {}
+                    Err(e) => log::warn!(
+                        "[mailbox] self-handoff-and-switch: SELF-HANDOFF.md archive failed (non-fatal): {}",
+                        e
+                    ),
+                }
+            });
+        };
+
+        Self::drive_self_switch_after_sustained_idle(
+            original_session_id,
+            cwd,
+            target_agent,
+            target_profile,
+            pending,
+            settle,
+            poll,
+            max_defer,
+            archive_delay,
+            session_state,
+            persist,
+            restart,
+            inject,
+            archive,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn drive_self_switch_after_sustained_idle<
+        SessionState,
+        SessionFut,
+        Persist,
+        PersistFut,
+        Restart,
+        RestartFut,
+        Inject,
+        InjectFut,
+        Archive,
+    >(
+        original_session_id: Uuid,
+        cwd: PathBuf,
+        target_agent: String,
+        target_profile: String,
+        pending: Arc<crate::PendingSelfClear>,
+        settle: std::time::Duration,
+        poll: std::time::Duration,
+        max_defer: std::time::Duration,
+        archive_delay: std::time::Duration,
+        mut session_state: SessionState,
+        mut persist: Persist,
+        mut restart: Restart,
+        mut inject: Inject,
+        archive: Archive,
+    ) where
+        SessionState: FnMut(Uuid) -> SessionFut + Send + 'static,
+        SessionFut: std::future::Future<Output = (bool, bool)> + Send,
+        Persist: FnMut(PathBuf, String, String) -> PersistFut + Send + 'static,
+        PersistFut: std::future::Future<Output = Result<(), String>> + Send,
+        Restart: FnMut(Uuid, String, String) -> RestartFut + Send + 'static,
+        RestartFut: std::future::Future<Output = Result<String, String>> + Send,
+        Inject: FnMut(Uuid, &'static str) -> InjectFut + Send + 'static,
+        InjectFut: std::future::Future<Output = Result<(), String>> + Send,
+        Archive: Fn(PathBuf, std::time::Duration) + Send + 'static,
+    {
+        let mut state = SelfClearGateState::new(std::time::Instant::now());
+        let mut session_id = original_session_id;
+        let mut new_alias_id: Option<Uuid> = None;
+
+        loop {
+            tokio::time::sleep(poll).await;
+            let (present, waiting) = session_state(session_id).await;
+            let (next, action) = self_clear_gate_advance(
+                state,
+                present,
+                waiting,
+                std::time::Instant::now(),
+                settle,
+                max_defer,
+            );
+            state = next;
+
+            match action {
+                SelfClearGateAction::Wait => continue,
+                SelfClearGateAction::InjectClear => {
+                    log::info!(
+                        "[mailbox] self-handoff-and-switch: session {} idle >={}s; persisting target coding agent '{}' profile '{}' and respawning (phase 1)",
+                        session_id,
+                        settle.as_secs(),
+                        target_agent,
+                        target_profile
+                    );
+                    if let Err(e) =
+                        persist(cwd.clone(), target_agent.clone(), target_profile.clone()).await
+                    {
+                        log::warn!(
+                            "[mailbox] self-handoff-and-switch: persist failed for session {}: {}",
+                            original_session_id,
+                            e
+                        );
+                        break;
+                    }
+                    let restarted =
+                        restart(session_id, target_agent.clone(), target_profile.clone()).await;
+                    let new_id = match restarted {
+                        Ok(id) => match Uuid::parse_str(&id) {
+                            Ok(uuid) => uuid,
+                            Err(e) => {
+                                log::warn!(
+                                    "[mailbox] self-handoff-and-switch: restarted session id '{}' could not be parsed: {}",
+                                    id,
+                                    e
+                                );
+                                break;
+                            }
+                        },
+                        Err(e) => {
+                            log::warn!(
+                                "[mailbox] self-handoff-and-switch: restart failed for session {}: {}",
+                                original_session_id,
+                                e
+                            );
+                            break;
+                        }
+                    };
+                    {
+                        let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
+                        if set.insert(new_id) {
+                            new_alias_id = Some(new_id);
+                        } else {
+                            log::warn!(
+                                "[mailbox] self-handoff-and-switch: new session {} was already marked pending",
+                                new_id
+                            );
+                        }
+                    }
+                    session_id = new_id;
+                    continue;
+                }
+                SelfClearGateAction::InjectHandoff => {
+                    log::info!(
+                        "[mailbox] self-handoff-and-switch: session {} idle >={}s post-switch; injecting handoff prompt (phase 2)",
+                        session_id,
+                        settle.as_secs()
+                    );
+                    match inject(session_id, SELF_SWITCH_HANDOFF_PROMPT).await {
+                        Ok(_) => archive(cwd.clone(), archive_delay),
+                        Err(e) => log::warn!(
+                            "[mailbox] self-handoff-and-switch: handoff prompt injection failed for session {}: {}",
+                            session_id,
+                            e
+                        ),
+                    }
+                    break;
+                }
+                SelfClearGateAction::Abandon(reason) => {
+                    log::warn!(
+                        "[mailbox] self-handoff-and-switch ABANDONED for original session {} current session {}: {} (agent may re-issue)",
+                        original_session_id,
+                        session_id,
+                        reason
+                    );
+                    break;
+                }
+            }
+        }
+
+        let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
+        set.remove(&original_session_id);
+        if let Some(new_id) = new_alias_id {
+            set.remove(&new_id);
+        }
+    }
+
     /// #617 - write the self-clear queue-ack response, then move the message to
     /// delivered/. Mirrors the close-session dual-write (self-contained copy; the
     /// landed close-session block is intentionally left untouched, blast radius 0).
@@ -3270,6 +3876,50 @@ impl MailboxPoller {
                     }
                 }
                 // (2) resolved-sender path (best-effort).
+                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
+                    let responses_dir = std::path::PathBuf::from(sender_path)
+                        .join(crate::config::agent_local_dir_name())
+                        .join("responses");
+                    let _ = std::fs::create_dir_all(&responses_dir);
+                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                }
+            }
+        }
+        self.move_to_delivered(path, msg).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write_self_switch_response<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        session_id: Uuid,
+        status: &str,
+        targets: &SelfSwitchTargets,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
+        if let Some(ref rid) = msg.request_id {
+            let response = serde_json::json!({
+                "action": SELF_SWITCH_ACTION,
+                "status": status,
+                "session_id": session_id.to_string(),
+                "settle_secs": SELF_CLEAR_SETTLE_SECS,
+                "requested_by": msg.from,
+                "target_coding_agent": targets.coding_agent,
+                "target_profile": targets.profile,
+            });
+            if let Ok(json) = serde_json::to_string_pretty(&response) {
+                if !is_app_outbox {
+                    if let Some(responses_dir) = path
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .map(|ac| ac.join("responses"))
+                    {
+                        let _ = std::fs::create_dir_all(&responses_dir);
+                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    }
+                }
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
@@ -4040,6 +4690,8 @@ mod tests {
             target: None,
             force: None,
             timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
         }
     }
 
@@ -4246,6 +4898,8 @@ mod tests {
             target: None,
             force: None,
             timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
         };
         std::fs::write(&message_path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
         message_path
@@ -4332,17 +4986,16 @@ mod tests {
     fn wake_agent_command_normalizes_preferred_agent_command() {
         let agents = wake_agents();
 
-        let resolved =
-            resolve_wake_agent_command_from_sources(
-                &agents,
-                "codex",
-                None,
-                Some("claude"),
-                None,
-                None,
-            )
-            .unwrap()
-            .unwrap();
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "codex",
+            None,
+            Some("claude"),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);
@@ -4375,17 +5028,16 @@ mod tests {
     fn wake_agent_command_normalizes_last_coding_agent_command() {
         let agents = wake_agents();
 
-        let resolved =
-            resolve_wake_agent_command_from_sources(
-                &agents,
-                "auto",
-                None,
-                Some("codex"),
-                None,
-                None,
-            )
-            .unwrap()
-            .unwrap();
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "auto",
+            None,
+            Some("codex"),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);
@@ -4495,17 +5147,16 @@ mod tests {
     fn wake_agent_command_selected_agent_preserves_args() {
         let agents = wake_agents();
 
-        let resolved =
-            resolve_wake_agent_command_from_sources(
-                &agents,
-                "codex",
-                None,
-                None,
-                None,
-                Some("claude"),
-            )
-            .unwrap()
-            .unwrap();
+        let resolved = resolve_wake_agent_command_from_sources(
+            &agents,
+            "codex",
+            None,
+            None,
+            None,
+            Some("claude"),
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(resolved.shell, "codex");
         assert_eq!(resolved.shell_args, vec!["--yolo"]);
@@ -5069,7 +5720,10 @@ mod tests {
         let now = base + std::time::Duration::from_millis(1500);
         let (next, inject) = next_sustained_idle_state(true, Some(base), now, settle);
         assert_eq!(next, Some(base), "idle_since preserved while settling");
-        assert!(!inject, "must keep waiting until the full settle window elapses");
+        assert!(
+            !inject,
+            "must keep waiting until the full settle window elapses"
+        );
     }
 
     #[test]
@@ -5118,7 +5772,10 @@ mod tests {
         // proving the window genuinely restarted rather than carrying over.
         let t4 = base + std::time::Duration::from_millis(2000);
         let (_, i4) = next_sustained_idle_state(true, s3, t4, settle);
-        assert!(!i4, "must not inject until settle elapses from the RESTART point");
+        assert!(
+            !i4,
+            "must not inject until settle elapses from the RESTART point"
+        );
     }
 
     #[test]
@@ -5132,7 +5789,10 @@ mod tests {
         // now (= base) is strictly before since.
         let (next, inject) = next_sustained_idle_state(true, Some(since), base, settle);
         assert_eq!(next, Some(since), "idle_since must be preserved");
-        assert!(!inject, "a backwards clock must never be treated as settled");
+        assert!(
+            !inject,
+            "a backwards clock must never be treated as settled"
+        );
     }
 
     #[test]
@@ -5281,8 +5941,14 @@ mod tests {
         let (next, action) = self_clear_gate_advance(state, true, true, inject_now, settle, max);
         assert_eq!(action, SelfClearGateAction::InjectClear);
         assert_eq!(next.phase, SelfClearPhase::Handoff);
-        assert_eq!(next.idle_since, None, "idle clock reset for the fresh Phase 2 window");
-        assert_eq!(next.phase_started, inject_now, "phase clock restarts at the clear instant");
+        assert_eq!(
+            next.idle_since, None,
+            "idle clock reset for the fresh Phase 2 window"
+        );
+        assert_eq!(
+            next.phase_started, inject_now,
+            "phase clock restarts at the clear instant"
+        );
     }
 
     #[test]
@@ -5297,7 +5963,8 @@ mod tests {
             idle_since: Some(base),
             phase_started: base,
         };
-        let (handoff_state, a0) = self_clear_gate_advance(clear, true, true, inject_now, settle, max);
+        let (handoff_state, a0) =
+            self_clear_gate_advance(clear, true, true, inject_now, settle, max);
         assert_eq!(a0, SelfClearGateAction::InjectClear);
 
         // Immediately feed idle just after the transition: must NOT inject handoff; the fresh window
@@ -5305,7 +5972,11 @@ mod tests {
         let epsilon = std::time::Duration::from_millis(1);
         let (s2, a2) =
             self_clear_gate_advance(handoff_state, true, true, inject_now + epsilon, settle, max);
-        assert_eq!(a2, SelfClearGateAction::Wait, "pre-clear idle must not satisfy Phase 2");
+        assert_eq!(
+            a2,
+            SelfClearGateAction::Wait,
+            "pre-clear idle must not satisfy Phase 2"
+        );
         assert_eq!(s2.idle_since, Some(inject_now + epsilon));
         assert_eq!(s2.phase, SelfClearPhase::Handoff);
 
@@ -5335,7 +6006,8 @@ mod tests {
         let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
         let max = std::time::Duration::from_secs(3600);
         // Tick 1: idle starts the clock (Clear).
-        let (s1, a1) = self_clear_gate_advance(SelfClearGateState::new(base), true, true, base, settle, max);
+        let (s1, a1) =
+            self_clear_gate_advance(SelfClearGateState::new(base), true, true, base, settle, max);
         assert_eq!(a1, SelfClearGateAction::Wait);
         assert_eq!(s1.idle_since, Some(base));
         // Tick 2: busy clears the clock.
@@ -5364,7 +6036,11 @@ mod tests {
             Some(t3),
             "the busy step must restart the window; pre-busy idle does not carry over"
         );
-        assert_eq!(s4.phase, SelfClearPhase::Clear, "no settle yet, still Phase 1");
+        assert_eq!(
+            s4.phase,
+            SelfClearPhase::Clear,
+            "no settle yet, still Phase 1"
+        );
     }
 
     #[test]
@@ -5388,6 +6064,178 @@ mod tests {
     fn self_clear_action_const_pins_wire_value() {
         // FOLD-2: the single-sourced action value. A rename here is a deliberate, test-visible change.
         assert_eq!(SELF_CLEAR_ACTION, "self-handoff-and-clear");
+    }
+
+    #[test]
+    fn self_switch_handoff_prompt_is_single_line_self_contained() {
+        assert!(!SELF_SWITCH_HANDOFF_PROMPT.is_empty());
+        assert!(!SELF_SWITCH_HANDOFF_PROMPT.contains('\n'));
+        assert!(!SELF_SWITCH_HANDOFF_PROMPT.contains('\u{2014}'));
+        assert!(SELF_SWITCH_HANDOFF_PROMPT.contains("SELF-HANDOFF.md"));
+    }
+
+    #[test]
+    fn self_switch_action_const_pins_wire_value() {
+        assert_eq!(SELF_SWITCH_ACTION, "self-handoff-and-switch");
+    }
+
+    fn switch_settings() -> AppSettings {
+        AppSettings {
+            agents: wake_agents(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_switch_targets_uses_request_values_first() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let settings = switch_settings();
+
+        let targets = resolve_switch_targets(
+            &settings,
+            temp.path(),
+            Some("claude"),
+            Some("b"),
+            Some("codex"),
+            Some("C"),
+            Some("D"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            targets,
+            SelfSwitchTargets {
+                coding_agent: "claude".into(),
+                profile: "B".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_switch_targets_uses_live_recipe_before_durable_cells() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("config.json"),
+            r#"{"tooling":{"currentCodingAgent":"claude","profile":"B"}}"#,
+        )
+        .unwrap();
+        let settings = switch_settings();
+
+        let targets = resolve_switch_targets(
+            &settings,
+            temp.path(),
+            None,
+            None,
+            Some("codex"),
+            Some("C"),
+            Some("D"),
+        )
+        .unwrap();
+
+        assert_eq!(targets.coding_agent, "codex");
+        assert_eq!(targets.profile, "C");
+    }
+
+    #[test]
+    fn resolve_switch_targets_uses_requested_profile_after_effective_profile() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let settings = switch_settings();
+
+        let targets = resolve_switch_targets(
+            &settings,
+            temp.path(),
+            None,
+            None,
+            Some("codex"),
+            None,
+            Some("b"),
+        )
+        .unwrap();
+
+        assert_eq!(targets.profile, "B");
+    }
+
+    #[test]
+    fn resolve_switch_targets_uses_configured_durable_agent_when_live_agent_missing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("config.json"),
+            r#"{"tooling":{"currentCodingAgent":"claude","profile":"c"}}"#,
+        )
+        .unwrap();
+        let settings = switch_settings();
+
+        let targets =
+            resolve_switch_targets(&settings, temp.path(), None, None, None, None, None).unwrap();
+
+        assert_eq!(targets.coding_agent, "claude");
+        assert_eq!(targets.profile, "C");
+    }
+
+    #[test]
+    fn resolve_switch_targets_filters_stale_durable_agent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("config.json"),
+            r#"{"tooling":{"currentCodingAgent":"ghost","profile":"B"}}"#,
+        )
+        .unwrap();
+        let settings = switch_settings();
+
+        let err = resolve_switch_targets(&settings, temp.path(), None, None, None, None, None)
+            .unwrap_err();
+
+        assert!(err.contains("no target coding agent"));
+        assert!(err.contains("codex (Codex)"));
+    }
+
+    #[test]
+    fn resolve_switch_targets_rejects_unknown_requested_agent_with_choices() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let settings = AppSettings {
+            agents: vec![
+                wake_agent("codex-main", "Codex Main", "codex"),
+                wake_agent(
+                    "codex-research",
+                    "Codex Research",
+                    "codex --profile research",
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let err = resolve_switch_targets(
+            &settings,
+            temp.path(),
+            Some("codex"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("codex-main (Codex Main)"));
+        assert!(err.contains("codex-research (Codex Research)"));
+    }
+
+    #[test]
+    fn resolve_switch_targets_reports_empty_agent_list() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let settings = AppSettings::default();
+
+        let err = resolve_switch_targets(
+            &settings,
+            temp.path(),
+            Some("codex"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("<none configured>"));
     }
 
     // ── #626/#629 archive_root_md unit tests (tempdir, deterministic timestamp) ──
@@ -5484,7 +6332,10 @@ mod tests {
         // #629 - if the agent already moved or removed SELF-HANDOFF.md, the delayed archive is a no-op.
         let temp = tempfile::TempDir::new().unwrap();
         let res = archive_root_md(temp.path(), "SELF-HANDOFF", "20260301_121314").unwrap();
-        assert!(res.is_none(), "absent SELF-HANDOFF.md is a no-op (Ok(None))");
+        assert!(
+            res.is_none(),
+            "absent SELF-HANDOFF.md is a no-op (Ok(None))"
+        );
         let count = std::fs::read_dir(temp.path()).unwrap().count();
         assert_eq!(
             count, 0,
@@ -5547,11 +6398,7 @@ mod tests {
         std::fs::read_dir(cwd.join("self-clear"))
             .map(|rd| {
                 rd.filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.file_name()
-                            .to_string_lossy()
-                            .ends_with("_SELF-FORGET.md")
-                    })
+                    .filter(|e| e.file_name().to_string_lossy().ends_with("_SELF-FORGET.md"))
                     .count()
             })
             .unwrap_or(0)
@@ -5574,13 +6421,17 @@ mod tests {
         )
     }
 
-    fn read_self_clear_response_status(cwd: &Path, request_id: &str) -> Option<String> {
+    fn read_response_json(cwd: &Path, request_id: &str) -> Option<serde_json::Value> {
         let resp = cwd
             .join(crate::config::agent_local_dir_name())
             .join("responses")
             .join(format!("{}.json", request_id));
         let content = std::fs::read_to_string(&resp).ok()?;
-        let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn read_self_clear_response_status(cwd: &Path, request_id: &str) -> Option<String> {
+        let v = read_response_json(cwd, request_id)?;
         v.get("status").and_then(|s| s.as_str()).map(String::from)
     }
 
@@ -5688,7 +6539,11 @@ mod tests {
         assert_eq!(pending_self_clear_len(&app).await, 1);
         // The already_queued second request did NOT re-archive: still exactly one archive, and the
         // freshly re-created SELF-FORGET.md is left in place.
-        assert_eq!(count_forget_archives(&cwd), 1, "already_queued must not re-archive");
+        assert_eq!(
+            count_forget_archives(&cwd),
+            1,
+            "already_queued must not re-archive"
+        );
         assert!(
             cwd.join("SELF-FORGET.md").is_file(),
             "the re-created SELF-FORGET.md must survive an already_queued request"
@@ -5851,22 +6706,18 @@ mod tests {
         let (session_id, token) =
             seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
         seed_self_handoff(&cwd); // #626 existence gate
-        // #617 follow-up: the Root Agent exclusion was removed. A token-authorized
-        // self-clear from the Root must now queue like any other coding-agent
-        // session. Identity is still resolved solely by find_by_token, so this can
-        // only ever clear the session that owns the presented token.
+                                 // #617 follow-up: the Root Agent exclusion was removed. A token-authorized
+                                 // self-clear from the Root must now queue like any other coding-agent
+                                 // session. Identity is still resolved solely by find_by_token, so this can
+                                 // only ever clear the session that owns the presented token.
         {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
             mgr.set_is_root_agent(session_id, true).await;
         }
 
-        let (path, msg) = build_self_clear_message(
-            &cwd,
-            "msg-sc-root",
-            "rid-sc-root",
-            Some(token.to_string()),
-        );
+        let (path, msg) =
+            build_self_clear_message(&cwd, "msg-sc-root", "rid-sc-root", Some(token.to_string()));
         let poller = MailboxPoller::new();
         poller
             .handle_self_clear(&app, &path, &msg, false)
@@ -5929,9 +6780,558 @@ mod tests {
             target: None,
             force: None,
             timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
         };
         std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
         (path, msg)
+    }
+
+    struct SelfSwitchFixture {
+        _temp: tempfile::TempDir,
+        replica: PathBuf,
+        _origin: PathBuf,
+        app: tauri::App<tauri::test::MockRuntime>,
+    }
+
+    fn make_self_switch_fixture() -> SelfSwitchFixture {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-a");
+        let workspace = project.join(".ac");
+        let origin = workspace.join("_agent_dev-rust");
+        let wg_dir = workspace.join("wg-1-dev-team");
+        let replica = wg_dir.join("__agent_dev-rust");
+
+        std::fs::create_dir_all(&origin).unwrap();
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust"}"#,
+        )
+        .unwrap();
+
+        let app = make_mailbox_app(temp.path());
+        SelfSwitchFixture {
+            _temp: temp,
+            replica,
+            _origin: origin,
+            app,
+        }
+    }
+
+    async fn seed_self_switch_session(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        cwd: &Path,
+        shell: &str,
+        agent_id: Option<&str>,
+        requested_profile: Option<&str>,
+        effective_profile: Option<&str>,
+    ) -> (Uuid, Uuid) {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let session = mgr
+            .create_session(
+                shell.into(),
+                vec![],
+                cwd.to_string_lossy().to_string(),
+                agent_id.map(str::to_string),
+                agent_id.map(|id| format!("Label for {}", id)),
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        mgr.set_profile_metadata(
+            session.id,
+            requested_profile.map(str::to_string),
+            effective_profile.map(str::to_string),
+            Vec::new(),
+            false,
+            None,
+            None,
+        )
+        .await;
+        (session.id, session.token)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_self_switch_message(
+        cwd: &Path,
+        msg_id: &str,
+        request_id: &str,
+        token: Option<String>,
+        coding_agent: Option<&str>,
+        profile: Option<&str>,
+        from: &str,
+    ) -> (PathBuf, OutboxMessage) {
+        let outbox_dir = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let path = outbox_dir.join(format!("{}.json", msg_id));
+        let msg = OutboxMessage {
+            id: msg_id.into(),
+            token,
+            from: from.into(),
+            to: String::new(),
+            body: String::new(),
+            mode: String::new(),
+            get_output: false,
+            request_id: Some(request_id.into()),
+            sender_agent: None,
+            preferred_agent: String::new(),
+            priority: "normal".into(),
+            timestamp: "2026-06-28T00:00:00Z".into(),
+            command: None,
+            action: Some(SELF_SWITCH_ACTION.into()),
+            target: None,
+            force: None,
+            timeout_secs: None,
+            switch_coding_agent: coding_agent.map(str::to_string),
+            switch_profile: profile.map(str::to_string),
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
+        (path, msg)
+    }
+
+    fn read_reject_reason(cwd: &Path, msg_id: &str) -> Option<String> {
+        std::fs::read_to_string(
+            cwd.join(crate::config::agent_local_dir_name())
+                .join("outbox")
+                .join("rejected")
+                .join(format!("{}.reason.txt", msg_id)),
+        )
+        .ok()
+    }
+
+    #[tokio::test]
+    async fn handle_self_switch_valid_token_queues_with_resolved_targets() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let (session_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "codex",
+            Some("codex"),
+            Some("A"),
+            Some("B"),
+        )
+        .await;
+        seed_self_handoff(&fixture.replica);
+        std::fs::write(fixture.replica.join("SELF-FORGET.md"), "topic to forget").unwrap();
+
+        let (path, msg) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-1",
+            "rid-ss-1",
+            Some(token.to_string()),
+            Some("claude"),
+            Some("c"),
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_handoff_switch(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let response = read_response_json(&fixture.replica, "rid-ss-1").unwrap();
+        assert_eq!(response["action"], SELF_SWITCH_ACTION);
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["target_coding_agent"], "claude");
+        assert_eq!(response["target_profile"], "C");
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        assert_eq!(count_forget_archives(&fixture.replica), 1);
+        assert!(!fixture.replica.join("SELF-FORGET.md").is_file());
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            saved["tooling"]["currentCodingAgent"].is_null(),
+            "target selection is persisted by Phase 1, not queue time"
+        );
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn handle_self_switch_pending_alias_reports_already_queued() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let (session_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "codex",
+            Some("codex"),
+            None,
+            Some("A"),
+        )
+        .await;
+        seed_self_handoff(&fixture.replica);
+        std::fs::write(fixture.replica.join("SELF-FORGET.md"), "new topic").unwrap();
+        {
+            let pending = app.state::<Arc<crate::PendingSelfClear>>();
+            pending
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session_id);
+        }
+
+        let (path, msg) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-alias",
+            "rid-ss-alias",
+            Some(token.to_string()),
+            None,
+            None,
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_handoff_switch(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let response = read_response_json(&fixture.replica, "rid-ss-alias").unwrap();
+        assert_eq!(response["status"], "already_queued");
+        assert_eq!(response["target_coding_agent"], "codex");
+        assert_eq!(response["target_profile"], "A");
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        assert!(
+            fixture.replica.join("SELF-FORGET.md").is_file(),
+            "already_queued must not archive a new SELF-FORGET.md"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_self_switch_rejects_origin_before_handoff_gate() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let (_session_id, token) = seed_self_switch_session(
+            &app,
+            &fixture._origin,
+            "codex",
+            Some("codex"),
+            None,
+            Some("A"),
+        )
+        .await;
+
+        let (path, msg) = build_self_switch_message(
+            &fixture._origin,
+            "msg-ss-origin",
+            "rid-ss-origin",
+            Some(token.to_string()),
+            None,
+            None,
+            "proj-a/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_handoff_switch(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let reason = read_reject_reason(&fixture._origin, "msg-ss-origin").unwrap();
+        assert!(reason.contains("WG replica"), "{reason}");
+        assert!(!reason.contains("SELF-HANDOFF"), "{reason}");
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_self_switch_rejects_fake_replica_before_handoff_gate() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let fake = temp.path().join("__agent_fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        let (_session_id, token) =
+            seed_self_switch_session(&app, &fake, "codex", Some("codex"), None, Some("A")).await;
+
+        let (path, msg) = build_self_switch_message(
+            &fake,
+            "msg-ss-fake",
+            "rid-ss-fake",
+            Some(token.to_string()),
+            None,
+            None,
+            "proj-a:wg-1-dev-team/fake",
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_handoff_switch(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let reason = read_reject_reason(&fake, "msg-ss-fake").unwrap();
+        assert!(reason.contains("configured WG replica"), "{reason}");
+        assert!(!reason.contains("SELF-HANDOFF"), "{reason}");
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_self_switch_unknown_coding_agent_lists_configured_ids() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        {
+            let settings = app.state::<SettingsState>();
+            let mut cfg = settings.write().await;
+            cfg.agents = vec![
+                wake_agent("codex-main", "Codex Main", "codex"),
+                wake_agent(
+                    "codex-research",
+                    "Codex Research",
+                    "codex --profile research",
+                ),
+            ];
+        }
+        let (_session_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "codex",
+            Some("codex-main"),
+            None,
+            Some("A"),
+        )
+        .await;
+        seed_self_handoff(&fixture.replica);
+
+        let (path, msg) = build_self_switch_message(
+            &fixture.replica,
+            "msg-ss-unknown",
+            "rid-ss-unknown",
+            Some(token.to_string()),
+            Some("codex"),
+            None,
+            "proj-a:wg-1-dev-team/dev-rust",
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_handoff_switch(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let reason = read_reject_reason(&fixture.replica, "msg-ss-unknown").unwrap();
+        assert!(reason.contains("codex-main (Codex Main)"), "{reason}");
+        assert!(
+            reason.contains("codex-research (Codex Research)"),
+            "{reason}"
+        );
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+    }
+
+    #[tokio::test]
+    async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
+        let original_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let seen_states = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+        let persist_calls = Arc::new(Mutex::new(Vec::<(PathBuf, String, String)>::new()));
+        let restart_calls = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+        let inject_calls = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+        let archive_calls = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let alias_seen_at_inject = Arc::new(Mutex::new(false));
+
+        let state_seen = seen_states.clone();
+        let session_state = move |session_id: Uuid| {
+            let state_seen = state_seen.clone();
+            async move {
+                state_seen.lock().unwrap().push(session_id);
+                (true, true)
+            }
+        };
+
+        let persist_seen = persist_calls.clone();
+        let persist = move |cwd: PathBuf, agent: String, profile: String| {
+            let persist_seen = persist_seen.clone();
+            async move {
+                persist_seen.lock().unwrap().push((cwd, agent, profile));
+                Ok(())
+            }
+        };
+
+        let restart_seen = restart_calls.clone();
+        let restart = move |session_id: Uuid, _agent: String, _profile: String| {
+            let restart_seen = restart_seen.clone();
+            async move {
+                restart_seen.lock().unwrap().push(session_id);
+                Ok(new_id.to_string())
+            }
+        };
+
+        let pending_for_inject = pending.clone();
+        let inject_seen = inject_calls.clone();
+        let alias_seen = alias_seen_at_inject.clone();
+        let inject = move |session_id: Uuid, prompt: &'static str| {
+            let pending_for_inject = pending_for_inject.clone();
+            let inject_seen = inject_seen.clone();
+            let alias_seen = alias_seen.clone();
+            async move {
+                assert_eq!(prompt, SELF_SWITCH_HANDOFF_PROMPT);
+                inject_seen.lock().unwrap().push(session_id);
+                let set = pending_for_inject
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *alias_seen.lock().unwrap() =
+                    set.contains(&original_id) && set.contains(&session_id);
+                Ok(())
+            }
+        };
+
+        let archive_seen = archive_calls.clone();
+        let archive = move |root: PathBuf, _delay: std::time::Duration| {
+            archive_seen.lock().unwrap().push(root);
+        };
+        let cwd = PathBuf::from("C:/project/.ac/wg-1-dev-team/__agent_dev-rust");
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            cwd.clone(),
+            "claude".into(),
+            "B".into(),
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::ZERO,
+            session_state,
+            persist,
+            restart,
+            inject,
+            archive,
+        )
+        .await;
+
+        assert_eq!(*seen_states.lock().unwrap(), vec![original_id, new_id]);
+        assert_eq!(
+            *persist_calls.lock().unwrap(),
+            vec![(cwd.clone(), "claude".into(), "B".into())]
+        );
+        assert_eq!(*restart_calls.lock().unwrap(), vec![original_id]);
+        assert_eq!(*inject_calls.lock().unwrap(), vec![new_id]);
+        assert_eq!(*archive_calls.lock().unwrap(), vec![cwd]);
+        assert!(
+            *alias_seen_at_inject.lock().unwrap(),
+            "the new session id must be marked pending during Phase 2 injection"
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn self_switch_driver_restart_failure_skips_inject_and_cleans_pending() {
+        let original_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let persist_calls = Arc::new(Mutex::new(0usize));
+        let restart_calls = Arc::new(Mutex::new(0usize));
+        let inject_calls = Arc::new(Mutex::new(0usize));
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let persist_seen = persist_calls.clone();
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| {
+            let persist_seen = persist_seen.clone();
+            async move {
+                *persist_seen.lock().unwrap() += 1;
+                Ok(())
+            }
+        };
+        let restart_seen = restart_calls.clone();
+        let restart = move |_session_id: Uuid, _agent: String, _profile: String| {
+            let restart_seen = restart_seen.clone();
+            async move {
+                *restart_seen.lock().unwrap() += 1;
+                Err("destroyed but not recreated".to_string())
+            }
+        };
+        let inject_seen = inject_calls.clone();
+        let inject = move |_session_id: Uuid, _prompt: &'static str| {
+            let inject_seen = inject_seen.clone();
+            async move {
+                *inject_seen.lock().unwrap() += 1;
+                Ok(())
+            }
+        };
+        let archive = move |_root: PathBuf, _delay: std::time::Duration| {};
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            PathBuf::from("C:/x/.ac/wg-1-dev-team/__agent_dev-rust"),
+            "claude".into(),
+            "B".into(),
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::ZERO,
+            session_state,
+            persist,
+            restart,
+            inject,
+            archive,
+        )
+        .await;
+
+        assert_eq!(*persist_calls.lock().unwrap(), 1);
+        assert_eq!(*restart_calls.lock().unwrap(), 1);
+        assert_eq!(*inject_calls.lock().unwrap(), 0);
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn self_switch_driver_persist_failure_skips_restart_and_cleans_pending() {
+        let original_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let restart_calls = Arc::new(Mutex::new(0usize));
+        let inject_calls = Arc::new(Mutex::new(0usize));
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move {
+            Err("config write failed".to_string())
+        };
+        let restart_seen = restart_calls.clone();
+        let restart = move |_session_id: Uuid, _agent: String, _profile: String| {
+            let restart_seen = restart_seen.clone();
+            async move {
+                *restart_seen.lock().unwrap() += 1;
+                Ok(Uuid::new_v4().to_string())
+            }
+        };
+        let inject_seen = inject_calls.clone();
+        let inject = move |_session_id: Uuid, _prompt: &'static str| {
+            let inject_seen = inject_seen.clone();
+            async move {
+                *inject_seen.lock().unwrap() += 1;
+                Ok(())
+            }
+        };
+        let archive = move |_root: PathBuf, _delay: std::time::Duration| {};
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            PathBuf::from("C:/x/.ac/wg-1-dev-team/__agent_dev-rust"),
+            "claude".into(),
+            "B".into(),
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::ZERO,
+            session_state,
+            persist,
+            restart,
+            inject,
+            archive,
+        )
+        .await;
+
+        assert_eq!(*restart_calls.lock().unwrap(), 0);
+        assert_eq!(*inject_calls.lock().unwrap(), 0);
+        assert!(pending.0.lock().unwrap().is_empty());
     }
 
     /// Best-effort removal of one msg-id's outbox artifacts so the Root e2e tests are
@@ -6070,7 +7470,10 @@ mod tests {
             !reason.exists(),
             "canonical Root sender must NOT be rejected by either anti-spoof gate"
         );
-        assert!(!path.exists(), "message must be consumed (moved to delivered/)");
+        assert!(
+            !path.exists(),
+            "message must be consumed (moved to delivered/)"
+        );
 
         // #626: this test owns SELF-HANDOFF.md in the shared root; remove it so it does not linger.
         let _ = std::fs::remove_file(root_cwd.join("SELF-HANDOFF.md"));
