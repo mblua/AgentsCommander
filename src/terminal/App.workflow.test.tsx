@@ -327,6 +327,46 @@ describe("TerminalApp workflow", () => {
     }
   });
 
+  it("queues live output behind a delayed first native snapshot", async () => {
+    const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
+    setupTerminalTransport(fake, [
+      session({
+        id: "session-1",
+        name: "wg-1-dev-team/architect",
+        workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
+      }),
+    ]);
+    fake.onInvoke("get_screen_snapshot", () => snapshot.promise);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
+
+      const terminal = xterm.instances[0];
+      fake.emitFromBackend("pty_output", {
+        sessionId: "session-1",
+        data: [76, 73, 86, 69],
+      });
+
+      expect(terminal.writes).toHaveLength(0);
+
+      snapshot.resolve({
+        sessionId: "session-1",
+        data: [83, 78, 65, 80],
+        rows: null,
+        cols: null,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([83, 78, 65, 80]);
+      expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual([76, 73, 86, 69]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("does not request another snapshot when switching away and back to an existing terminal", async () => {
     const sessions = [
       session({
@@ -373,8 +413,9 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("keeps live output immediate when the native snapshot is unavailable", async () => {
+  it("flushes queued live output when the native snapshot is unavailable", async () => {
     const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
         id: "session-1",
@@ -382,16 +423,23 @@ describe("TerminalApp workflow", () => {
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
     ]);
+    fake.onInvoke("get_screen_snapshot", () => snapshot.promise);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
+
+      const terminal = xterm.instances[0];
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
         data: [76, 73, 86, 69],
       });
 
-      const terminal = xterm.instances[0];
+      expect(terminal.writes).toHaveLength(0);
+
+      snapshot.resolve(null);
+
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([76, 73, 86, 69]);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
@@ -403,9 +451,10 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("keeps live output immediate when the native snapshot request fails", async () => {
+  it("flushes queued live output when the native snapshot request fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
       session({
         id: "session-1",
@@ -413,17 +462,23 @@ describe("TerminalApp workflow", () => {
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
     ]);
-    fake.reject("get_screen_snapshot", "missing parser");
+    fake.onInvoke("get_screen_snapshot", () => snapshot.promise);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
+
+      const terminal = xterm.instances[0];
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
         data: [76, 73, 86, 69],
       });
 
-      const terminal = xterm.instances[0];
+      expect(terminal.writes).toHaveLength(0);
+
+      snapshot.reject("missing parser");
+
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([76, 73, 86, 69]);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
