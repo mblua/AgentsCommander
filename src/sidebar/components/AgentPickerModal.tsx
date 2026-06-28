@@ -534,6 +534,7 @@ const AgentPickerModal: Component<{
     const scope = selectedScope();
     const requested = requestedProfileForSelection();
     const effective = effectivePreview().effectiveProfile;
+    const target = targetReplicaPath();
     // #537: replica scope no longer uses the pre-apply restart toggle; the post-assign
     // "Restart now?" modal (ProjectPanel) owns the restart. Force it off so a toggle
     // value carried over from kind/workgroup scope cannot trigger a backend restart.
@@ -541,7 +542,6 @@ const AgentPickerModal: Component<{
     try {
       let updatedCount: number | undefined;
       let restartedCount: number | undefined;
-      const target = targetReplicaPath();
       // Broad-scope writes are backend-owned; only call apply for a real WG replica.
       if (target && isWgReplica()) {
         const result = await SettingsAPI.applyCodingAgentProfileSelection({
@@ -564,6 +564,7 @@ const AgentPickerModal: Component<{
           const extra = result.errors.length - 1;
           showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
           setDangerArmed(false);
+          if (scope !== "replica") setScopePreview(null);
           setBusy(false);
           runScopePreview(scope, agent.id, selectedProfile());
           return;
@@ -588,6 +589,11 @@ const AgentPickerModal: Component<{
       setError(message);
       // #537: keep unexpected apply failures as loud as the structured ones.
       showToast(message);
+      if (scope !== "replica" && target && isWgReplica()) {
+        setDangerArmed(false);
+        setScopePreview(null);
+        runScopePreview(scope, agent.id, selectedProfile());
+      }
       setBusy(false);
     }
   };

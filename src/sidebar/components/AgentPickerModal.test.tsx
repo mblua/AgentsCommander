@@ -837,6 +837,45 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
+  it("resets broad-scope confirmation and re-previews when stale fingerprint apply rejects", async () => {
+    const staleFingerprintMessage =
+      "Target selection changed. Rerun preview before applying profile selection.";
+    mockSettingsApi.applyCodingAgentProfileSelection.mockRejectedValue(
+      new Error(staleFingerprintMessage),
+    );
+    const { dispose, onSelect } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.kind");
+    await settle();
+    target<HTMLInputElement>("agentPicker.armToggle").click();
+    await settle();
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
+
+    mockSettingsApi.previewCodingAgentProfileSelection.mockClear();
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(text("agentPicker.toast")).toContain(staleFingerprintMessage);
+    expect(target<HTMLInputElement>("agentPicker.armToggle").checked).toBe(false);
+    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
+    expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledTimes(1);
+    expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "kind",
+        codingAgentId: "codex",
+        profile: "A",
+      }),
+    );
+
+    dispose();
+  });
+
   it("applies a replica-scope selection through the backend and then commits", async () => {
     const { dispose, onSelect } = renderPicker({
       agentPath: WG_REPLICA_PATH,
