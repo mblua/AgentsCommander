@@ -119,7 +119,6 @@ const AgentPickerModal: Component<{
   const [selectedScope, setSelectedScope] = createSignal<ProfileAssignmentScope>("replica");
   const [restartSessions, setRestartSessions] = createSignal(false);
   const [dangerArmed, setDangerArmed] = createSignal(false);
-  const [kindConfirmationText, setKindConfirmationText] = createSignal("");
   const [scopePreview, setScopePreview] = createSignal<PreviewCodingAgentProfileSelectionResult | null>(null);
   const [scopePreviewBusy, setScopePreviewBusy] = createSignal(false);
   const [scopePreviewError, setScopePreviewError] = createSignal("");
@@ -361,8 +360,8 @@ const AgentPickerModal: Component<{
   });
 
   // Backend scope preview — authoritative target/live-session enumeration and the
-  // fingerprint that apply re-validates. Re-runs (and clears the typed confirmation,
-  // arm checkbox, preview, fingerprint) whenever scope, coding agent, profile,
+  // fingerprint that apply re-validates. Re-runs (and clears the broad-scope
+  // confirmation checkbox, preview, fingerprint) whenever scope, coding agent, profile,
   // restart toggle, or target replica changes (#384 Frontend §4).
   const runScopePreview = (scope: ProfileAssignmentScope, agentId: string, profile: string) => {
     const target = targetReplicaPath();
@@ -402,7 +401,6 @@ const AgentPickerModal: Component<{
     // Reset every transient confirmation/preview artifact on any input change.
     previewSeq += 1;
     setDangerArmed(false);
-    setKindConfirmationText("");
     setScopePreview(null);
     setScopePreviewError("");
     setApplyErrors([]);
@@ -430,25 +428,25 @@ const AgentPickerModal: Component<{
     return profileTouched() || initialProfileShouldLaunch() ? selectedProfile() : null;
   };
 
-  // Typed confirmation phrase for the cross-workgroup `kind` scope. Must match the
-  // backend phrase exactly, including count and restart wording (#384 §7).
-  const kindPhrase = createMemo(() => {
-    const preview = scopePreview();
-    const agent = selectedAgent();
-    if (!preview || !agent) return "";
-    const restart = restartSessions() ? "WITH RESTART" : "WITHOUT RESTART";
-    return `APPLY ${agent.id}:${selectedProfile()} TO ${preview.targetCount} REPLICAS ${restart}`;
-  });
-
   const scopeCount = (scope: ProfileAssignmentScope): number => {
     const preview = scopePreview();
     if (preview && selectedScope() === scope) return preview.targetCount;
     return scope === "replica" ? 1 : 0;
   };
 
+  const scopeReplicaNoun = (count: number) => count === 1 ? "replica" : "replicas";
+
   const distinctWorkgroupCount = createMemo(() => {
     const targets = scopePreview()?.targets ?? [];
     return new Set(targets.map((t) => t.workgroupName)).size;
+  });
+
+  const confirmationLabel = createMemo(() => {
+    const scope = selectedScope();
+    const count = scopeCount(scope);
+    const noun = scopeReplicaNoun(count);
+    if (scope === "kind") return `I understand this overwrites ${count} ${noun} of this kind`;
+    return `I understand this overwrites ${count} ${noun}`;
   });
 
   const applyLabel = createMemo(() => {
@@ -523,8 +521,7 @@ const AgentPickerModal: Component<{
     if (scope === "replica") return !isRedundantReplicaSelection();
     if (!isWgReplica()) return false;
     if (scopePreviewBusy() || !scopePreview()) return false;
-    if (scope === "workgroup") return dangerArmed();
-    if (scope === "kind") return kindConfirmationText().trim() === kindPhrase();
+    if (scope === "workgroup" || scope === "kind") return dangerArmed();
     return false;
   });
 
@@ -555,18 +552,17 @@ const AgentPickerModal: Component<{
           restartSessions: restart,
           confirmedTargetFingerprint:
             scope === "replica" ? null : scopePreview()?.targetFingerprint ?? null,
-          typedConfirmation: scope === "kind" ? kindConfirmationText().trim() : null,
+          typedConfirmation: null,
         });
         if (result.errors.length > 0) {
           // Stale fingerprint / failed targets: surface errors, keep the modal open,
-          // reset the typed confirmation and re-run preview so the user re-confirms.
+          // reset the broad confirmation and re-run preview so the user re-confirms.
           setApplyErrors(result.errors);
           // #537: the assign no longer silently no-ops. Fire a loud toast with the
           // backend's human-readable message so the failure cannot be missed.
           const firstError = result.errors[0];
           const extra = result.errors.length - 1;
           showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
-          setKindConfirmationText("");
           setDangerArmed(false);
           setBusy(false);
           runScopePreview(scope, agent.id, selectedProfile());
@@ -1110,7 +1106,7 @@ const AgentPickerModal: Component<{
 
             <div class="agent-picker-bar-spacer" />
 
-            <Show when={selectedScope() === "workgroup"}>
+            <Show when={selectedScope() === "workgroup" || selectedScope() === "kind"}>
               <label class="agent-scope-arm">
                 <input
                   type="checkbox"
@@ -1119,7 +1115,7 @@ const AgentPickerModal: Component<{
                   onChange={(e) => setDangerArmed(e.currentTarget.checked)}
                   {...automationAttrs("agentPicker.armToggle", "checkbox", dangerArmed() ? "checked" : "unchecked")}
                 />
-                <span>I understand this overwrites {scopeCount("workgroup")} replicas</span>
+                <span>{confirmationLabel()}</span>
               </label>
             </Show>
 
@@ -1147,21 +1143,6 @@ const AgentPickerModal: Component<{
             </button>
           </div>
 
-          <Show when={selectedScope() === "kind"}>
-            <div class="agent-scope-confirm">
-              <label class="agent-scope-confirm-label">
-                Type to confirm: <code>{kindPhrase()}</code>
-              </label>
-              <input
-                class="agent-scope-confirm-input"
-                value={kindConfirmationText()}
-                onInput={(e) => setKindConfirmationText(e.currentTarget.value)}
-                placeholder={kindPhrase()}
-                spellcheck={false}
-                {...automationAttrs("agentPicker.kindConfirm", "textbox", applyEnabled() ? "matched" : "unmatched")}
-              />
-            </div>
-          </Show>
         </div>
       </div>
     </div>

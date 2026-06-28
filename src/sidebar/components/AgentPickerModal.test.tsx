@@ -579,7 +579,7 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  it("keeps kind apply disabled until preview succeeds and the typed phrase matches", async () => {
+  it("keeps kind apply disabled until the arm checkbox is checked", async () => {
     const { dispose } = renderPicker({
       agentPath: WG_REPLICA_PATH,
       scopeContext: WG_SCOPE_CONTEXT,
@@ -591,24 +591,19 @@ describe("AgentPickerModal", () => {
     await settle();
 
     expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
-    const phrase = target<HTMLInputElement>("agentPicker.kindConfirm").getAttribute("placeholder")!;
-    expect(phrase).toBe("APPLY codex:A TO 3 REPLICAS WITHOUT RESTART");
+    expect(maybe("agentPicker.kindConfirm")).toBeNull();
+    expect(target<HTMLInputElement>("agentPicker.armToggle").closest("label")?.textContent).toContain(
+      "I understand this overwrites 3 replicas of this kind",
+    );
 
-    const input = target<HTMLInputElement>("agentPicker.kindConfirm");
-    input.value = "APPLY codex:A TO 3 REPLICAS";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
-    expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
-
-    input.value = phrase;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+    target<HTMLInputElement>("agentPicker.armToggle").click();
     await settle();
     expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
 
     dispose();
   });
 
-  it("resets the typed confirmation when the profile changes", async () => {
+  it("resets the kind arm checkbox when the profile changes", async () => {
     const { dispose } = renderPicker({
       agentPath: WG_REPLICA_PATH,
       scopeContext: WG_SCOPE_CONTEXT,
@@ -618,22 +613,20 @@ describe("AgentPickerModal", () => {
 
     clickRadio("agentPicker.scope.kind");
     await settle();
-    const input = target<HTMLInputElement>("agentPicker.kindConfirm");
-    input.value = target<HTMLInputElement>("agentPicker.kindConfirm").getAttribute("placeholder")!;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+    target<HTMLInputElement>("agentPicker.armToggle").click();
     await settle();
     expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
 
-    // Changing the profile must reset the typed confirmation and re-disable apply.
+    // Changing the profile must reset the checkbox confirmation and re-disable apply.
     target<HTMLButtonElement>("agentPicker.profile.B").click();
     await settle();
-    expect(target<HTMLInputElement>("agentPicker.kindConfirm").value).toBe("");
+    expect(target<HTMLInputElement>("agentPicker.armToggle").checked).toBe(false);
     expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
 
     dispose();
   });
 
-  it("sends confirmedTargetFingerprint and typedConfirmation for a kind apply", async () => {
+  it("sends confirmedTargetFingerprint and null typedConfirmation for a kind apply", async () => {
     const { dispose, onSelect } = renderPicker({
       agentPath: WG_REPLICA_PATH,
       scopeContext: WG_SCOPE_CONTEXT,
@@ -643,10 +636,7 @@ describe("AgentPickerModal", () => {
 
     clickRadio("agentPicker.scope.kind");
     await settle();
-    const input = target<HTMLInputElement>("agentPicker.kindConfirm");
-    const phrase = input.getAttribute("placeholder")!;
-    input.value = phrase;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+    target<HTMLInputElement>("agentPicker.armToggle").click();
     await settle();
 
     target<HTMLButtonElement>("agentPicker.apply").click();
@@ -659,11 +649,46 @@ describe("AgentPickerModal", () => {
         profile: "A",
         restartSessions: false,
         confirmedTargetFingerprint: "fp-kind",
-        typedConfirmation: phrase,
+        typedConfirmation: null,
       }),
     );
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ scope: "kind", restartSessions: false }),
+    );
+
+    dispose();
+  });
+
+  it("keeps the restart toggle for kind scope and carries it into preview and apply", async () => {
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    await settle();
+
+    clickRadio("agentPicker.scope.kind");
+    await settle();
+
+    target<HTMLInputElement>("agentPicker.restartToggle").click();
+    await settle();
+
+    expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ scope: "kind", restartSessions: true }),
+    );
+
+    target<HTMLInputElement>("agentPicker.armToggle").click();
+    await settle();
+    target<HTMLButtonElement>("agentPicker.apply").click();
+    await settle();
+
+    expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "kind",
+        restartSessions: true,
+        confirmedTargetFingerprint: "fp-kind",
+        typedConfirmation: null,
+      }),
     );
 
     dispose();
@@ -791,9 +816,7 @@ describe("AgentPickerModal", () => {
 
     clickRadio("agentPicker.scope.kind");
     await settle();
-    const input = target<HTMLInputElement>("agentPicker.kindConfirm");
-    input.value = input.getAttribute("placeholder")!;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+    target<HTMLInputElement>("agentPicker.armToggle").click();
     await settle();
 
     target<HTMLButtonElement>("agentPicker.apply").click();
@@ -806,9 +829,10 @@ describe("AgentPickerModal", () => {
     expect(text("agentPicker.errors")).toContain("Targets changed; rerun preview.");
     expect(maybe("agentPicker.toast")).toBeTruthy();
     expect(text("agentPicker.toast")).toContain("Targets changed; rerun preview.");
-    // Modal stays open; selection is not committed; typed confirmation is reset.
+    // Modal stays open; selection is not committed; checkbox confirmation is reset.
     expect(onSelect).not.toHaveBeenCalled();
     expect(maybe("agentPicker.modal")).toBeTruthy();
+    expect(target<HTMLInputElement>("agentPicker.armToggle").checked).toBe(false);
 
     dispose();
   });
