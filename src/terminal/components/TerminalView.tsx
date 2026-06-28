@@ -21,6 +21,10 @@ interface SessionTerminal {
   terminal: Terminal;
   fitAddon: FitAddon;
   inputBuffer: string;
+  snapshotReplayRequested: boolean;
+  snapshotResizeSuppressed: boolean;
+  hasRenderedOutput: boolean;
+  replayStatus: HTMLDivElement;
 }
 
 interface TerminalViewProps {
@@ -106,6 +110,78 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
+  const setReplayStatus = (entry: SessionTerminal, message: string | null) => {
+    entry.replayStatus.textContent = message ?? "";
+    entry.replayStatus.hidden = !message;
+  };
+
+  const writeTerminalBytes = (entry: SessionTerminal, data: Uint8Array) => {
+    entry.hasRenderedOutput = true;
+    setReplayStatus(entry, null);
+    entry.terminal.write(data);
+  };
+
+  const resizeTerminalForSnapshot = (
+    entry: SessionTerminal,
+    cols: number,
+    rows: number
+  ) => {
+    entry.snapshotResizeSuppressed = true;
+    try {
+      entry.terminal.resize(cols, rows);
+    } finally {
+      entry.snapshotResizeSuppressed = false;
+    }
+  };
+
+  const replayNativeSnapshot = (sessionId: string, entry: SessionTerminal) => {
+    if (!isTauri || entry.snapshotReplayRequested) {
+      return;
+    }
+
+    entry.snapshotReplayRequested = true;
+
+    void PtyAPI.getScreenSnapshot(sessionId)
+      .then((snapshot) => {
+        if (terminals.get(sessionId) !== entry) {
+          return;
+        }
+
+        if (!snapshot || snapshot.data.length === 0) {
+          if (!entry.hasRenderedOutput) {
+            setReplayStatus(
+              entry,
+              "Terminal buffer unavailable. Resize the window to request a repaint."
+            );
+          }
+          return;
+        }
+
+        if (
+          snapshot.rows !== null &&
+          snapshot.cols !== null &&
+          (entry.terminal.rows !== snapshot.rows || entry.terminal.cols !== snapshot.cols)
+        ) {
+          resizeTerminalForSnapshot(entry, snapshot.cols, snapshot.rows);
+        }
+
+        writeTerminalBytes(entry, new Uint8Array(snapshot.data));
+
+        if (sessionId === activeSessionId) {
+          scheduleViewportSync(sessionId);
+        }
+      })
+      .catch((err) => {
+        console.warn("[terminal] snapshot replay failed:", err);
+        if (terminals.get(sessionId) === entry && !entry.hasRenderedOutput) {
+          setReplayStatus(
+            entry,
+            "Terminal buffer unavailable. Resize the window to request a repaint."
+          );
+        }
+      });
+  };
+
   const createSessionTerminal = (sessionId: string) => {
     const existing = terminals.get(sessionId);
     if (existing) {
@@ -127,6 +203,12 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     terminal.loadAddon(fitAddon);
     terminal.open(container);
 
+    const replayStatus = document.createElement("div");
+    replayStatus.className = "terminal-replay-status";
+    replayStatus.hidden = true;
+    replayStatus.setAttribute("data-ac-testid", `terminal.replay-status.${sessionId}`);
+    container.appendChild(replayStatus);
+
     try {
       const webglAddon = new WebglAddon();
       webglAddon.onContextLoss(() => {
@@ -142,6 +224,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       terminal,
       fitAddon,
       inputBuffer: "",
+      snapshotReplayRequested: false,
+      snapshotResizeSuppressed: false,
+      hasRenderedOutput: false,
+      replayStatus,
     };
 
     // Per-terminal keyboard shortcuts. Match keys via event.key (layout-aware,
@@ -227,7 +313,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
 
     terminal.onResize(({ cols, rows }) => {
-      if (activeSessionId !== sessionId) {
+      if (activeSessionId !== sessionId || entry.snapshotResizeSuppressed) {
         return;
       }
 
@@ -235,6 +321,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
 
     terminals.set(sessionId, entry);
+    replayNativeSnapshot(sessionId, entry);
     return entry;
   };
 
@@ -285,7 +372,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return;
       }
 
-      entry.terminal.write(new Uint8Array(data));
+      writeTerminalBytes(entry, new Uint8Array(data));
     });
 
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {

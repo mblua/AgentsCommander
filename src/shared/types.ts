@@ -91,6 +91,13 @@ export interface PtyOutputEvent {
   data: number[];
 }
 
+export interface PtyScreenSnapshot {
+  sessionId: string;
+  data: number[];
+  rows: number | null;
+  cols: number | null;
+}
+
 /**
  * #598 — per-agent config-folder seed. Mirrors the Rust `ConfigSeedConfig`
  * (`#[serde(rename_all = "camelCase")]`): `enabled` (serde default true) and
