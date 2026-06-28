@@ -39,6 +39,12 @@ pub struct OutboxMessage {
     /// Timeout in seconds for graceful shutdown before fallback to force-kill
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u32>,
+    /// self-handoff-and-switch target configured coding-agent entry id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch_coding_agent: Option<String>,
+    /// self-handoff-and-switch target profile slot letter A-Z.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,4 +76,62 @@ pub struct AgentInfo {
     pub path: String,
     pub teams: Vec<String>,
     pub is_coordinator_of: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_message() -> OutboxMessage {
+        OutboxMessage {
+            id: "msg-1".into(),
+            token: None,
+            from: "from".into(),
+            to: "to".into(),
+            body: String::new(),
+            mode: "wake".into(),
+            get_output: false,
+            request_id: None,
+            sender_agent: None,
+            preferred_agent: String::new(),
+            priority: "normal".into(),
+            timestamp: "2026-06-28T00:00:00Z".into(),
+            command: None,
+            action: None,
+            target: None,
+            force: None,
+            timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
+        }
+    }
+
+    #[test]
+    fn outbox_switch_fields_serialize_as_camel_case() {
+        let mut msg = base_message();
+        msg.switch_coding_agent = Some("codex-main".into());
+        msg.switch_profile = Some("B".into());
+
+        let json = serde_json::to_value(&msg).unwrap();
+
+        assert_eq!(json["switchCodingAgent"], "codex-main");
+        assert_eq!(json["switchProfile"], "B");
+        assert!(json.get("switch_coding_agent").is_none());
+    }
+
+    #[test]
+    fn outbox_switch_fields_default_when_missing() {
+        let json = serde_json::json!({
+            "id": "msg-1",
+            "from": "from",
+            "to": "to",
+            "body": "",
+            "timestamp": "2026-06-28T00:00:00Z"
+        });
+
+        let msg: OutboxMessage = serde_json::from_value(json).unwrap();
+
+        assert_eq!(msg.switch_coding_agent, None);
+        assert_eq!(msg.switch_profile, None);
+    }
 }

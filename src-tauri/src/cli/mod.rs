@@ -10,6 +10,7 @@ pub mod new_project;
 pub mod open_project;
 pub mod role_experiment;
 pub mod self_clear;
+pub mod self_switch;
 pub mod send;
 pub mod session_safety;
 pub mod task_append_body;
@@ -123,6 +124,9 @@ pub enum Commands {
     /// (two-phase, deferred: clear after 30s sustained idle, then resume-prompt after a fresh 30s)
     #[command(name = "self-handoff-and-clear")]
     SelfClear(self_clear::SelfClearArgs),
+    /// Hand off via SELF-HANDOFF.md, switch or hard-reset the caller, then resume from it
+    #[command(name = "self-handoff-and-switch")]
+    SelfSwitch(self_switch::SelfSwitchArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
     ListPeers(list_peers::ListPeersArgs),
     /// List reachable peers (lean JSON — name, working, sessionStatus, reachable, teams)
@@ -292,6 +296,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
     let code = match cmd {
         Commands::Send(args) => send::execute(args),
         Commands::SelfClear(args) => self_clear::execute(args),
+        Commands::SelfSwitch(args) => self_switch::execute(args),
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
