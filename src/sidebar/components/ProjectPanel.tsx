@@ -1236,6 +1236,14 @@ const ProjectPanel: Component = () => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
+          const communication = createMemo(() => session()?.communication ?? null);
+          const showRaiseHand = createMemo(() =>
+            isCoord() &&
+            isSessionLive(session()) &&
+            !!taskTitle &&
+            communication()?.kind === "raiseHand" &&
+            communication()?.visible === true
+          );
           const repoBadges = createMemo(() => {
             const s = session();
             return s && s.gitRepos.length > 0
@@ -1302,6 +1310,7 @@ const ProjectPanel: Component = () => {
               : "");
           const rowTestId = () =>
             `replica.row.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+          const communicationSlotTestId = () => `${rowTestId()}.communicationSlot`;
           const badgesTestId = () =>
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const repoBadgeTestId = (label: string, index: number) =>
@@ -1422,7 +1431,20 @@ const ProjectPanel: Component = () => {
               <div class={`session-item-status ${dotClass()}`} />
               <div class="replica-item-info">
                 <Show when={taskTitle}>
-                  <span class="coord-task-title" title={taskTitle ?? undefined}>{taskTitle}</span>
+                  <div class="coord-task-line">
+                    <span class="coord-task-title" title={taskTitle ?? undefined}>{taskTitle}</span>
+                    <Show when={showRaiseHand()}>
+                      <span
+                        class="coord-communication-slot"
+                        data-kind="raiseHand"
+                        data-ac-testid={communicationSlotTestId()}
+                        title="Raised hand"
+                        aria-label="Raised hand"
+                      >
+                        <span class="coord-communication-icon" aria-hidden="true">!</span>
+                      </span>
+                    </Show>
+                  </div>
                 </Show>
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                 <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
