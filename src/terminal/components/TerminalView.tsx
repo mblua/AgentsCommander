@@ -11,6 +11,7 @@ import {
 } from "../../shared/ipc";
 import { isBrowser, isTauri } from "../../shared/platform";
 import { terminalStore } from "../stores/terminal";
+import type { PtyOutputEvent } from "../../shared/types";
 import type { UnlistenFn } from "../../shared/transport";
 import { updatePromptCapture } from "./prompt-input-capture";
 import { createTerminalOptions } from "./terminal-options";
@@ -21,6 +22,13 @@ interface SessionTerminal {
   terminal: Terminal;
   fitAddon: FitAddon;
   inputBuffer: string;
+  snapshotReplayRequested: boolean;
+  snapshotReplayPending: boolean;
+  snapshotResizeSuppressed: boolean;
+  hasRenderedOutput: boolean;
+  replayStatus: HTMLDivElement;
+  pendingSnapshotEvents: PtyOutputEvent[];
+  lastAppliedSequence: number | null;
 }
 
 interface TerminalViewProps {
@@ -106,6 +114,152 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
+  const setReplayStatus = (entry: SessionTerminal, message: string | null) => {
+    entry.replayStatus.textContent = message ?? "";
+    entry.replayStatus.hidden = !message;
+  };
+
+  const writeTerminalBytes = (entry: SessionTerminal, data: Uint8Array) => {
+    entry.hasRenderedOutput = true;
+    setReplayStatus(entry, null);
+    entry.terminal.write(data);
+  };
+
+  const eventSequence = (event: PtyOutputEvent): number | null =>
+    typeof event.sequence === "number" ? event.sequence : null;
+
+  const shouldDropAlreadyAppliedEvent = (
+    entry: SessionTerminal,
+    sequence: number | null
+  ) =>
+    sequence !== null &&
+    entry.lastAppliedSequence !== null &&
+    sequence <= entry.lastAppliedSequence;
+
+  const markAppliedSequence = (entry: SessionTerminal, sequence: number | null) => {
+    if (sequence === null) {
+      return;
+    }
+
+    entry.lastAppliedSequence =
+      entry.lastAppliedSequence === null
+        ? sequence
+        : Math.max(entry.lastAppliedSequence, sequence);
+  };
+
+  const writeLivePtyOutput = (entry: SessionTerminal, event: PtyOutputEvent) => {
+    const sequence = eventSequence(event);
+
+    if (entry.snapshotReplayPending) {
+      entry.pendingSnapshotEvents.push(event);
+      return;
+    }
+
+    if (shouldDropAlreadyAppliedEvent(entry, sequence)) {
+      return;
+    }
+
+    writeTerminalBytes(entry, new Uint8Array(event.data));
+    markAppliedSequence(entry, sequence);
+  };
+
+  const finishPendingSnapshotReplay = (
+    sessionId: string,
+    entry: SessionTerminal
+  ): PtyOutputEvent[] | null => {
+    if (terminals.get(sessionId) !== entry || !entry.snapshotReplayPending) {
+      return null;
+    }
+
+    entry.snapshotReplayPending = false;
+    const pendingEvents = entry.pendingSnapshotEvents;
+    entry.pendingSnapshotEvents = [];
+    return pendingEvents;
+  };
+
+  const flushPendingEvents = (
+    entry: SessionTerminal,
+    events: PtyOutputEvent[]
+  ) => {
+    for (const event of events) {
+      writeLivePtyOutput(entry, event);
+    }
+  };
+
+  const resizeTerminalForSnapshot = (
+    entry: SessionTerminal,
+    cols: number,
+    rows: number
+  ) => {
+    entry.snapshotResizeSuppressed = true;
+    try {
+      entry.terminal.resize(cols, rows);
+    } finally {
+      entry.snapshotResizeSuppressed = false;
+    }
+  };
+
+  const replayNativeSnapshot = (sessionId: string, entry: SessionTerminal) => {
+    if (!isTauri || entry.snapshotReplayRequested) {
+      return;
+    }
+
+    entry.snapshotReplayRequested = true;
+    entry.snapshotReplayPending = true;
+    entry.pendingSnapshotEvents = [];
+
+    void PtyAPI.getScreenSnapshot(sessionId)
+      .then((snapshot) => {
+        const pendingEvents = finishPendingSnapshotReplay(sessionId, entry);
+        if (!pendingEvents) {
+          return;
+        }
+
+        if (!snapshot || snapshot.data.length === 0) {
+          flushPendingEvents(entry, pendingEvents);
+          if (!entry.hasRenderedOutput) {
+            setReplayStatus(
+              entry,
+              "Terminal buffer unavailable. Resize the window to request a repaint."
+            );
+          }
+          return;
+        }
+
+        if (
+          snapshot.rows !== null &&
+          snapshot.cols !== null &&
+          (entry.terminal.rows !== snapshot.rows || entry.terminal.cols !== snapshot.cols)
+        ) {
+          resizeTerminalForSnapshot(entry, snapshot.cols, snapshot.rows);
+        }
+
+        writeTerminalBytes(entry, new Uint8Array(snapshot.data));
+        markAppliedSequence(entry, snapshot.sequence);
+        flushPendingEvents(entry, pendingEvents);
+
+        if (sessionId === activeSessionId) {
+          scheduleViewportSync(sessionId);
+        }
+      })
+      .catch((err) => {
+        const pendingEvents = finishPendingSnapshotReplay(sessionId, entry);
+        if (!pendingEvents) {
+          return;
+        }
+
+        console.warn("[terminal] snapshot replay failed:", err);
+        flushPendingEvents(entry, pendingEvents);
+
+        if (!entry.hasRenderedOutput) {
+          setReplayStatus(
+            entry,
+            "Terminal buffer unavailable. Resize the window to request a repaint."
+          );
+        }
+      });
+  };
+
   const createSessionTerminal = (sessionId: string) => {
     const existing = terminals.get(sessionId);
     if (existing) {
@@ -127,6 +281,12 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     terminal.loadAddon(fitAddon);
     terminal.open(container);
 
+    const replayStatus = document.createElement("div");
+    replayStatus.className = "terminal-replay-status";
+    replayStatus.hidden = true;
+    replayStatus.setAttribute("data-ac-testid", `terminal.replay-status.${sessionId}`);
+    container.appendChild(replayStatus);
+
     try {
       const webglAddon = new WebglAddon();
       webglAddon.onContextLoss(() => {
@@ -142,6 +302,13 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       terminal,
       fitAddon,
       inputBuffer: "",
+      snapshotReplayRequested: false,
+      snapshotReplayPending: false,
+      snapshotResizeSuppressed: false,
+      hasRenderedOutput: false,
+      replayStatus,
+      pendingSnapshotEvents: [],
+      lastAppliedSequence: null,
     };
 
     // Per-terminal keyboard shortcuts. Match keys via event.key (layout-aware,
@@ -227,7 +394,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
 
     terminal.onResize(({ cols, rows }) => {
-      if (activeSessionId !== sessionId) {
+      if (activeSessionId !== sessionId || entry.snapshotResizeSuppressed) {
         return;
       }
 
@@ -235,6 +402,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
 
     terminals.set(sessionId, entry);
+    replayNativeSnapshot(sessionId, entry);
     return entry;
   };
 
@@ -275,7 +443,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
     resizeObserver.observe(hostRef);
 
-    unlistenPtyOutput = await onPtyOutput(({ sessionId, data }) => {
+    unlistenPtyOutput = await onPtyOutput((event) => {
+      const { sessionId } = event;
       const entry =
         terminals.get(sessionId) ?? (sessionId === activeSessionId
           ? createSessionTerminal(sessionId)
@@ -285,7 +454,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return;
       }
 
-      entry.terminal.write(new Uint8Array(data));
+      writeLivePtyOutput(entry, event);
     });
 
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {

@@ -373,11 +373,16 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
 
             let pty_mgr = state.pty_mgr.lock().unwrap();
             let snapshot = pty_mgr.get_screen_snapshot(uuid);
-            let size = pty_mgr.get_pty_size(uuid);
+            let size = snapshot
+                .as_ref()
+                .map(|snapshot| (snapshot.rows, snapshot.cols))
+                .or_else(|| pty_mgr.get_pty_size(uuid));
             drop(pty_mgr);
 
-            if let Some(data) = snapshot {
-                state.broadcaster.broadcast_pty_output(&session_id, &data);
+            if let Some(snapshot) = snapshot {
+                state
+                    .broadcaster
+                    .broadcast_pty_output(&session_id, &snapshot.data);
             }
 
             match size {

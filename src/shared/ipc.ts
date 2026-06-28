@@ -7,6 +7,7 @@ import type {
   SessionCommunication,
   SessionRepo,
   PtyOutputEvent,
+  PtyScreenSnapshot,
   AppSettings,
   LogLevel,
   UpdateInfo,
@@ -226,6 +227,9 @@ export const PtyAPI = {
 
   resize: (sessionId: string, cols: number, rows: number) =>
     transport.invoke<void>("pty_resize", { sessionId, cols, rows }),
+
+  getScreenSnapshot: (sessionId: string) =>
+    transport.invoke<PtyScreenSnapshot | null>("get_screen_snapshot", { sessionId }),
 
   /** Request screen snapshot replay for late-joining browser clients.
    *  Returns PTY dimensions so the browser can mirror them. */

@@ -6,6 +6,16 @@ use crate::pty::manager::PtyManager;
 use crate::session::session::SessionCommunicationKind;
 use crate::voice::tracker::VoiceTrackingState;
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyScreenSnapshotPayload {
+    pub session_id: String,
+    pub data: Vec<u8>,
+    pub rows: Option<u16>,
+    pub cols: Option<u16>,
+    pub sequence: u64,
+}
+
 #[tauri::command]
 pub async fn pty_write(
     app: AppHandle,
@@ -144,4 +154,31 @@ pub fn pty_resize(
         .unwrap()
         .resize(uuid, cols, rows)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_screen_snapshot(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+) -> Result<Option<PtyScreenSnapshotPayload>, String> {
+    let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+
+    let snapshot = {
+        let pty_mgr = pty_mgr
+            .lock()
+            .map_err(|_| "PtyManager lock poisoned".to_string())?;
+        pty_mgr.get_screen_snapshot(uuid)
+    };
+
+    let Some(snapshot) = snapshot else {
+        return Ok(None);
+    };
+
+    Ok(Some(PtyScreenSnapshotPayload {
+        session_id,
+        data: snapshot.data,
+        rows: Some(snapshot.rows),
+        cols: Some(snapshot.cols),
+        sequence: snapshot.sequence,
+    }))
 }
