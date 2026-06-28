@@ -248,6 +248,11 @@ const ProjectPanel: Component = () => {
     agentLabel: string;
     requestedProfile: string | null;
   } | null>(null);
+  const [editingTeamTarget, setEditingTeamTarget] = createSignal<{
+    projectPath: string;
+    teamName: string;
+  } | null>(null);
+  const closeEditTeamModal = () => setEditingTeamTarget(null);
   // #573: in-flight + error state for the prompt's restart. The old code did a
   // consume-and-clear (setRestartPrompt(null) before the async settled) with a
   // bare `.catch(console.error)`, so a failed restart vanished silently and the
@@ -434,7 +439,6 @@ const ProjectPanel: Component = () => {
         const [showNewLoop, setShowNewLoop] = createSignal(false);
         const [editingLoop, setEditingLoop] = createSignal<AcLoopSummary | null>(null);
         const [teamCtxMenu, setTeamCtxMenu] = createSignal<{ team: AcTeam; x: number; y: number } | null>(null);
-        const [editingTeam, setEditingTeam] = createSignal<AcTeam | null>(null);
         const [deletingTeam, setDeletingTeam] = createSignal<AcTeam | null>(null);
         const [deleteError, setDeleteError] = createSignal("");
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
@@ -2364,7 +2368,12 @@ const ProjectPanel: Component = () => {
                     class="session-context-option"
                     onClick={() => {
                       const menu = teamCtxMenu();
-                      if (menu) setEditingTeam(menu.team);
+                      if (menu) {
+                        setEditingTeamTarget({
+                          projectPath: proj.path,
+                          teamName: menu.team.name,
+                        });
+                      }
                       setTeamCtxMenu(null);
                     }}
                   >
@@ -2946,17 +2955,6 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
-            {/* Edit team modal */}
-            {editingTeam() && (
-              <Portal>
-                <EditTeamModal
-                  projectPath={proj.path}
-                  team={editingTeam()!}
-                  onClose={() => setEditingTeam(null)}
-                />
-              </Portal>
-            )}
-
             {/* Delete team confirmation */}
             {deletingTeam() && (
               <Portal>
@@ -3011,6 +3009,18 @@ const ProjectPanel: Component = () => {
         );
       }}
     </For>
+
+    {/* #669: hoisted out of the project row so project refreshes that replace
+        row objects do not dispose the edit modal or its unsaved local state. */}
+    {editingTeamTarget() && (
+      <Portal>
+        <EditTeamModal
+          projectPath={editingTeamTarget()!.projectPath}
+          teamName={editingTeamTarget()!.teamName}
+          onClose={closeEditTeamModal}
+        />
+      </Portal>
+    )}
 
     {/* #588 Coordinator manual-close confirmation. Hoisted to the stable
         ProjectPanel root (outside the projects <For>, like pendingLaunch) so a
