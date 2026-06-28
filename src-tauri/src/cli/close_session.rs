@@ -196,6 +196,8 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         target: Some(resolved_target),
         force: Some(args.force),
         timeout_secs: Some(args.timeout),
+        switch_coding_agent: None,
+        switch_profile: None,
     };
 
     // Write to outbox — use app outbox for root/master token, else agent's outbox
