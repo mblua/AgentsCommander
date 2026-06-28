@@ -14,17 +14,15 @@ import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
   composeEffectiveCommand,
-  effectiveEnvProjection,
   expandAcPlaceholdersPreview,
-  hasAcPlaceholder,
   isAcAgentPath,
-  isCodexAgent,
   isWgReplicaPath,
   normalizeProfileLetter,
   profileBadgeKind,
   type ProfileBadgeKind,
   profileCellCommandText,
   profileDisplayLabel,
+  profileEnvOrigin,
   resolveProfilePreview,
   sortedProfileLetters,
   targetProfileFqn,
@@ -238,42 +236,60 @@ const AgentPickerModal: Component<{
     }
     return localSelectionPreview();
   });
-  const projectedCell = createMemo(() => {
-    const agent = selectedAgent();
-    if (!agent) return EMPTY_DISPLAY_CELL;
-    return enabledLaunchCellFor(agent, effectivePreview().effectiveProfile);
+  const profileEnvEntries = (cell: ProfileCellConfig | null) =>
+    Object.entries(cell?.enabled ? cell.env : {})
+      .filter(([key]) => key.trim().length > 0)
+      .sort(([a], [b]) => a.localeCompare(b, "en", { sensitivity: "base" }))
+      .map(([key, value]) => ({
+        key,
+        value: expandAcPlaceholdersPreview(value, acRoot()),
+        origin: profileEnvOrigin(key, value),
+      }));
+  const declaredProfileEnv = (agent: AgentConfig | null, letter: string) =>
+    profileEnvEntries(profileCellFor(agent, letter));
+  const envCountText = (count: number) => `${count} env var${count === 1 ? "" : "s"}`;
+  const comparisonResolutionText = (
+    agentId: string,
+    preview: ReturnType<typeof resolveProfilePreview>,
+  ) =>
+    preview.fallbackApplied
+      ? `${profileLabel(preview.requestedProfile, agentId)} → ${profileLabel(preview.effectiveProfile, agentId)} (fallback)`
+      : `${profileLabel(preview.requestedProfile, agentId)} direct`;
+  const comparisonStatusLabel = (status: string) =>
+    status === "direct" ? "direct" : status === "fallback" ? "fallback" : "missing";
+  const comparisonRows = createMemo(() => {
+    const current = settings();
+    if (!current) return [];
+    return sortedAgents().map((agent, index) => {
+      const preview = resolveProfilePreview(current.codingAgentProfiles, agent.id, selectedProfile());
+      const cell = enabledLaunchCellFor(agent, preview.effectiveProfile);
+      const command = expandAcPlaceholdersPreview(
+        composeEffectiveCommand(agent.command, profileCellCommandText(cell)),
+        acRoot(),
+      );
+      const envEntries = profileEnvEntries(cell);
+      const status = command.trim().length === 0
+        ? "missing"
+        : preview.fallbackApplied
+        ? "fallback"
+        : "direct";
+      return {
+        agent,
+        index,
+        preview,
+        cell,
+        command,
+        envEntries,
+        status,
+        active: index === highlightIndex(),
+      };
+    });
   });
-  // #597: the effective command is the agent base command followed by the cell params.
-  // Display-only AC placeholder expansion uses the replica root.
-  const projectedCommand = createMemo(() => {
-    const cmd = composeEffectiveCommand(
-      selectedAgent()?.command ?? "",
-      profileCellCommandText(projectedCell()),
-    );
-    return expandAcPlaceholdersPreview(cmd, acRoot());
-  });
-  // #527 Effective Projection: merged effective env (agent env + profile env) with
-  // per-value origin badges, plus the chosen-pair resolution descriptors.
-  const effectiveEnv = createMemo(() =>
-    effectiveEnvProjection(selectedAgent()?.envs, projectedCell().env, acRoot()),
-  );
-  const projectionFallback = createMemo(() => effectivePreview().fallbackApplied);
-  const projectionBadgeKind = createMemo<"match" | "fallback">(() =>
-    projectionFallback() ? "fallback" : "match",
-  );
-  const resolutionText = createMemo(() =>
-    projectionFallback()
-      ? `${profileLabel(effectivePreview().requestedProfile)} → ${profileLabel(effectivePreview().effectiveProfile)} (fallback)`
-      : "Direct match",
-  );
-  const commandUsesAcPlaceholder = createMemo(() =>
-    hasAcPlaceholder(
-      composeEffectiveCommand(
-        selectedAgent()?.command ?? "",
-        profileCellCommandText(projectedCell()),
-      ),
-    ),
-  );
+  const comparisonSummary = createMemo(() => ({
+    direct: comparisonRows().filter((row) => row.status === "direct").length,
+    fallback: comparisonRows().filter((row) => row.status === "fallback").length,
+    missing: comparisonRows().filter((row) => row.status === "missing").length,
+  }));
   const providerDefaultPreview = (agent: AgentConfig) => {
     const current = settings();
     if (!current) {
@@ -292,10 +308,6 @@ const AgentPickerModal: Component<{
   };
   const backendWarnings = createMemo(() => backendPreview()?.warnings ?? []);
   const hasBackendWarnings = createMemo(() => backendWarnings().length > 0);
-  const selectedIsCodex = createMemo(() => {
-    const agent = selectedAgent();
-    return agent ? isCodexAgent(agent) : false;
-  });
 
   onMount(async () => {
     overlayRef?.focus();
@@ -316,7 +328,7 @@ const AgentPickerModal: Component<{
     setInitialProfileShouldLaunch(Boolean(currentRequested) || Boolean(acDefault));
   });
 
-  // Backend profile resolution for the projected preview (effective letter, fallback).
+  // Backend profile resolution for the selected pair (effective letter, fallback).
   createEffect(() => {
     const current = settings();
     const agent = selectedAgent();
@@ -798,6 +810,39 @@ const AgentPickerModal: Component<{
                             <span>Command </span>
                             <span>{composeEffectiveCommand(selectedAgent()?.command ?? "", profileCellCommandText(cell())) || "none"}</span>
                           </span>
+                          <Show when={selected()}>
+                            <span
+                              class="agent-profile-declared-env"
+                              data-ac-testid={`agentPicker.profile.${letter}.env`}
+                              data-ac-role="list"
+                            >
+                              <span class="agent-profile-declared-env-head">Declared env</span>
+                              <Show
+                                when={declaredProfileEnv(selectedAgent(), letter).length > 0}
+                                fallback={
+                                  <span class="agent-profile-declared-env-empty">
+                                    No declared env vars for {profileLabel(letter)}
+                                  </span>
+                                }
+                              >
+                                <span class="agent-profile-declared-env-grid">
+                                  <For each={declaredProfileEnv(selectedAgent(), letter)}>
+                                    {(entry) => (
+                                      <span
+                                        class="agent-profile-declared-env-row"
+                                        data-ac-role="row"
+                                        data-ac-env-origin={entry.origin}
+                                      >
+                                        <span class="agent-profile-declared-env-key">{entry.key}</span>
+                                        <span class="agent-profile-declared-env-value">{entry.value}</span>
+                                        <span class="agent-profile-declared-env-origin">{entry.origin}</span>
+                                      </span>
+                                    )}
+                                  </For>
+                                </span>
+                              </Show>
+                            </span>
+                          </Show>
                           <Show when={!configured()}>
                             <span class="agent-profile-token warn">
                               Fallback {letter}-&gt;{preview().effectiveProfile}
@@ -813,147 +858,119 @@ const AgentPickerModal: Component<{
 
             <section
               class="agent-profile-panel agent-projection-panel"
-              data-component="Effective projection panel"
-              {...automationAttrs("agentPicker.projected", "status")}
+              data-component="Same profile comparison panel"
+              {...automationAttrs("agentPicker.comparison", "status")}
             >
               <div class="agent-projection-head">
                 <div class="agent-projection-heading">
-                  <div class="agent-profile-panel-title">Effective Projection</div>
-                  <div class="agent-profile-panel-kicker">Projected command and env for the chosen pair</div>
-                </div>
-                <span
-                  class={`agent-projection-badge ${projectionBadgeKind()}`}
-                  data-ac-role="status"
-                  data-ac-state={projectionBadgeKind()}
-                >
-                  {projectionBadgeKind()}
-                </span>
-              </div>
-
-              {/* Chosen pair — AGENT THEN PROFILE */}
-              <div class="agent-projection-card">
-                <div class="agent-projection-card-head">
-                  <span class="agent-projection-card-title">Chosen pair</span>
-                  <span class="agent-projection-tag cyan">agent then profile</span>
-                </div>
-                <div class="agent-projection-grid">
-                  <div class="agent-projection-row" data-ac-role="row">
-                    <span class="agent-projection-label">Coding agent</span>
-                    <span class="agent-projection-value" data-component="Selected coding agent">
-                      {selectedAgent()?.label ?? "none"}
-                    </span>
-                    <span class="agent-projection-pill green">selected</span>
-                  </div>
-                  <div class="agent-projection-row" data-ac-role="row">
-                    <span class="agent-projection-label">Profile letter</span>
-                    <span class="agent-projection-value">{effectivePreview().requestedProfile}</span>
-                    <span class={`agent-projection-pill ${projectionBadgeKind() === "fallback" ? "yellow" : "green"}`}>
-                      {projectionBadgeKind()}
-                    </span>
-                  </div>
-                  <div class="agent-projection-row" data-ac-role="row">
-                    <span class="agent-projection-label">Resolution</span>
-                    <span class="agent-projection-value" data-component="Profile resolution">{resolutionText()}</span>
-                    <span class={`agent-projection-pill ${projectionBadgeKind() === "fallback" ? "yellow" : "green"}`}>
-                      {projectionBadgeKind()}
-                    </span>
+                  <div class="agent-profile-panel-title">Same Profile In Other Agents</div>
+                  <div class="agent-profile-panel-kicker">
+                    {profileLabel(selectedProfile())} compared across configured Coding Agents
                   </div>
                 </div>
               </div>
 
-              {/* Command (RESOLVED) + Env (EFFECTIVE) */}
-              <div class="agent-projection-pair">
-                <div class="agent-projection-card">
-                  <div class="agent-projection-card-head">
-                    <span class="agent-projection-card-title">Command</span>
-                    <span class="agent-projection-tag cyan">resolved</span>
-                  </div>
-                  <div class="agent-projection-command" data-component="Resolved invocation">
-                    <span class="agent-projection-command-label">Invocation</span>
-                    <span class="agent-projection-command-value">{projectedCommand() || "none"}</span>
-                  </div>
-                  <Show when={commandUsesAcPlaceholder()}>
-                    <div class="agent-projection-ph">
-                      <span class="arrow">→</span>
-                      <span>AC path placeholders expand at launch; the backend validates the path.</span>
-                    </div>
-                  </Show>
-                  <Show when={selectedIsCodex() || selectedAgent()?.isolatedHome}>
-                    <div class="agent-projection-note">
-                      Home isolation {selectedAgent()?.isolatedHome ? "enabled" : "disabled"}
-                    </div>
-                  </Show>
-                  {/* #598 — read-only hint that this agent reseeds a config
-                      folder each spawn. The winning template tier needs a live
-                      FS check the picker must not do, so we only name the dest. */}
-                  <Show
-                    when={
-                      !!selectedAgent()?.configSeed?.enabled &&
-                      !!selectedAgent()?.configSeed?.dest?.trim()
-                    }
-                  >
-                    <div class="agent-projection-note">
-                      Seeds {selectedAgent()?.configSeed?.dest?.trim()} on every spawn
-                    </div>
-                  </Show>
-                  <Show when={projectedCell().notes}>
-                    <div class="agent-projection-note">Note: {projectedCell().notes}</div>
-                  </Show>
+              <div class="agent-comparison-summary" aria-label="Profile status summary">
+                <div class="agent-comparison-summary-tile">
+                  <span class="agent-comparison-summary-value direct">{comparisonSummary().direct}</span>
+                  <span class="agent-comparison-summary-label">Direct</span>
                 </div>
+                <div class="agent-comparison-summary-tile">
+                  <span class="agent-comparison-summary-value fallback">{comparisonSummary().fallback}</span>
+                  <span class="agent-comparison-summary-label">Fallback</span>
+                </div>
+                <div class="agent-comparison-summary-tile">
+                  <span class="agent-comparison-summary-value missing">{comparisonSummary().missing}</span>
+                  <span class="agent-comparison-summary-label">Missing</span>
+                </div>
+              </div>
 
-                <div class="agent-projection-card">
-                  <div class="agent-projection-card-head">
-                    <span class="agent-projection-card-title">Env</span>
-                    <span class="agent-projection-tag cyan">effective</span>
-                  </div>
-                  <div class="agent-projection-grid" data-ac-testid="agentPicker.projectedEnv" data-ac-role="list">
-                    <Show
-                      when={effectiveEnv().length > 0}
-                      fallback={
-                        <div class="agent-projection-row">
-                          <span class="agent-projection-label">env</span>
-                          <span class="agent-projection-value">No additional env vars</span>
-                          <span class="agent-projection-pill">none</span>
-                        </div>
-                      }
+              <div class="agent-comparison-table" role="table" aria-label="Same profile comparison">
+                <div class="agent-comparison-table-head" role="row">
+                  <span>Coding Agent</span>
+                  <span>Resolution</span>
+                  <span>Command delta</span>
+                  <span>Env summary</span>
+                </div>
+                <For each={comparisonRows()}>
+                  {(row) => (
+                    <button
+                      type="button"
+                      class="agent-comparison-row"
+                      classList={{ active: row.active }}
+                      role="row"
+                      onClick={() => setHighlightIndex(row.index)}
+                      data-ac-agent-id={row.agent.id}
+                      data-ac-profile-status={row.status}
+                      data-ac-effective-profile={row.preview.effectiveProfile}
+                      data-ac-requested-profile={row.preview.requestedProfile}
+                      {...automationAttrs(
+                        `agentPicker.comparison.row.${row.agent.id}`,
+                        "button",
+                        row.active ? "active" : "inactive",
+                      )}
                     >
-                      <For each={effectiveEnv()}>
-                        {(entry) => (
-                          <div class="agent-projection-row" data-ac-role="row" data-ac-env-origin={entry.origin}>
-                            <span class="agent-projection-label">{entry.key}</span>
-                            <span class="agent-projection-value">{entry.value}</span>
-                            <span
-                              class={`agent-projection-pill ${entry.origin === "profile" ? "" : "green"}`}
-                            >
-                              {entry.origin}
-                            </span>
-                          </div>
-                        )}
-                      </For>
-                    </Show>
-                  </div>
-                </div>
+                      <span class="agent-comparison-agent-cell">
+                        <span class="agent-comparison-agent-name">{row.agent.label}</span>
+                        <span class="agent-comparison-agent-sub">
+                          {row.active ? "selected coding agent" : "configured peer"}
+                        </span>
+                      </span>
+                      <span class="agent-comparison-resolution-cell">
+                        <span
+                          class={`agent-comparison-status ${row.status}`}
+                          data-ac-role="status"
+                          data-ac-state={row.status}
+                        >
+                          {comparisonStatusLabel(row.status)}
+                        </span>
+                        <span class="agent-comparison-resolution">
+                          {comparisonResolutionText(row.agent.id, row.preview)}
+                        </span>
+                      </span>
+                      <span class="agent-comparison-command-cell">
+                        <span class="agent-comparison-command">{row.command || "none"}</span>
+                        <Show when={row.cell.notes}>
+                          <span class="agent-comparison-note">{row.cell.notes}</span>
+                        </Show>
+                      </span>
+                      <span class="agent-comparison-env-cell">
+                        <span class="agent-comparison-env-count">{envCountText(row.envEntries.length)}</span>
+                        <Show
+                          when={row.envEntries.length > 0}
+                          fallback={<span class="agent-comparison-env-muted">No profile env declared</span>}
+                        >
+                          <span class="agent-comparison-env-preview">
+                            {row.envEntries[0].key}={row.envEntries[0].value}
+                          </span>
+                        </Show>
+                      </span>
+                    </button>
+                  )}
+                </For>
               </div>
 
-              <div
-                class="agent-profile-warning-strip agent-projection-status"
-                classList={{ visible: effectivePreview().fallbackApplied || hasBackendWarnings() }}
-                data-component="Coding Agent profile fallback explanation"
-                {...automationAttrs(
-                  "agentPicker.fallback",
-                  "status",
-                  effectivePreview().fallbackApplied || hasBackendWarnings() ? "warning" : "neutral"
-                )}
-              >
-                <span>
-                  {effectivePreview().fallbackApplied
-                    ? `${profileLabel(effectivePreview().requestedProfile)} is not configured for ${selectedAgent()?.label ?? "the selected coding agent"}; launch resolves through ${profileLabel(effectivePreview().effectiveProfile)}. A remains the final fallback.`
-                    : `${selectedAgent()?.label ?? "Selected coding agent"} launches with configured ${profileLabel(selectedProfile())} parameters.`}
-                </span>
-                <Show when={hasBackendWarnings()}>
-                  <span>Profile warning: {backendWarnings().join(" ")}</span>
-                </Show>
-              </div>
+              <Show when={selectedAgent()}>
+                <div
+                  class="agent-profile-warning-strip agent-projection-status"
+                  classList={{ visible: effectivePreview().fallbackApplied || hasBackendWarnings() }}
+                  data-component="Coding Agent profile fallback explanation"
+                  {...automationAttrs(
+                    "agentPicker.fallback",
+                    "status",
+                    effectivePreview().fallbackApplied || hasBackendWarnings() ? "warning" : "neutral"
+                  )}
+                >
+                  <span>
+                    {effectivePreview().fallbackApplied
+                      ? `${profileLabel(effectivePreview().requestedProfile)} is not configured for ${selectedAgent()?.label ?? "the selected coding agent"}; launch resolves through ${profileLabel(effectivePreview().effectiveProfile)}. A remains the final fallback.`
+                      : `${selectedAgent()?.label ?? "Selected coding agent"} launches with configured ${profileLabel(selectedProfile())} parameters.`}
+                  </span>
+                  <Show when={hasBackendWarnings()}>
+                    <span>Profile warning: {backendWarnings().join(" ")}</span>
+                  </Show>
+                </div>
+              </Show>
             </section>
           </div>
         </div>

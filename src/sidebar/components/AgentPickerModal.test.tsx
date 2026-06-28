@@ -391,7 +391,7 @@ describe("AgentPickerModal", () => {
 
     expect(target("agentPicker.providers")).toBeTruthy();
     expect(target("agentPicker.profiles")).toBeTruthy();
-    expect(target("agentPicker.projected")).toBeTruthy();
+    expect(target("agentPicker.comparison")).toBeTruthy();
     expect(target("agentPicker.cancel")).toBeTruthy();
     expect(target("agentPicker.apply")).toBeTruthy();
     expect(text("agentPicker.apply")).toContain("Assign to this replica");
@@ -426,7 +426,7 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  it("updates active provider state and projected command when a coding agent is clicked", async () => {
+  it("updates active provider state and the active comparison row when a coding agent is clicked", async () => {
     const { dispose } = renderPicker({ agentPath: REPO_PATH });
     await settle();
 
@@ -434,9 +434,27 @@ describe("AgentPickerModal", () => {
     await settle();
 
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
-    // Effective Projection chosen-pair shows the selected coding agent + resolved command.
-    expect(text("agentPicker.projected")).toContain("Claude Code");
-    expect(text("agentPicker.projected")).toContain("claude --dangerously-skip-permissions");
+    expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("active");
+    expect(text("agentPicker.comparison.row.claude")).toContain("Claude Code");
+    expect(text("agentPicker.comparison.row.claude")).toContain("claude --dangerously-skip-permissions");
+
+    dispose();
+  });
+
+  it("shows declared env vars for the selected profile and keeps comparison free of profile-letter controls", async () => {
+    const { dispose } = renderPicker({ agentPath: REPO_PATH });
+    await settle();
+
+    target<HTMLButtonElement>("agentPicker.profile.B").click();
+    await settle();
+
+    expect(text("agentPicker.profile.B.env")).toContain("Declared env");
+    expect(text("agentPicker.profile.B.env")).toContain("CODEX_PROFILE");
+    expect(text("agentPicker.profile.B.env")).toContain("fast");
+    expect(target("agentPicker.comparison").querySelector("[data-ac-profile-letter]")).toBeNull();
+    expect(text("agentPicker.comparison")).toContain("Same Profile In Other Agents");
+    expect(text("agentPicker.comparison")).not.toContain("Effective Projection");
+    expect(text("agentPicker.comparison")).not.toContain("Chosen pair");
 
     dispose();
   });
@@ -475,31 +493,31 @@ describe("AgentPickerModal", () => {
     const { dispose } = renderPicker({ agentPath: REPO_PATH });
     await settle();
 
-    // Baseline: codex is the initial selection and drives the projection.
+    // Baseline: codex is the initial selection and drives the active comparison row.
     expect(target("agentPicker.provider.codex").getAttribute("data-ac-state")).toBe("active");
-    expect(text("agentPicker.projected")).toContain("Codex");
+    expect(target("agentPicker.comparison.row.codex").getAttribute("data-ac-state")).toBe("active");
 
-    // Hovering claude must NOT activate it nor update the Effective Projection.
+    // Hovering claude must NOT activate it nor update the active comparison row.
     const claudeCard = target<HTMLButtonElement>("agentPicker.provider.claude");
     claudeCard.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     claudeCard.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
     await settle();
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("inactive");
     expect(target("agentPicker.provider.codex").getAttribute("data-ac-state")).toBe("active");
-    expect(text("agentPicker.projected")).toContain("Codex");
-    expect(text("agentPicker.projected")).not.toContain("Claude Code");
+    expect(target("agentPicker.comparison.row.codex").getAttribute("data-ac-state")).toBe("active");
+    expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("inactive");
 
-    // Clicking still selects and updates the projection.
+    // Clicking still selects and updates the active comparison row.
     claudeCard.click();
     await settle();
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
-    expect(text("agentPicker.projected")).toContain("Claude Code");
-    expect(text("agentPicker.projected")).toContain("claude --dangerously-skip-permissions");
+    expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("active");
+    expect(text("agentPicker.comparison.row.claude")).toContain("claude --dangerously-skip-permissions");
 
     dispose();
   });
 
-  it("shows fallback on missing profile cards and in the projected panel", async () => {
+  it("shows fallback on missing profile cards and in the comparison row", async () => {
     const { dispose } = renderPicker({ agentPath: REPO_PATH });
     await settle();
 
@@ -510,8 +528,8 @@ describe("AgentPickerModal", () => {
     expect(text("agentPicker.profile.C")).toContain("Fallback C->B");
     expect(text("agentPicker.fallback")).toContain("C-REVIEW is not configured");
     expect(text("agentPicker.fallback")).toContain("A remains the final fallback");
-    // Effective Projection chosen-pair Resolution row reports the fallback hop.
-    expect(text("agentPicker.projected")).toContain("C-REVIEW → B-FAST (fallback)");
+    expect(text("agentPicker.comparison.row.codex")).toContain("C-REVIEW → B-FAST (fallback)");
+    expect(target("agentPicker.comparison.row.codex").getAttribute("data-ac-profile-status")).toBe("fallback");
 
     dispose();
   });
@@ -868,7 +886,7 @@ describe("AgentPickerModal", () => {
     );
     await settle();
     expect(text("agentPicker.fallback")).not.toContain("old warning");
-    expect(text("agentPicker.projected")).toContain("Claude Code");
+    expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("active");
 
     dispose();
   });

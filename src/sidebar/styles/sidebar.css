@@ -2989,7 +2989,7 @@ html.light-theme .settings-hint-warning {
 }
 
 /* #563: cosmetic-only hover affordance. Selection is click-driven — hovering a
-   card must never pre-select it or update the Effective Projection. Only color
+   card must never pre-select it or update the active comparison row. Only color
    shifts here (border width and box size are unchanged), so nothing reflows.
    `:not(.active)` keeps the selected card's distinct accent tint. */
 .agent-profile-provider-card:hover:not(.active),
@@ -3096,6 +3096,66 @@ html.light-theme .settings-hint-warning {
 .agent-profile-param span:last-child {
   color: var(--sidebar-fg);
   overflow-wrap: anywhere;
+}
+
+.agent-profile-declared-env {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 1px;
+}
+
+.agent-profile-declared-env-head {
+  color: var(--sidebar-accent);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.agent-profile-declared-env-grid {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-profile-declared-env-row {
+  display: grid;
+  grid-template-columns: minmax(82px, 0.45fr) minmax(0, 1fr) auto;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(4, 8, 14, 0.55);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.agent-profile-declared-env-key {
+  color: var(--sidebar-fg-dim);
+  text-transform: uppercase;
+}
+
+.agent-profile-declared-env-value {
+  color: var(--sidebar-fg);
+  overflow-wrap: anywhere;
+}
+
+.agent-profile-declared-env-origin {
+  justify-self: end;
+  color: var(--status-active, #35f2a6);
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.agent-profile-declared-env-empty {
+  color: var(--sidebar-fg-dim);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  line-height: 1.35;
 }
 
 .agent-profile-warning-strip {
@@ -3332,7 +3392,7 @@ html.light-theme .settings-hint-warning {
   color: var(--sidebar-fg-dim);
 }
 
-/* ── #527 Selection Screen: step guides + Effective Projection ── */
+/* ── Selection Screen: step guides + same-profile comparison ── */
 .agent-profile-panel-head {
   display: flex;
   align-items: flex-start;
@@ -3386,171 +3446,164 @@ html.light-theme .settings-hint-warning {
   min-width: 0;
 }
 
-.agent-projection-badge {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 9px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--sidebar-border);
-  color: var(--sidebar-fg-dim);
-}
-
-.agent-projection-badge.match {
-  color: var(--status-active, #35f2a6);
-  border-color: rgba(53, 242, 166, 0.4);
-  background: rgba(53, 242, 166, 0.12);
-}
-
-.agent-projection-badge.fallback {
-  color: var(--status-pending, #f8c657);
-  border-color: rgba(248, 198, 87, 0.4);
-  background: rgba(248, 198, 87, 0.12);
-}
-
-.agent-projection-card {
+.agent-comparison-summary {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+.agent-comparison-summary-tile {
+  display: grid;
+  gap: 2px;
   min-width: 0;
-  padding: 10px;
+  padding: 9px;
   border: 1px solid var(--sidebar-border);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
 }
 
-.agent-projection-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-xs);
-}
-
-.agent-projection-card-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--sidebar-fg);
-}
-
-.agent-projection-tag {
-  padding: 2px 6px;
-  border-radius: 999px;
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  border: 1px solid var(--sidebar-border);
-  color: var(--sidebar-fg-dim);
-  white-space: nowrap;
-}
-
-.agent-projection-tag.cyan {
-  color: var(--sidebar-accent);
-  border-color: rgba(0, 212, 255, 0.28);
-  background: rgba(0, 212, 255, 0.1);
-}
-
-.agent-projection-grid {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-
-.agent-projection-row {
-  display: grid;
-  grid-template-columns: minmax(92px, 0.5fr) minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-  background: rgba(4, 8, 14, 0.4);
+.agent-comparison-summary-value {
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.agent-comparison-summary-value.direct {
+  color: var(--status-active, #35f2a6);
+}
+
+.agent-comparison-summary-value.fallback {
+  color: var(--status-pending, #f8c657);
+}
+
+.agent-comparison-summary-value.missing {
+  color: var(--status-exited, #ff5d5d);
+}
+
+.agent-comparison-summary-label {
+  color: var(--sidebar-fg-dim);
   font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.agent-comparison-table {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.agent-comparison-table-head,
+.agent-comparison-row {
+  display: grid;
+  grid-template-columns: minmax(118px, 0.7fr) minmax(116px, 0.62fr) minmax(180px, 1.08fr) minmax(130px, 0.72fr);
+  gap: 8px;
+  min-width: 640px;
+}
+
+.agent-comparison-table-head {
+  padding: 8px;
+  color: var(--sidebar-fg-dim);
+  background: rgba(4, 8, 14, 0.7);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-comparison-row {
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  background: transparent;
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  text-align: left;
+}
+
+.agent-comparison-row:hover,
+.agent-comparison-row.active {
+  background: rgba(0, 212, 255, 0.065);
+}
+
+.agent-comparison-row.active {
+  box-shadow: inset 2px 0 0 var(--sidebar-accent);
+}
+
+.agent-comparison-agent-cell,
+.agent-comparison-resolution-cell,
+.agent-comparison-command-cell,
+.agent-comparison-env-cell {
+  display: grid;
+  align-content: start;
+  gap: 4px;
   min-width: 0;
 }
 
-.agent-projection-label {
-  color: var(--sidebar-fg-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
+.agent-comparison-agent-name {
+  color: var(--sidebar-fg);
+  font-weight: 800;
 }
 
-.agent-projection-value {
-  color: var(--sidebar-fg);
+.agent-comparison-agent-sub,
+.agent-comparison-note,
+.agent-comparison-env-muted,
+.agent-comparison-env-preview {
+  color: var(--sidebar-fg-dim);
+  line-height: 1.35;
+}
+
+.agent-comparison-resolution,
+.agent-comparison-command,
+.agent-comparison-env-count,
+.agent-comparison-env-preview {
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+}
+
+.agent-comparison-resolution,
+.agent-comparison-command,
+.agent-comparison-env-preview {
   overflow-wrap: anywhere;
 }
 
-.agent-projection-pill {
-  justify-self: end;
-  padding: 1px 6px;
+.agent-comparison-status {
+  justify-self: start;
+  padding: 2px 6px;
+  border: 1px solid var(--sidebar-border);
   border-radius: 999px;
   font-size: 8px;
   font-weight: 800;
-  text-transform: uppercase;
   letter-spacing: 0.03em;
-  border: 1px solid var(--sidebar-border);
-  color: var(--sidebar-fg-dim);
-  white-space: nowrap;
+  text-transform: uppercase;
 }
 
-.agent-projection-pill.green {
+.agent-comparison-status.direct {
   color: var(--status-active, #35f2a6);
   border-color: rgba(53, 242, 166, 0.35);
   background: rgba(53, 242, 166, 0.1);
 }
 
-.agent-projection-pill.yellow {
+.agent-comparison-status.fallback {
   color: var(--status-pending, #f8c657);
   border-color: rgba(248, 198, 87, 0.4);
   background: rgba(248, 198, 87, 0.12);
 }
 
-.agent-projection-pair {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 10px;
-  min-width: 0;
+.agent-comparison-status.missing {
+  color: var(--status-exited, #ff5d5d);
+  border-color: rgba(255, 93, 93, 0.4);
+  background: rgba(255, 93, 93, 0.1);
 }
 
-.agent-projection-command {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  align-items: baseline;
-  padding: 7px 8px;
-  border-radius: var(--radius-sm);
-  background: rgba(4, 8, 14, 0.55);
-  font-family: "Cascadia Code", "JetBrains Mono", monospace;
-  font-size: 10px;
-}
-
-.agent-projection-command-label {
-  color: var(--sidebar-fg-dim);
-}
-
-.agent-projection-command-value {
+.agent-comparison-env-count {
   color: var(--sidebar-fg);
-  overflow-wrap: anywhere;
-}
-
-.agent-projection-ph {
-  display: flex;
-  gap: 6px;
-  font-family: "Cascadia Code", "JetBrains Mono", monospace;
-  font-size: 9.5px;
-  color: var(--sidebar-fg-dim);
-  line-height: 1.4;
-}
-
-.agent-projection-ph .arrow {
-  color: var(--status-active, #35f2a6);
-  font-weight: 800;
-}
-
-.agent-projection-note {
-  font-size: 10px;
-  color: var(--sidebar-fg-dim);
+  font-weight: 700;
 }
 
 .agent-picker-bar {
