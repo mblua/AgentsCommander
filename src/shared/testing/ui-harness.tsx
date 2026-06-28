@@ -179,6 +179,7 @@ export function session(overrides: Partial<Session> = {}): Session {
     workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
     status: "running",
     waitingForInput: false,
+    communication: null,
     pendingReview: false,
     lastPrompt: null,
     agentId: null,

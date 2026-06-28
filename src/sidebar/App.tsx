@@ -12,6 +12,7 @@ import {
   onSessionDestroyed,
   onSessionSwitched,
   onSessionRenamed,
+  onSessionCommunicationChanged,
   onSessionIdle,
   onSessionBusy,
   onSessionGitRepos,
@@ -282,6 +283,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       const allRepos = await ReposAPI.search("");
       sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
     } catch {}
+
+    unlisteners.push(
+      await onSessionCommunicationChanged(({ sessionId, communication }) => {
+        sessionsStore.setCommunication(sessionId, communication);
+      })
+    );
 
     // Load initial sessions
     const sessions = await SessionAPI.list();

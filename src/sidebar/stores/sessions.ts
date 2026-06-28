@@ -1,7 +1,7 @@
 import { createMemo, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
-import type { RepoMatch, Session, SessionRepo, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
+import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
 import { projectStore } from "./project";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
@@ -348,6 +348,10 @@ export const sessionsStore = {
     if (!waiting) {
       setState("sessions", (s) => s.id === id, "pendingReview", false);
     }
+  },
+
+  setCommunication(sessionId: string, communication: SessionCommunication | null) {
+    setState("sessions", (s) => s.id === sessionId, "communication", communication);
   },
 
   setGitRepos(sessionId: string, repos: SessionRepo[]) {
