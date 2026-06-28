@@ -788,7 +788,7 @@ export interface PreviewCodingAgentProfileSelectionResult {
   liveSessionCount: number;
   /** Hash of (codingAgentId, profile, restart, sorted canonical target paths). */
   targetFingerprint: string;
-  /** True for `kind`; requires the typed confirmation phrase. */
+  /** Backend confirmation hint; frontend broad scopes use a checkbox confirmation gate. */
   requiresExplicitConfirmation: boolean;
   targets: ProfileAssignmentTarget[];
   warnings: string[];
@@ -802,7 +802,7 @@ export interface ApplyCodingAgentProfileSelectionRequest {
   restartSessions: boolean;
   /** Required for `kind`/`workgroup`; `null` allowed for single-target `replica`. */
   confirmedTargetFingerprint?: string | null;
-  /** Required for `kind`; the exact typed phrase from the preview. */
+  /** Legacy typed confirmation field; frontend sends `null` and relies on fingerprint + checkbox confirmation. */
   typedConfirmation?: string | null;
 }
 

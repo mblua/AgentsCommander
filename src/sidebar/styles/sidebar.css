@@ -3643,33 +3643,6 @@ html.light-theme .settings-hint-warning {
   color: var(--status-exited, #ff5d5d);
 }
 
-.agent-scope-confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.agent-scope-confirm-label {
-  font-size: 10px;
-  color: var(--sidebar-fg-dim);
-}
-
-.agent-scope-confirm-label code {
-  font-family: "Cascadia Code", "JetBrains Mono", monospace;
-  color: var(--status-exited, #ff5d5d);
-}
-
-.agent-scope-confirm-input {
-  width: 100%;
-  padding: var(--spacing-xs) var(--spacing-sm);
-  border: 1px solid var(--sidebar-border);
-  border-radius: var(--radius-sm);
-  background: var(--sidebar-hover);
-  color: var(--sidebar-fg);
-  font-family: "Cascadia Code", "JetBrains Mono", monospace;
-  font-size: var(--font-size-sm);
-}
-
 @media (max-width: 900px) {
   .agent-profile-assignment-body {
     grid-template-columns: 1fr;

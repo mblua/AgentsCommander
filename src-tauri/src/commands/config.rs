@@ -510,7 +510,9 @@ pub async fn preview_coding_agent_profile_selection(
         target_count: enumeration.targets.len(),
         live_session_count,
         target_fingerprint,
-        requires_explicit_confirmation: request.scope == ProfileAssignmentScope::Kind,
+        requires_explicit_confirmation: profile_assignment_requires_explicit_confirmation(
+            &request.scope,
+        ),
         targets: enumeration.targets,
         warnings: enumeration.warnings,
     })
@@ -546,11 +548,7 @@ pub async fn apply_coding_agent_profile_selection(
         request.restart_sessions,
         &enumeration.canonical_target_paths,
     );
-    validate_profile_assignment_confirmation(
-        &request,
-        &target_fingerprint,
-        enumeration.targets.len(),
-    )?;
+    validate_profile_assignment_confirmation(&request, &target_fingerprint)?;
 
     if request.restart_sessions {
         prevalidate_profile_assignment_restarts(
@@ -688,10 +686,13 @@ fn normalize_profile_letter_for_assignment(profile: &str) -> Result<String, Stri
         .ok_or_else(|| "Profile must be a single letter A through Z".to_string())
 }
 
+fn profile_assignment_requires_explicit_confirmation(scope: &ProfileAssignmentScope) -> bool {
+    *scope != ProfileAssignmentScope::Replica
+}
+
 fn validate_profile_assignment_confirmation(
     request: &ApplyCodingAgentProfileSelectionRequest,
     fingerprint: &str,
-    target_count: usize,
 ) -> Result<(), String> {
     if request.scope != ProfileAssignmentScope::Replica {
         match request.confirmed_target_fingerprint.as_deref() {
@@ -709,24 +710,6 @@ fn validate_profile_assignment_confirmation(
                 "Target selection changed. Rerun preview before applying profile selection."
                     .to_string(),
             );
-        }
-    }
-
-    if request.scope == ProfileAssignmentScope::Kind {
-        let restart = if request.restart_sessions {
-            "WITH RESTART"
-        } else {
-            "WITHOUT RESTART"
-        };
-        let expected = format!(
-            "APPLY {}:{} TO {} REPLICAS {}",
-            request.coding_agent_id,
-            normalize_profile_letter_for_assignment(&request.profile)?,
-            target_count,
-            restart
-        );
-        if request.typed_confirmation.as_deref() != Some(expected.as_str()) {
-            return Err("Typed confirmation does not match the current target preview".to_string());
         }
     }
     Ok(())
@@ -1422,6 +1405,23 @@ mod tests {
         Arc::new(RwLock::new(settings))
     }
 
+    fn profile_assignment_request(
+        scope: super::ProfileAssignmentScope,
+        confirmed_target_fingerprint: Option<&str>,
+        typed_confirmation: Option<&str>,
+    ) -> super::ApplyCodingAgentProfileSelectionRequest {
+        super::ApplyCodingAgentProfileSelectionRequest {
+            target_replica_path: "C:/ac/wg-1/__agent_dev-rust".to_string(),
+            coding_agent_id: "dev-rust".to_string(),
+            profile: "B".to_string(),
+            scope,
+            restart_sessions: false,
+            confirmed_target_fingerprint: confirmed_target_fingerprint
+                .map(|value| value.to_string()),
+            typed_confirmation: typed_confirmation.map(|value| value.to_string()),
+        }
+    }
+
     #[test]
     fn profile_assignment_fingerprint_uses_typed_fields() {
         let targets = vec!["c:/ac/wg-1/__agent_a".to_string()];
@@ -1439,6 +1439,62 @@ mod tests {
         assert_ne!(ab_c, a_bc);
         assert_ne!(ab_c, restart);
         assert_ne!(ab_c, other_targets);
+    }
+
+    #[test]
+    fn profile_assignment_confirmation_hint_tracks_broad_scopes() {
+        assert!(!super::profile_assignment_requires_explicit_confirmation(
+            &super::ProfileAssignmentScope::Replica
+        ));
+        assert!(super::profile_assignment_requires_explicit_confirmation(
+            &super::ProfileAssignmentScope::Workgroup
+        ));
+        assert!(super::profile_assignment_requires_explicit_confirmation(
+            &super::ProfileAssignmentScope::Kind
+        ));
+    }
+
+    #[test]
+    fn kind_assignment_accepts_fingerprint_without_typed_confirmation() {
+        let request =
+            profile_assignment_request(super::ProfileAssignmentScope::Kind, Some("fp-kind"), None);
+
+        assert_eq!(
+            super::validate_profile_assignment_confirmation(&request, "fp-kind"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn kind_assignment_ignores_legacy_typed_confirmation() {
+        let request = profile_assignment_request(
+            super::ProfileAssignmentScope::Kind,
+            Some("fp-kind"),
+            Some("not the old exact phrase"),
+        );
+
+        assert_eq!(
+            super::validate_profile_assignment_confirmation(&request, "fp-kind"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn broad_assignment_rejects_missing_or_stale_fingerprint() {
+        for scope in [
+            super::ProfileAssignmentScope::Kind,
+            super::ProfileAssignmentScope::Workgroup,
+        ] {
+            let missing = profile_assignment_request(scope.clone(), None, None);
+            let err = super::validate_profile_assignment_confirmation(&missing, "current-fp")
+                .unwrap_err();
+            assert!(err.contains("Target selection changed"), "{err}");
+
+            let stale = profile_assignment_request(scope, Some("old-fp"), None);
+            let err =
+                super::validate_profile_assignment_confirmation(&stale, "current-fp").unwrap_err();
+            assert!(err.contains("Target selection changed"), "{err}");
+        }
     }
 
     #[test]
