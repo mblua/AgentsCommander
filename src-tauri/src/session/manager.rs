@@ -4,7 +4,10 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::profile::CodingAgentKind;
-use super::session::{Session, SessionInfo, SessionRepo, SessionStatus};
+use super::session::{
+    Session, SessionCommunication, SessionCommunicationKind, SessionInfo, SessionRepo,
+    SessionStatus,
+};
 use crate::config::settings::WindowGeometry;
 use crate::errors::AppError;
 
@@ -61,6 +64,7 @@ impl SessionManager {
             working_directory,
             status: SessionStatus::Running,
             waiting_for_input: false,
+            communication: None,
             pending_review: false,
             last_prompt: None,
             agent_id,
@@ -290,7 +294,9 @@ impl SessionManager {
                 // is_coordinator || agent_id guard above is the real scope gate.
                 // `s.id` is already a Uuid (Copy), so no parse is needed.
                 let fqn = crate::config::teams::agent_fqn_from_path(&s.working_directory);
-                let team_key = fqn.rsplit_once('/').map(|(team, _agent)| team.to_string())?;
+                let team_key = fqn
+                    .rsplit_once('/')
+                    .map(|(team, _agent)| team.to_string())?;
                 Some((s.id, team_key))
             })
             .collect()
@@ -341,7 +347,7 @@ impl SessionManager {
         out
     }
 
-    pub async fn mark_exited(&self, id: Uuid, code: i32) {
+    pub async fn mark_exited(&self, id: Uuid, code: i32) -> bool {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
             log::info!(
@@ -351,8 +357,16 @@ impl SessionManager {
                 s.status,
                 code
             );
+            let cleared_raise_hand = s.communication.as_ref().is_some_and(|communication| {
+                communication.kind == SessionCommunicationKind::RaiseHand && communication.visible
+            });
+            if cleared_raise_hand {
+                s.communication = None;
+            }
             s.status = SessionStatus::Exited(code);
+            return cleared_raise_hand;
         }
+        false
     }
 
     /// Clear the active session if it matches the given ID.
@@ -414,6 +428,51 @@ impl SessionManager {
         if let Some(s) = sessions.get_mut(&id) {
             s.last_prompt = Some(prompt);
         }
+    }
+
+    pub async fn raise_hand(
+        &self,
+        id: Uuid,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Option<(bool, SessionCommunication)> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions.get_mut(&id)?;
+        if !session.is_coordinator || matches!(session.status, SessionStatus::Exited(_)) {
+            return None;
+        }
+
+        if let Some(existing) = session.communication.as_ref() {
+            if existing.kind == SessionCommunicationKind::RaiseHand && existing.visible {
+                return Some((false, existing.clone()));
+            }
+        }
+
+        let communication = SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: updated_at.to_rfc3339(),
+        };
+        session.communication = Some(communication.clone());
+        Some((true, communication))
+    }
+
+    pub async fn clear_communication_if_kind(
+        &self,
+        id: Uuid,
+        kind: SessionCommunicationKind,
+    ) -> bool {
+        let mut sessions = self.sessions.write().await;
+        let Some(session) = sessions.get_mut(&id) else {
+            return false;
+        };
+        let should_clear = session
+            .communication
+            .as_ref()
+            .is_some_and(|communication| communication.kind == kind && communication.visible);
+        if should_clear {
+            session.communication = None;
+        }
+        should_clear
     }
 
     /// (#630/#631) Stamp the durable resume intent. Used by the restart path and
@@ -743,6 +802,218 @@ mod tests {
             !mgr.clear_start_fresh_on_restore_if_set(Uuid::new_v4())
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn raise_hand_coordinator_running_session_stores_communication() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-28T17:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let raised = mgr.raise_hand(session.id, now).await;
+
+        let Some((changed, communication)) = raised else {
+            panic!("coordinator should accept raise-hand");
+        };
+        assert!(changed);
+        assert_eq!(communication.kind, SessionCommunicationKind::RaiseHand);
+        assert!(communication.visible);
+        assert_eq!(communication.updated_at, now.to_rfc3339());
+        let stored = mgr.get_session(session.id).await.unwrap();
+        assert_eq!(stored.communication, Some(communication.clone()));
+        let infos = mgr.list_sessions().await;
+        assert_eq!(infos[0].communication, Some(communication));
+    }
+
+    #[tokio::test]
+    async fn raise_hand_second_request_returns_existing_without_mutation() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        let first = chrono::DateTime::parse_from_rfc3339("2026-06-28T17:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let second = chrono::DateTime::parse_from_rfc3339("2026-06-28T18:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let (_, first_comm) = mgr.raise_hand(session.id, first).await.unwrap();
+        let second_result = mgr.raise_hand(session.id, second).await;
+
+        assert_eq!(second_result, Some((false, first_comm.clone())));
+        let stored = mgr.get_session(session.id).await.unwrap();
+        assert_eq!(stored.communication, Some(first_comm));
+    }
+
+    #[tokio::test]
+    async fn raise_hand_non_coordinator_returns_none() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        assert!(mgr
+            .raise_hand(session.id, chrono::Utc::now())
+            .await
+            .is_none());
+        assert!(mgr
+            .get_session(session.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn raise_hand_exited_coordinator_returns_none() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        assert!(!mgr.mark_exited(session.id, 0).await);
+
+        assert!(mgr
+            .raise_hand(session.id, chrono::Utc::now())
+            .await
+            .is_none());
+        assert!(mgr
+            .get_session(session.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn raise_hand_clear_removes_visible_raise_hand_once() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .unwrap();
+
+        assert!(
+            mgr.clear_communication_if_kind(session.id, SessionCommunicationKind::RaiseHand)
+                .await
+        );
+        assert!(mgr
+            .get_session(session.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+        assert!(
+            !mgr.clear_communication_if_kind(session.id, SessionCommunicationKind::RaiseHand)
+                .await
+        );
+        assert!(
+            !mgr.clear_communication_if_kind(Uuid::new_v4(), SessionCommunicationKind::RaiseHand)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn raise_hand_mark_exited_clears_visible_state() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .unwrap();
+
+        assert!(mgr.mark_exited(session.id, 7).await);
+        let stored = mgr.get_session(session.id).await.unwrap();
+        assert!(matches!(stored.status, SessionStatus::Exited(7)));
+        assert!(stored.communication.is_none());
+        let infos = mgr.list_sessions().await;
+        assert!(infos[0].communication.is_none());
+    }
+
+    #[tokio::test]
+    async fn raise_hand_mark_exited_returns_false_without_visible_state() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        assert!(!mgr.mark_exited(session.id, 0).await);
+        assert!(mgr
+            .get_session(session.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
     }
 
     #[tokio::test]
@@ -1090,7 +1361,15 @@ mod tests {
     async fn agent_team_members_includes_agent_owned_excludes_adhoc() {
         let mgr = SessionManager::new();
         let coord = mgr
-            .create_session("claude".into(), vec![], COORD_CWD.into(), None, None, vec![], true)
+            .create_session(
+                "claude".into(),
+                vec![],
+                COORD_CWD.into(),
+                None,
+                None,
+                vec![],
+                true,
+            )
             .await
             .unwrap();
         // agent_id set, not a coordinator -> still agent-owned.
@@ -1132,7 +1411,15 @@ mod tests {
     async fn coordinator_refs_by_team_maps_team_to_coordinator() {
         let mgr = SessionManager::new();
         let coord = mgr
-            .create_session("claude".into(), vec![], COORD_CWD.into(), None, None, vec![], true)
+            .create_session(
+                "claude".into(),
+                vec![],
+                COORD_CWD.into(),
+                None,
+                None,
+                vec![],
+                true,
+            )
             .await
             .unwrap();
         // A non-coordinator agent must NOT appear in the refs map.
@@ -1161,7 +1448,15 @@ mod tests {
     async fn coordinator_ids_by_team_maps_team_to_coordinator_id() {
         let mgr = SessionManager::new();
         let coord = mgr
-            .create_session("claude".into(), vec![], COORD_CWD.into(), None, None, vec![], true)
+            .create_session(
+                "claude".into(),
+                vec![],
+                COORD_CWD.into(),
+                None,
+                None,
+                vec![],
+                true,
+            )
             .await
             .unwrap();
         // A non-coordinator agent on the same team must NOT appear (only the coordinator).

@@ -3,6 +3,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
+use crate::session::session::SessionCommunicationKind;
 use crate::voice::tracker::VoiceTrackingState;
 
 #[tauri::command]
@@ -64,8 +65,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     // MUST run before the coordinator-only early return below so non-coordinator
     // members re-arm too.
     {
-        let mgr =
-            app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
         let cleared = mgr
             .read()
             .await
@@ -77,16 +77,31 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         }
     }
 
+    let cleared_raise_hand = {
+        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let manager = {
+            let guard = mgr.read().await;
+            guard.clone()
+        };
+        manager
+            .clear_communication_if_kind(session_id, SessionCommunicationKind::RaiseHand)
+            .await
+    };
+    if cleared_raise_hand {
+        let _ = app.emit(
+            "session_communication_changed",
+            serde_json::json!({ "sessionId": session_id.to_string(), "communication": null }),
+        );
+    }
+
     // (b) badge: reset only when the typed-to session is a coordinator.
     let cwd = {
-        let mgr = app
-            .state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
         let cwd = mgr.read().await.coordinator_cwd(session_id).await;
         cwd
     };
     let Some(cwd) = cwd else { return };
-    let Some(clocks) =
-        app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+    let Some(clocks) = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
     else {
         return;
     };

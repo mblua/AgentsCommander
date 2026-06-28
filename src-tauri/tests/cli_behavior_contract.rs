@@ -168,6 +168,7 @@ fn root_help_lists_public_subcommands() {
         "create-agent",
         "create-agent-matrix",
         "close-session",
+        "raise-hand",
         "task-set-title",
         "task-append-body",
         "open-project",
@@ -274,6 +275,7 @@ fn public_subcommand_help_contracts() {
             &["close-session", "--help"],
             &["--token", "--root", "--target"],
         ),
+        (&["raise-hand", "--help"], &["--token", "--root", "OUTPUT"]),
         (
             &["task-set-title", "--help"],
             &["--token", "--root", "--title"],
@@ -353,6 +355,7 @@ fn token_gated_commands_missing_token_contracts() {
         &["send", "--to", "Project:wg-1/dev", "--root", &root_s],
         &["list-peers", "--root", &root_s],
         &["list-peers-lean", "--root", &root_s],
+        &["raise-hand", "--root", &root_s],
         &[
             "close-session",
             "--root",
@@ -413,6 +416,7 @@ fn token_gated_commands_invalid_token_redaction_contracts() {
             "--target",
             "Project:wg-1/dev",
         ],
+        &["raise-hand", "--token", LEAK_PROBE_TOKEN, "--root", &root_s],
         &[
             "task-set-title",
             "--token",
@@ -463,6 +467,7 @@ fn token_gated_commands_missing_root_contracts() {
     let cases: &[&[&str]] = &[
         &["list-peers", "--token", VALID_TOKEN],
         &["list-peers-lean", "--token", VALID_TOKEN],
+        &["raise-hand", "--token", VALID_TOKEN],
         &[
             "close-session",
             "--token",

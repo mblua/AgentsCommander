@@ -374,8 +374,8 @@ fn expand_env_var_refs(input: &str) -> String {
         match after.find('%') {
             Some(end) => {
                 let name = &after[..end];
-                let valid = !name.is_empty()
-                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                let valid =
+                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
                 if valid {
                     if let Ok(v) = std::env::var(name) {
                         buf.push_str(&v);
@@ -924,8 +924,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         .map(|p| p.is_dir())
         .unwrap_or(false);
     let is_claude = agent_kind == Some(CodingAgentKind::Claude);
-    let will_inject_continue =
-        should_inject_continue(is_claude, skip_auto_resume, claude_project_exists, &full_cmd);
+    let will_inject_continue = should_inject_continue(
+        is_claude,
+        skip_auto_resume,
+        claude_project_exists,
+        &full_cmd,
+    );
     // (#630/#631) Resume-decision trace. Widened beyond Claude: codex/gemini ride
     // the same `skip_auto_resume` axis (below) and were equally invisible. INFO
     // during the stabilization window; demote later.
@@ -1029,8 +1033,10 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                 // during replica identity repair. State what actually failed;
                 // the interpolated error carries the precise, retry-suggesting
                 // detail from format_publish_error.
-                let dialog_msg =
-                    format!("Cannot launch session - failed to update replica config:\n\n{}", e);
+                let dialog_msg = format!(
+                    "Cannot launch session - failed to update replica config:\n\n{}",
+                    e
+                );
                 app.dialog()
                     .message(&dialog_msg)
                     .title("Session Launch Error")
@@ -1338,10 +1344,12 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                     hash,
                     cwd,
                 );
-                if let Err(e) = crate::config::coding_agent_profiles::set_replica_profile_content_hash(
-                    std::path::Path::new(&cwd),
-                    hash,
-                ) {
+                if let Err(e) =
+                    crate::config::coding_agent_profiles::set_replica_profile_content_hash(
+                        std::path::Path::new(&cwd),
+                        hash,
+                    )
+                {
                     log::warn!("Failed to persist profileContentHash: {}", e);
                 }
             }
@@ -1760,7 +1768,16 @@ async fn destroy_session_inner_with_options<R: tauri::Runtime>(
 
     if is_root_agent && !force_destroy_root {
         mgr.set_is_root_agent(uuid, true).await;
-        mgr.mark_exited(uuid, 0).await;
+        let cleared_raise_hand = mgr.mark_exited(uuid, 0).await;
+        if cleared_raise_hand {
+            let _ = app.emit(
+                "session_communication_changed",
+                serde_json::json!({
+                    "sessionId": uuid.to_string(),
+                    "communication": null,
+                }),
+            );
+        }
         mgr.clear_active_if(uuid).await;
         let dormant_info = mgr.get_session(uuid).await.map(|s| SessionInfo::from(&s));
 
@@ -2297,7 +2314,8 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
     // The `persist_current_state` in step 7 below writes it durably.
     if !is_root_agent {
         let mgr = session_mgr.read().await;
-        mgr.set_start_fresh_on_restore(new_uuid, restart_start_fresh).await;
+        mgr.set_start_fresh_on_restore(new_uuid, restart_start_fresh)
+            .await;
     }
 
     if activate_after {
@@ -3137,6 +3155,7 @@ mod tests {
             working_directory: cwd.to_string(),
             status: SessionStatus::Running,
             waiting_for_input: false,
+            communication: None,
             pending_review: false,
             last_prompt: None,
             agent_id: agent_id.map(str::to_string),
@@ -3745,14 +3764,20 @@ mod tests {
     fn restart_intent_normal_member_reopen_resumes() {
         // Branch A reopen of a NORMAL member (no stored intent, Some(false))
         // => resume, unchanged from today.
-        assert!(!super::restart_skip_auto_resume_with_intent(false, Some(false)));
+        assert!(!super::restart_skip_auto_resume_with_intent(
+            false,
+            Some(false)
+        ));
     }
 
     #[test]
     fn restart_intent_deferred_fresh_member_reopen_stays_fresh() {
         // #631 closure: a "Restart Session"-then-app-restart member defers, then
         // reopens via Branch A (Some(false)), but its persisted fresh intent wins.
-        assert!(super::restart_skip_auto_resume_with_intent(true, Some(false)));
+        assert!(super::restart_skip_auto_resume_with_intent(
+            true,
+            Some(false)
+        ));
     }
 
     #[test]
