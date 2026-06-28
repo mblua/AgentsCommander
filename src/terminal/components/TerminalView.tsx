@@ -25,7 +25,6 @@ interface SessionTerminal {
   snapshotReplayPending: boolean;
   snapshotResizeSuppressed: boolean;
   hasRenderedOutput: boolean;
-  queuedSnapshotOutput: Uint8Array[];
   replayStatus: HTMLDivElement;
 }
 
@@ -123,22 +122,28 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.terminal.write(data);
   };
 
-  const flushQueuedSnapshotOutput = (entry: SessionTerminal) => {
-    const queuedOutput = entry.queuedSnapshotOutput;
-    entry.queuedSnapshotOutput = [];
-
-    for (const data of queuedOutput) {
-      writeTerminalBytes(entry, data);
-    }
-  };
-
-  const writeOrQueueTerminalBytes = (entry: SessionTerminal, data: Uint8Array) => {
+  const writeLiveTerminalBytes = (entry: SessionTerminal, data: Uint8Array) => {
     if (entry.snapshotReplayPending) {
-      entry.queuedSnapshotOutput.push(data);
-      return;
+      // The backend parser may already include these live bytes in the
+      // in-flight snapshot. Let live output win and ignore that replay.
+      entry.snapshotReplayPending = false;
     }
 
     writeTerminalBytes(entry, data);
+  };
+
+  const claimPendingSnapshotReplay = (sessionId: string, entry: SessionTerminal) => {
+    if (terminals.get(sessionId) !== entry || !entry.snapshotReplayPending) {
+      return false;
+    }
+
+    if (entry.hasRenderedOutput) {
+      entry.snapshotReplayPending = false;
+      return false;
+    }
+
+    entry.snapshotReplayPending = false;
+    return true;
   };
 
   const resizeTerminalForSnapshot = (
@@ -164,14 +169,11 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     void PtyAPI.getScreenSnapshot(sessionId)
       .then((snapshot) => {
-        if (terminals.get(sessionId) !== entry) {
+        if (!claimPendingSnapshotReplay(sessionId, entry)) {
           return;
         }
 
-        entry.snapshotReplayPending = false;
-
         if (!snapshot || snapshot.data.length === 0) {
-          flushQueuedSnapshotOutput(entry);
           if (!entry.hasRenderedOutput) {
             setReplayStatus(
               entry,
@@ -190,20 +192,17 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         }
 
         writeTerminalBytes(entry, new Uint8Array(snapshot.data));
-        flushQueuedSnapshotOutput(entry);
 
         if (sessionId === activeSessionId) {
           scheduleViewportSync(sessionId);
         }
       })
       .catch((err) => {
-        console.warn("[terminal] snapshot replay failed:", err);
-        if (terminals.get(sessionId) !== entry) {
+        if (!claimPendingSnapshotReplay(sessionId, entry)) {
           return;
         }
 
-        entry.snapshotReplayPending = false;
-        flushQueuedSnapshotOutput(entry);
+        console.warn("[terminal] snapshot replay failed:", err);
 
         if (!entry.hasRenderedOutput) {
           setReplayStatus(
@@ -260,7 +259,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       snapshotReplayPending: false,
       snapshotResizeSuppressed: false,
       hasRenderedOutput: false,
-      queuedSnapshotOutput: [],
       replayStatus,
     };
 
@@ -406,7 +404,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return;
       }
 
-      writeOrQueueTerminalBytes(entry, new Uint8Array(data));
+      writeLiveTerminalBytes(entry, new Uint8Array(data));
     });
 
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {

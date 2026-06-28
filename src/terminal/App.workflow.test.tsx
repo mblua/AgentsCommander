@@ -164,6 +164,11 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 function hasPtyResizeCall(
   fake: FakeTransport,
   sessionId: string,
@@ -327,7 +332,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("queues live output behind a delayed first native snapshot", async () => {
+  it("renders live output immediately when it beats the first native snapshot", async () => {
     const fake = new FakeTransport();
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
@@ -345,12 +350,14 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
 
       const terminal = xterm.instances[0];
+      const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
-        data: [76, 73, 86, 69],
+        data: liveOutput,
       });
 
-      expect(terminal.writes).toHaveLength(0);
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
 
       snapshot.resolve({
         sessionId: "session-1",
@@ -359,9 +366,51 @@ describe("TerminalApp workflow", () => {
         cols: null,
       });
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(2));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([83, 78, 65, 80]);
-      expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual([76, 73, 86, 69]);
+      await flushPromises();
+      expect(terminal.writes).toHaveLength(1);
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("ignores a delayed native snapshot that already includes live output", async () => {
+    const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
+    setupTerminalTransport(fake, [
+      session({
+        id: "session-1",
+        name: "wg-1-dev-team/architect",
+        workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
+      }),
+    ]);
+    fake.onInvoke("get_screen_snapshot", () => snapshot.promise);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
+
+      const terminal = xterm.instances[0];
+      const liveOutput = [76, 73, 86, 69];
+      fake.emitFromBackend("pty_output", {
+        sessionId: "session-1",
+        data: liveOutput,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
+
+      snapshot.resolve({
+        sessionId: "session-1",
+        data: [83, 78, 65, 80, 76, 73, 86, 69],
+        rows: null,
+        cols: null,
+      });
+
+      await flushPromises();
+      expect(terminal.writes).toHaveLength(1);
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
     } finally {
       rendered.cleanup();
     }
@@ -413,7 +462,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("flushes queued live output when the native snapshot is unavailable", async () => {
+  it("keeps live output when the native snapshot is unavailable later", async () => {
     const fake = new FakeTransport();
     const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [
@@ -431,17 +480,20 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
 
       const terminal = xterm.instances[0];
+      const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
-        data: [76, 73, 86, 69],
+        data: liveOutput,
       });
 
-      expect(terminal.writes).toHaveLength(0);
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
 
       snapshot.resolve(null);
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([76, 73, 86, 69]);
+      await flushPromises();
+      expect(terminal.writes).toHaveLength(1);
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
         '[data-ac-testid="terminal.replay-status.session-1"]'
       );
@@ -451,7 +503,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("flushes queued live output when the native snapshot request fails", async () => {
+  it("keeps live output when the native snapshot request fails later", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fake = new FakeTransport();
     const snapshot = deferred<PtyScreenSnapshot | null>();
@@ -470,17 +522,20 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(1));
 
       const terminal = xterm.instances[0];
+      const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
         sessionId: "session-1",
-        data: [76, 73, 86, 69],
+        data: liveOutput,
       });
 
-      expect(terminal.writes).toHaveLength(0);
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
 
       snapshot.reject("missing parser");
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([76, 73, 86, 69]);
+      await flushPromises();
+      expect(terminal.writes).toHaveLength(1);
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual(liveOutput);
       const replayStatus = rendered.root.querySelector<HTMLDivElement>(
         '[data-ac-testid="terminal.replay-status.session-1"]'
       );
