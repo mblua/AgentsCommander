@@ -436,12 +436,13 @@ describe("AgentPickerModal", () => {
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
     expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("active");
     expect(text("agentPicker.comparison.row.claude")).toContain("Claude Code");
-    expect(text("agentPicker.comparison.row.claude")).toContain("claude --dangerously-skip-permissions");
+    expect(text("agentPicker.comparison.row.claude")).toContain("A direct");
+    expect(text("agentPicker.comparison.row.claude")).not.toContain("claude --dangerously-skip-permissions");
 
     dispose();
   });
 
-  it("shows declared env vars for the selected profile and keeps comparison free of profile-letter controls", async () => {
+  it("shows declared env vars for the selected profile and keeps comparison compact", async () => {
     const { dispose } = renderPicker({ agentPath: REPO_PATH });
     await settle();
 
@@ -451,12 +452,16 @@ describe("AgentPickerModal", () => {
     expect(text("agentPicker.profile.B.env")).toContain("Declared env");
     expect(text("agentPicker.profile.B.env")).toContain("CODEX_PROFILE");
     expect(text("agentPicker.profile.B.env")).toContain("fast");
-    expect(text("agentPicker.comparison.row.codex")).toContain("2 env vars");
-    expect(text("agentPicker.comparison.row.codex")).toContain("CODEX_PROFILE=fast");
+    expect(text("agentPicker.comparison.row.codex")).toContain("B-FAST direct");
     expect(target("agentPicker.comparison").querySelector("[data-ac-profile-letter]")).toBeNull();
-    expect(text("agentPicker.comparison")).toContain("Same Profile In Other Agents");
-    expect(text("agentPicker.comparison")).not.toContain("Effective Projection");
-    expect(text("agentPicker.comparison")).not.toContain("Chosen pair");
+    const comparisonText = text("agentPicker.comparison");
+    expect(comparisonText).toContain("Same Profile In Other Agents");
+    expect(comparisonText).not.toContain("Effective Projection");
+    expect(comparisonText).not.toContain("Chosen pair");
+    expect(comparisonText).not.toMatch(/Command Delta/i);
+    expect(comparisonText).not.toMatch(/Env Summary/i);
+    expect(comparisonText).not.toContain("2 env vars");
+    expect(comparisonText).not.toContain("CODEX_PROFILE=fast");
     expect(maybe("agentPicker.fallback")).toBeNull();
 
     dispose();
@@ -515,7 +520,8 @@ describe("AgentPickerModal", () => {
     await settle();
     expect(target("agentPicker.provider.claude").getAttribute("data-ac-state")).toBe("active");
     expect(target("agentPicker.comparison.row.claude").getAttribute("data-ac-state")).toBe("active");
-    expect(text("agentPicker.comparison.row.claude")).toContain("claude --dangerously-skip-permissions");
+    expect(text("agentPicker.comparison.row.claude")).toContain("A direct");
+    expect(text("agentPicker.comparison.row.claude")).not.toContain("claude --dangerously-skip-permissions");
 
     dispose();
   });

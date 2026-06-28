@@ -3431,8 +3431,10 @@ html.light-theme .settings-hint-warning {
 }
 
 .agent-projection-panel {
-  align-content: start;
+  align-content: stretch;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 10px;
+  min-height: 0;
 }
 
 .agent-projection-head {
@@ -3490,18 +3492,40 @@ html.light-theme .settings-hint-warning {
 
 .agent-comparison-table {
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: clamp(220px, 42vh, 420px);
+  overflow: hidden;
   border: 1px solid var(--sidebar-border);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.02);
 }
 
+.agent-comparison-table-body {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.agent-comparison-table-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.agent-comparison-table-body::-webkit-scrollbar-thumb {
+  background: var(--sidebar-border);
+  border-radius: 2px;
+}
+
 .agent-comparison-table-head,
 .agent-comparison-row {
   display: grid;
-  grid-template-columns: minmax(118px, 0.7fr) minmax(116px, 0.62fr) minmax(180px, 1.08fr) minmax(130px, 0.72fr);
+  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
   gap: 8px;
-  min-width: 640px;
+  width: 100%;
+  min-width: 0;
 }
 
 .agent-comparison-table-head {
@@ -3537,9 +3561,7 @@ html.light-theme .settings-hint-warning {
 }
 
 .agent-comparison-agent-cell,
-.agent-comparison-resolution-cell,
-.agent-comparison-command-cell,
-.agent-comparison-env-cell {
+.agent-comparison-resolution-cell {
   display: grid;
   align-content: start;
   gap: 4px;
@@ -3551,24 +3573,18 @@ html.light-theme .settings-hint-warning {
   font-weight: 800;
 }
 
-.agent-comparison-agent-sub,
-.agent-comparison-note,
-.agent-comparison-env-muted,
-.agent-comparison-env-preview {
+.agent-comparison-agent-sub {
   color: var(--sidebar-fg-dim);
   line-height: 1.35;
 }
 
-.agent-comparison-resolution,
-.agent-comparison-command,
-.agent-comparison-env-count,
-.agent-comparison-env-preview {
+.agent-comparison-resolution {
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
 }
 
+.agent-comparison-agent-name,
+.agent-comparison-agent-sub,
 .agent-comparison-resolution,
-.agent-comparison-command,
-.agent-comparison-env-preview {
   overflow-wrap: anywhere;
 }
 
@@ -3599,11 +3615,6 @@ html.light-theme .settings-hint-warning {
   color: var(--status-exited, #ff5d5d);
   border-color: rgba(255, 93, 93, 0.4);
   background: rgba(255, 93, 93, 0.1);
-}
-
-.agent-comparison-env-count {
-  color: var(--sidebar-fg);
-  font-weight: 700;
 }
 
 .agent-picker-bar {

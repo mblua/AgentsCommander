@@ -14,7 +14,6 @@ import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
   composeEffectiveCommand,
-  effectiveEnvProjection,
   expandAcPlaceholdersPreview,
   isAcAgentPath,
   isWgReplicaPath,
@@ -248,7 +247,6 @@ const AgentPickerModal: Component<{
       }));
   const declaredProfileEnv = (agent: AgentConfig | null, letter: string) =>
     profileEnvEntries(profileCellFor(agent, letter));
-  const envCountText = (count: number) => `${count} env var${count === 1 ? "" : "s"}`;
   const comparisonResolutionText = (
     agentId: string,
     preview: ReturnType<typeof resolveProfilePreview>,
@@ -268,7 +266,6 @@ const AgentPickerModal: Component<{
         composeEffectiveCommand(agent.command, profileCellCommandText(cell)),
         acRoot(),
       );
-      const envEntries = effectiveEnvProjection(agent.envs, cell.env, acRoot());
       const status = command.trim().length === 0
         ? "missing"
         : preview.fallbackApplied
@@ -278,9 +275,6 @@ const AgentPickerModal: Component<{
         agent,
         index,
         preview,
-        cell,
-        command,
-        envEntries,
         status,
         active: index === highlightIndex(),
       };
@@ -890,65 +884,48 @@ const AgentPickerModal: Component<{
                 <div class="agent-comparison-table-head" role="row">
                   <span>Coding Agent</span>
                   <span>Resolution</span>
-                  <span>Command delta</span>
-                  <span>Env summary</span>
                 </div>
-                <For each={comparisonRows()}>
-                  {(row) => (
-                    <button
-                      type="button"
-                      class="agent-comparison-row"
-                      classList={{ active: row.active }}
-                      role="row"
-                      onClick={() => setHighlightIndex(row.index)}
-                      data-ac-agent-id={row.agent.id}
-                      data-ac-profile-status={row.status}
-                      data-ac-effective-profile={row.preview.effectiveProfile}
-                      data-ac-requested-profile={row.preview.requestedProfile}
-                      {...automationAttrs(
-                        `agentPicker.comparison.row.${row.agent.id}`,
-                        "button",
-                        row.active ? "active" : "inactive",
-                      )}
-                    >
-                      <span class="agent-comparison-agent-cell">
-                        <span class="agent-comparison-agent-name">{row.agent.label}</span>
-                        <span class="agent-comparison-agent-sub">
-                          {row.active ? "selected coding agent" : "configured peer"}
-                        </span>
-                      </span>
-                      <span class="agent-comparison-resolution-cell">
-                        <span
-                          class={`agent-comparison-status ${row.status}`}
-                          data-ac-role="status"
-                          data-ac-state={row.status}
-                        >
-                          {comparisonStatusLabel(row.status)}
-                        </span>
-                        <span class="agent-comparison-resolution">
-                          {comparisonResolutionText(row.agent.id, row.preview)}
-                        </span>
-                      </span>
-                      <span class="agent-comparison-command-cell">
-                        <span class="agent-comparison-command">{row.command || "none"}</span>
-                        <Show when={row.cell.notes}>
-                          <span class="agent-comparison-note">{row.cell.notes}</span>
-                        </Show>
-                      </span>
-                      <span class="agent-comparison-env-cell">
-                        <span class="agent-comparison-env-count">{envCountText(row.envEntries.length)}</span>
-                        <Show
-                          when={row.envEntries.length > 0}
-                          fallback={<span class="agent-comparison-env-muted">No launch env declared</span>}
-                        >
-                          <span class="agent-comparison-env-preview">
-                            {row.envEntries[0].key}={row.envEntries[0].value}
+                <div class="agent-comparison-table-body" role="rowgroup">
+                  <For each={comparisonRows()}>
+                    {(row) => (
+                      <button
+                        type="button"
+                        class="agent-comparison-row"
+                        classList={{ active: row.active }}
+                        role="row"
+                        onClick={() => setHighlightIndex(row.index)}
+                        data-ac-agent-id={row.agent.id}
+                        data-ac-profile-status={row.status}
+                        data-ac-effective-profile={row.preview.effectiveProfile}
+                        data-ac-requested-profile={row.preview.requestedProfile}
+                        {...automationAttrs(
+                          `agentPicker.comparison.row.${row.agent.id}`,
+                          "button",
+                          row.active ? "active" : "inactive",
+                        )}
+                      >
+                        <span class="agent-comparison-agent-cell">
+                          <span class="agent-comparison-agent-name">{row.agent.label}</span>
+                          <span class="agent-comparison-agent-sub">
+                            {row.active ? "selected coding agent" : "configured peer"}
                           </span>
-                        </Show>
-                      </span>
-                    </button>
-                  )}
-                </For>
+                        </span>
+                        <span class="agent-comparison-resolution-cell">
+                          <span
+                            class={`agent-comparison-status ${row.status}`}
+                            data-ac-role="status"
+                            data-ac-state={row.status}
+                          >
+                            {comparisonStatusLabel(row.status)}
+                          </span>
+                          <span class="agent-comparison-resolution">
+                            {comparisonResolutionText(row.agent.id, row.preview)}
+                          </span>
+                        </span>
+                      </button>
+                    )}
+                  </For>
+                </div>
               </div>
 
               <Show when={effectivePreview().fallbackApplied || hasBackendWarnings()}>
