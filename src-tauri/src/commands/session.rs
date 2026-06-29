@@ -1016,7 +1016,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         (target, managed, auto_self_clear)
     };
 
-    let materialized_context_path = if let Some(ref target_filename) = target_filename {
+    if let Some(ref target_filename) = target_filename {
         match crate::config::session_context::materialize_agent_context_file_with_filename(
             &cwd,
             target_filename,
@@ -1024,7 +1024,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             is_coordinator,
             auto_self_clear,
         ) {
-            Ok(context) => context,
+            Ok(_) => {}
             Err(e) => {
                 log::error!("Replica context validation failed: {}", e);
                 use tauri_plugin_dialog::DialogExt;
@@ -1047,31 +1047,10 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                 return Err(e);
             }
         }
-    } else {
-        None
-    };
-
-    // Claude consumes the materialized CLAUDE.md via --append-system-prompt-file.
-    if agent_kind == Some(CodingAgentKind::Claude) {
-        if let Some(context_path) = materialized_context_path.as_ref() {
-            if executable_basename(&shell) == "cmd" {
-                if let Some(last) = shell_args.last_mut() {
-                    if last.to_lowercase().contains("claude") {
-                        *last =
-                            format!("{} --append-system-prompt-file \"{}\"", last, context_path);
-                        log::info!("Injected --append-system-prompt-file for Claude (cmd path)");
-                    }
-                }
-            } else {
-                shell_args.push("--append-system-prompt-file".to_string());
-                shell_args.push(context_path.to_string());
-                log::info!("Injected --append-system-prompt-file for Claude session");
-            }
-        }
     }
 
     // Capture the effective arg vector BEFORE spawn so SessionInfo::from(&session)
-    // (emitted at line ~439 as "session_created") carries the injected flags.
+    // (emitted at line ~439 as "session_created") carries provider resume flags.
     // Bind once, broadcast to two consumers: the store write is for later
     // `mgr.get_session` callers; the local-clone write is for the imminent emit.
     //

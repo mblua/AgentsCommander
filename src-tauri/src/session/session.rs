@@ -64,10 +64,10 @@ pub struct Session {
     pub shell: String,
     pub shell_args: Vec<String>,
     /// Effective arg vector actually handed to portable-pty at spawn time,
-    /// including dynamic injections (`--continue`, `codex resume --last`,
-    /// `--append-system-prompt-file <path>`). `None` until the PTY is
-    /// spawned for this session; set once by `create_session_inner` right
-    /// before `pty_mgr.spawn`. Runtime-only — NOT persisted to `sessions.toml`
+    /// including dynamic provider resume injections (`--continue`,
+    /// `codex resume --last`, `gemini --resume latest`). `None` until the PTY
+    /// is spawned for this session; set once by `create_session_inner` right
+    /// before `pty_mgr.spawn`. Runtime-only. NOT persisted to `sessions.toml`
     /// (configured args in `shell_args` are the persistence recipe; the
     /// effective args are re-derived at every spawn from current settings).
     #[serde(skip)]

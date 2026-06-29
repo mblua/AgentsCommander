@@ -43,6 +43,17 @@ const POLL_INTERVAL: Duration = Duration::from_millis(75);
 
 type PtyCleanupEntries = Arc<Mutex<Vec<(Arc<Mutex<PtyManager>>, Uuid)>>>;
 
+static TEST_CONFIG_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lifecycle_test_config_dir() -> PathBuf {
+    std::env::temp_dir()
+        .join(format!(
+            "agentscommander-pty-lifecycle-{}",
+            std::process::id()
+        ))
+        .join("config")
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TestPtyOutputPayload {
@@ -113,8 +124,6 @@ impl Drop for LifecycleCleanup {
 }
 
 struct LifecycleFixture {
-    _temp: tempfile::TempDir,
-    _env_guard: TestConfigEnvGuard,
     cleanup: LifecycleCleanup,
     repo_root: PathBuf,
     config_dir: PathBuf,
@@ -127,16 +136,25 @@ struct LifecycleFixture {
     app: tauri::App,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
+    _temp: tempfile::TempDir,
+    _env_guard: TestConfigEnvGuard,
+    _env_lock: std::sync::MutexGuard<'static, ()>,
 }
 
 fn make_lifecycle_fixture() -> LifecycleFixture {
+    let env_lock = TEST_CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let repo_root = temp.path().join("repo-pty-lifecycle");
-    let config_dir = temp.path().join("config");
+    let config_dir = lifecycle_test_config_dir();
     let session_cwd = repo_root.clone();
     let script_path = temp.path().join("pty-child.ps1");
 
     std::fs::create_dir_all(&repo_root).expect("create repo root");
+    if config_dir.exists() {
+        std::fs::remove_dir_all(&config_dir).expect("reset config dir");
+    }
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     std::fs::write(repo_root.join(".gitignore"), "*\r\n").expect("seed repo file");
 
@@ -171,8 +189,6 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
     );
 
     LifecycleFixture {
-        _temp: temp,
-        _env_guard: env_guard,
         cleanup,
         repo_root,
         config_dir,
@@ -185,6 +201,9 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
         app,
         session_mgr,
         pty_mgr,
+        _temp: temp,
+        _env_guard: env_guard,
+        _env_lock: env_lock,
     }
 }
 
@@ -795,6 +814,77 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
                     )
                 )
             });
+    });
+}
+
+#[test]
+fn claude_launch_materializes_context_without_prompt_file_arg() {
+    let mut fixture = make_lifecycle_fixture();
+    let agent_cwd = fixture._temp.path().join(".ac").join("_agent_claude");
+    std::fs::create_dir_all(&agent_cwd).expect("create claude agent cwd");
+    let script_path = agent_cwd.join("claude.ps1");
+    write_child_script(&script_path);
+    let pid_file = fixture.pid_path("claude_no_prompt_arg");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    runtime.block_on(async {
+        let info = create_session_inner(
+            fixture.app.handle(),
+            &fixture.session_mgr,
+            &fixture.pty_mgr,
+            "powershell.exe".to_string(),
+            script_args(&script_path, &pid_file),
+            path_to_string(&agent_cwd),
+            Some("Claude context materialization".to_string()),
+            None,
+            None,
+            false,
+            Vec::new(),
+            true,
+            None,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("Claude launch failed: {e}"));
+
+        let session_id = parse_session_id(&info);
+        fixture.cleanup.record_session(&fixture.pty_mgr, session_id);
+        wait_for_output(&fixture, &info.id, "AC_READY", OUTPUT_TIMEOUT)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+
+        assert_eq!(
+            info.agent_kind,
+            Some(agentscommander_lib::session::profile::CodingAgentKind::Claude)
+        );
+        assert!(
+            agent_cwd.join("CLAUDE.md").is_file(),
+            "Claude managed instructions file should still be materialized"
+        );
+        let effective_args = info
+            .effective_shell_args
+            .as_ref()
+            .expect("effective args are captured before spawn");
+        assert!(
+            !effective_args
+                .iter()
+                .any(|arg| arg.to_lowercase().contains("--append-system-prompt-file")),
+            "Claude launch args must not include --append-system-prompt-file: {effective_args:?}"
+        );
+
+        let pid = wait_for_pid_file(&pid_file, PID_TIMEOUT)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        fixture.cleanup.record_pid(pid);
+        destroy_session_inner(fixture.app.handle(), session_id)
+            .await
+            .unwrap_or_else(|e| panic!("destroy Claude materialization session failed: {e}"));
+        wait_for_process_exit(pid, EXIT_TIMEOUT)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
     });
 }
 
