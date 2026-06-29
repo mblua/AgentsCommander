@@ -43,6 +43,17 @@ const POLL_INTERVAL: Duration = Duration::from_millis(75);
 
 type PtyCleanupEntries = Arc<Mutex<Vec<(Arc<Mutex<PtyManager>>, Uuid)>>>;
 
+static TEST_CONFIG_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lifecycle_test_config_dir() -> PathBuf {
+    std::env::temp_dir()
+        .join(format!(
+            "agentscommander-pty-lifecycle-{}",
+            std::process::id()
+        ))
+        .join("config")
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TestPtyOutputPayload {
@@ -113,8 +124,6 @@ impl Drop for LifecycleCleanup {
 }
 
 struct LifecycleFixture {
-    _temp: tempfile::TempDir,
-    _env_guard: TestConfigEnvGuard,
     cleanup: LifecycleCleanup,
     repo_root: PathBuf,
     config_dir: PathBuf,
@@ -127,16 +136,25 @@ struct LifecycleFixture {
     app: tauri::App,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
+    _temp: tempfile::TempDir,
+    _env_guard: TestConfigEnvGuard,
+    _env_lock: std::sync::MutexGuard<'static, ()>,
 }
 
 fn make_lifecycle_fixture() -> LifecycleFixture {
+    let env_lock = TEST_CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let repo_root = temp.path().join("repo-pty-lifecycle");
-    let config_dir = temp.path().join("config");
+    let config_dir = lifecycle_test_config_dir();
     let session_cwd = repo_root.clone();
     let script_path = temp.path().join("pty-child.ps1");
 
     std::fs::create_dir_all(&repo_root).expect("create repo root");
+    if config_dir.exists() {
+        std::fs::remove_dir_all(&config_dir).expect("reset config dir");
+    }
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     std::fs::write(repo_root.join(".gitignore"), "*\r\n").expect("seed repo file");
 
@@ -171,8 +189,6 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
     );
 
     LifecycleFixture {
-        _temp: temp,
-        _env_guard: env_guard,
         cleanup,
         repo_root,
         config_dir,
@@ -185,6 +201,9 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
         app,
         session_mgr,
         pty_mgr,
+        _temp: temp,
+        _env_guard: env_guard,
+        _env_lock: env_lock,
     }
 }
 
