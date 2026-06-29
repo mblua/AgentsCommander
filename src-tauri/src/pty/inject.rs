@@ -6,9 +6,10 @@ use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 
 /// Returns true when the given shell command requires a separate Enter keystroke
-/// to submit pasted input. Coding agents (Claude, Codex, etc.) all need explicit
-/// Enter after a text block paste. Plain shells (bash, powershell) don't go through
-/// this path — they're filtered out before reaching inject_text_into_session.
+/// to submit pasted input. Coding agents (Claude, Codex, Gemini, Cursor agent)
+/// need explicit Enter after a text block paste. Plain shells (bash, powershell)
+/// don't go through this path; they're filtered out before reaching
+/// inject_text_into_session.
 ///
 /// The shell may be a bare name ("claude") or a full path
 /// ("C:\Users\...\.claude\local\claude.exe"), so we extract the filename stem
@@ -19,16 +20,19 @@ pub(crate) fn needs_explicit_enter(shell: &str) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or(shell.trim())
         .to_lowercase();
-    stem.starts_with("codex") || stem.starts_with("claude") || stem.starts_with("gemini")
+    stem.starts_with("codex")
+        || stem.starts_with("claude")
+        || stem.starts_with("gemini")
+        || stem == "agent"
 }
 
 /// Inject a text block into a session's PTY stdin.
 ///
-/// For agents that require explicit Enter (Claude, Codex, Gemini), `\r` is
-/// sent twice — at 1500 ms and 2000 ms after the text write — as a reliability
-/// measure against Enter not registering on the first attempt. For plain shells
-/// (bash, powershell), no Enter is sent (the caller's text already controls
-/// submission).
+/// For agents that require explicit Enter (Claude, Codex, Gemini, Cursor agent),
+/// `\r` is sent twice, at 1500 ms and 2000 ms after the text write, as a
+/// reliability measure against Enter not registering on the first attempt. For
+/// plain shells (bash, powershell), no Enter is sent (the caller's text already
+/// controls submission).
 ///
 /// This is the ONLY function that should be used for text-block injection.
 /// Direct keystrokes from xterm.js (single chars, Ctrl sequences) bypass this
@@ -88,9 +92,10 @@ where
         );
     }
 
-    // Agent CLIs (Claude, Codex): send Enter twice with staggered delays.
+    // Agent CLIs (Claude, Codex, Gemini, Cursor agent): send Enter twice with
+    // staggered delays.
     // Sometimes a single \r doesn't register (race with paste-detection mode).
-    // The second \r is a safety net — if the first worked, the agent is already
+    // The second \r is a safety net. If the first worked, the agent is already
     // processing and an extra Enter on empty input is harmless.
     if send_enter {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -145,6 +150,11 @@ mod tests {
             "C:\\Users\\maria\\.claude\\local\\claude.exe",
             "gemini",
             "gemini.exe",
+            "agent",
+            "agent.exe",
+            "agent.cmd",
+            "C:\\Users\\maria\\AppData\\Local\\Programs\\Cursor\\agent.exe",
+            "  agent  ",
             "  codex  ", // leading/trailing whitespace tolerated
         ] {
             assert!(
@@ -164,6 +174,8 @@ mod tests {
             "pwsh.exe",
             "cmd.exe",
             "zsh",
+            "agentctl",
+            "agentic",
             "",
             "   ",
         ] {

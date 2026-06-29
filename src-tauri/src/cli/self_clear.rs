@@ -36,7 +36,7 @@ owns the token you present.\n\n\
 BEST-EFFORT: neither phase is guaranteed. A perpetually busy session that never reaches 30s sustained \
 idle, or a daemon restart mid-cycle, drops the remainder (a greppable warn line is logged). Re-issue \
 if your context is still present later.\n\n\
-SCOPE: only coding-agent CLIs (Claude / Codex / Gemini).")]
+SCOPE: only coding-agent CLIs (Claude / Codex / Gemini / Cursor agent).")]
 pub struct SelfClearArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.

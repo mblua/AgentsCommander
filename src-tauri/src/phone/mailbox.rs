@@ -2331,7 +2331,7 @@ impl MailboxPoller {
                     }
                     Some(s) if !crate::pty::inject::needs_explicit_enter(&s.shell) => {
                         return Err(format!(
-                            "Cannot execute remote command '/{}': session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini). cmd / pwsh wrappers around an agent are tracked separately as #233-followup-cmd-wrapper.",
+                            "Cannot execute remote command '/{}': session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini / Cursor agent). cmd / pwsh wrappers around an agent are tracked separately as #233-followup-cmd-wrapper.",
                             command, s.shell
                         ))
                     }
@@ -3170,7 +3170,7 @@ impl MailboxPoller {
                     path,
                     msg,
                     &format!(
-                        "self-clear: session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini); /clear is not supported here",
+                        "self-clear: session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini / Cursor agent); /clear is not supported here",
                         session.shell
                     ),
                 )
@@ -3424,7 +3424,7 @@ impl MailboxPoller {
                     path,
                     msg,
                     &format!(
-                        "self-handoff-and-switch: session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini); switch is not supported here",
+                        "self-handoff-and-switch: session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini / Cursor agent); switch is not supported here",
                         session.shell
                     ),
                 )
