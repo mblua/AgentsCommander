@@ -537,6 +537,56 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
+  it("does not match an exited replica by stale waiting/pending flags (#689)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", projectDiscovery());
+
+    sessionsStore.setSessions([
+      session({
+        id: "coord-session",
+        name: "wg-2-dev-team/dev-webpage-ui",
+        workingDirectory: `${workgroupPath}\\__agent_dev-webpage-ui`,
+        status: "running",
+        isCoordinator: true,
+      }),
+      session({
+        id: "peer-session",
+        name: "wg-2-dev-team/dev-rust",
+        workingDirectory: `${workgroupPath}\\__agent_dev-rust`,
+        status: { exited: 0 },
+        waitingForInput: true,
+        pendingReview: true,
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
+      const staleRow = findByTestId<HTMLElement>(
+        rendered.root,
+        "replica.row.workgroups.wg-2-dev-team.dev-rust"
+      );
+      expect(staleRow.querySelector(".session-item-status")?.classList.contains("exited")).toBe(true);
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      input(filterInput, "waiting");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("dev-rust"));
+
+      input(filterInput, "pending");
+      await waitFor(() => expect(rendered.root.textContent).not.toContain("dev-rust"));
+
+      input(filterInput, "exited");
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("does not match a loop's promptPreview (hover-only), but the loop name still matches (bug 1)", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
