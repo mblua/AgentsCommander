@@ -40,6 +40,7 @@ import {
   formatReplicaRepoBadgeLabel,
   repoLabelFromPath,
 } from "./replica-repo-badges";
+import { sessionDotClass } from "./session-status";
 
 interface PendingLaunch {
   path: string;
@@ -164,12 +165,7 @@ function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | und
 
 /** Compute CSS class for replica status dot */
 function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): string {
-  const session = replicaSession(wg, replica);
-  if (!session) return "offline";
-  if (session.pendingReview) return "pending";
-  if (session.waitingForInput) return "waiting";
-  if (typeof session.status === "string") return session.status;
-  return "exited";
+  return sessionDotClass(replicaSession(wg, replica));
 }
 
 /** Check if a session has a live PTY process (not exited, not offline) */

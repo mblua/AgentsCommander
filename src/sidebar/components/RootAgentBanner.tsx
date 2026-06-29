@@ -12,17 +12,13 @@ import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
-import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
+import type { Session, TelegramBotConfig } from "../../shared/types";
 import { sessionProfileBadge } from "../../shared/profile-utils";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import { rootAgentCodingAgentAction } from "./root-agent-action";
 import { TelegramIcon } from "./TelegramIcon";
-
-function statusClass(status: SessionStatus): string {
-  if (typeof status === "string") return status;
-  return "exited";
-}
+import { sessionDotClass } from "./session-status";
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
 
@@ -54,11 +50,7 @@ const RootAgentBanner: Component = () => {
   });
 
   const dotClass = createMemo(() => {
-    const r = rootSession();
-    if (!r) return "offline";
-    if (r.pendingReview) return "pending";
-    if (r.waitingForInput) return "waiting";
-    return statusClass(r.status);
+    return sessionDotClass(rootSession());
   });
 
   const subtitle = createMemo(() => {

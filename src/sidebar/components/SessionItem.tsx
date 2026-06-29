@@ -1,6 +1,6 @@
 import { Component, createSignal, Show, For, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { Session, SessionStatus, TelegramBotConfig, RepoMatch } from "../../shared/types";
+import type { Session, TelegramBotConfig, RepoMatch } from "../../shared/types";
 import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI, emitOpenSettings } from "../../shared/ipc";
 import { extractProjectName } from "../../shared/path-extractors";
 import { isTauri } from "../../shared/platform";
@@ -15,11 +15,7 @@ import AgentPickerModal from "./AgentPickerModal";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import { TelegramIcon } from "./TelegramIcon";
 import { profileDisplayLabel, sessionProfileBadge } from "../../shared/profile-utils";
-
-function statusClass(status: SessionStatus): string {
-  if (typeof status === "string") return status;
-  return "exited";
-}
+import { sessionDotClass } from "./session-status";
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
 
@@ -292,7 +288,7 @@ const SessionItem: Component<{
       data-ac-state={props.isActive ? "active" : isInactive() ? "inactive" : "idle"}
     >
       <div
-        class={`session-item-status ${isInactive() ? "offline" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
+        class={`session-item-status ${sessionDotClass(props.session, { inactive: isInactive() })}`}
       />
       <div class="session-item-info">
         <div class="session-item-name" onDblClick={handleDoubleClick} title={props.session.workingDirectory}>
