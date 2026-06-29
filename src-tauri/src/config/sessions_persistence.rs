@@ -811,9 +811,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
 
 /// Strip AC-managed provider args from saved shell arguments.
 /// Current launch-time injections are Claude's `--continue`, Codex's
-/// `resume --last`, and Gemini's `--resume latest`. Also strips Claude's old
-/// `--append-system-prompt-file <path>` argument as legacy cleanup for saved
-/// recipes created by older builds.
+/// `resume --last`, and Gemini's `--resume latest`.
 /// These must not be baked into the saved "recipe" because they self-perpetuate
 /// across app restarts (or session restarts) even when the conditions change.
 ///
@@ -822,54 +820,14 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
 /// - **cmd.exe wrapper**: tokens may be separate args (`["/C", "codex", "resume", "--last"]`)
 ///   or embedded in a single arg string (`["/K", "git pull && codex resume --last"]`)
 pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<String> {
-    fn token_has_unclosed_quote(token: &str, quote: char) -> bool {
-        token.chars().filter(|c| *c == quote).count() % 2 == 1
-    }
-
-    fn advance_past_quoted_value(tokens: &[String], start: usize) -> usize {
-        if start >= tokens.len() {
-            return start;
-        }
-
-        let mut idx = start;
-        let mut in_single = false;
-        let mut in_double = false;
-
-        while idx < tokens.len() {
-            let token = &tokens[idx];
-            if token_has_unclosed_quote(token, '\'') {
-                in_single = !in_single;
-            }
-            if token_has_unclosed_quote(token, '"') {
-                in_double = !in_double;
-            }
-            idx += 1;
-            if !in_single && !in_double {
-                break;
-            }
-        }
-
-        idx
-    }
-
     fn strip_claude_tokens(tokens: &mut Vec<String>, start: usize) {
         // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
-        // is a 1-element const for Claude, so [0] is provably in bounds. The
-        // `--append-system-prompt-file` flag below is legacy context-file
-        // cleanup, NOT a resume token, so it stays as a literal.
+        // is a 1-element const for Claude, so [0] is provably in bounds.
         let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
         let mut idx = start;
         while idx < tokens.len() {
             if tokens[idx].eq_ignore_ascii_case(continue_flag) {
                 tokens.remove(idx);
-                continue;
-            }
-            if tokens[idx].eq_ignore_ascii_case("--append-system-prompt-file") {
-                tokens.remove(idx);
-                let end = advance_past_quoted_value(tokens, idx);
-                for _ in idx..end {
-                    tokens.remove(idx);
-                }
                 continue;
             }
             idx += 1;
@@ -1013,12 +971,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
         result
     } else {
         let mut result = Vec::with_capacity(args.len());
-        let mut skip_next = false;
         for (idx, a) in args.iter().enumerate() {
-            if skip_next {
-                skip_next = false;
-                continue;
-            }
             if is_codex
                 && idx == 0
                 && a.eq_ignore_ascii_case("resume")
@@ -1061,10 +1014,6 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
             }
 
             if is_claude && a.eq_ignore_ascii_case("--continue") {
-                continue;
-            }
-            if is_claude && a.eq_ignore_ascii_case("--append-system-prompt-file") {
-                skip_next = true; // skip the next arg (the file path)
                 continue;
             }
             result.push(a.clone());
@@ -1656,7 +1605,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_auto_injected_args_removes_legacy_direct_claude_context_file() {
+    fn strip_auto_injected_args_preserves_user_authored_direct_claude_prompt_file() {
         let stripped = strip_auto_injected_args(
             "claude",
             &[
@@ -1665,11 +1614,18 @@ mod tests {
                 "--search".to_string(),
             ],
         );
-        assert_eq!(stripped, vec!["--search".to_string()]);
+        assert_eq!(
+            stripped,
+            vec![
+                "--append-system-prompt-file".to_string(),
+                "C:\\temp\\ctx.md".to_string(),
+                "--search".to_string()
+            ]
+        );
     }
 
     #[test]
-    fn strip_auto_injected_args_removes_legacy_embedded_claude_context_file_with_spaces() {
+    fn strip_auto_injected_args_preserves_embedded_claude_prompt_file_with_spaces() {
         let stripped = strip_auto_injected_args(
             "cmd.exe",
             &[
@@ -1679,7 +1635,11 @@ mod tests {
         );
         assert_eq!(
             stripped,
-            vec!["/K".to_string(), "claude --search".to_string(),]
+            vec![
+                "/K".to_string(),
+                "claude --append-system-prompt-file \"C:\\Program Files\\ctx.md\" --search"
+                    .to_string(),
+            ]
         );
     }
 
