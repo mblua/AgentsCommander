@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import SessionItem from "./SessionItem";
 import RootAgentBanner from "./RootAgentBanner";
-import iconUrl from "../../assets/icon-16.png";
+import iconUrl from "../../../src-tauri/icons/64x64.png";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,

@@ -1,6 +1,6 @@
 import { Component, createMemo, createSignal, Show, For, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import iconUrl from "../../assets/icon-16.png";
+import iconUrl from "../../../src-tauri/icons/64x64.png";
 import { isTauri } from "../../shared/platform";
 import {
   SessionAPI,
