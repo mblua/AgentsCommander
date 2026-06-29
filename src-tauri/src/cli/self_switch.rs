@@ -33,7 +33,8 @@ then resumes from SELF-HANDOFF.md.\n\n\
 BEFORE invoking, write SELF-HANDOFF.md in your own root with the notes you need to resume. \
 If SELF-HANDOFF.md is missing, the command refuses.\n\n\
 --coding-agent takes the configured coding-agent entry id from settings, not the backend kind \
-or AC peer name. If the id is unknown, the daemon rejection lists configured ids.\n\n\
+or AC peer name. Use --list-coding-agents to print valid ids and profile letters without \
+sending a switch request. If the id is unknown, the daemon rejection lists configured ids.\n\n\
 Omitting both --coding-agent and --profile is allowed. It hard-resets the live running recipe \
 by respawning the same coding agent/profile fresh and then injecting the handoff prompt.\n\n\
 SCOPE: WG replicas only (__agent_* under a wg-* workgroup). Root Agent and origin matrix agents \
@@ -56,12 +57,116 @@ pub struct SelfSwitchArgs {
     #[arg(long)]
     pub profile: Option<String>,
 
+    /// List configured coding-agent ids and profile letters for this command, then exit.
+    #[arg(long = "list-coding-agents")]
+    pub list_coding_agents: bool,
+
     /// Seconds to wait for the daemon's queue acknowledgement (default 15).
     #[arg(long, default_value = "15")]
     pub timeout: u64,
 }
 
+fn all_profile_letters() -> impl Iterator<Item = String> {
+    (b'A'..=b'Z').map(|byte| (byte as char).to_string())
+}
+
+fn direct_profile_letters(
+    settings: &crate::config::settings::AppSettings,
+    coding_agent_id: &str,
+) -> Vec<String> {
+    all_profile_letters()
+        .filter(|letter| {
+            let resolution = crate::config::coding_agent_profiles::resolve_profile(
+                settings,
+                crate::config::coding_agent_profiles::ProfileResolutionRequest {
+                    coding_agent_id,
+                    launch_path: None,
+                    agent_matrix_name: None,
+                    requested_profile: Some(letter),
+                },
+            );
+            resolution.effective_profile == *letter
+        })
+        .collect()
+}
+
+fn quote_coding_agent_id_for_copy(id: &str) -> String {
+    if !id.is_empty()
+        && id.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '\\' | '@')
+        })
+    {
+        return id.to_string();
+    }
+
+    single_quote_arg_for_copy(id)
+}
+
+#[cfg(windows)]
+fn single_quote_arg_for_copy(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "''"))
+}
+
+#[cfg(not(windows))]
+fn single_quote_arg_for_copy(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+fn render_coding_agent_discovery(settings: &crate::config::settings::AppSettings) -> String {
+    if settings.agents.is_empty() {
+        return "No configured coding agents found.".to_string();
+    }
+
+    let mut lines = vec![
+        "Configured coding agents for self-handoff-and-switch:".to_string(),
+        "Use AgentConfig.id exactly with --coding-agent. Use --profile A-Z, or omit --profile to keep the caller's current effective profile.".to_string(),
+        String::new(),
+    ];
+
+    for agent in &settings.agents {
+        let direct_profiles = direct_profile_letters(settings, &agent.id);
+        let direct_profiles = if direct_profiles.is_empty() {
+            "A".to_string()
+        } else {
+            direct_profiles.join(", ")
+        };
+
+        lines.push(format!("- {}", agent.id));
+        if !agent.label.trim().is_empty() {
+            lines.push(format!("  label: {}", agent.label));
+        }
+        lines.push(format!("  command: {}", agent.command));
+        lines.push(format!("  profiles without fallback: {}", direct_profiles));
+        lines.push(
+            "  fallback: other A-Z letters fall back to the nearest lower profile listed above, ending at A."
+                .to_string(),
+        );
+        lines.push("  copy:".to_string());
+        let agent_id_for_copy = quote_coding_agent_id_for_copy(&agent.id);
+        for profile in direct_profiles.split(", ") {
+            lines.push(format!(
+                "    self-handoff-and-switch --coding-agent={} --profile {}",
+                agent_id_for_copy, profile
+            ));
+        }
+        lines.push(String::new());
+    }
+
+    lines.pop();
+    lines.join("\n")
+}
+
+fn print_coding_agent_discovery() {
+    let settings = crate::config::settings::load_settings_for_cli();
+    crate::cli_println!("{}", render_coding_agent_discovery(&settings));
+}
+
 pub fn execute(args: SelfSwitchArgs) -> i32 {
+    if args.list_coding_agents {
+        print_coding_agent_discovery();
+        return 0;
+    }
+
     let root = match args.root {
         Some(ref r) => r.clone(),
         None => {
@@ -284,6 +389,7 @@ mod tests {
                 assert_eq!(args.root.as_deref(), Some("anything"));
                 assert_eq!(args.coding_agent, None);
                 assert_eq!(args.profile, None);
+                assert!(!args.list_coding_agents);
             }
             _ => panic!("expected SelfSwitch subcommand"),
         }
@@ -316,8 +422,135 @@ mod tests {
                     normalize_profile_arg(args.profile).unwrap().as_deref(),
                     Some("C")
                 );
+                assert!(!args.list_coding_agents);
             }
             _ => panic!("expected SelfSwitch subcommand"),
         }
+    }
+
+    #[test]
+    fn self_switch_list_coding_agents_parses_without_token_or_root() {
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "agentscommander",
+            "self-handoff-and-switch",
+            "--list-coding-agents",
+        ])
+        .expect("discovery should not require token or root at clap parse time");
+        let cmd = parsed.command.expect("subcommand present");
+        match cmd {
+            crate::cli::Commands::SelfSwitch(args) => {
+                assert!(args.list_coding_agents);
+                assert_eq!(args.token, None);
+                assert_eq!(args.root, None);
+                assert_eq!(args.coding_agent, None);
+                assert_eq!(args.profile, None);
+            }
+            _ => panic!("expected SelfSwitch subcommand"),
+        }
+    }
+
+    fn agent(id: &str, label: &str, command: &str) -> crate::config::settings::AgentConfig {
+        crate::config::settings::AgentConfig {
+            id: id.to_string(),
+            label: label.to_string(),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+        }
+    }
+
+    fn enabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
+        crate::config::settings::ProfileCellConfig {
+            enabled: true,
+            command: command.to_string(),
+            env: std::collections::BTreeMap::new(),
+            notes: String::new(),
+        }
+    }
+
+    fn disabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
+        crate::config::settings::ProfileCellConfig {
+            enabled: false,
+            command: command.to_string(),
+            env: std::collections::BTreeMap::new(),
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn discovery_lists_exact_ids_for_duplicate_backend_commands() {
+        let mut settings = crate::config::settings::AppSettings {
+            agents: vec![
+                agent("codex-main", "Codex Main", "codex --model gpt-5"),
+                agent("codex-review", "Codex Review", "codex --model gpt-5"),
+            ],
+            ..crate::config::settings::AppSettings::default()
+        };
+        settings.coding_agent_profiles.profiles_by_agent.insert(
+            "codex-main".to_string(),
+            std::collections::BTreeMap::from([
+                ("A".to_string(), enabled_cell("")),
+                ("B".to_string(), enabled_cell("--profile-b")),
+            ]),
+        );
+        settings.coding_agent_profiles.profiles_by_agent.insert(
+            "codex-review".to_string(),
+            std::collections::BTreeMap::from([
+                ("A".to_string(), enabled_cell("")),
+                ("C".to_string(), enabled_cell("--profile-c")),
+            ]),
+        );
+
+        let rendered = render_coding_agent_discovery(&settings);
+
+        assert!(rendered.contains("- codex-main"));
+        assert!(rendered.contains("- codex-review"));
+        assert!(rendered.contains("self-handoff-and-switch --coding-agent=codex-main --profile B"));
+        assert!(
+            rendered.contains("self-handoff-and-switch --coding-agent=codex-review --profile C")
+        );
+        assert!(!rendered.contains("self-handoff-and-switch --coding-agent codex --profile"));
+    }
+
+    #[test]
+    fn discovery_reports_direct_profiles_and_fallback_rule() {
+        let mut settings = crate::config::settings::AppSettings {
+            agents: vec![agent("codex-main", "Codex Main", "codex")],
+            ..crate::config::settings::AppSettings::default()
+        };
+        settings.coding_agent_profiles.profiles_by_agent.insert(
+            "codex-main".to_string(),
+            std::collections::BTreeMap::from([
+                ("A".to_string(), enabled_cell("")),
+                ("B".to_string(), disabled_cell("--disabled")),
+                ("D".to_string(), enabled_cell("--profile-d")),
+            ]),
+        );
+
+        let rendered = render_coding_agent_discovery(&settings);
+
+        assert!(rendered.contains("profiles without fallback: A, D"));
+        assert!(
+            rendered.contains("other A-Z letters fall back to the nearest lower profile listed")
+        );
+        assert!(!rendered.contains("self-handoff-and-switch --coding-agent=codex-main --profile B"));
+    }
+
+    #[test]
+    fn discovery_shell_quotes_copy_ids_with_spaces_and_metacharacters() {
+        let settings = crate::config::settings::AppSettings {
+            agents: vec![agent("codex main; Remove-Item *", "Codex Main", "codex")],
+            ..crate::config::settings::AppSettings::default()
+        };
+
+        let rendered = render_coding_agent_discovery(&settings);
+
+        assert!(rendered.contains(
+            "self-handoff-and-switch --coding-agent='codex main; Remove-Item *' --profile A"
+        ));
     }
 }
