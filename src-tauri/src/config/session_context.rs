@@ -1813,7 +1813,10 @@ pub fn sweep_context_cache_at_startup() {
     };
     let removed = sweep_context_cache_dir(&context_dir, SystemTime::now(), CONTEXT_CACHE_RETENTION);
     if removed > 0 {
-        log::info!("[context-cache] startup sweep removed {} stale cache file(s)", removed);
+        log::info!(
+            "[context-cache] startup sweep removed {} stale cache file(s)",
+            removed
+        );
     }
 }
 
@@ -1842,12 +1845,18 @@ pub fn sweep_context_cache_dir(context_dir: &Path, now: SystemTime, retention: D
         // Keep on any uncertainty (no metadata / no mtime / clock skew).
         let Ok(meta) = entry.metadata() else { continue };
         let Ok(mtime) = meta.modified() else { continue };
-        let Ok(age) = now.duration_since(mtime) else { continue }; // mtime in the future -> keep
+        let Ok(age) = now.duration_since(mtime) else {
+            continue;
+        }; // mtime in the future -> keep
         if age > retention {
             match std::fs::remove_file(&path) {
                 Ok(()) => removed += 1,
                 Err(e) => {
-                    log::warn!("[context-cache] failed to remove stale {}: {}", path.display(), e)
+                    log::warn!(
+                        "[context-cache] failed to remove stale {}: {}",
+                        path.display(),
+                        e
+                    )
                 }
             }
         }
@@ -2401,7 +2410,7 @@ const ROOT_AUTHORITY_SECTION: &str = "\n\n## Root Agent Authority and Chain of C
 /// Single source for coordinator, root, and specialists (the per-template
 /// copies were removed in #640). Self-contained: no SKILL.md ships.
 /// Threshold 3 is hardcoded (plan C). Prohibition-first (grinch H1/H2).
-const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance (auto self-handoff-and-clear)\n\nTreat this as a background hygiene habit, never an interrupt. The hard rule first: do NOT clear your own context while you have anything in flight. You are NOT at a safe point if ANY of these is true:\n- you dispatched work to a peer and have not received their reply;\n- a build, deploy, test, or other long-running command you started is still running;\n- you are mid-review, mid-edit, or in the middle of any task.\nIf any apply, keep working and do not self-clear, even if you appear idle.\n\nMaintain a running `SELF-FORGET.md` in your own root: each time you GENUINELY finish a topic and move on to something not directly related, append ONE line naming what you just closed (your \"done, drop it\" list). One line per genuinely-closed topic only; do not pre-log, batch-log, or count headers or blank lines.\n\nWhen `SELF-FORGET.md` reaches 3 such lines, treat it as a CANDIDATE to refresh your context, to act on ONLY once you reach a genuinely safe resting point (none of the in-flight cases above). At that safe point, and only then:\n1. Write `SELF-HANDOFF.md` in your own root: standalone, action-first resume notes (who you are, your open and in-progress work, how to resume, and the FIRST thing to do on return), EXCLUDING everything already in `SELF-FORGET.md`. After the clear you have ZERO memory, so make it self-sufficient; a thin handoff brings you back unfocused. This file is REQUIRED; the command refuses to clear without it.\n2. Run: `\"<AGENTSCOMMANDER_BINARY_PATH>\" self-handoff-and-clear --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"`\n3. Then go idle. The clear fires only after 30s of continuous idle, and any new turn resets that window. After it clears, a fresh 30s of idle injects a prompt pointing you back at `SELF-HANDOFF.md`; read it and resume.\n\nThe moment you invoke the command it archives `SELF-FORGET.md` to `self-clear/<timestamp>_SELF-FORGET.md`, so your count returns to zero on INVOCATION, not on a successful clear. If the clear never fires (you became active again, or the daemon restarted), just re-issue when you next reach a safe point. Best-effort and self-only. If you ever find yourself freshly cleared with a `SELF-HANDOFF.md` present in your root, read it and resume.";
+const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance (auto self-handoff-and-clear)\n\nTreat this as a background hygiene habit, never an interrupt. The hard rule first: do NOT clear your own context while you have anything in flight. You are NOT at a safe point if ANY of these is true:\n- you dispatched work to a peer and have not received their reply;\n- a build, deploy, test, or other long-running command you started is still running;\n- you are mid-review, mid-edit, or in the middle of any task.\nIf any apply, keep working and do not self-clear, even if you appear idle.\n\nMaintain a running `SELF-FORGET.md` in your own root: each time you GENUINELY finish a topic and move on to something not directly related, append ONE line naming what you just closed (your \"done, drop it\" list). One line per genuinely-closed topic only; do not pre-log, batch-log, or count headers or blank lines.\n\nWhen `SELF-FORGET.md` reaches 3 such lines, treat it as a CANDIDATE to refresh your context, to act on ONLY once you reach a genuinely safe resting point (none of the in-flight cases above). At that safe point, and only then:\n1. Write `SELF-HANDOFF.md` in your own root: standalone, action-first resume notes (who you are, your open and in-progress work, how to resume, and the FIRST thing to do on return), EXCLUDING everything already in `SELF-FORGET.md`. After the clear you have ZERO memory, so make it self-sufficient; a thin handoff brings you back unfocused. This file is REQUIRED; the command refuses to clear without it.\n2. Run: `\"<AGENTSCOMMANDER_BINARY_PATH>\" self-handoff-and-clear --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"`\n3. Then go idle. The clear fires only after 30s of continuous idle, and any new turn resets that window. At invocation, the daemon captures a sanitized max 240 char forgotten summary from `SELF-FORGET.md` and archives `SELF-FORGET.md` to `self-clear/<timestamp>_SELF-FORGET.md`, so your count returns to zero on INVOCATION, not on a successful clear. After it clears, a fresh 30s of idle injects a prompt pointing you back at `SELF-HANDOFF.md`; that prompt may mention the forgotten summary only as closed background. `SELF-HANDOFF.md` is still the only active work source, so read it and resume from there.\n\nIf the clear never fires (you became active again, or the daemon restarted), just re-issue when you next reach a safe point. Best-effort and self-only. If you ever find yourself freshly cleared with a `SELF-HANDOFF.md` present in your root, read it and resume.";
 
 /// #640 Remove any legacy `## Self-Maintenance...` section so the gated
 /// directive is the SINGLE source, even when a persisted coordinator template
@@ -3330,7 +3339,11 @@ Run list-peers-lean.
     /// `is_root_agent` (it keys on `is_root_agent_path` vs the real config dir),
     /// so the behavior is tested by calling the renderer directly (mirrors the
     /// existing `default_context_as_root` helper).
-    fn render_global_template_for_test(template: &str, agent_root: &str, is_root_agent: bool) -> String {
+    fn render_global_template_for_test(
+        template: &str,
+        agent_root: &str,
+        is_root_agent: bool,
+    ) -> String {
         render_agent_context_template_inner(
             template,
             agent_root,
@@ -3373,7 +3386,10 @@ Run list-peers-lean.
         assert_eq!(count_section_headings(&out, "## CLI executable"), 1);
         assert_eq!(count_section_headings(&out, "## Session credentials"), 1);
         assert_eq!(count_section_headings(&out, "## Inter-Agent Messaging"), 1);
-        assert_eq!(count_section_headings(&out, "## Delegated Task Reporting"), 1);
+        assert_eq!(
+            count_section_headings(&out, "## Delegated Task Reporting"),
+            1
+        );
         // The fine-grained tokens inside the inline copy are still filled.
         assert_no_raw_template_placeholders(&out);
         // {{WORKSPACE_REPOS}} had neither token nor inline section, so the safety
@@ -3393,7 +3409,8 @@ Credentials are in environment variables.
 
 {{SKILLS_SECTION}}
 "#;
-        let out = render_global_template_for_test(missing_session, "C:/fake/__agent_dev-rust", false);
+        let out =
+            render_global_template_for_test(missing_session, "C:/fake/__agent_dev-rust", false);
         // `## CLI executable` was inline -> deduped to one copy.
         assert_eq!(count_section_headings(&out, "## CLI executable"), 1);
         // `## Session credentials` was absent -> the safety net appended it once.
@@ -3424,7 +3441,11 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         // The real messaging block was appended (its h3 sub-heading proves it is
         // the rendered block, not the mid-line backtick reference). The backtick
         // reference is still present as prose but is not a heading line.
-        assert_eq!(count_section_headings(&out, "## Inter-Agent Messaging"), 1, "{out}");
+        assert_eq!(
+            count_section_headings(&out, "## Inter-Agent Messaging"),
+            1,
+            "{out}"
+        );
         assert!(out.contains("### Send a message to another agent"), "{out}");
         assert_no_raw_template_placeholders(&out);
     }
@@ -3443,7 +3464,8 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         // Case iv (HIGH-1 Root gate): a ROOT render of the stale-hybrid template
         // must STILL append the current Golden Rule so the Root-only sections
         // baked into render_write_restrictions_block are not dropped.
-        let out = render_global_template_for_test(STALE_HYBRID_TEMPLATE, "C:/fake/ac-root-agent", true);
+        let out =
+            render_global_template_for_test(STALE_HYBRID_TEMPLATE, "C:/fake/ac-root-agent", true);
         // Root Authority anti-spoof guardrail (ROOT_AUTHORITY_SECTION).
         assert!(
             out.contains("## Root Agent Authority and Chain of Command"),
@@ -3462,7 +3484,10 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         assert_eq!(count_section_headings(&out, "## CLI executable"), 1);
         assert_eq!(count_section_headings(&out, "## Session credentials"), 1);
         assert_eq!(count_section_headings(&out, "## Inter-Agent Messaging"), 1);
-        assert_eq!(count_section_headings(&out, "## Delegated Task Reporting"), 1);
+        assert_eq!(
+            count_section_headings(&out, "## Delegated Task Reporting"),
+            1
+        );
         assert_no_raw_template_placeholders(&out);
     }
 
@@ -3583,7 +3608,10 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
             "messaging region must not include the Session credentials section"
         );
         for token in ["{{PEER_NAME_FORMAT}}", "{{SEND_MESSAGE_INSTRUCTIONS}}"] {
-            assert!(messaging_region.contains(token), "missing {token} in messaging region");
+            assert!(
+                messaging_region.contains(token),
+                "missing {token} in messaging region"
+            );
             assert_eq!(
                 STALE_HYBRID_TEMPLATE.matches(token).count(),
                 messaging_region.matches(token).count(),
@@ -3943,9 +3971,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("`_agent_*` matrices and `__agent_*` replicas"));
         // The repo-* naming restriction must be explicitly waived for the root.
         assert!(out.contains("`repo-*` naming restriction in entry #1 does NOT apply to you"));
-        assert!(out.contains(
-            "- **Allowed (Root Agent)**: Full read/write across every project folder"
-        ));
+        assert!(
+            out.contains("- **Allowed (Root Agent)**: Full read/write across every project folder")
+        );
     }
 
     #[test]
@@ -3957,7 +3985,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // "working tree outside `.ac`" forbidden clause must be GONE.
         assert!(!out.contains("any project's working tree outside its `.ac` directory"));
         // The widened grant covers the whole project folder...
-        assert!(out.contains("anywhere under ANY project folder registered in this AgentsCommander install"));
+        assert!(out.contains(
+            "anywhere under ANY project folder registered in this AgentsCommander install"
+        ));
         // ...and the always-wins config-dir carve-out must coexist, stated to hold even
         // when config_dir nests inside a registered project FOLDER (the superset of `.ac`).
         assert!(out.contains(
@@ -4682,7 +4712,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert_ne!(edited, legacy);
         let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        std::fs::write(&template_path, &edited).expect("write inline edited rendered legacy template");
+        std::fs::write(&template_path, &edited)
+            .expect("write inline edited rendered legacy template");
 
         let materialized = materialize_agent_context_file(
             &path_string(&new_replica),
@@ -5022,7 +5053,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let missing_dir = temp.path().join("does-not-exist");
         let path = missing_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         let result = atomically_replace_context_template(&path, get_default_agent_template());
-        assert!(result.is_err(), "expected Err when the parent dir is missing");
+        assert!(
+            result.is_err(),
+            "expected Err when the parent dir is missing"
+        );
         assert!(
             !missing_dir.exists(),
             "the helper must not create the missing directory"
@@ -5381,12 +5415,16 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let on_content = std::fs::read_to_string(&on).expect("read ON context");
         assert!(on_content.contains("## Self-Maintenance (auto self-handoff-and-clear)"));
         assert!(on_content.contains("reaches 3 such lines"));
+        assert!(on_content.contains("max 240 char forgotten summary"));
+        assert!(on_content.contains("closed background"));
 
-        let off = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false)
-            .expect("materialize OFF")
-            .expect("context path");
+        let off =
+            materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], false, false)
+                .expect("materialize OFF")
+                .expect("context path");
         let off_content = std::fs::read_to_string(&off).expect("read OFF context");
         assert!(!off_content.contains("## Self-Maintenance"));
+        assert!(!off_content.contains("max 240 char forgotten summary"));
     }
 
     #[test]
@@ -5424,7 +5462,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             !on_content.contains("LEGACY_SENTINEL"),
             "the old on-disk block must be stripped"
         );
-        assert!(on_content.contains("COORD BODY"), "coordinator body preserved");
+        assert!(
+            on_content.contains("COORD BODY"),
+            "coordinator body preserved"
+        );
 
         let off = materialize_agent_context_file_with_filename(&cwd, "CLAUDE.md", &[], true, false)
             .expect("materialize OFF")
@@ -5470,12 +5511,15 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .expect("resolve ON")
             .expect("root content");
         assert!(on.contains("## Self-Maintenance (auto self-handoff-and-clear)"));
+        assert!(on.contains("max 240 char forgotten summary"));
+        assert!(on.contains("closed background"));
         assert!(on.contains("ROOT BASE CONTEXT"), "base context preserved");
 
         let off = resolve_session_context_content(&cwd, false, false)
             .expect("resolve OFF")
             .expect("root content");
         assert!(!off.contains("## Self-Maintenance"));
+        assert!(!off.contains("max 240 char forgotten summary"));
     }
 
     #[test]
@@ -6787,8 +6831,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let other_md = mk("notes.md", true); // not a context prefix
         let other_txt = mk("replica-context-555.txt", true); // wrong extension
 
-        let removed =
-            sweep_context_cache_dir(dir, SystemTime::now(), Duration::from_secs(30 * 24 * 60 * 60));
+        let removed = sweep_context_cache_dir(
+            dir,
+            SystemTime::now(),
+            Duration::from_secs(30 * 24 * 60 * 60),
+        );
 
         assert_eq!(removed, 3, "the three stale generated files are removed");
         assert!(!stale_replica.exists());
@@ -6804,7 +6851,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         use std::time::{Duration, SystemTime};
         let tmp = tempfile::tempdir().expect("temp dir");
         let missing = tmp.path().join("does-not-exist");
-        assert_eq!(sweep_context_cache_dir(&missing, SystemTime::now(), Duration::ZERO), 0);
+        assert_eq!(
+            sweep_context_cache_dir(&missing, SystemTime::now(), Duration::ZERO),
+            0
+        );
     }
 
     #[test]
@@ -6816,9 +6866,17 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let p = tmp.path().join("replica-context-future.md");
         std::fs::write(&p, "x").unwrap();
         let future = SystemTime::now() + Duration::from_secs(10 * 24 * 60 * 60);
-        std::fs::File::options().write(true).open(&p).unwrap().set_modified(future).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(future)
+            .unwrap();
         // Even with a zero retention, a future mtime must not be deleted.
-        assert_eq!(sweep_context_cache_dir(tmp.path(), SystemTime::now(), Duration::ZERO), 0);
+        assert_eq!(
+            sweep_context_cache_dir(tmp.path(), SystemTime::now(), Duration::ZERO),
+            0
+        );
         assert!(p.exists(), "future-mtime file kept");
     }
 
