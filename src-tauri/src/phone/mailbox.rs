@@ -1060,8 +1060,14 @@ fn capture_self_forget_summary(root: &std::path::Path) -> Option<ForgottenSummar
         return None;
     }
 
-    let raw = match String::from_utf8(bytes) {
-        Ok(raw) => raw,
+    let raw = match std::str::from_utf8(&bytes) {
+        Ok(raw) => raw.to_string(),
+        Err(e) if e.error_len().is_none() => {
+            let valid_up_to = e.valid_up_to();
+            std::str::from_utf8(&bytes[..valid_up_to])
+                .unwrap_or("")
+                .to_string()
+        }
         Err(e) => {
             log::warn!(
                 "[mailbox] self-handoff: SELF-FORGET.md summary from {} is not valid UTF-8 (non-fatal): {}",
@@ -6761,6 +6767,30 @@ mod tests {
         let summary = capture_self_forget_summary(temp.path()).unwrap();
         assert!(summary.as_str().chars().count() <= SELF_FORGET_SUMMARY_MAX_CHARS);
         assert!(summary.as_str().ends_with("..."));
+
+        let archived = archive_root_md(temp.path(), "SELF-FORGET", "20260102_030405")
+            .unwrap()
+            .expect("archive");
+        assert_eq!(std::fs::read_to_string(archived).unwrap(), full);
+    }
+
+    #[test]
+    fn capture_self_forget_summary_truncates_split_trailing_utf8_scalar() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let full = format!(
+            "{}é",
+            "a".repeat(SELF_FORGET_SUMMARY_READ_LIMIT_BYTES as usize - 1)
+        );
+        assert_eq!(
+            full.as_bytes().len(),
+            SELF_FORGET_SUMMARY_READ_LIMIT_BYTES as usize + 1
+        );
+        std::fs::write(temp.path().join("SELF-FORGET.md"), &full).unwrap();
+
+        let summary = capture_self_forget_summary(temp.path()).unwrap();
+        assert!(summary.as_str().chars().count() <= SELF_FORGET_SUMMARY_MAX_CHARS);
+        assert!(summary.as_str().ends_with("..."));
+        assert!(!summary.as_str().contains('é'));
 
         let archived = archive_root_md(temp.path(), "SELF-FORGET", "20260102_030405")
             .unwrap()
