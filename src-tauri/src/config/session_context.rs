@@ -1922,7 +1922,11 @@ pub fn get_default_coordinator_template() -> &'static str {
      **Screenshot Capture Paths:**\n\
      - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work. Important: cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
      - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels. In that case ask the user to capture with Greenshot, use latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
-     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n"
+     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n\n\
+     ## Raising Your Hand\n\
+     When you are blocked, need a user decision, or are waiting for user attention, run:\n\
+         \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
+     This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n"
 }
 
 fn render_agent_context_template(
@@ -5343,6 +5347,21 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             !tpl.contains('\u{2014}'),
             "coordinator template must stay em-dash-free"
         );
+    }
+
+    #[test]
+    fn coordinator_template_carries_raise_hand_guidance_and_shared_template_does_not() {
+        // #684: the coordinator template gains a short raise-hand usage guide
+        // beside the screenshot guidance. It must be coordinator-only, so the
+        // shared agent template (every non-coordinator agent) must NOT carry it.
+        let coordinator = get_default_coordinator_template();
+        assert!(coordinator.contains("## Raising Your Hand"));
+        assert!(coordinator.contains("raise-hand --token <AGENTSCOMMANDER_TOKEN>"));
+        assert!(coordinator.contains("Sidebar raised-hand indicator for your coordinator row"));
+
+        let shared = get_default_agent_template();
+        assert!(!shared.contains("## Raising Your Hand"));
+        assert!(!shared.contains("raise-hand --token"));
     }
 
     #[test]
