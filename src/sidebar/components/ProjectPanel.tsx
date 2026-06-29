@@ -40,6 +40,7 @@ import {
   formatReplicaRepoBadgeLabel,
   repoLabelFromPath,
 } from "./replica-repo-badges";
+import { sessionDotClass } from "./session-status";
 
 interface PendingLaunch {
   path: string;
@@ -81,6 +82,11 @@ function teamMemberDisplayLabel(agentName: string): string {
 
 function sessionStatusSearchText(status: Session["status"]): string {
   return typeof status === "string" ? status : `exited ${status.exited}`;
+}
+
+function sessionEffectiveStatusSearchText(session: Session): string {
+  const dotClass = sessionDotClass(session);
+  return dotClass === "exited" ? sessionStatusSearchText(session.status) : dotClass;
 }
 
 /** Build the gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
@@ -164,12 +170,7 @@ function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | und
 
 /** Compute CSS class for replica status dot */
 function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): string {
-  const session = replicaSession(wg, replica);
-  if (!session) return "offline";
-  if (session.pendingReview) return "pending";
-  if (session.waitingForInput) return "waiting";
-  if (typeof session.status === "string") return session.status;
-  return "exited";
+  return sessionDotClass(replicaSession(wg, replica));
 }
 
 /** Check if a session has a live PTY process (not exited, not offline) */
@@ -635,17 +636,15 @@ const ProjectPanel: Component = () => {
         // contributed by the per-row callers under the gate that matches their
         // render — repo/branch (replicaSearchText / sessionRepoSearchText) and the
         // profile badge — so "what you match == what you see" (#515 bug 1).
-        // `shell` is dropped: it is never shown on any row. status/waiting/pending
-        // stay — they are the visible status dot's state, so dropping them would
-        // hide a row whose dot the user can see.
+        // `shell` is dropped: it is never shown on any row. Status text comes
+        // from the same effective state as the dot, so stale live flags cannot
+        // index an exited row as waiting/pending.
         const sessionSearchText = (session: Session | undefined) => {
           if (!session) return "";
           return joinSearchText(
             session.name,
             session.agentLabel,
-            sessionStatusSearchText(session.status),
-            session.waitingForInput ? "waiting" : null,
-            session.pendingReview ? "pending" : null
+            sessionEffectiveStatusSearchText(session)
           );
         };
         // Repo/branch chips on an agent SessionItem render only for a coordinator
