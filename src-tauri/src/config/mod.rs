@@ -13,6 +13,7 @@ pub mod profile;
 pub mod projects;
 pub mod replica_identity;
 pub mod root_agent;
+pub mod seeded_context_templates;
 pub mod session_context;
 pub mod sessions_persistence;
 pub mod settings;
