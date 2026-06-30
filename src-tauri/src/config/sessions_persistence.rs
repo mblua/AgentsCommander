@@ -620,7 +620,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
     }
 }
 
-pub fn load_sessions_purging_outside_project_paths(
+pub async fn load_sessions_purging_outside_project_paths(
     project_paths: &[String],
 ) -> Vec<PersistedSession> {
     let dir = match super::config_dir() {
@@ -631,39 +631,75 @@ pub fn load_sessions_purging_outside_project_paths(
         }
     };
 
-    match purge_sessions_outside_project_paths_in_dir(&dir, project_paths) {
+    match purge_sessions_outside_project_paths_in_dir(&dir, project_paths).await {
         Ok(filtered) => filtered,
         Err(e) => {
             log::error!(
                 "Failed to rewrite sessions.json after orphan-session purge: {}",
                 e
             );
+            // Read-only fallback (no save): a stale read here cannot violate the
+            // atomicity contract because nothing is written back. Restore
+            // reconciles on the next persist.
             filter_sessions_for_project_paths(load_sessions_from_dir(&dir), project_paths)
         }
     }
 }
 
-pub fn purge_sessions_outside_project_paths(project_paths: &[String]) -> Result<usize, String> {
+pub async fn purge_sessions_outside_project_paths(
+    project_paths: &[String],
+) -> Result<usize, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let before = load_sessions_from_dir(&dir);
-    let filtered = filter_sessions_for_project_paths(before.clone(), project_paths);
-    let removed = before.len().saturating_sub(filtered.len());
-    if removed > 0 {
-        save_sessions_to_dir(&dir, &filtered)?;
-    }
-    Ok(removed)
+    let (before_len, filtered) =
+        purge_sessions_outside_project_paths_in_dir_locked(&dir, project_paths).await?;
+    Ok(before_len.saturating_sub(filtered.len()))
 }
 
-fn purge_sessions_outside_project_paths_in_dir(
+async fn purge_sessions_outside_project_paths_in_dir(
     dir: &Path,
     project_paths: &[String],
 ) -> Result<Vec<PersistedSession>, String> {
+    let (_before_len, filtered) =
+        purge_sessions_outside_project_paths_in_dir_locked(dir, project_paths).await?;
+    Ok(filtered)
+}
+
+/// #698 HIGH fix — the lock-holding core shared by BOTH purge entry points:
+/// `purge_sessions_outside_project_paths` (settings-update path, reachable from
+/// `purge_sessions_after_settings_update`) and
+/// `purge_sessions_outside_project_paths_in_dir` (startup-restore path).
+///
+/// The orphan purge is a load -> filter -> save sequence. Before this fix the
+/// load and save ran OUTSIDE `sessions_save_lock()`, so another locked
+/// persistence writer could land its durable write between them: the purge read
+/// a stale `sessions.json`, a raise-hand then persisted `communication:
+/// raiseHand`, and the purge's already-computed stale copy overwrote it,
+/// silently dropping a successfully-emitted raise from disk and from CLI
+/// `list-sessions`.
+///
+/// Holding `sessions_save_lock()` across the whole load+filter+save makes the
+/// purge a full participant in the same mutual exclusion the raise-hand and
+/// `persist_current_state` helpers use, so every sessions persistence writer
+/// now serializes on one lock. Whichever writer acquires the lock second
+/// re-reads the fresh on-disk state, so neither can clobber the other with stale
+/// data. The save is the sync, leaf-level `save_sessions_to_dir` (its own
+/// `SAVE_SESSIONS_LOCK` never re-enters this one), so there is no deadlock and
+/// no await is held across a second acquisition of this lock.
+///
+/// Returns `(before_len, filtered)` so callers can report either the removed
+/// count or the retained snapshot.
+async fn purge_sessions_outside_project_paths_in_dir_locked(
+    dir: &Path,
+    project_paths: &[String],
+) -> Result<(usize, Vec<PersistedSession>), String> {
+    let _guard = sessions_save_lock().lock().await;
     let before = load_sessions_from_dir(dir);
-    let filtered = filter_sessions_for_project_paths(before.clone(), project_paths);
-    if filtered.len() < before.len() {
+    let before_len = before.len();
+    let filtered = filter_sessions_for_project_paths(before, project_paths);
+    if filtered.len() < before_len {
         save_sessions_to_dir(dir, &filtered)?;
     }
-    Ok(filtered)
+    Ok((before_len, filtered))
 }
 
 /// Save current sessions to the app config directory (see config_dir()).
@@ -2003,8 +2039,8 @@ mod tests {
         assert_eq!(filtered[0].name, "kept-coordinator");
     }
 
-    #[test]
-    fn purge_sessions_outside_project_paths_rewrites_sessions_json() {
+    #[tokio::test]
+    async fn purge_sessions_outside_project_paths_rewrites_sessions_json() {
         let temp = tempfile::tempdir().expect("tempdir");
         let current = temp.path().join("current");
         let removed = temp.path().join("removed");
@@ -2031,6 +2067,7 @@ mod tests {
 
         let project_paths = vec![current.to_string_lossy().to_string()];
         let filtered = purge_sessions_outside_project_paths_in_dir(temp.path(), &project_paths)
+            .await
             .expect("purge sessions");
 
         assert_eq!(filtered.len(), 1);
@@ -2041,6 +2078,106 @@ mod tests {
         let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("parse sessions");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "keep");
+    }
+
+    /// #698 grinch HIGH regression — the orphan purge must take
+    /// `sessions_save_lock()` and re-read `sessions.json` INSIDE that lock, so it
+    /// can never overwrite a raise-hand that another locked writer persisted
+    /// after the purge began. We drive the exact interleaving deterministically:
+    ///   1. seed A (retained, no communication) + B (removable),
+    ///   2. hold the save lock and start the purge; it must park at the lock
+    ///      WITHOUT having rewritten the file (B still on disk = no stale
+    ///      pre-read followed by a stale write),
+    ///   3. while the lock is held, overwrite the file with A carrying a visible
+    ///      raiseHand (what a raise-hand persist would have produced),
+    ///   4. release the lock; the purge re-reads the fresh state, keeps A, drops
+    ///      B, and the persisted raiseHand SURVIVES.
+    ///
+    /// The pre-fix code (load+save outside the lock) would have written its stale
+    /// pre-read here, dropping A's raiseHand. Note `save_sessions_to_dir` (step 3)
+    /// takes only the sync `SAVE_SESSIONS_LOCK`, never this async lock, so seeding
+    /// the file while holding `guard` cannot deadlock.
+    #[tokio::test]
+    async fn purge_reads_under_save_lock_and_preserves_concurrent_raise_hand() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current = temp.path().join("current");
+        let removed = temp.path().join("removed");
+        let current_agent = current.join(".ac").join("wg-1").join("__agent_keep");
+        let removed_agent = removed.join(".ac").join("wg-1").join("__agent_old");
+        std::fs::create_dir_all(&current_agent).expect("create current agent");
+        std::fs::create_dir_all(&removed_agent).expect("create removed agent");
+
+        let kept = PersistedSession {
+            name: "keep".into(),
+            working_directory: current_agent.to_string_lossy().to_string(),
+            is_coordinator: true,
+            status: Some(SessionStatus::Running),
+            ..Default::default()
+        };
+        let removable = PersistedSession {
+            name: "drop".into(),
+            working_directory: removed_agent.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        save_sessions_to_dir(temp.path(), &[kept.clone(), removable.clone()]).expect("seed");
+
+        let project_paths = vec![current.to_string_lossy().to_string()];
+
+        // Hold the save lock so the purge cannot proceed past its lock acquisition.
+        let guard = sessions_save_lock().lock().await;
+        let mut purge = Box::pin(purge_sessions_outside_project_paths_in_dir(
+            temp.path(),
+            &project_paths,
+        ));
+        let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut purge)
+            .await
+            .is_err();
+        assert!(
+            timed_out,
+            "purge must wait for the save lock before reading or writing"
+        );
+
+        // The purge has NOT rewritten the file yet (it has not even read it):
+        // the removable session is still present on disk.
+        let parked: Vec<PersistedSession> = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("sessions.json")).expect("read parked"),
+        )
+        .expect("parse parked");
+        assert_eq!(
+            parked.len(),
+            2,
+            "purge must not write while parked at the lock"
+        );
+
+        // Simulate a raise-hand that persisted A with a visible raiseHand while
+        // the purge was parked.
+        let mut raised = kept.clone();
+        raised.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: "2026-06-30T13:00:00+00:00".into(),
+        });
+        save_sessions_to_dir(temp.path(), &[raised, removable]).expect("persist raise-hand");
+
+        drop(guard);
+        let filtered = purge.await.expect("purge should succeed");
+
+        // The purge kept A, dropped B, and preserved the raise-hand it re-read
+        // under the lock.
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "keep");
+        let saved: Vec<PersistedSession> = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("sessions.json")).expect("read final"),
+        )
+        .expect("parse final");
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].name, "keep");
+        let comm = saved[0]
+            .communication
+            .as_ref()
+            .expect("raise-hand must survive the purge");
+        assert_eq!(comm.kind, SessionCommunicationKind::RaiseHand);
+        assert!(comm.visible);
     }
 
     #[test]
