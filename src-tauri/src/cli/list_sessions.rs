@@ -2,7 +2,7 @@ use clap::Args;
 use serde::Serialize;
 
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
-use crate::session::session::SessionStatus;
+use crate::session::session::{SessionCommunicationKind, SessionStatus};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -12,6 +12,7 @@ OUTPUT: JSON array of current sessions. Each entry contains:\n  \
   workingDirectory  Session's working directory path\n  \
   status            One of: \"active\", \"running\", \"idle\", or {\"exited\": <code>}\n  \
   waitingForInput   true when the session is waiting for user input\n  \
+  raisedHand        true when a visible raise-hand request is active\n  \
   createdAt         ISO 8601 timestamp of session creation\n\n\
 REQUIREMENTS: The app must be running (sessions.json is kept up-to-date while the app runs).\n\n\
 EXAMPLES:\n  \
@@ -32,6 +33,7 @@ struct SessionEntry {
     working_directory: String,
     status: serde_json::Value,
     waiting_for_input: bool,
+    raised_hand: bool,
     created_at: String,
 }
 
@@ -43,6 +45,23 @@ fn status_tag(status: &SessionStatus) -> &'static str {
         SessionStatus::Idle => "idle",
         SessionStatus::Exited(_) => "exited",
     }
+}
+
+/// #698 - derive the public `raisedHand` boolean from a persisted row. True only
+/// when the full valid-visible contract holds: the row is a coordinator, has a
+/// present non-exited status, and carries a visible `RaiseHand` communication.
+/// Every other shape (missing status, missing/hidden/non-raise communication,
+/// non-coordinator, exited, restore-only) maps to false.
+fn raised_hand_from_persisted(s: &PersistedSession) -> bool {
+    let Some(status) = s.status.as_ref() else {
+        return false;
+    };
+    if !s.is_coordinator || matches!(status, SessionStatus::Exited(_)) {
+        return false;
+    }
+    s.communication.as_ref().is_some_and(|communication| {
+        communication.kind == SessionCommunicationKind::RaiseHand && communication.visible
+    })
 }
 
 /// Convert a PersistedSession (with runtime fields) to a CLI output entry.
@@ -58,6 +77,7 @@ fn to_entry(s: &PersistedSession) -> SessionEntry {
         working_directory: s.working_directory.clone(),
         status: status_value,
         waiting_for_input: s.waiting_for_input.unwrap_or(false),
+        raised_hand: raised_hand_from_persisted(s),
         created_at: s.created_at.clone().unwrap_or_default(),
     }
 }

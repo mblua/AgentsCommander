@@ -503,6 +503,46 @@ impl SessionManager {
         false
     }
 
+    /// #698 — clear BOTH user-input session-state transitions in a SINGLE
+    /// critical section: re-arm the durable resume intent
+    /// (`start_fresh_on_restore` true -> false, #630/#631) and lower any visible
+    /// raise-hand. Returns `(cleared_start_fresh, cleared_raise_hand)` so the
+    /// caller can persist once and emit the raise-hand clear event only when a
+    /// hand was actually lowered.
+    ///
+    /// Doing both under one `sessions.write()` acquisition is the MEDIUM grinch
+    /// fix: with the previous two-call shape a concurrent snapshot could observe a
+    /// half-applied state (`start_fresh_on_restore` already cleared while the hand
+    /// was still raised). Mutating both fields atomically removes that window.
+    pub async fn clear_user_input_transitions(&self, id: Uuid) -> (bool, bool) {
+        let mut sessions = self.sessions.write().await;
+        let Some(s) = sessions.get_mut(&id) else {
+            return (false, false);
+        };
+
+        let cleared_start_fresh = if s.start_fresh_on_restore {
+            log::info!(
+                "[session-state] {} '{}': start_fresh_on_restore true -> false (user message, re-armed)",
+                &id.to_string()[..8],
+                s.name
+            );
+            s.start_fresh_on_restore = false;
+            true
+        } else {
+            false
+        };
+
+        let cleared_raise_hand = s
+            .communication
+            .as_ref()
+            .is_some_and(|c| c.kind == SessionCommunicationKind::RaiseHand && c.visible);
+        if cleared_raise_hand {
+            s.communication = None;
+        }
+
+        (cleared_start_fresh, cleared_raise_hand)
+    }
+
     /// Set the resolved coding-agent identity. Called once by
     /// `create_session_inner` immediately after `CodingAgentKind::detect`.
     pub async fn set_agent_kind(&self, id: Uuid, kind: Option<CodingAgentKind>) {
@@ -1014,6 +1054,91 @@ mod tests {
             .unwrap()
             .communication
             .is_none());
+    }
+
+    /// #698 MEDIUM fix: `clear_user_input_transitions` lowers a visible raise-hand
+    /// AND re-arms the fresh intent in ONE critical section, reporting which fields
+    /// transitioned. A second call is a no-op, and an unknown id is a no-op.
+    #[tokio::test]
+    async fn clear_user_input_transitions_clears_both_fields_atomically() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+
+        // Both transitions happen together and are reported.
+        let (cleared_start_fresh, cleared_raise_hand) =
+            mgr.clear_user_input_transitions(session.id).await;
+        assert!(cleared_start_fresh);
+        assert!(cleared_raise_hand);
+
+        let stored = mgr
+            .get_session(session.id)
+            .await
+            .expect("session should still exist");
+        assert!(!stored.start_fresh_on_restore);
+        assert!(stored.communication.is_none());
+
+        // Idempotent: a second call transitions nothing.
+        assert_eq!(
+            mgr.clear_user_input_transitions(session.id).await,
+            (false, false)
+        );
+
+        // Unknown id is a no-op.
+        assert_eq!(
+            mgr.clear_user_input_transitions(Uuid::new_v4()).await,
+            (false, false)
+        );
+    }
+
+    /// #698: the two transitions are independent — `clear_user_input_transitions`
+    /// reports each field's own true/false, so a session with only one set re-arms
+    /// only that one.
+    #[tokio::test]
+    async fn clear_user_input_transitions_reports_each_field_independently() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        // Only the fresh intent is set -> (true, false).
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        assert_eq!(
+            mgr.clear_user_input_transitions(session.id).await,
+            (true, false)
+        );
+
+        // Only a raised hand is set -> (false, true).
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+        assert_eq!(
+            mgr.clear_user_input_transitions(session.id).await,
+            (false, true)
+        );
     }
 
     #[tokio::test]

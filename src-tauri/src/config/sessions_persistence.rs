@@ -4,10 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use uuid::Uuid;
+
 use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
-use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
+use crate::session::session::{
+    SessionCommunication, SessionCommunicationKind, SessionStatus, TEMP_SESSION_PREFIX,
+};
 
 /// #291 — in-process mutex serializing all `save_sessions` calls.
 ///
@@ -162,9 +166,10 @@ pub(crate) fn rename_with_retry(
 /// Minimal session data needed to restore a session on next app start.
 /// No UUID, just the "recipe" to re-create it.
 ///
-/// The optional runtime fields (id, waiting_for_input, created_at) are
-/// populated during live snapshots so the CLI can read session state from the
-/// file without requiring an HTTP request. They are ignored on restore.
+/// The optional runtime fields (id, waiting_for_input, communication,
+/// created_at) are populated during live snapshots so the CLI can read session
+/// state from the file without requiring an HTTP request. They are ignored on
+/// restore.
 ///
 /// `status` is also populated during live snapshots for CLI consumption AND is
 /// now **consumed on restore** by the issue #248 startup wake policy: the
@@ -246,6 +251,9 @@ pub struct PersistedSession {
     /// Whether the session is waiting for user input (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_for_input: Option<bool>,
+    /// Current visible session communication state (only present in live snapshots)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub communication: Option<SessionCommunication>,
     /// ISO 8601 creation timestamp (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
@@ -612,7 +620,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
     }
 }
 
-pub fn load_sessions_purging_outside_project_paths(
+pub async fn load_sessions_purging_outside_project_paths(
     project_paths: &[String],
 ) -> Vec<PersistedSession> {
     let dir = match super::config_dir() {
@@ -623,39 +631,75 @@ pub fn load_sessions_purging_outside_project_paths(
         }
     };
 
-    match purge_sessions_outside_project_paths_in_dir(&dir, project_paths) {
+    match purge_sessions_outside_project_paths_in_dir(&dir, project_paths).await {
         Ok(filtered) => filtered,
         Err(e) => {
             log::error!(
                 "Failed to rewrite sessions.json after orphan-session purge: {}",
                 e
             );
+            // Read-only fallback (no save): a stale read here cannot violate the
+            // atomicity contract because nothing is written back. Restore
+            // reconciles on the next persist.
             filter_sessions_for_project_paths(load_sessions_from_dir(&dir), project_paths)
         }
     }
 }
 
-pub fn purge_sessions_outside_project_paths(project_paths: &[String]) -> Result<usize, String> {
+pub async fn purge_sessions_outside_project_paths(
+    project_paths: &[String],
+) -> Result<usize, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
-    let before = load_sessions_from_dir(&dir);
-    let filtered = filter_sessions_for_project_paths(before.clone(), project_paths);
-    let removed = before.len().saturating_sub(filtered.len());
-    if removed > 0 {
-        save_sessions_to_dir(&dir, &filtered)?;
-    }
-    Ok(removed)
+    let (before_len, filtered) =
+        purge_sessions_outside_project_paths_in_dir_locked(&dir, project_paths).await?;
+    Ok(before_len.saturating_sub(filtered.len()))
 }
 
-fn purge_sessions_outside_project_paths_in_dir(
+async fn purge_sessions_outside_project_paths_in_dir(
     dir: &Path,
     project_paths: &[String],
 ) -> Result<Vec<PersistedSession>, String> {
+    let (_before_len, filtered) =
+        purge_sessions_outside_project_paths_in_dir_locked(dir, project_paths).await?;
+    Ok(filtered)
+}
+
+/// #698 HIGH fix — the lock-holding core shared by BOTH purge entry points:
+/// `purge_sessions_outside_project_paths` (settings-update path, reachable from
+/// `purge_sessions_after_settings_update`) and
+/// `purge_sessions_outside_project_paths_in_dir` (startup-restore path).
+///
+/// The orphan purge is a load -> filter -> save sequence. Before this fix the
+/// load and save ran OUTSIDE `sessions_save_lock()`, so another locked
+/// persistence writer could land its durable write between them: the purge read
+/// a stale `sessions.json`, a raise-hand then persisted `communication:
+/// raiseHand`, and the purge's already-computed stale copy overwrote it,
+/// silently dropping a successfully-emitted raise from disk and from CLI
+/// `list-sessions`.
+///
+/// Holding `sessions_save_lock()` across the whole load+filter+save makes the
+/// purge a full participant in the same mutual exclusion the raise-hand and
+/// `persist_current_state` helpers use, so every sessions persistence writer
+/// now serializes on one lock. Whichever writer acquires the lock second
+/// re-reads the fresh on-disk state, so neither can clobber the other with stale
+/// data. The save is the sync, leaf-level `save_sessions_to_dir` (its own
+/// `SAVE_SESSIONS_LOCK` never re-enters this one), so there is no deadlock and
+/// no await is held across a second acquisition of this lock.
+///
+/// Returns `(before_len, filtered)` so callers can report either the removed
+/// count or the retained snapshot.
+async fn purge_sessions_outside_project_paths_in_dir_locked(
+    dir: &Path,
+    project_paths: &[String],
+) -> Result<(usize, Vec<PersistedSession>), String> {
+    let _guard = sessions_save_lock().lock().await;
     let before = load_sessions_from_dir(dir);
-    let filtered = filter_sessions_for_project_paths(before.clone(), project_paths);
-    if filtered.len() < before.len() {
+    let before_len = before.len();
+    let filtered = filter_sessions_for_project_paths(before, project_paths);
+    if filtered.len() < before_len {
         save_sessions_to_dir(dir, &filtered)?;
     }
-    Ok(filtered)
+    Ok((before_len, filtered))
 }
 
 /// Save current sessions to the app config directory (see config_dir()).
@@ -802,6 +846,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             id: Some(s.id.clone()),
             status: Some(s.status.clone()),
             waiting_for_input: Some(s.waiting_for_input),
+            communication: s.communication.clone(),
             created_at: Some(s.created_at.clone()),
         })
         .collect();
@@ -1024,7 +1069,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
 
 /// Pure: produce a sanitized copy of a failed-recoverable PersistedSession
 /// suitable for merging into a fresh snapshot. Drops runtime fields (`id`,
-/// `status`, `waiting_for_input`, `created_at`) since those describe the
+/// `status`, `waiting_for_input`, `communication`, `created_at`) since those describe the
 /// PRIOR run's state; the session is no longer live, and persisting them
 /// would make `list-sessions` (which filters on `id.is_some()`) report the
 /// session as alive when it is not. See §224.
@@ -1033,6 +1078,7 @@ pub(crate) fn sanitize_failed_recoverable(ps: &PersistedSession) -> PersistedSes
     clean.id = None;
     clean.status = None;
     clean.waiting_for_input = None;
+    clean.communication = None;
     clean.created_at = None;
     clean
 }
@@ -1060,7 +1106,7 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
     let _guard = sessions_save_lock().lock().await;
     let mut snapshot = snapshot_sessions(mgr).await;
     // §224 — strip stale runtime fields (`id`, `status`, `waiting_for_input`,
-    // `created_at`) from failed-recoverable entries. Without this, the prior
+    // `communication`, `created_at`) from failed-recoverable entries. Without this, the prior
     // run's runtime fields travel into the new snapshot, and `list-sessions`
     // reports a session as alive (its `s.id.is_some()` filter passes) while
     // the in-memory `SessionManager` does not contain it. `close-session`
@@ -1104,6 +1150,23 @@ async fn persist_current_state_to_dir_for_project_paths_result(
     project_paths: Option<&[String]>,
 ) -> Result<(), String> {
     let _guard = sessions_save_lock().lock().await;
+    snapshot_and_save_locked(mgr, dir, project_paths).await
+}
+
+/// Snapshot the live sessions, apply the project-path filter, and save.
+///
+/// CONTRACT: the caller MUST already hold `sessions_save_lock()`. This is the
+/// lock-free body shared by `persist_current_state_to_dir_for_project_paths_result`
+/// and the #698 atomic mutate-then-persist helpers
+/// (`raise_hand_and_persist_*`, `clear_user_input_transitions_and_persist_*`),
+/// which take that lock once and run a `SessionManager` mutation plus this save
+/// under it. Splitting it out keeps those helpers from re-acquiring the tokio
+/// mutex (which is not reentrant and would deadlock).
+async fn snapshot_and_save_locked(
+    mgr: &SessionManager,
+    dir: &Path,
+    project_paths: Option<&[String]>,
+) -> Result<(), String> {
     let snapshot = snapshot_sessions(mgr).await;
     let snapshot = match project_paths {
         Some(project_paths) => filter_sessions_for_project_paths(snapshot, project_paths),
@@ -1126,23 +1189,161 @@ pub async fn persist_current_state(mgr: &SessionManager) {
     }
 }
 
+/// #698 — outcome of an atomic raise-hand-and-persist attempt.
+#[derive(Debug)]
+pub enum RaiseHandPersistOutcome {
+    /// The hand was newly raised and the snapshot was saved durably. The caller
+    /// should emit `session_communication_changed` with this communication.
+    Raised(SessionCommunication),
+    /// A visible raise-hand was already present; nothing changed and nothing was
+    /// persisted. The raise is still active (`raised: true`, status `already_visible`).
+    AlreadyVisible,
+    /// The session cannot raise its hand (missing, non-coordinator, or exited);
+    /// `raised: false`, status `not_visible`.
+    NotRaisable,
+}
+
+/// #698 — apply the raise-hand transition and persist the resulting snapshot
+/// atomically with respect to ALL session persistence.
+///
+/// Fix for the HIGH grinch finding: the live mutation and its durable snapshot
+/// must not be observable independently. We take `sessions_save_lock()` FIRST,
+/// so no concurrent `persist_current_state` caller can snapshot or write the
+/// raised state between our mutation and our save. We then mutate, snapshot, and
+/// save under that single lock. On save failure we roll back the live
+/// communication BEFORE releasing the lock, so neither memory nor disk retains a
+/// raise that did not survive: any later persist can only ever snapshot the
+/// cleared state.
+///
+/// We deliberately do NOT call `persist_current_state_result` here; it would
+/// re-acquire the same (non-reentrant) tokio mutex and deadlock. We call the
+/// lock-free `snapshot_and_save_locked` instead.
+pub async fn raise_hand_and_persist_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<RaiseHandPersistOutcome, String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    raise_hand_and_persist_to_dir_result(mgr, session_id, now, &dir, Some(&project_paths)).await
+}
+
+async fn raise_hand_and_persist_to_dir_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    now: chrono::DateTime<chrono::Utc>,
+    dir: &Path,
+    project_paths: Option<&[String]>,
+) -> Result<RaiseHandPersistOutcome, String> {
+    let _guard = sessions_save_lock().lock().await;
+
+    let communication = match mgr.raise_hand(session_id, now).await {
+        Some((true, communication)) => communication,
+        Some((false, _)) => return Ok(RaiseHandPersistOutcome::AlreadyVisible),
+        None => return Ok(RaiseHandPersistOutcome::NotRaisable),
+    };
+
+    if let Err(e) = snapshot_and_save_locked(mgr, dir, project_paths).await {
+        // Roll back the live raise under the still-held lock so a raise that
+        // failed to persist is visible nowhere (memory or disk).
+        let _ = mgr
+            .clear_communication_if_kind(session_id, SessionCommunicationKind::RaiseHand)
+            .await;
+        return Err(e);
+    }
+
+    Ok(RaiseHandPersistOutcome::Raised(communication))
+}
+
+/// #698 — the user-input session-state transitions cleared by
+/// `clear_user_input_transitions_and_persist_result`, reported so the caller can
+/// decide whether to emit the raise-hand clear event.
+#[derive(Debug, Clone, Copy)]
+pub struct ClearedUserInputTransitions {
+    /// `start_fresh_on_restore` flipped `true -> false` (#630/#631 re-arm).
+    pub cleared_start_fresh: bool,
+    /// A visible raise-hand was lowered (#698).
+    pub cleared_raise_hand: bool,
+}
+
+/// #698 — clear the user-input session-state transitions (re-arm
+/// `start_fresh_on_restore`, lower any visible raise-hand) and persist the
+/// result atomically with respect to all session persistence.
+///
+/// Fix for the MEDIUM grinch finding: the two field clears previously ran in two
+/// separate critical sections with an await between them, so a concurrent persist
+/// could snapshot a half-applied state (`startFreshOnRestore: false` with a still
+/// visible `raiseHand`). Here both fields flip in ONE `SessionManager` critical
+/// section (`clear_user_input_transitions`), and the mutation plus its snapshot
+/// save run under a single `sessions_save_lock()` acquisition, so no other
+/// persistence caller can write an intermediate state.
+///
+/// Unlike the raise-hand path there is no rollback: a real user message means the
+/// hand is lowered and the fresh intent re-armed regardless of whether this
+/// snapshot reaches disk. The in-memory clear is therefore applied unconditionally
+/// (even when the home directory cannot be resolved); on save failure it stands
+/// and the next persist reconciles the file. The caller learns of any failure
+/// through `Err` and, per existing behavior, suppresses the clear event.
+pub async fn clear_user_input_transitions_and_persist_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+) -> Result<ClearedUserInputTransitions, String> {
+    let dir = super::config_dir();
+    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    clear_user_input_transitions_and_persist_to_dir_result(
+        mgr,
+        session_id,
+        dir.as_deref(),
+        Some(&project_paths),
+    )
+    .await
+}
+
+async fn clear_user_input_transitions_and_persist_to_dir_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> Result<ClearedUserInputTransitions, String> {
+    let _guard = sessions_save_lock().lock().await;
+
+    // Mutate FIRST and unconditionally: the user typed, so the hand is lowered
+    // and the fresh intent re-armed even if we cannot persist. Both fields flip
+    // in one critical section, so no snapshot can capture a half-applied state.
+    let (cleared_start_fresh, cleared_raise_hand) =
+        mgr.clear_user_input_transitions(session_id).await;
+    let cleared = ClearedUserInputTransitions {
+        cleared_start_fresh,
+        cleared_raise_hand,
+    };
+
+    if cleared_start_fresh || cleared_raise_hand {
+        let dir = dir.ok_or("Could not determine home directory")?;
+        snapshot_and_save_locked(mgr, dir, project_paths).await?;
+    }
+
+    Ok(cleared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        filter_sessions_for_project_paths, persist_current_state_result,
+        clear_user_input_transitions_and_persist_to_dir_result, filter_sessions_for_project_paths,
+        load_sessions_raw_from_dir_for_test, persist_current_state_result,
         persist_current_state_to_dir_result, purge_sessions_outside_project_paths_in_dir,
-        rename_with_retry, sanitize_failed_recoverable, save_sessions_to_dir, sessions_save_lock,
-        snapshot_sessions, strip_auto_injected_args, working_directory_under_any_project_path,
-        PersistedSession, RENAME_ATTEMPTS,
+        raise_hand_and_persist_to_dir_result, rename_with_retry, sanitize_failed_recoverable,
+        save_sessions_to_dir, sessions_save_lock, snapshot_sessions, strip_auto_injected_args,
+        working_directory_under_any_project_path, PersistedSession, RaiseHandPersistOutcome,
+        RENAME_ATTEMPTS,
     };
     use crate::session::manager::SessionManager;
+    use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
     use std::time::Duration;
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt.
     #[test]
     fn sanitize_failed_recoverable_drops_runtime_fields() {
-        use crate::session::session::SessionStatus;
         let ps = PersistedSession {
             last_prompt: None,
             name: "alice".into(),
@@ -1165,6 +1366,11 @@ mod tests {
             id: Some("uuid-prior-run".into()),
             status: Some(SessionStatus::Idle),
             waiting_for_input: Some(true),
+            communication: Some(SessionCommunication {
+                kind: SessionCommunicationKind::RaiseHand,
+                visible: true,
+                updated_at: "2026-06-30T11:00:00+00:00".into(),
+            }),
             created_at: Some("2026-05-15T00:00:00Z".into()),
             ..Default::default()
         };
@@ -1177,6 +1383,10 @@ mod tests {
         assert!(
             clean.waiting_for_input.is_none(),
             "waiting_for_input must be cleared"
+        );
+        assert!(
+            clean.communication.is_none(),
+            "communication must be cleared"
         );
         assert!(clean.created_at.is_none(), "created_at must be cleared");
 
@@ -1240,6 +1450,59 @@ mod tests {
 
         let back: PersistedSession = serde_json::from_str(json).expect("deserialize");
         assert!(back.telegram_bot_id.is_none());
+    }
+
+    #[test]
+    fn communication_defaults_none_for_legacy_json() {
+        let json = r#"{
+            "name": "legacy",
+            "shell": "cmd",
+            "shellArgs": [],
+            "workingDirectory": "C:/x"
+        }"#;
+
+        let back: PersistedSession = serde_json::from_str(json).expect("deserialize");
+        assert!(back.communication.is_none());
+    }
+
+    /// Issue 698: a malformed/future typed `communication` field invalidates the
+    /// entire raw load (serde fails the whole array, `unwrap_or_default` yields
+    /// `[]`), exactly like other malformed typed persisted fields. This is the
+    /// accepted behavior for #698; documented here so it is intentional, not a
+    /// silent regression. Revisit in a separate persistence-resilience issue.
+    #[test]
+    fn load_sessions_raw_returns_empty_for_malformed_communication() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions = serde_json::json!([
+            {
+                "name": "coord-x",
+                "shell": "codex",
+                "shellArgs": [],
+                "workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_tech-lead",
+                "id": "11111111-1111-1111-1111-111111111111",
+                "status": "running",
+                "waitingForInput": false,
+                "isCoordinator": true,
+                "communication": {
+                    "kind": "futureKind",
+                    "visible": true,
+                    "updatedAt": "2026-06-30T11:00:00+00:00"
+                },
+                "createdAt": "2026-06-30T10:00:00+00:00"
+            }
+        ]);
+        std::fs::write(
+            temp.path().join("sessions.json"),
+            serde_json::to_string_pretty(&sessions).expect("sessions json"),
+        )
+        .expect("write sessions");
+
+        let rows = load_sessions_raw_from_dir_for_test(temp.path());
+
+        assert!(
+            rows.is_empty(),
+            "malformed typed communication intentionally invalidates the raw load in issue 698"
+        );
     }
 
     #[test]
@@ -1320,6 +1583,32 @@ mod tests {
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_sessions_preserves_raise_hand_communication() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-30T11:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let (_, expected) = mgr.raise_hand(session.id, now).await.unwrap();
+
+        let snapshot = snapshot_sessions(&mgr).await;
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].communication, Some(expected));
     }
 
     // (#630/#631) The durable fresh intent flows Session -> SessionInfo carrier ->
@@ -1426,10 +1715,296 @@ mod tests {
             .expect("persist_current_state_result should succeed");
     }
 
+    // ---- #698 grinch HIGH: atomic raise-hand + persist with rollback ----
+
+    /// Happy path: a coordinator's raised hand reaches `sessions.json` through the
+    /// single save-lock acquisition.
+    #[tokio::test]
+    async fn raise_hand_and_persist_writes_raised_state_to_disk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true, // coordinator
+            )
+            .await
+            .expect("create_session should succeed");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-30T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let outcome =
+            raise_hand_and_persist_to_dir_result(&mgr, session.id, now, temp.path(), None)
+                .await
+                .expect("raise-hand persist should succeed");
+        assert!(matches!(outcome, RaiseHandPersistOutcome::Raised(_)));
+
+        // Live state is raised...
+        let live = mgr.list_sessions().await;
+        let live_comm = live[0].communication.as_ref().expect("live communication");
+        assert_eq!(live_comm.kind, SessionCommunicationKind::RaiseHand);
+        assert!(live_comm.visible);
+
+        // ...and so is the durable snapshot.
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        let comm = rows[0]
+            .communication
+            .as_ref()
+            .expect("communication persisted");
+        assert_eq!(comm.kind, SessionCommunicationKind::RaiseHand);
+        assert!(comm.visible);
+    }
+
+    /// HIGH grinch fix: when the snapshot save fails, the live raise is rolled back
+    /// under the same lock, so a raise that did not survive is visible nowhere
+    /// (memory or disk). Without the rollback, `list-sessions` could report
+    /// `raisedHand:true` for a raise that never persisted.
+    #[tokio::test]
+    async fn raise_hand_and_persist_rolls_back_live_state_on_save_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Point the "dir" at an existing FILE so `save_sessions_to_dir`'s
+        // `create_dir_all` fails and the save errors out deterministically.
+        let file_as_dir = temp.path().join("sessions-dir-is-a-file");
+        std::fs::write(&file_as_dir, "not a directory").expect("write file target");
+
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let result = raise_hand_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            chrono::Utc::now(),
+            &file_as_dir,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "save into a file path must fail");
+
+        let live = mgr.list_sessions().await;
+        assert!(
+            live[0].communication.is_none(),
+            "raise must be rolled back after a failed persist"
+        );
+    }
+
+    /// HIGH grinch fix: the raise mutation is gated by `sessions_save_lock()`. While
+    /// another persistence caller holds it, the raise is not even applied (let alone
+    /// persisted), so no concurrent persist can snapshot a raised-but-unpersisted
+    /// state.
+    #[tokio::test]
+    async fn raise_hand_and_persist_waits_for_save_lock_before_mutating() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let guard = sessions_save_lock().lock().await;
+        let mut fut = Box::pin(raise_hand_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            chrono::Utc::now(),
+            temp.path(),
+            None,
+        ));
+        let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut fut)
+            .await
+            .is_err();
+        assert!(
+            timed_out,
+            "raise-hand persist should wait for the save lock"
+        );
+
+        // The mutation has NOT happened yet: the helper is parked at the lock.
+        assert!(
+            mgr.list_sessions().await[0].communication.is_none(),
+            "raise must not be applied while the save lock is held elsewhere"
+        );
+
+        drop(guard);
+        let outcome = fut.await.expect("raise-hand persist should succeed");
+        assert!(matches!(outcome, RaiseHandPersistOutcome::Raised(_)));
+        assert!(mgr.list_sessions().await[0].communication.is_some());
+    }
+
+    // ---- #698 grinch MEDIUM: single-critical-section user-input clear ----
+
+    /// MEDIUM grinch fix: both user-input transitions (re-arm `start_fresh_on_restore`
+    /// + lower raise-hand) clear together and the cleared state reaches disk.
+    #[tokio::test]
+    async fn clear_user_input_transitions_persists_both_cleared_fields() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+
+        let cleared = clear_user_input_transitions_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            Some(temp.path()),
+            None,
+        )
+        .await
+        .expect("clear+persist should succeed");
+        assert!(cleared.cleared_start_fresh);
+        assert!(cleared.cleared_raise_hand);
+
+        // Live state cleared.
+        let live = mgr.list_sessions().await;
+        assert!(!live[0].start_fresh_on_restore);
+        assert!(live[0].communication.is_none());
+
+        // Durable snapshot cleared.
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].start_fresh_on_restore);
+        assert!(rows[0].communication.is_none());
+    }
+
+    /// MEDIUM grinch fix: a real user message lowers the hand and re-arms the fresh
+    /// intent even if the snapshot save fails (no rollback). The in-memory clear must
+    /// stand; the next persist reconciles disk.
+    #[tokio::test]
+    async fn clear_user_input_transitions_keeps_clear_on_save_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_as_dir = temp.path().join("sessions-dir-is-a-file");
+        std::fs::write(&file_as_dir, "not a directory").expect("write file target");
+
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+
+        let result = clear_user_input_transitions_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            Some(&file_as_dir),
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "save into a file path must fail");
+
+        // No rollback: the user typed, so the clear stands in memory.
+        let live = mgr.list_sessions().await;
+        assert!(!live[0].start_fresh_on_restore);
+        assert!(live[0].communication.is_none());
+    }
+
+    /// MEDIUM grinch fix: the user-input clear mutation is gated by
+    /// `sessions_save_lock()`, so a concurrent persist cannot snapshot or write a
+    /// half-cleared state between the mutation and its save.
+    #[tokio::test]
+    async fn clear_user_input_transitions_waits_for_save_lock_before_mutating() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+
+        let guard = sessions_save_lock().lock().await;
+        let mut fut = Box::pin(clear_user_input_transitions_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            Some(temp.path()),
+            None,
+        ));
+        let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut fut)
+            .await
+            .is_err();
+        assert!(timed_out, "user-input clear should wait for the save lock");
+
+        // The mutation has NOT happened yet: both fields are still set.
+        let parked = mgr.list_sessions().await;
+        assert!(
+            parked[0].start_fresh_on_restore,
+            "fresh intent must remain until the lock frees"
+        );
+        assert!(
+            parked[0].communication.is_some(),
+            "raise must remain until the lock frees"
+        );
+
+        drop(guard);
+        let cleared = fut.await.expect("clear+persist should succeed");
+        assert!(cleared.cleared_start_fresh && cleared.cleared_raise_hand);
+        let after = mgr.list_sessions().await;
+        assert!(!after[0].start_fresh_on_restore);
+        assert!(after[0].communication.is_none());
+    }
+
     #[test]
     fn filter_sessions_for_project_paths_drops_coordinator_and_non_coordinator_orphans() {
-        use crate::session::session::SessionStatus;
-
         let project_paths = vec!["C:/projects/current".to_string()];
         let sessions = vec![
             PersistedSession {
@@ -1464,8 +2039,8 @@ mod tests {
         assert_eq!(filtered[0].name, "kept-coordinator");
     }
 
-    #[test]
-    fn purge_sessions_outside_project_paths_rewrites_sessions_json() {
+    #[tokio::test]
+    async fn purge_sessions_outside_project_paths_rewrites_sessions_json() {
         let temp = tempfile::tempdir().expect("tempdir");
         let current = temp.path().join("current");
         let removed = temp.path().join("removed");
@@ -1492,6 +2067,7 @@ mod tests {
 
         let project_paths = vec![current.to_string_lossy().to_string()];
         let filtered = purge_sessions_outside_project_paths_in_dir(temp.path(), &project_paths)
+            .await
             .expect("purge sessions");
 
         assert_eq!(filtered.len(), 1);
@@ -1502,6 +2078,106 @@ mod tests {
         let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("parse sessions");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "keep");
+    }
+
+    /// #698 grinch HIGH regression — the orphan purge must take
+    /// `sessions_save_lock()` and re-read `sessions.json` INSIDE that lock, so it
+    /// can never overwrite a raise-hand that another locked writer persisted
+    /// after the purge began. We drive the exact interleaving deterministically:
+    ///   1. seed A (retained, no communication) + B (removable),
+    ///   2. hold the save lock and start the purge; it must park at the lock
+    ///      WITHOUT having rewritten the file (B still on disk = no stale
+    ///      pre-read followed by a stale write),
+    ///   3. while the lock is held, overwrite the file with A carrying a visible
+    ///      raiseHand (what a raise-hand persist would have produced),
+    ///   4. release the lock; the purge re-reads the fresh state, keeps A, drops
+    ///      B, and the persisted raiseHand SURVIVES.
+    ///
+    /// The pre-fix code (load+save outside the lock) would have written its stale
+    /// pre-read here, dropping A's raiseHand. Note `save_sessions_to_dir` (step 3)
+    /// takes only the sync `SAVE_SESSIONS_LOCK`, never this async lock, so seeding
+    /// the file while holding `guard` cannot deadlock.
+    #[tokio::test]
+    async fn purge_reads_under_save_lock_and_preserves_concurrent_raise_hand() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current = temp.path().join("current");
+        let removed = temp.path().join("removed");
+        let current_agent = current.join(".ac").join("wg-1").join("__agent_keep");
+        let removed_agent = removed.join(".ac").join("wg-1").join("__agent_old");
+        std::fs::create_dir_all(&current_agent).expect("create current agent");
+        std::fs::create_dir_all(&removed_agent).expect("create removed agent");
+
+        let kept = PersistedSession {
+            name: "keep".into(),
+            working_directory: current_agent.to_string_lossy().to_string(),
+            is_coordinator: true,
+            status: Some(SessionStatus::Running),
+            ..Default::default()
+        };
+        let removable = PersistedSession {
+            name: "drop".into(),
+            working_directory: removed_agent.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        save_sessions_to_dir(temp.path(), &[kept.clone(), removable.clone()]).expect("seed");
+
+        let project_paths = vec![current.to_string_lossy().to_string()];
+
+        // Hold the save lock so the purge cannot proceed past its lock acquisition.
+        let guard = sessions_save_lock().lock().await;
+        let mut purge = Box::pin(purge_sessions_outside_project_paths_in_dir(
+            temp.path(),
+            &project_paths,
+        ));
+        let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut purge)
+            .await
+            .is_err();
+        assert!(
+            timed_out,
+            "purge must wait for the save lock before reading or writing"
+        );
+
+        // The purge has NOT rewritten the file yet (it has not even read it):
+        // the removable session is still present on disk.
+        let parked: Vec<PersistedSession> = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("sessions.json")).expect("read parked"),
+        )
+        .expect("parse parked");
+        assert_eq!(
+            parked.len(),
+            2,
+            "purge must not write while parked at the lock"
+        );
+
+        // Simulate a raise-hand that persisted A with a visible raiseHand while
+        // the purge was parked.
+        let mut raised = kept.clone();
+        raised.communication = Some(SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: "2026-06-30T13:00:00+00:00".into(),
+        });
+        save_sessions_to_dir(temp.path(), &[raised, removable]).expect("persist raise-hand");
+
+        drop(guard);
+        let filtered = purge.await.expect("purge should succeed");
+
+        // The purge kept A, dropped B, and preserved the raise-hand it re-read
+        // under the lock.
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "keep");
+        let saved: Vec<PersistedSession> = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("sessions.json")).expect("read final"),
+        )
+        .expect("parse final");
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].name, "keep");
+        let comm = saved[0]
+            .communication
+            .as_ref()
+            .expect("raise-hand must survive the purge");
+        assert_eq!(comm.kind, SessionCommunicationKind::RaiseHand);
+        assert!(comm.visible);
     }
 
     #[test]
@@ -1821,7 +2497,6 @@ mod tests {
     /// `should_wake_on_restore` in `lib.rs` consumes it.
     #[test]
     fn issue_248_status_round_trips_through_persistence() {
-        use crate::session::session::SessionStatus;
         let cases = [SessionStatus::Exited(0), SessionStatus::Running];
         for status in cases {
             let ps = PersistedSession {
@@ -1852,6 +2527,28 @@ mod tests {
             let back: PersistedSession = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(back.status, Some(status));
         }
+    }
+
+    #[test]
+    fn communication_round_trips_when_present() {
+        let ps = PersistedSession {
+            name: "coord-x".into(),
+            shell: "claude".into(),
+            shell_args: vec![],
+            working_directory: "C:/proj/.ac/wg-1-dev-team/__agent_tech-lead".into(),
+            communication: Some(SessionCommunication {
+                kind: SessionCommunicationKind::RaiseHand,
+                visible: true,
+                updated_at: "2026-06-30T11:00:00+00:00".into(),
+            }),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&ps).expect("serialize");
+        assert_eq!(json["communication"]["kind"], "raiseHand");
+        assert_eq!(json["communication"]["visible"], true);
+        let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.communication, ps.communication);
     }
 
     #[test]
