@@ -1050,6 +1050,16 @@ const ProjectPanel: Component = () => {
           }
         };
 
+        const openReplicaFolder = async (path: string) => {
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+          try {
+            await WindowAPI.openInExplorer(path);
+          } catch (e) {
+            console.error("Failed to open Replica folder:", e);
+          }
+        };
+
         const handleProjectContextMenu = (e: MouseEvent) => {
           e.preventDefault();
           e.stopPropagation();
@@ -1482,11 +1492,6 @@ const ProjectPanel: Component = () => {
             e.stopPropagation();
             voiceRecorder.cancel();
           };
-          const handleOpenExplorer = async (e: MouseEvent) => {
-            e.stopPropagation();
-            const s = session();
-            try { await WindowAPI.openInExplorer(s ? s.workingDirectory : replica.path); } catch (err) { console.error("Failed to open explorer:", err); }
-          };
           const handleDetach = async (e: MouseEvent) => {
             e.stopPropagation();
             const s = session();
@@ -1668,7 +1673,6 @@ const ProjectPanel: Component = () => {
                   onClick={handleMicClick}
                   title={!settingsStore.voiceEnabled ? "Enable voice-to-text in Settings and set a Gemini API key to use this." : isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
                 >&#x1F399;</button>
-                <button class="session-item-explorer" onClick={handleOpenExplorer} title="Open folder in explorer">&#x1F4C2;</button>
                 <button
                   class="session-item-detach"
                   classList={{ attached: isDetached() }}
@@ -2736,6 +2740,13 @@ const ProjectPanel: Component = () => {
                             </button>
                           )}
                         </Show>
+                        <button
+                          class="session-context-option"
+                          title={menu().replica.path}
+                          onClick={() => void openReplicaFolder(menu().replica.path)}
+                        >
+                          &#x1F4C2; Open Replica's Folder
+                        </button>
                         <div class="context-separator" />
                         <button
                           class="session-context-option"
@@ -2788,6 +2799,13 @@ const ProjectPanel: Component = () => {
                               </button>
                             )}
                           </Show>
+                          <button
+                            class="session-context-option"
+                            title={menu().replica.path}
+                            onClick={() => void openReplicaFolder(menu().replica.path)}
+                          >
+                            &#x1F4C2; Open Replica's Folder
+                          </button>
                           <button
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}
