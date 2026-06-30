@@ -4,10 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use uuid::Uuid;
+
 use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
-use crate::session::session::{SessionCommunication, SessionStatus, TEMP_SESSION_PREFIX};
+use crate::session::session::{
+    SessionCommunication, SessionCommunicationKind, SessionStatus, TEMP_SESSION_PREFIX,
+};
 
 /// #291 — in-process mutex serializing all `save_sessions` calls.
 ///
@@ -1110,6 +1114,23 @@ async fn persist_current_state_to_dir_for_project_paths_result(
     project_paths: Option<&[String]>,
 ) -> Result<(), String> {
     let _guard = sessions_save_lock().lock().await;
+    snapshot_and_save_locked(mgr, dir, project_paths).await
+}
+
+/// Snapshot the live sessions, apply the project-path filter, and save.
+///
+/// CONTRACT: the caller MUST already hold `sessions_save_lock()`. This is the
+/// lock-free body shared by `persist_current_state_to_dir_for_project_paths_result`
+/// and the #698 atomic mutate-then-persist helpers
+/// (`raise_hand_and_persist_*`, `clear_user_input_transitions_and_persist_*`),
+/// which take that lock once and run a `SessionManager` mutation plus this save
+/// under it. Splitting it out keeps those helpers from re-acquiring the tokio
+/// mutex (which is not reentrant and would deadlock).
+async fn snapshot_and_save_locked(
+    mgr: &SessionManager,
+    dir: &Path,
+    project_paths: Option<&[String]>,
+) -> Result<(), String> {
     let snapshot = snapshot_sessions(mgr).await;
     let snapshot = match project_paths {
         Some(project_paths) => filter_sessions_for_project_paths(snapshot, project_paths),
@@ -1132,14 +1153,151 @@ pub async fn persist_current_state(mgr: &SessionManager) {
     }
 }
 
+/// #698 — outcome of an atomic raise-hand-and-persist attempt.
+#[derive(Debug)]
+pub enum RaiseHandPersistOutcome {
+    /// The hand was newly raised and the snapshot was saved durably. The caller
+    /// should emit `session_communication_changed` with this communication.
+    Raised(SessionCommunication),
+    /// A visible raise-hand was already present; nothing changed and nothing was
+    /// persisted. The raise is still active (`raised: true`, status `already_visible`).
+    AlreadyVisible,
+    /// The session cannot raise its hand (missing, non-coordinator, or exited);
+    /// `raised: false`, status `not_visible`.
+    NotRaisable,
+}
+
+/// #698 — apply the raise-hand transition and persist the resulting snapshot
+/// atomically with respect to ALL session persistence.
+///
+/// Fix for the HIGH grinch finding: the live mutation and its durable snapshot
+/// must not be observable independently. We take `sessions_save_lock()` FIRST,
+/// so no concurrent `persist_current_state` caller can snapshot or write the
+/// raised state between our mutation and our save. We then mutate, snapshot, and
+/// save under that single lock. On save failure we roll back the live
+/// communication BEFORE releasing the lock, so neither memory nor disk retains a
+/// raise that did not survive: any later persist can only ever snapshot the
+/// cleared state.
+///
+/// We deliberately do NOT call `persist_current_state_result` here; it would
+/// re-acquire the same (non-reentrant) tokio mutex and deadlock. We call the
+/// lock-free `snapshot_and_save_locked` instead.
+pub async fn raise_hand_and_persist_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<RaiseHandPersistOutcome, String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    raise_hand_and_persist_to_dir_result(mgr, session_id, now, &dir, Some(&project_paths)).await
+}
+
+async fn raise_hand_and_persist_to_dir_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    now: chrono::DateTime<chrono::Utc>,
+    dir: &Path,
+    project_paths: Option<&[String]>,
+) -> Result<RaiseHandPersistOutcome, String> {
+    let _guard = sessions_save_lock().lock().await;
+
+    let communication = match mgr.raise_hand(session_id, now).await {
+        Some((true, communication)) => communication,
+        Some((false, _)) => return Ok(RaiseHandPersistOutcome::AlreadyVisible),
+        None => return Ok(RaiseHandPersistOutcome::NotRaisable),
+    };
+
+    if let Err(e) = snapshot_and_save_locked(mgr, dir, project_paths).await {
+        // Roll back the live raise under the still-held lock so a raise that
+        // failed to persist is visible nowhere (memory or disk).
+        let _ = mgr
+            .clear_communication_if_kind(session_id, SessionCommunicationKind::RaiseHand)
+            .await;
+        return Err(e);
+    }
+
+    Ok(RaiseHandPersistOutcome::Raised(communication))
+}
+
+/// #698 — the user-input session-state transitions cleared by
+/// `clear_user_input_transitions_and_persist_result`, reported so the caller can
+/// decide whether to emit the raise-hand clear event.
+#[derive(Debug, Clone, Copy)]
+pub struct ClearedUserInputTransitions {
+    /// `start_fresh_on_restore` flipped `true -> false` (#630/#631 re-arm).
+    pub cleared_start_fresh: bool,
+    /// A visible raise-hand was lowered (#698).
+    pub cleared_raise_hand: bool,
+}
+
+/// #698 — clear the user-input session-state transitions (re-arm
+/// `start_fresh_on_restore`, lower any visible raise-hand) and persist the
+/// result atomically with respect to all session persistence.
+///
+/// Fix for the MEDIUM grinch finding: the two field clears previously ran in two
+/// separate critical sections with an await between them, so a concurrent persist
+/// could snapshot a half-applied state (`startFreshOnRestore: false` with a still
+/// visible `raiseHand`). Here both fields flip in ONE `SessionManager` critical
+/// section (`clear_user_input_transitions`), and the mutation plus its snapshot
+/// save run under a single `sessions_save_lock()` acquisition, so no other
+/// persistence caller can write an intermediate state.
+///
+/// Unlike the raise-hand path there is no rollback: a real user message means the
+/// hand is lowered and the fresh intent re-armed regardless of whether this
+/// snapshot reaches disk. The in-memory clear is therefore applied unconditionally
+/// (even when the home directory cannot be resolved); on save failure it stands
+/// and the next persist reconciles the file. The caller learns of any failure
+/// through `Err` and, per existing behavior, suppresses the clear event.
+pub async fn clear_user_input_transitions_and_persist_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+) -> Result<ClearedUserInputTransitions, String> {
+    let dir = super::config_dir();
+    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    clear_user_input_transitions_and_persist_to_dir_result(
+        mgr,
+        session_id,
+        dir.as_deref(),
+        Some(&project_paths),
+    )
+    .await
+}
+
+async fn clear_user_input_transitions_and_persist_to_dir_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> Result<ClearedUserInputTransitions, String> {
+    let _guard = sessions_save_lock().lock().await;
+
+    // Mutate FIRST and unconditionally: the user typed, so the hand is lowered
+    // and the fresh intent re-armed even if we cannot persist. Both fields flip
+    // in one critical section, so no snapshot can capture a half-applied state.
+    let (cleared_start_fresh, cleared_raise_hand) =
+        mgr.clear_user_input_transitions(session_id).await;
+    let cleared = ClearedUserInputTransitions {
+        cleared_start_fresh,
+        cleared_raise_hand,
+    };
+
+    if cleared_start_fresh || cleared_raise_hand {
+        let dir = dir.ok_or("Could not determine home directory")?;
+        snapshot_and_save_locked(mgr, dir, project_paths).await?;
+    }
+
+    Ok(cleared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        filter_sessions_for_project_paths, load_sessions_raw_from_dir_for_test,
-        persist_current_state_result, persist_current_state_to_dir_result,
-        purge_sessions_outside_project_paths_in_dir, rename_with_retry,
-        sanitize_failed_recoverable, save_sessions_to_dir, sessions_save_lock, snapshot_sessions,
-        strip_auto_injected_args, working_directory_under_any_project_path, PersistedSession,
+        clear_user_input_transitions_and_persist_to_dir_result, filter_sessions_for_project_paths,
+        load_sessions_raw_from_dir_for_test, persist_current_state_result,
+        persist_current_state_to_dir_result, purge_sessions_outside_project_paths_in_dir,
+        raise_hand_and_persist_to_dir_result, rename_with_retry, sanitize_failed_recoverable,
+        save_sessions_to_dir, sessions_save_lock, snapshot_sessions, strip_auto_injected_args,
+        working_directory_under_any_project_path, PersistedSession, RaiseHandPersistOutcome,
         RENAME_ATTEMPTS,
     };
     use crate::session::manager::SessionManager;
@@ -1519,6 +1677,294 @@ mod tests {
         persist_current_state_result(&mgr)
             .await
             .expect("persist_current_state_result should succeed");
+    }
+
+    // ---- #698 grinch HIGH: atomic raise-hand + persist with rollback ----
+
+    /// Happy path: a coordinator's raised hand reaches `sessions.json` through the
+    /// single save-lock acquisition.
+    #[tokio::test]
+    async fn raise_hand_and_persist_writes_raised_state_to_disk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true, // coordinator
+            )
+            .await
+            .expect("create_session should succeed");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-30T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let outcome =
+            raise_hand_and_persist_to_dir_result(&mgr, session.id, now, temp.path(), None)
+                .await
+                .expect("raise-hand persist should succeed");
+        assert!(matches!(outcome, RaiseHandPersistOutcome::Raised(_)));
+
+        // Live state is raised...
+        let live = mgr.list_sessions().await;
+        let live_comm = live[0].communication.as_ref().expect("live communication");
+        assert_eq!(live_comm.kind, SessionCommunicationKind::RaiseHand);
+        assert!(live_comm.visible);
+
+        // ...and so is the durable snapshot.
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        let comm = rows[0]
+            .communication
+            .as_ref()
+            .expect("communication persisted");
+        assert_eq!(comm.kind, SessionCommunicationKind::RaiseHand);
+        assert!(comm.visible);
+    }
+
+    /// HIGH grinch fix: when the snapshot save fails, the live raise is rolled back
+    /// under the same lock, so a raise that did not survive is visible nowhere
+    /// (memory or disk). Without the rollback, `list-sessions` could report
+    /// `raisedHand:true` for a raise that never persisted.
+    #[tokio::test]
+    async fn raise_hand_and_persist_rolls_back_live_state_on_save_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Point the "dir" at an existing FILE so `save_sessions_to_dir`'s
+        // `create_dir_all` fails and the save errors out deterministically.
+        let file_as_dir = temp.path().join("sessions-dir-is-a-file");
+        std::fs::write(&file_as_dir, "not a directory").expect("write file target");
+
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let result = raise_hand_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            chrono::Utc::now(),
+            &file_as_dir,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "save into a file path must fail");
+
+        let live = mgr.list_sessions().await;
+        assert!(
+            live[0].communication.is_none(),
+            "raise must be rolled back after a failed persist"
+        );
+    }
+
+    /// HIGH grinch fix: the raise mutation is gated by `sessions_save_lock()`. While
+    /// another persistence caller holds it, the raise is not even applied (let alone
+    /// persisted), so no concurrent persist can snapshot a raised-but-unpersisted
+    /// state.
+    #[tokio::test]
+    async fn raise_hand_and_persist_waits_for_save_lock_before_mutating() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let guard = sessions_save_lock().lock().await;
+        let mut fut = Box::pin(raise_hand_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            chrono::Utc::now(),
+            temp.path(),
+            None,
+        ));
+        let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut fut)
+            .await
+            .is_err();
+        assert!(
+            timed_out,
+            "raise-hand persist should wait for the save lock"
+        );
+
+        // The mutation has NOT happened yet: the helper is parked at the lock.
+        assert!(
+            mgr.list_sessions().await[0].communication.is_none(),
+            "raise must not be applied while the save lock is held elsewhere"
+        );
+
+        drop(guard);
+        let outcome = fut.await.expect("raise-hand persist should succeed");
+        assert!(matches!(outcome, RaiseHandPersistOutcome::Raised(_)));
+        assert!(mgr.list_sessions().await[0].communication.is_some());
+    }
+
+    // ---- #698 grinch MEDIUM: single-critical-section user-input clear ----
+
+    /// MEDIUM grinch fix: both user-input transitions (re-arm `start_fresh_on_restore`
+    /// + lower raise-hand) clear together and the cleared state reaches disk.
+    #[tokio::test]
+    async fn clear_user_input_transitions_persists_both_cleared_fields() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+
+        let cleared = clear_user_input_transitions_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            Some(temp.path()),
+            None,
+        )
+        .await
+        .expect("clear+persist should succeed");
+        assert!(cleared.cleared_start_fresh);
+        assert!(cleared.cleared_raise_hand);
+
+        // Live state cleared.
+        let live = mgr.list_sessions().await;
+        assert!(!live[0].start_fresh_on_restore);
+        assert!(live[0].communication.is_none());
+
+        // Durable snapshot cleared.
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].start_fresh_on_restore);
+        assert!(rows[0].communication.is_none());
+    }
+
+    /// MEDIUM grinch fix: a real user message lowers the hand and re-arms the fresh
+    /// intent even if the snapshot save fails (no rollback). The in-memory clear must
+    /// stand; the next persist reconciles disk.
+    #[tokio::test]
+    async fn clear_user_input_transitions_keeps_clear_on_save_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_as_dir = temp.path().join("sessions-dir-is-a-file");
+        std::fs::write(&file_as_dir, "not a directory").expect("write file target");
+
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+
+        let result = clear_user_input_transitions_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            Some(&file_as_dir),
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "save into a file path must fail");
+
+        // No rollback: the user typed, so the clear stands in memory.
+        let live = mgr.list_sessions().await;
+        assert!(!live[0].start_fresh_on_restore);
+        assert!(live[0].communication.is_none());
+    }
+
+    /// MEDIUM grinch fix: the user-input clear mutation is gated by
+    /// `sessions_save_lock()`, so a concurrent persist cannot snapshot or write a
+    /// half-cleared state between the mutation and its save.
+    #[tokio::test]
+    async fn clear_user_input_transitions_waits_for_save_lock_before_mutating() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+        mgr.raise_hand(session.id, chrono::Utc::now())
+            .await
+            .expect("raise_hand should succeed");
+
+        let guard = sessions_save_lock().lock().await;
+        let mut fut = Box::pin(clear_user_input_transitions_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            Some(temp.path()),
+            None,
+        ));
+        let timed_out = tokio::time::timeout(Duration::from_millis(25), &mut fut)
+            .await
+            .is_err();
+        assert!(timed_out, "user-input clear should wait for the save lock");
+
+        // The mutation has NOT happened yet: both fields are still set.
+        let parked = mgr.list_sessions().await;
+        assert!(
+            parked[0].start_fresh_on_restore,
+            "fresh intent must remain until the lock frees"
+        );
+        assert!(
+            parked[0].communication.is_some(),
+            "raise must remain until the lock frees"
+        );
+
+        drop(guard);
+        let cleared = fut.await.expect("clear+persist should succeed");
+        assert!(cleared.cleared_start_fresh && cleared.cleared_raise_hand);
+        let after = mgr.list_sessions().await;
+        assert!(!after[0].start_fresh_on_restore);
+        assert!(after[0].communication.is_none());
     }
 
     #[test]

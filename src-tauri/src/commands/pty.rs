@@ -3,7 +3,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
-use crate::session::session::SessionCommunicationKind;
 use crate::voice::tracker::VoiceTrackingState;
 
 #[derive(Clone, serde::Serialize)]
@@ -68,47 +67,45 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         idle.touch_silence(session_id);
     }
 
-    // (#630/#631 + #698) Apply both user-input state transitions, then persist
-    // once. On the FIRST real user message we re-arm the resume intent (so a
+    // (#630/#631 + #698) Apply both user-input state transitions and persist them
+    // atomically. On the FIRST real user message we re-arm the resume intent (so a
     // restarted-fresh session stays fresh until the user actually engages) and
     // clear any visible raise-hand communication. This is the unified user-input
     // choke point (xterm/Telegram/web); injection and auto-resume never call it,
     // and it runs before the coordinator-only early return below so non-
-    // coordinator members re-arm too. Both mutations run before the single
-    // persistence attempt so a snapshot can never capture a half-applied
-    // transition (e.g. a still-raised hand). The clear event is emitted only
-    // after persistence succeeds, so `list-sessions` and the UI agree.
-    let (cleared_start_fresh, cleared_raise_hand, manager) = {
+    // coordinator members re-arm too.
+    //
+    // `clear_user_input_transitions_and_persist_result` flips BOTH fields in one
+    // SessionManager critical section and runs the mutation + snapshot + save
+    // under a single global save lock, so no concurrent persist can snapshot a
+    // half-applied state or write an intermediate one (MEDIUM grinch fix). The
+    // clear event is emitted only after persistence succeeds, so `list-sessions`
+    // and the UI agree.
+    let manager = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let manager = {
-            let guard = mgr.read().await;
-            guard.clone()
-        };
-        let cleared_start_fresh = manager
-            .clear_start_fresh_on_restore_if_set(session_id)
-            .await;
-        let cleared_raise_hand = manager
-            .clear_communication_if_kind(session_id, SessionCommunicationKind::RaiseHand)
-            .await;
-        (cleared_start_fresh, cleared_raise_hand, manager)
+        let guard = mgr.read().await;
+        guard.clone()
     };
-
-    let persisted_transitions = if cleared_start_fresh || cleared_raise_hand {
-        match crate::config::sessions_persistence::persist_current_state_result(&manager).await {
-            Ok(()) => true,
+    let cleared_raise_hand =
+        match crate::config::sessions_persistence::clear_user_input_transitions_and_persist_result(
+            &manager, session_id,
+        )
+        .await
+        {
+            Ok(cleared) => cleared.cleared_raise_hand,
             Err(e) => {
                 log::error!(
                     "Failed to persist user-input session state transitions: {}",
                     e
                 );
+                // The in-memory clear still applied; only the snapshot failed.
+                // Suppress the clear event so the live UI does not diverge from the
+                // durable file (the next persist will reconcile disk).
                 false
             }
-        }
-    } else {
-        true
-    };
+        };
 
-    if cleared_raise_hand && persisted_transitions {
+    if cleared_raise_hand {
         let _ = app.emit(
             "session_communication_changed",
             serde_json::json!({ "sessionId": session_id.to_string(), "communication": null }),
