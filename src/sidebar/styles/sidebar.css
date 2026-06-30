@@ -1106,6 +1106,31 @@ html.light-theme .root-agent-avatar {
   cursor: not-allowed;
 }
 
+/* #695 — Context template update modal */
+.context-template-modal {
+  max-width: 480px;
+}
+
+.context-template-note {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--sidebar-fg);
+}
+
+.context-template-note-dim {
+  opacity: 0.85;
+}
+
+.context-template-path {
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  word-break: break-all;
+  padding: var(--spacing-sm);
+  background: var(--sidebar-hover);
+  border-radius: var(--radius-sm);
+}
+
 /* Settings fields */
 .settings-section {
   display: flex;
