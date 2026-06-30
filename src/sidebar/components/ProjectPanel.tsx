@@ -198,9 +198,22 @@ function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
   return `${wg.name}/${replica.name}`;
 }
 
+function normalizedReplicaSessionPath(path: string | null | undefined): string | null {
+  const trimmed = path?.trim();
+  return trimmed ? normalizeProjectPathForCompare(trimmed) : null;
+}
+
 /** Find existing session for a replica, if any */
 function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | undefined {
-  return sessionsStore.findSessionByName(replicaSessionName(wg, replica));
+  const expectedName = replicaSessionName(wg, replica);
+  const expectedPath = normalizedReplicaSessionPath(replica.path);
+  if (!expectedPath) return undefined;
+
+  return sessionsStore.sessions.find(
+    (session) =>
+      session.name === expectedName &&
+      normalizedReplicaSessionPath(session.workingDirectory) === expectedPath
+  );
 }
 
 function replicaRepoMenuEntries(wg: AcWorkgroup, replica: AcAgentReplica): SessionRepo[] {
@@ -2823,6 +2836,7 @@ const ProjectPanel: Component = () => {
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
                       const matrixFolder = () => replicaMatrixFolder(menu().replica);
+                      const repoEntries = () => replicaRepoMenuEntries(menu().wg, menu().replica);
                       return (
                         <>
                           <button
@@ -2855,6 +2869,31 @@ const ProjectPanel: Component = () => {
                           >
                             &#x1F4C2; Open Replica's Folder
                           </button>
+                          <Show when={repoEntries().length > 0}>
+                            <For each={repoEntries()}>
+                              {(repo, index) => (
+                                <button
+                                  class="session-context-option session-context-repo-option"
+                                  title={repo.sourcePath}
+                                  onClick={() => void openRepoFolder(repo.sourcePath)}
+                                  data-ac-testid={`replica.inactive.menu.repo.${index()}`}
+                                  data-ac-role="menuitem"
+                                >
+                                  <svg
+                                    class="session-context-repo-icon"
+                                    viewBox="0 0 16 16"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      fill="currentColor"
+                                      d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
+                                    />
+                                  </svg>
+                                  <span class="session-context-repo-label">{repo.label}</span>
+                                </button>
+                              )}
+                            </For>
+                          </Show>
                           <button
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}

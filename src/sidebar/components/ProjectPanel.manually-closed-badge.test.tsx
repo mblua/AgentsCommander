@@ -147,7 +147,13 @@ describe("ProjectPanel MANUALLY-CLOSED pill (#588)", () => {
     // so the manual pill must NOT render even though the marker is present. This
     // is the exact stale-on-raise trap #589 fixes for AUTO-CLOSED.
     sessionsStore.setSessions([
-      session({ id: "live-coord", name: coordSessionName, isCoordinator: true, status: "running" }),
+      session({
+        id: "live-coord",
+        name: coordSessionName,
+        workingDirectory: coordPath,
+        isCoordinator: true,
+        status: "running",
+      }),
     ]);
 
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
