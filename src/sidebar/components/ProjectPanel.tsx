@@ -14,6 +14,7 @@ import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { projectStore } from "../stores/project";
+import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
@@ -144,6 +145,36 @@ function deriveScopeContextFromSession(
 }
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
+const PROJECT_PANEL_COLLAPSE_KEY_SEP = "\u0000";
+
+type ProjectPanelCollapseSection =
+  | "project"
+  | "selected-workgroup"
+  | "workgroups"
+  | "workgroup"
+  | "loops"
+  | "agents"
+  | "teams"
+  | "team";
+
+function projectPanelCollapseKey(
+  projectPath: string,
+  section: ProjectPanelCollapseSection,
+  id = ""
+): string {
+  return [
+    normalizeProjectPathForCompare(projectPath),
+    section,
+    id,
+  ].join(PROJECT_PANEL_COLLAPSE_KEY_SEP);
+}
+
+function workgroupCollapseId(wg: AcWorkgroup, rowContext: string): string {
+  return [
+    rowContext,
+    normalizeProjectPathForCompare(wg.path || wg.name),
+  ].join(PROJECT_PANEL_COLLAPSE_KEY_SEP);
+}
 
 /**
  * #573 (grinch Step-7): upper bound for the post-assign restart await. The Tauri
@@ -235,6 +266,15 @@ const ProjectPanel: Component = () => {
   });
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
+  const [collapsedByKey, setCollapsedByKey] = createSignal<Record<string, boolean>>({});
+  const isPanelCollapsed = (key: string, defaultCollapsed = false) =>
+    collapsedByKey()[key] ?? defaultCollapsed;
+  const togglePanelCollapsed = (key: string, defaultCollapsed = false) => {
+    setCollapsedByKey((prev) => ({
+      ...prev,
+      [key]: !(prev[key] ?? defaultCollapsed),
+    }));
+  };
 
   // #537: post-assign "Restart now?" prompt. Hoisted to the stable ProjectPanel
   // scope (NOT inside the projects <For>) so a background replica-list refresh,
@@ -431,7 +471,6 @@ const ProjectPanel: Component = () => {
     </Show>
     <For each={projectStore.projects}>
       {(proj) => {
-        const [collapsed, setCollapsed] = createSignal(false);
         const [showCtxMenu, setShowCtxMenu] = createSignal(false);
         const [ctxMenuPos, setCtxMenuPos] = createSignal({ x: 0, y: 0 });
         const [showNewAgent, setShowNewAgent] = createSignal(false);
@@ -962,6 +1001,12 @@ const ProjectPanel: Component = () => {
 
         const hasTeams = () => proj.teams.length > 0;
         const projectAutomationId = () => automationIdPart(proj.path);
+        const projectCollapsedKey = projectPanelCollapseKey(proj.path, "project");
+        const selectedWorkgroupCollapsedKey = projectPanelCollapseKey(proj.path, "selected-workgroup");
+        const workgroupsCollapsedKey = projectPanelCollapseKey(proj.path, "workgroups");
+        const loopsCollapsedKey = projectPanelCollapseKey(proj.path, "loops");
+        const agentsCollapsedKey = projectPanelCollapseKey(proj.path, "agents");
+        const teamsCollapsedKey = projectPanelCollapseKey(proj.path, "teams");
         const hasLoopTargets = () =>
           proj.workgroups.some((wg) => wg.agents.some((agent) => agent.isCoordinator));
         const naturalCoordinatorItems = createMemo(() => {
@@ -1579,13 +1624,18 @@ const ProjectPanel: Component = () => {
         };
 
         const renderWorkgroupSubgroup = (wg: AcWorkgroup, rowContext: string) => {
-          const [wgCollapsed, setWgCollapsed] = createSignal(false);
+          const wgCollapsedKey = projectPanelCollapseKey(
+            proj.path,
+            "workgroup",
+            workgroupCollapseId(wg, rowContext)
+          );
+          const wgCollapsed = () => isPanelCollapsed(wgCollapsedKey);
           return (
             <div class="ac-wg-subgroup">
               <div
                 class="ac-wg-header ac-wg-header--collapsible"
                 title={wg.path}
-                onClick={() => setWgCollapsed((c) => !c)}
+                onClick={() => togglePanelCollapsed(wgCollapsedKey)}
                 onContextMenu={(e) => handleWgContextMenu(e, wg)}
               >
                 <span class="ac-discovery-chevron" classList={{ collapsed: wgCollapsed() }}>
@@ -1612,10 +1662,10 @@ const ProjectPanel: Component = () => {
             <button
               class="project-header"
               title={proj.path}
-              onClick={() => setCollapsed((c) => !c)}
+              onClick={() => togglePanelCollapsed(projectCollapsedKey)}
               onContextMenu={handleProjectContextMenu}
             >
-              <span class="ac-discovery-chevron" classList={{ collapsed: collapsed() }}>
+              <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(projectCollapsedKey) }}>
                 &#x25BE;
               </span>
               <span class="project-title">Project: {proj.folderName}</span>
@@ -1775,7 +1825,7 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
-            <Show when={!collapsed()}>
+            <Show when={!isPanelCollapsed(projectCollapsedKey)}>
               <div class="project-content">
                 {/* Coordinator Quick-Access — shown by styles that enable it via CSS */}
                 {(() => {
@@ -1796,16 +1846,14 @@ const ProjectPanel: Component = () => {
                 })()}
                 {/* Selected Workgroup */}
                 {(() => {
-                  const [selectedCollapsed, setSelectedCollapsed] = createSignal(false);
-
                   return (
                     <Show when={(sessionsStore.showCategories || sessionsStore.alwaysShowSelectedWorkgroup) && selectedWorkgroupVisible()}>
                       <div class="ac-wg-group">
                         <div
                           class="ac-wg-header ac-wg-header--collapsible"
-                          onClick={() => setSelectedCollapsed((c) => !c)}
+                          onClick={() => togglePanelCollapsed(selectedWorkgroupCollapsedKey)}
                         >
-                          <span class="ac-discovery-chevron" classList={{ collapsed: selectedCollapsed() }}>
+                          <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(selectedWorkgroupCollapsedKey) }}>
                             &#x25BE;
                           </span>
                           <div class="ac-wg-header-text">
@@ -1813,7 +1861,7 @@ const ProjectPanel: Component = () => {
                           </div>
                           <span class="ac-team-count">{selectedWorkgroup() ? 1 : 0}</span>
                         </div>
-                        <Show when={!selectedCollapsed()}>
+                        <Show when={!isPanelCollapsed(selectedWorkgroupCollapsedKey)}>
                           <Show when={selectedWorkgroup()} fallback={<div class="ac-empty-hint">No selected workgroup</div>}>
                             <For each={[selectedWorkgroup()!]}>
                               {(wg) => renderWorkgroupSubgroup(wg, "selected")}
@@ -1826,8 +1874,6 @@ const ProjectPanel: Component = () => {
                 })()}
                 {/* Workgroups */}
                 {(() => {
-                  const [wgsCollapsed, setWgsCollapsed] = createSignal(false);
-
                   const handleWorkgroupsHeaderContextMenu = (e: MouseEvent) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1861,10 +1907,10 @@ const ProjectPanel: Component = () => {
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
-                        onClick={() => setWgsCollapsed((c) => !c)}
+                        onClick={() => togglePanelCollapsed(workgroupsCollapsedKey)}
                         onContextMenu={handleWorkgroupsHeaderContextMenu}
                       >
-                        <span class="ac-discovery-chevron" classList={{ collapsed: wgsCollapsed() }}>
+                        <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(workgroupsCollapsedKey) }}>
                           &#x25BE;
                         </span>
                         <div class="ac-wg-header-text">
@@ -1872,7 +1918,7 @@ const ProjectPanel: Component = () => {
                         </div>
                         <span class="ac-team-count">{filteredWorkgroups().length}</span>
                       </div>
-                      <Show when={!wgsCollapsed()}>
+                      <Show when={!isPanelCollapsed(workgroupsCollapsedKey)}>
                         <Show
                           when={filteredWorkgroups().length > 0}
                           fallback={<div class="ac-empty-hint">No workgroups</div>}
@@ -1913,8 +1959,6 @@ const ProjectPanel: Component = () => {
                 })()}
                 {/* Loops */}
                 {(() => {
-                  const [loopsCollapsed, setLoopsCollapsed] = createSignal(false);
-
                   const handleLoopsHeaderContextMenu = (e: MouseEvent) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1951,11 +1995,11 @@ const ProjectPanel: Component = () => {
                     <div class="ac-wg-group ac-loop-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
-                        onClick={() => setLoopsCollapsed((c) => !c)}
+                        onClick={() => togglePanelCollapsed(loopsCollapsedKey)}
                         onContextMenu={handleLoopsHeaderContextMenu}
                         data-ac-testid={`project.loops.header.${projectAutomationId()}`}
                       >
-                        <span class="ac-discovery-chevron" classList={{ collapsed: loopsCollapsed() }}>
+                        <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(loopsCollapsedKey) }}>
                           &#x25BE;
                         </span>
                         <div class="ac-wg-header-text">
@@ -1963,7 +2007,7 @@ const ProjectPanel: Component = () => {
                         </div>
                         <span class="ac-team-count">{filteredLoops().length}</span>
                       </div>
-                      <Show when={!loopsCollapsed()}>
+                      <Show when={!isPanelCollapsed(loopsCollapsedKey)}>
                         <Show
                           when={filteredLoops().length > 0}
                           fallback={<div class="ac-empty-hint">No loops</div>}
@@ -2039,8 +2083,6 @@ const ProjectPanel: Component = () => {
                 })()}
                 {/* Agents */}
                 {(() => {
-                  const [matrixCollapsed, setMatrixCollapsed] = createSignal(false);
-
                   const handleAgentContextMenu = (e: MouseEvent, agent: { name: string; path: string; preferredAgentId?: string }) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -2101,17 +2143,17 @@ const ProjectPanel: Component = () => {
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
-                        onClick={() => setMatrixCollapsed((c) => !c)}
+                        onClick={() => togglePanelCollapsed(agentsCollapsedKey)}
                         onContextMenu={handleAgentsHeaderContextMenu}
                       >
-                        <span class="ac-discovery-chevron" classList={{ collapsed: matrixCollapsed() }}>
+                        <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(agentsCollapsedKey) }}>
                           &#x25BE;
                         </span>
                         <div class="ac-wg-header-text">
                           <span class="ac-wg-name">Agents</span>
                         </div>
                       </div>
-                      <Show when={!matrixCollapsed()}>
+                      <Show when={!isPanelCollapsed(agentsCollapsedKey)}>
                         <Show
                           when={filteredAgents().length > 0}
                           fallback={<div class="ac-empty-hint">No agents</div>}
@@ -2259,8 +2301,6 @@ const ProjectPanel: Component = () => {
                 })()}
                 {/* Teams */}
                 {(() => {
-                  const [teamsCollapsed, setTeamsCollapsed] = createSignal(false);
-
                   const handleTeamsHeaderContextMenu = (e: MouseEvent) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -2294,39 +2334,40 @@ const ProjectPanel: Component = () => {
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
-                        onClick={() => setTeamsCollapsed((c) => !c)}
+                        onClick={() => togglePanelCollapsed(teamsCollapsedKey)}
                         onContextMenu={handleTeamsHeaderContextMenu}
                       >
-                        <span class="ac-discovery-chevron" classList={{ collapsed: teamsCollapsed() }}>
+                        <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(teamsCollapsedKey) }}>
                           &#x25BE;
                         </span>
                         <div class="ac-wg-header-text">
                           <span class="ac-wg-name">Teams</span>
                         </div>
                       </div>
-                      <Show when={!teamsCollapsed()}>
+                      <Show when={!isPanelCollapsed(teamsCollapsedKey)}>
                         <Show
                           when={filteredTeams().length > 0}
                           fallback={<div class="ac-empty-hint">No teams</div>}
                         >
                           <For each={filteredTeams()}>
                             {(team) => {
-                              const [teamExpanded, setTeamExpanded] = createSignal(false);
+                              const teamCollapsedKey = projectPanelCollapseKey(proj.path, "team", team.name);
+                              const teamCollapsed = () => isPanelCollapsed(teamCollapsedKey, true);
                               const visibleTeamMembers = () => filteredTeamMembers(team);
                               return (
                                 <div class="ac-team-group">
                                   <div
                                     class="ac-team-header"
-                                    onClick={() => setTeamExpanded((e) => !e)}
+                                    onClick={() => togglePanelCollapsed(teamCollapsedKey, true)}
                                     onContextMenu={(e) => handleTeamContextMenu(e, team)}
                                   >
-                                    <span class="ac-discovery-chevron" classList={{ collapsed: !teamExpanded() }}>
+                                    <span class="ac-discovery-chevron" classList={{ collapsed: teamCollapsed() }}>
                                       &#x25BE;
                                     </span>
                                     <span class="ac-team-name">{team.name}</span>
                                     <span class="ac-team-count">{visibleTeamMembers().length}</span>
                                   </div>
-                                  <Show when={teamExpanded()}>
+                                  <Show when={!teamCollapsed()}>
                                     <div class="ac-team-members">
                                       <For each={visibleTeamMembers()}>
                                         {(agentName) => {
