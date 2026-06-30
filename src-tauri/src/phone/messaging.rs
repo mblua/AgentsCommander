@@ -10,8 +10,10 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MESSAGING_DIR_NAME: &str = "messaging";
 pub const PTY_SAFE_MAX: usize = 1024;
-pub const FILE_NOTIFICATION_PREFIX: &str = "New message: ";
-pub const FILE_NOTIFICATION_SUFFIX: &str = ". Read this file.";
+pub const FILE_NOTIFICATION_PREFIX: &str = "Process this inter-agent message: ";
+pub const FILE_NOTIFICATION_SUFFIX: &str = "";
+const LEGACY_FILE_NOTIFICATION_PREFIX: &str = "New message: ";
+const LEGACY_FILE_NOTIFICATION_SUFFIX: &str = ". Read this file.";
 
 const MAX_SLUG_LEN: usize = 50;
 const MAX_COLLISION_SUFFIX: u32 = 99;
@@ -40,6 +42,11 @@ pub fn parse_file_notification(body: &str) -> Option<&str> {
     body.strip_prefix(FILE_NOTIFICATION_PREFIX)
         .and_then(|rest| rest.strip_suffix(FILE_NOTIFICATION_SUFFIX))
         .filter(|path| !path.is_empty())
+        .or_else(|| {
+            body.strip_prefix(LEGACY_FILE_NOTIFICATION_PREFIX)
+                .and_then(|rest| rest.strip_suffix(LEGACY_FILE_NOTIFICATION_SUFFIX))
+                .filter(|path| !path.is_empty())
+        })
 }
 
 pub fn notification_filename(path: &str) -> Option<&str> {
@@ -726,11 +733,21 @@ mod tests {
         let path = r"C:\tmp\ac-root-agent\messaging\20260524-040000-root-to-wg1-tech-lead-smoke.md";
         let body = format_file_notification(path);
 
+        assert!(body.contains("Process this inter-agent message:"));
+        assert!(!body.contains("Read this file"));
         assert_eq!(parse_file_notification(&body), Some(path));
         assert_eq!(
             notification_filename(path),
             Some("20260524-040000-root-to-wg1-tech-lead-smoke.md")
         );
+    }
+
+    #[test]
+    fn legacy_file_notification_still_parses() {
+        let path = r"C:\tmp\wg-1-dev-team\messaging\20260630-120000-wg1-a-to-wg1-b-smoke.md";
+        let legacy = format!("New message: {}. Read this file.", path);
+
+        assert_eq!(parse_file_notification(&legacy), Some(path));
     }
 
     #[test]
@@ -778,7 +795,7 @@ mod tests {
     fn pty_safe_max_clamp_rejects_long_path() {
         let from = "wg99-extremely-long-agent-name-segment";
         // Synthetic body large enough to push the total past 1024.
-        let body_len = 34 + 1000; // 1000-char abs_path
+        let body_len = FILE_NOTIFICATION_PREFIX.len() + FILE_NOTIFICATION_SUFFIX.len() + 1000;
         let overhead = PTY_WRAP_FIXED + from.len();
         assert!(
             body_len + overhead > PTY_SAFE_MAX,

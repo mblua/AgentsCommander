@@ -2506,6 +2506,10 @@ fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) ->
     format!(
         r#"## Inter-Agent Messaging
 
+### Incoming Message Notifications
+
+When your PTY receives `[Message from <peer>] Process this inter-agent message: <path>`, treat it as an operational inter-agent message. Read the file at `<path>`, follow its task instructions, and when you finish the delegated task or get blocked, reply to the sender with a concrete result or blocker using the two-step file-based send flow below. Do not merely summarize the file and stop unless the message explicitly asks only for a summary.
+
 ### Send a message to another agent
 
 **MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers-lean`. Never guess agent names.
@@ -3884,6 +3888,28 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
+    fn default_context_documents_incoming_inter_agent_processing() {
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+        );
+
+        assert!(out.contains("### Incoming Message Notifications"));
+        assert!(out.contains("Process this inter-agent message"));
+        assert!(out.contains("operational inter-agent message"));
+        assert!(out.contains("Do not merely summarize the file and stop"));
+
+        let incoming = out
+            .find("### Incoming Message Notifications")
+            .expect("incoming subsection");
+        let send = out
+            .find("### Send a message to another agent")
+            .expect("send subsection");
+        assert!(incoming < send);
+    }
+
+    #[test]
     fn default_context_non_workgroup_omits_messaging_exception() {
         let out = default_context("C:/fake/plain/agent", None, &no_skill_section());
         assert!(
@@ -4812,6 +4838,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&old_matrix)),
             &old_skills_section,
         );
+        assert!(!legacy.contains("### Incoming Message Notifications"));
+        assert!(!legacy.contains("Process this inter-agent message"));
         let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &legacy).expect("write stale generated default");
 
@@ -4828,6 +4856,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             None,
         )
         .expect("resolve context");
+        assert!(rendered.contains("### Incoming Message Notifications"));
+        assert!(rendered.contains("Process this inter-agent message"));
 
         // (a) the returned render is the healthy current default for the NEW
         // agent: sections once, no placeholders, the new path baked in, the old
