@@ -449,6 +449,107 @@ const ProjectPanel: Component = () => {
     setRestartPrompt(null);
   };
 
+  // #710: modal-open state hoisted OUT of the projects <For>. A background
+  // discovery refresh (reloadProject / branch / clock events) replaces each
+  // project object reference, so SolidJS disposes and re-creates every <For>
+  // row — and with it any signal declared inside the row callback. A modal
+  // whose open-flag lived on the row was therefore torn down mid-interaction
+  // (#710, same bug class as #537/#669). These signals live at the stable
+  // ProjectPanel scope (like pendingLaunch / restartPrompt / editingTeamTarget)
+  // and carry only STABLE identities (projectPath, loop id, session id,
+  // wg/replica path); the render blocks after the <For> re-resolve the live
+  // project/session/loop data from them, so a refresh updates the modal's data
+  // without unmounting it.
+  const [newAgentTarget, setNewAgentTarget] = createSignal<{ projectPath: string } | null>(null);
+  const [newTeamTarget, setNewTeamTarget] = createSignal<{ projectPath: string } | null>(null);
+  const [newWorkgroupTarget, setNewWorkgroupTarget] = createSignal<{ projectPath: string } | null>(null);
+  const [newLoopTarget, setNewLoopTarget] = createSignal<{ projectPath: string } | null>(null);
+  const [editingLoopTarget, setEditingLoopTarget] = createSignal<{ projectPath: string; loopId: string } | null>(null);
+  const [replicaCodingAgentTarget, setReplicaCodingAgentTarget] = createSignal<{ sessionId: string; sessionName: string } | null>(null);
+  // Coding Agent picker target for a gray/red (not-running) replica — #545.
+  // Carries stable paths (#710); the render block re-resolves the live wg/replica
+  // so a refresh that replaces those object refs keeps the picker open.
+  const [inactiveCodingAgentTarget, setInactiveCodingAgentTarget] = createSignal<{ projectPath: string; wgPath: string; replicaPath: string } | null>(null);
+
+  // Resolve the live ProjectState for a hoisted modal from the stable path it
+  // carries. Every projectStore mutation maps over `projects` keyed by path
+  // (project.ts), so the entry stays findable across refreshes; this returns
+  // undefined only once the project is actually removed, which collapses the
+  // dependent modal (its <Show> turns falsy) — the correct "project gone" close.
+  const findProjectByPath = (projectPath: string | null | undefined) => {
+    if (!projectPath) return undefined;
+    const normalized = normalizeProjectPathForCompare(projectPath);
+    return projectStore.projects.find(
+      (p) => normalizeProjectPathForCompare(p.path) === normalized,
+    );
+  };
+
+  // #710: re-resolve the live workgroup + replica for the inactive coding-agent
+  // picker from the stable identities in the target. A discovery refresh fully
+  // replaces the workgroups/agents arrays (project.ts reloadProject), so the old
+  // {wg, replica} object refs went stale and the row disposal closed the modal;
+  // matching by path re-finds them. Null (project/wg/replica gone) closes it.
+  const inactiveCodingAgentResolved = createMemo(() => {
+    const target = inactiveCodingAgentTarget();
+    if (!target) return null;
+    const proj = findProjectByPath(target.projectPath);
+    const wg = proj?.workgroups.find((w) => w.path === target.wgPath);
+    const replica = wg?.agents.find((r) => r.path === target.replicaPath);
+    return proj && wg && replica ? { proj, wg, replica } : null;
+  });
+
+  // #710: re-resolve the live loop for the edit-loop modal by id, so a refresh
+  // (which replaces the loops array) feeds the modal fresh data instead of
+  // disposing it. Null (loop deleted) closes the modal.
+  const editingLoopResolved = createMemo(() => {
+    const target = editingLoopTarget();
+    if (!target) return null;
+    const proj = findProjectByPath(target.projectPath);
+    const loop = proj?.loops.find((l) => l.id === target.loopId);
+    return proj && loop ? { proj, loop } : null;
+  });
+
+  // #710: top-level restart helper for the hoisted coding-agent picker's
+  // onSelect. Same bounded restart as the per-row restartReplicaSession below,
+  // minus the row-local context-menu cleanup (the menu is already gone by the
+  // time the picker resolves), so it can live at the stable ProjectPanel scope.
+  // #574 §15.1: bound the await with RESTART_TIMEOUT_MS, mirroring
+  // applyRestartPrompt. The Tauri IPC transport has no client-side timeout
+  // (transport-tauri.ts), so a wedged backend would never settle this await, the
+  // catch would never run, and NO toast would fire on desktop — the exact #574
+  // silent-failure class. WsTransport self-heals after 30s; this gives desktop
+  // the same guarantee. The bare "Command timeout: restart_session" reject
+  // string passes through launchErrorMessage verbatim, so desktop and WS get
+  // identical copy.
+  const restartReplicaSessionCore = async (
+    sessionId: string,
+    agentId?: string,
+    requestedProfile?: string | null,
+  ) => {
+    let timeoutTimer: number | undefined;
+    try {
+      await Promise.race([
+        SessionAPI.restart(
+          sessionId,
+          agentId ? { agentId, requestedProfile } : undefined,
+        ),
+        new Promise<never>((_, reject) => {
+          timeoutTimer = window.setTimeout(
+            () => reject("Command timeout: restart_session"),
+            RESTART_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (e) {
+      console.error("Failed to restart session:", e); // keep for logs
+      toastStore.error(launchErrorMessage(e));
+    } finally {
+      // Cancel the pending timeout when the restart settles first, so a
+      // successful restart can't leave a dangling timer / late rejection.
+      window.clearTimeout(timeoutTimer);
+    }
+  };
+
   const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const existing = replicaSession(wg, replica);
     if (existing) {
@@ -567,11 +668,10 @@ const ProjectPanel: Component = () => {
       {(proj) => {
         const [showCtxMenu, setShowCtxMenu] = createSignal(false);
         const [ctxMenuPos, setCtxMenuPos] = createSignal({ x: 0, y: 0 });
-        const [showNewAgent, setShowNewAgent] = createSignal(false);
-        const [showNewTeam, setShowNewTeam] = createSignal(false);
-        const [showNewWorkgroup, setShowNewWorkgroup] = createSignal(false);
-        const [showNewLoop, setShowNewLoop] = createSignal(false);
-        const [editingLoop, setEditingLoop] = createSignal<AcLoopSummary | null>(null);
+        // #710: New Agent/Team/Workgroup/Loop + Edit Loop open-state hoisted to
+        // the stable ProjectPanel scope (setNewAgentTarget/…/setEditingLoopTarget
+        // above) so a background refresh that re-creates this row can't dispose an
+        // open modal. Triggers below pass proj.path (and loop id) into them.
         const [teamCtxMenu, setTeamCtxMenu] = createSignal<{ team: AcTeam; x: number; y: number } | null>(null);
         const [deletingTeam, setDeletingTeam] = createSignal<AcTeam | null>(null);
         const [deleteError, setDeleteError] = createSignal("");
@@ -582,9 +682,10 @@ const ProjectPanel: Component = () => {
           | { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
           | null
         >(null);
-        const [replicaCodingAgentTarget, setReplicaCodingAgentTarget] = createSignal<{ sessionId: string; sessionName: string } | null>(null);
-        // Coding Agent picker target for a gray/red (not-running) replica — #545.
-        const [inactiveCodingAgentTarget, setInactiveCodingAgentTarget] = createSignal<{ wg: AcWorkgroup; replica: AcAgentReplica } | null>(null);
+        // #710: live + inactive Coding Agent picker open-state hoisted to the
+        // stable ProjectPanel scope (replicaCodingAgentTarget /
+        // inactiveCodingAgentTarget above). The triggers below set them with
+        // stable identities (session id; project/wg/replica paths).
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -971,39 +1072,11 @@ const ProjectPanel: Component = () => {
           agentId?: string,
           requestedProfile?: string | null,
         ) => {
+          // Row-local cleanup (the context menu that launched this is per-row),
+          // then defer to the hoisted core which owns the bounded restart + toast.
           setReplicaCtxMenu(null);
           cleanupCtx();
-          // #574 §15.1: bound the await with RESTART_TIMEOUT_MS, mirroring
-          // applyRestartPrompt (:244-279). The Tauri IPC transport has no
-          // client-side timeout (transport-tauri.ts:23-26), so a wedged backend
-          // would never settle this await, the catch would never run, and NO toast
-          // would fire on desktop - the exact #574 silent-failure class. WsTransport
-          // self-heals after 30s; this gives desktop the same guarantee. The bare
-          // "Command timeout: restart_session" reject string passes through
-          // launchErrorMessage verbatim (launch-errors.ts:17-28), so desktop and WS
-          // get identical copy.
-          let timeoutTimer: number | undefined;
-          try {
-            await Promise.race([
-              SessionAPI.restart(
-                sessionId,
-                agentId ? { agentId, requestedProfile } : undefined,
-              ),
-              new Promise<never>((_, reject) => {
-                timeoutTimer = window.setTimeout(
-                  () => reject("Command timeout: restart_session"),
-                  RESTART_TIMEOUT_MS,
-                );
-              }),
-            ]);
-          } catch (e) {
-            console.error("Failed to restart session:", e); // keep for logs
-            toastStore.error(launchErrorMessage(e));
-          } finally {
-            // Cancel the pending timeout when the restart settles first, so a
-            // successful restart can't leave a dangling timer / late rejection.
-            window.clearTimeout(timeoutTimer);
-          }
+          await restartReplicaSessionCore(sessionId, agentId, requestedProfile);
         };
 
         const toggleReplicaDetach = async (sessionId: string) => {
@@ -1853,13 +1926,13 @@ const ProjectPanel: Component = () => {
                 >
                   <button
                     class="session-context-option"
-                    onClick={() => { setShowCtxMenu(false); setShowNewAgent(true); }}
+                    onClick={() => { setShowCtxMenu(false); setNewAgentTarget({ projectPath: proj.path }); }}
                   >
                     New Agent
                   </button>
                   <button
                     class="session-context-option"
-                    onClick={() => { setShowCtxMenu(false); setShowNewTeam(true); }}
+                    onClick={() => { setShowCtxMenu(false); setNewTeamTarget({ projectPath: proj.path }); }}
                   >
                     New Team
                   </button>
@@ -1870,7 +1943,7 @@ const ProjectPanel: Component = () => {
                     onClick={() => {
                       if (!hasTeams()) return;
                       setShowCtxMenu(false);
-                      setShowNewWorkgroup(true);
+                      setNewWorkgroupTarget({ projectPath: proj.path });
                     }}
                   >
                     New Workgroup
@@ -1882,7 +1955,7 @@ const ProjectPanel: Component = () => {
                     onClick={() => {
                       if (!hasLoopTargets()) return;
                       setShowCtxMenu(false);
-                      setShowNewLoop(true);
+                      setNewLoopTarget({ projectPath: proj.path });
                     }}
                     data-ac-testid={`loop.action.new.${projectAutomationId()}.projectMenu`}
                   >
@@ -1899,51 +1972,10 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
-            {/* Entity creation modals */}
-            {showNewAgent() && (
-              <Portal>
-                <NewEntityAgentModal
-                  projectPath={proj.path}
-                  onClose={() => setShowNewAgent(false)}
-                />
-              </Portal>
-            )}
-            {showNewTeam() && (
-              <Portal>
-                <NewTeamModal
-                  projectPath={proj.path}
-                  onClose={() => setShowNewTeam(false)}
-                />
-              </Portal>
-            )}
-            {showNewWorkgroup() && (
-              <Portal>
-                <NewWorkgroupModal
-                  projectPath={proj.path}
-                  teams={proj.teams}
-                  onClose={() => setShowNewWorkgroup(false)}
-                />
-              </Portal>
-            )}
-            {showNewLoop() && (
-              <Portal>
-                <NewLoopModal
-                  projectPath={proj.path}
-                  workgroups={proj.workgroups}
-                  onClose={() => setShowNewLoop(false)}
-                />
-              </Portal>
-            )}
-            {editingLoop() && (
-              <Portal>
-                <EditLoopModal
-                  projectPath={proj.path}
-                  workgroups={proj.workgroups}
-                  loop={editingLoop()!}
-                  onClose={() => setEditingLoop(null)}
-                />
-              </Portal>
-            )}
+            {/* #710: entity-creation + edit-loop modals moved out of this row to
+                the stable ProjectPanel scope (after the projects <For>) so a
+                background refresh that re-creates the row no longer disposes an
+                open modal. See the hoisted render blocks below. */}
 
             <Show when={!isPanelCollapsed(projectCollapsedKey)}>
               <div class="project-content">
@@ -2066,7 +2098,7 @@ const ProjectPanel: Component = () => {
                             onClick={() => {
                               if (!hasTeams()) return;
                               setWorkgroupsHeaderCtxMenu(null);
-                              setShowNewWorkgroup(true);
+                              setNewWorkgroupTarget({ projectPath: proj.path });
                             }}
                           >
                             New Workgroup
@@ -2141,7 +2173,7 @@ const ProjectPanel: Component = () => {
                                   "ac-loop-row-pending": !!loop.pendingDueAt,
                                   "ac-loop-row-missed": loop.lastResult?.kind === "missedWhileClosed",
                                 }}
-                                onClick={() => setEditingLoop(loop)}
+                                onClick={() => setEditingLoopTarget({ projectPath: proj.path, loopId: loop.id })}
                                 onContextMenu={(e) => handleLoopContextMenu(e, loop)}
                                 title={loop.promptPreview}
                                 data-ac-testid={loopTestId(loop)}
@@ -2189,7 +2221,7 @@ const ProjectPanel: Component = () => {
                             onClick={() => {
                               if (!hasLoopTargets()) return;
                               setLoopsHeaderCtxMenu(null);
-                              setShowNewLoop(true);
+                              setNewLoopTarget({ projectPath: proj.path });
                             }}
                             data-ac-testid={`loop.action.new.${projectAutomationId()}`}
                           >
@@ -2359,7 +2391,7 @@ const ProjectPanel: Component = () => {
                             class="session-context-option"
                             onClick={() => {
                               setAgentsHeaderCtxMenu(null);
-                              setShowNewAgent(true);
+                              setNewAgentTarget({ projectPath: proj.path });
                             }}
                           >
                             New Agent
@@ -2524,7 +2556,7 @@ const ProjectPanel: Component = () => {
                             class="session-context-option"
                             onClick={() => {
                               setTeamsHeaderCtxMenu(null);
-                              setShowNewTeam(true);
+                              setNewTeamTarget({ projectPath: proj.path });
                             }}
                           >
                             New Team
@@ -2633,7 +2665,7 @@ const ProjectPanel: Component = () => {
                       const menu = loopCtxMenu();
                       setLoopCtxMenu(null);
                       cleanupCtx();
-                      if (menu) setEditingLoop(menu.loop);
+                      if (menu) setEditingLoopTarget({ projectPath: proj.path, loopId: menu.loop.id });
                     }}
                     data-ac-testid={`loop.action.edit.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
                   >
@@ -2846,7 +2878,11 @@ const ProjectPanel: Component = () => {
                               const replica = menu().replica;
                               setReplicaCtxMenu(null);
                               cleanupCtx();
-                              setInactiveCodingAgentTarget({ wg, replica });
+                              setInactiveCodingAgentTarget({
+                                projectPath: proj.path,
+                                wgPath: wg.path,
+                                replicaPath: replica.path,
+                              });
                             }}
                           >
                             Coding Agent
@@ -2910,99 +2946,10 @@ const ProjectPanel: Component = () => {
                 </div>
               </Portal>
             )}
-            {replicaCodingAgentTarget() && (
-              <Portal>
-                <AgentPickerModal
-                  sessionName={replicaCodingAgentTarget()!.sessionName}
-                  agentPath={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.workingDirectory}
-                  currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
-                  // #551 FIX 2: a live session's agent IS the explicit current
-                  // coding agent, so it doubles as the redundancy baseline.
-                  explicitCurrentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
-                  currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
-                  scopeContext={deriveScopeContextFromSession(
-                    sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
-                    replicaCodingAgentTarget()!.sessionName,
-                  )}
-                  // #551: re-assigning the running agent+profile is a no-op and
-                  // pops a needless restart prompt — disable it with a tooltip.
-                  disableRedundantReplicaAssign
-                  // #592: but DRIFT (loaded cell != current config) makes a same-pair
-                  // re-assign meaningful (re-stamp + relaunch), so it overrides the
-                  // disable. Same backend profileOutdated the badge reads.
-                  targetProfileOutdated={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.profileOutdated}
-                  onSelect={async (selection) => {
-                    // The picker already persisted the selection through the backend
-                    // (config write) for WG replicas. For a non-WG agent session there
-                    // is no backend persist path, so apply the change by restarting with
-                    // the chosen agent/profile.
-                    const target = replicaCodingAgentTarget();
-                    setReplicaCodingAgentTarget(null);
-                    if (!target) return;
-                    const session = sessionsStore.sessions.find((s) => s.id === target.sessionId);
-                    if (!isWgReplicaPath(session?.workingDirectory)) {
-                      await restartReplicaSession(
-                        target.sessionId,
-                        selection.agent.id,
-                        selection.requestedProfile,
-                      );
-                      return;
-                    }
-                    // #537: WG replica was persisted but the live session still runs the
-                    // old agent. Offer an immediate restart when there is a live session.
-                    if (shouldOfferRestartAfterAssign(selection, session)) {
-                      const slash = target.sessionName.lastIndexOf("/");
-                      // #573: clear any error left over from a prior failed restart
-                      // so a fresh prompt never opens showing a stale message. (No
-                      // need to reset `restarting`: dismiss is blocked while it is
-                      // true, so the picker can't reopen to reach here mid-flight.)
-                      setRestartError("");
-                      setRestartPrompt({
-                        sessionId: target.sessionId,
-                        replicaName: slash >= 0 ? target.sessionName.slice(slash + 1) : target.sessionName,
-                        agentId: selection.agent.id,
-                        agentLabel: selection.agent.label,
-                        requestedProfile: selection.requestedProfile,
-                      });
-                    }
-                  }}
-                  onClose={() => setReplicaCodingAgentTarget(null)}
-                />
-              </Portal>
-            )}
-            {/* Coding Agent picker for a gray/red replica — pick what launches
-                before first launch / relaunch, without starting the agent (#545).
-                For a WG replica the picker writes the selection through the backend. */}
-            <Show when={inactiveCodingAgentTarget()}>
-              {(target) => (
-                <Portal>
-                  <AgentPickerModal
-                    sessionName={replicaSessionName(target().wg, target().replica)}
-                    agentPath={target().replica.path}
-                    currentAgentId={target().replica.currentCodingAgentId ?? target().replica.preferredAgentId}
-                    // #551 FIX 2: redundancy keys off the EXPLICIT currentCodingAgentId
-                    // only — never the preferredAgentId hint above. A never-assigned gray
-                    // replica (no currentCodingAgentId) keeps "Assign" enabled so its
-                    // preferred agent can be pinned in one click.
-                    explicitCurrentAgentId={target().replica.currentCodingAgentId ?? null}
-                    currentRequestedProfile={target().replica.currentProfile ?? null}
-                    scopeContext={replicaScopeContext(target().wg, target().replica)}
-                    // #551: pre-launch "Set Coding Agent" opens pre-selected to the
-                    // replica's current pair; re-assigning it is a no-op, so disable.
-                    disableRedundantReplicaAssign
-                    onSelect={async () => {
-                      // WG replica: the picker already wrote the coding-agent
-                      // selection via the backend (no restart — the agent isn't
-                      // running). Close first, then reload so the chosen agent
-                      // shows and is pre-selected at first launch.
-                      setInactiveCodingAgentTarget(null);
-                      await projectStore.reloadProject(proj.path);
-                    }}
-                    onClose={() => setInactiveCodingAgentTarget(null)}
-                  />
-                </Portal>
-              )}
-            </Show>
+            {/* #710: live + inactive Coding Agent pickers moved out of this row
+                to the stable ProjectPanel scope (after the projects <For>) so a
+                background refresh that re-creates the row no longer disposes an
+                open picker. See the hoisted render blocks below. */}
 
             {/* Delete WG confirmation */}
             {deletingWg() && (
@@ -3281,6 +3228,170 @@ const ProjectPanel: Component = () => {
         );
       }}
     </For>
+
+    {/* #710: entity-creation / edit-loop modals + coding-agent pickers hoisted
+        out of the projects <For> so a background discovery refresh (which
+        replaces row objects and disposes their local signals) cannot tear them
+        down mid-interaction. Each resolves its live project / loop / session
+        data from the stable identity carried in its target signal. Mirrors the
+        editingTeamTarget / pendingLaunch precedent below. */}
+    {/* Gated on findProjectByPath (like the New Workgroup / New Loop / Edit Loop
+        blocks below) — not just the raw target signal — so the modal auto-closes
+        if its project is removed, matching the pre-#710 row-disposal behavior and
+        keeping all five entity-creation modals consistent. */}
+    <Show when={findProjectByPath(newAgentTarget()?.projectPath)}>
+      {(proj) => (
+        <Portal>
+          <NewEntityAgentModal
+            projectPath={proj().path}
+            onClose={() => setNewAgentTarget(null)}
+          />
+        </Portal>
+      )}
+    </Show>
+    <Show when={findProjectByPath(newTeamTarget()?.projectPath)}>
+      {(proj) => (
+        <Portal>
+          <NewTeamModal
+            projectPath={proj().path}
+            onClose={() => setNewTeamTarget(null)}
+          />
+        </Portal>
+      )}
+    </Show>
+    <Show when={findProjectByPath(newWorkgroupTarget()?.projectPath)}>
+      {(proj) => (
+        <Portal>
+          <NewWorkgroupModal
+            projectPath={proj().path}
+            teams={proj().teams}
+            onClose={() => setNewWorkgroupTarget(null)}
+          />
+        </Portal>
+      )}
+    </Show>
+    <Show when={findProjectByPath(newLoopTarget()?.projectPath)}>
+      {(proj) => (
+        <Portal>
+          <NewLoopModal
+            projectPath={proj().path}
+            workgroups={proj().workgroups}
+            onClose={() => setNewLoopTarget(null)}
+          />
+        </Portal>
+      )}
+    </Show>
+    <Show when={editingLoopResolved()}>
+      {(resolved) => (
+        <Portal>
+          <EditLoopModal
+            projectPath={resolved().proj.path}
+            workgroups={resolved().proj.workgroups}
+            loop={resolved().loop}
+            onClose={() => setEditingLoopTarget(null)}
+          />
+        </Portal>
+      )}
+    </Show>
+    {/* Coding Agent picker for a live (green/red) replica session. Resolves all
+        session data live by stable sessionId, so a refresh updates it in place. */}
+    {replicaCodingAgentTarget() && (
+      <Portal>
+        <AgentPickerModal
+          sessionName={replicaCodingAgentTarget()!.sessionName}
+          agentPath={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.workingDirectory}
+          currentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
+          // #551 FIX 2: a live session's agent IS the explicit current
+          // coding agent, so it doubles as the redundancy baseline.
+          explicitCurrentAgentId={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.agentId}
+          currentRequestedProfile={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.requestedProfile}
+          scopeContext={deriveScopeContextFromSession(
+            sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId),
+            replicaCodingAgentTarget()!.sessionName,
+          )}
+          // #551: re-assigning the running agent+profile is a no-op and
+          // pops a needless restart prompt — disable it with a tooltip.
+          disableRedundantReplicaAssign
+          // #592: but DRIFT (loaded cell != current config) makes a same-pair
+          // re-assign meaningful (re-stamp + relaunch), so it overrides the
+          // disable. Same backend profileOutdated the badge reads.
+          targetProfileOutdated={sessionsStore.sessions.find((s) => s.id === replicaCodingAgentTarget()!.sessionId)?.profileOutdated}
+          onSelect={async (selection) => {
+            // The picker already persisted the selection through the backend
+            // (config write) for WG replicas. For a non-WG agent session there
+            // is no backend persist path, so apply the change by restarting with
+            // the chosen agent/profile.
+            const target = replicaCodingAgentTarget();
+            setReplicaCodingAgentTarget(null);
+            if (!target) return;
+            const session = sessionsStore.sessions.find((s) => s.id === target.sessionId);
+            if (!isWgReplicaPath(session?.workingDirectory)) {
+              await restartReplicaSessionCore(
+                target.sessionId,
+                selection.agent.id,
+                selection.requestedProfile,
+              );
+              return;
+            }
+            // #537: WG replica was persisted but the live session still runs the
+            // old agent. Offer an immediate restart when there is a live session.
+            if (shouldOfferRestartAfterAssign(selection, session)) {
+              const slash = target.sessionName.lastIndexOf("/");
+              // #573: clear any error left over from a prior failed restart
+              // so a fresh prompt never opens showing a stale message. (No
+              // need to reset `restarting`: dismiss is blocked while it is
+              // true, so the picker can't reopen to reach here mid-flight.)
+              setRestartError("");
+              setRestartPrompt({
+                sessionId: target.sessionId,
+                replicaName: slash >= 0 ? target.sessionName.slice(slash + 1) : target.sessionName,
+                agentId: selection.agent.id,
+                agentLabel: selection.agent.label,
+                requestedProfile: selection.requestedProfile,
+              });
+            }
+          }}
+          onClose={() => setReplicaCodingAgentTarget(null)}
+        />
+      </Portal>
+    )}
+    {/* Coding Agent picker for a gray/red (not-running) replica — pick what
+        launches before first launch / relaunch, without starting the agent
+        (#545). For a WG replica the picker writes the selection through the
+        backend. #710: the live wg/replica are re-resolved by path so a refresh
+        keeps the picker open with fresh data. */}
+    <Show when={inactiveCodingAgentResolved()}>
+      {(resolved) => (
+        <Portal>
+          <AgentPickerModal
+            sessionName={replicaSessionName(resolved().wg, resolved().replica)}
+            agentPath={resolved().replica.path}
+            currentAgentId={resolved().replica.currentCodingAgentId ?? resolved().replica.preferredAgentId}
+            // #551 FIX 2: redundancy keys off the EXPLICIT currentCodingAgentId
+            // only — never the preferredAgentId hint above. A never-assigned gray
+            // replica (no currentCodingAgentId) keeps "Assign" enabled so its
+            // preferred agent can be pinned in one click.
+            explicitCurrentAgentId={resolved().replica.currentCodingAgentId ?? null}
+            currentRequestedProfile={resolved().replica.currentProfile ?? null}
+            scopeContext={replicaScopeContext(resolved().wg, resolved().replica)}
+            // #551: pre-launch "Set Coding Agent" opens pre-selected to the
+            // replica's current pair; re-assigning it is a no-op, so disable.
+            disableRedundantReplicaAssign
+            onSelect={async () => {
+              // WG replica: the picker already wrote the coding-agent selection
+              // via the backend (no restart — the agent isn't running). Capture
+              // the project path BEFORE clearing the target (which collapses the
+              // resolver), then reload so the chosen agent shows and is
+              // pre-selected at first launch.
+              const projectPath = resolved().proj.path;
+              setInactiveCodingAgentTarget(null);
+              await projectStore.reloadProject(projectPath);
+            }}
+            onClose={() => setInactiveCodingAgentTarget(null)}
+          />
+        </Portal>
+      )}
+    </Show>
 
     {/* #669: hoisted out of the project row so project refreshes that replace
         row objects do not dispose the edit modal or its unsaved local state. */}
