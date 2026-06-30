@@ -30,7 +30,10 @@ BEFORE invoking, write SELF-HANDOFF.md in your own root with the notes you need 
 anything already recorded in SELF-FORGET.md). If SELF-HANDOFF.md is missing, the command refuses (clearing \
 with nothing to resume from would wipe your context).\n\n\
 On invocation the command archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md in your root \
-(no-op if absent), so your next cycle starts with a fresh SELF-FORGET.md.\n\n\
+(no-op if absent), so your next cycle starts with a fresh SELF-FORGET.md. Before archiving, the daemon \
+captures a sanitized compact forgotten summary from SELF-FORGET.md, max 240 chars. The later resume prompt \
+may include that summary only as closed background, not instructions and not work to resume. SELF-HANDOFF.md \
+remains the active resume source.\n\n\
 IDENTITY: the session is resolved from --token (find_by_token). You can only clear the session that \
 owns the token you present.\n\n\
 BEST-EFFORT: neither phase is guaranteed. A perpetually busy session that never reaches 30s sustained \
@@ -200,14 +203,16 @@ pub fn execute(args: SelfClearArgs) -> i32 {
                         Some("queued") => crate::cli_println!(
                             "self-handoff-and-clear requested. Phase 1 injects /clear only after this session is \
                              continuously idle for {0}s; Phase 2 then waits a fresh {0}s of post-clear idle and \
-                             injects a prompt to read SELF-HANDOFF.md and resume. Best-effort and NOT guaranteed \
-                             (a busy session or a daemon restart drops it). If your context is still present later, \
-                             re-issue.",
+                             injects a prompt to read SELF-HANDOFF.md and resume. If SELF-FORGET.md was present \
+                             at queue time, that prompt includes a compact closed-background forgotten summary. \
+                             Best-effort and NOT guaranteed (a busy session or a daemon restart drops it). If your \
+                             context is still present later, re-issue.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
                         ),
                         Some("already_queued") => crate::cli_println!(
                             "self-handoff-and-clear already pending for this session (or a clear/handoff is in \
                              flight); Phase 1 runs after {}s sustained idle, then Phase 2 after a fresh window. \
+                             The first queued request owns any forgotten summary; this request does not refresh it. \
                              Best-effort; re-issue later if needed.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
                         ),
@@ -246,8 +251,7 @@ mod tests {
 
     #[test]
     fn already_queued_status_returns_zero() {
-        let resp =
-            r#"{"action":"self-handoff-and-clear","status":"already_queued","session_id":"s","settle_secs":30}"#;
+        let resp = r#"{"action":"self-handoff-and-clear","status":"already_queued","session_id":"s","settle_secs":30}"#;
         assert_eq!(interpret_self_clear_response_exit_code(resp), 0);
     }
 
@@ -354,6 +358,23 @@ mod tests {
             parsed.is_err(),
             "the old `self-clear` name must be rejected after the #626 rename"
         );
+    }
+
+    #[test]
+    fn self_clear_help_documents_forgotten_summary_behavior() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let mut subcommand = cmd
+            .get_subcommands()
+            .find(|cmd| cmd.get_name() == "self-handoff-and-clear")
+            .expect("self-handoff-and-clear subcommand")
+            .clone();
+        let help = subcommand.render_long_help().to_string();
+
+        assert!(help.contains("SELF-FORGET.md"), "{help}");
+        assert!(help.contains("240"), "{help}");
+        assert!(help.contains("closed background"), "{help}");
+        assert!(help.contains("SELF-HANDOFF.md"), "{help}");
     }
 
     // ── #617 HIGH-1: Root self-clear sender derivation (the actual fix) ──
