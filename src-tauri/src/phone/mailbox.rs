@@ -6782,7 +6782,7 @@ mod tests {
             "a".repeat(SELF_FORGET_SUMMARY_READ_LIMIT_BYTES as usize - 1)
         );
         assert_eq!(
-            full.as_bytes().len(),
+            full.len(),
             SELF_FORGET_SUMMARY_READ_LIMIT_BYTES as usize + 1
         );
         std::fs::write(temp.path().join("SELF-FORGET.md"), &full).unwrap();
