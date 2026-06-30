@@ -4,6 +4,8 @@ import SessionItem from "./SessionItem";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
+  click,
+  contextMenu,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
@@ -206,6 +208,210 @@ describe("SessionItem profile badge tooltip (#548)", () => {
         expect(badge(rendered.root).textContent).toBe("B->A");
         expect(badge(rendered.root).getAttribute("title")).toBe("A-BASELINE");
       });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
+
+describe("SessionItem coordinator repo folder menu (#708)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  function repoMenuItems(sessionId: string): HTMLElement[] {
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(`[data-ac-testid^="session.${sessionId}.menu.repo."]`),
+    );
+  }
+
+  function repoMenuLabel(item: HTMLElement): string | null {
+    return item.querySelector<HTMLElement>(".session-context-repo-label")?.textContent ?? null;
+  }
+
+  it("renders one folder action per valid coordinator repo and opens duplicate labels by index", async () => {
+    const repos = [
+      { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: "feature/x" },
+      { label: "docs", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-docs-primary", branch: null },
+      { label: "docs", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-docs-secondary", branch: "docs-alt" },
+      { label: "cli", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-cli", branch: null },
+      { label: "mobile", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-mobile", branch: "main" },
+    ];
+    const fake = new FakeTransport();
+    fake.resolve("open_in_explorer", null);
+
+    const rendered = renderWithFakeTransport(
+      () => (
+        <SessionItem
+          session={session({
+            id: "coord-1",
+            name: "wg-7-dev-team/architect",
+            isCoordinator: true,
+            gitRepos: repos,
+          })}
+          isActive={false}
+        />
+      ),
+      fake,
+    );
+    try {
+      contextMenu(rendered.root.querySelector('[data-ac-testid="session.coord-1"]')!);
+
+      await waitFor(() => {
+        const items = repoMenuItems("coord-1");
+        expect(items).toHaveLength(repos.length);
+        expect(items.map(repoMenuLabel)).toEqual(["AgentsCommander", "docs", "docs", "cli", "mobile"]);
+        expect(repoMenuLabel(items[0])).toBe("AgentsCommander");
+        expect(items[0].textContent).not.toContain("Open");
+        expect(items[0].textContent).not.toContain("feature/x");
+        expect(repoMenuLabel(items[1])).toBe("docs");
+        expect(repoMenuLabel(items[2])).toBe("docs");
+      });
+
+      click(document.querySelector('[data-ac-testid="session.coord-1.menu.repo.2"]')!);
+
+      await waitFor(() =>
+        expect(fake.lastCall("open_in_explorer")?.args).toEqual({
+          path: "C:\\Project\\.ac\\wg-7-dev-team\\repo-docs-secondary",
+        }),
+      );
+      expect(document.querySelector('[data-ac-testid="session.coord-1.menu"]')).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("filters malformed repo entries before rendering folder actions", async () => {
+    const repos = [
+      { label: "empty", sourcePath: "", branch: null },
+      { label: "missing", branch: null },
+      { label: "spaces", sourcePath: "   ", branch: null },
+      { label: "valid", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-valid", branch: null },
+    ] as unknown as Session["gitRepos"];
+    const fake = new FakeTransport();
+    fake.resolve("open_in_explorer", null);
+
+    const rendered = renderWithFakeTransport(
+      () => (
+        <SessionItem
+          session={session({
+            id: "coord-filtered",
+            name: "wg-7-dev-team/architect",
+            isCoordinator: true,
+            gitRepos: repos,
+          })}
+          isActive={false}
+        />
+      ),
+      fake,
+    );
+    try {
+      contextMenu(rendered.root.querySelector('[data-ac-testid="session.coord-filtered"]')!);
+
+      await waitFor(() => {
+        const items = repoMenuItems("coord-filtered");
+        expect(items).toHaveLength(1);
+        expect(repoMenuLabel(items[0])).toBe("valid");
+      });
+
+      click(document.querySelector('[data-ac-testid="session.coord-filtered.menu.repo.0"]')!);
+
+      await waitFor(() =>
+        expect(fake.lastCall("open_in_explorer")?.args).toEqual({
+          path: "C:\\Project\\.ac\\wg-7-dev-team\\repo-valid",
+        }),
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("hides repo folder actions for non-coordinators and coordinators without repos", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("open_in_explorer", null);
+
+    const nonCoordinator = renderWithFakeTransport(
+      () => (
+        <SessionItem
+          session={session({
+            id: "member-1",
+            isCoordinator: false,
+            gitRepos: [
+              { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: null },
+            ],
+          })}
+          isActive={false}
+        />
+      ),
+      fake,
+    );
+    try {
+      contextMenu(nonCoordinator.root.querySelector('[data-ac-testid="session.member-1"]')!);
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="session.member-1.menu"]')).not.toBeNull());
+      expect(repoMenuItems("member-1")).toHaveLength(0);
+    } finally {
+      nonCoordinator.cleanup();
+      document.body.replaceChildren();
+    }
+
+    const noRepoCoordinator = renderWithFakeTransport(
+      () => (
+        <SessionItem
+          session={session({
+            id: "coord-empty",
+            isCoordinator: true,
+            gitRepos: [],
+          })}
+          isActive={false}
+        />
+      ),
+      fake,
+    );
+    try {
+      contextMenu(noRepoCoordinator.root.querySelector('[data-ac-testid="session.coord-empty"]')!);
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="session.coord-empty.menu"]')).not.toBeNull());
+      expect(repoMenuItems("coord-empty")).toHaveLength(0);
+    } finally {
+      noRepoCoordinator.cleanup();
+    }
+  });
+
+  it("does not open a context menu for inactive coordinators even when repos exist", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("open_in_explorer", null);
+
+    const rendered = renderWithFakeTransport(
+      () => (
+        <SessionItem
+          session={session({
+            id: "inactive-coord-1",
+            name: "wg-7-dev-team/architect",
+            isCoordinator: true,
+            gitRepos: [
+              { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-7-dev-team\\repo-AgentsCommander", branch: null },
+            ],
+          })}
+          isActive={false}
+        />
+      ),
+      fake,
+    );
+    try {
+      contextMenu(rendered.root.querySelector('[data-ac-testid="session.inactive-coord-1"]')!);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(document.querySelector('[data-ac-testid="session.inactive-coord-1.menu"]')).toBeNull();
+      expect(repoMenuItems("inactive-coord-1")).toHaveLength(0);
+      expect(fake.lastCall("open_in_explorer")).toBeUndefined();
     } finally {
       rendered.cleanup();
     }

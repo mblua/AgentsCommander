@@ -137,6 +137,21 @@ const SessionItem: Component<{
     }
   };
 
+  const repoMenuEntries = () =>
+    props.session.gitRepos.filter(
+      (repo) => typeof repo.sourcePath === "string" && repo.sourcePath.trim().length > 0,
+    );
+
+  const handleOpenRepoExplorer = async (sourcePath: string) => {
+    setShowContextMenu(false);
+    cleanupContextMenu();
+    try {
+      await WindowAPI.openInExplorer(sourcePath);
+    } catch (err) {
+      console.error("Failed to open repo folder:", err);
+    }
+  };
+
   const isDetached = () => sessionsStore.isDetached(props.session.id);
 
   const handleDetachToggle = async (e: MouseEvent) => {
@@ -514,6 +529,32 @@ const SessionItem: Component<{
             >
               Coding Agent
             </button>
+            <Show when={props.session.isCoordinator && !isInactive() && repoMenuEntries().length > 0}>
+              <div class="context-separator" />
+              <For each={repoMenuEntries()}>
+                {(repo, index) => (
+                  <button
+                    class="session-context-option session-context-repo-option"
+                    onClick={() => void handleOpenRepoExplorer(repo.sourcePath)}
+                    title={`Open repo folder: ${repo.sourcePath}`}
+                    data-ac-testid={`session.${props.session.id}.menu.repo.${index()}`}
+                    data-ac-role="menuitem"
+                  >
+                    <svg
+                      class="session-context-repo-icon"
+                      viewBox="0 0 16 16"
+                      aria-hidden="true"
+                    >
+                      <path
+                        fill="currentColor"
+                        d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
+                      />
+                    </svg>
+                    <span class="session-context-repo-label">{repo.label}</span>
+                  </button>
+                )}
+              </For>
+            </Show>
             <div class="context-separator" />
             <button
               class="session-context-option"
