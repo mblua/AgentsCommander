@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import SessionItem from "./SessionItem";
 import RootAgentBanner from "./RootAgentBanner";
+import iconUrl from "../../../src-tauri/icons/64x64.png";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
@@ -106,6 +107,10 @@ describe("session workflow automation hooks", () => {
     try {
       const banner = rendered.root.querySelector('[data-ac-testid="rootAgent.banner"]');
       expect(banner?.getAttribute("data-ac-state")).toBe("live");
+      const avatar = rendered.root.querySelector<HTMLImageElement>(".root-agent-avatar-img");
+      expect(avatar?.getAttribute("src")).toBe(iconUrl);
+      expect(avatar?.getAttribute("alt")).toBe("");
+      expect(rendered.root.querySelector(".root-agent-avatar svg")).toBeNull();
 
       const detach = rendered.root.querySelector('[data-ac-testid="rootAgent.detachToggle"]');
       expect(detach?.getAttribute("data-ac-state")).toBe("attached");

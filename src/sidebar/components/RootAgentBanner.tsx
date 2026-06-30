@@ -1,5 +1,6 @@
 import { Component, createMemo, createSignal, Show, For, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
+import iconUrl from "../../../src-tauri/icons/64x64.png";
 import { isTauri } from "../../shared/platform";
 import {
   SessionAPI,
@@ -383,18 +384,12 @@ const RootAgentBanner: Component = () => {
       >
         <div class={`session-item-status ${dotClass()}`} />
         <div class="root-agent-avatar">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-          >
-            <path d="M12 2L2 7l10 5 10-5-10-5z" />
-            <path d="M2 17l10 5 10-5" />
-            <path d="M2 12l10 5 10-5" />
-          </svg>
+          <img
+            src={iconUrl}
+            class="root-agent-avatar-img"
+            alt=""
+            draggable={false}
+          />
         </div>
         <div class="root-agent-text">
           <span class="root-agent-title">Agent's Commander</span>
