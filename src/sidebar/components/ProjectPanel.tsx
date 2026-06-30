@@ -211,6 +211,74 @@ function isSessionLive(session: Session | undefined): boolean {
   return true;
 }
 
+function pathSeparatorFor(path: string): "\\" | "/" {
+  return path.includes("\\") ? "\\" : "/";
+}
+
+function trimTrailingPathSeparators(path: string): string {
+  return path.replace(/[\\/]+$/, "") || path;
+}
+
+function isAbsolutePath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(path) || /^[\\/]/.test(path);
+}
+
+function normalizePath(path: string, separator: "\\" | "/"): string {
+  const trimmed = path.trim();
+  const driveMatch = trimmed.match(/^([A-Za-z]:)[\\/]+(.*)$/);
+  const uncMatch = driveMatch ? null : trimmed.match(/^[\\/]{2}([^\\/]+)[\\/]([^\\/]+)[\\/]?(.*)$/);
+  let root = "";
+  let rest = trimmed;
+
+  if (driveMatch) {
+    root = `${driveMatch[1]}${separator}`;
+    rest = driveMatch[2];
+  } else if (uncMatch) {
+    root = `${separator}${separator}${uncMatch[1]}${separator}${uncMatch[2]}${separator}`;
+    rest = uncMatch[3];
+  } else if (/^[\\/]/.test(trimmed)) {
+    root = separator;
+    rest = trimmed.replace(/^[\\/]+/, "");
+  }
+
+  const segments: string[] = [];
+  for (const segment of rest.split(/[\\/]+/)) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
+        segments.pop();
+      } else if (!root) {
+        segments.push(segment);
+      }
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  const suffix = segments.join(separator);
+  if (!root) return suffix || ".";
+  return suffix ? `${root}${suffix}` : root;
+}
+
+function matrixFolderFromIdentityPath(replicaPath: string, identityPath: string | undefined): string | null {
+  const path = identityPath?.trim();
+  if (!path) return null;
+
+  const separator = pathSeparatorFor(replicaPath || path);
+  const identityTarget = path.match(/(^|[\\/])identity\.json$/i)
+    ? path.replace(/[\\/][^\\/]+$/, "")
+    : path;
+  const absoluteTarget = isAbsolutePath(identityTarget)
+    ? identityTarget
+    : `${trimTrailingPathSeparators(replicaPath)}${separator}${identityTarget}`;
+
+  return normalizePath(absoluteTarget, separator);
+}
+
+function replicaMatrixFolder(replica: AcAgentReplica): string | null {
+  return matrixFolderFromIdentityPath(replica.path, replica.identityPath);
+}
+
 function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }): string {
   return `${item.wg.path}\u0000${item.replica.path}`;
 }
@@ -484,7 +552,7 @@ const ProjectPanel: Component = () => {
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
         const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<
-          | { kind: "active"; sessionId: string; sessionName: string; wg: AcWorkgroup; exited: boolean; x: number; y: number }
+          | { kind: "active"; sessionId: string; sessionName: string; wg: AcWorkgroup; replica: AcAgentReplica; exited: boolean; x: number; y: number }
           | { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
           | null
         >(null);
@@ -971,6 +1039,27 @@ const ProjectPanel: Component = () => {
           }
         };
 
+        const openMatrixFolder = async (path: string) => {
+          setAgentCtxMenu(null);
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+          try {
+            await WindowAPI.openInExplorer(path);
+          } catch (e) {
+            console.error("Failed to open Matrix folder:", e);
+          }
+        };
+
+        const openReplicaFolder = async (path: string) => {
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+          try {
+            await WindowAPI.openInExplorer(path);
+          } catch (e) {
+            console.error("Failed to open Replica folder:", e);
+          }
+        };
+
         const handleProjectContextMenu = (e: MouseEvent) => {
           e.preventDefault();
           e.stopPropagation();
@@ -1199,7 +1288,7 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        const handleReplicaContextMenu = (e: MouseEvent, session: Session, wg: AcWorkgroup) => {
+        const handleReplicaContextMenu = (e: MouseEvent, session: Session, wg: AcWorkgroup, replica: AcAgentReplica) => {
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
@@ -1217,6 +1306,7 @@ const ProjectPanel: Component = () => {
             sessionId: session.id,
             sessionName: session.name,
             wg,
+            replica,
             // Red/exited replicas get the full menu PLUS the broom; green/live
             // gets the full menu with no broom (#545 rework).
             exited: !isSessionLive(session),
@@ -1402,11 +1492,6 @@ const ProjectPanel: Component = () => {
             e.stopPropagation();
             voiceRecorder.cancel();
           };
-          const handleOpenExplorer = async (e: MouseEvent) => {
-            e.stopPropagation();
-            const s = session();
-            try { await WindowAPI.openInExplorer(s ? s.workingDirectory : replica.path); } catch (err) { console.error("Failed to open explorer:", err); }
-          };
           const handleDetach = async (e: MouseEvent) => {
             e.stopPropagation();
             const s = session();
@@ -1465,7 +1550,7 @@ const ProjectPanel: Component = () => {
                 // red additionally shows the broom. Only gray (no session) falls
                 // into the minimal Coding Agent + broom menu (#545 rework).
                 if (s) {
-                  handleReplicaContextMenu(e, s, wg);
+                  handleReplicaContextMenu(e, s, wg, replica);
                 } else {
                   handleReplicaInactiveContextMenu(e, wg, replica);
                 }
@@ -1588,7 +1673,6 @@ const ProjectPanel: Component = () => {
                   onClick={handleMicClick}
                   title={!settingsStore.voiceEnabled ? "Enable voice-to-text in Settings and set a Gemini API key to use this." : isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
                 >&#x1F399;</button>
-                <button class="session-item-explorer" onClick={handleOpenExplorer} title="Open folder in explorer">&#x1F4C2;</button>
                 <button
                   class="session-item-detach"
                   classList={{ attached: isDetached() }}
@@ -2207,11 +2291,11 @@ const ProjectPanel: Component = () => {
                             class="session-context-option"
                             onClick={() => {
                               const menu = agentCtxMenu();
-                              setAgentCtxMenu(null);
-                              if (menu) WindowAPI.openInExplorer(menu.agent.path);
+                              if (menu) void openMatrixFolder(menu.agent.path);
                             }}
+                            title={agentCtxMenu()!.agent.path}
                           >
-                            Open in Explorer
+                            &#x1F4C2; Open Matrix folder
                           </button>
                           <button
                             class="session-context-option context-option-danger"
@@ -2622,6 +2706,7 @@ const ProjectPanel: Component = () => {
                       const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
+                      const matrixFolder = () => replicaMatrixFolder(menu().replica);
                       return (
                       <>
                         <button
@@ -2643,6 +2728,24 @@ const ProjectPanel: Component = () => {
                           }}
                         >
                           Coding Agent
+                        </button>
+                        <Show when={matrixFolder()}>
+                          {(path) => (
+                            <button
+                              class="session-context-option"
+                              title={path()}
+                              onClick={() => void openMatrixFolder(path())}
+                            >
+                              &#x1F4C2; Open Matrix folder
+                            </button>
+                          )}
+                        </Show>
+                        <button
+                          class="session-context-option"
+                          title={menu().replica.path}
+                          onClick={() => void openReplicaFolder(menu().replica.path)}
+                        >
+                          &#x1F4C2; Open Replica's Folder
                         </button>
                         <div class="context-separator" />
                         <button
@@ -2670,6 +2773,7 @@ const ProjectPanel: Component = () => {
                       const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
+                      const matrixFolder = () => replicaMatrixFolder(menu().replica);
                       return (
                         <>
                           <button
@@ -2683,6 +2787,24 @@ const ProjectPanel: Component = () => {
                             }}
                           >
                             Coding Agent
+                          </button>
+                          <Show when={matrixFolder()}>
+                            {(path) => (
+                              <button
+                                class="session-context-option"
+                                title={path()}
+                                onClick={() => void openMatrixFolder(path())}
+                              >
+                                &#x1F4C2; Open Matrix folder
+                              </button>
+                            )}
+                          </Show>
+                          <button
+                            class="session-context-option"
+                            title={menu().replica.path}
+                            onClick={() => void openReplicaFolder(menu().replica.path)}
+                          >
+                            &#x1F4C2; Open Replica's Folder
                           </button>
                           <button
                             class="session-context-option"
