@@ -741,11 +741,29 @@ export interface LoopEventPayload {
   message?: string | null;
 }
 
+export interface ContextTemplateUpdate {
+  projectPath: string;
+  workspacePath: string;
+  filePath: string;
+  filename: string;
+  label: string;
+  currentFileSha256: string;
+  currentDefaultSha256: string;
+  currentDefaultVersion: number;
+}
+
+export interface ContextTemplateOverwriteResult {
+  filePath: string;
+  backupPath: string;
+  currentDefaultSha256: string;
+}
+
 export interface AcDiscoveryResult {
   agents: AcAgentMatrix[];
   teams: AcTeam[];
   workgroups: AcWorkgroup[];
   loops: AcLoopSummary[];
+  contextTemplateUpdates: ContextTemplateUpdate[];
 }
 
 // ---------------------------------------------------------------------------

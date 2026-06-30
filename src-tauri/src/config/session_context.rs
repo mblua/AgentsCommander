@@ -833,22 +833,7 @@ fn find_workspace_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(workspace_dir).map_err(|e| {
-        format!(
-            "failed to create context templates directory {}: {}",
-            workspace_dir.display(),
-            e
-        )
-    })?;
-    write_template_if_missing(
-        &workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
-        get_default_agent_template(),
-    )?;
-    write_template_if_missing(
-        &workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-        get_default_coordinator_template(),
-    )?;
-    Ok(())
+    crate::config::seeded_context_templates::ensure_project_context_templates(workspace_dir)
 }
 
 pub(crate) fn write_template_if_missing(path: &Path, content: &str) -> Result<(), String> {
@@ -1023,6 +1008,14 @@ fn read_or_create_context_template(
     };
     if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
         migrate_legacy_agent_context_template(&context_dir)?;
+    }
+    if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME
+        || filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME
+    {
+        crate::config::seeded_context_templates::sync_project_context_template_for_read(
+            &context_dir,
+            filename,
+        )?;
     }
     if let Some(content) = read_context_template(agent_root, filename)? {
         return Ok(Some(content));
@@ -2169,7 +2162,10 @@ fn heal_stale_global_context_template(
 /// `root_agent::atomic_replace_existing` primitive (plain rename on Unix;
 /// rename-if-absent else `ReplaceFileW(REPLACEFILE_WRITE_THROUGH)` on Windows).
 /// The temp file is cleaned up on every failure path.
-fn atomically_replace_context_template(path: &Path, content: &str) -> Result<(), String> {
+pub(crate) fn atomically_replace_context_template(
+    path: &Path,
+    content: &str,
+) -> Result<(), String> {
     let temp = unique_context_template_temp_path(path);
     let mut file = std::fs::OpenOptions::new()
         .write(true)

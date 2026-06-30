@@ -153,6 +153,8 @@ pub struct AcDiscoveryResult {
     pub teams: Vec<AcTeam>,
     pub workgroups: Vec<AcWorkgroup>,
     pub loops: Vec<crate::config::loops::AcLoopSummary>,
+    pub context_template_updates:
+        Vec<crate::config::seeded_context_templates::ContextTemplateUpdate>,
 }
 
 /// Extract the origin project name from a resolved identity path.
@@ -938,6 +940,7 @@ pub async fn discover_ac_agents(
     let mut teams: Vec<AcTeam> = Vec::new();
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
     let mut loops: Vec<crate::config::loops::AcLoopSummary> = Vec::new();
+    let mut context_template_updates = Vec::new();
     // Track the Project AC Root-containing dir each workgroup originated from. Keys are
     // `wg.name` values (unique within a discovery run; workgroup dir names include
     // the team name which collides only intentionally across projects). Populated as
@@ -976,6 +979,17 @@ pub async fn discover_ac_agents(
 
             // Opportunistic: ensure gitignore exists for existing projects
             let _ = ensure_workspace_gitignore(&workspace_dir);
+            match crate::config::seeded_context_templates::scan_project_context_template_updates(
+                &repo_dir,
+                &workspace_dir,
+            ) {
+                Ok(mut updates) => context_template_updates.append(&mut updates),
+                Err(e) => log::warn!(
+                    "[context-templates] scan failed for {}: {}",
+                    workspace_dir.display(),
+                    e
+                ),
+            }
             loops.extend(crate::config::loops::discover_loops_in_project(&repo_dir));
 
             let project_folder = repo_dir
@@ -1312,12 +1326,16 @@ pub async fn discover_ac_agents(
         total_replicas,
         total_coordinator
     );
+    crate::config::seeded_context_templates::dedupe_context_template_updates(
+        &mut context_template_updates,
+    );
 
     Ok(AcDiscoveryResult {
         agents,
         teams,
         workgroups,
         loops,
+        context_template_updates,
     })
 }
 
@@ -1472,11 +1490,27 @@ pub async fn discover_project(
             teams: vec![],
             workgroups: vec![],
             loops: vec![],
+            context_template_updates: vec![],
         });
     };
 
     // Opportunistic: ensure gitignore protects workgroup clones
     let _ = ensure_workspace_gitignore(&workspace_dir);
+    let mut context_template_updates =
+        match crate::config::seeded_context_templates::scan_project_context_template_updates(
+            base,
+            &workspace_dir,
+        ) {
+            Ok(updates) => updates,
+            Err(e) => {
+                log::warn!(
+                    "[context-templates] scan failed for {}: {}",
+                    workspace_dir.display(),
+                    e
+                );
+                Vec::new()
+            }
+        };
 
     // Discovery-wide team snapshot — see discover_ac_agents for rationale.
     // Lock-safe: discover_teams() reads settings from disk via load_settings()
@@ -1810,13 +1844,51 @@ pub async fn discover_project(
         total_replicas,
         total_coordinator
     );
+    crate::config::seeded_context_templates::dedupe_context_template_updates(
+        &mut context_template_updates,
+    );
 
     Ok(AcDiscoveryResult {
         agents,
         teams,
         workgroups,
         loops,
+        context_template_updates,
     })
+}
+
+#[tauri::command]
+pub async fn keep_custom_context_template(
+    path: String,
+    filename: String,
+    current_file_sha256: String,
+    current_default_sha256: String,
+) -> Result<(), String> {
+    let workspace_dir = existing_workspace_dir(Path::new(&path))
+        .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
+    crate::config::seeded_context_templates::dismiss_context_template_update(
+        &workspace_dir,
+        &filename,
+        &current_file_sha256,
+        &current_default_sha256,
+    )
+}
+
+#[tauri::command]
+pub async fn overwrite_context_template_with_default(
+    path: String,
+    filename: String,
+    current_file_sha256: String,
+    current_default_sha256: String,
+) -> Result<crate::config::seeded_context_templates::ContextTemplateOverwriteResult, String> {
+    let workspace_dir = existing_workspace_dir(Path::new(&path))
+        .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
+    crate::config::seeded_context_templates::overwrite_context_template_with_default(
+        &workspace_dir,
+        &filename,
+        &current_file_sha256,
+        &current_default_sha256,
+    )
 }
 
 /// Read the `context` array from a replica's config.json.
@@ -2018,6 +2090,24 @@ mod tests {
         assert!(!workspace
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .exists());
+    }
+
+    #[tokio::test]
+    async fn keep_custom_context_template_rejects_workspace_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join(".ac");
+        std::fs::create_dir(&workspace).expect("create .ac");
+
+        let err = keep_custom_context_template(
+            workspace.to_string_lossy().to_string(),
+            crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
+            "file".to_string(),
+            "default".to_string(),
+        )
+        .await
+        .expect_err("workspace path must not be accepted as project path");
+
+        assert!(err.contains("Project AC Root not found"));
     }
 
     #[test]

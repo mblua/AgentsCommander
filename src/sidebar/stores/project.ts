@@ -1,5 +1,11 @@
 import { createSignal } from "solid-js";
-import type { AcWorkgroup, AcAgentMatrix, AcTeam, AcLoopSummary } from "../../shared/types";
+import type {
+  AcWorkgroup,
+  AcAgentMatrix,
+  AcTeam,
+  AcLoopSummary,
+  ContextTemplateUpdate,
+} from "../../shared/types";
 import { ProjectAPI, SettingsAPI, AgentCreatorAPI } from "../../shared/ipc";
 import {
   findLoadedProjectPathForRefresh,
@@ -13,6 +19,10 @@ export interface ProjectState {
   agents: AcAgentMatrix[];
   teams: AcTeam[];
   loops: AcLoopSummary[];
+  /** #695 — pending seeded context-template updates surfaced by discovery. Each
+   *  entry is a customized template whose baked default has a newer version; the
+   *  sidebar resolves it through an explicit keep/overwrite modal. */
+  contextTemplateUpdates: ContextTemplateUpdate[];
 }
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
@@ -108,6 +118,7 @@ export const projectStore = {
               agents: result.agents,
               teams: result.teams,
               loops: result.loops,
+              contextTemplateUpdates: result.contextTemplateUpdates,
             },
           ];
         });
@@ -164,6 +175,7 @@ export const projectStore = {
           agents: result.agents,
           teams: result.teams,
           loops: result.loops,
+          contextTemplateUpdates: result.contextTemplateUpdates,
         },
       ];
     });
@@ -337,6 +349,7 @@ export const projectStore = {
                       agents: result.agents,
                       teams: result.teams,
                       loops: result.loops,
+                      contextTemplateUpdates: result.contextTemplateUpdates,
                     }
                   : p
               )
@@ -367,6 +380,35 @@ export const projectStore = {
     const normalized = normalizePath(path);
     setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
     await persistProjectPaths();
+  },
+
+  /** #695 — drop exactly one resolved pending context-template update. The key
+   *  is `(projectPath, filename, currentDefaultSha256, currentFileSha256)`: the
+   *  file hash is part of the key (grinch fix #5) so resolving a stale modal
+   *  cannot silently remove a newer pending update queued for the same
+   *  project/file/default after the user edited the template again. */
+  removeContextTemplateUpdate(
+    projectPath: string,
+    filename: string,
+    defaultSha256: string,
+    fileSha256: string
+  ) {
+    const normalized = normalizePath(projectPath);
+    setProjects((prev) =>
+      prev.map((project) =>
+        normalizePath(project.path) === normalized
+          ? {
+              ...project,
+              contextTemplateUpdates: project.contextTemplateUpdates.filter(
+                (update) =>
+                  update.filename !== filename ||
+                  update.currentDefaultSha256 !== defaultSha256 ||
+                  update.currentFileSha256 !== fileSha256
+              ),
+            }
+          : project
+      )
+    );
   },
 
   clear() {

@@ -310,6 +310,22 @@ Before creating any new specialist agent (any role-defined `create-agent-matrix`
     .to_string()
 });
 
+pub(crate) fn default_root_context_template() -> &'static str {
+    ROOT_ROLE_MD.as_str()
+}
+
+pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
+    let normalized = normalize_role_text(content);
+    let old_generated = [
+        normalize_role_text(OLD_ROOT_ROLE_MD),
+        normalize_role_text(&OLD_ROOT_CONTEXT_WITH_COORDINATION_MD),
+        normalize_role_text(ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD),
+        normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD),
+        normalize_role_text(ROOT_ROLE_MD.as_str()),
+    ];
+    old_generated.contains(&normalized)
+}
+
 const MINIMAL_ROOT_ROLE_MD: &str = r#"# Role
 
 You are the personal Root Agent for AgentsCommander.
@@ -585,84 +601,13 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
 }
 
 fn migrate_root_context_template(context_template_path: &Path) -> Result<(), String> {
-    let existing = match read_validated_template(context_template_path)? {
-        Some(existing) => existing,
-        None => {
-            crate::config::session_context::write_template_if_missing(
-                context_template_path,
-                ROOT_ROLE_MD.as_str(),
-            )?;
-            return read_validated_template(context_template_path)?
-                .map(|_| ())
-                .ok_or_else(|| {
-                    format!(
-                        "Template missing immediately after write_template_if_missing: {}",
-                        context_template_path.display()
-                    )
-                });
-        }
-    };
-
-    let existing_normalized = normalize_role_text(&existing);
-    let old_generated = [
-        normalize_role_text(OLD_ROOT_ROLE_MD),
-        normalize_role_text(&OLD_ROOT_CONTEXT_WITH_COORDINATION_MD),
-        normalize_role_text(ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD),
-        normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD),
-    ];
-    if old_generated.contains(&existing_normalized) {
-        std::fs::write(context_template_path, ROOT_ROLE_MD.as_str()).map_err(|e| {
-            format!(
-                "Failed to migrate root agent context template {}: {}",
-                context_template_path.display(),
-                e
-            )
-        })?;
-    } else if existing.contains(ROOT_COORDINATION_MESSAGING_PARAGRAPH)
-        || existing.contains(OLD_DEFERRED_MESSAGING_PARAGRAPH)
-    {
-        log::warn!(
-            "Custom root agent context template {} appears to contain stale operational messaging prose; preserving custom content",
-            context_template_path.display()
-        );
-    }
-
-    Ok(())
-}
-
-fn read_validated_template(path: &Path) -> Result<Option<String>, String> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(format!(
-                "Failed to inspect root agent context template {}: {}",
-                path.display(),
-                e
-            ))
-        }
-    };
-    let file_type = metadata.file_type();
-    if file_type.is_symlink() || !metadata.is_file() {
-        return Err(format!(
-            "Root agent context template {} exists but is not a regular file",
-            path.display()
-        ));
-    }
-    let bytes = std::fs::read(path).map_err(|e| {
+    let config_dir = context_template_path.parent().ok_or_else(|| {
         format!(
-            "Failed to read root agent context template {}: {}",
-            path.display(),
-            e
+            "Could not resolve config directory from {}",
+            context_template_path.display()
         )
     })?;
-    String::from_utf8(bytes).map(Some).map_err(|e| {
-        format!(
-            "Root agent context template {} is not valid UTF-8: {}",
-            path.display(),
-            e
-        )
-    })
+    crate::config::seeded_context_templates::ensure_root_context_template(config_dir)
 }
 
 fn atomic_write_role(role_path: &Path, content: &str) -> Result<(), String> {

@@ -207,6 +207,7 @@ export function discovery(
     workgroups: [],
     loops: [],
     ...overrides,
+    contextTemplateUpdates: overrides.contextTemplateUpdates ?? [],
   };
 }
 

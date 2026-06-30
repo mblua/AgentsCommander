@@ -18,6 +18,8 @@ import type {
   PhoneMessage,
   AgentInfo,
   AcDiscoveryResult,
+  ContextTemplateOverwriteResult,
+  ContextTemplateUpdate,
   AcProjectRefreshRequestedPayload,
   LoopConfigDetails,
   LoopCreateInput,
@@ -688,6 +690,23 @@ export const ProjectAPI = {
     transport.invoke<void>("create_ac_project", { path }),
   discover: (path: string) =>
     transport.invoke<AcDiscoveryResult>("discover_project", { path }),
+  keepCustomContextTemplate: (update: ContextTemplateUpdate) =>
+    transport.invoke<void>("keep_custom_context_template", {
+      path: update.projectPath,
+      filename: update.filename,
+      currentFileSha256: update.currentFileSha256,
+      currentDefaultSha256: update.currentDefaultSha256,
+    }),
+  overwriteContextTemplateWithDefault: (update: ContextTemplateUpdate) =>
+    transport.invoke<ContextTemplateOverwriteResult>(
+      "overwrite_context_template_with_default",
+      {
+        path: update.projectPath,
+        filename: update.filename,
+        currentFileSha256: update.currentFileSha256,
+        currentDefaultSha256: update.currentDefaultSha256,
+      }
+    ),
   /**
    * Validate an existing AC project at `path` and register it in
    * settings.projectPaths. Wraps the `open_project` Tauri command added in

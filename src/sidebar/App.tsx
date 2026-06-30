@@ -1,13 +1,14 @@
-import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
+import { Component, createSignal, createEffect, onMount, onCleanup, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
-import type { SessionStatus } from "../shared/types";
+import type { SessionStatus, ContextTemplateUpdate } from "../shared/types";
 import {
   SessionAPI,
   SettingsAPI,
   TelegramAPI,
   ReposAPI,
   WindowAPI,
+  ProjectAPI,
   onSessionCreated,
   onSessionDestroyed,
   onSessionSwitched,
@@ -46,7 +47,9 @@ import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
 import OnboardingModal from "./components/OnboardingModal";
+import ContextTemplateUpdateModal from "./components/ContextTemplateUpdateModal";
 import ToastHost from "../shared/components/ToastHost";
+import { toastStore } from "../shared/stores/toasts";
 import { handleProjectRefreshRequested } from "./project-refresh-handler";
 import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
 import { createUpdateToaster } from "./update-toast";
@@ -68,6 +71,16 @@ function isExitedStatus(status: SessionStatus): boolean {
 const SidebarApp: Component<SidebarAppProps> = (props) => {
   const [showOnboarding, setShowOnboarding] = createSignal(false);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
+  // #695 — one-at-a-time seeded context-template update modal. `seen` is keyed
+  // by `(projectPath, filename, defaultSha256, fileSha256)` so a resolved or
+  // skipped update is not re-shown, while a genuinely new pending update (the
+  // user edited the file again, or the baked default bumped) gets a fresh key.
+  const [activeContextTemplateUpdate, setActiveContextTemplateUpdate] =
+    createSignal<ContextTemplateUpdate | null>(null);
+  const [contextTemplateUpdateBusy, setContextTemplateUpdateBusy] = createSignal(false);
+  const [contextTemplateUpdateError, setContextTemplateUpdateError] =
+    createSignal<string | null>(null);
+  const seenContextTemplateUpdates = new Set<string>();
   const unlisteners: UnlistenFn[] = [];
   let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
   let cleanupZoom: (() => void) | null = null;
@@ -113,6 +126,98 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   // #609 — sticky "npm update available" toaster. Per-mount dedup state so the
   // startup event + the getUpdateStatus snapshot never double-toast a version.
   const showUpdateToast = createUpdateToaster();
+
+  // #695 — seeded context-template update flow. The exact removal key (grinch
+  // fix #5) includes the file hash so a resolved older modal never silently
+  // drops a newer pending update for the same project/file/default.
+  const contextTemplateUpdateKey = (update: ContextTemplateUpdate) =>
+    `${update.projectPath}\n${update.filename}\n${update.currentDefaultSha256}\n${update.currentFileSha256}`;
+
+  const nextContextTemplateUpdate = (): ContextTemplateUpdate | null => {
+    for (const project of projectStore.projects) {
+      for (const update of project.contextTemplateUpdates) {
+        if (!seenContextTemplateUpdates.has(contextTemplateUpdateKey(update))) {
+          return update;
+        }
+      }
+    }
+    return null;
+  };
+
+  const formatContextTemplateError = (e: unknown): string => {
+    if (typeof e === "string") return e;
+    if (e instanceof Error) return e.message;
+    try {
+      return JSON.stringify(e);
+    } catch {
+      return String(e);
+    }
+  };
+
+  // Drop exactly the resolved update from the store and close the modal. The
+  // createEffect below then surfaces the next unseen pending update, one at a
+  // time. Removal and `seen` both key on the file hash, so a concurrent newer
+  // pending update survives (grinch fix #5).
+  const resolveContextTemplateUpdate = (update: ContextTemplateUpdate) => {
+    projectStore.removeContextTemplateUpdate(
+      update.projectPath,
+      update.filename,
+      update.currentDefaultSha256,
+      update.currentFileSha256
+    );
+    setActiveContextTemplateUpdate(null);
+  };
+
+  const keepContextTemplateUpdate = async () => {
+    const update = activeContextTemplateUpdate();
+    if (!update) return;
+    setContextTemplateUpdateBusy(true);
+    setContextTemplateUpdateError(null);
+    try {
+      await ProjectAPI.keepCustomContextTemplate(update);
+      resolveContextTemplateUpdate(update);
+    } catch (e) {
+      // Keep the modal open so the user can retry; the backend made no durable
+      // change, so re-showing the same notice later would be correct anyway.
+      setContextTemplateUpdateError(formatContextTemplateError(e));
+    } finally {
+      setContextTemplateUpdateBusy(false);
+    }
+  };
+
+  const overwriteContextTemplateUpdate = async () => {
+    const update = activeContextTemplateUpdate();
+    if (!update) return;
+    setContextTemplateUpdateBusy(true);
+    setContextTemplateUpdateError(null);
+    try {
+      const result = await ProjectAPI.overwriteContextTemplateWithDefault(update);
+      resolveContextTemplateUpdate(update);
+      // Sticky info toast — the user must be able to find the `.bak` the old
+      // file was preserved as.
+      toastStore.info(
+        `${update.label} overwritten with the new default. Your previous version was saved to ${result.backupPath}`,
+        { durationMs: null }
+      );
+    } catch (e) {
+      setContextTemplateUpdateError(formatContextTemplateError(e));
+    } finally {
+      setContextTemplateUpdateBusy(false);
+    }
+  };
+
+  // Surface the next pending context-template update whenever no modal is open.
+  // Short-circuiting on an active modal keeps it one-at-a-time; closing the
+  // modal re-runs this effect, which re-reads projectStore.projects and picks
+  // up any update queued while the previous one was open.
+  createEffect(() => {
+    if (activeContextTemplateUpdate()) return;
+    const next = nextContextTemplateUpdate();
+    if (!next) return;
+    seenContextTemplateUpdates.add(contextTemplateUpdateKey(next));
+    setContextTemplateUpdateError(null);
+    setActiveContextTemplateUpdate(next);
+  });
 
   // #592 - pull the backend-computed drift flag and surgically patch each
   // session. Uses setProfileOutdated (never setSessions) so the frontend-only
@@ -468,6 +573,17 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
           <div class={toast().className} data-ac-testid="loop.toast">
             {toast().message}
           </div>
+        )}
+      </Show>
+      <Show when={activeContextTemplateUpdate()}>
+        {(update) => (
+          <ContextTemplateUpdateModal
+            update={update()}
+            busy={contextTemplateUpdateBusy()}
+            error={contextTemplateUpdateError()}
+            onKeep={() => void keepContextTemplateUpdate()}
+            onOverwrite={() => void overwriteContextTemplateUpdate()}
+          />
         )}
       </Show>
       <ToastHost />
