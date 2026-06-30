@@ -19,10 +19,10 @@ import type { AcDiscoveryResult, Session } from "../../shared/types";
 // Issue #545: gray (never launched) and red (exited) replicas could not open a
 // right-click menu, blocking the Coding Agent selector and the clear-task broom
 // before/between launches.
-//   - gray (no session): Coding Agent + Matrix folder + broom menu.
+//   - gray (no session): Coding Agent + Matrix folder + Replica folder + broom menu.
 //   - red (exited): the FULL active-replica menu (Restart Session, Coding Agent,
-//     Open in new window) PLUS the clear-task broom (#545 rework).
-//   - green (running): the full menu, unchanged (no broom).
+//     Matrix/Replica folders, Open in new window) PLUS the clear-task broom (#545 rework).
+//   - green (running): the full menu, including the broom.
 
 const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
@@ -111,6 +111,14 @@ function findMatrixFolderAction(menu: HTMLElement): HTMLButtonElement | null {
   );
 }
 
+function findReplicaFolderAction(menu: HTMLElement): HTMLButtonElement | null {
+  return (
+    Array.from(menu.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Open Replica's Folder")
+    ) ?? null
+  );
+}
+
 function findRow(root: ParentNode, testId: string): HTMLElement {
   const el = root.querySelector<HTMLElement>(`[data-ac-testid="${testId}"]`);
   if (!el) throw new Error(`Row not found: ${testId}`);
@@ -171,6 +179,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       const menu = replicaMenu();
       expect(menu).not.toBeNull();
       expect(menu!.textContent).toContain("Coding Agent");
+      expect(menu!.textContent).toContain("Open Replica's Folder");
       expect(menu!.textContent).toContain("Clear task title");
     });
     const menu = replicaMenu()!;
@@ -201,6 +210,29 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberPath);
   });
 
+  it("opens the workgroup replica folder from a gray workgroup replica", async () => {
+    const fake = await setupPanel([coordSession()]);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let action: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      action = findReplicaFolderAction(menu!);
+      expect(action).not.toBeNull();
+    });
+
+    click(action!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("open_in_explorer");
+      expect(call).toBeDefined();
+      expect(call!.args.path).toBe(memberPath);
+    });
+    expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberMatrixPath);
+  });
+
   it("opens the canonical Matrix folder from a live workgroup replica", async () => {
     const fake = await setupPanel([coordSession(), memberSession()]);
 
@@ -222,6 +254,29 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(call!.args.path).toBe(memberMatrixPath);
     });
     expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberPath);
+  });
+
+  it("opens the workgroup replica folder from a live workgroup replica", async () => {
+    const fake = await setupPanel([coordSession(), memberSession()]);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let action: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      action = findReplicaFolderAction(menu!);
+      expect(action).not.toBeNull();
+    });
+
+    click(action!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("open_in_explorer");
+      expect(call).toBeDefined();
+      expect(call!.args.path).toBe(memberPath);
+    });
+    expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberMatrixPath);
   });
 
   it("hides the Matrix folder action for a workgroup replica without identityPath", async () => {
@@ -249,6 +304,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       const menu = replicaMenu();
       expect(menu).not.toBeNull();
       expect(findMatrixFolderAction(menu!)).toBeNull();
+      expect(findReplicaFolderAction(menu!)).not.toBeNull();
     });
     expect(fake.lastCall("open_in_explorer")).toBeUndefined();
   });
@@ -298,10 +354,37 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       // Red keeps the full active-replica menu...
       expect(menu!.textContent).toContain("Restart Session");
       expect(menu!.textContent).toContain("Coding Agent");
+      expect(menu!.textContent).toContain("Open Replica's Folder");
       expect(menu!.textContent).toContain("Open in new window");
       // ...and gains the broom (#545 rework).
       expect(menu!.textContent).toContain("Clear task title");
     });
+  });
+
+  it("opens the workgroup replica folder from a red (exited) workgroup replica", async () => {
+    const fake = await setupPanel([
+      coordSession(),
+      memberSession({ status: { exited: 0 } }),
+    ]);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let action: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      action = findReplicaFolderAction(menu!);
+      expect(action).not.toBeNull();
+    });
+
+    click(action!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("open_in_explorer");
+      expect(call).toBeDefined();
+      expect(call!.args.path).toBe(memberPath);
+    });
+    expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberMatrixPath);
   });
 
   it("broom on a red replica clears the task", async () => {
@@ -348,9 +431,22 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     });
     const menu = replicaMenu()!;
     expect(menu.textContent).toContain("Coding Agent");
+    expect(menu.textContent).toContain("Open Replica's Folder");
     expect(menu.textContent).toContain("Open in new window");
     // #545: the broom now renders in EVERY dot state, including green.
     expect(menu.textContent).toContain("Clear task title");
+  });
+
+  it("removes the ProjectPanel live replica hover folder button", async () => {
+    await setupPanel([coordSession(), memberSession()]);
+
+    const row = findRow(rendered!.root, memberRowTestId);
+
+    expect(row.querySelector(".session-item-explorer")).toBeNull();
+    expect(row.querySelector(".session-item-mic")).not.toBeNull();
+    expect(row.querySelector(".session-item-detach")).not.toBeNull();
+    expect(row.querySelector(".session-item-telegram")).not.toBeNull();
+    expect(row.querySelector(".session-item-close")).not.toBeNull();
   });
 
   it("broom on a gray replica clears the task via a sibling workgroup session", async () => {
