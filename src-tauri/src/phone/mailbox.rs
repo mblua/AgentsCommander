@@ -10,15 +10,14 @@ use tauri::Manager;
 use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
+use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 #[cfg(test)]
-use crate::session::session::SessionCommunicationKind;
-#[cfg(test)]
-use crate::session::session::SessionRepo;
+use crate::session::session::{SessionCommunicationKind, SessionRepo};
 use crate::session::session::{SessionInfo, SessionStatus};
 use crate::{AppOutbox, MasterToken};
 
@@ -3509,11 +3508,37 @@ impl MailboxPoller {
                 .await;
         }
 
-        let outcome = mgr.raise_hand(session_id, chrono::Utc::now()).await;
+        // #698 - raise the hand and persist its snapshot atomically with respect
+        // to all session persistence (see `raise_hand_and_persist_result`). The
+        // mutation, snapshot, and save happen under one global save lock, so no
+        // concurrent persist can durably write the raised state before this
+        // snapshot lands. The snapshot is durable before we emit the UI event or
+        // write the success response, so a peer reading `list-sessions` sees
+        // `raisedHand: true` only after it survived. On persist failure the helper
+        // has already rolled back the live communication under the same lock, so
+        // we just reject the message rather than reporting a success that did not
+        // survive.
+        let outcome = crate::config::sessions_persistence::raise_hand_and_persist_result(
+            &mgr,
+            session_id,
+            chrono::Utc::now(),
+        )
+        .await;
         let (raised, status, changed_communication) = match outcome {
-            Some((true, communication)) => (true, "raised", Some(communication)),
-            Some((false, _communication)) => (true, "already_visible", None),
-            None => (false, "not_visible", None),
+            Ok(RaiseHandPersistOutcome::Raised(communication)) => {
+                (true, "raised", Some(communication))
+            }
+            Ok(RaiseHandPersistOutcome::AlreadyVisible) => (true, "already_visible", None),
+            Ok(RaiseHandPersistOutcome::NotRaisable) => (false, "not_visible", None),
+            Err(e) => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        &format!("raise-hand: failed to persist state: {}", e),
+                    )
+                    .await;
+            }
         };
 
         if let Some(communication) = changed_communication {

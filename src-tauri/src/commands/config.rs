@@ -97,7 +97,7 @@ pub async fn update_settings(
     new_settings: AppSettings,
 ) -> Result<(), String> {
     let saved = persist_protected_settings_update(settings.inner(), new_settings).await?;
-    purge_sessions_after_settings_update(&saved);
+    purge_sessions_after_settings_update(&saved).await;
     Ok(())
 }
 
@@ -108,7 +108,7 @@ pub async fn save_settings_draft(
     draft: AppSettings,
 ) -> Result<(), String> {
     let (saved, events) = persist_settings_draft_update(settings.inner(), draft).await?;
-    purge_sessions_after_settings_update(&saved);
+    purge_sessions_after_settings_update(&saved).await;
     emit_settings_draft_update_events(&app, &events);
     // #612 apply the (possibly changed) log level live + broadcast so every
     // webview re-applies its console gate. Idempotent and cheap; runs only on an
@@ -173,10 +173,12 @@ async fn persist_settings_draft_update_with_saver(
     Ok((draft, events))
 }
 
-pub(crate) fn purge_sessions_after_settings_update(saved: &AppSettings) {
+pub(crate) async fn purge_sessions_after_settings_update(saved: &AppSettings) {
     if let Err(e) = crate::config::sessions_persistence::purge_sessions_outside_project_paths(
         &saved.project_paths,
-    ) {
+    )
+    .await
+    {
         log::warn!(
             "[settings] Failed to purge sessions outside current projectPaths after settings update: {}",
             e

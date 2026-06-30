@@ -656,8 +656,18 @@ pub fn run(
             // The matching `load_sessions()` call at the original site is
             // removed; `persisted` is reused by the restore task below.
             let restore_settings_snapshot = config::settings::load_settings();
-            let persisted = sessions_persistence::load_sessions_purging_outside_project_paths(
-                &restore_settings_snapshot.project_paths,
+            // #698 — the orphan purge now takes the async `sessions_save_lock()`
+            // across its load+filter+save so it cannot clobber a concurrently
+            // persisted raise-hand. This sync `setup` body runs on the main
+            // thread (outside any runtime worker), so `block_on` is safe here,
+            // matching the existing `tauri::async_runtime::block_on` uses in the
+            // run-event handler. The lock is uncontended at this point (the
+            // mailbox poller and other writers start below), so it returns
+            // immediately.
+            let persisted = tauri::async_runtime::block_on(
+                sessions_persistence::load_sessions_purging_outside_project_paths(
+                    &restore_settings_snapshot.project_paths,
+                ),
             );
             let restore_flag = app
                 .state::<Arc<RestoreInProgress>>()

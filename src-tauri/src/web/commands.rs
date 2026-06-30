@@ -296,7 +296,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 new_settings,
             )
             .await?;
-            crate::commands::config::purge_sessions_after_settings_update(&saved);
+            crate::commands::config::purge_sessions_after_settings_update(&saved).await;
 
             Ok(json!(null))
         }
@@ -309,7 +309,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let (saved, events) =
                 crate::commands::config::persist_settings_draft_update(&state.settings, draft)
                     .await?;
-            crate::commands::config::purge_sessions_after_settings_update(&saved);
+            crate::commands::config::purge_sessions_after_settings_update(&saved).await;
             if events.profiles_changed {
                 broadcast_all(
                     &state.app_handle,
