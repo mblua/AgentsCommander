@@ -1,6 +1,6 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, TelegramBotConfig, BlockerReport } from "../../shared/types";
+import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, emitOpenSettings } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import {
@@ -95,6 +95,10 @@ function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   return (replica.repoPaths ?? []).map((p) => {
     return { label: repoLabelFromPath(p), sourcePath: p };
   });
+}
+
+function hasValidRepoSourcePath(repo: Pick<SessionRepo, "sourcePath">): boolean {
+  return typeof repo.sourcePath === "string" && repo.sourcePath.trim().length > 0;
 }
 
 /**
@@ -194,9 +198,31 @@ function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
   return `${wg.name}/${replica.name}`;
 }
 
+function normalizedReplicaSessionPath(path: string | null | undefined): string | null {
+  const trimmed = path?.trim();
+  return trimmed ? normalizeProjectPathForCompare(trimmed) : null;
+}
+
 /** Find existing session for a replica, if any */
 function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | undefined {
-  return sessionsStore.findSessionByName(replicaSessionName(wg, replica));
+  const expectedName = replicaSessionName(wg, replica);
+  const expectedPath = normalizedReplicaSessionPath(replica.path);
+  if (!expectedPath) return undefined;
+
+  return sessionsStore.sessions.find(
+    (session) =>
+      session.name === expectedName &&
+      normalizedReplicaSessionPath(session.workingDirectory) === expectedPath
+  );
+}
+
+function replicaRepoMenuEntries(wg: AcWorkgroup, replica: AcAgentReplica): SessionRepo[] {
+  if (!replica.isCoordinator) return [];
+  const session = replicaSession(wg, replica);
+  const repos = session && session.gitRepos.length > 0
+    ? session.gitRepos
+    : configuredReplicaRepoBadges(replica, wg);
+  return repos.filter(hasValidRepoSourcePath);
 }
 
 /** Compute CSS class for replica status dot */
@@ -1057,6 +1083,16 @@ const ProjectPanel: Component = () => {
             await WindowAPI.openInExplorer(path);
           } catch (e) {
             console.error("Failed to open Replica folder:", e);
+          }
+        };
+
+        const openRepoFolder = async (path: string) => {
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+          try {
+            await WindowAPI.openInExplorer(path);
+          } catch (e) {
+            console.error("Failed to open repo folder:", e);
           }
         };
 
@@ -2707,6 +2743,7 @@ const ProjectPanel: Component = () => {
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
                       const matrixFolder = () => replicaMatrixFolder(menu().replica);
+                      const repoEntries = () => replicaRepoMenuEntries(menu().wg, menu().replica);
                       return (
                       <>
                         <button
@@ -2747,6 +2784,31 @@ const ProjectPanel: Component = () => {
                         >
                           &#x1F4C2; Open Replica's Folder
                         </button>
+                        <Show when={repoEntries().length > 0}>
+                          <For each={repoEntries()}>
+                            {(repo, index) => (
+                              <button
+                                class="session-context-option session-context-repo-option"
+                                title={repo.sourcePath}
+                                onClick={() => void openRepoFolder(repo.sourcePath)}
+                                data-ac-testid={`replica.${menu().sessionId}.menu.repo.${index()}`}
+                                data-ac-role="menuitem"
+                              >
+                                <svg
+                                  class="session-context-repo-icon"
+                                  viewBox="0 0 16 16"
+                                  aria-hidden="true"
+                                >
+                                  <path
+                                    fill="currentColor"
+                                    d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
+                                  />
+                                </svg>
+                                <span class="session-context-repo-label">{repo.label}</span>
+                              </button>
+                            )}
+                          </For>
+                        </Show>
                         <div class="context-separator" />
                         <button
                           class="session-context-option"
@@ -2774,6 +2836,7 @@ const ProjectPanel: Component = () => {
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
                       const matrixFolder = () => replicaMatrixFolder(menu().replica);
+                      const repoEntries = () => replicaRepoMenuEntries(menu().wg, menu().replica);
                       return (
                         <>
                           <button
@@ -2806,6 +2869,31 @@ const ProjectPanel: Component = () => {
                           >
                             &#x1F4C2; Open Replica's Folder
                           </button>
+                          <Show when={repoEntries().length > 0}>
+                            <For each={repoEntries()}>
+                              {(repo, index) => (
+                                <button
+                                  class="session-context-option session-context-repo-option"
+                                  title={repo.sourcePath}
+                                  onClick={() => void openRepoFolder(repo.sourcePath)}
+                                  data-ac-testid={`replica.inactive.menu.repo.${index()}`}
+                                  data-ac-role="menuitem"
+                                >
+                                  <svg
+                                    class="session-context-repo-icon"
+                                    viewBox="0 0 16 16"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      fill="currentColor"
+                                      d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
+                                    />
+                                  </svg>
+                                  <span class="session-context-repo-label">{repo.label}</span>
+                                </button>
+                              )}
+                            </For>
+                          </Show>
                           <button
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}

@@ -2446,6 +2446,9 @@ html.light-theme .root-agent-avatar {
   border-radius: var(--radius-md);
   padding: var(--spacing-xs) 0;
   min-width: 180px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   z-index: 9999;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
 }
@@ -2469,6 +2472,23 @@ html.light-theme .root-agent-avatar {
 
 .session-context-option:hover {
   background: rgba(0, 212, 255, 0.08);
+}
+
+.session-context-repo-option {
+  min-width: 0;
+}
+
+.session-context-repo-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: #a855f7;
+}
+
+.session-context-repo-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Settings: Test button for Telegram bots */
