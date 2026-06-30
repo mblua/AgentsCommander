@@ -5698,6 +5698,29 @@ mod tests {
     }
 
     #[test]
+    fn root_sender_payload_accepts_legacy_file_notification() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root_dir = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let messaging_dir = root_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&messaging_dir).unwrap();
+        let filename = "20260524-040000-root-to-wg1-tech-lead-smoke.md";
+        let message_file = messaging_dir.join(filename);
+        std::fs::write(&message_file, "root message").unwrap();
+        let body = format!(
+            "New message: {}. Read this file.",
+            message_file.to_string_lossy()
+        );
+        let msg = root_outbox_message(body, None);
+
+        assert_eq!(
+            validate_root_sender_payload_with_root_dir(&msg, &root_dir),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn root_sender_payload_rejects_existing_non_root_message_file() {
         let temp = tempfile::TempDir::new().unwrap();
         let root_dir = temp
