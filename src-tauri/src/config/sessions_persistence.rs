@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use crate::config::settings::WindowGeometry;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
-use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
+use crate::session::session::{SessionCommunication, SessionStatus, TEMP_SESSION_PREFIX};
 
 /// #291 — in-process mutex serializing all `save_sessions` calls.
 ///
@@ -162,9 +162,10 @@ pub(crate) fn rename_with_retry(
 /// Minimal session data needed to restore a session on next app start.
 /// No UUID, just the "recipe" to re-create it.
 ///
-/// The optional runtime fields (id, waiting_for_input, created_at) are
-/// populated during live snapshots so the CLI can read session state from the
-/// file without requiring an HTTP request. They are ignored on restore.
+/// The optional runtime fields (id, waiting_for_input, communication,
+/// created_at) are populated during live snapshots so the CLI can read session
+/// state from the file without requiring an HTTP request. They are ignored on
+/// restore.
 ///
 /// `status` is also populated during live snapshots for CLI consumption AND is
 /// now **consumed on restore** by the issue #248 startup wake policy: the
@@ -246,6 +247,9 @@ pub struct PersistedSession {
     /// Whether the session is waiting for user input (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_for_input: Option<bool>,
+    /// Current visible session communication state (only present in live snapshots)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub communication: Option<SessionCommunication>,
     /// ISO 8601 creation timestamp (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
@@ -802,6 +806,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             id: Some(s.id.clone()),
             status: Some(s.status.clone()),
             waiting_for_input: Some(s.waiting_for_input),
+            communication: s.communication.clone(),
             created_at: Some(s.created_at.clone()),
         })
         .collect();
@@ -1024,7 +1029,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
 
 /// Pure: produce a sanitized copy of a failed-recoverable PersistedSession
 /// suitable for merging into a fresh snapshot. Drops runtime fields (`id`,
-/// `status`, `waiting_for_input`, `created_at`) since those describe the
+/// `status`, `waiting_for_input`, `communication`, `created_at`) since those describe the
 /// PRIOR run's state; the session is no longer live, and persisting them
 /// would make `list-sessions` (which filters on `id.is_some()`) report the
 /// session as alive when it is not. See §224.
@@ -1033,6 +1038,7 @@ pub(crate) fn sanitize_failed_recoverable(ps: &PersistedSession) -> PersistedSes
     clean.id = None;
     clean.status = None;
     clean.waiting_for_input = None;
+    clean.communication = None;
     clean.created_at = None;
     clean
 }
@@ -1060,7 +1066,7 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
     let _guard = sessions_save_lock().lock().await;
     let mut snapshot = snapshot_sessions(mgr).await;
     // §224 — strip stale runtime fields (`id`, `status`, `waiting_for_input`,
-    // `created_at`) from failed-recoverable entries. Without this, the prior
+    // `communication`, `created_at`) from failed-recoverable entries. Without this, the prior
     // run's runtime fields travel into the new snapshot, and `list-sessions`
     // reports a session as alive (its `s.id.is_some()` filter passes) while
     // the in-memory `SessionManager` does not contain it. `close-session`
@@ -1129,20 +1135,21 @@ pub async fn persist_current_state(mgr: &SessionManager) {
 #[cfg(test)]
 mod tests {
     use super::{
-        filter_sessions_for_project_paths, persist_current_state_result,
-        persist_current_state_to_dir_result, purge_sessions_outside_project_paths_in_dir,
-        rename_with_retry, sanitize_failed_recoverable, save_sessions_to_dir, sessions_save_lock,
-        snapshot_sessions, strip_auto_injected_args, working_directory_under_any_project_path,
-        PersistedSession, RENAME_ATTEMPTS,
+        filter_sessions_for_project_paths, load_sessions_raw_from_dir_for_test,
+        persist_current_state_result, persist_current_state_to_dir_result,
+        purge_sessions_outside_project_paths_in_dir, rename_with_retry,
+        sanitize_failed_recoverable, save_sessions_to_dir, sessions_save_lock, snapshot_sessions,
+        strip_auto_injected_args, working_directory_under_any_project_path, PersistedSession,
+        RENAME_ATTEMPTS,
     };
     use crate::session::manager::SessionManager;
+    use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
     use std::time::Duration;
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt.
     #[test]
     fn sanitize_failed_recoverable_drops_runtime_fields() {
-        use crate::session::session::SessionStatus;
         let ps = PersistedSession {
             last_prompt: None,
             name: "alice".into(),
@@ -1165,6 +1172,11 @@ mod tests {
             id: Some("uuid-prior-run".into()),
             status: Some(SessionStatus::Idle),
             waiting_for_input: Some(true),
+            communication: Some(SessionCommunication {
+                kind: SessionCommunicationKind::RaiseHand,
+                visible: true,
+                updated_at: "2026-06-30T11:00:00+00:00".into(),
+            }),
             created_at: Some("2026-05-15T00:00:00Z".into()),
             ..Default::default()
         };
@@ -1177,6 +1189,10 @@ mod tests {
         assert!(
             clean.waiting_for_input.is_none(),
             "waiting_for_input must be cleared"
+        );
+        assert!(
+            clean.communication.is_none(),
+            "communication must be cleared"
         );
         assert!(clean.created_at.is_none(), "created_at must be cleared");
 
@@ -1240,6 +1256,59 @@ mod tests {
 
         let back: PersistedSession = serde_json::from_str(json).expect("deserialize");
         assert!(back.telegram_bot_id.is_none());
+    }
+
+    #[test]
+    fn communication_defaults_none_for_legacy_json() {
+        let json = r#"{
+            "name": "legacy",
+            "shell": "cmd",
+            "shellArgs": [],
+            "workingDirectory": "C:/x"
+        }"#;
+
+        let back: PersistedSession = serde_json::from_str(json).expect("deserialize");
+        assert!(back.communication.is_none());
+    }
+
+    /// Issue 698: a malformed/future typed `communication` field invalidates the
+    /// entire raw load (serde fails the whole array, `unwrap_or_default` yields
+    /// `[]`), exactly like other malformed typed persisted fields. This is the
+    /// accepted behavior for #698; documented here so it is intentional, not a
+    /// silent regression. Revisit in a separate persistence-resilience issue.
+    #[test]
+    fn load_sessions_raw_returns_empty_for_malformed_communication() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions = serde_json::json!([
+            {
+                "name": "coord-x",
+                "shell": "codex",
+                "shellArgs": [],
+                "workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_tech-lead",
+                "id": "11111111-1111-1111-1111-111111111111",
+                "status": "running",
+                "waitingForInput": false,
+                "isCoordinator": true,
+                "communication": {
+                    "kind": "futureKind",
+                    "visible": true,
+                    "updatedAt": "2026-06-30T11:00:00+00:00"
+                },
+                "createdAt": "2026-06-30T10:00:00+00:00"
+            }
+        ]);
+        std::fs::write(
+            temp.path().join("sessions.json"),
+            serde_json::to_string_pretty(&sessions).expect("sessions json"),
+        )
+        .expect("write sessions");
+
+        let rows = load_sessions_raw_from_dir_for_test(temp.path());
+
+        assert!(
+            rows.is_empty(),
+            "malformed typed communication intentionally invalidates the raw load in issue 698"
+        );
     }
 
     #[test]
@@ -1320,6 +1389,32 @@ mod tests {
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_sessions_preserves_raise_hand_communication() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-30T11:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let (_, expected) = mgr.raise_hand(session.id, now).await.unwrap();
+
+        let snapshot = snapshot_sessions(&mgr).await;
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].communication, Some(expected));
     }
 
     // (#630/#631) The durable fresh intent flows Session -> SessionInfo carrier ->
@@ -1428,8 +1523,6 @@ mod tests {
 
     #[test]
     fn filter_sessions_for_project_paths_drops_coordinator_and_non_coordinator_orphans() {
-        use crate::session::session::SessionStatus;
-
         let project_paths = vec!["C:/projects/current".to_string()];
         let sessions = vec![
             PersistedSession {
@@ -1821,7 +1914,6 @@ mod tests {
     /// `should_wake_on_restore` in `lib.rs` consumes it.
     #[test]
     fn issue_248_status_round_trips_through_persistence() {
-        use crate::session::session::SessionStatus;
         let cases = [SessionStatus::Exited(0), SessionStatus::Running];
         for status in cases {
             let ps = PersistedSession {
@@ -1852,6 +1944,28 @@ mod tests {
             let back: PersistedSession = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(back.status, Some(status));
         }
+    }
+
+    #[test]
+    fn communication_round_trips_when_present() {
+        let ps = PersistedSession {
+            name: "coord-x".into(),
+            shell: "claude".into(),
+            shell_args: vec![],
+            working_directory: "C:/proj/.ac/wg-1-dev-team/__agent_tech-lead".into(),
+            communication: Some(SessionCommunication {
+                kind: SessionCommunicationKind::RaiseHand,
+                visible: true,
+                updated_at: "2026-06-30T11:00:00+00:00".into(),
+            }),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&ps).expect("serialize");
+        assert_eq!(json["communication"]["kind"], "raiseHand");
+        assert_eq!(json["communication"]["visible"], true);
+        let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.communication, ps.communication);
     }
 
     #[test]

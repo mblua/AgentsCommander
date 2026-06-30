@@ -219,7 +219,10 @@ fn public_subcommand_help_contracts() {
             &["list-peers-lean", "--help"],
             &["lean", "--token", "--root"],
         ),
-        (&["list-sessions", "--help"], &["OUTPUT", "--status"]),
+        (
+            &["list-sessions", "--help"],
+            &["OUTPUT", "--status", "raisedHand"],
+        ),
         (
             &["agency-templates", "--help"],
             &["update", "list", "status"],
@@ -527,6 +530,116 @@ fn read_only_json_commands_missing_config_contracts() {
         );
         assert_success_json_array(&stdout);
     }
+}
+
+#[test]
+fn list_sessions_outputs_raised_hand_boolean_with_negative_cases() {
+    let tmp = Tmp::new("cli-list-sessions-raised-hand");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+
+    let visible_raise_hand = serde_json::json!({
+        "kind": "raiseHand",
+        "visible": true,
+        "updatedAt": "2026-06-30T11:00:00+00:00"
+    });
+    let hidden_raise_hand = serde_json::json!({
+        "kind": "raiseHand",
+        "visible": false,
+        "updatedAt": "2026-06-30T11:00:00+00:00"
+    });
+    let sessions = serde_json::json!([
+        {
+            "name": "tech-lead",
+            "shell": "codex",
+            "shellArgs": [],
+            "workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_tech-lead",
+            "isCoordinator": true,
+            "id": "11111111-1111-1111-1111-111111111111",
+            "status": "running",
+            "waitingForInput": true,
+            "communication": visible_raise_hand,
+            "createdAt": "2026-06-30T10:00:00+00:00"
+        },
+        {
+            "name": "coord-missing-communication",
+            "shell": "codex",
+            "shellArgs": [],
+            "workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_architect",
+            "isCoordinator": true,
+            "id": "22222222-2222-2222-2222-222222222222",
+            "status": "running",
+            "waitingForInput": false,
+            "createdAt": "2026-06-30T10:05:00+00:00"
+        },
+        {
+            "name": "coord-hidden-communication",
+            "shell": "codex",
+            "shellArgs": [],
+            "workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_planner",
+            "isCoordinator": true,
+            "id": "33333333-3333-3333-3333-333333333333",
+            "status": "running",
+            "waitingForInput": false,
+            "communication": hidden_raise_hand,
+            "createdAt": "2026-06-30T10:10:00+00:00"
+        },
+        {
+            "name": "dev-rust",
+            "shell": "codex",
+            "shellArgs": [],
+            "workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_dev-rust",
+            "isCoordinator": false,
+            "id": "44444444-4444-4444-4444-444444444444",
+            "status": "running",
+            "waitingForInput": false,
+            "communication": visible_raise_hand,
+            "createdAt": "2026-06-30T10:15:00+00:00"
+        },
+        {
+            "name": "coord-exited",
+            "shell": "codex",
+            "shellArgs": [],
+            "workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_old-tech-lead",
+            "isCoordinator": true,
+            "id": "55555555-5555-5555-5555-555555555555",
+            "status": { "exited": 0 },
+            "waitingForInput": false,
+            "communication": visible_raise_hand,
+            "createdAt": "2026-06-30T10:20:00+00:00"
+        }
+    ]);
+    std::fs::write(
+        config_dir.join("sessions.json"),
+        serde_json::to_string_pretty(&sessions).expect("sessions json"),
+    )
+    .expect("write sessions");
+
+    let (code, stdout, stderr) = run(&bin, &["list-sessions"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let rows = assert_success_json_array(&stdout);
+    assert_eq!(rows.as_array().unwrap().len(), 5);
+    assert_eq!(rows[0]["raisedHand"], true);
+    assert_eq!(rows[1]["raisedHand"], false);
+    assert_eq!(rows[2]["raisedHand"], false);
+    assert_eq!(rows[3]["raisedHand"], false);
+    assert_eq!(rows[4]["raisedHand"], false);
+    assert!(rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["raisedHand"].is_boolean()));
+
+    let (code, stdout, stderr) = run(&bin, &["list-sessions", "--status", "running"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let running = assert_success_json_array(&stdout);
+    assert_eq!(running.as_array().unwrap().len(), 4);
+    assert!(running
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["status"] == "running" && row.get("raisedHand").is_some()));
 }
 
 #[test]

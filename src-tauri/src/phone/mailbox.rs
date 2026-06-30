@@ -16,10 +16,8 @@ use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 #[cfg(test)]
-use crate::session::session::SessionCommunicationKind;
-#[cfg(test)]
 use crate::session::session::SessionRepo;
-use crate::session::session::{SessionInfo, SessionStatus};
+use crate::session::session::{SessionCommunicationKind, SessionInfo, SessionStatus};
 use crate::{AppOutbox, MasterToken};
 
 fn sender_name_for_session_cwd_with_root_flag(
@@ -3517,6 +3515,26 @@ impl MailboxPoller {
         };
 
         if let Some(communication) = changed_communication {
+            // #698 - a first successful raise-hand must be durably persisted
+            // before we emit the UI event or write the success response, so a
+            // peer reading `list-sessions` sees `raisedHand: true` only after
+            // the snapshot lands. If persistence fails, roll back the live
+            // communication and reject the message rather than reporting a
+            // success that did not survive.
+            if let Err(e) =
+                crate::config::sessions_persistence::persist_current_state_result(&mgr).await
+            {
+                let _ = mgr
+                    .clear_communication_if_kind(session_id, SessionCommunicationKind::RaiseHand)
+                    .await;
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        &format!("raise-hand: failed to persist state: {}", e),
+                    )
+                    .await;
+            }
             let _ = tauri::Emitter::emit(
                 app,
                 "session_communication_changed",
