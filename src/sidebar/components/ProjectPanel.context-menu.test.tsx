@@ -28,7 +28,6 @@ const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
 const coordPath = `${workgroupPath}\\__agent_dev-webpage-ui`;
 const memberPath = `${workgroupPath}\\__agent_dev-rust`;
-const coordMatrixPath = `${projectPath}\\.ac\\_agent_dev-webpage-ui`;
 const memberMatrixPath = `${projectPath}\\.ac\\_agent_dev-rust`;
 const originAgentPath = `${projectPath}\\.ac\\_agent_dev-docs`;
 // renderReplicaItem builds rowTestId() from rowContext + wg.name + replica.name
@@ -53,14 +52,14 @@ function projectDiscovery(
           {
             name: "dev-webpage-ui",
             path: coordPath,
-            identityPath: `${coordMatrixPath}\\identity.json`,
+            identityPath: "../../_agent_dev-webpage-ui",
             repoPaths: [],
             isCoordinator: true,
           },
           {
             name: "dev-rust",
             path: memberPath,
-            identityPath: `${memberMatrixPath}\\identity.json`,
+            identityPath: "../../_agent_dev-rust",
             repoPaths: [],
             isCoordinator: false,
           },

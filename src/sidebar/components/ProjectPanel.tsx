@@ -211,16 +211,72 @@ function isSessionLive(session: Session | undefined): boolean {
   return true;
 }
 
-function matrixFolderFromIdentityPath(identityPath: string | undefined): string | null {
+function pathSeparatorFor(path: string): "\\" | "/" {
+  return path.includes("\\") ? "\\" : "/";
+}
+
+function trimTrailingPathSeparators(path: string): string {
+  return path.replace(/[\\/]+$/, "") || path;
+}
+
+function isAbsolutePath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(path) || /^[\\/]/.test(path);
+}
+
+function normalizePath(path: string, separator: "\\" | "/"): string {
+  const trimmed = path.trim();
+  const driveMatch = trimmed.match(/^([A-Za-z]:)[\\/]+(.*)$/);
+  const uncMatch = driveMatch ? null : trimmed.match(/^[\\/]{2}([^\\/]+)[\\/]([^\\/]+)[\\/]?(.*)$/);
+  let root = "";
+  let rest = trimmed;
+
+  if (driveMatch) {
+    root = `${driveMatch[1]}${separator}`;
+    rest = driveMatch[2];
+  } else if (uncMatch) {
+    root = `${separator}${separator}${uncMatch[1]}${separator}${uncMatch[2]}${separator}`;
+    rest = uncMatch[3];
+  } else if (/^[\\/]/.test(trimmed)) {
+    root = separator;
+    rest = trimmed.replace(/^[\\/]+/, "");
+  }
+
+  const segments: string[] = [];
+  for (const segment of rest.split(/[\\/]+/)) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
+        segments.pop();
+      } else if (!root) {
+        segments.push(segment);
+      }
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  const suffix = segments.join(separator);
+  if (!root) return suffix || ".";
+  return suffix ? `${root}${suffix}` : root;
+}
+
+function matrixFolderFromIdentityPath(replicaPath: string, identityPath: string | undefined): string | null {
   const path = identityPath?.trim();
   if (!path) return null;
-  const normalized = path.replace(/[\\/]+$/, "");
-  const match = normalized.match(/^(.*)[\\/][^\\/]+$/);
-  return match?.[1] ?? null;
+
+  const separator = pathSeparatorFor(replicaPath || path);
+  const identityTarget = path.match(/(^|[\\/])identity\.json$/i)
+    ? path.replace(/[\\/][^\\/]+$/, "")
+    : path;
+  const absoluteTarget = isAbsolutePath(identityTarget)
+    ? identityTarget
+    : `${trimTrailingPathSeparators(replicaPath)}${separator}${identityTarget}`;
+
+  return normalizePath(absoluteTarget, separator);
 }
 
 function replicaMatrixFolder(replica: AcAgentReplica): string | null {
-  return matrixFolderFromIdentityPath(replica.identityPath);
+  return matrixFolderFromIdentityPath(replica.path, replica.identityPath);
 }
 
 function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }): string {
