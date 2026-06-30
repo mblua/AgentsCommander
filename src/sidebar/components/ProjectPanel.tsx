@@ -211,6 +211,18 @@ function isSessionLive(session: Session | undefined): boolean {
   return true;
 }
 
+function matrixFolderFromIdentityPath(identityPath: string | undefined): string | null {
+  const path = identityPath?.trim();
+  if (!path) return null;
+  const normalized = path.replace(/[\\/]+$/, "");
+  const match = normalized.match(/^(.*)[\\/][^\\/]+$/);
+  return match?.[1] ?? null;
+}
+
+function replicaMatrixFolder(replica: AcAgentReplica): string | null {
+  return matrixFolderFromIdentityPath(replica.identityPath);
+}
+
 function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }): string {
   return `${item.wg.path}\u0000${item.replica.path}`;
 }
@@ -484,7 +496,7 @@ const ProjectPanel: Component = () => {
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
         const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<
-          | { kind: "active"; sessionId: string; sessionName: string; wg: AcWorkgroup; exited: boolean; x: number; y: number }
+          | { kind: "active"; sessionId: string; sessionName: string; wg: AcWorkgroup; replica: AcAgentReplica; exited: boolean; x: number; y: number }
           | { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
           | null
         >(null);
@@ -971,6 +983,17 @@ const ProjectPanel: Component = () => {
           }
         };
 
+        const openMatrixFolder = async (path: string) => {
+          setAgentCtxMenu(null);
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+          try {
+            await WindowAPI.openInExplorer(path);
+          } catch (e) {
+            console.error("Failed to open Matrix folder:", e);
+          }
+        };
+
         const handleProjectContextMenu = (e: MouseEvent) => {
           e.preventDefault();
           e.stopPropagation();
@@ -1199,7 +1222,7 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        const handleReplicaContextMenu = (e: MouseEvent, session: Session, wg: AcWorkgroup) => {
+        const handleReplicaContextMenu = (e: MouseEvent, session: Session, wg: AcWorkgroup, replica: AcAgentReplica) => {
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
@@ -1217,6 +1240,7 @@ const ProjectPanel: Component = () => {
             sessionId: session.id,
             sessionName: session.name,
             wg,
+            replica,
             // Red/exited replicas get the full menu PLUS the broom; green/live
             // gets the full menu with no broom (#545 rework).
             exited: !isSessionLive(session),
@@ -1465,7 +1489,7 @@ const ProjectPanel: Component = () => {
                 // red additionally shows the broom. Only gray (no session) falls
                 // into the minimal Coding Agent + broom menu (#545 rework).
                 if (s) {
-                  handleReplicaContextMenu(e, s, wg);
+                  handleReplicaContextMenu(e, s, wg, replica);
                 } else {
                   handleReplicaInactiveContextMenu(e, wg, replica);
                 }
@@ -2207,11 +2231,11 @@ const ProjectPanel: Component = () => {
                             class="session-context-option"
                             onClick={() => {
                               const menu = agentCtxMenu();
-                              setAgentCtxMenu(null);
-                              if (menu) WindowAPI.openInExplorer(menu.agent.path);
+                              if (menu) void openMatrixFolder(menu.agent.path);
                             }}
+                            title={agentCtxMenu()!.agent.path}
                           >
-                            Open in Explorer
+                            &#x1F4C2; Open Matrix folder
                           </button>
                           <button
                             class="session-context-option context-option-danger"
@@ -2622,6 +2646,7 @@ const ProjectPanel: Component = () => {
                       const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
+                      const matrixFolder = () => replicaMatrixFolder(menu().replica);
                       return (
                       <>
                         <button
@@ -2644,6 +2669,17 @@ const ProjectPanel: Component = () => {
                         >
                           Coding Agent
                         </button>
+                        <Show when={matrixFolder()}>
+                          {(path) => (
+                            <button
+                              class="session-context-option"
+                              title={path()}
+                              onClick={() => void openMatrixFolder(path())}
+                            >
+                              &#x1F4C2; Open Matrix folder
+                            </button>
+                          )}
+                        </Show>
                         <div class="context-separator" />
                         <button
                           class="session-context-option"
@@ -2670,6 +2706,7 @@ const ProjectPanel: Component = () => {
                       const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
+                      const matrixFolder = () => replicaMatrixFolder(menu().replica);
                       return (
                         <>
                           <button
@@ -2684,6 +2721,17 @@ const ProjectPanel: Component = () => {
                           >
                             Coding Agent
                           </button>
+                          <Show when={matrixFolder()}>
+                            {(path) => (
+                              <button
+                                class="session-context-option"
+                                title={path()}
+                                onClick={() => void openMatrixFolder(path())}
+                              >
+                                &#x1F4C2; Open Matrix folder
+                              </button>
+                            )}
+                          </Show>
                           <button
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}

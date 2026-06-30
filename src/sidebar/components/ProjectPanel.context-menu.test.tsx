@@ -19,7 +19,7 @@ import type { AcDiscoveryResult, Session } from "../../shared/types";
 // Issue #545: gray (never launched) and red (exited) replicas could not open a
 // right-click menu, blocking the Coding Agent selector and the clear-task broom
 // before/between launches.
-//   - gray (no session): minimal Coding Agent + broom menu.
+//   - gray (no session): Coding Agent + Matrix folder + broom menu.
 //   - red (exited): the FULL active-replica menu (Restart Session, Coding Agent,
 //     Open in new window) PLUS the clear-task broom (#545 rework).
 //   - green (running): the full menu, unchanged (no broom).
@@ -28,6 +28,9 @@ const projectPath = "C:\\Project";
 const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
 const coordPath = `${workgroupPath}\\__agent_dev-webpage-ui`;
 const memberPath = `${workgroupPath}\\__agent_dev-rust`;
+const coordMatrixPath = `${projectPath}\\.ac\\_agent_dev-webpage-ui`;
+const memberMatrixPath = `${projectPath}\\.ac\\_agent_dev-rust`;
+const originAgentPath = `${projectPath}\\.ac\\_agent_dev-docs`;
 // renderReplicaItem builds rowTestId() from rowContext + wg.name + replica.name
 // via automationIdPart (which keeps these slugs verbatim). The non-coordinator
 // member always renders in the "workgroups" section.
@@ -47,8 +50,20 @@ function projectDiscovery(
         task,
         taskTitle,
         agents: [
-          { name: "dev-webpage-ui", path: coordPath, repoPaths: [], isCoordinator: true },
-          { name: "dev-rust", path: memberPath, repoPaths: [], isCoordinator: false },
+          {
+            name: "dev-webpage-ui",
+            path: coordPath,
+            identityPath: `${coordMatrixPath}\\identity.json`,
+            repoPaths: [],
+            isCoordinator: true,
+          },
+          {
+            name: "dev-rust",
+            path: memberPath,
+            identityPath: `${memberMatrixPath}\\identity.json`,
+            repoPaths: [],
+            isCoordinator: false,
+          },
         ],
       },
     ],
@@ -89,9 +104,25 @@ function findBroom(menu: HTMLElement): HTMLButtonElement | null {
   );
 }
 
+function findMatrixFolderAction(menu: HTMLElement): HTMLButtonElement | null {
+  return (
+    Array.from(menu.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Open Matrix folder")
+    ) ?? null
+  );
+}
+
 function findRow(root: ParentNode, testId: string): HTMLElement {
   const el = root.querySelector<HTMLElement>(`[data-ac-testid="${testId}"]`);
   if (!el) throw new Error(`Row not found: ${testId}`);
+  return el;
+}
+
+function findAgentRow(root: ParentNode, label: string): HTMLElement {
+  const el = Array.from(root.querySelectorAll<HTMLElement>(".replica-item")).find((row) =>
+    row.textContent?.includes(label)
+  );
+  if (!el) throw new Error(`Agent row not found: ${label}`);
   return el;
 }
 
@@ -101,7 +132,8 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
 
   async function setupPanel(
     sessions: Session[] = [],
-    discoveryResult: AcDiscoveryResult = projectDiscovery()
+    discoveryResult: AcDiscoveryResult = projectDiscovery(),
+    expectedText = "dev-rust"
   ): Promise<FakeTransport> {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
@@ -109,10 +141,11 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     fake.resolve("task_clean", { workgroupRoot: workgroupPath, task: null });
     // #545: cold-workgroup broom routes here when no session resolves the root.
     fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
+    fake.resolve("open_in_explorer", null);
     if (sessions.length > 0) sessionsStore.setSessions(sessions);
     rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     await projectStore.createAndLoad(projectPath);
-    await waitFor(() => expect(rendered!.root.textContent).toContain("dev-rust"));
+    await waitFor(() => expect(rendered!.root.textContent).toContain(expectedText));
     return fake;
   }
 
@@ -130,7 +163,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     document.body.replaceChildren();
   });
 
-  it("opens a Coding Agent + broom menu on a gray (never-launched) replica", async () => {
+  it("opens a Coding Agent + Matrix folder + broom menu on a gray replica", async () => {
     await setupPanel([coordSession()]);
 
     contextMenu(findRow(rendered!.root, memberRowTestId));
@@ -144,6 +177,115 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     const menu = replicaMenu()!;
     expect(menu.textContent).not.toContain("Restart Session");
     expect(menu.textContent).not.toContain("Open in new window");
+  });
+
+  it("opens the canonical Matrix folder from a gray workgroup replica", async () => {
+    const fake = await setupPanel([coordSession()]);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let action: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      action = findMatrixFolderAction(menu!);
+      expect(action).not.toBeNull();
+    });
+
+    click(action!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("open_in_explorer");
+      expect(call).toBeDefined();
+      expect(call!.args.path).toBe(memberMatrixPath);
+    });
+    expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberPath);
+  });
+
+  it("opens the canonical Matrix folder from a live workgroup replica", async () => {
+    const fake = await setupPanel([coordSession(), memberSession()]);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let action: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      action = findMatrixFolderAction(menu!);
+      expect(action).not.toBeNull();
+    });
+
+    click(action!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("open_in_explorer");
+      expect(call).toBeDefined();
+      expect(call!.args.path).toBe(memberMatrixPath);
+    });
+    expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberPath);
+  });
+
+  it("hides the Matrix folder action for a workgroup replica without identityPath", async () => {
+    const fake = await setupPanel(
+      [coordSession()],
+      discovery({
+        workgroups: [
+          {
+            name: "wg-2-dev-team",
+            path: workgroupPath,
+            task: null,
+            taskTitle: "Context menu states",
+            agents: [
+              { name: "dev-webpage-ui", path: coordPath, repoPaths: [], isCoordinator: true },
+              { name: "dev-rust", path: memberPath, repoPaths: [], isCoordinator: false },
+            ],
+          },
+        ],
+      })
+    );
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(findMatrixFolderAction(menu!)).toBeNull();
+    });
+    expect(fake.lastCall("open_in_explorer")).toBeUndefined();
+  });
+
+  it("opens the Matrix folder from an origin agent row", async () => {
+    const fake = await setupPanel(
+      [],
+      discovery({
+        agents: [
+          {
+            name: "dev-docs",
+            path: originAgentPath,
+            roleExists: true,
+          },
+        ],
+      }),
+      "dev-docs"
+    );
+
+    contextMenu(findAgentRow(rendered!.root, "dev-docs"));
+
+    let action: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      action = findMatrixFolderAction(menu!);
+      expect(action).not.toBeNull();
+    });
+
+    click(action!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("open_in_explorer");
+      expect(call).toBeDefined();
+      expect(call!.args.path).toBe(originAgentPath);
+    });
   });
 
   it("opens the full menu PLUS broom on a red (exited) replica", async () => {
