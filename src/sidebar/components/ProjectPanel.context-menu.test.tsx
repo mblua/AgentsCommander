@@ -34,6 +34,7 @@ const originAgentPath = `${projectPath}\\.ac\\_agent_dev-docs`;
 // via automationIdPart (which keeps these slugs verbatim). The non-coordinator
 // member always renders in the "workgroups" section.
 const memberRowTestId = "replica.row.workgroups.wg-2-dev-team.dev-rust";
+const coordQuickRowTestId = "replica.row.quick.wg-2-dev-team.dev-webpage-ui";
 
 // #545: taskTitle/task are parametrized so tests can drive the broom's
 // title-only disable predicate (isTaskClean) across Clean/empty/real titles.
@@ -117,6 +118,14 @@ function findReplicaFolderAction(menu: HTMLElement): HTMLButtonElement | null {
       b.textContent?.includes("Open Replica's Folder")
     ) ?? null
   );
+}
+
+function repoFolderActions(menu: HTMLElement): HTMLButtonElement[] {
+  return Array.from(menu.querySelectorAll<HTMLButtonElement>('[data-ac-testid^="replica.coord-session.menu.repo."]'));
+}
+
+function repoFolderLabel(item: HTMLElement): string | null {
+  return item.querySelector<HTMLElement>(".session-context-repo-label")?.textContent ?? null;
 }
 
 function findRow(root: ParentNode, testId: string): HTMLElement {
@@ -277,6 +286,46 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(call!.args.path).toBe(memberPath);
     });
     expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberMatrixPath);
+  });
+
+  it("renders coordinator repo folder actions from live gitRepos and opens duplicate labels by index", async () => {
+    const repos = [
+      { label: "AgentsCommander", sourcePath: "C:\\Project\\.ac\\wg-2-dev-team\\repo-AgentsCommander", branch: "feature/x" },
+      { label: "empty", sourcePath: "", branch: null },
+      { label: "missing", branch: null },
+      { label: "number", sourcePath: 42, branch: null },
+      { label: "spaces", sourcePath: "   ", branch: null },
+      { label: "docs", sourcePath: "C:\\Project\\.ac\\wg-2-dev-team\\repo-docs-primary", branch: null },
+      { label: "docs", sourcePath: "C:\\Project\\.ac\\wg-2-dev-team\\repo-docs-secondary", branch: "docs-alt" },
+      { label: "cli", sourcePath: "C:\\Project\\.ac\\wg-2-dev-team\\repo-cli", branch: "main" },
+    ] as unknown as Session["gitRepos"];
+    const fake = await setupPanel([coordSession({ gitRepos: repos })], projectDiscovery(), "dev-webpage-ui");
+
+    contextMenu(findRow(rendered!.root, coordQuickRowTestId));
+
+    let items: HTMLButtonElement[] = [];
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      items = repoFolderActions(menu!);
+      expect(items).toHaveLength(4);
+      expect(items.map(repoFolderLabel)).toEqual(["AgentsCommander", "docs", "docs", "cli"]);
+    });
+
+    expect(items.map((item) => item.textContent?.trim())).toEqual(["AgentsCommander", "docs", "docs", "cli"]);
+    expect(items[0].textContent).not.toContain("Open");
+    expect(items[0].textContent).not.toContain("feature/x");
+    expect(items[2].textContent).not.toContain("docs-alt");
+    expect(items[3].textContent).not.toContain("main");
+
+    click(document.querySelector('[data-ac-testid="replica.coord-session.menu.repo.2"]')!);
+
+    await waitFor(() =>
+      expect(fake.lastCall("open_in_explorer")?.args).toEqual({
+        path: "C:\\Project\\.ac\\wg-2-dev-team\\repo-docs-secondary",
+      }),
+    );
+    expect(replicaMenu()).toBeNull();
   });
 
   it("hides the Matrix folder action for a workgroup replica without identityPath", async () => {
