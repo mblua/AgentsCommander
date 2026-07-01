@@ -1,0 +1,32 @@
+/* #714 Screenshot overlay window styles.
+ *
+ * CRITICAL (dev-webpage-ui enrichment §A): src/main.tsx bundles EVERY window App
+ * (and its CSS) into ONE bundle, so a BARE `html, body, #root { background:
+ * transparent }` rule would leak into the main/terminal/RM/guide/spec-board
+ * windows and turn their background transparent. The document-level rules below
+ * are therefore SCOPED to `html[data-window="screenshot-overlay"]`, which
+ * main.tsx sets only for this window before rendering. The `.screenshot-overlay`
+ * class rules are already scoped and safe. */
+
+html[data-window="screenshot-overlay"],
+html[data-window="screenshot-overlay"] body,
+html[data-window="screenshot-overlay"] #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.screenshot-overlay {
+  width: 100vw;
+  height: 100vh;
+  cursor: crosshair;
+  user-select: none;
+}
+
+.screenshot-overlay canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
