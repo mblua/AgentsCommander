@@ -55,13 +55,20 @@ You can turn the integration off at any time via **Settings → General → RTK*
 
 ## Code signing
 
-Windows releases are digitally signed by SignPath. The private key never leaves SignPath's HSM, and every signing request requires manual approval. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
+Windows code signing is planned through SignPath Foundation and is pending setup and approval. Current Windows release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
 
-Linux and macOS builds are not signed today. Verify Linux assets with the SHA-256 sums attached to the GitHub release.
+Verify every downloaded release asset against the `SHASUMS256.txt` file attached to the GitHub release. On Windows, inspect Authenticode status with:
+
+```powershell
+Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
+```
+
+Linux and macOS builds are not signed today.
 
 ## Known gaps
 
 - **macOS code signing** is not yet in place ([#320](https://github.com/mblua/AgentsCommander/issues/320)).
+- **Windows code signing** is pending SignPath setup and approval ([#717](https://github.com/mblua/AgentsCommander/issues/717)).
 - **`--root` is unverified** at the CLI boundary. A malicious local process with shell access can spoof its own root. Mitigated by the daemon-side per-session token check, but not eliminated.
 - **No sandbox between agents.** Two agents in the same workgroup share filesystem access. If you need hard isolation, run each agent in its own VM or container.
 - **API keys live in plaintext** at `~/.agentscommander/settings.json`. Protect your user account; if your account is compromised, the keys are.

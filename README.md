@@ -17,7 +17,7 @@
   <a href="https://github.com/mblua/AgentsCommander/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/mblua/AgentsCommander/release.yml?style=flat-square&label=build" alt="Build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT" /></a>
   <a href="https://github.com/mblua/AgentsCommander/stargazers"><img src="https://img.shields.io/github/stars/mblua/AgentsCommander?style=flat-square&color=00d4ff&label=stars" alt="GitHub stars" /></a>
-  <a href="CODE_SIGNING_POLICY.md"><img src="https://img.shields.io/badge/code--signed-SignPath-00d4ff?style=flat-square&logo=windows" alt="Code-signed · SignPath" /></a>
+  <a href="CODE_SIGNING_POLICY.md"><img src="https://img.shields.io/badge/code--signing-pending-00d4ff?style=flat-square&logo=windows" alt="Code signing pending" /></a>
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri%202-dea584?style=flat-square&logo=rust" alt="Built with Rust + Tauri 2" /></a>
 </p>
 
@@ -50,7 +50,7 @@ agentscommander new-project /path/to/project
 
 The npm package is `@mblua/agentscommander`. The installed command is still `agentscommander`.
 
-Prefer a desktop installer or a manual download? Get the signed Windows installer, Linux AppImage, macOS dmg, or portable assets from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
+Prefer a desktop installer or a manual download? Get the Windows installer, Linux AppImage, macOS dmg, or portable assets from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
 
 ## The 30-second pitch
 
@@ -150,7 +150,13 @@ These are not accidents.
 
 ## Trust
 
-AgentsCommander does not collect telemetry, analytics, or usage data. Optional features (Telegram Bridge, Voice-to-Text) transmit data to external services only when you enable them; see [`PRIVACY.md`](PRIVACY.md). Windows releases are digitally signed: certificate by [SignPath Foundation](https://signpath.org), free code signing courtesy of [SignPath.io](https://signpath.io). Full policy in [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
+AgentsCommander does not collect telemetry, analytics, or usage data. Optional features (Telegram Bridge, Voice-to-Text) transmit data to external services only when you enable them; see [`PRIVACY.md`](PRIVACY.md). Windows code signing is planned through [SignPath Foundation](https://signpath.org) with free signing courtesy of [SignPath.io](https://signpath.io), but current Windows release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. Verify downloads with the release `SHASUMS256.txt`; on Windows you can inspect signature status with:
+
+```powershell
+Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
+```
+
+Full signing policy in [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
 
 ## Community
 
