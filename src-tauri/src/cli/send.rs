@@ -212,10 +212,13 @@ fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> 
 const REQUEST_ID_LEN: usize = 36;
 
 /// Byte width the injected PTY notification adds around the message body: the
-/// plain wrap plus the sender name, and when `get_output` is set the response
-/// marker framing that `phone::mailbox` injects at the get-output site
-/// (`PTY_RESPONSE_MARKER_FIXED` plus two request ids). Sizing the clamp from the
-/// same numbers keeps it in lockstep with what actually reaches the PTY.
+/// plain wrap plus the sender name. The `get_output` branch additionally sizes
+/// the `--get-output` response-marker framing (`PTY_RESPONSE_MARKER_FIXED` plus
+/// two request ids), but that framing only reaches the PTY on a non-interactive
+/// session (`phone::mailbox` gates it on `!interactive`, unreachable since 0.7.0).
+/// The live clamp therefore calls this with `get_output = false`; the `true`
+/// branch is inert future-proofing for that not-yet-reachable marker path and is
+/// exercised only by the contract tests.
 fn notification_pty_overhead(sender_len: usize, get_output: bool) -> usize {
     let mut overhead = crate::phone::messaging::PTY_WRAP_FIXED + sender_len;
     if get_output {
@@ -420,10 +423,13 @@ pub fn execute(args: SendArgs) -> i32 {
         }
 
         // PTY_SAFE_MAX clamp. The wrap no longer embeds wg_root or bin_path, so
-        // the overhead is the fixed framing plus `from`. With `--get-output` the
-        // mailbox also injects the response-marker framing, so count it here or a
-        // near-limit path could pass this check yet truncate once injected.
-        let overhead = notification_pty_overhead(sender.len(), args.get_output);
+        // the overhead is the fixed framing plus `from`. The live wake path never
+        // injects the `--get-output` response markers (`phone::mailbox` gates them
+        // on a non-interactive session, unreachable today), so budget the plain
+        // wrap here by passing `false`. Keying this on `args.get_output` would flip
+        // a near-limit long path from delivered to rejected over marker bytes that
+        // never reach the PTY.
+        let overhead = notification_pty_overhead(sender.len(), false);
         if body.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
             eprintln!(
                 "Error: notification exceeds PTY-safe length (body {} + overhead {} > {}). \
@@ -721,22 +727,31 @@ mod tests {
     }
 
     #[test]
-    fn get_output_markers_tighten_pty_overhead() {
+    fn get_output_does_not_tighten_live_pty_clamp() {
+        // The live wake path never injects the `--get-output` response markers
+        // (`phone::mailbox` gates them on a non-interactive session, unreachable
+        // today), so the CLI clamp must budget a `--get-output` send exactly like
+        // a plain send. The live clamp calls `notification_pty_overhead(_, false)`;
+        // this locks that a near-limit path is not rejected over marker bytes that
+        // never reach the PTY, guarding against re-keying it on `args.get_output`.
         let sender_len = "project:wg-1-team/agent".len();
-        let plain = notification_pty_overhead(sender_len, false);
-        let with_markers = notification_pty_overhead(sender_len, true);
+        let live_overhead = notification_pty_overhead(sender_len, false);
+        let plain_overhead = crate::phone::messaging::PTY_WRAP_FIXED + sender_len;
 
-        // The get-output framing adds the marker fixed cost plus two request ids.
-        assert_eq!(
-            with_markers - plain,
-            crate::phone::messaging::PTY_RESPONSE_MARKER_FIXED + 2 * REQUEST_ID_LEN
-        );
+        // Live budget is the plain wrap: get-output adds nothing on the live path.
+        assert_eq!(live_overhead, plain_overhead);
 
-        // A body that exactly fills the plain-wrap budget must overflow once the
-        // get-output markers are counted, so the clamp rejects it.
-        let body_len = crate::phone::messaging::PTY_SAFE_MAX - plain;
-        assert!(body_len + plain <= crate::phone::messaging::PTY_SAFE_MAX);
-        assert!(body_len + with_markers > crate::phone::messaging::PTY_SAFE_MAX);
+        // A body sized to exactly fill the plain-wrap budget must be ACCEPTED by
+        // the clamp (`body.len() + overhead > PTY_SAFE_MAX` is false).
+        let body_len = crate::phone::messaging::PTY_SAFE_MAX - plain_overhead;
+        assert!(body_len + live_overhead <= crate::phone::messaging::PTY_SAFE_MAX);
+
+        // Under the reverted tightening, counting the never-injected marker
+        // overhead would have rejected this same body. Confirm the corrected live
+        // path does not, so the tightening cannot silently return.
+        let tightened_overhead =
+            plain_overhead + crate::phone::messaging::PTY_RESPONSE_MARKER_FIXED + 2 * REQUEST_ID_LEN;
+        assert!(body_len + tightened_overhead > crate::phone::messaging::PTY_SAFE_MAX);
     }
 
     #[test]
