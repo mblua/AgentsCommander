@@ -42,11 +42,17 @@ const FAILED_EVENT: &str = "screenshot_capture_failed";
 
 /// Capture lifecycle. `Starting` is the gate that blocks concurrent hotkey
 /// starts; it is reserved under the mutex before desktop capture and atomically
-/// replaced by `Active` only if the same capture id is still pending.
+/// replaced by `Active` only if the same capture id is still pending. `Finishing`
+/// is the teardown gate: `confirm_selection` holds it (instead of dropping
+/// straight to `Idle`) while it saves the PNG and destroys overlays, so a second
+/// hotkey press cannot start a capture that photographs the still-visible
+/// overlays. The `Uuid` is the finishing capture's id, so the final reset to
+/// `Idle` never clobbers a state another path already changed.
 pub enum ScreenshotCaptureLifecycle {
     Idle,
     Starting(ScreenshotCaptureStarting),
     Active(ActiveScreenshotCapture),
+    Finishing(Uuid),
 }
 
 pub struct ScreenshotCaptureStarting {
@@ -132,14 +138,12 @@ pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(
     let gs = app.global_shortcut();
     let state = app.state::<ScreenshotHotkeyState>();
     let mut runtime = state.lock().unwrap();
-    runtime.status.configured = configured.to_string();
 
     // No-op save of the same key: it is already ours, so just record success and
     // avoid a spurious "already registered" error from re-registering.
     if gs.is_registered(shortcut) {
         runtime.registered_shortcut = Some(shortcut);
-        runtime.status.registered = true;
-        runtime.status.error = None;
+        runtime.status = hotkey_status_after_attempt(configured, Ok(()));
         return Ok(());
     }
 
@@ -151,29 +155,67 @@ pub fn register_configured_hotkey(app: &AppHandle, configured: &str) -> Result<(
                 }
             }
             runtime.registered_shortcut = Some(shortcut);
-            runtime.status.registered = true;
-            runtime.status.error = None;
+            runtime.status = hotkey_status_after_attempt(configured, Ok(()));
             Ok(())
         }
         Err(e) => {
-            // Keep the previously-registered key working; report the conflict.
+            // The configured shortcut did NOT register. Keep any previously
+            // registered fallback alive (do not take `registered_shortcut`) so it
+            // keeps working and a later save can unregister it, but report the
+            // configured shortcut as NOT registered so the UI surfaces the
+            // conflict (Grinch #714 LOW): `status.registered` describes the
+            // configured shortcut, not the internal fallback.
             let msg = e.to_string();
-            runtime.status.registered = runtime.registered_shortcut.is_some();
-            runtime.status.error = Some(msg.clone());
+            runtime.status = hotkey_status_after_attempt(configured, Err(msg.as_str()));
             Err(msg)
         }
     }
 }
 
+/// Compute the frontend-facing hotkey status after a registration attempt. Pure,
+/// so the "`registered` describes the CONFIGURED shortcut" invariant is
+/// unit-testable: on failure `registered` is false and `error` is set even when an
+/// internal fallback shortcut is still alive, which is what lets the sidebar's
+/// `!registered && error` check warn that the configured combo does nothing.
+fn hotkey_status_after_attempt(configured: &str, outcome: Result<(), &str>) -> ScreenshotHotkeyStatus {
+    match outcome {
+        Ok(()) => ScreenshotHotkeyStatus {
+            configured: configured.to_string(),
+            registered: true,
+            error: None,
+        },
+        Err(msg) => ScreenshotHotkeyStatus {
+            configured: configured.to_string(),
+            registered: false,
+            error: Some(msg.to_string()),
+        },
+    }
+}
+
 // ── Hotkey entry point ─────────────────────────────────────────────────────
 
-/// Global-shortcut handler entry. Spawns the async capture and, on any failure
-/// that happens before overlays exist, surfaces the error visibly because the
-/// hotkey normally fires while another app is focused.
+/// Outcome of a `begin_capture` attempt. `Busy` is the typed no-op path for a
+/// debounced repeat press (a capture is already starting/active/finishing): the
+/// hotkey handler must NOT surface it, because bringing the app forward mid-flight
+/// would pollute the frozen screenshot and show a bogus failure. Only a genuine
+/// `Err` is surfaced.
+pub enum BeginOutcome {
+    Started,
+    Busy,
+}
+
+/// Global-shortcut handler entry. Spawns the async capture and, on any genuine
+/// failure that happens before overlays exist, surfaces the error visibly because
+/// the hotkey normally fires while another app is focused. A `Busy` outcome (a
+/// rapid repeat press while a capture is in flight) is a silent no-op.
 pub fn begin_capture_from_hotkey(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = begin_capture(app.clone()).await {
-            surface_hotkey_failure(&app, &e);
+        match begin_capture(app.clone()).await {
+            Ok(BeginOutcome::Started) => {}
+            Ok(BeginOutcome::Busy) => {
+                log::debug!("[screenshot] hotkey ignored: a capture is already in progress");
+            }
+            Err(e) => surface_hotkey_failure(&app, &e),
         }
     });
 }
@@ -203,7 +245,9 @@ fn surface_hotkey_failure(app: &AppHandle, message: &str) {
 
 /// Resolve active session, capture all monitors, store `Active`, open overlays.
 /// Every early-return path leaves the lifecycle `Idle` (no leaked `Starting`).
-pub async fn begin_capture(app: AppHandle) -> Result<(), String> {
+/// Returns `BeginOutcome::Busy` (a no-op, not an error) when a capture is already
+/// in flight, so a debounced repeat hotkey press is silently ignored.
+pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
     // 1. Resolve the active session and its owning replica root.
     let session_mgr = app.state::<std::sync::Arc<tokio::sync::RwLock<SessionManager>>>();
     let active_id = {
@@ -228,7 +272,10 @@ pub async fn begin_capture(app: AppHandle) -> Result<(), String> {
         let state = app.state::<ScreenshotCaptureState>();
         let mut guard = state.lock().await;
         if !matches!(&*guard, ScreenshotCaptureLifecycle::Idle) {
-            return Err("Screenshot capture is already active".to_string());
+            // A capture is already starting/active/finishing: a debounced repeat
+            // press. No-op (do NOT surface a failure or raise the window, which
+            // would pollute the in-flight frozen capture).
+            return Ok(BeginOutcome::Busy);
         }
         *guard = ScreenshotCaptureLifecycle::Starting(ScreenshotCaptureStarting {
             id: capture_id,
@@ -262,8 +309,10 @@ pub async fn begin_capture(app: AppHandle) -> Result<(), String> {
         let still_ours =
             matches!(&*guard, ScreenshotCaptureLifecycle::Starting(s) if s.id == capture_id);
         if !still_ours {
-            // Superseded/cancelled while capturing: do not open overlays.
-            return Err("Screenshot capture was superseded".to_string());
+            // Superseded/cancelled while capturing: do not open overlays. This is
+            // a no-op, not a visible failure.
+            log::debug!("[screenshot] capture {capture_id} superseded before overlays opened");
+            return Ok(BeginOutcome::Busy);
         }
         *guard = ScreenshotCaptureLifecycle::Active(ActiveScreenshotCapture {
             id: capture_id,
@@ -288,7 +337,7 @@ pub async fn begin_capture(app: AppHandle) -> Result<(), String> {
         .await;
         return Err(e);
     }
-    Ok(())
+    Ok(BeginOutcome::Started)
 }
 
 async fn reset_starting_if_matches(app: &AppHandle, id: Uuid) {
@@ -551,25 +600,32 @@ pub async fn confirm_selection(
     state: &ScreenshotCaptureState,
     selection: ScreenshotSelection,
 ) -> Result<ScreenshotCaptureResult, String> {
-    // Take the active capture iff it matches; drop the guard before file I/O.
+    // Take the active capture iff it matches, and move to `Finishing` (NOT `Idle`)
+    // so a new hotkey capture cannot start and photograph the still-visible
+    // overlays while we save and tear down. The guard is dropped before file I/O.
     let capture = {
         let mut guard = state.lock().await;
-        let matches = matches!(
+        let is_match = matches!(
             &*guard,
             ScreenshotCaptureLifecycle::Active(c) if c.id.to_string() == selection.capture_id
         );
-        if !matches {
+        if !is_match {
             return Err("Screenshot capture is no longer active".to_string());
         }
-        match std::mem::replace(&mut *guard, ScreenshotCaptureLifecycle::Idle) {
-            ScreenshotCaptureLifecycle::Active(c) => c,
-            _ => unreachable!("matched Active above"),
-        }
+        let ScreenshotCaptureLifecycle::Active(c) =
+            std::mem::replace(&mut *guard, ScreenshotCaptureLifecycle::Idle)
+        else {
+            unreachable!("matched Active above")
+        };
+        // Install the finishing gate keyed by this capture's id; the transient
+        // `Idle` above is never observed because the lock is still held.
+        *guard = ScreenshotCaptureLifecycle::Finishing(c.id);
+        c
     };
 
     let capture_id = capture.id;
     let result = save_selection(capture, &selection).await;
-    match result {
+    let outcome = match result {
         Ok(saved) => {
             // Best-effort clipboard copy; the PNG already exists, so a clipboard
             // failure must not fail the capture (plan §E).
@@ -593,6 +649,21 @@ pub async fn confirm_selection(
             );
             Err(msg)
         }
+    };
+
+    // Overlays are destroyed; release the finishing gate so the next hotkey press
+    // can start a fresh capture. Runs on both success and failure.
+    finish_capture_to_idle(state, capture_id).await;
+    outcome
+}
+
+/// Release the `Finishing` gate installed by `confirm_selection` once its overlays
+/// are destroyed, returning the lifecycle to `Idle`. Guarded by id so it never
+/// clobbers a state some other path already changed.
+async fn finish_capture_to_idle(state: &ScreenshotCaptureState, capture_id: Uuid) {
+    let mut guard = state.lock().await;
+    if matches!(&*guard, ScreenshotCaptureLifecycle::Finishing(id) if *id == capture_id) {
+        *guard = ScreenshotCaptureLifecycle::Idle;
     }
 }
 
@@ -775,6 +846,9 @@ pub async fn handle_overlay_window_destroyed(app: AppHandle, label: String) {
         match &*guard {
             ScreenshotCaptureLifecycle::Active(c) => Some(c.id),
             ScreenshotCaptureLifecycle::Starting(s) => Some(s.id),
+            // Finishing: `confirm_selection` owns teardown and will reset to
+            // `Idle`, so the Destroyed events it triggers must not re-enter cleanup.
+            ScreenshotCaptureLifecycle::Finishing(_) => None,
             ScreenshotCaptureLifecycle::Idle => None,
         }
     };
@@ -849,8 +923,15 @@ fn find_replica_root(start: &Path) -> Option<PathBuf> {
 /// owning WG replica root of the active session's CWD. Rejects non-replica CWDs,
 /// symlinks/reparse points, and roots that fail WG replica identity validation.
 fn resolve_session_replica_root(working_directory: &str) -> Result<PathBuf, String> {
-    let cwd = PathBuf::from(working_directory);
-    let root = find_replica_root(&cwd).ok_or_else(|| {
+    // Canonicalize the session CWD BEFORE walking ancestors so `..` and symlink
+    // components cannot spoof a `__agent_*` ancestor. Example spoof:
+    // `...\wg-6\__agent_x\..\repo-AgentsCommander` resolves to the repo sibling
+    // (which must be rejected), yet a raw name-walk would see the `__agent_x`
+    // ancestor and save there. Canonicalize requires the path to exist, which is
+    // always true for a live session's CWD; a missing/unresolvable CWD is rejected.
+    let canonical_cwd = std::fs::canonicalize(working_directory)
+        .map_err(|e| format!("Cannot resolve the active session directory: {e}"))?;
+    let root = find_replica_root(&canonical_cwd).ok_or_else(|| {
         "The active session is not inside a workgroup replica directory, so there is no place to save the screenshot".to_string()
     })?;
 
@@ -872,8 +953,13 @@ fn resolve_session_replica_root(working_directory: &str) -> Result<PathBuf, Stri
     Ok(canonical)
 }
 
-/// Re-run the symlink/reparse + directory checks on the target immediately before
-/// creating the PNG (the directory could have changed since capture start).
+/// Re-run the FULL start-time validation on the target immediately before creating
+/// the PNG, because the directory could have changed since capture start. This is
+/// the symlink/reparse + directory guard, plus a re-canonicalization and a re-run
+/// of the WG replica structure + persisted-identity checks. It closes the window
+/// where the replica root is deleted and recreated as a plain, non-replica
+/// directory between capture and confirm (which the final parent-containment check
+/// alone would still accept). `target` is the canonical root resolved at start.
 fn revalidate_replica_target(target: &Path) -> Result<(), String> {
     let meta = std::fs::symlink_metadata(target)
         .map_err(|e| format!("Cannot read the replica directory: {e}"))?;
@@ -883,6 +969,18 @@ fn revalidate_replica_target(target: &Path) -> Result<(), String> {
     if !meta.is_dir() {
         return Err("The replica path is not a directory".to_string());
     }
+
+    // `target` was already canonical at start; if re-canonicalizing yields a
+    // different path the directory was replaced under us, so reject.
+    let canonical = std::fs::canonicalize(target)
+        .map_err(|e| format!("Cannot canonicalize the replica directory: {e}"))?;
+    if canonical.as_path() != target {
+        return Err("The replica directory changed between capture and save".to_string());
+    }
+
+    // Same structure + persisted-identity validation used at capture start.
+    crate::config::replica_identity::expected_wg_replica_identity(&canonical)?;
+    crate::config::replica_identity::read_wg_replica_config_read_only(&canonical)?;
     Ok(())
 }
 
@@ -954,6 +1052,133 @@ mod tests {
         let _ = std::fs::remove_file(&replica);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_rejects_dotdot_spoof_to_repo_sibling() {
+        // A CWD that walks INTO the replica then back out via `..` into a `repo-*`
+        // workgroup sibling must resolve (canonically) to the repo and be rejected,
+        // not spoof the `__agent_*` ancestor via a raw path-name walk (Grinch #714
+        // MEDIUM). Requires real dirs so `canonicalize` can resolve `..`.
+        let base = std::env::temp_dir().join(format!("ac-shot-spoof-{}", Uuid::new_v4().simple()));
+        let wg = base.join("wg-6-dev-team");
+        let replica = wg.join("__agent_x");
+        let repo = wg.join("repo-foo");
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let spoof = replica.join("..").join("repo-foo");
+        let result = resolve_session_replica_root(&spoof.to_string_lossy());
+
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            result.is_err(),
+            "`..` spoof into a repo sibling must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_rejects_missing_child_of_replica() {
+        // The replica exists, but the session CWD points to a now-missing child.
+        // With no existing path to canonicalize, resolution must fail rather than
+        // fall back to the raw replica ancestor (Grinch #714 MEDIUM).
+        let base = std::env::temp_dir().join(format!("ac-shot-missing-{}", Uuid::new_v4().simple()));
+        let replica = base.join("wg-6-dev-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+
+        let missing_child = replica.join("gone");
+        let result = resolve_session_replica_root(&missing_child.to_string_lossy());
+
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(result.is_err(), "missing child CWD must be rejected");
+    }
+
+    #[test]
+    fn revalidate_rejects_plain_recreated_dir() {
+        // A directory shaped like a replica root but WITHOUT the WG replica config
+        // / matrix (models delete + recreate-as-plain between capture and confirm)
+        // must be rejected at confirm time by the re-run identity checks, even
+        // though it passes the symlink/is_dir guard (Grinch #714 MEDIUM).
+        let base = std::env::temp_dir().join(format!("ac-shot-reval-{}", Uuid::new_v4().simple()));
+        let replica = base.join("wg-6-dev-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        let canonical = std::fs::canonicalize(&replica).unwrap();
+
+        let result = revalidate_replica_target(&canonical);
+
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            result.is_err(),
+            "plain (non-config) replica-shaped dir must be rejected at confirm"
+        );
+    }
+
+    #[tokio::test]
+    async fn finishing_gate_blocks_then_releases() {
+        // The `Finishing` lifecycle is non-Idle, so begin_capture's Idle gate
+        // rejects a new capture (returns Busy) until confirm_selection destroys the
+        // overlays and releases the gate (Grinch #714 HIGH finishing race).
+        let id = Uuid::new_v4();
+        let state: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
+            ScreenshotCaptureLifecycle::Finishing(id),
+        ));
+
+        // Non-Idle while finishing => a new hotkey press would be Busy.
+        assert!(!matches!(
+            &*state.lock().await,
+            ScreenshotCaptureLifecycle::Idle
+        ));
+
+        // A mismatched id must NOT release the gate.
+        finish_capture_to_idle(&state, Uuid::new_v4()).await;
+        assert!(matches!(
+            &*state.lock().await,
+            ScreenshotCaptureLifecycle::Finishing(_)
+        ));
+
+        // The matching id releases the gate to Idle.
+        finish_capture_to_idle(&state, id).await;
+        assert!(matches!(
+            &*state.lock().await,
+            ScreenshotCaptureLifecycle::Idle
+        ));
+    }
+
+    #[tokio::test]
+    async fn finish_capture_to_idle_ignores_non_finishing() {
+        // Defensive: releasing the gate never clobbers a Starting/Active state.
+        let state: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
+            ScreenshotCaptureLifecycle::Starting(ScreenshotCaptureStarting {
+                id: Uuid::new_v4(),
+                target_session_id: Uuid::new_v4(),
+                target_session_name: "s".to_string(),
+                target_directory: PathBuf::from("x"),
+                created_at: Utc::now(),
+            }),
+        ));
+        finish_capture_to_idle(&state, Uuid::new_v4()).await;
+        assert!(matches!(
+            &*state.lock().await,
+            ScreenshotCaptureLifecycle::Starting(_)
+        ));
+    }
+
+    #[test]
+    fn hotkey_status_reflects_configured_shortcut_only() {
+        // Success: the configured shortcut is active.
+        let ok = hotkey_status_after_attempt("Ctrl+Q", Ok(()));
+        assert_eq!(ok.configured, "Ctrl+Q");
+        assert!(ok.registered);
+        assert!(ok.error.is_none());
+
+        // Failure (e.g. OS conflict): the configured shortcut is NOT active even if
+        // an internal fallback stays registered. `registered` must be false and the
+        // error present so the sidebar's `!registered && error` check warns that the
+        // configured combo does nothing (Grinch #714 LOW).
+        let err = hotkey_status_after_attempt("Ctrl+P", Err("hotkey already registered"));
+        assert_eq!(err.configured, "Ctrl+P");
+        assert!(!err.registered);
+        assert_eq!(err.error.as_deref(), Some("hotkey already registered"));
     }
 
     #[test]
