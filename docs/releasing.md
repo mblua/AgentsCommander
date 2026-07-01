@@ -60,7 +60,7 @@ git push origin v0.8.43
 This creates a **draft release** with:
 
 - Auto-generated changelog (from commits since the previous tag)
-- Windows installers (signed by SignPath via the release workflow)
+- Windows installers (SignPath signing planned; artifacts may be unsigned until integration is complete)
 - Windows raw executables:
   - `src-tauri/target/release/agentscommander.exe`
   - `src-tauri/target/release/agentscommander_testeable.exe`
@@ -76,10 +76,12 @@ the macOS rows add their `--target` after the production config.
 The release shows up under [Releases](https://github.com/mblua/AgentsCommander/releases) as a **draft**. Open it and verify:
 
 - **Asset count.** Every platform produced an installer. Re-run the failing job if one is missing.
-- **Windows signature.** Right-click the installer → Properties → Digital Signatures → SignPath Foundation. Or:
+- **Windows signature status.** Until SignPath integration is active, the installer may be unsigned. Inspect the Authenticode status:
   ```powershell
   Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
   ```
+- **Checksums.** Verify downloaded assets against `SHASUMS256.txt`. If a Windows artifact is unsigned, keep the release notes truthful about that status.
+- **Signed Windows artifacts.** Once SignPath signing is active, right-click the installer, choose Properties > Digital Signatures, and confirm SignPath Foundation. `Get-AuthenticodeSignature` should report `Valid`.
 - **Changelog.** Add curated highlights at the top (the auto-generated list goes underneath). Use the previous release as a tone reference.
 - **Tag matches the bump.** If you tagged `v0.8.42` but the binary reports `0.8.41`, abort and re-bump.
 
@@ -112,5 +114,5 @@ For an urgent fix on an already-released line:
 ## See also
 
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — branch naming and Husky hook
-- [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md) — SignPath chain
+- [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md) - pending SignPath policy
 - [`CHANGELOG.md`](../CHANGELOG.md)
