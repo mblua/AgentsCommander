@@ -2485,6 +2485,13 @@ html.light-theme .root-agent-avatar {
   color: #a855f7;
 }
 
+.session-context-matrix-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--danger, #ef4444);
+}
+
 .session-context-repo-label {
   min-width: 0;
   overflow: hidden;

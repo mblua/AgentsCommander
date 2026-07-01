@@ -305,6 +305,21 @@ function replicaMatrixFolder(replica: AcAgentReplica): string | null {
   return matrixFolderFromIdentityPath(replica.path, replica.identityPath);
 }
 
+function MatrixFolderIcon() {
+  return (
+    <svg
+      class="session-context-matrix-icon"
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+    >
+      <path
+        fill="currentColor"
+        d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z"
+      />
+    </svg>
+  );
+}
+
 function coordinatorItemKey(item: { replica: AcAgentReplica; wg: AcWorkgroup }): string {
   return `${item.wg.path}\u0000${item.replica.path}`;
 }
@@ -2363,7 +2378,7 @@ const ProjectPanel: Component = () => {
                             }}
                             title={agentCtxMenu()!.agent.path}
                           >
-                            &#x1F4C2; Open Matrix folder
+                            <MatrixFolderIcon /> Open Matrix folder
                           </button>
                           <button
                             class="session-context-option context-option-danger"
@@ -2798,17 +2813,6 @@ const ProjectPanel: Component = () => {
                         >
                           Coding Agent
                         </button>
-                        <Show when={matrixFolder()}>
-                          {(path) => (
-                            <button
-                              class="session-context-option"
-                              title={path()}
-                              onClick={() => void openMatrixFolder(path())}
-                            >
-                              &#x1F4C2; Open Matrix folder
-                            </button>
-                          )}
-                        </Show>
                         <button
                           class="session-context-option"
                           title={menu().replica.path}
@@ -2840,6 +2844,17 @@ const ProjectPanel: Component = () => {
                               </button>
                             )}
                           </For>
+                        </Show>
+                        <Show when={matrixFolder()}>
+                          {(path) => (
+                            <button
+                              class="session-context-option"
+                              title={path()}
+                              onClick={() => void openMatrixFolder(path())}
+                            >
+                              <MatrixFolderIcon /> Open Matrix folder
+                            </button>
+                          )}
                         </Show>
                         <div class="context-separator" />
                         <button
@@ -2887,17 +2902,6 @@ const ProjectPanel: Component = () => {
                           >
                             Coding Agent
                           </button>
-                          <Show when={matrixFolder()}>
-                            {(path) => (
-                              <button
-                                class="session-context-option"
-                                title={path()}
-                                onClick={() => void openMatrixFolder(path())}
-                              >
-                                &#x1F4C2; Open Matrix folder
-                              </button>
-                            )}
-                          </Show>
                           <button
                             class="session-context-option"
                             title={menu().replica.path}
@@ -2929,6 +2933,17 @@ const ProjectPanel: Component = () => {
                                 </button>
                               )}
                             </For>
+                          </Show>
+                          <Show when={matrixFolder()}>
+                            {(path) => (
+                              <button
+                                class="session-context-option"
+                                title={path()}
+                                onClick={() => void openMatrixFolder(path())}
+                              >
+                                <MatrixFolderIcon /> Open Matrix folder
+                              </button>
+                            )}
                           </Show>
                           <button
                             class="session-context-option"

@@ -153,6 +153,12 @@ function repoFolderLabel(item: HTMLElement): string | null {
   return item.querySelector<HTMLElement>(".session-context-repo-label")?.textContent ?? null;
 }
 
+function menuButtonLabels(menu: HTMLElement): string[] {
+  return Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).map((button) =>
+    (button.textContent ?? "").trim().replace(/^[^A-Za-z0-9]+/, "").trim()
+  );
+}
+
 function findRow(root: ParentNode, testId: string): HTMLElement {
   const el = root.querySelector<HTMLElement>(`[data-ac-testid="${testId}"]`);
   if (!el) throw new Error(`Row not found: ${testId}`);
@@ -240,6 +246,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(menu).not.toBeNull();
       action = findMatrixFolderAction(menu!);
       expect(action).not.toBeNull();
+      expect(action!.querySelector(".session-context-matrix-icon")).not.toBeNull();
     });
 
     click(action!);
@@ -350,6 +357,18 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(items[0].textContent).not.toContain("feature/x");
     expect(items[2].textContent).not.toContain("docs-alt");
     expect(items[3].textContent).not.toContain("main");
+    expect(menuButtonLabels(replicaMenu()!)).toEqual([
+      "Restart Session",
+      "Coding Agent",
+      "Open Replica's Folder",
+      "AgentsCommander",
+      "docs",
+      "docs",
+      "cli",
+      "Open Matrix folder",
+      "Open in new window",
+      "Clear task title",
+    ]);
 
     click(document.querySelector('[data-ac-testid="replica.coord-session.menu.repo.2"]')!);
 
@@ -435,6 +454,14 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(items.map(repoFolderLabel)).toEqual(["AgentsCommander", "docs"]);
       expect(items[0].title).toBe(repos[0]);
       expect(items[1].title).toBe(repos[1]);
+      expect(menuButtonLabels(menu!)).toEqual([
+        "Coding Agent",
+        "Open Replica's Folder",
+        "AgentsCommander",
+        "docs",
+        "Open Matrix folder",
+        "Clear task title",
+      ]);
     });
 
     click(items[1]);
