@@ -33,9 +33,15 @@ If you prefer a desktop installer or manual download, get the latest asset for y
 
 | Platform | Asset |
 |---|---|
-| Windows 10 1809+ | `Agents Commander_X.Y.Z_x64-setup.exe` (signed) or the portable `agentscommander.exe` |
+| Windows 10 1809+ | `Agents Commander_X.Y.Z_x64-setup.exe` or the portable `agentscommander.exe` |
 | Linux | `agentscommander_*_amd64.AppImage` |
 | macOS | `Agents Commander_*.dmg` (Apple Silicon + Intel) |
+
+Windows code signing is planned through SignPath and pending setup. Current Windows artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. Verify downloads with the release `SHASUMS256.txt`; on Windows you can inspect signature status with:
+
+```powershell
+Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
+```
 
 Run the installer, or drop the portable `.exe` into any folder and double-click. On first launch AC creates its config directory next to the binary (e.g. `.agentscommander/` on Windows). See [Portable instances](features/portable-instances.md) for the rules.
 

@@ -91,10 +91,10 @@ jobs:
       - name: SignPath integration (Placeholder)
         if: matrix.platform == 'windows-latest'
         run: |
-          echo "SignPath integration requires maintainer setup."
-          echo "Future steps will use the SignPath GitHub Action to submit artifacts for signing."
+          echo "SignPath integration is pending maintainer setup and approval."
+          echo "After setup, this workflow can use the SignPath GitHub Action to submit artifacts for signing."
           echo "Prerequisites: SignPath org/project/policy/artifact config ids, and an API token."
-          echo "See docs/CODE_SIGNING_POLICY.md for details on the approval gate."
+          echo "See CODE_SIGNING_POLICY.md for the pending policy and approval gate."
       - name: Upload raw binaries and npm assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
