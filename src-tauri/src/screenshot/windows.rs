@@ -601,7 +601,13 @@ pub async fn overlay_state(
                         image_data_url: m.preview_data_url.clone(),
                         session_id: c.target_session_id.to_string(),
                         session_name: c.target_session_name.clone(),
-                        target_directory: c.target_directory.to_string_lossy().to_string(),
+                        // Strip the Windows `\\?\` verbatim prefix that `canonicalize`
+                        // leaves on the resolved root, so the overlay shows a clean save
+                        // location (shared #730 helper; internal PathBuf checks keep the
+                        // raw canonical value).
+                        target_directory: crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+                            &c.target_directory,
+                        ),
                     })),
                     None => OverlayDecision::Stale,
                 }
@@ -755,7 +761,11 @@ async fn save_selection(
     .await
     .map_err(|e| (None, format!("save task panicked: {e}")))??;
 
-    let path_string = saved_path.to_string_lossy().to_string();
+    // `saved_path` is canonical (verbatim `\\?\` on Windows). Every containment
+    // check above ran on the raw canonical PathBuf; only the user-facing string
+    // (clipboard, saved event, result payload, log) is normalized via the shared
+    // #730 helper so it matches the clean paths the rest of the app now emits.
+    let path_string = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&saved_path);
     log::info!(
         "[screenshot] saved {} for session '{}'",
         path_string,
