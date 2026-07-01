@@ -88,9 +88,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lifecycle_default_is_idle_only() {
-        // Compile-time proof the variant exists; matches the alias usage.
-        let _ = ScreenshotCaptureLifecycle::Idle;
+    fn default_hotkey_runtime_is_unregistered() {
+        // The non-Windows stub never registers a global shortcut: its hotkey
+        // runtime starts unregistered with no error, and only records the
+        // unsupported status once `register_configured_hotkey` runs at settings
+        // time. (`ScreenshotCaptureLifecycle::Idle` still compiles via lib.rs.)
+        let runtime = ScreenshotHotkeyRuntime::default();
+        assert!(!runtime.status.registered);
+        assert!(runtime.status.error.is_none());
     }
 
     #[tokio::test]
