@@ -313,6 +313,7 @@ impl PtyManager {
         mut resource_registration: Option<ResourceLaunchRegistration>,
     ) -> Result<(), AppError> {
         let pty_system = native_pty_system();
+        let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
 
         let size = PtySize {
             rows,
@@ -348,7 +349,7 @@ impl PtyManager {
             }
             c
         };
-        command.cwd(cwd);
+        command.cwd(&spawn_cwd);
         for key in env_remove_keys {
             command.env_remove(key);
         }
@@ -375,12 +376,12 @@ impl PtyManager {
         }
 
         if let Some(git_ceiling_dirs) =
-            crate::config::session_context::git_ceiling_directories_for_session_root(cwd)
+            crate::config::session_context::git_ceiling_directories_for_session_root(&spawn_cwd)
         {
             command.env("GIT_CEILING_DIRECTORIES", &git_ceiling_dirs);
             log::info!(
                 "[pty] Applied GIT_CEILING_DIRECTORIES for session cwd {}: {}",
-                cwd,
+                spawn_cwd,
                 git_ceiling_dirs
             );
 
@@ -389,7 +390,10 @@ impl PtyManager {
                 command.env("PATH", &git_guard_env.path);
                 command.env("PATHEXT", &git_guard_env.pathext);
                 command.env("AC_REAL_GIT", &git_guard_env.real_git);
-                log::info!("[pty] Enabled git guard wrapper for session cwd {}", cwd);
+                log::info!(
+                    "[pty] Enabled git guard wrapper for session cwd {}",
+                    spawn_cwd
+                );
             }
         }
 
@@ -408,7 +412,9 @@ impl PtyManager {
         // app-exit can kill the whole tree atomically via the job handle. Created
         // before the resource registration so the early-return error paths below
         // drop `job` and let KILL_ON_JOB_CLOSE reap the child too.
-        let job = child.process_id().and_then(crate::pty::job::JobObject::for_child);
+        let job = child
+            .process_id()
+            .and_then(crate::pty::job::JobObject::for_child);
 
         if let Some(registration) = resource_registration.as_mut() {
             let Some(pid) = child.process_id() else {

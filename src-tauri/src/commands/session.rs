@@ -738,6 +738,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
 ) -> Result<SessionInfo, String> {
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
     let (agent_id, agent_label) = {
         if let Some(spawn) = resolved_spawn.as_ref() {
             (
@@ -1347,10 +1348,11 @@ pub(crate) fn build_configured_agent_spawn_for_cwd(
     if !settings.agents.iter().any(|agent| agent.id == agent_id) {
         return Ok(None);
     }
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
     crate::config::agent_command::build_agent_spawn_command(
         settings,
         agent_id,
-        Some(std::path::Path::new(cwd)),
+        Some(std::path::Path::new(&cwd)),
         requested_profile,
     )
     .map(Some)
@@ -1436,6 +1438,7 @@ pub async fn create_session(
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "C:\\".to_string())
     });
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
     let resolved_spawn = if let Some(aid) = agent_id.as_deref() {
         build_configured_agent_spawn_for_cwd(&cfg, aid, &cwd, requested_profile.as_deref())?
@@ -2211,6 +2214,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
     } else {
         cwd
     };
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
     // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
     let clean_args =

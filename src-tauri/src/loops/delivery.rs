@@ -333,13 +333,16 @@ async fn spawn_coordinator_session(
     );
     let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+    let cwd = crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+        &target.coordinator_replica_dir,
+    );
     let info = crate::commands::session::create_session_inner(
         app,
         session_mgr.inner(),
         pty_mgr.inner(),
         command.shell,
         command.shell_args,
-        target.coordinator_replica_dir.to_string_lossy().to_string(),
+        cwd,
         Some(session_name),
         command.agent_id,
         command.agent_label,
@@ -415,6 +418,8 @@ async fn resolve_loop_agent_command(
     app: &AppHandle,
     replica_dir: &Path,
 ) -> Result<ResolvedLoopAgentCommand, String> {
+    let replica_dir = crate::path_utils::normalize_windows_verbatim_path_buf(replica_dir);
+    let replica_dir = replica_dir.as_path();
     let settings = {
         let settings_state = app.state::<SettingsState>();
         let settings = settings_state.read().await.clone();
@@ -471,8 +476,7 @@ fn read_last_coding_agent(replica_dir: &Path) -> Option<String> {
 
 fn path_compare_key(path: &Path) -> String {
     let resolved: PathBuf = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let value = resolved.to_string_lossy().to_string();
-    let value = value.strip_prefix(r"\\?\").unwrap_or(&value).to_string();
+    let value = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&resolved);
     let value = value.replace('\\', "/").trim_end_matches('/').to_string();
     if cfg!(windows) {
         value.to_lowercase()
@@ -488,6 +492,15 @@ mod tests {
         write_loop_config, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
         LoopTrigger, LoopTriggerKind, LOOP_TIMEZONE_LOCAL,
     };
+
+    #[test]
+    #[cfg(windows)]
+    fn path_compare_key_converts_verbatim_unc() {
+        assert_eq!(
+            path_compare_key(Path::new(r"\\?\UNC\server\share\repo")),
+            "//server/share/repo"
+        );
+    }
 
     fn sample_config() -> LoopConfigToml {
         LoopConfigToml {

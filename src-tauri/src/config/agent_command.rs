@@ -529,8 +529,7 @@ enum OpencodeConfigDirOutcome {
 /// Executable file_name forms that count as opencode when found among the
 /// command ARGS. The bare `opencode` covers the `cmd /c opencode` wrapper; the
 /// `.exe`/`.cmd`/`.bat` forms cover a direct path or an npm-style shim.
-const OPENCODE_ARG_FORMS: [&str; 4] =
-    ["opencode", "opencode.exe", "opencode.cmd", "opencode.bat"];
+const OPENCODE_ARG_FORMS: [&str; 4] = ["opencode", "opencode.exe", "opencode.cmd", "opencode.bat"];
 
 /// True when the launch command runs opencode, matched by executable name.
 /// There is no `CodingAgentKind::OpenCode` (the enum is Claude/Codex/Gemini and
@@ -567,7 +566,11 @@ fn find_opencode_config_dir<'a>(
     profile_env
         .iter()
         .find(|(key, _)| is_opencode_config_dir_key(key))
-        .or_else(|| agent_env.iter().find(|(key, _)| is_opencode_config_dir_key(key)))
+        .or_else(|| {
+            agent_env
+                .iter()
+                .find(|(key, _)| is_opencode_config_dir_key(key))
+        })
         .map(|(_, value)| value)
 }
 
@@ -611,7 +614,10 @@ fn ensure_opencode_config_dir(
     }
     match std::fs::create_dir_all(&path) {
         Ok(()) => {
-            log::info!("[opencode] Ensured OPENCODE_CONFIG_DIR '{}'", path.display());
+            log::info!(
+                "[opencode] Ensured OPENCODE_CONFIG_DIR '{}'",
+                path.display()
+            );
             OpencodeConfigDirOutcome::Ensured
         }
         Err(e) => {
@@ -700,7 +706,12 @@ pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> St
     // Versioned, NUL-tagged serialization. NUL cannot appear in commands/env we
     // accept, and the field tags stop a value from forging a record boundary.
     let mut buf = String::new();
-    let _ = write!(buf, "v1\u{0}cmd\u{0}{}\u{0}envc\u{0}{}\u{0}", command, normalized.len());
+    let _ = write!(
+        buf,
+        "v1\u{0}cmd\u{0}{}\u{0}envc\u{0}{}\u{0}",
+        command,
+        normalized.len()
+    );
     for (key, value) in &normalized {
         let _ = write!(buf, "k\u{0}{}\u{0}v\u{0}{}\u{0}", key, value);
     }
@@ -709,12 +720,18 @@ pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> St
     digest[..16].to_string()
 }
 
+fn normalize_launch_path_for_spawn(launch_path: Option<&Path>) -> Option<PathBuf> {
+    launch_path.map(crate::path_utils::normalize_windows_verbatim_path_buf)
+}
+
 pub fn build_agent_spawn_command(
     settings: &AppSettings,
     agent_id: &str,
     launch_path: Option<&Path>,
     requested_profile: Option<&str>,
 ) -> Result<AgentSpawnCommand, String> {
+    let normalized_launch_path = normalize_launch_path_for_spawn(launch_path);
+    let launch_path = normalized_launch_path.as_deref();
     let agent = settings
         .agents
         .iter()
@@ -905,11 +922,14 @@ pub fn build_agent_spawn_command(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::normalize_launch_path_for_spawn;
     use super::{
-        build_agent_spawn_command, command_runs_opencode, default_instructions_filename_for_command,
-        ensure_opencode_config_dir, find_opencode_config_dir, is_safe_instructions_filename,
-        managed_instructions_filenames, normalize_legacy_agent_command, profile_content_hash,
-        resolve_instructions_filename, resolve_target_filename, OpencodeConfigDirOutcome,
+        build_agent_spawn_command, command_runs_opencode,
+        default_instructions_filename_for_command, ensure_opencode_config_dir,
+        find_opencode_config_dir, is_safe_instructions_filename, managed_instructions_filenames,
+        normalize_legacy_agent_command, profile_content_hash, resolve_instructions_filename,
+        resolve_target_filename, OpencodeConfigDirOutcome,
     };
     use crate::config::settings::{
         AgentConfig, AppSettings, CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig,
@@ -922,6 +942,20 @@ mod tests {
         let got = normalize_legacy_agent_command("codex --yolo").unwrap();
         assert_eq!(got.shell, "codex");
         assert_eq!(got.shell_args, vec!["--yolo"]);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_launch_path_for_spawn_converts_verbatim_unc() {
+        let path = normalize_launch_path_for_spawn(Some(std::path::Path::new(
+            r"\\?\UNC\server\share\repo\.ac\wg-1\__agent_dev",
+        )))
+        .expect("normalized path");
+
+        assert_eq!(
+            path,
+            std::path::PathBuf::from(r"\\server\share\repo\.ac\wg-1\__agent_dev")
+        );
     }
 
     #[test]
@@ -1220,7 +1254,10 @@ mod tests {
 
         assert_eq!(
             spawn.shell,
-            expected_root.join("bin").join("codex.exe").to_string_lossy()
+            expected_root
+                .join("bin")
+                .join("codex.exe")
+                .to_string_lossy()
         );
         assert_eq!(spawn.shell_args, vec!["--flag"]);
     }
@@ -1438,7 +1475,10 @@ mod tests {
             default_instructions_filename_for_command("gemini -m gpt-5"),
             "GEMINI.md"
         );
-        assert_eq!(default_instructions_filename_for_command("codex"), "AGENTS.md");
+        assert_eq!(
+            default_instructions_filename_for_command("codex"),
+            "AGENTS.md"
+        );
         assert_eq!(
             default_instructions_filename_for_command("opencode"),
             "AGENTS.md"
@@ -1535,7 +1575,10 @@ mod tests {
         );
         // 4. neither configured agent nor detection -> None.
         assert_eq!(resolve_target_filename(None, &settings, None), None);
-        assert_eq!(resolve_target_filename(Some("ghost"), &settings, None), None);
+        assert_eq!(
+            resolve_target_filename(Some("ghost"), &settings, None),
+            None
+        );
     }
 
     #[test]
@@ -1559,24 +1602,24 @@ mod tests {
     #[test]
     fn is_safe_instructions_filename_rejects_unsafe_names() {
         let bad = [
-            "",                 // empty
-            "   ",              // whitespace only
-            ".md",              // empty stem
-            "AGENTS.txt",       // wrong extension
-            "AGENTS",           // no extension
-            "a/b.md",           // forward separator
-            "a\\b.md",          // backslash separator
-            "..\\x.md",         // traversal + separator
-            "../x.md",          // traversal
-            "a..md",            // contains ..
-            "C:x.md",           // drive prefix (colon)
-            "AGENTS.md:evil",   // NTFS Alternate Data Stream (colon)
-            "AGENTS.md ",       // trailing space
-            "AGENTS.md.",       // trailing dot
-            "AGENTS .md",       // space immediately before extension
-            "a\nb.md",          // control char
-            "CON.md",           // reserved device
-            "con.md",           // reserved device (case-insensitive)
+            "",               // empty
+            "   ",            // whitespace only
+            ".md",            // empty stem
+            "AGENTS.txt",     // wrong extension
+            "AGENTS",         // no extension
+            "a/b.md",         // forward separator
+            "a\\b.md",        // backslash separator
+            "..\\x.md",       // traversal + separator
+            "../x.md",        // traversal
+            "a..md",          // contains ..
+            "C:x.md",         // drive prefix (colon)
+            "AGENTS.md:evil", // NTFS Alternate Data Stream (colon)
+            "AGENTS.md ",     // trailing space
+            "AGENTS.md.",     // trailing dot
+            "AGENTS .md",     // space immediately before extension
+            "a\nb.md",        // control char
+            "CON.md",         // reserved device
+            "con.md",         // reserved device (case-insensitive)
             "PRN.md",
             "aux.md",
             "NUL.md",
@@ -1591,7 +1634,10 @@ mod tests {
             "LAST_AC_CONTEXT.md", // G9 (case-insensitive)
         ];
         for name in bad {
-            assert!(!is_safe_instructions_filename(name), "should reject {name:?}");
+            assert!(
+                !is_safe_instructions_filename(name),
+                "should reject {name:?}"
+            );
         }
         // Length cap (> 128 chars).
         let long = format!("{}.md", "a".repeat(130));
@@ -1625,7 +1671,10 @@ mod tests {
             "cmd.exe",
             &["/c".to_string(), r"C:\tools\opencode.cmd".to_string()]
         ));
-        assert!(command_runs_opencode("cmd.exe", &["/c opencode.bat".to_string()]));
+        assert!(command_runs_opencode(
+            "cmd.exe",
+            &["/c opencode.bat".to_string()]
+        ));
         // Non-opencode commands do not match.
         assert!(!command_runs_opencode("codex", &[]));
         assert!(!command_runs_opencode("claude", &["--resume".to_string()]));
@@ -1645,8 +1694,14 @@ mod tests {
             "claude",
             &[r"C:\Users\me\opencode.md".to_string()]
         ));
-        assert!(!command_runs_opencode("claude", &["opencode.json".to_string()]));
-        assert!(!command_runs_opencode("claude", &["opencode.txt".to_string()]));
+        assert!(!command_runs_opencode(
+            "claude",
+            &["opencode.json".to_string()]
+        ));
+        assert!(!command_runs_opencode(
+            "claude",
+            &["opencode.txt".to_string()]
+        ));
     }
 
     #[test]
@@ -1711,7 +1766,10 @@ mod tests {
         let outcome = ensure_opencode_config_dir("codex", &[], &BTreeMap::new(), &profile_env);
 
         assert_eq!(outcome, OpencodeConfigDirOutcome::Skipped);
-        assert!(!target.exists(), "must not create the dir for a non-opencode command");
+        assert!(
+            !target.exists(),
+            "must not create the dir for a non-opencode command"
+        );
     }
 
     #[test]
@@ -1789,7 +1847,10 @@ mod tests {
         // launch_path None is fine: a literal absolute value needs no placeholder context.
         let spawn = build_agent_spawn_command(&settings, "opencode", None, Some("A")).unwrap();
 
-        assert!(target.is_dir(), "build should have created OPENCODE_CONFIG_DIR");
+        assert!(
+            target.is_dir(),
+            "build should have created OPENCODE_CONFIG_DIR"
+        );
         let env: BTreeMap<_, _> = spawn.child_env.into_iter().collect();
         assert_eq!(
             env.get("OPENCODE_CONFIG_DIR").map(String::as_str),
@@ -1902,7 +1963,10 @@ mod tests {
         let expected_replica = canonical_replica(&replica);
         let workspace = expected_replica.parent().unwrap().parent().unwrap();
         let matrix = workspace.join("_agent_dev-rust");
-        let letter = spawn.profile_resolution.effective_profile.to_ascii_lowercase();
+        let letter = spawn
+            .profile_resolution
+            .effective_profile
+            .to_ascii_lowercase();
 
         use crate::config::config_seed::ConfigSeedTier;
         // Workspace tiers outrank matrix tiers; profile beats base in each. The
@@ -2075,7 +2139,11 @@ mod tests {
         }
     }
 
-    fn settings_with_cell(agent_command: &str, letter: &str, cell: ProfileCellConfig) -> AppSettings {
+    fn settings_with_cell(
+        agent_command: &str,
+        letter: &str,
+        cell: ProfileCellConfig,
+    ) -> AppSettings {
         let mut settings = AppSettings {
             agents: vec![agent("codex", agent_command)],
             ..AppSettings::default()
@@ -2098,7 +2166,8 @@ mod tests {
         assert_eq!(a, b, "same inputs must hash identically");
         assert_eq!(a.len(), 16, "hash must be 16 chars");
         assert!(
-            a.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            a.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
             "hash must be lowercase hex: {a}"
         );
     }
@@ -2126,7 +2195,10 @@ mod tests {
         let h2 = build_agent_spawn_command(&s2, "codex", None, Some("A"))
             .unwrap()
             .profile_content_hash;
-        assert_ne!(h1, h2, "an agent-base edit must flip the effective-command hash");
+        assert_ne!(
+            h1, h2,
+            "an agent-base edit must flip the effective-command hash"
+        );
     }
 
     #[test]
@@ -2177,7 +2249,10 @@ mod tests {
 
     #[test]
     fn compose_effective_command_joins_and_drops_empty_sides() {
-        assert_eq!(super::compose_effective_command("claude", "--x"), "claude --x");
+        assert_eq!(
+            super::compose_effective_command("claude", "--x"),
+            "claude --x"
+        );
         assert_eq!(super::compose_effective_command("claude", ""), "claude");
         assert_eq!(super::compose_effective_command("", "--x"), "--x");
         assert_eq!(super::compose_effective_command("", ""), "");
@@ -2289,7 +2364,10 @@ mod tests {
         assert_eq!(merged.get(&key("ka")).map(String::as_str), Some("agent"));
         assert_eq!(merged.get(&key("kb")).map(String::as_str), Some("cell")); // profile wins
         assert_eq!(merged.get(&key("kc")).map(String::as_str), Some("cell"));
-        assert!(!merged.contains_key(&key("koff")), "disabled rows are excluded");
+        assert!(
+            !merged.contains_key(&key("koff")),
+            "disabled rows are excluded"
+        );
     }
 
     #[cfg(windows)]

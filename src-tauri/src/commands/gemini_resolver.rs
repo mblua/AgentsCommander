@@ -48,12 +48,12 @@ pub(crate) fn lookup_chats_dir_for_cwd(gemini_home: &Path, cwd: &str) -> Option<
 }
 
 /// Canonicalize a path-string for cwd comparison against `projects.json` keys.
-/// On Windows: strip `\\?\` prefix + normalize `/` -> `\` + lowercase. On Unix:
-/// lowercase only.
+/// On Windows: strip verbatim drive or UNC prefixes, convert `/` to `\`, and
+/// lowercase. On Unix: lowercase only.
 #[cfg(windows)]
 pub(crate) fn canonicalize_cwd_for_gemini(cwd: &str) -> String {
-    let stripped = cwd.strip_prefix(r"\\?\").unwrap_or(cwd);
-    stripped.replace('/', "\\").to_lowercase()
+    let normalized = crate::path_utils::normalize_windows_verbatim_path(cwd);
+    normalized.replace('/', "\\").to_lowercase()
 }
 
 #[cfg(not(windows))]
@@ -131,6 +131,19 @@ mod tests {
 
         let chats = lookup_chats_dir_for_cwd(&gemini, "C:/Users/Foo");
         assert!(chats.is_some());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn canonicalize_cwd_for_gemini_matches_ordinary_and_verbatim_unc() {
+        assert_eq!(
+            canonicalize_cwd_for_gemini(r"\\?\UNC\server\share\Repo"),
+            canonicalize_cwd_for_gemini(r"\\server\share\Repo")
+        );
+        assert_eq!(
+            canonicalize_cwd_for_gemini(r"\\?\UNC\server\share\Repo"),
+            r"\\server\share\repo"
+        );
     }
 
     #[test]

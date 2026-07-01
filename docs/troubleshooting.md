@@ -6,13 +6,13 @@ For developers hitting an error. Skim the headings for the symptom that matches 
 
 ### Windows: SmartScreen blocks the installer
 
-The Windows release is signed by SignPath, but a freshly-released asset may not have reputation yet. Click **More info → Run anyway**. To verify the signature first:
+Windows code signing is planned through SignPath, but current release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. SmartScreen can also warn on newly signed apps before they build reputation. Before running a downloaded installer, verify its checksum against the release `SHASUMS256.txt` file and inspect Authenticode status:
 
 ```powershell
 Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
 ```
 
-`Status` should read `Valid`. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
+Until Windows signing is active, `Status` may read `NotSigned`. Once SignPath signing is active, `Status` should read `Valid`. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
 
 ### Linux: `.AppImage` will not execute
 

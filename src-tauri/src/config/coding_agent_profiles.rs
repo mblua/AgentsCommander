@@ -92,8 +92,7 @@ fn write_tooling_string(agent_dir: &Path, key: &str, value: Option<&str>) -> Res
 }
 
 fn strip_extended_prefix(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    s.strip_prefix(r"\\?\").map(PathBuf::from).unwrap_or(path)
+    crate::path_utils::normalize_windows_verbatim_path_buf(&path)
 }
 
 fn canonical_existing_dir(path: &Path, label: &str) -> Result<PathBuf, String> {
@@ -728,6 +727,8 @@ mod tests {
     use crate::config::settings::{AgentConfig, ProfileCellConfig, ProfileSlotConfig};
     use std::collections::BTreeMap;
     use std::path::Path;
+    #[cfg(windows)]
+    use std::path::PathBuf;
 
     fn settings_with_cells(cells: &[(&str, Vec<&str>)]) -> AppSettings {
         let mut settings = AppSettings::default();
@@ -780,6 +781,15 @@ mod tests {
             })
             .collect();
         settings
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn strip_extended_prefix_converts_verbatim_unc() {
+        assert_eq!(
+            strip_extended_prefix(PathBuf::from(r"\\?\UNC\server\share\repo")),
+            PathBuf::from(r"\\server\share\repo")
+        );
     }
 
     fn settings_with_project(project: &Path) -> AppSettings {
@@ -1058,7 +1068,9 @@ mod tests {
         // The Root Agent dir name does NOT start with `__agent_`/`_agent_`, but it
         // is a legitimate replica running a coding agent: the hash must persist
         // and round-trip so drift survives an AC restart (#592 Root Agent fix).
-        let root_agent = temp.path().join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
+        let root_agent = temp
+            .path()
+            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
         std::fs::create_dir_all(&root_agent).unwrap();
 
         set_replica_profile_content_hash(&root_agent, "cafef00dcafef00d").unwrap();
