@@ -34,16 +34,24 @@ pub fn format_pty_wrap(from: &str, body: &str) -> String {
 /// Fixed-char portion of the `--get-output` response-marker framing that the
 /// mailbox appends to the PTY wrap, with empty request-id placeholders. This is
 /// exactly the delta between `format_pty_wrap_with_markers` and `format_pty_wrap`
-/// when every placeholder is empty; the contract test locks it. The CLI clamp
-/// (`cli::send`) adds this plus two request-id lengths when `--get-output` is set.
+/// when every placeholder is empty; the contract test locks it. It sizes only
+/// the retained non-interactive marker path, which is unreachable today. The
+/// live interactive wake clamp in `cli::send` stays plain-wrap budgeting and does
+/// NOT add this overhead when `--get-output` is set; only the inert
+/// `notification_pty_overhead(_, true)` branch (reserved for a future
+/// non-interactive consumer) adds it plus two request-id lengths.
 pub const PTY_RESPONSE_MARKER_FIXED: usize =
     "\n(Reply between markers: %%AC_RESPONSE::::START%% ... %%AC_RESPONSE::::END%%)".len();
 
 /// Single-source render of the PTY wrap used for `--get-output` messages, which
 /// carries response markers so a non-interactive session can delimit its reply.
-/// The get-output injection site in `phone::mailbox` calls this; keeping the
-/// literal here (mirroring `format_pty_wrap`) lets the CLI clamp size the marker
-/// overhead from `PTY_RESPONSE_MARKER_FIXED` without the accounting drifting.
+/// The mailbox only injects these markers on a non-interactive session
+/// (`use_markers = get_output && !interactive`), which is unreachable today, so
+/// this is retained future-proofing. Keeping the literal here (mirroring
+/// `format_pty_wrap`) lets `PTY_RESPONSE_MARKER_FIXED` size the marker overhead
+/// for that future non-interactive path without the accounting drifting; today's
+/// live interactive wake clamp in `cli::send` budgets the plain wrap only and
+/// does not size marker overhead.
 pub fn format_pty_wrap_with_markers(from: &str, body: &str, request_id: &str) -> String {
     format!(
         "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n\r",
@@ -802,8 +810,10 @@ mod tests {
     /// Contract test: the empty expansion of the `--get-output` marker wrap must
     /// equal the plain wrap plus `PTY_RESPONSE_MARKER_FIXED`. Any edit to the
     /// marker literal in `format_pty_wrap_with_markers` (kept byte-identical with
-    /// the `phone::mailbox` get-output injection) trips this before the CLI clamp
-    /// accounting in `cli::send` can drift.
+    /// the `phone::mailbox` get-output injection) trips this before the retained
+    /// marker accounting (the inert `notification_pty_overhead(_, true)` branch in
+    /// `cli::send`, reserved for the future non-interactive path) can drift. The
+    /// live interactive wake clamp itself budgets the plain wrap only.
     #[test]
     fn format_pty_wrap_with_markers_overhead_matches_constant() {
         assert_eq!(
