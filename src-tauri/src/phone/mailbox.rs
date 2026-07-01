@@ -357,9 +357,13 @@ fn validate_root_sender_payload_with_root_dir(
 /// We walk ancestors: `<file>.json` → `outbox` → `<local-dir>` → `<__agent_*>` →
 /// `<wg-*>` → `<workspace>` → `<project_dir>`.
 ///
-/// Uses `to_str()?` (NOT `to_string_lossy()`) for parity with
-/// `list_peers::detect_wg_replica`. Keep this in lockstep with
-/// `cli::send::derive_root_project_dir`.
+/// Uses `to_str()` (NOT `to_string_lossy()`) for parity with
+/// `list_peers::detect_wg_replica`. The shared
+/// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
+/// `config::workspace::wg_replica_layout_from_agent_dir` (single source with
+/// `cli::send::derive_root_project_dir` and `list_peers::detect_wg_replica`,
+/// see #726); only the outbox-specific `<file>.json -> outbox -> <local-dir>`
+/// prefix to reach the `__agent_*` dir stays here.
 fn derive_project_from_outbox_path(outbox_file: &Path) -> Result<Option<String>, String> {
     let Some(canon) = std::fs::canonicalize(outbox_file).ok() else {
         return Ok(None);
@@ -377,37 +381,10 @@ fn derive_project_from_outbox_path(outbox_file: &Path) -> Result<Option<String>,
     let Some(agent_dir) = local_dir.parent() else {
         return Ok(None);
     };
-    let Some(agent_name) = agent_dir.file_name().and_then(|n| n.to_str()) else {
-        return Ok(None);
-    };
-    if !agent_name.starts_with("__agent_") {
-        return Ok(None);
+    match crate::config::workspace::wg_replica_layout_from_agent_dir(agent_dir)? {
+        Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
+        None => Ok(None),
     }
-    let Some(wg_dir) = agent_dir.parent() else {
-        return Ok(None);
-    };
-    let Some(wg_name) = wg_dir.file_name().and_then(|n| n.to_str()) else {
-        return Ok(None);
-    };
-    if !wg_name.starts_with("wg-") {
-        return Ok(None);
-    }
-    let Some(workspace_dir) = wg_dir.parent() else {
-        return Ok(None);
-    };
-    if !workspace_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(crate::config::workspace::is_workspace_dir_name)
-        .unwrap_or(false)
-    {
-        return Ok(None);
-    }
-    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)?;
-    let Some(project_dir) = workspace_dir.parent() else {
-        return Ok(None);
-    };
-    Ok(project_dir.to_str().map(|path| path.to_string()))
 }
 
 /// Tracks delivery attempts for a single outbox message.

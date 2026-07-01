@@ -176,52 +176,24 @@ fn wait_for_response(
 }
 
 /// If `root` lives inside `<project_dir>/<Project AC Root>/wg-<N>-*/__agent_*/`,
-/// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
-/// inside a WG-replica shape OR if the resulting `project_dir` is not valid
-/// UTF-8 (parity with `list_peers::detect_wg_replica`, which also uses
-/// `to_str()?` rather than `to_string_lossy()`).
+/// return `project_dir` as a UTF-8 `String` (`None` if the shape does not match
+/// or `project_dir` is not valid UTF-8, matching `list_peers::detect_wg_replica`
+/// which also uses `to_str()` rather than `to_string_lossy()`).
 ///
-/// Mirrors the WG-replica detection in `list_peers::detect_wg_replica` so that
-/// `send` resolves WG-peer targets against the same root-walk-up source that
-/// `list-peers` uses to emit them with `reachable: true`. See #228.
-///
-/// Keep in lockstep with `list_peers::detect_wg_replica` and
-/// `phone::mailbox::derive_project_from_outbox_path`.
+/// Thin wrapper over `config::workspace::wg_replica_layout_from_agent_dir`, the
+/// single source of the WG-replica walk-up shared with
+/// `list_peers::detect_wg_replica` and
+/// `phone::mailbox::derive_project_from_outbox_path`, so `send` resolves WG-peer
+/// targets against the same source `list-peers` reports as `reachable: true`.
+/// See #228 / #726.
 fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
     let Some(canon) = std::fs::canonicalize(root).ok() else {
         return Ok(None);
     };
-    let Some(my_dir_name) = canon.file_name().and_then(|name| name.to_str()) else {
-        return Ok(None);
-    };
-    if !my_dir_name.starts_with("__agent_") {
-        return Ok(None);
+    match crate::config::workspace::wg_replica_layout_from_agent_dir(&canon)? {
+        Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
+        None => Ok(None),
     }
-    let Some(wg_dir) = canon.parent() else {
-        return Ok(None);
-    };
-    let Some(wg_name) = wg_dir.file_name().and_then(|name| name.to_str()) else {
-        return Ok(None);
-    };
-    if !wg_name.starts_with("wg-") {
-        return Ok(None);
-    }
-    let Some(workspace_dir) = wg_dir.parent() else {
-        return Ok(None);
-    };
-    if !workspace_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(crate::config::workspace::is_workspace_dir_name)
-        .unwrap_or(false)
-    {
-        return Ok(None);
-    }
-    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)?;
-    let Some(project_dir) = workspace_dir.parent() else {
-        return Ok(None);
-    };
-    Ok(project_dir.to_str().map(|path| path.to_string()))
 }
 
 fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
