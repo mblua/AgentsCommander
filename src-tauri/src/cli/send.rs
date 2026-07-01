@@ -207,6 +207,23 @@ fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> 
     crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)
 }
 
+/// v4 UUID string length. Request ids are `Uuid::new_v4().to_string()`, so the
+/// `--get-output` response markers embed two 36-char ids.
+const REQUEST_ID_LEN: usize = 36;
+
+/// Byte width the injected PTY notification adds around the message body: the
+/// plain wrap plus the sender name, and when `get_output` is set the response
+/// marker framing that `phone::mailbox` injects at the get-output site
+/// (`PTY_RESPONSE_MARKER_FIXED` plus two request ids). Sizing the clamp from the
+/// same numbers keeps it in lockstep with what actually reaches the PTY.
+fn notification_pty_overhead(sender_len: usize, get_output: bool) -> usize {
+    let mut overhead = crate::phone::messaging::PTY_WRAP_FIXED + sender_len;
+    if get_output {
+        overhead += crate::phone::messaging::PTY_RESPONSE_MARKER_FIXED + 2 * REQUEST_ID_LEN;
+    }
+    overhead
+}
+
 pub fn execute(args: SendArgs) -> i32 {
     let root = match args.root {
         Some(ref r) => r.clone(),
@@ -270,17 +287,22 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     };
     if let Some(root_project) = root_project {
-        // Canonicalize once outside the dedup closure. If canonicalization of
-        // `root_project` itself fails (rare — it just resolved milliseconds
-        // ago inside `derive_root_project_dir`), fall back to string-equality
-        // rather than a broken `None == None` match.
+        // Canonicalize the target once. Compare by string first and only fall
+        // back to a per-path canonicalize syscall when the strings differ, so the
+        // common "project already registered" case does no extra filesystem work.
+        // If canonicalizing `root_project` itself fails (rare: it resolved
+        // milliseconds ago inside `derive_root_project_dir`), the string check
+        // still catches an exact duplicate.
         let canon_root_project = std::fs::canonicalize(&root_project).ok();
-        let already_present = effective_project_paths
-            .iter()
-            .any(|p| match &canon_root_project {
+        let already_present = effective_project_paths.iter().any(|p| {
+            if p == &root_project {
+                return true;
+            }
+            match &canon_root_project {
                 Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
-                None => p == &root_project,
-            });
+                None => false,
+            }
+        });
         if !already_present {
             effective_project_paths.push(root_project);
         }
@@ -397,9 +419,11 @@ pub fn execute(args: SendArgs) -> i32 {
             );
         }
 
-        // PTY_SAFE_MAX clamp (trimmed overhead: the wrap no longer embeds
-        // wg_root or bin_path — only `from` and the fixed framing remain).
-        let overhead = crate::phone::messaging::PTY_WRAP_FIXED + sender.len();
+        // PTY_SAFE_MAX clamp. The wrap no longer embeds wg_root or bin_path, so
+        // the overhead is the fixed framing plus `from`. With `--get-output` the
+        // mailbox also injects the response-marker framing, so count it here or a
+        // near-limit path could pass this check yet truncate once injected.
+        let overhead = notification_pty_overhead(sender.len(), args.get_output);
         if body.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
             eprintln!(
                 "Error: notification exceeds PTY-safe length (body {} + overhead {} > {}). \
@@ -694,6 +718,25 @@ mod tests {
             validate_root_agent_delivery_kind(false, Some("compact")),
             Ok(())
         );
+    }
+
+    #[test]
+    fn get_output_markers_tighten_pty_overhead() {
+        let sender_len = "project:wg-1-team/agent".len();
+        let plain = notification_pty_overhead(sender_len, false);
+        let with_markers = notification_pty_overhead(sender_len, true);
+
+        // The get-output framing adds the marker fixed cost plus two request ids.
+        assert_eq!(
+            with_markers - plain,
+            crate::phone::messaging::PTY_RESPONSE_MARKER_FIXED + 2 * REQUEST_ID_LEN
+        );
+
+        // A body that exactly fills the plain-wrap budget must overflow once the
+        // get-output markers are counted, so the clamp rejects it.
+        let body_len = crate::phone::messaging::PTY_SAFE_MAX - plain;
+        assert!(body_len + plain <= crate::phone::messaging::PTY_SAFE_MAX);
+        assert!(body_len + with_markers > crate::phone::messaging::PTY_SAFE_MAX);
     }
 
     #[test]

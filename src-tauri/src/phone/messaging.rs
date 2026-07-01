@@ -31,6 +31,26 @@ pub fn format_pty_wrap(from: &str, body: &str) -> String {
     format!("\n[Message from {}] {}\n\r", from, body)
 }
 
+/// Fixed-char portion of the `--get-output` response-marker framing that the
+/// mailbox appends to the PTY wrap, with empty request-id placeholders. This is
+/// exactly the delta between `format_pty_wrap_with_markers` and `format_pty_wrap`
+/// when every placeholder is empty; the contract test locks it. The CLI clamp
+/// (`cli::send`) adds this plus two request-id lengths when `--get-output` is set.
+pub const PTY_RESPONSE_MARKER_FIXED: usize =
+    "\n(Reply between markers: %%AC_RESPONSE::::START%% ... %%AC_RESPONSE::::END%%)".len();
+
+/// Single-source render of the PTY wrap used for `--get-output` messages, which
+/// carries response markers so a non-interactive session can delimit its reply.
+/// The get-output injection site in `phone::mailbox` calls this; keeping the
+/// literal here (mirroring `format_pty_wrap`) lets the CLI clamp size the marker
+/// overhead from `PTY_RESPONSE_MARKER_FIXED` without the accounting drifting.
+pub fn format_pty_wrap_with_markers(from: &str, body: &str, request_id: &str) -> String {
+    format!(
+        "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n\r",
+        from, body, request_id, request_id
+    )
+}
+
 pub fn format_file_notification(abs_path: &str) -> String {
     format!(
         "{}{}{}",
@@ -233,10 +253,9 @@ pub fn validate_filename_shape(name: &str) -> Result<(), MessagingError> {
     }
 
     // Locate the "to" literal. Must be at index >= 3 (from_short has >=1 part)
-    // and <= parts.len()-3 (to_short and slug each have >=1 part).
-    if parts.len() < 3 {
-        return Err(invalid());
-    }
+    // and <= parts.len()-3 (to_short and slug each have >=1 part). parts.len()
+    // is already >= 6 here (checked above), so only the search-window bound
+    // below can reject.
     let search_end = parts.len() - 2;
     if 3 >= search_end {
         return Err(invalid());
@@ -778,6 +797,35 @@ mod tests {
     fn format_pty_wrap_matches_pty_wrap_fixed() {
         assert_eq!(format_pty_wrap("", "").len(), PTY_WRAP_FIXED);
         assert_eq!(PTY_WRAP_FIXED, 19);
+    }
+
+    /// Contract test: the empty expansion of the `--get-output` marker wrap must
+    /// equal the plain wrap plus `PTY_RESPONSE_MARKER_FIXED`. Any edit to the
+    /// marker literal in `format_pty_wrap_with_markers` (kept byte-identical with
+    /// the `phone::mailbox` get-output injection) trips this before the CLI clamp
+    /// accounting in `cli::send` can drift.
+    #[test]
+    fn format_pty_wrap_with_markers_overhead_matches_constant() {
+        assert_eq!(
+            format_pty_wrap_with_markers("", "", "").len(),
+            PTY_WRAP_FIXED + PTY_RESPONSE_MARKER_FIXED
+        );
+    }
+
+    /// Both the START and END markers carry the request id, so a non-empty id
+    /// adds `2 * id.len()` on top of `PTY_RESPONSE_MARKER_FIXED`.
+    #[test]
+    fn format_pty_wrap_with_markers_embeds_both_request_ids() {
+        let rid = "0123456789abcdef0123456789abcdef0123"; // 36 chars (v4 length)
+        let rendered = format_pty_wrap_with_markers("wg7-me", "hi", rid);
+        assert_eq!(rendered.matches(rid).count(), 2);
+        assert_eq!(
+            rendered.len(),
+            PTY_WRAP_FIXED + "wg7-me".len() + "hi".len() + PTY_RESPONSE_MARKER_FIXED + 2 * rid.len()
+        );
+        assert!(rendered.starts_with('\n'));
+        assert!(rendered.ends_with("\n\r"));
+        assert!(rendered.contains("%%AC_RESPONSE::"));
     }
 
     /// Structural round-trip: non-empty placeholders are rendered visibly.

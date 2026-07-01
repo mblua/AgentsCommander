@@ -2599,10 +2599,9 @@ impl MailboxPoller {
         // CLI clamp). Only the `--get-output` + `request_id` case wraps the
         // payload with response markers.
         let payload = match (use_markers, msg.request_id.as_ref()) {
-            (true, Some(rid)) => format!(
-                "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n\r",
-                msg.from, msg.body, rid, rid
-            ),
+            (true, Some(rid)) => {
+                crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, &msg.body, rid)
+            }
             _ => crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body),
         };
 
