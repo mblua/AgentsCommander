@@ -148,6 +148,33 @@ fn wait_for_delivery_confirmation(
     }
 }
 
+/// Poll for the `--get-output` response file, returning its contents once it
+/// appears. Mirrors `wait_for_delivery_confirmation`: the file is checked BEFORE
+/// the timeout, so a response that lands in the final poll window (or with
+/// `timeout == 0`) is still read instead of being dropped. Returns `Err` on
+/// timeout or a read failure.
+fn wait_for_response(
+    response_path: &Path,
+    timeout: std::time::Duration,
+    poll_interval: std::time::Duration,
+) -> Result<String, String> {
+    let resp_start = std::time::Instant::now();
+
+    loop {
+        if response_path.exists() {
+            return std::fs::read_to_string(response_path)
+                .map_err(|e| format!("failed to read response file: {}", e));
+        }
+        if resp_start.elapsed() >= timeout {
+            return Err(format!(
+                "timeout waiting for response after {}s",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
 /// If `root` lives inside `<project_dir>/<Project AC Root>/wg-<N>-*/__agent_*/`,
 /// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
 /// inside a WG-replica shape OR if the resulting `project_dir` is not valid
@@ -530,33 +557,18 @@ pub fn execute(args: SendArgs) -> i32 {
         let response_path = responses_dir.join(format!("{}.json", rid));
         let timeout = std::time::Duration::from_secs(args.timeout);
         let poll_interval = std::time::Duration::from_secs(2);
-        let resp_start = std::time::Instant::now();
 
         crate::cli_println!("Waiting for response (timeout: {}s)...", args.timeout);
 
-        loop {
-            if resp_start.elapsed() >= timeout {
-                eprintln!(
-                    "Error: timeout waiting for response after {}s",
-                    args.timeout
-                );
+        match wait_for_response(&response_path, timeout, poll_interval) {
+            Ok(content) => {
+                crate::cli_println!("{}", content);
+                return 0;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
                 return 1;
             }
-
-            if response_path.exists() {
-                match std::fs::read_to_string(&response_path) {
-                    Ok(content) => {
-                        crate::cli_println!("{}", content);
-                        return 0;
-                    }
-                    Err(e) => {
-                        eprintln!("Error: failed to read response file: {}", e);
-                        return 1;
-                    }
-                }
-            }
-
-            std::thread::sleep(poll_interval);
         }
     }
 
@@ -752,6 +764,55 @@ mod tests {
         assert!(err.contains("delivery confirmation timeout"));
         assert!(err.contains("msg-3"));
         assert!(err.contains(&temp.path().display().to_string()));
+    }
+
+    #[test]
+    fn wait_for_response_returns_present_file_at_zero_timeout() {
+        // Regression lock for the ordering bug: a response already on disk must
+        // be read even when the timeout has fully elapsed (timeout == 0). The old
+        // timeout-first ordering dropped it and returned a timeout error instead.
+        let temp = tempfile::TempDir::new().unwrap();
+        let response_path = temp.path().join("resp.json");
+        std::fs::write(&response_path, "{\"ok\":true}").unwrap();
+
+        let result = wait_for_response(
+            &response_path,
+            std::time::Duration::from_secs(0),
+            std::time::Duration::from_millis(1),
+        );
+
+        assert_eq!(result.unwrap(), "{\"ok\":true}");
+    }
+
+    #[test]
+    fn wait_for_response_returns_present_file_within_window() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let response_path = temp.path().join("resp.json");
+        std::fs::write(&response_path, "hello").unwrap();
+
+        let result = wait_for_response(
+            &response_path,
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(1),
+        );
+
+        assert_eq!(result.unwrap(), "hello");
+    }
+
+    #[test]
+    fn wait_for_response_times_out_when_absent() {
+        // The timeout must still fire (no infinite loop) when no file appears.
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = temp.path().join("never.json");
+
+        let err = wait_for_response(
+            &missing,
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("timeout waiting for response"));
     }
 
     #[test]
