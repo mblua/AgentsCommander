@@ -8,6 +8,7 @@ pub mod network;
 pub mod phone;
 pub mod pty;
 pub mod resource_monitor;
+pub mod screenshot;
 pub mod session;
 pub mod shutdown;
 pub mod telegram;
@@ -366,6 +367,11 @@ pub fn run(
     );
     let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
     let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
+    // #714 screenshot capture lifecycle + global-hotkey registration state.
+    let screenshot_capture_state: screenshot::ScreenshotCaptureState =
+        Arc::new(tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle));
+    let screenshot_hotkey_state: screenshot::ScreenshotHotkeyState =
+        Arc::new(std::sync::Mutex::new(screenshot::ScreenshotHotkeyRuntime::default()));
     let settings_for_web = Arc::clone(&settings);
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
@@ -400,8 +406,25 @@ pub fn run(
     let ui_automation_state_for_setup = ui_automation_state.clone();
     let ui_automation_state_for_exit = ui_automation_state.clone();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    // #714 clipboard + global-shortcut plugins are referenced ONLY on Windows so
+    // non-Windows release builds never link them (screenshot capture is
+    // Windows-only for this issue). The rest of the builder chain is shared.
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+
+    #[cfg(target_os = "windows")]
+    let builder = builder
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        crate::screenshot::begin_capture_from_hotkey(app.clone());
+                    }
+                })
+                .build(),
+        );
+
+    builder
         .manage(master_token)
         .manage(app_outbox)
         .manage(session_mgr)
@@ -425,6 +448,8 @@ pub fn run(
         .manage(shutdown_signal)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
         .manage(Arc::new(PendingSelfClear::default()))
+        .manage(screenshot_capture_state) // #714
+        .manage(screenshot_hotkey_state) // #714
         .setup(move |app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
@@ -478,6 +503,23 @@ pub fn run(
                 Some(broadcaster_for_pty),
             )));
             app.manage(pty_mgr.clone());
+
+            // #714 register the configured global screenshot hotkey. Windows-only
+            // effect; on other targets register_configured_hotkey records an
+            // unsupported status and returns Ok so startup does not warn.
+            {
+                let screenshot_hotkey = {
+                    let s = app.state::<SettingsState>();
+                    tauri::async_runtime::block_on(async {
+                        s.read().await.screenshot_capture_hotkey.clone()
+                    })
+                };
+                if let Err(e) =
+                    crate::screenshot::register_configured_hotkey(app.handle(), &screenshot_hotkey)
+                {
+                    log::warn!("[screenshot] global hotkey registration failed: {}", e);
+                }
+            }
 
             // Start web server if enabled in settings
             {
@@ -1923,6 +1965,11 @@ pub fn run(
             commands::role_templates::list_role_templates,
             commands::role_templates::get_agency_templates_status,
             commands::role_templates::update_agency_templates,
+            commands::screenshot::screenshot_get_overlay_state,
+            commands::screenshot::screenshot_confirm_selection,
+            commands::screenshot::screenshot_cancel_capture,
+            commands::screenshot::screenshot_get_hotkey_status,
+            commands::screenshot::screenshot_reload_hotkey,
         ])
         .build(tauri::generate_context!())
         .expect("error while building application")
@@ -1993,6 +2040,16 @@ pub fn run(
                                 );
                             }
                         }
+                    }
+                    // #714 screenshot overlay destroyed (user close, crash, or our
+                    // own teardown): clear capture state and destroy sibling
+                    // overlays. Idempotent — a no-op once state is already Idle.
+                    if label.starts_with("screenshot-overlay-") {
+                        let label = label.to_string();
+                        let app = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            crate::screenshot::handle_overlay_window_destroyed(app, label).await;
+                        });
                     }
                 }
                 tauri::RunEvent::Exit => {

@@ -36,7 +36,13 @@ rfd = "0.15"
 tauri-plugin-dialog = "2.6.0"
 which = "7"
 
+# #714 Native screenshot capture is Windows-only for this issue. Non-Windows
+# builds compile through the `screenshot::unsupported` stub and never link these.
 [target.'cfg(windows)'.dependencies]
+tauri-plugin-global-shortcut = "2.3.2"
+tauri-plugin-clipboard-manager = "2.3.2"
+xcap = "0.9.6"
+image = "0.25.10"
 windows-sys = { version = "0.59", features = [
     "Win32_System_Console",
     "Win32_Foundation",
