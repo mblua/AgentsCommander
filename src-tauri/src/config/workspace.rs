@@ -97,3 +97,127 @@ pub fn ensure_authoritative_workspace_dir(workspace_dir: &Path) -> Result<(), St
         ))
     }
 }
+
+/// The WG-replica path layout `<project_dir>/<workspace>/wg-*/__agent_*`, as
+/// resolved by [`wg_replica_layout_from_agent_dir`]. Absolute paths, except the
+/// two names, which the shape checks already proved are valid UTF-8.
+pub struct WgReplicaLayout {
+    /// Agent name with the `__agent_` prefix stripped.
+    pub agent_name: String,
+    /// The `wg-<N>-*` directory name.
+    pub wg_name: String,
+    /// Absolute path to the `wg-<N>-*` directory.
+    pub wg_dir: PathBuf,
+    /// Absolute path to the Project AC Root directory.
+    pub workspace_dir: PathBuf,
+    /// Absolute path to the project directory (parent of the Project AC Root).
+    pub project_dir: PathBuf,
+}
+
+/// Given an already-canonicalized agent replica directory (the `__agent_*`
+/// folder), walk up the WG-replica layout `__agent_* -> wg-* -> <workspace> ->
+/// <project>` and return its pieces.
+///
+/// Returns `Ok(None)` when `agent_dir` is not a WG-replica shape (wrong name
+/// prefix, missing ancestor, or non-authoritative workspace name), and `Err`
+/// only when the workspace fails [`ensure_authoritative_workspace_dir`].
+///
+/// Single source for the walk-up shared by `cli::send::derive_root_project_dir`,
+/// `cli::list_peers::detect_wg_replica`, and
+/// `phone::mailbox::derive_project_from_outbox_path`. Each caller canonicalizes
+/// its own input (an agent root, or an outbox file walked up to the agent dir)
+/// and applies its own final projection (full project path, project name, or the
+/// richer struct); the shared shape checks live here so the three cannot drift.
+pub fn wg_replica_layout_from_agent_dir(
+    agent_dir: &Path,
+) -> Result<Option<WgReplicaLayout>, String> {
+    let Some(agent_name) = agent_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("__agent_"))
+    else {
+        return Ok(None);
+    };
+    let agent_name = agent_name.to_string();
+
+    let Some(wg_dir) = agent_dir.parent() else {
+        return Ok(None);
+    };
+    let Some(wg_name) = wg_dir.file_name().and_then(|name| name.to_str()) else {
+        return Ok(None);
+    };
+    if !wg_name.starts_with("wg-") {
+        return Ok(None);
+    }
+
+    let Some(workspace_dir) = wg_dir.parent() else {
+        return Ok(None);
+    };
+    if !workspace_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(is_workspace_dir_name)
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+    ensure_authoritative_workspace_dir(workspace_dir)?;
+
+    let Some(project_dir) = workspace_dir.parent() else {
+        return Ok(None);
+    };
+
+    Ok(Some(WgReplicaLayout {
+        agent_name,
+        wg_name: wg_name.to_string(),
+        wg_dir: wg_dir.to_path_buf(),
+        workspace_dir: workspace_dir.to_path_buf(),
+        project_dir: project_dir.to_path_buf(),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wg_replica_layout_resolves_all_pieces() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-x");
+        let agent_dir = project.join(".ac").join("wg-1-devs").join("__agent_alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let canon = std::fs::canonicalize(&agent_dir).unwrap();
+
+        let layout = wg_replica_layout_from_agent_dir(&canon)
+            .unwrap()
+            .expect("WG replica layout should resolve");
+
+        assert_eq!(layout.agent_name, "alice");
+        assert_eq!(layout.wg_name, "wg-1-devs");
+        assert_eq!(layout.project_dir, std::fs::canonicalize(&project).unwrap());
+        assert_eq!(
+            layout.workspace_dir,
+            std::fs::canonicalize(project.join(".ac")).unwrap()
+        );
+    }
+
+    #[test]
+    fn wg_replica_layout_none_for_non_agent_dir() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path().join("proj-x").join(".ac").join("wg-1-devs");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Points at the wg dir, not an __agent_* dir.
+        let canon = std::fs::canonicalize(&dir).unwrap();
+        assert!(wg_replica_layout_from_agent_dir(&canon).unwrap().is_none());
+    }
+
+    #[test]
+    fn wg_replica_layout_none_for_non_wg_parent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // __agent_* dir whose parent is not a wg-* dir.
+        let agent_dir = temp.path().join("proj-x").join(".ac").join("__agent_alice");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let canon = std::fs::canonicalize(&agent_dir).unwrap();
+        assert!(wg_replica_layout_from_agent_dir(&canon).unwrap().is_none());
+    }
+}
