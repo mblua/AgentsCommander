@@ -54,8 +54,8 @@ pub(crate) fn resolve_codex_sessions_root_at(
 /// Canonicalize a path-string for cwd comparison against Codex's
 /// `session_meta.cwd` field.
 ///
-/// On Windows: lowercase + normalize `/` → `\` + strip the `\\?\` extended-
-/// length prefix that `std::fs::canonicalize` sometimes returns.
+/// On Windows: lowercase, convert `/` to `\`, and strip verbatim drive or
+/// verbatim UNC prefixes that `std::fs::canonicalize` sometimes returns.
 /// On Unix: lowercase only.
 ///
 /// **Must be applied to BOTH sides** inside `find_session_file` (H6): AC's
@@ -65,8 +65,8 @@ pub(crate) fn resolve_codex_sessions_root_at(
 pub(crate) fn canonicalize_cwd_for_codex(cwd: &str) -> String {
     #[cfg(windows)]
     {
-        let stripped = cwd.strip_prefix(r"\\?\").unwrap_or(cwd);
-        stripped.replace('/', "\\").to_lowercase()
+        let normalized = crate::path_utils::normalize_windows_verbatim_path(cwd);
+        normalized.replace('/', "\\").to_lowercase()
     }
     #[cfg(not(windows))]
     {
@@ -136,6 +136,19 @@ mod tests {
         assert_eq!(
             canonicalize_cwd_for_codex(r"\\?\C:/Users/Foo"),
             "c:\\users\\foo"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn canonicalize_cwd_for_codex_matches_ordinary_and_verbatim_unc() {
+        assert_eq!(
+            canonicalize_cwd_for_codex(r"\\?\UNC\server\share\Repo"),
+            canonicalize_cwd_for_codex(r"\\server\share\Repo")
+        );
+        assert_eq!(
+            canonicalize_cwd_for_codex(r"\\?\UNC\server\share\Repo"),
+            r"\\server\share\repo"
         );
     }
 

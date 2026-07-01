@@ -20,8 +20,7 @@ const AC_REPLICA_ROOT_ERROR: &str =
     "%AC_REPLICA_ROOT% requires an AC replica or root-agent launch root";
 const AC_WORKSPACE_ROOT_ERROR: &str =
     "%AC_WORKSPACE_ROOT% requires a launch root inside an AC (.ac) workspace";
-const AC_MATRIX_ROOT_ERROR: &str =
-    "%AC_MATRIX_ROOT% requires an AC workgroup replica launch root";
+const AC_MATRIX_ROOT_ERROR: &str = "%AC_MATRIX_ROOT% requires an AC workgroup replica launch root";
 const AC_PLACEHOLDER_LAUNCH_ROOT_ERROR: &str = "AC path placeholders require an AC launch root";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,7 +179,9 @@ pub fn reject_unexpanded_markers(
 }
 
 pub fn value_contains_ac_placeholder(value: &str) -> bool {
-    AC_PLACEHOLDER_TOKENS.iter().any(|token| value.contains(*token))
+    AC_PLACEHOLDER_TOKENS
+        .iter()
+        .any(|token| value.contains(*token))
 }
 
 pub fn ac_placeholder_error() -> &'static str {
@@ -221,8 +222,7 @@ fn is_marker_continue(byte: u8) -> bool {
 }
 
 fn strip_extended_prefix(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    s.strip_prefix(r"\\?\").map(PathBuf::from).unwrap_or(path)
+    crate::path_utils::normalize_windows_verbatim_path_buf(&path)
 }
 
 fn is_ac_replica_dir(path: &Path) -> bool {
@@ -250,9 +250,9 @@ fn is_root_agent_dir(path: &Path) -> bool {
 
 #[cfg(windows)]
 fn same_path_text(left: &Path, right: &Path) -> bool {
-    left.to_string_lossy()
-        .trim_start_matches(r"\\?\")
-        .eq_ignore_ascii_case(right.to_string_lossy().trim_start_matches(r"\\?\"))
+    let left = crate::path_utils::path_to_string_without_windows_verbatim_prefix(left);
+    let right = crate::path_utils::path_to_string_without_windows_verbatim_prefix(right);
+    left.eq_ignore_ascii_case(&right)
 }
 
 #[cfg(not(windows))]
@@ -267,6 +267,24 @@ mod tests {
     #[test]
     fn non_path_values_allow_dollar_markers() {
         reject_unexpanded_markers("s3cr$tP4ss ${NAME} $NAME", "env", false).unwrap();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn strip_extended_prefix_converts_verbatim_unc() {
+        assert_eq!(
+            strip_extended_prefix(PathBuf::from(r"\\?\UNC\server\share\repo")),
+            PathBuf::from(r"\\server\share\repo")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn same_path_text_matches_ordinary_and_verbatim_unc() {
+        assert!(same_path_text(
+            Path::new(r"\\server\share\repo"),
+            Path::new(r"\\?\UNC\server\share\repo")
+        ));
     }
 
     #[test]
@@ -290,7 +308,10 @@ mod tests {
 
     /// Create a real WG-replica launch root `<temp>/.ac/wg-7-dev-team/__agent_dev-rust`.
     fn make_replica(temp: &Path) -> PathBuf {
-        let replica = temp.join(".ac").join("wg-7-dev-team").join("__agent_dev-rust");
+        let replica = temp
+            .join(".ac")
+            .join("wg-7-dev-team")
+            .join("__agent_dev-rust");
         std::fs::create_dir_all(&replica).unwrap();
         replica
     }
@@ -368,12 +389,17 @@ mod tests {
         let replica = make_replica(temp.path());
         let ctx = placeholder_context_for_launch_root(&replica).unwrap();
 
-        let expected_replica = canonical_stripped(&replica).to_string_lossy().replace('\\', "/");
+        let expected_replica = canonical_stripped(&replica)
+            .to_string_lossy()
+            .replace('\\', "/");
         let out = expand_placeholders_in_content(
             "root=%AC_REPLICA_ROOT%/x and %AC_WORKSPACE_ROOT% and %AC_MATRIX_ROOT%",
             &ctx,
         );
-        assert!(out.contains(&format!("root={}/x", expected_replica)), "{out}");
+        assert!(
+            out.contains(&format!("root={}/x", expected_replica)),
+            "{out}"
+        );
         // No backslashes from the substituted paths (forward-slash normalized).
         assert!(!out.contains('\\'), "{out}");
     }
@@ -403,7 +429,10 @@ mod tests {
             "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT%",
             &normal,
         );
-        assert_eq!(out, "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT%");
+        assert_eq!(
+            out,
+            "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT%"
+        );
     }
 
     #[test]
@@ -458,7 +487,11 @@ mod tests {
 
     #[test]
     fn derive_matrix_root_matches_canonical_formula() {
-        let workspace = PathBuf::from(if cfg!(windows) { r"C:\proj\.ac" } else { "/proj/.ac" });
+        let workspace = PathBuf::from(if cfg!(windows) {
+            r"C:\proj\.ac"
+        } else {
+            "/proj/.ac"
+        });
         let replica = workspace.join("wg-7-dev-team").join("__agent_dev-rust");
         assert_eq!(
             derive_matrix_root(&replica, Some(&workspace)),

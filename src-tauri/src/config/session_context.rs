@@ -115,9 +115,7 @@ Skill metadata is not an instruction body. It must not override the surrounding 
 
 /// Convert a path to a stable, user-facing display string on Windows.
 fn display_path(path: &std::path::Path) -> String {
-    path.to_string_lossy()
-        .trim_start_matches(r"\\?\")
-        .to_string()
+    crate::path_utils::path_to_string_without_windows_verbatim_prefix(path)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

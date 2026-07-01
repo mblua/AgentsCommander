@@ -833,10 +833,8 @@ fn enumerate_profile_assignment_targets(
 
 pub(crate) fn canonical_compare_key(path: &Path) -> String {
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut text = path
-        .to_string_lossy()
-        .trim_start_matches(r"\\?\")
-        .replace('\\', "/");
+    let mut text =
+        crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path).replace('\\', "/");
     if cfg!(windows) {
         text = text.to_ascii_lowercase();
     }
@@ -854,12 +852,7 @@ fn canonical_real_dir(path: &Path, label: &str) -> Result<PathBuf, String> {
         ));
     }
     std::fs::canonicalize(path)
-        .map(|path| {
-            let text = path.to_string_lossy();
-            text.strip_prefix(r"\\?\")
-                .map(PathBuf::from)
-                .unwrap_or(path)
-        })
+        .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
         .map_err(|e| {
             format!(
                 "Failed to canonicalize {} '{}': {}",
@@ -966,9 +959,11 @@ fn build_profile_assignment_target(
         .map(str::to_string);
     ProfileAssignmentTarget {
         workgroup_name,
-        workgroup_path: wg_dir.to_string_lossy().to_string(),
+        workgroup_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(wg_dir),
         replica_name,
-        replica_path: replica_dir.to_string_lossy().to_string(),
+        replica_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+            replica_dir,
+        ),
         identity_path: identity.identity.clone(),
         origin_project,
         live_session_ids: live_by_cwd
@@ -1373,6 +1368,8 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::{build_profile_assignment_target, canonical_compare_key};
     use super::{
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
@@ -1384,6 +1381,8 @@ mod tests {
     };
     use crate::session::manager::SessionManager;
     use std::collections::BTreeMap;
+    #[cfg(windows)]
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -1401,6 +1400,39 @@ mod tests {
             }],
             ..AppSettings::default()
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn canonical_compare_key_converts_verbatim_unc() {
+        assert_eq!(
+            canonical_compare_key(Path::new(r"\\?\UNC\server\share\Repo")),
+            "//server/share/repo"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn profile_assignment_target_paths_convert_verbatim_unc() {
+        let live_by_cwd = BTreeMap::new();
+        let identity = crate::config::replica_identity::WgReplicaIdentity {
+            agent_name: "dev".to_string(),
+            workspace_dir: PathBuf::from(r"\\?\UNC\server\share\repo\.ac"),
+            matrix_dir: PathBuf::from(r"\\?\UNC\server\share\repo\.ac\_agent_dev"),
+            identity: "../../_agent_dev".to_string(),
+        };
+
+        let target = build_profile_assignment_target(
+            Path::new(r"\\?\UNC\server\share\repo\.ac\wg-1\__agent_dev"),
+            &identity,
+            &live_by_cwd,
+        );
+
+        assert_eq!(target.workgroup_path, r"\\server\share\repo\.ac\wg-1");
+        assert_eq!(
+            target.replica_path,
+            r"\\server\share\repo\.ac\wg-1\__agent_dev"
+        );
     }
 
     fn state_for(settings: AppSettings) -> SettingsState {
@@ -1545,7 +1577,10 @@ mod tests {
 
         let events = super::settings_draft_update_events(&before, &after);
         assert_eq!(events.env_agent_ids, vec!["agent-0".to_string()]);
-        assert!(!events.profiles_changed, "env-only edit is not a profiles change");
+        assert!(
+            !events.profiles_changed,
+            "env-only edit is not a profiles change"
+        );
     }
 
     #[tokio::test]

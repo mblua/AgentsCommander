@@ -838,7 +838,7 @@ pub(crate) async fn create_workgroup_on_disk(
     }
 
     let clone_errors = clone_missing_repos_for_workgroup(&wg_dir, &team_config.repos).await;
-    let result_path = wg_dir.to_string_lossy().to_string();
+    let result_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&wg_dir);
     log::info!(
         "[entity_creation] Created workgroup: {} ({} clone errors)",
         result_path,
@@ -995,7 +995,8 @@ pub async fn create_agent_matrix(
         let _warnings = apply_agent_matrix_settings_files(&created.agent_dir, flags);
     }
 
-    let result_path = created.agent_dir.to_string_lossy().to_string();
+    let result_path =
+        crate::path_utils::path_to_string_without_windows_verbatim_prefix(&created.agent_dir);
     log::debug!(
         "[entity_creation] Created agent matrix safe name: {}",
         created.safe_name
@@ -1172,7 +1173,7 @@ pub async fn create_team(
     )?;
     let team_dir = create_new_team_config_on_disk(&base, &safe_name, &config)?;
 
-    let result_path = team_dir.to_string_lossy().to_string();
+    let result_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&team_dir);
     log::info!("[entity_creation] Created team: {}", result_path);
     emit_coordinator_refresh(&app, session_mgr.inner()).await;
     Ok(CreatedEntityResult { path: result_path })
@@ -1332,7 +1333,7 @@ pub async fn create_workgroup(
         }
     }
 
-    let result_path = wg_dir.to_string_lossy().to_string();
+    let result_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&wg_dir);
     log::info!(
         "[entity_creation] Created workgroup: {} ({} clone errors)",
         result_path,
@@ -1414,7 +1415,9 @@ pub async fn delete_team(
             log::info!("[entity_creation] Deleted workgroup: {}", wg_name);
             // (#621) Drop this workgroup's coordinator_clocks keys (in-memory only;
             // one persist after the loop, see below).
-            if let Some(project_name) = Path::new(&project_path).file_name().and_then(|n| n.to_str())
+            if let Some(project_name) = Path::new(&project_path)
+                .file_name()
+                .and_then(|n| n.to_str())
             {
                 if let Some(clocks) =
                     app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
@@ -1489,7 +1492,10 @@ pub async fn delete_workgroup(
     delete_workgroup_dir_backend(&wg_dir, &workgroup_name, session_mgr.inner()).await?;
     // (#621) Drop the workgroup's coordinator_clocks keys from the in-memory store
     // and persist immediately (this command is not on the auto-close flush tick).
-    if let Some(project_name) = Path::new(&project_path).file_name().and_then(|n| n.to_str()) {
+    if let Some(project_name) = Path::new(&project_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+    {
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
         {
@@ -1643,8 +1649,7 @@ pub async fn update_team(
 fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<SessionRepo> {
     let resolved = replica_dir.join(rel);
     let abs = std::fs::canonicalize(&resolved).ok()?;
-    let s = abs.to_string_lossy();
-    let source_path = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
+    let source_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&abs);
     let dir = source_path
         .replace('\\', "/")
         .split('/')
@@ -2179,10 +2184,8 @@ async fn ensure_no_live_sessions_under_manager(
 
 fn path_key_for_delete(path: &Path) -> String {
     let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let text = resolved.to_string_lossy();
-    text.strip_prefix(r"\\?\")
-        .unwrap_or(&text)
-        .replace('\\', "/")
+    let text = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&resolved);
+    text.replace('\\', "/")
         .trim_end_matches('/')
         .to_ascii_lowercase()
 }
@@ -2407,14 +2410,7 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn git_cli_path(path: &Path) -> PathBuf {
-    let s = path.as_os_str().to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{}", rest))
-    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(rest)
-    } else {
-        path.to_path_buf()
-    }
+    crate::path_utils::normalize_windows_verbatim_path_buf(path)
 }
 
 #[cfg(not(windows))]
@@ -3885,25 +3881,44 @@ mod tests {
         let old = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
         let stale = cache.join("replica-context-aaa.md");
         std::fs::write(&stale, "x").unwrap();
-        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(old).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
         let fresh = cache.join("replica-context-bbb.md");
         std::fs::write(&fresh, "x").unwrap();
 
         // Remove wg-1: dir + clock key (cache via the age sweep).
-        assert!(matches!(try_atomic_delete_wg(&wg1), WgDeleteOutcome::Deleted));
+        assert!(matches!(
+            try_atomic_delete_wg(&wg1),
+            WgDeleteOutcome::Deleted
+        ));
         assert_eq!(clocks.remove_workgroup("Proj", "wg-1-team"), 1);
-        let swept =
-            sweep_context_cache_dir(&cache, SystemTime::now(), Duration::from_secs(30 * 24 * 60 * 60));
+        let swept = sweep_context_cache_dir(
+            &cache,
+            SystemTime::now(),
+            Duration::from_secs(30 * 24 * 60 * 60),
+        );
 
         assert!(!wg1.exists() && wg2.exists(), "only wg-1 dir removed");
         assert_eq!(clocks.last_user_message_at("Proj:wg-1-team/coord"), None);
         assert!(
-            clocks.last_user_message_at("Proj:wg-2-team/coord").is_some(),
+            clocks
+                .last_user_message_at("Proj:wg-2-team/coord")
+                .is_some(),
             "sibling clock intact"
         );
-        assert!(clocks.last_user_message_at("Proj/architect").is_some(), "origin clock intact");
+        assert!(
+            clocks.last_user_message_at("Proj/architect").is_some(),
+            "origin clock intact"
+        );
         assert_eq!(swept, 1);
-        assert!(!stale.exists() && fresh.exists(), "stale cache gone, fresh kept");
+        assert!(
+            !stale.exists() && fresh.exists(),
+            "stale cache gone, fresh kept"
+        );
     }
 
     #[test]
@@ -3935,10 +3950,15 @@ mod tests {
         assert_eq!(clocks.last_user_message_at("Proj:wg-2-squad/coord"), None);
         assert_eq!(clocks.last_user_message_at("Proj:wg-2-squad/dev"), None);
         assert!(
-            clocks.last_user_message_at("Proj:wg-9-other/coord").is_some(),
+            clocks
+                .last_user_message_at("Proj:wg-9-other/coord")
+                .is_some(),
             "other team wg intact"
         );
-        assert!(clocks.last_user_message_at("Proj/architect").is_some(), "origin intact");
+        assert!(
+            clocks.last_user_message_at("Proj/architect").is_some(),
+            "origin intact"
+        );
     }
 
     #[test]
@@ -3957,7 +3977,10 @@ mod tests {
 
         // Force the remove step to fail (rename succeeds, remove_dir_all errors -> Partial).
         let outcome = try_atomic_delete_wg_with_remove(&wg, |_p| {
-            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "blocked"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "blocked",
+            ))
         });
         // The production gate: clean the clock ONLY on Deleted.
         if matches!(outcome, WgDeleteOutcome::Deleted) {
@@ -3968,7 +3991,9 @@ mod tests {
             "forced failure is not a Deleted outcome"
         );
         assert!(
-            clocks.last_user_message_at("Proj:wg-1-team/coord").is_some(),
+            clocks
+                .last_user_message_at("Proj:wg-1-team/coord")
+                .is_some(),
             "a failed delete must keep the clock key"
         );
     }

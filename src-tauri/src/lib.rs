@@ -5,6 +5,7 @@ pub mod errors;
 pub mod logging;
 pub mod loops;
 pub mod network;
+pub mod path_utils;
 pub mod phone;
 pub mod pty;
 pub mod resource_monitor;

@@ -1084,14 +1084,21 @@ fn normalize_for_compare(path: &Path) -> String {
 }
 
 fn display_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .trim_start_matches(r"\\?\")
-        .to_string()
+    crate::path_utils::path_to_string_without_windows_verbatim_prefix(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn display_path_converts_verbatim_unc() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\ac-root-agent")),
+            r"\\server\share\ac-root-agent"
+        );
+    }
 
     #[cfg(unix)]
     fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
