@@ -248,6 +248,21 @@ fn surface_hotkey_failure(app: &AppHandle, message: &str) {
 /// Returns `BeginOutcome::Busy` (a no-op, not an error) when a capture is already
 /// in flight, so a debounced repeat hotkey press is silently ignored.
 pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
+    // 0. Busy pre-gate. If a capture is already in flight, bail out as a typed
+    //    Busy no-op BEFORE any fallible active-session/CWD resolution below. A
+    //    debounced repeat press during an in-flight capture whose active session
+    //    has since been cleared/deleted or switched to an unresolvable CWD would
+    //    otherwise surface an Err from that resolution and raise AC forward
+    //    mid-capture (polluting the frozen screenshot and showing a bogus
+    //    failure). The locked reserve in step 2 stays the race-closing
+    //    compare-and-set for the Idle path.
+    {
+        let state = app.state::<ScreenshotCaptureState>();
+        if let Some(outcome) = busy_pregate(state.inner()).await {
+            return Ok(outcome);
+        }
+    }
+
     // 1. Resolve the active session and its owning replica root.
     let session_mgr = app.state::<std::sync::Arc<tokio::sync::RwLock<SessionManager>>>();
     let active_id = {
@@ -338,6 +353,27 @@ pub async fn begin_capture(app: AppHandle) -> Result<BeginOutcome, String> {
         return Err(e);
     }
     Ok(BeginOutcome::Started)
+}
+
+/// Busy pre-gate for [`begin_capture`]: lock the lifecycle and return
+/// `Some(BeginOutcome::Busy)` when a capture is already in flight (any non-Idle
+/// state: `Starting`/`Active`/`Finishing`). Returns `None` only for `Idle`, so
+/// the caller may proceed to active-session/CWD resolution.
+///
+/// This MUST run before any fallible active-session/CWD resolution in
+/// `begin_capture`; otherwise a second hotkey press during an in-flight capture
+/// whose active session has since been cleared/deleted or switched to an
+/// unresolvable CWD would return a visible `Err` from that resolution and raise
+/// AgentsCommander forward mid-capture instead of being a silent `Busy` no-op.
+/// Taking only `&ScreenshotCaptureState` (no `AppHandle`/`SessionManager`) keeps
+/// the before-resolution ordering structurally unit-testable.
+async fn busy_pregate(state: &ScreenshotCaptureState) -> Option<BeginOutcome> {
+    let guard = state.lock().await;
+    if matches!(&*guard, ScreenshotCaptureLifecycle::Idle) {
+        None
+    } else {
+        Some(BeginOutcome::Busy)
+    }
 }
 
 async fn reset_starting_if_matches(app: &AppHandle, id: Uuid) {
@@ -1160,6 +1196,55 @@ mod tests {
         assert!(matches!(
             &*state.lock().await,
             ScreenshotCaptureLifecycle::Starting(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn busy_pregate_returns_busy_for_non_idle_before_resolution() {
+        // Idle: no short-circuit, so begin_capture proceeds to active-session/CWD
+        // resolution.
+        let idle: ScreenshotCaptureState =
+            std::sync::Arc::new(tokio::sync::Mutex::new(ScreenshotCaptureLifecycle::Idle));
+        assert!(busy_pregate(&idle).await.is_none());
+
+        // Every non-Idle state returns Busy. Because busy_pregate takes ONLY the
+        // lifecycle state (no AppHandle/SessionManager) it structurally cannot run
+        // the active-session/CWD resolution begin_capture does afterwards, proving
+        // the Busy no-op happens before any fallible resolution could surface an
+        // Err and raise AC mid-capture (Grinch #714 HIGH pre-gate ordering).
+        let starting: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
+            ScreenshotCaptureLifecycle::Starting(ScreenshotCaptureStarting {
+                id: Uuid::new_v4(),
+                target_session_id: Uuid::new_v4(),
+                target_session_name: "s".to_string(),
+                target_directory: PathBuf::from("x"),
+                created_at: Utc::now(),
+            }),
+        ));
+        assert!(matches!(
+            busy_pregate(&starting).await,
+            Some(BeginOutcome::Busy)
+        ));
+
+        let active: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
+            ScreenshotCaptureLifecycle::Active(ActiveScreenshotCapture {
+                id: Uuid::new_v4(),
+                target_session_id: Uuid::new_v4(),
+                target_session_name: "s".to_string(),
+                target_directory: PathBuf::from("x"),
+                monitors: Vec::new(),
+                overlay_labels: Vec::new(),
+                created_at: Utc::now(),
+            }),
+        ));
+        assert!(matches!(busy_pregate(&active).await, Some(BeginOutcome::Busy)));
+
+        let finishing: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
+            ScreenshotCaptureLifecycle::Finishing(Uuid::new_v4()),
+        ));
+        assert!(matches!(
+            busy_pregate(&finishing).await,
+            Some(BeginOutcome::Busy)
         ));
     }
 
