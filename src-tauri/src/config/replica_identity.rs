@@ -17,14 +17,11 @@ pub struct WgReplicaIdentity {
 }
 
 fn strip_unc(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    s.strip_prefix(r"\\?\").map(PathBuf::from).unwrap_or(path)
+    crate::path_utils::normalize_windows_verbatim_path_buf(&path)
 }
 
 fn display_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .trim_start_matches(r"\\?\")
-        .to_string()
+    crate::path_utils::path_to_string_without_windows_verbatim_prefix(path)
 }
 
 fn canonical_or_original(path: &Path) -> PathBuf {
@@ -420,6 +417,17 @@ pub fn read_and_repair_wg_replica_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn replica_identity_path_helpers_convert_verbatim_unc() {
+        let path = PathBuf::from(r"\\?\UNC\server\share\repo");
+        assert_eq!(strip_unc(path), PathBuf::from(r"\\server\share\repo"));
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\repo")),
+            r"\\server\share\repo"
+        );
+    }
 
     fn setup_replica(project_workspace_name: &str) -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("tempdir");

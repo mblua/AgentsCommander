@@ -69,6 +69,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "C:\\".to_string()),
             );
+            let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
             let session_name = args
                 .get("sessionName")
                 .and_then(|v| v.as_str())

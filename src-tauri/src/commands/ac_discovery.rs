@@ -292,17 +292,12 @@ fn extract_task_first_line(content: &str) -> Option<String> {
         .map(|l| l.trim_start_matches("# ").to_string())
 }
 
-/// Strip the Windows verbatim/UNC `\\?\` prefix if present so the emitted
-/// path matches the form `discover_project` produces (which never has the
-/// prefix because it comes from a `read_dir` walk). The codebase already
-/// applies the same strip downstream when embedding paths into the agent
-/// init prompt — see the `find_workgroup_task_path_handles_unc_prefix_input`
-/// test note in `session.rs`.
-fn strip_verbatim_prefix(p: &Path) -> PathBuf {
-    let s = p.to_string_lossy();
-    s.strip_prefix(r"\\?\")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| p.to_path_buf())
+fn normalize_projected_path(p: &Path) -> PathBuf {
+    crate::path_utils::normalize_windows_verbatim_path_buf(p)
+}
+
+fn projected_path_string(p: &Path) -> String {
+    crate::path_utils::path_to_string_without_windows_verbatim_prefix(p)
 }
 
 /// Detect git branch synchronously for a given directory path.
@@ -469,11 +464,8 @@ impl DiscoveryBranchWatcher {
         // output vs `discover_project` receiving a user-typed path) and emit doubled.
         let canonical_key = std::fs::canonicalize(project_dir)
             .ok()
-            .map(|p| {
-                let s = p.to_string_lossy();
-                s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
-            })
-            .unwrap_or_else(|| project_dir.to_string());
+            .map(|p| projected_path_string(&p))
+            .unwrap_or_else(|| projected_path_string(Path::new(project_dir)));
 
         // Invariant: git_repos order = replica.repo_paths order (which follows config.json `repos`).
         // Never sort or dedupe here.
@@ -728,7 +720,9 @@ impl DiscoveryBranchWatcher {
             // here because the parent is already the answer; calling it
             // would re-walk and add no information.
             if let Some(parent) = Path::new(&entry.replica_path).parent() {
-                wg_roots.entry(strip_verbatim_prefix(parent)).or_default();
+                wg_roots
+                    .entry(normalize_projected_path(parent))
+                    .or_default();
             }
         }
 
@@ -741,7 +735,7 @@ impl DiscoveryBranchWatcher {
             {
                 if let Some(parent) = task_path.parent() {
                     wg_roots
-                        .entry(strip_verbatim_prefix(parent))
+                        .entry(normalize_projected_path(parent))
                         .or_default()
                         .push(id);
                 }
@@ -975,7 +969,7 @@ pub async fn discover_ac_agents(
             let Some(workspace_dir) = existing_workspace_dir(&repo_dir) else {
                 continue;
             };
-            let repo_dir_str = repo_dir.to_string_lossy().to_string();
+            let repo_dir_str = projected_path_string(&repo_dir);
 
             // Opportunistic: ensure gitignore exists for existing projects
             let _ = ensure_workspace_gitignore(&workspace_dir);
@@ -1029,7 +1023,7 @@ pub async fn discover_ac_agents(
 
                     agents.push(AcAgentMatrix {
                         name: display_name,
-                        path: path.to_string_lossy().to_string(),
+                        path: projected_path_string(&path),
                         role_exists,
                         preferred_agent_id,
                     });
@@ -1049,7 +1043,7 @@ pub async fn discover_ac_agents(
                                 name.starts_with("repo-") && e.path().is_dir()
                             })
                         })
-                        .map(|e| e.path().to_string_lossy().to_string());
+                        .map(|e| projected_path_string(&e.path()));
 
                     // Scan __agent_* replicas inside the WG
                     let mut wg_agents: Vec<AcAgentReplica> = Vec::new();
@@ -1106,11 +1100,9 @@ pub async fn discover_ac_agents(
                                     .filter_map(|r| r.as_str())
                                     .filter_map(|rel| {
                                         let resolved = wg_path.join(rel);
-                                        std::fs::canonicalize(&resolved).ok().map(|p| {
-                                            let s = p.to_string_lossy();
-                                            // Strip \\?\ UNC prefix that canonicalize adds on Windows
-                                            s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
-                                        })
+                                        std::fs::canonicalize(&resolved)
+                                            .ok()
+                                            .map(|p| projected_path_string(&p))
                                     })
                                     .collect();
 
@@ -1170,7 +1162,7 @@ pub async fn discover_ac_agents(
 
                                 wg_agents.push(AcAgentReplica {
                                     name: replica_name,
-                                    path: wg_path.to_string_lossy().to_string(),
+                                    path: projected_path_string(&wg_path),
                                     identity_path,
                                     origin_project,
                                     preferred_agent_id,
@@ -1190,7 +1182,7 @@ pub async fn discover_ac_agents(
 
                     workgroups.push(AcWorkgroup {
                         name: dir_name.clone(),
-                        path: path.to_string_lossy().to_string(),
+                        path: projected_path_string(&path),
                         task,
                         task_title,
                         agents: wg_agents,
@@ -1556,7 +1548,7 @@ pub async fn discover_project(
 
             agents.push(AcAgentMatrix {
                 name: display_name,
-                path: entry_path.to_string_lossy().to_string(),
+                path: projected_path_string(&entry_path),
                 role_exists,
                 preferred_agent_id,
             });
@@ -1575,7 +1567,7 @@ pub async fn discover_project(
                         name.starts_with("repo-") && e.path().is_dir()
                     })
                 })
-                .map(|e| e.path().to_string_lossy().to_string());
+                .map(|e| projected_path_string(&e.path()));
 
             let mut wg_agents: Vec<AcAgentReplica> = Vec::new();
             if let Ok(wg_entries) = std::fs::read_dir(&entry_path) {
@@ -1628,10 +1620,9 @@ pub async fn discover_project(
                             .filter_map(|r| r.as_str())
                             .filter_map(|rel| {
                                 let resolved = wg_path.join(rel);
-                                std::fs::canonicalize(&resolved).ok().map(|p| {
-                                    let s = p.to_string_lossy();
-                                    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
-                                })
+                                std::fs::canonicalize(&resolved)
+                                    .ok()
+                                    .map(|p| projected_path_string(&p))
                             })
                             .collect();
 
@@ -1687,7 +1678,7 @@ pub async fn discover_project(
 
                         wg_agents.push(AcAgentReplica {
                             name: replica_name,
-                            path: wg_path.to_string_lossy().to_string(),
+                            path: projected_path_string(&wg_path),
                             identity_path,
                             origin_project,
                             preferred_agent_id,
@@ -1707,7 +1698,7 @@ pub async fn discover_project(
 
             workgroups.push(AcWorkgroup {
                 name: dir_name.clone(),
-                path: entry_path.to_string_lossy().to_string(),
+                path: projected_path_string(&entry_path),
                 task,
                 task_title,
                 agents: wg_agents,
@@ -1993,6 +1984,15 @@ fn read_task_fields(wg_path: &Path) -> TaskFields {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn projected_path_string_converts_verbatim_unc() {
+        assert_eq!(
+            projected_path_string(Path::new(r"\\?\UNC\server\share\repo")),
+            r"\\server\share\repo"
+        );
+    }
 
     #[tokio::test]
     async fn check_project_path_accepts_ac() {

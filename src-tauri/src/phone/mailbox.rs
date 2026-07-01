@@ -2236,6 +2236,7 @@ impl MailboxPoller {
         #[cfg(not(test))]
         let _ = msg;
         let skip_auto_resume = wake_spawn_skip_auto_resume(spawn_with_resume);
+        let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
@@ -4825,13 +4826,14 @@ impl MailboxPoller {
 
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+            let cwd = crate::path_utils::normalize_windows_verbatim_path(&request.cwd);
             let resolved_spawn = {
                 let settings = app.state::<SettingsState>();
                 let cfg = settings.read().await;
                 match crate::commands::session::build_configured_agent_spawn_for_cwd(
                     &cfg,
                     &request.agent_id,
-                    &request.cwd,
+                    &cwd,
                     request.requested_profile.as_deref(),
                 ) {
                     Ok(spawn) => spawn,
@@ -4862,7 +4864,7 @@ impl MailboxPoller {
                 pty_mgr.inner(),
                 shell,
                 shell_args,
-                request.cwd.clone(),
+                cwd,
                 Some(request.session_name.clone()),
                 Some(request.agent_id.clone()),
                 agent_label, // No agent label for legacy custom-shell fallback

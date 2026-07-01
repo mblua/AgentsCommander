@@ -99,10 +99,7 @@ const RENAME_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
 /// out of scope for #280 (observability hardening, not concurrency
 /// rework). File a follow-up if the 260 ms tail latency becomes
 /// user-perceptible.
-pub(crate) fn rename_with_retry(
-    tmp: &Path,
-    dst: &Path,
-) -> Result<(), (String, RenameDiagnostics)> {
+pub(crate) fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, RenameDiagnostics)> {
     static OP_ID: AtomicU64 = AtomicU64::new(0);
     let op_id = OP_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
@@ -264,17 +261,7 @@ fn sessions_path() -> Option<PathBuf> {
 }
 
 fn strip_long_prefix_str(s: &str) -> String {
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{}", rest)
-    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-        rest.to_string()
-    } else if let Some(rest) = s.strip_prefix(r"\??\UNC\") {
-        format!(r"\\{}", rest)
-    } else if let Some(rest) = s.strip_prefix(r"\??\") {
-        rest.to_string()
-    } else {
-        s.to_string()
-    }
+    crate::path_utils::normalize_windows_verbatim_path(s)
 }
 
 fn normalize_for_project_compare(path: &Path) -> String {
@@ -366,7 +353,7 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
     let mut result: Vec<PersistedSession> = Vec::with_capacity(total);
 
     for session in sessions {
-        let norm_cwd = session.working_directory.replace('\\', "/").to_lowercase();
+        let norm_cwd = normalized_cwd_key(&session.working_directory);
         let is_root_agent = session.is_root_agent
             || crate::config::root_agent::is_root_agent_path(&session.working_directory);
 
@@ -378,10 +365,7 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
                     session.working_directory
                 );
                 if !result[idx].was_active || session.was_active {
-                    let old_cwd = result[idx]
-                        .working_directory
-                        .replace('\\', "/")
-                        .to_lowercase();
+                    let old_cwd = normalized_cwd_key(&result[idx].working_directory);
                     name_index.remove(&result[idx].name);
                     cwd_index.remove(&old_cwd);
                     name_index.insert(session.name.clone(), idx);
@@ -403,10 +387,7 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
             );
             if !result[idx].was_active || session.was_active {
                 // Patch cwd_index if the CWD changed
-                let old_cwd = result[idx]
-                    .working_directory
-                    .replace('\\', "/")
-                    .to_lowercase();
+                let old_cwd = normalized_cwd_key(&result[idx].working_directory);
                 if old_cwd != norm_cwd {
                     cwd_index.remove(&old_cwd);
                     cwd_index.insert(norm_cwd, idx);
@@ -455,6 +436,20 @@ fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
     }
 
     result
+}
+
+fn normalized_cwd_key(cwd: &str) -> String {
+    crate::path_utils::normalize_windows_verbatim_path(cwd)
+        .replace('\\', "/")
+        .to_lowercase()
+}
+
+fn normalize_persisted_session_paths(session: &mut PersistedSession) {
+    session.working_directory =
+        crate::path_utils::normalize_windows_verbatim_path(&session.working_directory);
+    for repo in &mut session.git_repos {
+        repo.source_path = crate::path_utils::normalize_windows_verbatim_path(&repo.source_path);
+    }
 }
 
 /// Load sessions from disk without deduplication or temp-session filtering.
@@ -599,6 +594,10 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
                             );
                         }
                     }
+                }
+
+                for ps in deduped.iter_mut() {
+                    normalize_persisted_session_paths(ps);
                 }
 
                 log::info!(
@@ -1336,6 +1335,8 @@ mod tests {
         working_directory_under_any_project_path, PersistedSession, RaiseHandPersistOutcome,
         RENAME_ATTEMPTS,
     };
+    #[cfg(windows)]
+    use super::{deduplicate, load_sessions_from_path};
     use crate::session::manager::SessionManager;
     use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
     use std::time::Duration;
@@ -2203,6 +2204,70 @@ mod tests {
             r"c:\users\maria\project\.ac\wg-1\__agent_a",
             &project_paths
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn project_path_comparison_handles_windows_verbatim_cwd() {
+        let project_paths = vec![r"C:\Users\Maria\Project".to_string()];
+
+        assert!(working_directory_under_any_project_path(
+            r"\\?\C:\Users\Maria\Project\.ac\wg-1\__agent_a",
+            &project_paths
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn deduplicate_treats_windows_verbatim_and_ordinary_cwd_as_same_key() {
+        let rows = vec![
+            PersistedSession {
+                name: "verbatim".to_string(),
+                working_directory: r"\\?\C:\repo\.ac\wg-1\__agent_a".to_string(),
+                was_active: false,
+                ..Default::default()
+            },
+            PersistedSession {
+                name: "ordinary".to_string(),
+                working_directory: r"C:\repo\.ac\wg-1\__agent_a".to_string(),
+                was_active: true,
+                ..Default::default()
+            },
+        ];
+
+        let deduped = deduplicate(rows);
+
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].name, "ordinary");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn load_sessions_from_path_normalizes_windows_verbatim_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("sessions.json");
+        let sessions = serde_json::json!([
+            {
+                "name": "wg-1/a",
+                "shell": "cmd",
+                "shellArgs": [],
+                "workingDirectory": r"\\?\C:\repo\.ac\wg-1\__agent_a",
+                "gitRepos": [
+                    {
+                        "label": "repo",
+                        "sourcePath": r"\\?\UNC\server\share\repo",
+                        "branch": null
+                    }
+                ]
+            }
+        ]);
+        std::fs::write(&path, sessions.to_string()).expect("write sessions");
+
+        let loaded = load_sessions_from_path(&path);
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].working_directory, r"C:\repo\.ac\wg-1\__agent_a");
+        assert_eq!(loaded[0].git_repos[0].source_path, r"\\server\share\repo");
     }
 
     #[test]
