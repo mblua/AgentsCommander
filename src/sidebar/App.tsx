@@ -53,6 +53,7 @@ import { toastStore } from "../shared/stores/toasts";
 import { handleProjectRefreshRequested } from "./project-refresh-handler";
 import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
 import { createUpdateToaster } from "./update-toast";
+import { wireScreenshotListeners } from "./listeners-screenshot";
 import "./styles/sidebar.css";
 import "../shared/styles/toast.css";
 
@@ -287,6 +288,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       .catch((err) => {
         console.error("[update-check] getUpdateStatus failed:", err);
       });
+    // #714 screenshot capture saved/failed toasts + startup hotkey-status warning.
+    unlisteners.push(...(await wireScreenshotListeners()));
     unlisteners.push(
       await onCodingAgentEnvSettingsUpdated(() => {
         settingsStore.refresh();

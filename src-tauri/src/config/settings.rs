@@ -271,6 +271,9 @@ pub struct AppSettings {
     /// Raise terminal window when sidebar is clicked
     #[serde(default = "default_true")]
     pub raise_terminal_on_click: bool,
+    /// #714 Native global hotkey for screenshot capture, e.g. "Ctrl+Q".
+    #[serde(default = "default_screenshot_capture_hotkey")]
+    pub screenshot_capture_hotkey: String,
     /// Enable voice-to-text microphone button on session items
     #[serde(default)]
     pub voice_to_text_enabled: bool,
@@ -452,6 +455,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_screenshot_capture_hotkey() -> String {
+    "Ctrl+Q".to_string()
+}
+
 /// #640 Resolve the effective auto-self-clear flag for an agent.
 /// Precedence: the global master `auto_self_clear_enabled` is an absolute kill
 /// switch (off => off for all); else an explicit per-agent override
@@ -598,6 +605,7 @@ impl Default for AppSettings {
             team_idle_beep_enabled: true,
             sounds_enabled: true,
             raise_terminal_on_click: true,
+            screenshot_capture_hotkey: default_screenshot_capture_hotkey(),
             voice_to_text_enabled: false,
             gemini_api_key: String::new(),
             gemini_model: default_gemini_model(),
@@ -1246,7 +1254,17 @@ fn validate_env_rows(rows: &[CodingAgentEnv], context: &str) -> Result<(), Strin
 pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), String> {
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     validate_agent_commands(settings)?;
+    validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
     validate_resource_settings(settings)
+}
+
+/// #714 Reject a screenshot hotkey that the native parser cannot accept. Syntax
+/// errors block a settings save; OS-level registration conflicts do not (they are
+/// surfaced as runtime status by `screenshot::register_configured_hotkey`).
+pub fn validate_screenshot_hotkey(value: &str) -> Result<(), String> {
+    crate::screenshot::parse_screenshot_hotkey(value)
+        .map(|_| ())
+        .map_err(|e| format!("Screenshot hotkey: {}", e))
 }
 
 pub fn merge_protected_coding_agent_settings(
@@ -1924,6 +1942,45 @@ mod tests {
             serde_json::from_str(r##"{"id":"x","label":"X","command":"claude","color":"#000"}"##)
                 .unwrap();
         assert!(back.config_seed.is_none());
+    }
+
+    #[test]
+    fn screenshot_hotkey_defaults_when_absent() {
+        // #714 an old settings file without the key deserializes to "Ctrl+Q".
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("screenshotCaptureHotkey");
+        let parsed: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.screenshot_capture_hotkey, "Ctrl+Q");
+    }
+
+    #[test]
+    fn screenshot_hotkey_round_trips_camel_case() {
+        let s = AppSettings {
+            screenshot_capture_hotkey: "Control+P".to_string(),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            json.contains("\"screenshotCaptureHotkey\":\"Control+P\""),
+            "{json}"
+        );
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.screenshot_capture_hotkey, "Control+P");
+    }
+
+    #[test]
+    fn validate_and_repair_rejects_invalid_screenshot_hotkey() {
+        let mut s = AppSettings {
+            screenshot_capture_hotkey: "Ctrl+Shift+Q".to_string(),
+            ..AppSettings::default()
+        };
+        assert!(super::validate_and_repair_settings(&mut s).is_err());
+
+        s.screenshot_capture_hotkey = "Ctrl+Q".to_string();
+        assert!(super::validate_and_repair_settings(&mut s).is_ok());
     }
 
     #[test]

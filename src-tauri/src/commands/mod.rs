@@ -10,6 +10,7 @@ pub mod pty;
 pub mod repos;
 pub mod resource_monitor;
 pub mod role_templates;
+pub mod screenshot;
 pub mod session;
 pub mod spec_board;
 pub mod task;

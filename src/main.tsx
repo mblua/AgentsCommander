@@ -6,6 +6,7 @@ import GuideApp from "./guide/App";
 import BrowserApp from "./browser/App";
 import SpecBoardApp from "./spec-board/App";
 import ResourceMonitorApp from "./resource-monitor/App";
+import ScreenshotOverlayApp from "./screenshot-overlay/App";
 import MainApp from "./main/App";
 import { initAutomationBridge } from "./shared/automation-bridge";
 import { initLogLevelForWindow } from "./shared/log-level";
@@ -53,6 +54,12 @@ if (!isTauri) {
   render(() => <GuideApp />, root);
 } else if (windowType === "resource-monitor") {
   render(() => <ResourceMonitorApp />, root);
+} else if (windowType === "screenshot-overlay") {
+  // #714 Mark the document so the overlay's transparent html/body/#root CSS
+  // (scoped to this attribute) applies here ONLY, never leaking into the other
+  // windows that share this single bundle. Set BEFORE rendering.
+  document.documentElement.setAttribute("data-window", "screenshot-overlay");
+  render(() => <ScreenshotOverlayApp />, root);
 } else if (windowType === "spec-board") {
   render(() => <SpecBoardApp />, root);
 } else {

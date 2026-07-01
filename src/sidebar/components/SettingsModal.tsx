@@ -10,6 +10,7 @@ import type {
   ProfileCellConfig,
 } from "../../shared/types";
 import { SettingsAPI, TelegramAPI, ReposAPI } from "../../shared/ipc";
+import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { settingsStore } from "../../shared/stores/settings";
 import { setSoundsEnabled } from "../../shared/sound";
 import { sessionsStore } from "../stores/sessions";
@@ -704,8 +705,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
+  // #714 Lightweight pre-check mirroring the backend MVP parser (one Ctrl/Control
+  // + one alphanumeric key). Backend stays the authority for OS registration.
+  const validateScreenshotHotkey = (): string | null =>
+    validateScreenshotHotkeySyntax(
+      settings.data?.screenshotCaptureHotkey ?? "Ctrl+Q"
+    );
+
   const currentValidationError = (): string | null =>
-    validateAgents() ?? validateResources() ?? validateCoordinatorIdle();
+    validateAgents() ??
+    validateResources() ??
+    validateCoordinatorIdle() ??
+    validateScreenshotHotkey();
 
   // ── Save ──
   const handleSave = async () => {
@@ -860,6 +871,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             }
           />
           <span>Raise terminal when clicking sidebar</span>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Screenshot hotkey</span>
+          <input
+            class="settings-input settings-input-sm"
+            value={settings.data!.screenshotCaptureHotkey ?? "Ctrl+Q"}
+            onInput={(e) =>
+              updateField("screenshotCaptureHotkey", e.currentTarget.value)
+            }
+            data-ac-testid="settings.general.screenshotCaptureHotkey"
+          />
         </label>
       </div>
 

@@ -50,7 +50,12 @@ import type {
   ResourceKillRequest,
   ResourceKillResult,
   ResourceSnapshot,
-  CoordinatorCloseOutcome
+  CoordinatorCloseOutcome,
+  ScreenshotOverlayState,
+  ScreenshotSelection,
+  ScreenshotCaptureResult,
+  ScreenshotCaptureFailedEvent,
+  ScreenshotHotkeyStatus
 } from "./types";
 
 export interface SessionRepoInput {
@@ -474,6 +479,27 @@ export const WindowAPI = {
 
   dockResourceMonitor: () =>
     transport.invoke<void>("dock_resource_monitor_window"),
+};
+
+// #714 Screenshot capture. All global-shortcut, clipboard, and window lifecycle
+// work stays in Rust; the frontend only fetches the frozen overlay state, sends
+// the confirmed crop, cancels, and reads/reloads the hotkey registration status.
+export const ScreenshotAPI = {
+  getOverlayState: (captureId: string, monitorId: number) =>
+    transport.invoke<ScreenshotOverlayState>("screenshot_get_overlay_state", {
+      captureId,
+      monitorId,
+    }),
+  confirmSelection: (selection: ScreenshotSelection) =>
+    transport.invoke<ScreenshotCaptureResult>("screenshot_confirm_selection", {
+      selection,
+    }),
+  cancel: (captureId: string) =>
+    transport.invoke<void>("screenshot_cancel_capture", { captureId }),
+  getHotkeyStatus: () =>
+    transport.invoke<ScreenshotHotkeyStatus>("screenshot_get_hotkey_status"),
+  reloadHotkey: () =>
+    transport.invoke<ScreenshotHotkeyStatus>("screenshot_reload_hotkey"),
 };
 
 export const ResourceMonitorAPI = {
@@ -928,6 +954,27 @@ export function onCodingAgentProfilesUpdated(
   callback: () => void
 ): Promise<UnlistenFn> {
   return transport.listen<unknown>("coding_agent_profiles_updated", () => callback());
+}
+
+// #714 Screenshot capture result/failure events. Both emitted from the Rust
+// capture path; the sidebar renders them as toasts (the overlay window is
+// temporary and may be destroyed before the user reads anything).
+export function onScreenshotCaptureSaved(
+  callback: (data: ScreenshotCaptureResult) => void
+): Promise<UnlistenFn> {
+  return transport.listen<ScreenshotCaptureResult>(
+    "screenshot_capture_saved",
+    callback
+  );
+}
+
+export function onScreenshotCaptureFailed(
+  callback: (data: ScreenshotCaptureFailedEvent) => void
+): Promise<UnlistenFn> {
+  return transport.listen<ScreenshotCaptureFailedEvent>(
+    "screenshot_capture_failed",
+    callback
+  );
 }
 
 export function onCodingAgentEnvSettingsUpdated(

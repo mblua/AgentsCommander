@@ -8,7 +8,8 @@
     "terminal-*",
     "guide",
     "spec-board",
-    "resource-monitor"
+    "resource-monitor",
+    "screenshot-overlay-*"
   ],
   "permissions": [
     "core:default",

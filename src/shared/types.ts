@@ -253,6 +253,55 @@ export interface WindowGeometry {
   height: number;
 }
 
+/** #714 Frozen monitor image + metadata handed to one screenshot-overlay window.
+ *  Mirrors the Rust `ScreenshotOverlayState` (serde camelCase). `width`/`height`
+ *  are PHYSICAL image pixels (the captured bitmap), which the overlay maps
+ *  pointer coordinates onto proportionally. */
+export interface ScreenshotOverlayState {
+  captureId: string;
+  monitorId: number;
+  monitorX: number;
+  monitorY: number;
+  width: number;
+  height: number;
+  scaleFactor: number;
+  imageDataUrl: string;
+  sessionId: string;
+  sessionName: string;
+  targetDirectory: string;
+}
+
+/** #714 Physical, monitor-local crop rectangle sent to the backend on release.
+ *  Mirrors the Rust `ScreenshotSelection`. */
+export interface ScreenshotSelection {
+  captureId: string;
+  monitorId: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** #714 Success payload for `screenshot_capture_saved` + the confirm command. */
+export interface ScreenshotCaptureResult {
+  path: string;
+  sessionId: string;
+  sessionName: string;
+}
+
+/** #714 Failure payload for the `screenshot_capture_failed` event. */
+export interface ScreenshotCaptureFailedEvent {
+  message: string;
+}
+
+/** #714 Global-hotkey registration status. `error` is null when registered (or
+ *  not yet attempted). Mirrors the Rust `ScreenshotHotkeyStatus`. */
+export interface ScreenshotHotkeyStatus {
+  configured: string;
+  registered: boolean;
+  error: string | null;
+}
+
 export type MainSidebarSide = "left" | "right";
 
 /** #612 LIVE log verbosity for `agentscommander*` targets. The 5 canonical
@@ -337,6 +386,10 @@ export interface AppSettings {
   autoSelfClearByAgent: Record<string, boolean>;
   /** #612 LIVE log level for agentscommander targets. null (legacy/unset) => "info". */
   logLevel: LogLevel | null;
+  /** #714 Native global hotkey for screenshot capture (e.g. "Ctrl+Q"). Optional
+   *  here only to ease partial-settings test construction; the Rust
+   *  `#[serde(default)]` always emits it, so it is present at runtime. */
+  screenshotCaptureHotkey?: string;
 }
 
 /** #609 "npm update available" payload. Mirrors the Rust `UpdateInfo` struct

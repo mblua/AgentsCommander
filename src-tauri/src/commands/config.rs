@@ -93,11 +93,25 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<AppSetti
 
 #[tauri::command]
 pub async fn update_settings(
+    app: AppHandle,
     settings: State<'_, SettingsState>,
     new_settings: AppSettings,
 ) -> Result<(), String> {
     let saved = persist_protected_settings_update(settings.inner(), new_settings).await?;
     purge_sessions_after_settings_update(&saved).await;
+    // #714 re-register the (possibly changed) hotkey. Syntax was already validated
+    // before persistence; an OS-level registration conflict must NOT turn this
+    // successfully-persisted save into an Err. Surface it as a visible event.
+    if let Err(e) =
+        crate::screenshot::register_configured_hotkey(&app, &saved.screenshot_capture_hotkey)
+    {
+        let _ = app.emit(
+            "screenshot_capture_failed",
+            serde_json::json!({
+                "message": format!("Screenshot hotkey was saved but could not be registered: {}", e)
+            }),
+        );
+    }
     Ok(())
 }
 
@@ -109,6 +123,18 @@ pub async fn save_settings_draft(
 ) -> Result<(), String> {
     let (saved, events) = persist_settings_draft_update(settings.inner(), draft).await?;
     purge_sessions_after_settings_update(&saved).await;
+    // #714 same non-failing hotkey re-registration as update_settings: persisted
+    // save stays successful even if the OS refuses the hotkey.
+    if let Err(e) =
+        crate::screenshot::register_configured_hotkey(&app, &saved.screenshot_capture_hotkey)
+    {
+        let _ = app.emit(
+            "screenshot_capture_failed",
+            serde_json::json!({
+                "message": format!("Screenshot hotkey was saved but could not be registered: {}", e)
+            }),
+        );
+    }
     emit_settings_draft_update_events(&app, &events);
     // #612 apply the (possibly changed) log level live + broadcast so every
     // webview re-applies its console gate. Idempotent and cheap; runs only on an
