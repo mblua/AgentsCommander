@@ -952,4 +952,82 @@ describe("ProjectPanel regex filter", () => {
       rendered.cleanup();
     }
   });
+
+  it("matches a shut-down replica by its persisted Coding Agent label and Profile letter (#733/#515)", async () => {
+    // #733 makes a gray replica show its persisted Coding Agent + Profile badges;
+    // #515 requires the filter to match what is visible. Both rows are dormant
+    // members (no session): dev-webpage-ui carries a persisted codex/Z, dev-rust
+    // carries nothing. Neither "codex" nor "z" appears anywhere in dev-webpage-ui's
+    // row text except its badges, so a match proves the persisted label + letter
+    // now flow into replicaSearchText (before the fix they did not -> the row would
+    // be filtered out while visibly showing a Codex badge).
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve(
+      "get_settings",
+      baseSettings({ agents: [agentConfig({ id: "codex", label: "Codex", command: "codex" })] })
+    );
+    fake.resolve(
+      "discover_project",
+      discovery({
+        agents: [],
+        teams: [],
+        workgroups: [
+          {
+            name: "wg-2-dev-team",
+            path: workgroupPath,
+            task: null,
+            taskTitle: "Sidebar regex filter",
+            agents: [
+              {
+                name: "dev-webpage-ui",
+                path: `${workgroupPath}\\__agent_dev-webpage-ui`,
+                repoPaths: [],
+                isCoordinator: false,
+                currentCodingAgentId: "codex",
+                currentProfile: "Z",
+              },
+              {
+                name: "dev-rust",
+                path: `${workgroupPath}\\__agent_dev-rust`,
+                repoPaths: [],
+                isCoordinator: false,
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await settingsStore.load();
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+      // Both dormant rows are visible unfiltered, and the persisted badge shows.
+      expect(rendered.root.textContent).toContain("dev-rust");
+      expect(rendered.root.textContent).toContain("Codex");
+
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      click(toggle);
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      // (a) filter by the persisted Coding Agent label — matchable only via the badge.
+      input(filterInput, "codex");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("dev-webpage-ui");
+        expect(rendered.root.textContent).not.toContain("dev-rust");
+      });
+
+      // (b) filter by the persisted Profile letter — "z" is nowhere in the row text
+      // except the persisted profile badge.
+      input(filterInput, "z");
+      await waitFor(() => {
+        expect(rendered.root.textContent).toContain("dev-webpage-ui");
+        expect(rendered.root.textContent).not.toContain("dev-rust");
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

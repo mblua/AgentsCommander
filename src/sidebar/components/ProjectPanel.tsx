@@ -910,6 +910,30 @@ const ProjectPanel: Component = () => {
           if (!session.agentId) return null;
           return settingsStore.current?.agents?.find((a) => a.id === session.agentId)?.label ?? null;
         };
+        // #733/#515: single source of truth for a replica row's Coding Agent label
+        // and Profile badge, so the row render (renderReplicaItem) and the sidebar
+        // filter search text (replicaSearchText) can never diverge — a badge that is
+        // visible is always matchable. A live session wins and stays byte-identical
+        // to the pre-#733 behavior (reuses liveAgentLabel / sessionProfileBadge); a
+        // shut-down replica falls back to its persisted config (currentCodingAgentId
+        // ?? preferredAgentId — same precedence as the launch path at :616 — and
+        // currentProfile), mirroring repoBadges()' configured fallback.
+        const resolveReplicaAgentLabel = (
+          session: Session | undefined,
+          replica: AcAgentReplica
+        ): string | null => {
+          if (session) return liveAgentLabel(session);
+          const agentId = replica.currentCodingAgentId ?? replica.preferredAgentId;
+          if (!agentId) return null;
+          return settingsStore.current?.agents?.find((a) => a.id === agentId)?.label ?? null;
+        };
+        const resolveReplicaProfileBadge = (
+          session: Session | undefined,
+          replica: AcAgentReplica
+        ): string | null => {
+          if (session) return sessionProfileBadge(session);
+          return replica.currentProfile ?? null;
+        };
         const replicaSearchText = (
           replica: AcAgentReplica,
           wg: AcWorkgroup,
@@ -931,10 +955,12 @@ const ProjectPanel: Component = () => {
             replica.isCoordinator
               ? repos.map((repo) => formatReplicaRepoBadgeLabel(repo)).join(" ")
               : null,
-            liveAgentLabel(session),
-            // A replica row renders the profile badge unconditionally whenever the
-            // session has one (renderReplicaItem) → always matchable here (#515 bug 2).
-            session ? sessionProfileBadge(session) : null,
+            resolveReplicaAgentLabel(session, replica),
+            // #733/#515: mirror the row badges via the shared resolvers so a dormant
+            // replica's persisted Coding Agent label + Profile letter are matchable
+            // exactly when they are visible (renderReplicaItem uses the same helpers).
+            // A live session keeps sessionProfileBadge's `X->Y` fallback text.
+            resolveReplicaProfileBadge(session, replica),
             replica.isCoordinator ? "coordinator" : null,
             extraBadge,
             sessionSearchText(session)
@@ -1573,27 +1599,34 @@ const ProjectPanel: Component = () => {
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const repoBadgeTestId = (label: string, index: number) =>
             `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
-          const liveAgentLabel = () => {
-            const s = session();
-            if (!s) return null;
-            if (s.agentLabel) return s.agentLabel;
-            if (!s.agentId) return null;
-            return settingsStore.current?.agents?.find((a) => a.id === s.agentId)?.label ?? null;
-          };
-          const profileBadge = () => {
-            const s = session();
-            return s ? sessionProfileBadge(s) : null;
-          };
+          // #733: the Coding Agent + Profile badges fall back to the persisted
+          // replica config when there is no live session, so a shut-down replica
+          // (incl. AUTO-/MANUALLY-CLOSED coordinators — no isCoord() gate, Maria's
+          // scope decision) still shows its last agent/profile. Both the render
+          // (here) and the sidebar filter (replicaSearchText) route through the
+          // shared resolveReplica* helpers so a visible badge is always matchable
+          // (#515). The live-session branch stays byte-identical.
+          const liveAgentLabel = () => resolveReplicaAgentLabel(session(), replica);
+          const profileBadge = () => resolveReplicaProfileBadge(session(), replica);
           // #548: resolver-backed tooltip naming the EFFECTIVE profile (the one
           // actually in effect) for this session's coding agent. Plain function
           // (NOT createMemo) — row-local and recomputes on settings reload.
+          // #733: same session-less fallback as the two helpers above — the tooltip
+          // resolves from the persisted agent id + profile letter when there is no
+          // live session (cfg-missing still short-circuits to undefined, unchanged).
           const profileBadgeTitle = () => {
             const s = session();
             const cfg = settingsStore.current?.codingAgentProfiles;
-            if (!s || !cfg) return undefined;
-            const letter = s.effectiveProfile || s.requestedProfile;
+            if (!cfg) return undefined;
+            if (s) {
+              const letter = s.effectiveProfile || s.requestedProfile;
+              if (!letter) return undefined;
+              return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], s.agentId, letter);
+            }
+            const letter = replica.currentProfile;
             if (!letter) return undefined;
-            return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], s.agentId, letter);
+            const agentId = replica.currentCodingAgentId ?? replica.preferredAgentId;
+            return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], agentId, letter);
           };
           const isLive = () => isSessionLive(session());
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
