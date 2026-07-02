@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { toastStore } from "./toasts";
+import { toastStore, TOAST_EXIT_MS } from "./toasts";
 
 // The store is a module singleton, so every test must reset it. vi.useRealTimers()
 // is defensive: the timed cases install fake timers and a throw inside that window
 // could otherwise leak frozen timers into the next test.
 afterEach(() => {
-  vi.useRealTimers();
   toastStore.clear();
+  vi.useRealTimers();
 });
 
 describe("toastStore (#574)", () => {
@@ -38,8 +38,12 @@ describe("toastStore (#574)", () => {
       toastStore.success("done");
       expect(toastStore.items).toHaveLength(2);
       await vi.advanceTimersByTimeAsync(4000);
+      expect(toastStore.items).toHaveLength(2);
+      expect(toastStore.items.every((t) => t.exiting)).toBe(true);
+      await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
       expect(toastStore.items).toHaveLength(0);
     } finally {
+      toastStore.clear();
       vi.useRealTimers();
     }
   });
@@ -54,7 +58,11 @@ describe("toastStore (#574)", () => {
       expect(toastStore.items).toHaveLength(2);
 
       await vi.advanceTimersByTimeAsync(1000);
-      // The error auto-dismissed; the sticky info remains.
+      // The error auto-dismissed into its exit phase; the sticky info remains.
+      expect(toastStore.items).toHaveLength(2);
+      expect(toastStore.items.find((t) => t.message === "transient error")?.exiting).toBe(true);
+      await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
+      // The error finished fading out; the sticky info remains.
       expect(toastStore.items).toHaveLength(1);
       expect(toastStore.items[0].message).toBe("sticky info");
 
@@ -63,16 +71,29 @@ describe("toastStore (#574)", () => {
       expect(toastStore.items).toHaveLength(1);
       expect(toastStore.items[0].message).toBe("sticky info");
     } finally {
+      toastStore.clear();
       vi.useRealTimers();
     }
   });
 
-  it("dismiss(id) removes only that toast", () => {
-    const a = toastStore.error("a");
-    const b = toastStore.error("b");
-    toastStore.dismiss(a);
-    expect(toastStore.items).toHaveLength(1);
-    expect(toastStore.items[0].id).toBe(b);
+  it("dismiss(id) fades and removes only that toast", async () => {
+    vi.useFakeTimers();
+    try {
+      const a = toastStore.error("a");
+      const b = toastStore.error("b");
+      toastStore.dismiss(a);
+      toastStore.dismiss(a);
+      expect(toastStore.items).toHaveLength(2);
+      expect(toastStore.items.find((t) => t.id === a)?.exiting).toBe(true);
+      expect(toastStore.items.find((t) => t.id === b)?.exiting).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
+      expect(toastStore.items).toHaveLength(1);
+      expect(toastStore.items[0].id).toBe(b);
+    } finally {
+      toastStore.clear();
+      vi.useRealTimers();
+    }
   });
 
   it("clear() empties items and cancels pending timers", async () => {
@@ -80,12 +101,14 @@ describe("toastStore (#574)", () => {
     try {
       toastStore.info("note");
       expect(toastStore.items).toHaveLength(1);
+      toastStore.dismiss(toastStore.items[0].id);
       toastStore.clear();
       expect(toastStore.items).toHaveLength(0);
       // The cancelled timer must not fire (no throw, items stays empty).
-      await vi.advanceTimersByTimeAsync(4000);
+      await vi.advanceTimersByTimeAsync(4000 + TOAST_EXIT_MS);
       expect(toastStore.items).toHaveLength(0);
     } finally {
+      toastStore.clear();
       vi.useRealTimers();
     }
   });
@@ -109,9 +132,13 @@ describe("toastStore (#574)", () => {
         const dismissSpy = vi.spyOn(toastStore, "dismiss");
         await vi.advanceTimersByTimeAsync(4000);
         expect(dismissSpy).toHaveBeenCalledTimes(4);
+        expect(toastStore.items).toHaveLength(4);
+        expect(toastStore.items.every((t) => t.exiting)).toBe(true);
+        await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
         expect(toastStore.items).toHaveLength(0);
         dismissSpy.mockRestore();
       } finally {
+        toastStore.clear();
         vi.useRealTimers();
       }
     });

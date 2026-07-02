@@ -24,6 +24,12 @@
   font-family: var(--font-ui);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   pointer-events: auto;      /* dismissible */
+  transition: opacity 180ms ease-in, transform 180ms ease-in;
+}
+
+.toast-item--exiting {
+  opacity: 0;
+  transform: translateY(4px);
 }
 
 .toast-item--error {
