@@ -1573,27 +1573,54 @@ const ProjectPanel: Component = () => {
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const repoBadgeTestId = (label: string, index: number) =>
             `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
+          // #733: a shut-down replica has no live session, so each of the three
+          // badge helpers below falls back to the persisted replica config
+          // (currentCodingAgentId/currentProfile, filled at discovery from the
+          // on-disk config) when session() is undefined — mirroring repoBadges()
+          // above, which already falls to configuredReplicaRepoBadges(). The
+          // live-session branch is kept byte-identical (guarded by `if (s)`). The
+          // id precedence `currentCodingAgentId ?? preferredAgentId` matches the
+          // launch path at :616. Applies to ALL dormant replicas, coordinators AND
+          // members (Maria's scope decision — no isCoord() gate), so an auto- or
+          // manually-closed coordinator now shows its pill AND its last Coding
+          // Agent + Profile together.
           const liveAgentLabel = () => {
             const s = session();
-            if (!s) return null;
-            if (s.agentLabel) return s.agentLabel;
-            if (!s.agentId) return null;
-            return settingsStore.current?.agents?.find((a) => a.id === s.agentId)?.label ?? null;
+            if (s) {
+              if (s.agentLabel) return s.agentLabel;
+              if (!s.agentId) return null;
+              return settingsStore.current?.agents?.find((a) => a.id === s.agentId)?.label ?? null;
+            }
+            const agentId = replica.currentCodingAgentId ?? replica.preferredAgentId;
+            if (!agentId) return null;
+            return settingsStore.current?.agents?.find((a) => a.id === agentId)?.label ?? null;
           };
           const profileBadge = () => {
             const s = session();
-            return s ? sessionProfileBadge(s) : null;
+            // Live session keeps the `X->Y` fallback rendering of sessionProfileBadge;
+            // a dormant replica shows its persisted profile letter (#733).
+            if (s) return sessionProfileBadge(s);
+            return replica.currentProfile ?? null;
           };
           // #548: resolver-backed tooltip naming the EFFECTIVE profile (the one
           // actually in effect) for this session's coding agent. Plain function
           // (NOT createMemo) — row-local and recomputes on settings reload.
+          // #733: same session-less fallback as the two helpers above — the tooltip
+          // resolves from the persisted agent id + profile letter when there is no
+          // live session (cfg-missing still short-circuits to undefined, unchanged).
           const profileBadgeTitle = () => {
             const s = session();
             const cfg = settingsStore.current?.codingAgentProfiles;
-            if (!s || !cfg) return undefined;
-            const letter = s.effectiveProfile || s.requestedProfile;
+            if (!cfg) return undefined;
+            if (s) {
+              const letter = s.effectiveProfile || s.requestedProfile;
+              if (!letter) return undefined;
+              return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], s.agentId, letter);
+            }
+            const letter = replica.currentProfile;
             if (!letter) return undefined;
-            return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], s.agentId, letter);
+            const agentId = replica.currentCodingAgentId ?? replica.preferredAgentId;
+            return profileDisplayLabel(cfg, settingsStore.current?.agents ?? [], agentId, letter);
           };
           const isLive = () => isSessionLive(session());
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
