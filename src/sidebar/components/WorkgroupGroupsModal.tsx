@@ -1,4 +1,5 @@
-import { Component, For, Show, createMemo, createSignal } from "solid-js";
+import { Component, For, Index, Show, createMemo, createSignal } from "solid-js";
+import { focusOnMount } from "../../shared/focus-on-mount";
 import type { WorkgroupGroupsConfig } from "../../shared/types";
 import {
   MAX_GROUP_NAME_LENGTH,
@@ -54,15 +55,23 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
     setSaveError(null);
   };
 
+  // #746 — id of the row just added via "Add group"; its name input's ref
+  // consumes this to focus+select the pre-filled name so the user can type
+  // over it immediately. Plain variable (not a signal): addGroup sets it
+  // synchronously right before setDraft creates the new row.
+  let pendingFocusGroupId: string | null = null;
+
   const addGroup = () => {
     const current = draft();
     const existingIds = new Set(current.groups.map((group) => group.id));
+    const id = createGroupId(existingIds);
+    pendingFocusGroupId = id;
     setDraft({
       ...current,
       groups: [
         ...current.groups,
         {
-          id: createGroupId(existingIds),
+          id,
           name: nextGroupName(current),
           regex: props.initialWorkgroupName
             ? exactGroupRegexForWorkgroup(props.initialWorkgroupName)
@@ -148,34 +157,43 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
           </div>
 
           <div class="workgroup-groups-table">
-            <For each={draft().groups}>
+            {/* #746 — <Index>, NOT <For>: updateGroup replaces the edited row
+                object on every keystroke, and a reference-keyed <For> would
+                dispose+recreate the row, dropping focus after one character
+                (the #614 trap). Position-keyed rows keep the inputs stable. */}
+            <Index each={draft().groups}>
               {(group) => (
-                <div class="workgroup-group-edit-row" data-ac-testid={`workgroupGroups.row.${group.id}`}>
+                <div class="workgroup-group-edit-row" data-ac-testid={`workgroupGroups.row.${group().id}`}>
                   <input
                     class="workgroup-group-name-input"
-                    value={group.name}
+                    ref={(el) => {
+                      if (group().id !== pendingFocusGroupId) return;
+                      pendingFocusGroupId = null;
+                      focusOnMount(el, { select: true });
+                    }}
+                    value={group().name}
                     maxLength={MAX_GROUP_NAME_LENGTH}
-                    onInput={(e) => updateGroup(group.id, { name: e.currentTarget.value })}
+                    onInput={(e) => updateGroup(group().id, { name: e.currentTarget.value })}
                     aria-label="Group name"
                   />
                   <input
                     class="workgroup-group-regex-input"
-                    value={group.regex}
+                    value={group().regex}
                     maxLength={MAX_GROUP_REGEX_LENGTH}
-                    onInput={(e) => updateGroup(group.id, { regex: e.currentTarget.value })}
+                    onInput={(e) => updateGroup(group().id, { regex: e.currentTarget.value })}
                     aria-label="Group regex"
-                    data-ac-testid={`workgroupGroups.regex.${group.id}`}
+                    data-ac-testid={`workgroupGroups.regex.${group().id}`}
                   />
                   <button
                     class="workgroup-group-delete"
-                    onClick={() => deleteGroup(group.id)}
-                    aria-label={`Delete ${group.name}`}
+                    onClick={() => deleteGroup(group().id)}
+                    aria-label={`Delete ${group().name}`}
                   >
                     Delete
                   </button>
                 </div>
               )}
-            </For>
+            </Index>
             <Show when={draft().groups.length === 0}>
               <div class="workgroup-groups-empty">No groups configured</div>
             </Show>

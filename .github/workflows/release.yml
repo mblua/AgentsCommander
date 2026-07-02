@@ -83,7 +83,12 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Agents Commander ${{ github.ref_name }}'
-          releaseBody: ${{ steps.changelog.outputs.body || 'See the assets below to download and install Agents Commander.' }}
+          releaseBody: |
+            ${{ steps.changelog.outputs.body || 'See the assets below to download and install Agents Commander.' }}
+
+            ### Trust and privacy
+            - [Code signing policy](https://github.com/mblua/AgentsCommander/blob/main/CODE_SIGNING_POLICY.md) - Windows code signing is pending SignPath setup and approval; current Windows artifacts may be unsigned.
+            - [Privacy](https://github.com/mblua/AgentsCommander/blob/main/PRIVACY.md)
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

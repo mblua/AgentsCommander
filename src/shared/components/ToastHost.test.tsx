@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import ToastHost from "./ToastHost";
-import { toastStore } from "../stores/toasts";
+import { toastStore, TOAST_EXIT_MS } from "../stores/toasts";
 
 function q<T extends HTMLElement = HTMLElement>(testId: string): T | null {
   return document.body.querySelector<T>(`[data-ac-testid="${testId}"]`);
@@ -31,6 +31,7 @@ describe("ToastHost (#574)", () => {
     dispose?.();
     dispose = null;
     toastStore.clear();
+    vi.useRealTimers();
     document.body.replaceChildren();
   });
 
@@ -44,13 +45,17 @@ describe("ToastHost (#574)", () => {
     expect(item?.textContent ?? "").toContain("boom");
   });
 
-  it("clicking the dismiss button removes the item", () => {
+  it("clicking the dismiss button fades then removes the item", async () => {
+    vi.useFakeTimers();
     dispose = renderHost();
     toastStore.error("boom");
     expect(q("toast.item")).toBeTruthy();
     q("toast.item.dismiss")!.dispatchEvent(
       new MouseEvent("click", { bubbles: true, cancelable: true }),
     );
+    expect(q("toast.item")).toBeTruthy();
+    expect(q("toast.item")?.classList.contains("toast-item--exiting")).toBe(true);
+    await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
     expect(q("toast.item")).toBeNull();
   });
 
