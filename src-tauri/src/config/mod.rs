@@ -10,6 +10,7 @@ pub mod local_config_io;
 pub mod loops;
 pub mod placeholders;
 pub mod profile;
+pub mod project_settings;
 pub mod projects;
 pub mod replica_identity;
 pub mod root_agent;

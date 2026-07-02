@@ -1942,6 +1942,8 @@ pub fn run(
             commands::ac_discovery::open_project,
             commands::ac_discovery::new_project,
             commands::ac_discovery::discover_project,
+            commands::project_settings::get_project_groups,
+            commands::project_settings::update_project_groups,
             commands::ac_discovery::keep_custom_context_template,
             commands::ac_discovery::overwrite_context_template_with_default,
             commands::ac_discovery::get_replica_context_files,
