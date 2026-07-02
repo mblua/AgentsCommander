@@ -90,6 +90,15 @@ function mouse(el: Element, type: "mouseenter" | "mouseleave"): void {
   el.dispatchEvent(new MouseEvent(type, { bubbles: false, cancelable: true }));
 }
 
+function focus(el: Element): void {
+  el.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  el.dispatchEvent(new FocusEvent("focus", { bubbles: false }));
+}
+
+function keydown(el: Element, key: string): void {
+  el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+}
+
 function panelTarget<T extends Element>(root: ParentNode, testId: string): T {
   const element = root.querySelector<T>(`[data-ac-testid="${testId}"]`);
   if (!element) throw new Error(`Missing element ${testId}`);
@@ -376,6 +385,61 @@ describe("ProjectPanel workgroup groups", () => {
       } finally {
         vi.useRealTimers();
       }
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps the Add to Group flyout open when pointer click follows hover open", async () => {
+    const fake = new FakeTransport();
+    setupProjectTransport(fake);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await workgroupGroupsStore.save(projectPath, groupsConfig([]));
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+
+      await openCoordinatorMenu(rendered.root);
+      const trigger = target("replica.wg-1-dev-team.groups.trigger");
+      mouse(trigger, "mouseenter");
+      await waitFor(() =>
+        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull()
+      );
+
+      click(trigger);
+
+      await waitFor(() =>
+        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull()
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps the Add to Group flyout open when keyboard activation follows focus open", async () => {
+    const fake = new FakeTransport();
+    setupProjectTransport(fake);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await workgroupGroupsStore.save(projectPath, groupsConfig([]));
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+
+      await openCoordinatorMenu(rendered.root);
+      const trigger = target("replica.wg-1-dev-team.groups.trigger");
+      focus(trigger);
+      await waitFor(() =>
+        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull()
+      );
+
+      keydown(trigger, "Enter");
+      click(trigger);
+
+      await waitFor(() =>
+        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull()
+      );
     } finally {
       rendered.cleanup();
     }

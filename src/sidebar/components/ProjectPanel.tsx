@@ -1207,9 +1207,11 @@ const ProjectPanel: Component = () => {
           reclampGroupFlyout();
         };
 
-        const toggleGroupFlyout = (anchor: HTMLElement) => {
+        const activateGroupFlyout = (anchor: HTMLElement) => {
           if (groupFlyoutOpen() && groupFlyoutAnchorEl === anchor) {
-            closeGroupFlyout();
+            cancelGroupFlyoutClose();
+            positionGroupFlyout(anchor);
+            reclampGroupFlyout();
             return;
           }
           openGroupFlyout(anchor);
@@ -1419,7 +1421,13 @@ const ProjectPanel: Component = () => {
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                toggleGroupFlyout(e.currentTarget);
+                activateGroupFlyout(e.currentTarget);
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                e.stopPropagation();
+                activateGroupFlyout(e.currentTarget);
               }}
               data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
             >
