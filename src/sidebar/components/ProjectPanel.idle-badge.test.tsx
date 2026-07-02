@@ -12,6 +12,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
+import { replicaVolatileStore } from "../stores/replica-volatile";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import { clockStore } from "../stores/clock";
@@ -103,7 +104,9 @@ describe("ProjectPanel coordinator idle badge (#580 XOR gate + conditional toolt
 
       // Reopen (clear the marker, as the auto-close event does) → the pill
       // disappears and the red 90m counter returns from the same anchor.
-      projectStore.updateCoordinatorAutoClosed(coordPath, null);
+      // #748: the clear lands in the volatile store; the pill memo must react
+      // WITHOUT the row being re-created (row identity is stable now).
+      replicaVolatileStore.setAutoClosedAt(coordPath, null);
       await waitFor(() => {
         expect(rendered.root.querySelector(".coord-autoclosed")).toBeNull();
         const counter = rendered.root.querySelector(".coord-idle");

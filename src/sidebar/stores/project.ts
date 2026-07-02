@@ -1,7 +1,8 @@
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import type {
   AcWorkgroup,
   AcAgentMatrix,
+  AcDiscoveryResult,
   AcTeam,
   AcLoopSummary,
   ContextTemplateUpdate,
@@ -11,6 +12,8 @@ import {
   findLoadedProjectPathForRefresh,
   normalizeProjectPathForCompare,
 } from "./project-refresh";
+import { deepEqual, mergeDiscoveryResult } from "./project-merge";
+import { replicaVolatileStore } from "./replica-volatile";
 
 export interface ProjectState {
   path: string;
@@ -39,6 +42,47 @@ let loadingCount = 0;
 
 function normalizePath(p: string): string {
   return normalizeProjectPathForCompare(p);
+}
+
+/** Replica paths of every workgroup agent in a project/discovery shape — the
+ *  set of paths whose live volatile overrides a fresh snapshot supersedes. */
+function workgroupReplicaPaths(source: { workgroups: AcWorkgroup[] }): string[] {
+  return source.workgroups.flatMap((wg) => wg.agents.map((agent) => agent.path));
+}
+
+/** Append a freshly discovered project unless an equivalent path is already
+ *  loaded (Round-1 G2 dedup: re-check against the BACKEND-absolutised regPath,
+ *  which may differ from the caller's input in case/slashes/`..` — closes the
+ *  double-render race when two concurrent calls pass differently-shaped
+ *  strings that resolve to the same registered entry). The volatile overrides
+ *  this snapshot supersedes are cleared ONLY when the append actually applied:
+ *  a dedup-discarded snapshot must not wipe live event overrides that are
+ *  newer than the state the store kept (#748). */
+function appendDiscoveredProject(regPath: string, result: AcDiscoveryResult) {
+  const folderName = regPath.replace(/\\/g, "/").split("/").pop() ?? "unknown";
+  const normalizedReg = normalizePath(regPath);
+  batch(() => {
+    let appended = false;
+    setProjects((prev) => {
+      if (prev.some((p) => normalizePath(p.path) === normalizedReg)) return prev;
+      appended = true;
+      return [
+        ...prev,
+        {
+          path: regPath,
+          folderName,
+          workgroups: result.workgroups,
+          agents: result.agents,
+          teams: result.teams,
+          loops: result.loops,
+          contextTemplateUpdates: result.contextTemplateUpdates,
+        },
+      ];
+    });
+    if (appended) {
+      replicaVolatileStore.clearForPaths(workgroupReplicaPaths(result));
+    }
+  });
 }
 
 /** Stringify whatever a rejected Tauri command throws (usually the Err string). */
@@ -99,29 +143,7 @@ export const projectStore = {
         // when that case is expected.
         const reg = await ProjectAPI.open(path);
         const result = await ProjectAPI.discover(reg.path);
-        const folderName =
-          reg.path.replace(/\\/g, "/").split("/").pop() ?? "unknown";
-        // Round-1 G2: re-check against the BACKEND-absolutised reg.path
-        // (which may differ from the input `path` in case/slashes/`..`),
-        // mirroring the inner dedup pattern in createAndLoad. Closes the
-        // double-render race when two concurrent calls pass differently-
-        // shaped strings that resolve to the same registered entry.
-        const normalizedReg = normalizePath(reg.path);
-        setProjects((prev) => {
-          if (prev.some((p) => normalizePath(p.path) === normalizedReg)) return prev;
-          return [
-            ...prev,
-            {
-              path: reg.path,
-              folderName,
-              workgroups: result.workgroups,
-              agents: result.agents,
-              teams: result.teams,
-              loops: result.loops,
-              contextTemplateUpdates: result.contextTemplateUpdates,
-            },
-          ];
-        });
+        appendDiscoveredProject(reg.path, result);
         setLastLoadError(null);
       } catch (e) {
         // Round-1 G11: surface the failure instead of only logging it. The
@@ -161,24 +183,7 @@ export const projectStore = {
     const reg = await ProjectAPI.new(path);
     // After ensuring Project AC Root exists and persistence is set, run discovery for UI.
     const result = await ProjectAPI.discover(reg.path);
-    const folderName =
-      reg.path.replace(/\\/g, "/").split("/").pop() ?? "unknown";
-    const normalized = normalizePath(reg.path);
-    setProjects((prev) => {
-      if (prev.some((p) => normalizePath(p.path) === normalized)) return prev;
-      return [
-        ...prev,
-        {
-          path: reg.path,
-          folderName,
-          workgroups: result.workgroups,
-          agents: result.agents,
-          teams: result.teams,
-          loops: result.loops,
-          contextTemplateUpdates: result.contextTemplateUpdates,
-        },
-      ];
-    });
+    appendDiscoveredProject(reg.path, result);
   },
 
   /** Full open flow: pick folder, check Project AC Root, auto-load if found */
@@ -193,131 +198,83 @@ export const projectStore = {
     return { picked, hasWorkspace };
   },
 
-  /** Update a replica's branch from the discovery branch watcher */
-  updateReplicaBranch(replicaPath: string, branch: string | null) {
-    setProjects((prev) =>
-      prev.map((proj) => ({
-        ...proj,
-        workgroups: proj.workgroups.map((wg) => ({
-          ...wg,
-          agents: wg.agents.map((a) =>
-            a.path === replicaPath
-              ? { ...a, repoBranch: branch ?? undefined }
-              : a
-          ),
-        })),
-      }))
-    );
-  },
+  // #748 — the former updateReplicaBranch / updateCoordinatorClock /
+  // updateCoordinatorAutoClosed / updateCoordinatorManuallyClosed patchers
+  // lived here and rebuilt EVERY project/workgroup object reference per event,
+  // which made ProjectPanel's reference-keyed <For>s dispose and re-create the
+  // whole clickable sidebar DOM (losing any click in flight). Those live
+  // fields are now written to replicaVolatileStore (stores/replica-volatile.ts)
+  // and read through its effective* accessors, so events never touch project
+  // identity.
 
-  /** #552/#580 patch a coordinator replica's lastUserMessageAt (which now carries
-   *  the unified team-idle anchor, #580 — "team idle since", not just the user's
-   *  last message) from the clock event. Match by NORMALIZED path (required, not
-   *  a deviation: the event path is the session working_directory, which can
-   *  differ in slash/case from the discovery path on Windows). Discovery reload
-   *  self-heals on any miss. */
-  updateCoordinatorClock(replicaPath: string, lastUserMessageAt: string) {
-    const target = normalizePath(replicaPath);
-    setProjects((prev) =>
-      prev.map((proj) => ({
-        ...proj,
-        workgroups: proj.workgroups.map((wg) => ({
-          ...wg,
-          agents: wg.agents.map((a) =>
-            normalizePath(a.path) === target ? { ...a, lastUserMessageAt } : a
-          ),
-        })),
-      }))
-    );
-  },
-
-  /** #552 patch a coordinator replica's autoClosedAt from the auto-close event.
-   *  A string sets the marker (auto-closed); `null` clears it (reopen). Matched
-   *  by normalized path, same as updateCoordinatorClock. */
-  updateCoordinatorAutoClosed(replicaPath: string, autoClosedAt: string | null) {
-    const target = normalizePath(replicaPath);
-    setProjects((prev) =>
-      prev.map((proj) => ({
-        ...proj,
-        workgroups: proj.workgroups.map((wg) => ({
-          ...wg,
-          agents: wg.agents.map((a) =>
-            normalizePath(a.path) === target
-              ? { ...a, autoClosedAt: autoClosedAt ?? undefined }
-              : a
-          ),
-        })),
-      }))
-    );
-  },
-
-  /** #588 patch a coordinator replica's manuallyClosedAt from the event.
-   *  A string sets the marker; `null` clears it (reopen). Matched by normalized
-   *  path, same as updateCoordinatorAutoClosed. */
-  updateCoordinatorManuallyClosed(replicaPath: string, manuallyClosedAt: string | null) {
-    const target = normalizePath(replicaPath);
-    setProjects((prev) =>
-      prev.map((proj) => ({
-        ...proj,
-        workgroups: proj.workgroups.map((wg) => ({
-          ...wg,
-          agents: wg.agents.map((a) =>
-            normalizePath(a.path) === target
-              ? { ...a, manuallyClosedAt: manuallyClosedAt ?? undefined }
-              : a
-          ),
-        })),
-      }))
-    );
-  },
-
-  /** Update a workgroup's TASK.md fields from the discovery watcher. */
+  /** Update a workgroup's TASK.md fields from the discovery watcher. Clones
+   *  ONLY the project + workgroup on the matched path (#748 — unrelated rows
+   *  must keep their object identity); no match or no change leaves the store
+   *  value untouched. `taskTitle` is normalized null→undefined: the task event
+   *  serializes an explicit null while the discovery snapshot OMITS the field
+   *  (`skip_serializing_if` on task_title), so storing null would make the
+   *  next reload's deepEqual see a phantom change and re-create the row. */
   updateWorkgroupTask(
     workgroupPath: string,
     task: string | null,
     taskTitle: string | null | undefined
   ) {
-
     const normalized = normalizePath(workgroupPath);
-    setProjects((prev) =>
-      prev.map((proj) => ({
-        ...proj,
-        workgroups: proj.workgroups.map((wg) =>
-          normalizePath(wg.path) === normalized
-            ? { ...wg, task, taskTitle }
-
-            : wg
-        ),
-      }))
-    );
+    const normalizedTitle = taskTitle ?? undefined;
+    setProjects((prev) => {
+      let anyChanged = false;
+      const next = prev.map((proj) => {
+        const index = proj.workgroups.findIndex(
+          (wg) => normalizePath(wg.path) === normalized
+        );
+        if (index === -1) return proj;
+        const wg = proj.workgroups[index];
+        if (wg.task === task && (wg.taskTitle ?? undefined) === normalizedTitle) return proj;
+        anyChanged = true;
+        const workgroups = proj.workgroups.slice();
+        workgroups[index] = { ...wg, task, taskTitle: normalizedTitle };
+        return { ...proj, workgroups };
+      });
+      return anyChanged ? next : prev;
+    });
   },
 
-  /** Apply a Loop summary returned by a mutation/event without waiting for discovery. */
+  /** Apply a Loop summary returned by a mutation/event without waiting for
+   *  discovery. Identity-preserving (#748): an already-identical summary (a
+   *  duplicate event) leaves the store value untouched. */
   upsertLoop(projectPath: string, loop: AcLoopSummary) {
     const normalized = normalizePath(projectPath);
-    setProjects((prev) =>
-      prev.map((proj) => {
+    setProjects((prev) => {
+      let anyChanged = false;
+      const next = prev.map((proj) => {
         if (normalizePath(proj.path) !== normalized) return proj;
         const existingIndex = proj.loops.findIndex((candidate) => candidate.id === loop.id);
+        if (existingIndex !== -1 && deepEqual(proj.loops[existingIndex], loop)) return proj;
+        anyChanged = true;
         const loops =
           existingIndex === -1
             ? [...proj.loops, loop]
             : proj.loops.map((candidate) => (candidate.id === loop.id ? loop : candidate));
         return { ...proj, loops };
-      })
-    );
+      });
+      return anyChanged ? next : prev;
+    });
   },
 
-  /** Remove a Loop summary returned by a delete event without waiting for discovery. */
+  /** Remove a Loop summary returned by a delete event without waiting for
+   *  discovery. Identity-preserving (#748): an unknown loop id is a no-op. */
   removeLoop(projectPath: string, loopId: string) {
     const normalized = normalizePath(projectPath);
-    setProjects((prev) =>
-      prev.map((proj) =>
-        normalizePath(proj.path) === normalized
-          ? { ...proj, loops: proj.loops.filter((loop) => loop.id !== loopId) }
-          : proj
-      )
-    );
+    setProjects((prev) => {
+      let anyChanged = false;
+      const next = prev.map((proj) => {
+        if (normalizePath(proj.path) !== normalized) return proj;
+        if (!proj.loops.some((loop) => loop.id === loopId)) return proj;
+        anyChanged = true;
+        return { ...proj, loops: proj.loops.filter((loop) => loop.id !== loopId) };
+      });
+      return anyChanged ? next : prev;
+    });
   },
 
   /** Re-discover a single project and update its data in place */
@@ -340,20 +297,30 @@ export const projectStore = {
               // discovery was awaiting. Let the queued discovery provide the next full state.
               continue;
             }
-            setProjects((prev) =>
-              prev.map((p) =>
-                normalizePath(p.path) === normalized
-                  ? {
-                      ...p,
-                      workgroups: result.workgroups,
-                      agents: result.agents,
-                      teams: result.teams,
-                      loops: result.loops,
-                      contextTemplateUpdates: result.contextTemplateUpdates,
-                    }
-                  : p
-              )
-            );
+            // #748 — identity-preserving merge: entities the snapshot did not
+            // change keep their object references (an identical snapshot is a
+            // complete no-op). The volatile overrides for the replicas this
+            // snapshot covers are superseded in the same batch — discovery
+            // wins on reload, events re-patch after, exactly as the old
+            // wholesale replace behaved — but ONLY when the project is
+            // actually loaded: clearing for a snapshot the map cannot apply
+            // would wipe live overrides while installing nothing.
+            const loaded = projects().some((p) => normalizePath(p.path) === normalized);
+            batch(() => {
+              setProjects((prev) => {
+                let anyChanged = false;
+                const next = prev.map((p) => {
+                  if (normalizePath(p.path) !== normalized) return p;
+                  const merged = mergeDiscoveryResult(p, result);
+                  if (merged !== p) anyChanged = true;
+                  return merged;
+                });
+                return anyChanged ? next : prev;
+              });
+              if (loaded) {
+                replicaVolatileStore.clearForPaths(workgroupReplicaPaths(result));
+              }
+            });
           } catch (e) {
             console.error("Failed to reload project:", e);
           }
@@ -378,7 +345,15 @@ export const projectStore = {
   /** Remove a project from the list by path */
   async removeProject(path: string) {
     const normalized = normalizePath(path);
-    setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+    const removed = projects().find((p) => normalizePath(p.path) === normalized);
+    batch(() => {
+      setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+      // #748 — drop the removed project's live overrides so a later re-add
+      // starts from its fresh discovery snapshot, not a stale live layer.
+      if (removed) {
+        replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
+      }
+    });
     await persistProjectPaths();
   },
 
@@ -394,21 +369,25 @@ export const projectStore = {
     fileSha256: string
   ) {
     const normalized = normalizePath(projectPath);
-    setProjects((prev) =>
-      prev.map((project) =>
-        normalizePath(project.path) === normalized
-          ? {
-              ...project,
-              contextTemplateUpdates: project.contextTemplateUpdates.filter(
-                (update) =>
-                  update.filename !== filename ||
-                  update.currentDefaultSha256 !== defaultSha256 ||
-                  update.currentFileSha256 !== fileSha256
-              ),
-            }
-          : project
-      )
-    );
+    setProjects((prev) => {
+      let anyChanged = false;
+      const next = prev.map((project) => {
+        if (normalizePath(project.path) !== normalized) return project;
+        const contextTemplateUpdates = project.contextTemplateUpdates.filter(
+          (update) =>
+            update.filename !== filename ||
+            update.currentDefaultSha256 !== defaultSha256 ||
+            update.currentFileSha256 !== fileSha256
+        );
+        // #748 — nothing matched the exact key: keep the project identity.
+        if (contextTemplateUpdates.length === project.contextTemplateUpdates.length) {
+          return project;
+        }
+        anyChanged = true;
+        return { ...project, contextTemplateUpdates };
+      });
+      return anyChanged ? next : prev;
+    });
   },
 
   clear() {
@@ -420,6 +399,7 @@ export const projectStore = {
     inFlightLoads.clear();
     inFlightReloads.clear();
     queuedReloads.clear();
+    replicaVolatileStore.clearAll();
   },
 };
 
