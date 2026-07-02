@@ -21,6 +21,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
+import { replicaVolatileStore } from "../stores/replica-volatile";
 import { sessionsStore } from "../stores/sessions";
 import { automationIdPart } from "./replica-repo-badges";
 
@@ -265,15 +266,19 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
 
     await waitFor(() => expect(q("agentPicker.modal")).toBeTruthy());
 
-    // Background discovery refresh: rebuilds the project object → re-creates the
-    // <For> row. Before #710 this disposed the per-row signal and the picker
-    // vanished; hoisted to the stable root and resolved by sessionId, it survives.
+    // Background discovery refresh WITH changed data: rebuilds the project
+    // object → re-creates the <For> row. (#748 made an identical snapshot a
+    // no-op, so the refresh must carry a real change to exercise re-creation.)
+    // Before #710 this disposed the per-row signal and the picker vanished;
+    // hoisted to the stable root and resolved by sessionId, it survives.
+    fake.resolve("discover_project", discoveryResult(["ops-team"]));
     await projectStore.reloadProject(projectPath);
     await expectSecondDiscover(fake);
     expect(q("agentPicker.modal")).toBeTruthy();
 
-    // A replica-branch update rebuilds every project object too — still survives.
-    projectStore.updateReplicaBranch(replicaPath, "feature/x");
+    // A replica-branch event lands in the volatile store (#748) and must not
+    // disturb the modal either.
+    replicaVolatileStore.setRepoBranch(replicaPath, "feature/x");
     expect(q("agentPicker.modal")).toBeTruthy();
   });
 
@@ -294,13 +299,15 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
 
     await waitFor(() => expect(q("agentPicker.modal")).toBeTruthy());
 
+    // Changed snapshot so the reload still re-creates the row (#748).
+    fake.resolve("discover_project", discoveryResult(["ops-team"]));
     await projectStore.reloadProject(projectPath);
     await expectSecondDiscover(fake);
     // Re-resolved by stable project/wg/replica paths, so the picker stays open
     // with fresh data instead of being disposed with the row.
     expect(q("agentPicker.modal")).toBeTruthy();
 
-    projectStore.updateReplicaBranch(replicaPath, "feature/y");
+    replicaVolatileStore.setRepoBranch(replicaPath, "feature/y");
     expect(q("agentPicker.modal")).toBeTruthy();
   });
 
@@ -335,6 +342,12 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
 
     // The loop is re-resolved by stable id (editingLoopResolved). Before #710 the
     // refresh disposed the row's editingLoop signal and the modal vanished.
+    // #748: the snapshot carries a changed loop so the reload still re-creates
+    // the project row (an identical snapshot is a no-op now).
+    fake.resolve(
+      "discover_project",
+      discoveryResult([], [{ ...loopFixture(), promptPreview: "Changed preview" }]),
+    );
     await projectStore.reloadProject(projectPath);
     await expectSecondDiscover(fake);
 

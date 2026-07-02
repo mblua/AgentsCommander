@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcAgentReplica, AcWorkgroup } from "../../shared/types";
+import type { AcAgentReplica, AcLoopSummary, AcWorkgroup } from "../../shared/types";
 
 const m = vi.hoisted(() => ({
   open: vi.fn(),
+  newProject: vi.fn(),
   discover: vi.fn(),
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
@@ -11,6 +12,7 @@ const m = vi.hoisted(() => ({
 vi.mock("../../shared/ipc", () => ({
   ProjectAPI: {
     open: m.open,
+    new: m.newProject,
     discover: m.discover,
   },
   SettingsAPI: {
@@ -23,6 +25,7 @@ vi.mock("../../shared/ipc", () => ({
 }));
 
 import { projectStore } from "./project";
+import { effectiveAutoClosedAt, replicaVolatileStore } from "./replica-volatile";
 
 const PROJECT_PATH = "C:\\Users\\Maria\\Project";
 
@@ -126,62 +129,197 @@ describe("projectStore", () => {
     expect(projectStore.initState).toEqual({ attempted: false, pathCount: 0 });
   });
 
-  // #552 coordinator idle badge + auto-closed pill. Both patch methods match by
-  // NORMALIZED path: the event carries the session working_directory, which can
-  // differ in slash/case from the discovery path on Windows. These cover that
-  // load-bearing match plus the field-level set/clear semantics.
-  describe("coordinator clock + auto-closed patches (#552)", () => {
-    const COORD_A = `${PROJECT_PATH}\\.ac\\wg-1-team\\__agent_coord-a`;
+  // #748 — identity preservation. Object references drive ProjectPanel's
+  // reference-keyed <For>s: every reference these methods preserve is a DOM row
+  // NOT disposed/re-created (and a click over it NOT lost). The #552 event
+  // patch semantics (normalized-path match, set/clear) moved to
+  // replicaVolatileStore — see replica-volatile.test.ts.
+  describe("identity preservation (#748)", () => {
+    const WG_1 = `${PROJECT_PATH}\\.ac\\wg-1-team`;
+    const COORD_A = `${WG_1}\\__agent_coord-a`;
     const COORD_B = `${PROJECT_PATH}\\.ac\\wg-2-team\\__agent_coord-b`;
-    // Same replica as COORD_A but lower-cased with forward slashes, as the
-    // backend session working_directory arrives on the clock/auto-close events.
-    const COORD_A_EVENT = "c:/users/maria/project/.ac/wg-1-team/__agent_coord-a";
+    // Event/task paths arrive with the session working_directory shape, which
+    // can differ in slash/case from the discovery path on Windows.
+    const WG_1_EVENT = "c:/users/maria/project/.ac/wg-1-team";
 
-    it("updateCoordinatorClock patches the matching replica by normalized path and leaves others untouched", async () => {
-      await loadProjectWith([
-        makeWorkgroup("wg-1-team", [
-          // A carries a pre-existing auto-closed marker to prove the clock patch
-          // preserves sibling fields (it must only touch lastUserMessageAt).
-          makeReplica(COORD_A, { autoClosedAt: "2026-06-19T17:00:00Z" }),
-          makeReplica(COORD_B, { lastUserMessageAt: "2020-01-01T00:00:00Z" }),
-        ]),
-      ]);
+    function twoWorkgroups(coordAOverrides: Partial<AcAgentReplica> = {}): AcWorkgroup[] {
+      return [
+        makeWorkgroup("wg-1-team", [makeReplica(COORD_A, coordAOverrides)]),
+        makeWorkgroup("wg-2-team", [makeReplica(COORD_B)]),
+      ];
+    }
 
-      projectStore.updateCoordinatorClock(COORD_A_EVENT, "2026-06-19T18:00:00Z");
+    it("reloadProject with an identical snapshot keeps every object reference", async () => {
+      await loadProjectWith(twoWorkgroups());
+      const beforeProjects = projectStore.projects;
+      const beforeProject = beforeProjects[0];
 
-      const a = findReplica(COORD_A);
-      expect(a?.lastUserMessageAt).toBe("2026-06-19T18:00:00Z");
-      expect(a?.autoClosedAt).toBe("2026-06-19T17:00:00Z"); // sibling field preserved
-      // Non-matching replica is left exactly as discovered.
-      expect(findReplica(COORD_B)?.lastUserMessageAt).toBe("2020-01-01T00:00:00Z");
+      // Fresh (deep-equal but reference-distinct) snapshot: the preserved refs
+      // below must come from the merge, not from object reuse in the mock.
+      m.discover.mockResolvedValueOnce({
+        workgroups: twoWorkgroups(),
+        agents: [],
+        teams: [],
+        loops: [],
+      });
+      await projectStore.reloadProject(PROJECT_PATH);
+
+      expect(projectStore.projects).toBe(beforeProjects);
+      expect(projectStore.projects[0]).toBe(beforeProject);
     });
 
-    it("updateCoordinatorAutoClosed sets autoClosedAt from a string by normalized path and leaves others untouched", async () => {
-      await loadProjectWith([
-        makeWorkgroup("wg-1-team", [
-          makeReplica(COORD_A),
-          makeReplica(COORD_B),
-        ]),
-      ]);
+    it("reloadProject re-creates only the changed entities, preserving siblings", async () => {
+      await loadProjectWith(twoWorkgroups());
+      const before = projectStore.projects[0];
 
-      projectStore.updateCoordinatorAutoClosed(COORD_A_EVENT, "2026-06-19T18:05:00Z");
+      m.discover.mockResolvedValueOnce({
+        workgroups: twoWorkgroups({ currentProfile: "B" }),
+        agents: [],
+        teams: [],
+        loops: [],
+      });
+      await projectStore.reloadProject(PROJECT_PATH);
 
-      expect(findReplica(COORD_A)?.autoClosedAt).toBe("2026-06-19T18:05:00Z");
-      expect(findReplica(COORD_B)?.autoClosedAt).toBeUndefined();
+      const after = projectStore.projects[0];
+      expect(after).not.toBe(before);
+      expect(after.workgroups[0]).not.toBe(before.workgroups[0]);
+      expect(findReplica(COORD_A)?.currentProfile).toBe("B");
+      // The untouched sibling workgroup keeps its identity (its DOM survives).
+      expect(after.workgroups[1]).toBe(before.workgroups[1]);
     });
 
-    it("updateCoordinatorAutoClosed clears autoClosedAt when passed null (reopen)", async () => {
-      await loadProjectWith([
-        makeWorkgroup("wg-1-team", [
-          makeReplica(COORD_A, { autoClosedAt: "2026-06-19T18:05:00Z" }),
-        ]),
-      ]);
-      // Precondition: the marker is present before the clear.
-      expect(findReplica(COORD_A)?.autoClosedAt).toBe("2026-06-19T18:05:00Z");
+    it("a dedup-discarded duplicate load does NOT wipe live volatile overrides (#748 review fix)", async () => {
+      await loadProjectWith(twoWorkgroups());
+      const before = projectStore.projects;
+      // A live event lands after the initial load.
+      replicaVolatileStore.setAutoClosedAt(COORD_A, "2026-06-19T18:05:00Z");
 
-      projectStore.updateCoordinatorAutoClosed(COORD_A_EVENT, null);
+      // createAndLoad on the already-loaded project: discovery runs but the
+      // inner dedup guard discards the snapshot — the store keeps the ORIGINAL
+      // objects, so the newer live override must survive too.
+      m.newProject.mockResolvedValueOnce({ path: PROJECT_PATH });
+      m.discover.mockResolvedValueOnce({
+        workgroups: twoWorkgroups(),
+        agents: [],
+        teams: [],
+        loops: [],
+      });
+      await projectStore.createAndLoad(PROJECT_PATH);
 
-      expect(findReplica(COORD_A)?.autoClosedAt).toBeUndefined();
+      expect(projectStore.projects).toBe(before);
+      expect(effectiveAutoClosedAt(findReplica(COORD_A)!)).toBe("2026-06-19T18:05:00Z");
+    });
+
+    it("updateWorkgroupTask normalizes an event's null taskTitle to undefined (no phantom diff vs the snapshot)", async () => {
+      await loadProjectWith(twoWorkgroups());
+
+      // The task event serializes taskTitle: null; the discovery snapshot OMITS
+      // the field. Storing null would make the next reload's deepEqual see a
+      // phantom change and re-create the row.
+      projectStore.updateWorkgroupTask(WG_1_EVENT, "task body", null);
+      const afterEvent = projectStore.projects;
+      expect(afterEvent[0].workgroups[0].taskTitle).toBeUndefined();
+
+      // A fresh deep-equal snapshot (taskTitle omitted, same task) is a no-op.
+      m.discover.mockResolvedValueOnce({
+        workgroups: [
+          { ...makeWorkgroup("wg-1-team", [makeReplica(COORD_A)]), task: "task body" },
+          makeWorkgroup("wg-2-team", [makeReplica(COORD_B)]),
+        ],
+        agents: [],
+        teams: [],
+        loops: [],
+      });
+      await projectStore.reloadProject(PROJECT_PATH);
+      expect(projectStore.projects).toBe(afterEvent);
+
+      // A repeat of the same event (null title again) is also a strict no-op.
+      projectStore.updateWorkgroupTask(WG_1_EVENT, "task body", null);
+      expect(projectStore.projects).toBe(afterEvent);
+    });
+
+    it("reloadProject supersedes volatile overrides with the fresh snapshot", async () => {
+      await loadProjectWith(twoWorkgroups());
+      replicaVolatileStore.setAutoClosedAt(COORD_A, "2026-06-19T18:05:00Z");
+      expect(effectiveAutoClosedAt(findReplica(COORD_A)!)).toBe("2026-06-19T18:05:00Z");
+
+      m.discover.mockResolvedValueOnce({
+        workgroups: twoWorkgroups({ autoClosedAt: "2026-06-19T19:00:00Z" }),
+        agents: [],
+        teams: [],
+        loops: [],
+      });
+      await projectStore.reloadProject(PROJECT_PATH);
+
+      // Discovery wins on reload (the override is cleared), events re-patch after.
+      expect(effectiveAutoClosedAt(findReplica(COORD_A)!)).toBe("2026-06-19T19:00:00Z");
+    });
+
+    it("updateWorkgroupTask clones only the matched workgroup's chain, by normalized path", async () => {
+      await loadProjectWith(twoWorkgroups());
+      const before = projectStore.projects;
+
+      projectStore.updateWorkgroupTask(WG_1_EVENT, "task body", "New title");
+
+      const after = projectStore.projects;
+      expect(after).not.toBe(before);
+      expect(after[0].workgroups[0]).not.toBe(before[0].workgroups[0]);
+      expect(after[0].workgroups[0].taskTitle).toBe("New title");
+      // The matched workgroup's agents array and the sibling workgroup keep identity.
+      expect(after[0].workgroups[0].agents).toBe(before[0].workgroups[0].agents);
+      expect(after[0].workgroups[1]).toBe(before[0].workgroups[1]);
+    });
+
+    it("updateWorkgroupTask is a strict no-op on no match or no change", async () => {
+      await loadProjectWith(twoWorkgroups());
+      const before = projectStore.projects;
+
+      projectStore.updateWorkgroupTask("C:\\elsewhere\\wg-9", "task", "Title");
+      expect(projectStore.projects).toBe(before);
+
+      projectStore.updateWorkgroupTask(WG_1_EVENT, "task body", "Same title");
+      const mid = projectStore.projects;
+      projectStore.updateWorkgroupTask(WG_1_EVENT, "task body", "Same title");
+      expect(projectStore.projects).toBe(mid);
+    });
+
+    it("upsertLoop and removeLoop are strict no-ops for identical or unknown data", async () => {
+      const loop: AcLoopSummary = {
+        id: "standup",
+        name: "Standup",
+        enabled: false,
+        expr: "0 9 * * 1-5",
+        timezone: "local",
+        targetKind: "workgroupCoordinator",
+        workgroup: "wg-1-team",
+        promptPreview: "preview",
+        busyCoordinator: "skip",
+        path: `${PROJECT_PATH}\\.ac\\_loop_standup`,
+        configPath: `${PROJECT_PATH}\\.ac\\_loop_standup\\config.toml`,
+        lastCheckedAt: null,
+        lastDueAt: null,
+        lastDeliveredAt: null,
+        lastResult: null,
+        pendingDueAt: null,
+        lastMissedClosedAt: null,
+        nextDueAt: null,
+      };
+      await loadProjectWith(twoWorkgroups());
+
+      projectStore.upsertLoop(PROJECT_PATH, loop);
+      const withLoop = projectStore.projects;
+      expect(withLoop[0].loops).toHaveLength(1);
+
+      // Duplicate event with a deep-equal summary: identity untouched.
+      projectStore.upsertLoop(PROJECT_PATH, { ...loop });
+      expect(projectStore.projects).toBe(withLoop);
+
+      // Unknown loop id: identity untouched.
+      projectStore.removeLoop(PROJECT_PATH, "nope");
+      expect(projectStore.projects).toBe(withLoop);
+
+      projectStore.removeLoop(PROJECT_PATH, "standup");
+      expect(projectStore.projects[0].loops).toHaveLength(0);
     });
   });
 });
