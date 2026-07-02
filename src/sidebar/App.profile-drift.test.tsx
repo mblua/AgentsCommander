@@ -36,6 +36,7 @@ function setupTransport(fake: FakeTransport, isOutdated: () => boolean): void {
       workgroups: [],
     }),
   );
+  fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   // Dynamic: the drift flag the backend would compute in list_sessions flips
   // between calls without any event being emitted.

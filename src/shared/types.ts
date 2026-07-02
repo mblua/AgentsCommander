@@ -726,6 +726,18 @@ export interface AcWorkgroup {
   teamName?: string;
 }
 
+export interface WorkgroupGroup {
+  id: string;
+  name: string;
+  regex: string;
+}
+
+export interface WorkgroupGroupsConfig {
+  groups: WorkgroupGroup[];
+  showAll: boolean;
+  showUngrouped: boolean;
+}
+
 export type LoopTriggerKind = "cron";
 export type LoopTargetKind = "workgroupCoordinator";
 export type MissedWhileClosedPolicy = "notify";

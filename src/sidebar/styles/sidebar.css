@@ -2474,6 +2474,63 @@ html.light-theme .root-agent-avatar {
   background: rgba(0, 212, 255, 0.08);
 }
 
+.session-context-submenu {
+  padding: 2px 0;
+}
+
+.session-context-submenu-title,
+.session-context-note,
+.session-context-error {
+  padding: 5px var(--spacing-md);
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+}
+
+.session-context-submenu-title {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.session-context-error {
+  color: var(--danger, #ff6b6b);
+  white-space: normal;
+}
+
+.session-context-option-check {
+  width: 14px;
+  flex: 0 0 14px;
+  color: var(--sidebar-accent);
+}
+
+.session-context-group-option span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-context-inline-create {
+  display: flex;
+  gap: 6px;
+  padding: 4px var(--spacing-md);
+}
+
+.session-context-inline-input {
+  min-width: 0;
+  width: 130px;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  outline: none;
+}
+
+.session-context-inline-input:focus {
+  border-color: var(--sidebar-accent);
+}
+
 .session-context-repo-option {
   min-width: 0;
 }
@@ -2661,10 +2718,104 @@ html.light-theme .settings-hint-warning {
   width: 100%;
 }
 
+.sidebar-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.sidebar-body[data-rail-side="left"],
+.sidebar-body[data-rail-side="right"] {
+  flex-direction: row;
+}
+
 .sidebar-scrollable {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.workgroup-group-rail {
+  flex: 0 0 68px;
+  min-width: 68px;
+  max-width: 68px;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 5px;
+  background: rgba(255, 255, 255, 0.025);
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-body[data-rail-side="left"] .workgroup-group-rail {
+  border-left: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.workgroup-group-rail-project + .workgroup-group-rail-project {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.workgroup-group-rail-project-label {
+  margin-bottom: 5px;
+  color: var(--sidebar-fg-dim);
+  font-size: 9px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workgroup-group-rail-button {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin-bottom: 4px;
+  padding: 4px 5px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  line-height: 1.15;
+  text-align: center;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.workgroup-group-rail-button:hover,
+.workgroup-group-rail-button.selected {
+  background: rgba(0, 212, 255, 0.1);
+  border-color: rgba(0, 212, 255, 0.22);
+  color: var(--sidebar-fg);
+}
+
+.workgroup-group-rail-button.selected {
+  box-shadow: inset 3px 0 0 var(--sidebar-accent);
+}
+
+.workgroup-group-rail-button.edit {
+  margin-top: 8px;
+  color: var(--sidebar-accent);
+}
+
+.workgroup-group-rail-error {
+  margin: 4px auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--danger, #ff6b6b);
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
 }
 
 .sidebar-scrollable::-webkit-scrollbar {
@@ -3734,6 +3885,121 @@ html.light-theme .settings-hint-warning {
   font-size: 9px;
   color: var(--sidebar-fg-dim);
   letter-spacing: 0.3px;
+}
+
+/* ===== Workgroup Groups Modal ===== */
+.workgroup-groups-modal {
+  width: min(760px, 94vw);
+  max-height: min(720px, 88vh);
+}
+
+.workgroup-groups-form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  min-height: 0;
+  padding: var(--spacing-md);
+  overflow-y: auto;
+}
+
+.workgroup-groups-project {
+  color: var(--sidebar-fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+.workgroup-groups-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+}
+
+.workgroup-groups-toggles input {
+  accent-color: var(--sidebar-accent);
+}
+
+.workgroup-groups-table {
+  display: grid;
+  gap: var(--spacing-xs);
+  min-height: 0;
+}
+
+.workgroup-group-edit-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(180px, 1fr) auto;
+  gap: var(--spacing-xs);
+  align-items: center;
+}
+
+.workgroup-group-name-input,
+.workgroup-group-regex-input {
+  min-width: 0;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 0 var(--spacing-sm);
+  outline: none;
+}
+
+.workgroup-group-name-input:focus,
+.workgroup-group-regex-input:focus {
+  border-color: rgba(0, 212, 255, 0.38);
+}
+
+.workgroup-group-delete,
+.workgroup-group-add {
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--sidebar-fg-dim);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.workgroup-group-delete {
+  padding: 0 var(--spacing-sm);
+}
+
+.workgroup-group-add {
+  align-self: flex-start;
+  padding: 0 var(--spacing-md);
+}
+
+.workgroup-group-delete:hover,
+.workgroup-group-add:hover {
+  background: rgba(0, 212, 255, 0.09);
+  color: var(--sidebar-fg);
+}
+
+.workgroup-groups-empty,
+.workgroup-groups-errors {
+  color: var(--sidebar-fg-dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.workgroup-groups-errors {
+  color: var(--danger, #ff6b6b);
+}
+
+@media (max-width: 680px) {
+  .workgroup-group-edit-row {
+    grid-template-columns: 1fr;
+  }
+
+  .workgroup-group-delete {
+    justify-self: flex-start;
+  }
 }
 
 /* ===== New Agent Modal ===== */

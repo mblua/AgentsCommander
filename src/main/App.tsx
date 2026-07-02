@@ -239,7 +239,7 @@ const MainApp: Component = () => {
       <RtkBanner />
       <div class="main-body">
         <div class="main-sidebar-pane" style={{ width: `${sidebarWidth()}px` }}>
-          <SidebarApp embedded />
+          <SidebarApp embedded railSide={sidebarSide()} />
         </div>
         <div
           class="main-divider"

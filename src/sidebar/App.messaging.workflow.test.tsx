@@ -66,6 +66,7 @@ function setupMessagingTransport(fake: FakeTransport): void {
       workgroups: [],
     })
   );
+  fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", [generalSession]);
   fake.resolve("get_active_session", "session-1");
