@@ -180,7 +180,7 @@ describe("ProjectPanel raise-hand communication slot (#676)", () => {
     }
   });
 
-  it("does not render for non-coordinator rows or stale exited-session communication", async () => {
+  it("does not render for non-coordinator rows", async () => {
     const nonCoord = await mountProject(
       [workgroup("wg-3-dev-team", "worker", "Worker task", false)],
       [
@@ -194,9 +194,9 @@ describe("ProjectPanel raise-hand communication slot (#676)", () => {
     } finally {
       nonCoord.cleanup();
     }
+  });
 
-    resetUiStoresForTests();
-
+  it("renders for a dormant (exited) coordinator session with restored raise-hand communication (#747)", async () => {
     const exited = await mountProject(
       [workgroup("wg-4-dev-team", "dev-webpage-ui", "Exited task")],
       [
@@ -206,7 +206,13 @@ describe("ProjectPanel raise-hand communication slot (#676)", () => {
       ]
     );
     try {
-      expect(exited.root.querySelector(".coord-communication-slot")).toBeNull();
+      await waitFor(() => {
+        const slot = exited.root.querySelector(
+          `[data-ac-testid="${rowSlotTestId("wg-4-dev-team", "dev-webpage-ui")}"]`
+        );
+        expect(slot).not.toBeNull();
+        expect(slot?.getAttribute("data-kind")).toBe("raiseHand");
+      });
     } finally {
       exited.cleanup();
     }
