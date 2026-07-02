@@ -93,22 +93,22 @@ const ProjectRailSection: Component<{
         title: tooltipFor(props.project.workgroups),
       });
     }
-    for (const group of config().groups) {
-      const workgroups = props.project.workgroups.filter((wg) => groupMatches(group, wg));
-      result.push({
-        key: group.id,
-        label: counterLabel(group.name, workgroups),
-        selection: { kind: "group", id: group.id },
-        workgroups,
-        title: tooltipFor(workgroups),
-      });
-    }
     if (config().showUngrouped) {
       const workgroups = ungroupedWorkgroups();
       result.push({
         key: "ungrouped",
         label: counterLabel("Ungrouped", workgroups),
         selection: { kind: "ungrouped" },
+        workgroups,
+        title: tooltipFor(workgroups),
+      });
+    }
+    for (const group of config().groups) {
+      const workgroups = props.project.workgroups.filter((wg) => groupMatches(group, wg));
+      result.push({
+        key: group.id,
+        label: counterLabel(group.name, workgroups),
+        selection: { kind: "group", id: group.id },
         workgroups,
         title: tooltipFor(workgroups),
       });

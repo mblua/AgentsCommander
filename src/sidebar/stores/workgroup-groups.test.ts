@@ -6,6 +6,7 @@ import {
   appendExactGroupToken,
   defaultGroupsConfig,
   exactGroupRegexForWorkgroup,
+  removeExactGroupToken,
   validateGroupsConfig,
   workgroupGroupsStore,
 } from "./workgroup-groups";
@@ -172,5 +173,22 @@ describe("workgroup group validation helpers", () => {
 
   it("returns null when appending to an invalid regex", () => {
     expect(appendExactGroupToken("(", "wg-2-dev-team")).toBeNull();
+  });
+
+  it("removes an exact workgroup token from a generated regex union", () => {
+    expect(removeExactGroupToken("^(wg-1-dev-team|wg-2-dev-team)$", "wg-1-dev-team")).toBe(
+      exactGroupRegexForWorkgroup("wg-2-dev-team")
+    );
+    expect(removeExactGroupToken(exactGroupRegexForWorkgroup("wg-1-dev-team"), "wg-1-dev-team")).toBe(
+      "(?!)"
+    );
+  });
+
+  it("does not remove regex-derived custom memberships without an exact token", () => {
+    expect(removeExactGroupToken("^wg-1-", "wg-1-dev-team")).toBeNull();
+  });
+
+  it("does not report a token as removable when another regex branch would still match", () => {
+    expect(removeExactGroupToken("^(wg-1-.*|wg-1-dev-team)$", "wg-1-dev-team")).toBeNull();
   });
 });

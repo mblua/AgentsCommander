@@ -128,6 +128,72 @@ export function appendExactGroupToken(regex: string, wgName: string): string | n
   return `(?:${pattern})|^(${token})$`;
 }
 
+function splitEscapedAlternatives(body: string): string[] {
+  const alternatives: string[] = [];
+  let current = "";
+  let escaped = false;
+  for (const char of body) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (char === "|") {
+      alternatives.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  alternatives.push(current);
+  return alternatives;
+}
+
+function splitGeneratedAppend(pattern: string): { inner: string; token: string } | null {
+  if (!pattern.startsWith("(?:") || !pattern.endsWith(")$")) return null;
+  const markerIndex = pattern.lastIndexOf(")|^(");
+  if (markerIndex < 3) return null;
+  return {
+    inner: pattern.slice(3, markerIndex),
+    token: pattern.slice(markerIndex + 4, -2),
+  };
+}
+
+function removeExactGroupTokenUnchecked(regex: string, wgName: string): string | null {
+  const pattern = regex.trim();
+  const token = escapeRegexLiteral(wgName);
+  const generated = pattern.match(/^\^\((.*)\)\$$/);
+  if (generated) {
+    const alternatives = splitEscapedAlternatives(generated[1]);
+    if (!alternatives.includes(token)) return null;
+    const remaining = alternatives.filter((alternative) => alternative !== token);
+    return remaining.length > 0 ? `^(${remaining.join("|")})$` : "(?!)";
+  }
+
+  const appended = splitGeneratedAppend(pattern);
+  if (!appended) return null;
+  if (appended.token === token) return appended.inner || "(?!)";
+
+  const nextInner = removeExactGroupTokenUnchecked(appended.inner, wgName);
+  if (nextInner === null) return null;
+  return nextInner === "(?!)" ? `^(${appended.token})$` : `(?:${nextInner})|^(${appended.token})$`;
+}
+
+export function removeExactGroupToken(regex: string, wgName: string): string | null {
+  const nextRegex = removeExactGroupTokenUnchecked(regex, wgName);
+  if (nextRegex === null) return null;
+  try {
+    return new RegExp(nextRegex).test(wgName) ? null : nextRegex;
+  } catch {
+    return null;
+  }
+}
+
 export function compileGroupRegex(group: WorkgroupGroup): RegExp | null {
   if (charLength(group.regex) > MAX_GROUP_REGEX_LENGTH) return null;
   try {
@@ -325,6 +391,31 @@ export const workgroupGroupsStore = {
     const nextRegex = appendExactGroupToken(group.regex, wgName);
     if (nextRegex === null) {
       const message = "Fix this group's regex before adding a workgroup.";
+      const key = keyFor(projectPath);
+      setEntries(key, { ...ensureEntry(projectPath), error: message });
+      throw new Error(message);
+    }
+    await this.save(projectPath, {
+      ...config,
+      groups: config.groups.map((candidate) =>
+        candidate.id === groupId ? { ...candidate, regex: nextRegex } : candidate
+      ),
+    });
+  },
+
+  async removeWorkgroupFromGroup(projectPath: string, groupId: string, wgName: string): Promise<void> {
+    if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
+      const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
+      const key = keyFor(projectPath);
+      setEntries(key, { ...ensureEntry(projectPath), error: message });
+      throw new Error(message);
+    }
+    const config = this.config(projectPath);
+    const group = config.groups.find((candidate) => candidate.id === groupId);
+    if (!group) throw new Error("Group no longer exists.");
+    const nextRegex = removeExactGroupToken(group.regex, wgName);
+    if (nextRegex === null) {
+      const message = "This membership comes from a custom regex. Use Edit groups to change it.";
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);

@@ -51,6 +51,7 @@ import {
   MAX_GROUP_MATCH_ID_LENGTH,
   compileGroupRegex,
   groupMatchId,
+  removeExactGroupToken,
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
 
@@ -703,6 +704,7 @@ const ProjectPanel: Component = () => {
         const [groupFlyoutPos, setGroupFlyoutPos] = createSignal({ x: 0, y: 0 });
         let groupFlyoutEl: HTMLDivElement | undefined;
         let groupFlyoutAnchorEl: HTMLElement | undefined;
+        let groupFlyoutCloseTimer: number | undefined;
         const [agentCtxMenu, setAgentCtxMenu] = createSignal<{ agent: { name: string; path: string; preferredAgentId?: string }; x: number; y: number } | null>(null);
         const [agentsHeaderCtxMenu, setAgentsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [workgroupsHeaderCtxMenu, setWorkgroupsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
@@ -854,10 +856,27 @@ const ProjectPanel: Component = () => {
           setFilterPattern("");
           focusFilterInput();
         };
+        const cancelGroupFlyoutClose = () => {
+          if (groupFlyoutCloseTimer === undefined) return;
+          window.clearTimeout(groupFlyoutCloseTimer);
+          groupFlyoutCloseTimer = undefined;
+        };
         const closeGroupFlyout = () => {
+          cancelGroupFlyoutClose();
           setGroupFlyoutOpen(false);
           groupFlyoutAnchorEl = undefined;
           groupFlyoutEl = undefined;
+        };
+        const groupFlyoutHasError = () =>
+          !!groupMenuError() || !!workgroupGroupsStore.error(proj.path);
+        const scheduleGroupFlyoutClose = () => {
+          cancelGroupFlyoutClose();
+          if (groupFlyoutHasError()) return;
+          groupFlyoutCloseTimer = window.setTimeout(() => {
+            groupFlyoutCloseTimer = undefined;
+            if (groupFlyoutHasError()) return;
+            closeGroupFlyout();
+          }, 180);
         };
         const resetGroupCreateState = () => {
           setGroupCreateWgPath(null);
@@ -1181,11 +1200,21 @@ const ProjectPanel: Component = () => {
         };
 
         const openGroupFlyout = (anchor: HTMLElement) => {
+          cancelGroupFlyoutClose();
           groupFlyoutAnchorEl = anchor;
           positionGroupFlyout(anchor);
           setGroupFlyoutOpen(true);
           reclampGroupFlyout();
         };
+
+        const toggleGroupFlyout = (anchor: HTMLElement) => {
+          if (groupFlyoutOpen() && groupFlyoutAnchorEl === anchor) {
+            closeGroupFlyout();
+            return;
+          }
+          openGroupFlyout(anchor);
+        };
+        onCleanup(cancelGroupFlyoutClose);
 
         const restartReplicaSession = async (
           sessionId: string,
@@ -1240,10 +1269,14 @@ const ProjectPanel: Component = () => {
         const groupAlreadyMatches = (wg: AcWorkgroup, groupId: string) =>
           groupMatchesWorkgroup(wg, groupId);
 
-        const addToExistingGroup = async (wg: AcWorkgroup, groupId: string) => {
+        const toggleExistingGroup = async (wg: AcWorkgroup, groupId: string) => {
           setGroupMenuError("");
           try {
-            await workgroupGroupsStore.addWorkgroupToGroup(proj.path, groupId, wg.name);
+            if (groupAlreadyMatches(wg, groupId)) {
+              await workgroupGroupsStore.removeWorkgroupFromGroup(proj.path, groupId, wg.name);
+            } else {
+              await workgroupGroupsStore.addWorkgroupToGroup(proj.path, groupId, wg.name);
+            }
           } catch (error) {
             setGroupMenuError(error instanceof Error ? error.message : String(error));
             reclampGroupFlyout();
@@ -1279,6 +1312,8 @@ const ProjectPanel: Component = () => {
                 class="session-context-flyout"
                 ref={groupFlyoutEl}
                 style={{ left: `${groupFlyoutPos().x}px`, top: `${groupFlyoutPos().y}px` }}
+                onMouseEnter={cancelGroupFlyoutClose}
+                onMouseLeave={scheduleGroupFlyoutClose}
                 onClick={(e) => e.stopPropagation()}
                 onContextMenu={(e) => e.stopPropagation()}
                 data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.flyout`}
@@ -1286,17 +1321,31 @@ const ProjectPanel: Component = () => {
                 <For each={groupsConfig().groups}>
                   {(group) => {
                     const valid = () => !!compileGroupRegex(group);
+                    const selected = () => groupAlreadyMatches(wg, group.id);
+                    const removable = () => removeExactGroupToken(group.regex, wg.name) !== null;
+                    const customMembership = () => selected() && !removable();
+                    const disabled = () => !valid() || customMembership();
+                    const title = () => {
+                      if (!valid()) return "Fix this group's regex before adding a workgroup";
+                      if (customMembership()) {
+                        return "Membership comes from a custom regex. Use Edit groups to change it.";
+                      }
+                      return selected() ? "Remove this workgroup from the group" : group.regex;
+                    };
                     return (
                       <button
                         class="session-context-option session-context-group-option"
-                        classList={{ "context-option-disabled": !valid() }}
-                        disabled={!valid()}
-                        title={valid() ? group.regex : "Fix this group's regex before adding a workgroup"}
-                        onClick={() => void addToExistingGroup(wg, group.id)}
+                        classList={{ "context-option-disabled": disabled() }}
+                        disabled={disabled()}
+                        title={title()}
+                        onClick={() => {
+                          if (disabled()) return;
+                          void toggleExistingGroup(wg, group.id);
+                        }}
                         data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.${automationIdPart(group.id)}`}
                       >
                         <span class="session-context-option-check">
-                          {groupAlreadyMatches(wg, group.id) ? "\u2713" : ""}
+                          {selected() ? "\u2713" : ""}
                         </span>
                         <span>{group.name}</span>
                       </button>
@@ -1365,11 +1414,12 @@ const ProjectPanel: Component = () => {
             <button
               class="session-context-option session-context-submenu-trigger"
               onMouseEnter={(e) => openGroupFlyout(e.currentTarget)}
+              onMouseLeave={scheduleGroupFlyoutClose}
               onFocus={(e) => openGroupFlyout(e.currentTarget)}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                openGroupFlyout(e.currentTarget);
+                toggleGroupFlyout(e.currentTarget);
               }}
               data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
             >
@@ -3070,7 +3120,6 @@ const ProjectPanel: Component = () => {
                         >
                           Coding Agent
                         </button>
-                        {renderAddToGroupItem(menu().wg, menu().replica)}
                         <button
                           class="session-context-option"
                           title={menu().replica.path}
@@ -3121,6 +3170,7 @@ const ProjectPanel: Component = () => {
                         >
                           {sessionsStore.isDetached(menu().sessionId) ? "Re-attach to main" : "Open in new window"}
                         </button>
+                        {renderAddToGroupItem(menu().wg, menu().replica)}
                         <div class="context-separator" />
                         <button
                           class="session-context-option"
@@ -3160,7 +3210,6 @@ const ProjectPanel: Component = () => {
                           >
                             Coding Agent
                           </button>
-                          {renderAddToGroupItem(menu().wg, menu().replica)}
                           <button
                             class="session-context-option"
                             title={menu().replica.path}
@@ -3204,6 +3253,7 @@ const ProjectPanel: Component = () => {
                               </button>
                             )}
                           </Show>
+                          {renderAddToGroupItem(menu().wg, menu().replica)}
                           <button
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}
