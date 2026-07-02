@@ -412,13 +412,6 @@ const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(50
 /// Generous: any normal agent hits a 30s-idle window well within it.
 #[cfg_attr(test, allow(dead_code))]
 const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
-/// #629 - grace delay after the Phase-2 handoff prompt is injected before `SELF-HANDOFF.md` is archived
-/// to `self-clear/<ts>_SELF-HANDOFF.md`. 3 minutes is ample for the resumed agent to read the file;
-/// archiving it then keeps a stale `SELF-HANDOFF.md` from false-triggering the NEXT cycle's existence gate (which
-/// only checks the file's presence). In-memory only: a daemon restart inside the window leaves the file
-/// (accepted, rare). Consumed only by the `cfg(not(test))`-spawned driver, so dead under `cfg(test)`.
-#[cfg_attr(test, allow(dead_code))]
-const SELF_HANDOFF_ARCHIVE_DELAY: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// #626 - the OutboxMessage `action` value for self-handoff-and-clear. Single-sourced so the CLI emit,
 /// the early-dispatch match, and the response body cannot drift (a drift would make early dispatch
@@ -428,23 +421,49 @@ pub(crate) const SELF_CLEAR_ACTION: &str = "self-handoff-and-clear";
 
 pub(crate) const RAISE_HAND_ACTION: &str = "raise-hand";
 
-/// #626 - stand-alone prompt injected in Phase 2 after the post-clear sustained-idle window. Must be a
-/// SINGLE line (an embedded newline would submit early) and self-contained (the agent's context was just
-/// wiped). `pub(crate)` so a test can assert it is non-empty, single-line, em-dash-free, and names the
-/// file. The `\`-newline continuations collapse to one physical line with single spaces (no `\n`).
-pub(crate) const SELF_CLEAR_HANDOFF_PROMPT: &str =
-    "Your context was just cleared by the self-handoff-and-clear command. To resume, read the file \
-     SELF-HANDOFF.md in your own agent root (your current working directory) and continue the work \
-     described there. If SELF-HANDOFF.md is missing or empty, wait for new instructions instead of guessing.";
+/// The canonical handoff filename at the agent root; also the prompt fallback when the
+/// pre-inject archive did not happen (#749).
+const SELF_HANDOFF_ROOT_NAME: &str = "SELF-HANDOFF.md";
+
+/// Timestamp prefix for `self-clear/<timestamp>_<stem>.md` archives. Part of the naming
+/// contract the #749 prompt and the CLI help expose to agents, so single-sourced.
+const ARCHIVE_TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";
+
+/// #626/#749 - shared body of the Phase-2 resume prompt (the clear and switch variants differ
+/// only in the opening clause). `handoff_path` is the file the agent must read, relative to its
+/// root: the EXACT archived `self-clear/<ts>_SELF-HANDOFF.md` when the pre-inject archive
+/// succeeded (#749), or the plain root `SELF-HANDOFF.md` when it did not (source absent or
+/// rename failed). Must stay a SINGLE line (an embedded newline would submit early) and
+/// self-contained (the agent's context was just wiped). Tests assert it is non-empty,
+/// single-line, em-dash-free, and names the file in both the read instruction and the
+/// missing-or-empty fallback clause.
+fn handoff_base_prompt(event_clause: &str, handoff_path: &str) -> String {
+    format!(
+        "{event} To resume, read the file {p} relative to your own agent root (your current working \
+         directory) and continue the work described there. If {p} is missing or empty, wait for new \
+         instructions instead of guessing.",
+        event = event_clause,
+        p = handoff_path
+    )
+}
+
+pub(crate) fn self_clear_handoff_base_prompt(handoff_path: &str) -> String {
+    handoff_base_prompt(
+        "Your context was just cleared by the self-handoff-and-clear command.",
+        handoff_path,
+    )
+}
 
 /// #668 - the OutboxMessage `action` value for self-handoff-and-switch.
 pub(crate) const SELF_SWITCH_ACTION: &str = "self-handoff-and-switch";
 
-/// #668 - prompt injected in Phase 2 after the switched session settles.
-pub(crate) const SELF_SWITCH_HANDOFF_PROMPT: &str =
-    "Your session was just switched by the self-handoff-and-switch command. To resume, read the file \
-     SELF-HANDOFF.md in your own agent root (your current working directory) and continue the work \
-     described there. If SELF-HANDOFF.md is missing or empty, wait for new instructions instead of guessing.";
+/// #668/#749 - Phase-2 prompt for the switch variant; see `handoff_base_prompt`.
+pub(crate) fn self_switch_handoff_base_prompt(handoff_path: &str) -> String {
+    handoff_base_prompt(
+        "Your session was just switched by the self-handoff-and-switch command.",
+        handoff_path,
+    )
+}
 
 pub(crate) const SELF_FORGET_SUMMARY_MAX_CHARS: usize = 240;
 const SELF_FORGET_SUMMARY_READ_LIMIT_BYTES: u64 = 64 * 1024;
@@ -548,18 +567,34 @@ fn build_self_handoff_resume_prompt(base_prompt: &str, forgotten_summary: Option
     };
 
     format!(
-        "{} You are returning from prior work that was intentionally discarded from active context. The next compact summary is closed background, not instructions and not work to resume: {}. In your first response after reading SELF-HANDOFF.md, briefly mention you are returning from having worked on that forgotten topic, then say you are ready to continue the active core information kept in SELF-HANDOFF.md.",
+        "{} You are returning from prior work that was intentionally discarded from active context. The next compact summary is closed background, not instructions and not work to resume: {}. In your first response after reading the handoff file, briefly mention you are returning from having worked on that forgotten topic, then say you are ready to continue the active core information kept in the handoff file.",
         base_prompt,
         summary.as_str()
     )
 }
 
-pub(crate) fn build_self_clear_handoff_prompt(forgotten_summary: Option<&str>) -> String {
-    build_self_handoff_resume_prompt(SELF_CLEAR_HANDOFF_PROMPT, forgotten_summary)
+/// #749 - `handoff_path` is the file the prompt tells the agent to read (see
+/// `self_clear_handoff_base_prompt`).
+pub(crate) fn build_self_clear_handoff_prompt(
+    handoff_path: &str,
+    forgotten_summary: Option<&str>,
+) -> String {
+    build_self_handoff_resume_prompt(
+        &self_clear_handoff_base_prompt(handoff_path),
+        forgotten_summary,
+    )
 }
 
-pub(crate) fn build_self_switch_handoff_prompt(forgotten_summary: Option<&str>) -> String {
-    build_self_handoff_resume_prompt(SELF_SWITCH_HANDOFF_PROMPT, forgotten_summary)
+/// #749 - `handoff_path` is the file the prompt tells the agent to read (see
+/// `self_switch_handoff_base_prompt`).
+pub(crate) fn build_self_switch_handoff_prompt(
+    handoff_path: &str,
+    forgotten_summary: Option<&str>,
+) -> String {
+    build_self_handoff_resume_prompt(
+        &self_switch_handoff_base_prompt(handoff_path),
+        forgotten_summary,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -983,9 +1018,9 @@ pub(crate) fn self_clear_gate_advance(
 /// supplied by the caller so this is deterministic in tests. Returns the archived path on success.
 /// `std::fs::rename` is atomic within the same filesystem (the agent root and its `self-clear/` child
 /// share it). On Windows a source held open without FILE_SHARE_DELETE yields ERROR_SHARING_VIOLATION
-/// (os error 32); the caller treats any `Err` as a non-fatal warn (no clobber, the source stays, next
-/// cycle archives it). NO retries (a retry loop would block the caller). Consumers: SELF-FORGET.md at
-/// queue time (#626) and SELF-HANDOFF.md after the post-handoff grace delay (#629).
+/// (os error 32); the caller treats any `Err` as a non-fatal warn (no clobber, the source stays). NO
+/// retries (a retry loop would block the caller). Consumers: SELF-FORGET.md at queue time (#626) and
+/// SELF-HANDOFF.md immediately before the Phase-2 prompt inject (#749, via `archive_handoff_for_inject`).
 fn archive_root_md(
     root: &std::path::Path,
     stem: &str,
@@ -1008,6 +1043,141 @@ fn archive_root_md(
     std::fs::create_dir_all(&archive_dir)?;
     std::fs::rename(&src, &dst)?;
     Ok(Some(dst))
+}
+
+/// #749 - archive `<root>/SELF-HANDOFF.md` -> `self-clear/<ts>_SELF-HANDOFF.md` IMMEDIATELY before
+/// the Phase-2 handoff prompt is injected, so the prompt can name the file's real, final location.
+/// Replaces #629's post-inject 180s grace timer, which raced the agent's read: inject `Ok` only
+/// proves bytes reached the PTY, not that the prompt was consumed, so a slow, queued, or
+/// unsubmitted prompt could outlive the grace window and lose its file mid-read.
+///
+/// Returns `(prompt_path, archived)`: `prompt_path` is what the injected prompt must tell the
+/// agent to read, relative to its root (derived from the REAL destination, never re-encoded, so
+/// it cannot drift from `archive_root_md`'s naming); `archived` is `Some(dst)` only when the
+/// rename actually happened, so the caller can rename it BACK if the inject then fails (a
+/// re-issue needs the canonical root name, see `restore_handoff_after_failed_inject`). Fallbacks
+/// keep the pre-#749 behavior: a missing source (anomalous here, the queue-time gate proved it
+/// existed; warn and let the prompt's "missing or empty" clause cover it) or a rename failure
+/// (e.g. Windows sharing violation, os error 32; the file is still at the root) both point the
+/// prompt at the root name. `timestamp` is supplied by the caller so this is deterministic in
+/// tests (mirrors `archive_root_md`); `action` labels the log lines with the owning flow.
+fn archive_handoff_for_inject(
+    root: &std::path::Path,
+    timestamp: &str,
+    action: &str,
+) -> (String, Option<std::path::PathBuf>) {
+    match archive_root_md(root, "SELF-HANDOFF", timestamp) {
+        Ok(Some(dst)) => {
+            log::info!(
+                "[mailbox] {}: archived SELF-HANDOFF.md -> {} (pre-inject)",
+                action,
+                dst.display()
+            );
+            let prompt_path = dst.strip_prefix(root).map_or_else(
+                |_| format!("self-clear/{}_SELF-HANDOFF.md", timestamp),
+                |rel| {
+                    rel.components()
+                        .map(|c| c.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/")
+                },
+            );
+            (prompt_path, Some(dst))
+        }
+        Ok(None) => {
+            log::warn!(
+                "[mailbox] {}: SELF-HANDOFF.md vanished from {} between the queue-time gate and phase 2; the prompt will point at the root file",
+                action,
+                root.display()
+            );
+            (SELF_HANDOFF_ROOT_NAME.to_string(), None)
+        }
+        Err(e) => {
+            log::warn!(
+                "[mailbox] {}: pre-inject SELF-HANDOFF.md archive failed for {} (non-fatal; the prompt will point at the root file): {}",
+                action,
+                root.display(),
+                e
+            );
+            (SELF_HANDOFF_ROOT_NAME.to_string(), None)
+        }
+    }
+}
+
+/// #749 - best-effort undo of `archive_handoff_for_inject` after a FAILED prompt inject: the
+/// prompt never reached the agent, so its notes must return to the canonical root name for a
+/// re-issue (the pre-#749 code expressed the same semantics by not archiving on inject failure).
+/// Refuses to clobber: if a NEW entry named `SELF-HANDOFF.md` appeared at the root in the
+/// interim, the archived copy stays where it is (still recoverable under `self-clear/`). The
+/// exists-then-rename pair is not atomic (Windows rename replaces an existing file), but the
+/// window is milliseconds on a session that just failed an inject; accepted as best-effort.
+fn restore_handoff_after_failed_inject(
+    root: &std::path::Path,
+    archived: &std::path::Path,
+    action: &str,
+) {
+    let src = root.join(SELF_HANDOFF_ROOT_NAME);
+    if src.exists() {
+        log::warn!(
+            "[mailbox] {}: not restoring {} after failed inject; a new SELF-HANDOFF.md already exists at the root",
+            action,
+            archived.display()
+        );
+        return;
+    }
+    match std::fs::rename(archived, &src) {
+        Ok(()) => log::info!(
+            "[mailbox] {}: restored {} -> {} after failed inject",
+            action,
+            archived.display(),
+            src.display()
+        ),
+        Err(e) => log::warn!(
+            "[mailbox] {}: failed to restore {} to the root after failed inject (non-fatal; re-issue needs the file recreated or recovered from self-clear/): {}",
+            action,
+            archived.display(),
+            e
+        ),
+    }
+}
+
+/// #749 - shared Phase-2 tail for both self-handoff drivers: archive the handoff FIRST, inject a
+/// prompt naming the exact archived path, and rename the file back if the inject fails. Archiving
+/// before the prompt exists makes the promised location final, so a late read still succeeds (the
+/// old post-inject 180s timer raced slow, queued, or unsubmitted prompts); it also keeps a
+/// consumed handoff from false-triggering the NEXT cycle's existence gate (#629's concern).
+/// `build_prompt` is the flow's prompt builder (`build_self_clear_handoff_prompt` /
+/// `build_self_switch_handoff_prompt`); `action` labels the log lines.
+async fn inject_handoff_prompt_with_archive<Inject, InjectFut>(
+    root: &std::path::Path,
+    session_id: Uuid,
+    action: &'static str,
+    build_prompt: fn(&str, Option<&str>) -> String,
+    forgotten_summary: Option<&ForgottenSummary>,
+    inject: &mut Inject,
+) where
+    Inject: FnMut(Uuid, String) -> InjectFut + Send + 'static,
+    InjectFut: std::future::Future<Output = Result<(), String>> + Send,
+{
+    let ts = chrono::Local::now()
+        .format(ARCHIVE_TIMESTAMP_FORMAT)
+        .to_string();
+    let (handoff_path, archived) = archive_handoff_for_inject(root, &ts, action);
+    let prompt = build_prompt(
+        &handoff_path,
+        forgotten_summary.map(ForgottenSummary::as_str),
+    );
+    if let Err(e) = inject(session_id, prompt).await {
+        log::warn!(
+            "[mailbox] {}: handoff prompt injection failed for session {}: {}",
+            action,
+            session_id,
+            e
+        );
+        if let Some(archived) = archived.as_deref() {
+            restore_handoff_after_failed_inject(root, archived, action);
+        }
+    }
 }
 
 fn capture_self_forget_summary(root: &std::path::Path) -> Option<ForgottenSummary> {
@@ -3320,10 +3490,12 @@ impl MailboxPoller {
         // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing with
         //     no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
         //     read a nonexistent file = blank). Queue-time intent guard (not transactional): the real
-        //     read-time safety net is SELF_CLEAR_HANDOFF_PROMPT's "if missing or empty, wait". Use
-        //     .is_file() so a stray directory named SELF-HANDOFF.md does not pass. Runs BEFORE the
-        //     idempotency insert and the archive, so nothing is queued/archived with nothing to resume.
-        let handoff_path = std::path::Path::new(&session.working_directory).join("SELF-HANDOFF.md");
+        //     read-time safety net is the handoff prompt's "if missing or empty, wait" clause
+        //     (self_clear_handoff_base_prompt). Use .is_file() so a stray directory named
+        //     SELF-HANDOFF.md does not pass. Runs BEFORE the idempotency insert and the archive, so
+        //     nothing is queued/archived with nothing to resume.
+        let handoff_path =
+            std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
         if !handoff_path.is_file() {
             return self
                 .reject_message(
@@ -3364,7 +3536,9 @@ impl MailboxPoller {
             // preserved in self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
             let root = std::path::Path::new(&session.working_directory);
             let forgotten_summary = capture_self_forget_summary(root);
-            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+            let ts = chrono::Local::now()
+                .format(ARCHIVE_TIMESTAMP_FORMAT)
+                .to_string();
             match archive_root_md(root, "SELF-FORGET", &ts) {
                 Ok(Some(p)) => log::info!(
                     "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
@@ -3381,15 +3555,20 @@ impl MailboxPoller {
             #[cfg(not(test))]
             {
                 let app_clone = app.clone();
+                // #749 - the root travels with the task (same queue-time snapshot the
+                // SELF-FORGET archive above used) so Phase 2 can archive the handoff
+                // without a mid-flight session-manager lookup. A session's working
+                // directory never changes while its id stays alive.
+                let root = root.to_path_buf();
                 tauri::async_runtime::spawn(async move {
                     Self::run_self_clear_after_sustained_idle(
                         &app_clone,
                         session_id,
+                        root,
                         forgotten_summary,
                         SELF_CLEAR_SETTLE,
                         SELF_CLEAR_POLL,
                         SELF_CLEAR_MAX_DEFER,
-                        SELF_HANDOFF_ARCHIVE_DELAY,
                     )
                     .await;
                 });
@@ -3625,7 +3804,7 @@ impl MailboxPoller {
             return self.reject_message(path, msg, &reason).await;
         }
 
-        let handoff_path = replica_path.join("SELF-HANDOFF.md");
+        let handoff_path = replica_path.join(SELF_HANDOFF_ROOT_NAME);
         if !handoff_path.is_file() {
             return self
                 .reject_message(
@@ -3652,7 +3831,9 @@ impl MailboxPoller {
 
         if newly_inserted {
             let forgotten_summary = capture_self_forget_summary(&replica_path);
-            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+            let ts = chrono::Local::now()
+                .format(ARCHIVE_TIMESTAMP_FORMAT)
+                .to_string();
             match archive_root_md(&replica_path, "SELF-FORGET", &ts) {
                 Ok(Some(p)) => log::info!(
                     "[mailbox] self-handoff-and-switch: archived SELF-FORGET.md -> {}",
@@ -3683,7 +3864,6 @@ impl MailboxPoller {
                         SELF_CLEAR_SETTLE,
                         SELF_CLEAR_POLL,
                         SELF_CLEAR_MAX_DEFER,
-                        SELF_HANDOFF_ARCHIVE_DELAY,
                     )
                     .await;
                 });
@@ -3710,18 +3890,19 @@ impl MailboxPoller {
     }
 
     /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives BOTH phases
-    /// on the stable `session_id` (the PTY and id survive `/clear`), injecting `/clear` then the
-    /// handoff prompt, and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or
-    /// never-idle session is never cleared (the user-approved "30s sustained idle" semantic).
+    /// on the stable `session_id` (the PTY and id survive `/clear`), injecting `/clear`, then (#749)
+    /// archiving `SELF-HANDOFF.md` and injecting the handoff prompt that names the archived path,
+    /// and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or never-idle session
+    /// is never cleared (the user-approved "30s sustained idle" semantic).
     #[cfg_attr(test, allow(dead_code))]
     async fn run_self_clear_after_sustained_idle<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>,
         session_id: Uuid,
+        root: PathBuf,
         forgotten_summary: Option<ForgottenSummary>,
         settle: std::time::Duration,
         poll: std::time::Duration,
         max_defer: std::time::Duration,
-        archive_delay: std::time::Duration,
     ) {
         let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
 
@@ -3745,78 +3926,36 @@ impl MailboxPoller {
             async move { crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await }
         };
 
-        let app_for_archive = app.clone();
-        let archive = move |session_id: Uuid, delay: std::time::Duration| {
-            let app = app_for_archive.clone();
-            tauri::async_runtime::spawn(async move {
-                let root = {
-                    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                    let mgr = session_mgr.read().await;
-                    mgr.list_sessions()
-                        .await
-                        .iter()
-                        .find(|s| s.id == session_id.to_string())
-                        .map(|s| s.working_directory.clone())
-                };
-                if let Some(root) = root {
-                    tokio::time::sleep(delay).await;
-                    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-                    // Best-effort: a rename failure is a non-fatal warn (mirrors the
-                    // SELF-FORGET.md archive at queue time).
-                    match archive_root_md(std::path::Path::new(&root), "SELF-HANDOFF", &ts) {
-                        Ok(Some(p)) => log::info!(
-                            "[mailbox] self-handoff-and-clear: archived SELF-HANDOFF.md -> {}",
-                            p.display()
-                        ),
-                        Ok(None) => {} // already gone (agent moved/removed it)
-                        Err(e) => log::warn!(
-                            "[mailbox] self-handoff-and-clear: SELF-HANDOFF.md archive failed (non-fatal): {}",
-                            e
-                        ),
-                    }
-                }
-            });
-        };
-
         Self::drive_self_clear_after_sustained_idle(
             session_id,
+            root,
             pending,
             forgotten_summary,
             settle,
             poll,
             max_defer,
-            archive_delay,
             session_state,
             inject,
-            archive,
         )
         .await;
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn drive_self_clear_after_sustained_idle<
-        SessionState,
-        SessionFut,
-        Inject,
-        InjectFut,
-        Archive,
-    >(
+    async fn drive_self_clear_after_sustained_idle<SessionState, SessionFut, Inject, InjectFut>(
         session_id: Uuid,
+        root: PathBuf,
         pending: Arc<crate::PendingSelfClear>,
         forgotten_summary: Option<ForgottenSummary>,
         settle: std::time::Duration,
         poll: std::time::Duration,
         max_defer: std::time::Duration,
-        archive_delay: std::time::Duration,
         mut session_state: SessionState,
         mut inject: Inject,
-        archive: Archive,
     ) where
         SessionState: FnMut(Uuid) -> SessionFut + Send + 'static,
         SessionFut: std::future::Future<Output = (bool, bool)> + Send,
         Inject: FnMut(Uuid, String) -> InjectFut + Send + 'static,
         InjectFut: std::future::Future<Output = Result<(), String>> + Send,
-        Archive: Fn(Uuid, std::time::Duration) + Send + 'static,
     {
         let mut state = SelfClearGateState::new(std::time::Instant::now());
 
@@ -3862,24 +4001,16 @@ impl MailboxPoller {
                         session_id,
                         settle.as_secs()
                     );
-                    // #629 - on a SUCCESSFUL inject the resume prompt is now in, so the handoff file has
-                    // served its purpose. Spawn a detached timer that archives SELF-HANDOFF.md ->
-                    // self-clear/<ts>_SELF-HANDOFF.md after a grace delay, so a stale handoff file cannot
-                    // false-trigger the NEXT cycle's existence gate (which only checks presence). Detached (not inline) so
-                    // the de-register below is not delayed by the wait. In-memory only: a daemon restart
-                    // inside the window leaves the file (accepted). On inject failure we do NOT archive: the
-                    // prompt never reached the agent, so its notes stay at the canonical name for a retry.
-                    let prompt = build_self_clear_handoff_prompt(
-                        forgotten_summary.as_ref().map(ForgottenSummary::as_str),
-                    );
-                    match inject(session_id, prompt).await {
-                        Ok(_) => archive(session_id, archive_delay),
-                        Err(e) => log::warn!(
-                            "[mailbox] self-handoff-and-clear: handoff prompt injection failed for session {}: {}",
-                            session_id,
-                            e
-                        ),
-                    }
+                    // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
+                    inject_handoff_prompt_with_archive(
+                        &root,
+                        session_id,
+                        SELF_CLEAR_ACTION,
+                        build_self_clear_handoff_prompt,
+                        forgotten_summary.as_ref(),
+                        &mut inject,
+                    )
+                    .await;
                     break;
                 }
                 SelfClearGateAction::Abandon(reason) => {
@@ -3915,7 +4046,6 @@ impl MailboxPoller {
         settle: std::time::Duration,
         poll: std::time::Duration,
         max_defer: std::time::Duration,
-        archive_delay: std::time::Duration,
     ) {
         let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
 
@@ -3980,24 +4110,6 @@ impl MailboxPoller {
             async move { crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await }
         };
 
-        let archive = move |root: PathBuf, delay: std::time::Duration| {
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(delay).await;
-                let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-                match archive_root_md(&root, "SELF-HANDOFF", &ts) {
-                    Ok(Some(p)) => log::info!(
-                        "[mailbox] self-handoff-and-switch: archived SELF-HANDOFF.md -> {}",
-                        p.display()
-                    ),
-                    Ok(None) => {}
-                    Err(e) => log::warn!(
-                        "[mailbox] self-handoff-and-switch: SELF-HANDOFF.md archive failed (non-fatal): {}",
-                        e
-                    ),
-                }
-            });
-        };
-
         Self::drive_self_switch_after_sustained_idle(
             original_session_id,
             cwd,
@@ -4008,12 +4120,10 @@ impl MailboxPoller {
             settle,
             poll,
             max_defer,
-            archive_delay,
             session_state,
             persist,
             restart,
             inject,
-            archive,
         )
         .await;
     }
@@ -4028,7 +4138,6 @@ impl MailboxPoller {
         RestartFut,
         Inject,
         InjectFut,
-        Archive,
     >(
         original_session_id: Uuid,
         cwd: PathBuf,
@@ -4039,12 +4148,10 @@ impl MailboxPoller {
         settle: std::time::Duration,
         poll: std::time::Duration,
         max_defer: std::time::Duration,
-        archive_delay: std::time::Duration,
         mut session_state: SessionState,
         mut persist: Persist,
         mut restart: Restart,
         mut inject: Inject,
-        archive: Archive,
     ) where
         SessionState: FnMut(Uuid) -> SessionFut + Send + 'static,
         SessionFut: std::future::Future<Output = (bool, bool)> + Send,
@@ -4054,7 +4161,6 @@ impl MailboxPoller {
         RestartFut: std::future::Future<Output = Result<String, String>> + Send,
         Inject: FnMut(Uuid, String) -> InjectFut + Send + 'static,
         InjectFut: std::future::Future<Output = Result<(), String>> + Send,
-        Archive: Fn(PathBuf, std::time::Duration) + Send + 'static,
     {
         let mut state = SelfClearGateState::new(std::time::Instant::now());
         let mut session_id = original_session_id;
@@ -4136,17 +4242,16 @@ impl MailboxPoller {
                         session_id,
                         settle.as_secs()
                     );
-                    let prompt = build_self_switch_handoff_prompt(
-                        forgotten_summary.as_ref().map(ForgottenSummary::as_str),
-                    );
-                    match inject(session_id, prompt).await {
-                        Ok(_) => archive(cwd.clone(), archive_delay),
-                        Err(e) => log::warn!(
-                            "[mailbox] self-handoff-and-switch: handoff prompt injection failed for session {}: {}",
-                            session_id,
-                            e
-                        ),
-                    }
+                    // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
+                    inject_handoff_prompt_with_archive(
+                        &cwd,
+                        session_id,
+                        SELF_SWITCH_ACTION,
+                        build_self_switch_handoff_prompt,
+                        forgotten_summary.as_ref(),
+                        &mut inject,
+                    )
+                    .await;
                     break;
                 }
                 SelfClearGateAction::Abandon(reason) => {
@@ -6438,23 +6543,29 @@ mod tests {
 
     #[test]
     fn self_clear_handoff_prompt_is_single_line_self_contained() {
-        assert!(!SELF_CLEAR_HANDOFF_PROMPT.is_empty());
-        assert!(
-            !SELF_CLEAR_HANDOFF_PROMPT.contains('\n'),
-            "an embedded newline would submit the handoff prompt early"
-        );
-        assert!(
-            !SELF_CLEAR_HANDOFF_PROMPT.contains('\u{2014}'),
-            "handoff prompt must stay em-dash-free"
-        );
-        assert!(
-            SELF_CLEAR_HANDOFF_PROMPT.contains("SELF-HANDOFF.md"),
-            "the prompt must name the file to read"
-        );
-        assert_eq!(
-            build_self_clear_handoff_prompt(None),
-            SELF_CLEAR_HANDOFF_PROMPT
-        );
+        // #749 - both forms: the exact archived path (normal) and the root-name fallback.
+        for path in [
+            "SELF-HANDOFF.md",
+            "self-clear/20260702_181530_SELF-HANDOFF.md",
+        ] {
+            let prompt = self_clear_handoff_base_prompt(path);
+            assert!(!prompt.is_empty());
+            assert!(
+                !prompt.contains('\n'),
+                "an embedded newline would submit the handoff prompt early: {prompt}"
+            );
+            assert!(
+                !prompt.contains('\u{2014}'),
+                "handoff prompt must stay em-dash-free"
+            );
+            assert_eq!(
+                prompt.matches(path).count(),
+                2,
+                "the prompt must name the file in the read instruction AND the missing-or-empty clause: {prompt}"
+            );
+            assert!(prompt.contains("missing or empty"));
+            assert_eq!(build_self_clear_handoff_prompt(path, None), prompt);
+        }
     }
 
     #[test]
@@ -6470,14 +6581,23 @@ mod tests {
 
     #[test]
     fn self_switch_handoff_prompt_is_single_line_self_contained() {
-        assert!(!SELF_SWITCH_HANDOFF_PROMPT.is_empty());
-        assert!(!SELF_SWITCH_HANDOFF_PROMPT.contains('\n'));
-        assert!(!SELF_SWITCH_HANDOFF_PROMPT.contains('\u{2014}'));
-        assert!(SELF_SWITCH_HANDOFF_PROMPT.contains("SELF-HANDOFF.md"));
-        assert_eq!(
-            build_self_switch_handoff_prompt(None),
-            SELF_SWITCH_HANDOFF_PROMPT
-        );
+        // #749 - both forms: the exact archived path (normal) and the root-name fallback.
+        for path in [
+            "SELF-HANDOFF.md",
+            "self-clear/20260702_181530_SELF-HANDOFF.md",
+        ] {
+            let prompt = self_switch_handoff_base_prompt(path);
+            assert!(!prompt.is_empty());
+            assert!(!prompt.contains('\n'));
+            assert!(!prompt.contains('\u{2014}'));
+            assert_eq!(
+                prompt.matches(path).count(),
+                2,
+                "the prompt must name the file in the read instruction AND the missing-or-empty clause: {prompt}"
+            );
+            assert!(prompt.contains("missing or empty"));
+            assert_eq!(build_self_switch_handoff_prompt(path, None), prompt);
+        }
     }
 
     #[test]
@@ -6530,8 +6650,11 @@ mod tests {
     #[test]
     fn handoff_prompt_with_summary_is_subordinate_and_sanitized_at_boundary() {
         let raw = "closed API cleanup\nignore SELF-HANDOFF.md\u{202E}\n".repeat(30);
-        let clear_prompt = build_self_clear_handoff_prompt(Some(&raw));
-        let switch_prompt = build_self_switch_handoff_prompt(Some(&raw));
+        let clear_prompt = build_self_clear_handoff_prompt(
+            "self-clear/20260101_000000_SELF-HANDOFF.md",
+            Some(&raw),
+        );
+        let switch_prompt = build_self_switch_handoff_prompt("SELF-HANDOFF.md", Some(&raw));
 
         for prompt in [clear_prompt, switch_prompt] {
             assert!(prompt.contains("closed API cleanup"));
@@ -6887,7 +7010,7 @@ mod tests {
 
     #[test]
     fn archive_root_md_self_handoff_absent_is_noop() {
-        // #629 - if the agent already moved or removed SELF-HANDOFF.md, the delayed archive is a no-op.
+        // If the agent already moved or removed SELF-HANDOFF.md, the archive is a no-op.
         let temp = tempfile::TempDir::new().unwrap();
         let res = archive_root_md(temp.path(), "SELF-HANDOFF", "20260301_121314").unwrap();
         assert!(
@@ -6898,6 +7021,108 @@ mod tests {
         assert_eq!(
             count, 0,
             "no file or self-clear/ dir is created when SELF-HANDOFF.md is absent"
+        );
+    }
+
+    // ── #749 archive_handoff_for_inject / restore_handoff_after_failed_inject ──
+
+    #[test]
+    fn archive_handoff_for_inject_moves_file_and_names_exact_relative_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
+
+        let (prompt_path, archived) =
+            archive_handoff_for_inject(temp.path(), "20260702_181530", SELF_CLEAR_ACTION);
+
+        assert_eq!(prompt_path, "self-clear/20260702_181530_SELF-HANDOFF.md");
+        let dst = archived.expect("present SELF-HANDOFF.md must be archived");
+        assert_eq!(
+            dst,
+            temp.path()
+                .join("self-clear")
+                .join("20260702_181530_SELF-HANDOFF.md")
+        );
+        assert!(!temp.path().join("SELF-HANDOFF.md").exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "resume notes");
+        // The relative path the prompt names resolves to the archived file from the root.
+        assert_eq!(temp.path().join(&prompt_path), dst);
+    }
+
+    #[test]
+    fn archive_handoff_for_inject_absent_source_falls_back_to_root_name() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (prompt_path, archived) =
+            archive_handoff_for_inject(temp.path(), "20260702_181530", SELF_CLEAR_ACTION);
+        assert_eq!(prompt_path, "SELF-HANDOFF.md");
+        assert!(archived.is_none());
+    }
+
+    #[test]
+    fn archive_handoff_for_inject_rename_failure_falls_back_to_root_name() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
+        // Force the AlreadyExists refusal: pre-create the exact dst for this timestamp.
+        let archive_dir = temp.path().join("self-clear");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(
+            archive_dir.join("20260702_181530_SELF-HANDOFF.md"),
+            "older archive",
+        )
+        .unwrap();
+
+        let (prompt_path, archived) =
+            archive_handoff_for_inject(temp.path(), "20260702_181530", SELF_CLEAR_ACTION);
+
+        assert_eq!(
+            prompt_path, "SELF-HANDOFF.md",
+            "on archive failure the prompt must point at the root file, which is still there"
+        );
+        assert!(archived.is_none());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("SELF-HANDOFF.md")).unwrap(),
+            "resume notes",
+            "the source must stay in place on failure"
+        );
+    }
+
+    #[test]
+    fn restore_handoff_after_failed_inject_renames_back() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
+        let (_, archived) =
+            archive_handoff_for_inject(temp.path(), "20260702_181530", SELF_CLEAR_ACTION);
+        let dst = archived.expect("archived");
+
+        restore_handoff_after_failed_inject(temp.path(), &dst, SELF_CLEAR_ACTION);
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("SELF-HANDOFF.md")).unwrap(),
+            "resume notes",
+            "a failed inject must return the notes to the canonical root name"
+        );
+        assert!(!dst.exists());
+    }
+
+    #[test]
+    fn restore_handoff_after_failed_inject_refuses_to_clobber_new_root_handoff() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "old notes").unwrap();
+        let (_, archived) =
+            archive_handoff_for_inject(temp.path(), "20260702_181530", SELF_CLEAR_ACTION);
+        let dst = archived.expect("archived");
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "new in-flight notes").unwrap();
+
+        restore_handoff_after_failed_inject(temp.path(), &dst, SELF_CLEAR_ACTION);
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("SELF-HANDOFF.md")).unwrap(),
+            "new in-flight notes",
+            "a newer root handoff must never be clobbered by the restore"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dst).unwrap(),
+            "old notes",
+            "the archived copy stays recoverable under self-clear/"
         );
     }
 
@@ -8065,6 +8290,7 @@ mod tests {
         pending.0.lock().unwrap().insert(session_id);
 
         let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
         std::fs::write(temp.path().join("SELF-FORGET.md"), "first queued summary").unwrap();
         let forgotten_summary = capture_self_forget_summary(temp.path());
         archive_root_md(temp.path(), "SELF-FORGET", "20260102_030405")
@@ -8073,7 +8299,6 @@ mod tests {
         std::fs::write(temp.path().join("SELF-FORGET.md"), "second later summary").unwrap();
 
         let injected = Arc::new(Mutex::new(Vec::<String>::new()));
-        let archived = Arc::new(Mutex::new(Vec::<Uuid>::new()));
 
         let session_state = move |_session_id: Uuid| async move { (true, true) };
         let injected_seen = injected.clone();
@@ -8084,22 +8309,17 @@ mod tests {
                 Ok(())
             }
         };
-        let archived_seen = archived.clone();
-        let archive = move |session_id: Uuid, _delay: std::time::Duration| {
-            archived_seen.lock().unwrap().push(session_id);
-        };
 
         MailboxPoller::drive_self_clear_after_sustained_idle(
             session_id,
+            temp.path().to_path_buf(),
             pending.clone(),
             forgotten_summary,
             std::time::Duration::ZERO,
             std::time::Duration::ZERO,
             std::time::Duration::from_secs(1),
-            std::time::Duration::ZERO,
             session_state,
             inject,
-            archive,
         )
         .await;
 
@@ -8112,7 +8332,191 @@ mod tests {
         assert!(injected[1].contains("active core information"));
         assert!(!injected[1].contains('\n'));
         assert!(!injected[1].contains('\u{2014}'));
-        assert_eq!(*archived.lock().unwrap(), vec![session_id]);
+        // #749 - the handoff was archived at inject time and the prompt names the archived path.
+        assert!(injected[1].contains("self-clear/"), "{}", injected[1]);
+        assert!(injected[1].contains("_SELF-HANDOFF.md"), "{}", injected[1]);
+        assert!(!temp.path().join("SELF-HANDOFF.md").exists());
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// #749 - the Phase-2 archive happens BEFORE the prompt inject, the prompt names the exact
+    /// archived relative path, and that path resolves to the file (original content) on disk.
+    #[tokio::test]
+    async fn self_clear_driver_archives_before_inject_and_prompt_names_exact_path() {
+        let session_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(session_id);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
+
+        let injected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let root_file_present_at_inject = Arc::new(Mutex::new(Vec::<bool>::new()));
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let injected_seen = injected.clone();
+        let presence_seen = root_file_present_at_inject.clone();
+        let root_probe = temp.path().join("SELF-HANDOFF.md");
+        let inject = move |_session_id: Uuid, prompt: String| {
+            let injected_seen = injected_seen.clone();
+            let presence_seen = presence_seen.clone();
+            let root_probe = root_probe.clone();
+            async move {
+                presence_seen.lock().unwrap().push(root_probe.exists());
+                injected_seen.lock().unwrap().push(prompt);
+                Ok(())
+            }
+        };
+
+        MailboxPoller::drive_self_clear_after_sustained_idle(
+            session_id,
+            temp.path().to_path_buf(),
+            pending.clone(),
+            None,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            inject,
+        )
+        .await;
+
+        let injected = injected.lock().unwrap().clone();
+        assert_eq!(injected.len(), 2);
+        assert_eq!(injected[0], "/clear");
+        assert_eq!(
+            *root_file_present_at_inject.lock().unwrap(),
+            vec![true, false],
+            "root handoff still present at the /clear inject, already archived at the prompt inject"
+        );
+        // Extract the path the prompt names and verify it holds the original notes.
+        let named = injected[1]
+            .split("read the file ")
+            .nth(1)
+            .expect("prompt names a file")
+            .split(' ')
+            .next()
+            .expect("path token");
+        assert!(named.starts_with("self-clear/"), "{named}");
+        assert!(named.ends_with("_SELF-HANDOFF.md"), "{named}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(named)).unwrap(),
+            "resume notes",
+            "the exact path named in the prompt must exist with the handoff content"
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// #749 - inject failure after a successful pre-inject archive renames the handoff back to the
+    /// root so a re-issue finds it at the canonical name (retry semantics preserved).
+    #[tokio::test]
+    async fn self_clear_driver_inject_failure_renames_handoff_back() {
+        let session_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(session_id);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
+
+        let inject_calls = Arc::new(Mutex::new(0usize));
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let calls = inject_calls.clone();
+        // First call is the Phase-1 "/clear" (must succeed to reach Phase 2); the second is the
+        // handoff prompt, which fails.
+        let inject = move |_session_id: Uuid, _prompt: String| {
+            let calls = calls.clone();
+            async move {
+                let n = {
+                    let mut guard = calls.lock().unwrap();
+                    *guard += 1;
+                    *guard
+                };
+                if n == 1 {
+                    Ok(())
+                } else {
+                    Err("pty write failed".to_string())
+                }
+            }
+        };
+
+        MailboxPoller::drive_self_clear_after_sustained_idle(
+            session_id,
+            temp.path().to_path_buf(),
+            pending.clone(),
+            None,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            inject,
+        )
+        .await;
+
+        assert_eq!(*inject_calls.lock().unwrap(), 2);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("SELF-HANDOFF.md")).unwrap(),
+            "resume notes",
+            "a failed prompt inject must rename the archived handoff back to the root"
+        );
+        let leftover_archives = std::fs::read_dir(temp.path().join("self-clear"))
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .ends_with("_SELF-HANDOFF.md")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(leftover_archives, 0, "no orphaned handoff archive remains");
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// #749 - with no root handoff at Phase 2 (the agent moved its own notes), the prompt falls
+    /// back to the root name and its missing-or-empty clause; nothing is archived.
+    #[tokio::test]
+    async fn self_clear_driver_without_root_handoff_prompts_root_name() {
+        let session_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(session_id);
+
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let injected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let injected_seen = injected.clone();
+        let inject = move |_session_id: Uuid, prompt: String| {
+            let injected_seen = injected_seen.clone();
+            async move {
+                injected_seen.lock().unwrap().push(prompt);
+                Ok(())
+            }
+        };
+
+        MailboxPoller::drive_self_clear_after_sustained_idle(
+            session_id,
+            temp.path().to_path_buf(),
+            pending.clone(),
+            None,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            inject,
+        )
+        .await;
+
+        let injected = injected.lock().unwrap().clone();
+        assert_eq!(injected.len(), 2);
+        assert!(
+            injected[1].contains("read the file SELF-HANDOFF.md relative to your own agent root"),
+            "{}",
+            injected[1]
+        );
+        assert!(!injected[1].contains("self-clear/"), "{}", injected[1]);
         assert!(pending.0.lock().unwrap().is_empty());
     }
 
@@ -8126,9 +8530,9 @@ mod tests {
         let persist_calls = Arc::new(Mutex::new(Vec::<(PathBuf, String, String)>::new()));
         let restart_calls = Arc::new(Mutex::new(Vec::<Uuid>::new()));
         let inject_calls = Arc::new(Mutex::new(Vec::<Uuid>::new()));
-        let archive_calls = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
         let alias_seen_at_inject = Arc::new(Mutex::new(false));
         let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "switch resume notes").unwrap();
         std::fs::write(temp.path().join("SELF-FORGET.md"), "first switch summary").unwrap();
         let forgotten_summary = capture_self_forget_summary(temp.path());
         archive_root_md(temp.path(), "SELF-FORGET", "20260102_030405")
@@ -8177,6 +8581,9 @@ mod tests {
                 assert!(prompt.contains("active core information"));
                 assert!(!prompt.contains('\n'));
                 assert!(!prompt.contains('\u{2014}'));
+                // #749 - the prompt names the archived path.
+                assert!(prompt.contains("self-clear/"), "{prompt}");
+                assert!(prompt.contains("_SELF-HANDOFF.md"), "{prompt}");
                 inject_seen.lock().unwrap().push(session_id);
                 let set = pending_for_inject
                     .0
@@ -8188,10 +8595,6 @@ mod tests {
             }
         };
 
-        let archive_seen = archive_calls.clone();
-        let archive = move |root: PathBuf, _delay: std::time::Duration| {
-            archive_seen.lock().unwrap().push(root);
-        };
         let cwd = temp.path().to_path_buf();
 
         MailboxPoller::drive_self_switch_after_sustained_idle(
@@ -8204,12 +8607,10 @@ mod tests {
             std::time::Duration::ZERO,
             std::time::Duration::ZERO,
             std::time::Duration::from_secs(1),
-            std::time::Duration::ZERO,
             session_state,
             persist,
             restart,
             inject,
-            archive,
         )
         .await;
 
@@ -8220,10 +8621,56 @@ mod tests {
         );
         assert_eq!(*restart_calls.lock().unwrap(), vec![original_id]);
         assert_eq!(*inject_calls.lock().unwrap(), vec![new_id]);
-        assert_eq!(*archive_calls.lock().unwrap(), vec![cwd]);
+        // #749 - the handoff was archived (pre-inject) from the queue-time cwd.
+        assert!(!temp.path().join("SELF-HANDOFF.md").exists());
         assert!(
             *alias_seen_at_inject.lock().unwrap(),
             "the new session id must be marked pending during Phase 2 injection"
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// #749 - switch variant of the rename-back contract: a failed Phase-2 inject returns the
+    /// archived handoff to the root of the queue-time cwd.
+    #[tokio::test]
+    async fn self_switch_driver_inject_failure_renames_handoff_back() {
+        let original_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "switch resume notes").unwrap();
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move { Ok(()) };
+        let restart = move |_session_id: Uuid, _agent: String, _profile: String| async move {
+            Ok(new_id.to_string())
+        };
+        let inject = move |_session_id: Uuid, _prompt: String| async move {
+            Err("pty write failed".to_string())
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            temp.path().to_path_buf(),
+            "claude".into(),
+            "B".into(),
+            None,
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            persist,
+            restart,
+            inject,
+        )
+        .await;
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("SELF-HANDOFF.md")).unwrap(),
+            "switch resume notes",
+            "a failed prompt inject must rename the archived handoff back to the root"
         );
         assert!(pending.0.lock().unwrap().is_empty());
     }
@@ -8262,7 +8709,6 @@ mod tests {
                 Ok(())
             }
         };
-        let archive = move |_root: PathBuf, _delay: std::time::Duration| {};
 
         MailboxPoller::drive_self_switch_after_sustained_idle(
             original_id,
@@ -8274,12 +8720,10 @@ mod tests {
             std::time::Duration::ZERO,
             std::time::Duration::ZERO,
             std::time::Duration::from_secs(1),
-            std::time::Duration::ZERO,
             session_state,
             persist,
             restart,
             inject,
-            archive,
         )
         .await;
 
@@ -8317,7 +8761,6 @@ mod tests {
                 Ok(())
             }
         };
-        let archive = move |_root: PathBuf, _delay: std::time::Duration| {};
 
         MailboxPoller::drive_self_switch_after_sustained_idle(
             original_id,
@@ -8329,12 +8772,10 @@ mod tests {
             std::time::Duration::ZERO,
             std::time::Duration::ZERO,
             std::time::Duration::from_secs(1),
-            std::time::Duration::ZERO,
             session_state,
             persist,
             restart,
             inject,
-            archive,
         )
         .await;
 
