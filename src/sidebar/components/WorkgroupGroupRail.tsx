@@ -62,7 +62,7 @@ function tooltipFor(workgroups: AcWorkgroup[]): string {
 
 function counterLabel(name: string, workgroups: AcWorkgroup[]): string {
   const working = workgroups.filter(workgroupIsWorking).length;
-  return `${name} ${working}/${workgroups.length}`;
+  return `${name}\n${working}/${workgroups.length}`;
 }
 
 const ProjectRailSection: Component<{
@@ -87,7 +87,7 @@ const ProjectRailSection: Component<{
     if (config().showAll) {
       result.push({
         key: "all",
-        label: counterLabel("Todos", props.project.workgroups),
+        label: counterLabel("All", props.project.workgroups),
         selection: { kind: "all" },
         workgroups: props.project.workgroups,
         title: tooltipFor(props.project.workgroups),
@@ -107,7 +107,7 @@ const ProjectRailSection: Component<{
       const workgroups = ungroupedWorkgroups();
       result.push({
         key: "ungrouped",
-        label: counterLabel("Sin Grupo", workgroups),
+        label: counterLabel("Ungrouped", workgroups),
         selection: { kind: "ungrouped" },
         workgroups,
         title: tooltipFor(workgroups),
@@ -157,7 +157,7 @@ const ProjectRailSection: Component<{
         onClick={() => setEditing(true)}
         data-ac-testid="workgroupGroups.edit"
       >
-        Editar
+        Edit
       </button>
 
       <Show when={editing()}>

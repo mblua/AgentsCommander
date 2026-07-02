@@ -155,7 +155,7 @@ function repoFolderLabel(item: HTMLElement): string | null {
 
 function menuButtonLabels(menu: HTMLElement): string[] {
   return Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).map((button) =>
-    (button.textContent ?? "").trim().replace(/^[^A-Za-z0-9]+/, "").trim()
+    (button.textContent ?? "").trim().replace(/\u203a/g, "").replace(/^[^A-Za-z0-9]+/, "").trim()
   );
 }
 
@@ -360,7 +360,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menuButtonLabels(replicaMenu()!)).toEqual([
       "Restart Session",
       "Coding Agent",
-      "Crear grupo nuevo",
+      "Add to Group",
       "Open Replica's Folder",
       "AgentsCommander",
       "docs",
@@ -455,12 +455,12 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(items.map(repoFolderLabel)).toEqual(["AgentsCommander", "docs"]);
       expect(items[0].title).toBe(repos[0]);
       expect(items[1].title).toBe(repos[1]);
-    expect(menuButtonLabels(menu!)).toEqual([
-      "Coding Agent",
-      "Crear grupo nuevo",
-      "Open Replica's Folder",
-      "AgentsCommander",
-      "docs",
+      expect(menuButtonLabels(menu!)).toEqual([
+        "Coding Agent",
+        "Add to Group",
+        "Open Replica's Folder",
+        "AgentsCommander",
+        "docs",
         "Open Matrix folder",
         "Clear task title",
       ]);

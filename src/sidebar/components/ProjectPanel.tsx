@@ -699,6 +699,10 @@ const ProjectPanel: Component = () => {
         const [groupCreateWgPath, setGroupCreateWgPath] = createSignal<string | null>(null);
         const [groupCreateName, setGroupCreateName] = createSignal("");
         const [groupMenuError, setGroupMenuError] = createSignal("");
+        const [groupFlyoutOpen, setGroupFlyoutOpen] = createSignal(false);
+        const [groupFlyoutPos, setGroupFlyoutPos] = createSignal({ x: 0, y: 0 });
+        let groupFlyoutEl: HTMLDivElement | undefined;
+        let groupFlyoutAnchorEl: HTMLElement | undefined;
         const [agentCtxMenu, setAgentCtxMenu] = createSignal<{ agent: { name: string; path: string; preferredAgentId?: string }; x: number; y: number } | null>(null);
         const [agentsHeaderCtxMenu, setAgentsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [workgroupsHeaderCtxMenu, setWorkgroupsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
@@ -850,10 +854,19 @@ const ProjectPanel: Component = () => {
           setFilterPattern("");
           focusFilterInput();
         };
-        const resetGroupMenuState = () => {
+        const closeGroupFlyout = () => {
+          setGroupFlyoutOpen(false);
+          groupFlyoutAnchorEl = undefined;
+          groupFlyoutEl = undefined;
+        };
+        const resetGroupCreateState = () => {
           setGroupCreateWgPath(null);
           setGroupCreateName("");
           setGroupMenuError("");
+        };
+        const resetGroupMenuState = () => {
+          resetGroupCreateState();
+          closeGroupFlyout();
         };
         const handleFilterKeyDown = (e: KeyboardEvent) => {
           if (e.key !== "Escape") return;
@@ -1134,6 +1147,46 @@ const ProjectPanel: Component = () => {
           window.setTimeout(clamp, 0);
         };
 
+        const positionGroupFlyout = (anchor: HTMLElement) => {
+          const rect = anchor.getBoundingClientRect();
+          const width = groupFlyoutEl?.getBoundingClientRect().width ?? 220;
+          const height = groupFlyoutEl?.getBoundingClientRect().height ?? 180;
+          let x = rect.right + 4;
+          if (x + width + CONTEXT_MENU_VIEWPORT_MARGIN > window.innerWidth) {
+            x = rect.left - width - 4;
+          }
+          const maxX = Math.max(
+            CONTEXT_MENU_VIEWPORT_MARGIN,
+            window.innerWidth - width - CONTEXT_MENU_VIEWPORT_MARGIN
+          );
+          const maxY = Math.max(
+            CONTEXT_MENU_VIEWPORT_MARGIN,
+            window.innerHeight - height - CONTEXT_MENU_VIEWPORT_MARGIN
+          );
+          setGroupFlyoutPos({
+            x: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, x), maxX),
+            y: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, rect.top), maxY),
+          });
+        };
+
+        const reclampGroupFlyout = () => {
+          const anchor = groupFlyoutAnchorEl;
+          if (!anchor || !groupFlyoutOpen()) return;
+          const clamp = () => positionGroupFlyout(anchor);
+          if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(clamp);
+            return;
+          }
+          window.setTimeout(clamp, 0);
+        };
+
+        const openGroupFlyout = (anchor: HTMLElement) => {
+          groupFlyoutAnchorEl = anchor;
+          positionGroupFlyout(anchor);
+          setGroupFlyoutOpen(true);
+          reclampGroupFlyout();
+        };
+
         const restartReplicaSession = async (
           sessionId: string,
           agentId?: string,
@@ -1193,6 +1246,7 @@ const ProjectPanel: Component = () => {
             await workgroupGroupsStore.addWorkgroupToGroup(proj.path, groupId, wg.name);
           } catch (error) {
             setGroupMenuError(error instanceof Error ? error.message : String(error));
+            reclampGroupFlyout();
             reclampReplicaCtxMenu();
           }
         };
@@ -1201,97 +1255,128 @@ const ProjectPanel: Component = () => {
           const name = groupCreateName().trim();
           if (!name) {
             setGroupMenuError("Group name cannot be blank.");
+            reclampGroupFlyout();
             reclampReplicaCtxMenu();
             return;
           }
           setGroupMenuError("");
           try {
             await workgroupGroupsStore.createGroupForWorkgroup(proj.path, name, wg.name);
-            resetGroupMenuState();
+            resetGroupCreateState();
+            reclampGroupFlyout();
             reclampReplicaCtxMenu();
           } catch (error) {
             setGroupMenuError(error instanceof Error ? error.message : String(error));
+            reclampGroupFlyout();
             reclampReplicaCtxMenu();
           }
         };
 
-        const renderAddToGroupSection = (wg: AcWorkgroup, replica: AcAgentReplica) => (
+        const renderAddToGroupFlyout = (wg: AcWorkgroup) => (
+          <Portal>
+            <Show when={groupFlyoutOpen()}>
+              <div
+                class="session-context-flyout"
+                ref={groupFlyoutEl}
+                style={{ left: `${groupFlyoutPos().x}px`, top: `${groupFlyoutPos().y}px` }}
+                onClick={(e) => e.stopPropagation()}
+                onContextMenu={(e) => e.stopPropagation()}
+                data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.flyout`}
+              >
+                <For each={groupsConfig().groups}>
+                  {(group) => {
+                    const valid = () => !!compileGroupRegex(group);
+                    return (
+                      <button
+                        class="session-context-option session-context-group-option"
+                        classList={{ "context-option-disabled": !valid() }}
+                        disabled={!valid()}
+                        title={valid() ? group.regex : "Fix this group's regex before adding a workgroup"}
+                        onClick={() => void addToExistingGroup(wg, group.id)}
+                        data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.${automationIdPart(group.id)}`}
+                      >
+                        <span class="session-context-option-check">
+                          {groupAlreadyMatches(wg, group.id) ? "\u2713" : ""}
+                        </span>
+                        <span>{group.name}</span>
+                      </button>
+                    );
+                  }}
+                </For>
+                <Show when={groupsConfig().groups.length === 0}>
+                  <div class="session-context-note">No groups yet</div>
+                </Show>
+                <Show when={workgroupGroupsStore.error(proj.path)}>
+                  {(error) => <div class="session-context-error">{error()}</div>}
+                </Show>
+                <Show when={groupMenuError()}>
+                  <div class="session-context-error" data-ac-testid="replica.groups.error">
+                    {groupMenuError()}
+                  </div>
+                </Show>
+                <Show
+                  when={groupCreateWgPath() === wg.path}
+                  fallback={
+                    <button
+                      class="session-context-option"
+                      onClick={() => {
+                        setGroupCreateWgPath(wg.path);
+                        setGroupCreateName("");
+                        setGroupMenuError("");
+                        reclampGroupFlyout();
+                      }}
+                      data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.create`}
+                    >
+                      Create new group
+                    </button>
+                  }
+                >
+                  <div class="session-context-inline-create">
+                    <input
+                      class="session-context-inline-input"
+                      value={groupCreateName()}
+                      onInput={(e) => setGroupCreateName(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void createGroupFromMenu(wg);
+                        }
+                      }}
+                      placeholder="Group name"
+                      data-ac-testid="replica.groups.create.input"
+                    />
+                    <button
+                      class="session-context-option"
+                      onClick={() => void createGroupFromMenu(wg)}
+                      data-ac-testid="replica.groups.create.save"
+                    >
+                      Create
+                    </button>
+                  </div>
+                </Show>
+              </div>
+            </Show>
+          </Portal>
+        );
+
+        const renderAddToGroupItem = (wg: AcWorkgroup, replica: AcAgentReplica) => (
           <Show when={replica.isCoordinator}>
             <div class="context-separator" />
-            <div class="session-context-submenu" data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.menu`}>
-              <div class="session-context-submenu-title">Add to Group</div>
-              <For each={groupsConfig().groups}>
-                {(group) => {
-                  const valid = () => !!compileGroupRegex(group);
-                  return (
-                    <button
-                      class="session-context-option session-context-group-option"
-                      classList={{ "context-option-disabled": !valid() }}
-                      disabled={!valid()}
-                      title={valid() ? group.regex : "Fix this group's regex before adding a workgroup"}
-                      onClick={() => void addToExistingGroup(wg, group.id)}
-                      data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.${automationIdPart(group.id)}`}
-                    >
-                      <span class="session-context-option-check">
-                        {groupAlreadyMatches(wg, group.id) ? "\u2713" : ""}
-                      </span>
-                      <span>{group.name}</span>
-                    </button>
-                  );
-                }}
-              </For>
-              <Show when={groupsConfig().groups.length === 0}>
-                <div class="session-context-note">No groups yet</div>
-              </Show>
-              <Show when={workgroupGroupsStore.error(proj.path)}>
-                {(error) => <div class="session-context-error">{error()}</div>}
-              </Show>
-              <Show when={groupMenuError()}>
-                <div class="session-context-error" data-ac-testid="replica.groups.error">
-                  {groupMenuError()}
-                </div>
-              </Show>
-              <Show
-                when={groupCreateWgPath() === wg.path}
-                fallback={
-                  <button
-                    class="session-context-option"
-                    onClick={() => {
-                      setGroupCreateWgPath(wg.path);
-                      setGroupCreateName("");
-                      setGroupMenuError("");
-                      reclampReplicaCtxMenu();
-                    }}
-                    data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.create`}
-                  >
-                    Crear grupo nuevo
-                  </button>
-                }
-              >
-                <div class="session-context-inline-create">
-                  <input
-                    class="session-context-inline-input"
-                    value={groupCreateName()}
-                    onInput={(e) => setGroupCreateName(e.currentTarget.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void createGroupFromMenu(wg);
-                      }
-                    }}
-                    placeholder="Group name"
-                    data-ac-testid="replica.groups.create.input"
-                  />
-                  <button
-                    class="session-context-option"
-                    onClick={() => void createGroupFromMenu(wg)}
-                    data-ac-testid="replica.groups.create.save"
-                  >
-                    Create
-                  </button>
-                </div>
-              </Show>
-            </div>
+            <button
+              class="session-context-option session-context-submenu-trigger"
+              onMouseEnter={(e) => openGroupFlyout(e.currentTarget)}
+              onFocus={(e) => openGroupFlyout(e.currentTarget)}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openGroupFlyout(e.currentTarget);
+              }}
+              data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
+            >
+              <span>Add to Group</span>
+              <span class="session-context-submenu-arrow">&rsaquo;</span>
+            </button>
+            {renderAddToGroupFlyout(wg)}
           </Show>
         );
 
@@ -2985,7 +3070,7 @@ const ProjectPanel: Component = () => {
                         >
                           Coding Agent
                         </button>
-                        {renderAddToGroupSection(menu().wg, menu().replica)}
+                        {renderAddToGroupItem(menu().wg, menu().replica)}
                         <button
                           class="session-context-option"
                           title={menu().replica.path}
@@ -3075,7 +3160,7 @@ const ProjectPanel: Component = () => {
                           >
                             Coding Agent
                           </button>
-                          {renderAddToGroupSection(menu().wg, menu().replica)}
+                          {renderAddToGroupItem(menu().wg, menu().replica)}
                           <button
                             class="session-context-option"
                             title={menu().replica.path}
