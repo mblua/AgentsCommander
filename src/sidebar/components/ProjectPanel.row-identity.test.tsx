@@ -123,7 +123,8 @@ describe("ProjectPanel row identity across volatile events (#748)", () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve("get_settings", baseSettings());
-    fake.resolve("discover_project", coordDiscovery());
+    const firstSnapshot = coordDiscovery();
+    fake.resolve("discover_project", firstSnapshot);
 
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
@@ -132,7 +133,12 @@ describe("ProjectPanel row identity across volatile events (#748)", () => {
       await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeTruthy());
       const row = rendered.root.querySelector(rowSelector);
 
-      // Identical snapshot (fresh objects, equal data) → complete no-op.
+      // Identical snapshot → complete no-op. Serve a deep CLONE so the merge
+      // sees fresh objects with equal data: FakeTransport re-serves the same
+      // reference on every invoke, and without the clone the no-op verdict
+      // would ride deepEqual's `a === b` fast-path instead of proving real
+      // structural comparison.
+      fake.resolve("discover_project", structuredClone(firstSnapshot));
       await projectStore.reloadProject(projectPath);
       await waitFor(() =>
         expect(fake.callsFor("discover_project").length).toBeGreaterThanOrEqual(2),
