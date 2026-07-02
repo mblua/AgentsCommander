@@ -13,6 +13,7 @@ import { toastStore } from "../stores/toasts";
 import { projectStore } from "../../sidebar/stores/project";
 import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
+import { workgroupGroupsStore } from "../../sidebar/stores/workgroup-groups";
 import { terminalStore } from "../../terminal/stores/terminal";
 import { __resetHomeStoreForTests } from "../../main/stores/home";
 
@@ -231,6 +232,7 @@ export function resetUiStoresForTests(): void {
   sessionsStore.setAlwaysShowSelectedWorkgroup(true);
   sessionsStore.setCoordSortByActivity(false);
   sessionsStore.clearDetached();
+  workgroupGroupsStore.resetForTests();
   bridgesStore.setBridges([]);
   terminalStore.setActiveSession(null, "", "", null, "", null);
   terminalStore.setActiveWorkgroupTask(null);

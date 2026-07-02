@@ -119,6 +119,7 @@ function setupBrowserTransport(
     created: false,
   });
   fake.resolve("discover_project", browserDiscovery());
+  fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", [architectSession]);
   fake.resolve("get_active_session", architectSession.id);
@@ -153,6 +154,8 @@ describe("BrowserApp workflow", () => {
         expect(rendered.root.querySelector(".browser-layout")).not.toBeNull();
         expect(rendered.root.querySelector(".browser-sidebar")).not.toBeNull();
         expect(rendered.root.querySelector(".browser-terminal")).not.toBeNull();
+        expect(rendered.root.querySelector(".sidebar-body")?.getAttribute("data-rail-side")).toBe("left");
+        expect(rendered.root.querySelector(".workgroup-group-rail")).not.toBeNull();
         expect(rendered.root.textContent).toContain("wg-1-dev-team");
         expect(rendered.root.textContent).toContain("architect");
       });

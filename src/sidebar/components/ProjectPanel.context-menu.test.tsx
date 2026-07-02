@@ -360,6 +360,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menuButtonLabels(replicaMenu()!)).toEqual([
       "Restart Session",
       "Coding Agent",
+      "Crear grupo nuevo",
       "Open Replica's Folder",
       "AgentsCommander",
       "docs",
@@ -454,11 +455,12 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(items.map(repoFolderLabel)).toEqual(["AgentsCommander", "docs"]);
       expect(items[0].title).toBe(repos[0]);
       expect(items[1].title).toBe(repos[1]);
-      expect(menuButtonLabels(menu!)).toEqual([
-        "Coding Agent",
-        "Open Replica's Folder",
-        "AgentsCommander",
-        "docs",
+    expect(menuButtonLabels(menu!)).toEqual([
+      "Coding Agent",
+      "Crear grupo nuevo",
+      "Open Replica's Folder",
+      "AgentsCommander",
+      "docs",
         "Open Matrix folder",
         "Clear task title",
       ]);

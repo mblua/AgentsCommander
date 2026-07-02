@@ -55,7 +55,8 @@ import type {
   ScreenshotSelection,
   ScreenshotCaptureResult,
   ScreenshotCaptureFailedEvent,
-  ScreenshotHotkeyStatus
+  ScreenshotHotkeyStatus,
+  WorkgroupGroupsConfig
 } from "./types";
 
 export interface SessionRepoInput {
@@ -716,6 +717,10 @@ export const ProjectAPI = {
     transport.invoke<void>("create_ac_project", { path }),
   discover: (path: string) =>
     transport.invoke<AcDiscoveryResult>("discover_project", { path }),
+  getGroups: (path: string) =>
+    transport.invoke<WorkgroupGroupsConfig>("get_project_groups", { path }),
+  updateGroups: (path: string, config: WorkgroupGroupsConfig) =>
+    transport.invoke<WorkgroupGroupsConfig>("update_project_groups", { path, config }),
   keepCustomContextTemplate: (update: ContextTemplateUpdate) =>
     transport.invoke<void>("keep_custom_context_template", {
       path: update.projectPath,

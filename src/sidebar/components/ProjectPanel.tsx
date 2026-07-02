@@ -42,6 +42,17 @@ import {
   repoLabelFromPath,
 } from "./replica-repo-badges";
 import { sessionDotClass } from "./session-status";
+import {
+  findReplicaSession as replicaSession,
+  replicaDotClass,
+  replicaSessionName,
+} from "./workgroup-session";
+import {
+  MAX_GROUP_MATCH_ID_LENGTH,
+  compileGroupRegex,
+  groupMatchId,
+  workgroupGroupsStore,
+} from "../stores/workgroup-groups";
 
 interface PendingLaunch {
   path: string;
@@ -193,29 +204,6 @@ function workgroupCollapseId(wg: AcWorkgroup, rowContext: string): string {
  */
 export const RESTART_TIMEOUT_MS = 30_000;
 
-/** Build the session name used to link a replica to its session */
-function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
-  return `${wg.name}/${replica.name}`;
-}
-
-function normalizedReplicaSessionPath(path: string | null | undefined): string | null {
-  const trimmed = path?.trim();
-  return trimmed ? normalizeProjectPathForCompare(trimmed) : null;
-}
-
-/** Find existing session for a replica, if any */
-function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | undefined {
-  const expectedName = replicaSessionName(wg, replica);
-  const expectedPath = normalizedReplicaSessionPath(replica.path);
-  if (!expectedPath) return undefined;
-
-  return sessionsStore.sessions.find(
-    (session) =>
-      session.name === expectedName &&
-      normalizedReplicaSessionPath(session.workingDirectory) === expectedPath
-  );
-}
-
 function replicaRepoMenuEntries(wg: AcWorkgroup, replica: AcAgentReplica): SessionRepo[] {
   if (!replica.isCoordinator) return [];
   const session = replicaSession(wg, replica);
@@ -223,11 +211,6 @@ function replicaRepoMenuEntries(wg: AcWorkgroup, replica: AcAgentReplica): Sessi
     ? session.gitRepos
     : configuredReplicaRepoBadges(replica, wg);
   return repos.filter(hasValidRepoSourcePath);
-}
-
-/** Compute CSS class for replica status dot */
-function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): string {
-  return sessionDotClass(replicaSession(wg, replica));
 }
 
 /** Check if a session has a live PTY process (not exited, not offline) */
@@ -713,6 +696,9 @@ const ProjectPanel: Component = () => {
         const [filterOpen, setFilterOpen] = createSignal(false);
         const [filterPattern, setFilterPattern] = createSignal("");
         let filterInputEl: HTMLInputElement | undefined;
+        const [groupCreateWgPath, setGroupCreateWgPath] = createSignal<string | null>(null);
+        const [groupCreateName, setGroupCreateName] = createSignal("");
+        const [groupMenuError, setGroupMenuError] = createSignal("");
         const [agentCtxMenu, setAgentCtxMenu] = createSignal<{ agent: { name: string; path: string; preferredAgentId?: string }; x: number; y: number } | null>(null);
         const [agentsHeaderCtxMenu, setAgentsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
         const [workgroupsHeaderCtxMenu, setWorkgroupsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
@@ -863,6 +849,11 @@ const ProjectPanel: Component = () => {
         const clearFilter = () => {
           setFilterPattern("");
           focusFilterInput();
+        };
+        const resetGroupMenuState = () => {
+          setGroupCreateWgPath(null);
+          setGroupCreateName("");
+          setGroupMenuError("");
         };
         const handleFilterKeyDown = (e: KeyboardEvent) => {
           if (e.key !== "Escape") return;
@@ -1023,6 +1014,28 @@ const ProjectPanel: Component = () => {
           if (!filterActive() || matchesFilterText("Teams") || teamOwnMatches(team)) return team.agents;
           return team.agents.filter((agentName) => teamMemberMatches(team, agentName));
         };
+        const groupsConfig = () => workgroupGroupsStore.config(proj.path);
+        const selectedGroup = () => workgroupGroupsStore.selection(proj.path);
+        const compiledGroups = createMemo(() =>
+          groupsConfig().groups.map((group) => ({ group, regex: compileGroupRegex(group) }))
+        );
+        const canTestGroupMatchId = (wg: AcWorkgroup) =>
+          groupMatchId(wg).length <= MAX_GROUP_MATCH_ID_LENGTH;
+        const groupMatchesWorkgroup = (wg: AcWorkgroup, groupId: string) => {
+          if (!canTestGroupMatchId(wg)) return false;
+          const compiled = compiledGroups().find((entry) => entry.group.id === groupId);
+          return !!compiled?.regex?.test(groupMatchId(wg));
+        };
+        const workgroupMatchesAnyGroup = (wg: AcWorkgroup) =>
+          canTestGroupMatchId(wg) &&
+          compiledGroups().some((entry) => entry.regex?.test(groupMatchId(wg)));
+        const groupPredicate = (wg: AcWorkgroup) => {
+          const selected = selectedGroup();
+          if (selected.kind === "all") return true;
+          if (selected.kind === "ungrouped") return !workgroupMatchesAnyGroup(wg);
+          return groupMatchesWorkgroup(wg, selected.id);
+        };
+        const groupVisibleWorkgroups = createMemo(() => proj.workgroups.filter(groupPredicate));
         // Memoized so each section reads one cached pass per (filter, store)
         // change instead of rebuilding search text + re-running regex.test on
         // every access (these are read 3-4× per render). Dependencies are all
@@ -1032,8 +1045,9 @@ const ProjectPanel: Component = () => {
         // coordinatorItems memo it reads — createMemo runs eagerly, so it must
         // follow that declaration (not lead it) to avoid a temporal dead zone.
         const filteredWorkgroups = createMemo(() => {
-          if (!filterActive() || matchesFilterText("Workgroups")) return proj.workgroups;
-          return proj.workgroups.filter((wg) => workgroupMatches(wg, "Workgroups"));
+          const base = groupVisibleWorkgroups();
+          if (!filterActive() || matchesFilterText("Workgroups")) return base;
+          return base.filter((wg) => workgroupMatches(wg, "Workgroups"));
         });
         const filteredAgents = createMemo(() => {
           if (!filterActive() || matchesFilterText("Agents")) return proj.agents;
@@ -1045,7 +1059,8 @@ const ProjectPanel: Component = () => {
         });
         const selectedWorkgroupVisible = () => {
           const wg = selectedWorkgroup();
-          return !filterActive() || matchesFilterText("Selected Workgroup") || (wg ? workgroupMatches(wg, "Selected Workgroup") : false);
+          if (!wg || !groupPredicate(wg)) return false;
+          return !filterActive() || matchesFilterText("Selected Workgroup") || workgroupMatches(wg, "Selected Workgroup");
         };
         // Status line shown on each loop row — shared with the filter search
         // text so what the regex matches always equals what the user sees.
@@ -1108,6 +1123,17 @@ const ProjectPanel: Component = () => {
           );
         };
 
+        const reclampReplicaCtxMenu = () => {
+          const menu = replicaCtxMenu();
+          if (!menu) return;
+          const clamp = () => positionReplicaCtxMenu(menu.x, menu.y);
+          if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(clamp);
+            return;
+          }
+          window.setTimeout(clamp, 0);
+        };
+
         const restartReplicaSession = async (
           sessionId: string,
           agentId?: string,
@@ -1157,6 +1183,117 @@ const ProjectPanel: Component = () => {
           }
           return null;
         };
+
+        const groupAlreadyMatches = (wg: AcWorkgroup, groupId: string) =>
+          groupMatchesWorkgroup(wg, groupId);
+
+        const addToExistingGroup = async (wg: AcWorkgroup, groupId: string) => {
+          setGroupMenuError("");
+          try {
+            await workgroupGroupsStore.addWorkgroupToGroup(proj.path, groupId, wg.name);
+          } catch (error) {
+            setGroupMenuError(error instanceof Error ? error.message : String(error));
+            reclampReplicaCtxMenu();
+          }
+        };
+
+        const createGroupFromMenu = async (wg: AcWorkgroup) => {
+          const name = groupCreateName().trim();
+          if (!name) {
+            setGroupMenuError("Group name cannot be blank.");
+            reclampReplicaCtxMenu();
+            return;
+          }
+          setGroupMenuError("");
+          try {
+            await workgroupGroupsStore.createGroupForWorkgroup(proj.path, name, wg.name);
+            resetGroupMenuState();
+            reclampReplicaCtxMenu();
+          } catch (error) {
+            setGroupMenuError(error instanceof Error ? error.message : String(error));
+            reclampReplicaCtxMenu();
+          }
+        };
+
+        const renderAddToGroupSection = (wg: AcWorkgroup, replica: AcAgentReplica) => (
+          <Show when={replica.isCoordinator}>
+            <div class="context-separator" />
+            <div class="session-context-submenu" data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.menu`}>
+              <div class="session-context-submenu-title">Add to Group</div>
+              <For each={groupsConfig().groups}>
+                {(group) => {
+                  const valid = () => !!compileGroupRegex(group);
+                  return (
+                    <button
+                      class="session-context-option session-context-group-option"
+                      classList={{ "context-option-disabled": !valid() }}
+                      disabled={!valid()}
+                      title={valid() ? group.regex : "Fix this group's regex before adding a workgroup"}
+                      onClick={() => void addToExistingGroup(wg, group.id)}
+                      data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.${automationIdPart(group.id)}`}
+                    >
+                      <span class="session-context-option-check">
+                        {groupAlreadyMatches(wg, group.id) ? "\u2713" : ""}
+                      </span>
+                      <span>{group.name}</span>
+                    </button>
+                  );
+                }}
+              </For>
+              <Show when={groupsConfig().groups.length === 0}>
+                <div class="session-context-note">No groups yet</div>
+              </Show>
+              <Show when={workgroupGroupsStore.error(proj.path)}>
+                {(error) => <div class="session-context-error">{error()}</div>}
+              </Show>
+              <Show when={groupMenuError()}>
+                <div class="session-context-error" data-ac-testid="replica.groups.error">
+                  {groupMenuError()}
+                </div>
+              </Show>
+              <Show
+                when={groupCreateWgPath() === wg.path}
+                fallback={
+                  <button
+                    class="session-context-option"
+                    onClick={() => {
+                      setGroupCreateWgPath(wg.path);
+                      setGroupCreateName("");
+                      setGroupMenuError("");
+                      reclampReplicaCtxMenu();
+                    }}
+                    data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.create`}
+                  >
+                    Crear grupo nuevo
+                  </button>
+                }
+              >
+                <div class="session-context-inline-create">
+                  <input
+                    class="session-context-inline-input"
+                    value={groupCreateName()}
+                    onInput={(e) => setGroupCreateName(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void createGroupFromMenu(wg);
+                      }
+                    }}
+                    placeholder="Group name"
+                    data-ac-testid="replica.groups.create.input"
+                  />
+                  <button
+                    class="session-context-option"
+                    onClick={() => void createGroupFromMenu(wg)}
+                    data-ac-testid="replica.groups.create.save"
+                  >
+                    Create
+                  </button>
+                </div>
+              </Show>
+            </div>
+          </Show>
+        );
 
         // Broom (clear task title) for a gray/red replica — reuses the
         // active-agent TaskAPI.clean. The backend emits workgroup_task_updated,
@@ -1250,7 +1387,7 @@ const ProjectPanel: Component = () => {
           proj.workgroups.some((wg) => wg.agents.some((agent) => agent.isCoordinator));
         const naturalCoordinatorItems = createMemo(() => {
           const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
-          for (const wg of proj.workgroups) {
+          for (const wg of groupVisibleWorkgroups()) {
             for (const replica of wg.agents) {
               if (replica.isCoordinator) {
                 result.push({ replica, wg });
@@ -1451,6 +1588,7 @@ const ProjectPanel: Component = () => {
           setLoopCtxMenu(null);
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
+          resetGroupMenuState();
           setReplicaCtxMenu({
             kind: "active",
             sessionId: session.id,
@@ -1494,6 +1632,7 @@ const ProjectPanel: Component = () => {
           setLoopCtxMenu(null);
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
+          resetGroupMenuState();
           setReplicaCtxMenu({ kind: "inactive", wg, replica, x: e.clientX, y: e.clientY });
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -2846,6 +2985,7 @@ const ProjectPanel: Component = () => {
                         >
                           Coding Agent
                         </button>
+                        {renderAddToGroupSection(menu().wg, menu().replica)}
                         <button
                           class="session-context-option"
                           title={menu().replica.path}
@@ -2935,6 +3075,7 @@ const ProjectPanel: Component = () => {
                           >
                             Coding Agent
                           </button>
+                          {renderAddToGroupSection(menu().wg, menu().replica)}
                           <button
                             class="session-context-option"
                             title={menu().replica.path}

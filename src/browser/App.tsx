@@ -92,7 +92,7 @@ const BrowserApp: Component = () => {
   return (
     <div class="browser-layout" classList={{ "browser-dragging": dragging() }}>
       <div class="browser-sidebar" style={{ width: `${sidebarWidth()}px` }}>
-        <SidebarApp embedded />
+        <SidebarApp embedded railSide="left" />
       </div>
       <div
         class="browser-divider"

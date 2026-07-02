@@ -1,7 +1,7 @@
 import { Component, createSignal, createEffect, onMount, onCleanup, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
-import type { SessionStatus, ContextTemplateUpdate } from "../shared/types";
+import type { SessionStatus, ContextTemplateUpdate, MainSidebarSide } from "../shared/types";
 import {
   SessionAPI,
   SettingsAPI,
@@ -46,6 +46,7 @@ import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
+import WorkgroupGroupRail from "./components/WorkgroupGroupRail";
 import OnboardingModal from "./components/OnboardingModal";
 import ContextTemplateUpdateModal from "./components/ContextTemplateUpdateModal";
 import ToastHost from "../shared/components/ToastHost";
@@ -63,6 +64,7 @@ interface SidebarAppProps {
    * initializers; those are main-window concerns.
    */
   embedded?: boolean;
+  railSide?: MainSidebarSide;
 }
 
 function isExitedStatus(status: SessionStatus): boolean {
@@ -72,6 +74,7 @@ function isExitedStatus(status: SessionStatus): boolean {
 const SidebarApp: Component<SidebarAppProps> = (props) => {
   const [showOnboarding, setShowOnboarding] = createSignal(false);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
+  const [settingsRailSide, setSettingsRailSide] = createSignal<MainSidebarSide>("right");
   // #695 — one-at-a-time seeded context-template update modal. `seen` is keyed
   // by `(projectPath, filename, defaultSha256, fileSha256)` so a resolved or
   // skipped update is not re-shown, while a genuinely new pending update (the
@@ -90,6 +93,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   let loopToastTimer: ReturnType<typeof setTimeout> | null = null;
   let raiseTerminalEnabled = true;
   let lastRaiseTime = 0;
+  const railSide = () => props.railSide ?? settingsRailSide();
   // #592 - debounce handle for the profile-drift re-list (collapses bursts).
   let profileDriftRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const blockContextMenu = (e: Event) => {
@@ -98,6 +102,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // remain blocked.
     if (e.target instanceof Element && e.target.closest(".terminal-host")) return;
     e.preventDefault();
+  };
+
+  const handleMainSidebarSideChange = (event: Event) => {
+    const side = (event as CustomEvent<{ side?: MainSidebarSide }>).detail?.side;
+    setSettingsRailSide(side === "left" ? "left" : "right");
   };
 
   const handleRaiseTerminal = async (e: MouseEvent) => {
@@ -333,6 +342,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
     // Apply window settings
     const appSettings = await SettingsAPI.get();
+    setSettingsRailSide(appSettings.mainSidebarSide === "left" ? "left" : "right");
     if (!props.embedded) {
       document.documentElement.classList.toggle("light-theme", appSettings.themeLight);
     }
@@ -353,6 +363,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
     // Block the default browser context menu globally — custom menus are used instead
     document.addEventListener("contextmenu", blockContextMenu);
+    window.addEventListener("main-sidebar-side-change", handleMainSidebarSideChange);
 
     if (!props.embedded) {
       try {
@@ -546,6 +557,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     sessionsStore.setSidebarPointerInside(false);
     document.removeEventListener("mousedown", handleRaiseTerminal);
     document.removeEventListener("contextmenu", blockContextMenu);
+    window.removeEventListener("main-sidebar-side-change", handleMainSidebarSideChange);
     window.removeEventListener("focus", handleWindowFocusDriftRefresh);
     document.removeEventListener("visibilitychange", handleWindowFocusDriftRefresh);
   });
@@ -564,8 +576,16 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         </Show>
         <ActionBar />
         <RootAgentBanner />
-        <div class="sidebar-scrollable">
-          <ProjectPanel />
+        <div class="sidebar-body" data-rail-side={railSide()}>
+          <Show when={railSide() === "left"}>
+            <WorkgroupGroupRail projects={projectStore.projects} />
+          </Show>
+          <div class="sidebar-scrollable">
+            <ProjectPanel />
+          </div>
+          <Show when={railSide() === "right"}>
+            <WorkgroupGroupRail projects={projectStore.projects} />
+          </Show>
         </div>
       </div>
       <Show when={showOnboarding()}>

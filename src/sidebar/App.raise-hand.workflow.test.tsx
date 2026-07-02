@@ -71,6 +71,7 @@ function setupRaiseHandTransport(fake: FakeTransport, sessions: Session[]): void
       ],
     })
   );
+  fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", sessions);
   fake.resolve("get_active_session", null);

@@ -37,6 +37,7 @@ function setupTransport(fake: FakeTransport, updates: ContextTemplateUpdate[]): 
   fake.resolve("get_update_status", null);
   fake.resolve("open_project", { path: projectPath, registered: true, created: false });
   fake.resolve("discover_project", discovery({ contextTemplateUpdates: updates }));
+  fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", []);
   fake.resolve("get_active_session", null);
