@@ -12,7 +12,7 @@ OUTPUT: JSON array of current sessions. Each entry contains:\n  \
   workingDirectory  Session's working directory path\n  \
   status            One of: \"active\", \"running\", \"idle\", or {\"exited\": <code>}\n  \
   waitingForInput   true when the session is waiting for user input\n  \
-  raisedHand        true when a visible raise-hand request is active\n  \
+  raisedHand        true when a visible raise-hand request is active (persists across app restarts until real user input)\n  \
   createdAt         ISO 8601 timestamp of session creation\n\n\
 REQUIREMENTS: The app must be running (sessions.json is kept up-to-date while the app runs).\n\n\
 EXAMPLES:\n  \
@@ -47,16 +47,17 @@ fn status_tag(status: &SessionStatus) -> &'static str {
     }
 }
 
-/// #698 - derive the public `raisedHand` boolean from a persisted row. True only
-/// when the full valid-visible contract holds: the row is a coordinator, has a
-/// present non-exited status, and carries a visible `RaiseHand` communication.
-/// Every other shape (missing status, missing/hidden/non-raise communication,
-/// non-coordinator, exited, restore-only) maps to false.
+/// #698/#747 - derive the public `raisedHand` boolean from a persisted row.
+/// True when the row is a coordinator, has a present status, and carries a
+/// visible `RaiseHand` communication. `Exited` status is deliberately NOT a
+/// disqualifier since #747: a dormant restored coordinator legitimately keeps
+/// its persisted raised hand until real user input clears it. Every real-exit
+/// path clears `communication` in the same critical section (`mark_exited`),
+/// so an exited row with a visible hand can only be the #747 dormant restore.
+/// Missing status, missing/hidden/non-raise communication, non-coordinator,
+/// and restore-only rows map to false.
 fn raised_hand_from_persisted(s: &PersistedSession) -> bool {
-    let Some(status) = s.status.as_ref() else {
-        return false;
-    };
-    if !s.is_coordinator || matches!(status, SessionStatus::Exited(_)) {
+    if s.status.is_none() || !s.is_coordinator {
         return false;
     }
     s.communication.as_ref().is_some_and(|communication| {

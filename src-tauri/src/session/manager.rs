@@ -475,6 +475,33 @@ impl SessionManager {
         should_clear
     }
 
+    /// (#747) Re-apply a persisted raise-hand onto a restored session record.
+    /// Unlike `raise_hand`, this deliberately ACCEPTS records in
+    /// `SessionStatus::Exited(_)`: the startup defer arm restores dormant
+    /// placeholders that must keep their raised hand until real user input
+    /// (issue #747 supersedes #676's ephemeral-only rule). Gates: coordinator
+    /// records only, visible `RaiseHand` payloads only. Preserves the caller's
+    /// `updated_at` (the original raise time) so the indicator's age stays
+    /// truthful. Returns true when the communication was applied.
+    pub async fn restore_communication(
+        &self,
+        id: Uuid,
+        communication: SessionCommunication,
+    ) -> bool {
+        if communication.kind != SessionCommunicationKind::RaiseHand || !communication.visible {
+            return false;
+        }
+        let mut sessions = self.sessions.write().await;
+        let Some(session) = sessions.get_mut(&id) else {
+            return false;
+        };
+        if !session.is_coordinator {
+            return false;
+        }
+        session.communication = Some(communication);
+        true
+    }
+
     /// (#630/#631) Stamp the durable resume intent. Used by the restart path and
     /// the restore wake/defer paths.
     pub async fn set_start_fresh_on_restore(&self, id: Uuid, value: bool) {
@@ -1054,6 +1081,113 @@ mod tests {
             .unwrap()
             .communication
             .is_none());
+    }
+
+    /// (#747) The restore seam accepts an Exited coordinator record (the defer
+    /// arm calls it right after `mark_exited`) and keeps the original raise
+    /// time so the indicator's age stays truthful.
+    #[tokio::test]
+    async fn restore_communication_applies_visible_raise_hand_to_dormant_coordinator() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.mark_exited(session.id, 0).await;
+
+        let original_raise_time = "2026-06-30T11:00:00+00:00".to_string();
+        let communication = SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: original_raise_time.clone(),
+        };
+
+        assert!(
+            mgr.restore_communication(session.id, communication.clone())
+                .await,
+            "dormant coordinator must accept the restored hand"
+        );
+        let stored = mgr.get_session(session.id).await.unwrap();
+        assert!(matches!(stored.status, SessionStatus::Exited(0)));
+        let restored = stored.communication.expect("restored hand stored");
+        assert_eq!(restored.kind, SessionCommunicationKind::RaiseHand);
+        assert!(restored.visible);
+        assert_eq!(
+            restored.updated_at, original_raise_time,
+            "restore must preserve the ORIGINAL raise time, not re-stamp it"
+        );
+    }
+
+    /// (#747) Restore gates: non-coordinator records, hidden payloads, and
+    /// unknown ids are all rejected without mutating state.
+    #[tokio::test]
+    async fn restore_communication_rejects_non_coordinator_hidden_payload_and_unknown_id() {
+        let mgr = SessionManager::new();
+        let visible_hand = SessionCommunication {
+            kind: SessionCommunicationKind::RaiseHand,
+            visible: true,
+            updated_at: "2026-06-30T11:00:00+00:00".to_string(),
+        };
+
+        // Non-coordinator record: rejected, communication stays None.
+        let member = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+        assert!(
+            !mgr.restore_communication(member.id, visible_hand.clone())
+                .await
+        );
+        assert!(mgr
+            .get_session(member.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+
+        // Hidden payload on a coordinator: rejected.
+        let coordinator = mgr
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp2".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        let hidden_hand = SessionCommunication {
+            visible: false,
+            ..visible_hand.clone()
+        };
+        assert!(!mgr.restore_communication(coordinator.id, hidden_hand).await);
+        assert!(mgr
+            .get_session(coordinator.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+
+        // Unknown id: rejected.
+        assert!(!mgr.restore_communication(Uuid::new_v4(), visible_hand).await);
     }
 
     /// #698 MEDIUM fix: `clear_user_input_transitions` lowers a visible raise-hand

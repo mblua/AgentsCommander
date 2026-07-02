@@ -532,6 +532,11 @@ fn read_only_json_commands_missing_config_contracts() {
     }
 }
 
+/// #698 raisedHand contract with negative cases; #747 flipped the exited row:
+/// a coordinator row with `{"exited":0}` + visible raise-hand is EXACTLY the
+/// dormant-restored shape (every real-exit path clears communication in
+/// `mark_exited`, so it can only be produced by the #747 restore) and now
+/// reports `raisedHand: true`.
 #[test]
 fn list_sessions_outputs_raised_hand_boolean_with_negative_cases() {
     let tmp = Tmp::new("cli-list-sessions-raised-hand");
@@ -598,7 +603,7 @@ fn list_sessions_outputs_raised_hand_boolean_with_negative_cases() {
             "createdAt": "2026-06-30T10:15:00+00:00"
         },
         {
-            "name": "coord-exited",
+            "name": "coord-dormant-restored-hand",
             "shell": "codex",
             "shellArgs": [],
             "workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_old-tech-lead",
@@ -624,7 +629,7 @@ fn list_sessions_outputs_raised_hand_boolean_with_negative_cases() {
     assert_eq!(rows[1]["raisedHand"], false);
     assert_eq!(rows[2]["raisedHand"], false);
     assert_eq!(rows[3]["raisedHand"], false);
-    assert_eq!(rows[4]["raisedHand"], false);
+    assert_eq!(rows[4]["raisedHand"], true);
     assert!(rows
         .as_array()
         .unwrap()

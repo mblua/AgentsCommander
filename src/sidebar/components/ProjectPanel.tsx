@@ -1801,9 +1801,12 @@ const ProjectPanel: Component = () => {
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
           const communication = createMemo(() => session()?.communication ?? null);
+          // #747: no liveness gate. A dormant restored coordinator keeps its
+          // persisted raised hand; every real-exit path clears communication
+          // and emits session_communication_changed, so exited-with-hand can
+          // only be the restored state.
           const showRaiseHand = createMemo(() =>
             isCoord() &&
-            isSessionLive(session()) &&
             !!taskTitle &&
             communication()?.kind === "raiseHand" &&
             communication()?.visible === true
