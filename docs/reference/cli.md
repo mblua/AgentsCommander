@@ -441,6 +441,26 @@ agentscommander task-set-title \
 
 The verb writes a timestamped `*.bak.md` of the previous `TASK.md` on every successful write. Concurrent writes are serialized via an advisory lockfile (5s timeout). External edits between read and write abort the verb.
 
+On success, stdout is exactly:
+
+```text
+Updated
+```
+
+If the existing title starts with `USER:` (a human set it through the in-app title editor), the command exits `0`, leaves `TASK.md` unchanged, and stdout is exactly:
+
+```text
+Rejected: title set by user
+```
+
+If `--title` itself starts with the reserved `USER:` prefix and the current title is not already user-owned, the command exits `1`, writes no stdout, leaves `TASK.md` unchanged, and stderr starts with:
+
+```text
+Error: --title cannot start with reserved USER: prefix
+```
+
+Use Clean to reset a user-owned task before coordinator title updates resume. Operational audit details are written to the app log, not normal command output.
+
 ---
 
 ## `task-append-body`

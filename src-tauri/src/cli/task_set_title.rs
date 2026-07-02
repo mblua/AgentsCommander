@@ -23,7 +23,9 @@ INVARIANTS: A timestamped backup is created on every successful write that had a
 prior file. Concurrent writes are serialized via an advisory lockfile (5s timeout). \
 External edits between our read and our write are detected and the verb aborts.\n\n\
 TITLE INPUT: --title is a single-line string. Embedded \\n / \\r / NUL / other \
-control characters (except tab) are rejected.")]
+control characters (except tab) are rejected. A coordinator --title also cannot \
+start with the reserved USER: prefix; that marker is reserved for human-set \
+titles applied through the in-app title editor.")]
 pub struct TaskSetTitleArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
@@ -114,27 +116,24 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
     // tree. `sender=` and `wg=` are both caller-derived (--root) and a forged
     // --root produces a forged-but-consistent line; pid disambiguates.
     match task_ops::perform(&wg_root, TaskOp::SetTitle(args.title.clone())) {
-        Ok(EditOutcome::Wrote {
-            backup: Some(bp), ..
-        }) => {
-            log::info!(
-                "[task] set-title: sender={} wg={} pid={} backup={}",
-                sender,
-                wg_root.display(),
-                std::process::id(),
-                bp.display()
-            );
-            crate::cli_println!("TASK.md title updated; backup: {}", bp.display());
-            0
-        }
-        Ok(EditOutcome::Wrote { backup: None, .. }) => {
-            log::info!(
-                "[task] set-title: sender={} wg={} pid={} backup=<no prior file>",
-                sender,
-                wg_root.display(),
-                std::process::id()
-            );
-            crate::cli_println!("TASK.md created; no prior content to back up");
+        Ok(EditOutcome::Wrote { backup, .. }) => {
+            if let Some(bp) = backup {
+                log::info!(
+                    "[task] set-title: sender={} wg={} pid={} backup={}",
+                    sender,
+                    wg_root.display(),
+                    std::process::id(),
+                    bp.display()
+                );
+            } else {
+                log::info!(
+                    "[task] set-title: sender={} wg={} pid={} backup=<no prior file>",
+                    sender,
+                    wg_root.display(),
+                    std::process::id()
+                );
+            }
+            crate::cli_println!("Updated");
             0
         }
         Ok(EditOutcome::NoOp { .. }) => {
@@ -144,7 +143,17 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
                 wg_root.display(),
                 std::process::id()
             );
-            crate::cli_println!("TASK.md unchanged (title value already matches)");
+            crate::cli_println!("Updated");
+            0
+        }
+        Ok(EditOutcome::RejectedUserTitle { .. }) => {
+            log::info!(
+                "[task] set-title rejected user-owned title: sender={} wg={} pid={}",
+                sender,
+                wg_root.display(),
+                std::process::id()
+            );
+            crate::cli_println!("Rejected: title set by user");
             0
         }
         Err(e) => {

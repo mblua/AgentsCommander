@@ -818,3 +818,178 @@ fn window_info_no_gui_contract() {
         assert_eq!(json["error"], "window_info_unsupported_on_platform");
     }
 }
+
+// ── #738: task-set-title user-owned title output contract ───────────────────
+
+fn seed_master_token(config_dir: &Path, token: &str) {
+    std::fs::create_dir_all(config_dir).expect("create config dir");
+    std::fs::write(config_dir.join("master-token.txt"), token).expect("write master-token.txt");
+}
+
+fn make_wg_agent_root(tmp: &Path) -> PathBuf {
+    let root = tmp
+        .join("proj")
+        .join(".ac")
+        .join("wg-1-dev-team")
+        .join("__agent_architect");
+    std::fs::create_dir_all(&root).expect("create agent root");
+    root
+}
+
+/// Run `task-set-title` with `RUST_LOG=agentscommander=info` pinned, so the
+/// clean-output assertions hold even under verbose logging: the AC_MACHINE_OUTPUT
+/// allowlist must suppress stderr log lines and the startup log-path line.
+fn run_task_title(
+    bin: &Path,
+    agent_root: &Path,
+    master: &str,
+    title: &str,
+) -> (Option<i32>, String, String) {
+    let out = Command::new(bin)
+        .args([
+            "task-set-title",
+            "--token",
+            master,
+            "--root",
+            &agent_root.to_string_lossy(),
+            "--title",
+            title,
+        ])
+        .env("RUST_LOG", "agentscommander=info")
+        .output()
+        .expect("spawn task-set-title");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+fn bak_files(wg_root: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(wg_root)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("TASK.") && n.ends_with(".bak.md"))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn assert_no_leak(stdout: &str, stderr: &str) {
+    for stream in [stdout, stderr] {
+        for needle in [
+            "backup",
+            "pid=",
+            "[task]",
+            "app.log",
+            "INFO",
+            "agentscommander",
+            "module",
+        ] {
+            assert!(
+                !stream.contains(needle),
+                "normal output leaked {needle:?}:\nstdout={stdout:?}\nstderr={stderr:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn task_set_title_success_stdout_is_exact_updated() {
+    let tmp = Tmp::new("task-title-ok");
+    let bin = copy_binary_into(tmp.path());
+    let master = "test-master-738-ok";
+    seed_master_token(&config_dir_for_bin(&bin), master);
+    let agent_root = make_wg_agent_root(tmp.path());
+    let wg_root = agent_root.parent().unwrap().to_path_buf();
+
+    let (code, stdout, stderr) = run_task_title(&bin, &agent_root, master, "Auto");
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(stdout, "Updated\n");
+    assert!(stderr.trim().is_empty(), "stderr must be empty: {stderr}");
+
+    let task = std::fs::read_to_string(wg_root.join("TASK.md")).expect("read TASK.md");
+    assert!(
+        task.contains("title: 'Auto'") && !task.contains("USER:"),
+        "coordinator title must be plain, not USER:-marked:\n{task}"
+    );
+}
+
+#[test]
+fn task_set_title_rejects_user_owned_title_with_exact_output() {
+    let tmp = Tmp::new("task-title-reject");
+    let bin = copy_binary_into(tmp.path());
+    let master = "test-master-738-reject";
+    seed_master_token(&config_dir_for_bin(&bin), master);
+    let agent_root = make_wg_agent_root(tmp.path());
+    let wg_root = agent_root.parent().unwrap().to_path_buf();
+    let task_path = wg_root.join("TASK.md");
+    std::fs::write(&task_path, "---\ntitle: 'USER: Manual'\n---\n").unwrap();
+    let before = std::fs::read(&task_path).unwrap();
+
+    let (code, stdout, stderr) = run_task_title(&bin, &agent_root, master, "Auto");
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(stdout, "Rejected: title set by user\n");
+    assert!(stderr.trim().is_empty(), "stderr must be empty: {stderr}");
+    assert_eq!(
+        std::fs::read(&task_path).unwrap(),
+        before,
+        "TASK.md must be byte-unchanged on reject"
+    );
+    assert!(bak_files(&wg_root).is_empty(), "no backup on reject");
+}
+
+#[test]
+fn task_set_title_reserved_user_prefix_input_is_invalid() {
+    let tmp = Tmp::new("task-title-reserved");
+    let bin = copy_binary_into(tmp.path());
+    let master = "test-master-738-reserved";
+    seed_master_token(&config_dir_for_bin(&bin), master);
+    let agent_root = make_wg_agent_root(tmp.path());
+    let wg_root = agent_root.parent().unwrap().to_path_buf();
+    let task_path = wg_root.join("TASK.md");
+    std::fs::write(&task_path, "---\ntitle: 'Auto'\n---\n").unwrap();
+    let before = std::fs::read(&task_path).unwrap();
+
+    let (code, stdout, stderr) = run_task_title(&bin, &agent_root, master, "USER: forged");
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.is_empty(), "no stdout on invalid input: {stdout}");
+    assert_eq!(
+        stderr,
+        "Error: --title cannot start with reserved USER: prefix\n"
+    );
+    assert_eq!(
+        std::fs::read(&task_path).unwrap(),
+        before,
+        "TASK.md must be byte-unchanged on invalid input"
+    );
+    assert!(bak_files(&wg_root).is_empty(), "no backup on invalid input");
+}
+
+#[test]
+fn task_set_title_normal_output_does_not_leak_logs_or_paths() {
+    let tmp = Tmp::new("task-title-leak");
+    let bin = copy_binary_into(tmp.path());
+    let master = "test-master-738-leak";
+    seed_master_token(&config_dir_for_bin(&bin), master);
+    let agent_root = make_wg_agent_root(tmp.path());
+    let wg_root = agent_root.parent().unwrap().to_path_buf();
+
+    // Accepted path (fresh file -> Wrote): exact stdout, no log/path leak.
+    let (code, stdout, stderr) = run_task_title(&bin, &agent_root, master, "First");
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert_eq!(stdout, "Updated\n");
+    assert_no_leak(&stdout, &stderr);
+
+    // Rejected path (seed a USER: title so the next coordinator write is rejected).
+    std::fs::write(wg_root.join("TASK.md"), "---\ntitle: 'USER: Manual'\n---\n").unwrap();
+    let (code, stdout, stderr) = run_task_title(&bin, &agent_root, master, "Second");
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert_eq!(stdout, "Rejected: title set by user\n");
+    assert_no_leak(&stdout, &stderr);
+}

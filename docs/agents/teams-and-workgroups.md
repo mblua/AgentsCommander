@@ -108,6 +108,8 @@ agentscommander task-append-body --token "$TOKEN" --root "$ROOT" --text "We drop
 
 Both verbs validate the caller is a coordinator of any team in the project and create a timestamped `.bak.md` of the previous `TASK.md` before writing.
 
+Coordinator title updates do not overwrite titles that begin with `USER:` (a human set those through the in-app title editor). Coordinator-supplied titles also cannot start with the reserved `USER:` prefix. Use Clean to reset a user-owned task before coordinator auto-title updates resume.
+
 ## Activating a workgroup
 
 From the UI, click **Activate** on the team. From the CLI, use `workgroup add`. AC creates the same disk layout:

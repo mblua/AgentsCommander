@@ -35,8 +35,13 @@ const LOCK_STALE_AFTER_5M: Duration = Duration::from_secs(300);
 /// Edit operation requested by a verb.
 #[derive(Debug, Clone)]
 pub enum TaskOp {
-    /// Replace or insert the YAML-frontmatter `title:` field.
+    /// Coordinator/agent title write. Writes the value verbatim (no `USER:`
+    /// marker) and is subject to the user-lock + reserved-prefix guards.
     SetTitle(String),
+    /// Human title write (GUI editor + workgroup creation). Prefixes the value
+    /// with `USER:` (unless already present) and bypasses the coordinator
+    /// user-lock guard so a human can always edit a prior human title.
+    SetUserTitle(String),
     /// Append a body paragraph (frontmatter untouched).
     AppendBody(String),
     /// Replace BOTH frontmatter title AND body with the canonical Clean form
@@ -61,12 +66,81 @@ pub enum EditOutcome {
         content: String,
         title: Option<String>,
     },
+    /// Coordinator set-title rejected because the current title is user-owned
+    /// (`USER:`). NOT an error: exit code 0, no write, no backup. The GUI/human
+    /// path (`SetUserTitle`) never produces this.
+    RejectedUserTitle {
+        content: String,
+        title: Option<String>,
+    },
+}
+
+/// Reserved marker that flags a task title as human-set (#738).
+pub(crate) const USER_TITLE_PREFIX: &str = "USER:";
+
+#[derive(Debug, Clone, Copy)]
+struct TitleLine<'a> {
+    leading: &'a str,
+    value: &'a str,
+}
+
+/// Recognize a frontmatter `title:` line the same way the UI/backend readers do:
+/// split on the first `:`, match the key case-insensitively, and keep the
+/// leading whitespace so replacement can preserve indentation. `value` is the
+/// trimmed raw scalar (still quoted, if it was).
+fn title_line(line: &str) -> Option<TitleLine<'_>> {
+    let leading_len = line.len() - line.trim_start().len();
+    let leading = &line[..leading_len];
+    let rest = &line[leading_len..];
+    let (key, value) = rest.split_once(':')?;
+    if key.trim().eq_ignore_ascii_case("title") {
+        Some(TitleLine {
+            leading,
+            value: value.trim(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Decode a YAML scalar as broadly as the app's title readers: single-quoted
+/// (with `''` unescape), double-quoted (stripped), or bare (trimmed).
+fn decode_title_scalar(value: &str) -> String {
+    let value = value.trim();
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        return value[1..value.len() - 1].replace("''", "'");
+    }
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        return value[1..value.len() - 1].to_string();
+    }
+    value.to_string()
+}
+
+/// True when a title value carries the reserved human-owned marker.
+pub(crate) fn is_user_owned_title(title: &str) -> bool {
+    title.trim_start().starts_with(USER_TITLE_PREFIX)
+}
+
+/// Normalize a human-set title to the `USER: <value>` form, without double
+/// prefixing an already-marked value.
+pub(crate) fn user_owned_title(input: &str) -> String {
+    let trimmed = input.trim();
+    if is_user_owned_title(trimmed) {
+        trimmed.to_string()
+    } else {
+        format!("{} {}", USER_TITLE_PREFIX, trimmed)
+    }
 }
 
 /// Errors emitted by [`perform`]. `Display` impls match the §3 error matrix
 /// of plan #137 verbatim.
 #[derive(Debug, thiserror::Error)]
 pub enum TaskOpError {
+    /// Coordinator `--title` input itself started with the reserved `USER:`
+    /// prefix while the current title was not already user-owned (#738). Invalid
+    /// input: exit 1, no stdout, TASK.md unchanged, no backup.
+    #[error("--title cannot start with reserved USER: prefix")]
+    ReservedUserTitlePrefix,
     #[error("TASK.md is locked by another writer (5s timeout). Try again.")]
     LockTimeout,
     #[error("failed to acquire TASK.md lock at {}: {}. Aborting; TASK.md left unchanged.", .0.display(), .1)]
@@ -213,6 +287,7 @@ pub(crate) fn render(parsed: &ParsedTask) -> String {
 pub(crate) fn apply_edit(parsed: &ParsedTask, op: &TaskOp) -> ParsedTask {
     match op {
         TaskOp::SetTitle(title) => apply_set_title(parsed, title),
+        TaskOp::SetUserTitle(title) => apply_set_title(parsed, &user_owned_title(title)),
         TaskOp::AppendBody(text) => apply_append_body(parsed, text),
         TaskOp::Clean => apply_clean(parsed),
     }
@@ -249,11 +324,13 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
         };
     }
 
-    // Has frontmatter — find existing title-shaped line(s) (NIT-5).
+    // Has frontmatter — find existing title-shaped line(s) (NIT-5). Match the
+    // key case-insensitively (via `title_line`) so `Title:`/`TITLE:` lines are
+    // replaced in place instead of leaving a stranded key + a new duplicate.
     let title_count = parsed
         .frontmatter
         .iter()
-        .filter(|line| line.trim_start().starts_with("title:"))
+        .filter(|line| title_line(line).is_some())
         .count();
     if title_count > 1 {
         log::warn!(
@@ -264,17 +341,15 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
     }
 
     let mut new_fm: Vec<String> = parsed.frontmatter.clone();
-    let title_idx = new_fm
-        .iter()
-        .position(|line| line.trim_start().starts_with("title:"));
+    let title_idx = new_fm.iter().position(|line| title_line(line).is_some());
 
     match title_idx {
         Some(idx) => {
-            // Replace, preserving leading whitespace (so an indented `  title: x`
-            // becomes `  title: 'NewTitle'`).
-            let original = &new_fm[idx];
-            let leading_len = original.len() - original.trim_start().len();
-            let leading = &original[..leading_len];
+            // Replace, preserving the existing leading whitespace (so an indented
+            // `  title: x` becomes `  title: 'NewTitle'`).
+            let leading = title_line(&new_fm[idx])
+                .map(|title| title.leading)
+                .unwrap_or("");
             new_fm[idx] = format!("{}{}", leading, new_title_line);
         }
         None => {
@@ -326,37 +401,16 @@ fn apply_clean(parsed: &ParsedTask) -> ParsedTask {
     }
 }
 
-/// Extract the YAML-decoded value of the first `title:` line in the
-/// frontmatter, for the semantic idempotence short-circuit (MED-3). Returns
-/// `None` when the frontmatter has no title-shaped line.
+/// Extract the decoded value of the first `title:` line in the frontmatter, for
+/// the semantic idempotence short-circuit (MED-3) and the #738 user-lock guard.
+/// Matches the key case-insensitively and decodes single/double-quoted and bare
+/// scalars via [`decode_title_scalar`], mirroring the app's other title readers.
+/// Returns `None` when the frontmatter has no title-shaped line.
 pub(crate) fn title_value_of(parsed: &ParsedTask) -> Option<String> {
     parsed
         .frontmatter
         .iter()
-        .find(|line| line.trim_start().starts_with("title:"))
-        .map(|line| {
-            let after_prefix = line
-                .trim_start()
-                .strip_prefix("title:")
-                .unwrap_or("")
-                .trim();
-            extract_yaml_single_quoted(after_prefix)
-        })
-}
-
-/// Decode a YAML scalar from the canonical single-quoted form `'value with '' escapes'`.
-/// For non-canonical inputs (bare scalar, double-quoted, etc.) returns the raw
-/// trimmed input. Sufficient for "did the user-visible title change?" — the
-/// conservative direction (returning false → write a new backup) is harmless;
-/// the unsafe direction (returning true → skip a real edit) is impossible because
-/// the parsed-after-edit form is always canonical single-quoted.
-fn extract_yaml_single_quoted(s: &str) -> String {
-    let s = s.trim();
-    if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
-        let inner = &s[1..s.len() - 1];
-        return inner.replace("''", "'");
-    }
-    s.to_string()
+        .find_map(|line| title_line(line).map(|title| decode_title_scalar(title.value)))
 }
 
 // ── Lock guard ──────────────────────────────────────────────────────────────
@@ -465,6 +519,30 @@ where
 
     // ── 3-4. Parse + apply edit ───────────────────────────────────────────
     let parsed = parse_task(&existing);
+    let current_title = title_value_of(&parsed);
+    let current_is_user_owned = current_title.as_deref().is_some_and(is_user_owned_title);
+
+    // #738 user-lock: a coordinator SetTitle must never overwrite a human-owned
+    // (`USER:`) title. This is a successful outcome (exit 0): no write, no backup.
+    // Ordered before the reserved-prefix check so a coordinator re-sending the
+    // same `USER: X` is rejected here (not treated as invalid input).
+    if matches!(op, TaskOp::SetTitle(_)) && current_is_user_owned {
+        return Ok(EditOutcome::RejectedUserTitle {
+            content: existing.clone(),
+            title: current_title.clone(),
+        });
+    }
+
+    // #738 reserved-prefix: a coordinator SetTitle whose own input starts with
+    // `USER:` is invalid input (it would forge a human lock) unless an existing
+    // user-owned title already blocked the write above. Hard error, exit 1, no
+    // write, no backup. SetUserTitle/creation are unaffected (human-owned paths).
+    if let TaskOp::SetTitle(title) = &op {
+        if is_user_owned_title(title) {
+            return Err(TaskOpError::ReservedUserTitlePrefix);
+        }
+    }
+
     let new_parsed = apply_edit(&parsed, &op);
 
     // ── 5. Idempotence short-circuit ──────────────────────────────────────
@@ -474,7 +552,9 @@ where
     //   body byte-match the pre-edit shape (covers repeated clean clicks).
     // AppendBody: never NoOp.
     let is_noop = match op {
-        TaskOp::SetTitle(_) => title_value_of(&new_parsed) == title_value_of(&parsed),
+        TaskOp::SetTitle(_) | TaskOp::SetUserTitle(_) => {
+            title_value_of(&new_parsed) == current_title
+        }
         TaskOp::Clean => {
             new_parsed.frontmatter == parsed.frontmatter && new_parsed.body == parsed.body
         }
@@ -1353,5 +1433,165 @@ mod tests {
                 panic!("unexpected final disk content");
             }
         }
+    }
+
+    // ── #738: user-owned (USER:) title ownership ────────────────────────
+
+    fn bak_count(wg: &Path) -> usize {
+        std::fs::read_dir(wg)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".bak.md"))
+            .count()
+    }
+
+    #[test]
+    fn user_owned_title_prefixes_plain_title() {
+        assert_eq!(user_owned_title("Build login"), "USER: Build login");
+    }
+
+    #[test]
+    fn user_owned_title_does_not_double_prefix() {
+        assert_eq!(user_owned_title("USER: Build login"), "USER: Build login");
+    }
+
+    #[test]
+    fn set_title_rejects_when_existing_title_is_user_owned() {
+        let fix = FixtureRoot::new("task-738-reject");
+        let wg = fix.path().join("wg-1");
+        std::fs::create_dir_all(&wg).unwrap();
+        let task = wg.join("TASK.md");
+        std::fs::write(&task, "---\ntitle: 'USER: Keep me'\n---\nbody\n").unwrap();
+        let before = std::fs::read(&task).unwrap();
+        let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+        let r = perform_inner(&wg, TaskOp::SetTitle("Auto".into()), now).unwrap();
+        assert!(matches!(r, EditOutcome::RejectedUserTitle { .. }));
+        assert_eq!(
+            std::fs::read(&task).unwrap(),
+            before,
+            "TASK.md must be byte-unchanged on reject"
+        );
+        assert_eq!(bak_count(&wg), 0, "no backup on reject");
+    }
+
+    #[test]
+    fn set_title_rejects_case_variant_user_owned_titles() {
+        // A UI-visible user-owned title with a case-variant key must still block
+        // the coordinator overwrite (Grinch MUST-FIX #1).
+        for key in ["Title", "TITLE", "tItLe"] {
+            let fix = FixtureRoot::new("task-738-case");
+            let wg = fix.path().join("wg-1");
+            std::fs::create_dir_all(&wg).unwrap();
+            let task = wg.join("TASK.md");
+            std::fs::write(&task, format!("---\n{key}: 'USER: Manual'\n---\n")).unwrap();
+            let before = std::fs::read(&task).unwrap();
+            let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+            let r = perform_inner(&wg, TaskOp::SetTitle("Auto".into()), now).unwrap();
+            assert!(
+                matches!(r, EditOutcome::RejectedUserTitle { .. }),
+                "key {key} must reject"
+            );
+            assert_eq!(std::fs::read(&task).unwrap(), before, "key {key} unchanged");
+            assert_eq!(bak_count(&wg), 0, "key {key} no backup");
+        }
+    }
+
+    #[test]
+    fn set_title_rejects_double_quoted_user_owned_title() {
+        // Double-quoted scalar must decode to the same USER: marker (Grinch #1).
+        let fix = FixtureRoot::new("task-738-dq");
+        let wg = fix.path().join("wg-1");
+        std::fs::create_dir_all(&wg).unwrap();
+        let task = wg.join("TASK.md");
+        std::fs::write(&task, "---\ntitle: \"USER: Manual\"\n---\n").unwrap();
+        let before = std::fs::read(&task).unwrap();
+        let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+        let r = perform_inner(&wg, TaskOp::SetTitle("Auto".into()), now).unwrap();
+        assert!(matches!(r, EditOutcome::RejectedUserTitle { .. }));
+        assert_eq!(std::fs::read(&task).unwrap(), before);
+        assert_eq!(bak_count(&wg), 0);
+    }
+
+    #[test]
+    fn apply_set_title_replaces_case_variant_title_key() {
+        // A coordinator SetTitle over a PLAIN case-variant `Title: Old` (not
+        // user-owned) must replace that line in place, not leave it plus a new
+        // lowercase duplicate (Grinch MUST-FIX #1 second half).
+        let parsed = parse_task("---\nTitle: Old\n---\nbody\n");
+        let p = apply_set_title(&parsed, "Auto");
+        let title_lines = p.frontmatter.iter().filter(|l| title_line(l).is_some()).count();
+        assert_eq!(title_lines, 1, "exactly one title line after replacement");
+        assert_eq!(p.frontmatter, vec!["title: 'Auto'".to_string()]);
+    }
+
+    #[test]
+    fn set_title_rejects_reserved_user_prefix_input() {
+        // Coordinator input that itself starts with USER: is invalid input when
+        // the current title is not already user-owned (Grinch MUST-FIX #2).
+        let fix = FixtureRoot::new("task-738-reserved");
+        let wg = fix.path().join("wg-1");
+        std::fs::create_dir_all(&wg).unwrap();
+        let task = wg.join("TASK.md");
+        std::fs::write(&task, "---\ntitle: 'Auto'\n---\n").unwrap();
+        let before = std::fs::read(&task).unwrap();
+        let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+        let r = perform_inner(&wg, TaskOp::SetTitle("USER: forged".into()), now);
+        assert!(matches!(r, Err(TaskOpError::ReservedUserTitlePrefix)));
+        assert_eq!(std::fs::read(&task).unwrap(), before, "unchanged on invalid input");
+        assert_eq!(bak_count(&wg), 0, "no backup on invalid input");
+    }
+
+    #[test]
+    fn set_title_allowed_after_clean_clears_user_lock() {
+        let fix = FixtureRoot::new("task-738-clean");
+        let wg = fix.path().join("wg-1");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::write(
+            wg.join("TASK.md"),
+            "---\ntitle: 'USER: Keep me'\n---\nbody\n",
+        )
+        .unwrap();
+        let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+        // Clean resets the user-owned lock (writes canonical title 'Clean').
+        perform_inner(&wg, TaskOp::Clean, now).unwrap();
+        // Coordinator SetTitle is now allowed and writes a plain title.
+        let r = perform_inner(&wg, TaskOp::SetTitle("Auto".into()), now).unwrap();
+        assert!(matches!(r, EditOutcome::Wrote { .. }));
+        let parsed = parse_task(&std::fs::read_to_string(wg.join("TASK.md")).unwrap());
+        assert_eq!(title_value_of(&parsed).as_deref(), Some("Auto"));
+    }
+
+    #[test]
+    fn set_user_title_prefixes_plain_title() {
+        let fix = FixtureRoot::new("task-738-suser");
+        let wg = fix.path().join("wg-1");
+        std::fs::create_dir_all(&wg).unwrap();
+        let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+        perform_inner(&wg, TaskOp::SetUserTitle("Manual".into()), now).unwrap();
+        let parsed = parse_task(&std::fs::read_to_string(wg.join("TASK.md")).unwrap());
+        assert_eq!(title_value_of(&parsed).as_deref(), Some("USER: Manual"));
+    }
+
+    #[test]
+    fn set_user_title_overwrites_existing_user_title() {
+        let fix = FixtureRoot::new("task-738-suser2");
+        let wg = fix.path().join("wg-1");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::write(wg.join("TASK.md"), "---\ntitle: 'USER: Old'\n---\n").unwrap();
+        let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+        perform_inner(&wg, TaskOp::SetUserTitle("New".into()), now).unwrap();
+        let parsed = parse_task(&std::fs::read_to_string(wg.join("TASK.md")).unwrap());
+        assert_eq!(title_value_of(&parsed).as_deref(), Some("USER: New"));
+    }
+
+    #[test]
+    fn set_title_noop_on_plain_existing_title_still_updates_contract() {
+        let fix = FixtureRoot::new("task-738-noop");
+        let wg = fix.path().join("wg-1");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::write(wg.join("TASK.md"), "---\ntitle: 'Auto'\n---\nbody\n").unwrap();
+        let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+        let r = perform_inner(&wg, TaskOp::SetTitle("Auto".into()), now).unwrap();
+        assert!(matches!(r, EditOutcome::NoOp { .. }));
     }
 }
