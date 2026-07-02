@@ -13,6 +13,7 @@ import {
 import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
 import { launchErrorMessage } from "../../shared/launch-errors";
+import { focusOnMount } from "../../shared/focus-on-mount";
 import { projectStore } from "../stores/project";
 import {
   effectiveAutoClosedAt,
@@ -860,15 +861,7 @@ const ProjectPanel: Component = () => {
         const filterActive = () => filterState().regex !== null;
         const filterError = () => filterState().error;
         const focusFilterInput = () => {
-          const focus = () => {
-            filterInputEl?.focus();
-            filterInputEl?.select();
-          };
-          if (typeof window.requestAnimationFrame === "function") {
-            window.requestAnimationFrame(focus);
-            return;
-          }
-          window.setTimeout(focus, 0);
+          if (filterInputEl) focusOnMount(filterInputEl, { select: true });
         };
         const toggleFilter = () => {
           // Magnifier acts as a toggle. Closing also drops any in-flight
@@ -1413,8 +1406,13 @@ const ProjectPanel: Component = () => {
                   }
                 >
                   <div class="session-context-inline-create">
+                    {/* #746 — deliberately unconditional: a discovery-driven
+                        re-render disposes this subtree (focus falls to <body>
+                        regardless), so re-focusing the fresh input preserves
+                        typing continuity; the value lives in groupCreateName. */}
                     <input
                       class="session-context-inline-input"
+                      ref={(el) => focusOnMount(el)}
                       value={groupCreateName()}
                       onInput={(e) => setGroupCreateName(e.currentTarget.value)}
                       onKeyDown={(e) => {

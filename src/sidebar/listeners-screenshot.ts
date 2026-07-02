@@ -6,10 +6,12 @@ import {
 } from "../shared/ipc";
 import { toastStore } from "../shared/stores/toasts";
 
+export const SCREENSHOT_TOAST_DURATION_MS = 30_000;
+
 /**
  * #714 Wire the sidebar's screenshot-capture notifications:
- *  - `screenshot_capture_saved` → a sticky success toast carrying the saved PNG
- *    path (which is also on the clipboard).
+ *  - `screenshot_capture_saved` → a success toast carrying the saved PNG path
+ *    (which is also on the clipboard), auto-dismissing after 30s.
  *  - `screenshot_capture_failed` → a sticky error toast (the global hotkey often
  *    fires while another app is focused, so failures must be un-missable).
  *  - a one-shot startup check: if the hotkey is configured but the OS refused to
@@ -26,7 +28,7 @@ export async function wireScreenshotListeners(): Promise<UnlistenFn[]> {
   unlisteners.push(
     await onScreenshotCaptureSaved((result) => {
       toastStore.success(`Screenshot saved. Path copied: ${result.path}`, {
-        durationMs: null,
+        durationMs: SCREENSHOT_TOAST_DURATION_MS,
       });
     })
   );

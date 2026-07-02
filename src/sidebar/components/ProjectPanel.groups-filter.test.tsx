@@ -445,6 +445,34 @@ describe("ProjectPanel workgroup groups", () => {
     }
   });
 
+  it("focuses the inline create-group input when it appears (#746)", async () => {
+    const fake = new FakeTransport();
+    setupProjectTransport(fake);
+    fake.resolve("get_project_groups", groupsConfig([]));
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await workgroupGroupsStore.ensureLoaded(projectPath);
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+
+      await openCoordinatorMenu(rendered.root);
+      await openGroupFlyout();
+      click(target("replica.wg-1-dev-team.groups.create"));
+
+      // Resolve the input inside waitFor: a discovery-driven row re-render can
+      // re-create the flyout subtree once after the click, and the fresh
+      // input's ref re-focuses it — assert the live element ends up focused.
+      await waitFor(() =>
+        expect(document.activeElement).toBe(target<HTMLInputElement>("replica.groups.create.input"))
+      );
+      // The flyout stays open and expanded around the focused input.
+      expect(target("replica.wg-1-dev-team.groups.flyout")).not.toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("keeps the context menu open and shows an error when inline group creation fails", async () => {
     const fake = new FakeTransport();
     setupProjectTransport(fake);
