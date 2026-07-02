@@ -238,7 +238,7 @@ pub async fn task_set_title(
     }
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
     let outcome =
-        task_ops::perform(&wg_root, TaskOp::SetTitle(title)).map_err(|e| e.to_string())?;
+        task_ops::perform(&wg_root, TaskOp::SetUserTitle(title)).map_err(|e| e.to_string())?;
     log::info!(
         "[task] set_title for session {} -> {:?}",
         session_id,
@@ -248,6 +248,9 @@ pub async fn task_set_title(
     let (content, task_title) = match &outcome {
         task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
         task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
+        task_ops::EditOutcome::RejectedUserTitle { content, title } => {
+            (content.clone(), title.clone())
+        }
     };
     let trimmed = content.trim();
     let task = if trimmed.is_empty() {
@@ -279,6 +282,9 @@ pub async fn task_clean(
     let (content, task_title) = match &outcome {
         task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
         task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
+        task_ops::EditOutcome::RejectedUserTitle { content, title } => {
+            (content.clone(), title.clone())
+        }
     };
     let trimmed = content.trim();
     let task = if trimmed.is_empty() {
@@ -316,6 +322,9 @@ pub async fn task_clean_at(
     let (content, task_title) = match &outcome {
         task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
         task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
+        task_ops::EditOutcome::RejectedUserTitle { content, title } => {
+            (content.clone(), title.clone())
+        }
     };
     let trimmed = content.trim();
     let task = if trimmed.is_empty() {

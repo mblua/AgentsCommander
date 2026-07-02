@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::cli::task_ops;
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
 use crate::config::replica_identity::{
     expected_wg_replica_identity, normalize_wg_replica_context_entries,
@@ -324,7 +325,11 @@ pub(crate) fn parse_task_title(content: &str) -> Option<String> {
 /// auto-title prompt. Store the title in the same frontmatter shape used by
 /// the title editor.
 fn build_task_content(task_title: &str) -> String {
-    let escaped = task_title.trim().replace('\'', "''");
+    // #738: the workgroup-creation title is a human decision, so store it as
+    // user-owned (`USER:`). This locks it against coordinator auto-retitle until
+    // a Clean resets the task. `user_owned_title` trims and avoids double-prefix.
+    let title = task_ops::user_owned_title(task_title);
+    let escaped = title.replace('\'', "''");
     format!("---\ntitle: '{}'\n---\n", escaped)
 }
 
@@ -3374,6 +3379,33 @@ mod tests {
         assert!(
             !is_rename_blocked_by_handle(&e),
             "non-Windows must always return false"
+        );
+    }
+
+    // ── #738: build_task_content marks creation titles as user-owned ──
+
+    #[test]
+    fn build_task_content_prefixes_user_title() {
+        assert_eq!(
+            build_task_content("Build login"),
+            "---\ntitle: 'USER: Build login'\n---\n"
+        );
+    }
+
+    #[test]
+    fn build_task_content_does_not_double_prefix() {
+        assert_eq!(
+            build_task_content("USER: Existing"),
+            "---\ntitle: 'USER: Existing'\n---\n"
+        );
+    }
+
+    #[test]
+    fn build_task_content_escapes_quotes_after_prefix() {
+        // The single quote is YAML-escaped (doubled) after the USER: prefix.
+        assert_eq!(
+            build_task_content("Ana's task"),
+            "---\ntitle: 'USER: Ana''s task'\n---\n"
         );
     }
 
