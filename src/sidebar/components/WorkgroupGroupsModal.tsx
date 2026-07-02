@@ -108,7 +108,7 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
     <div class="modal-overlay" data-ac-testid="workgroupGroups.modal">
       <div class="agent-modal workgroup-groups-modal">
         <div class="agent-modal-header">
-          <span class="agent-modal-title">Editar grupos</span>
+          <span class="agent-modal-title">Edit groups</span>
           <button class="modal-close" onClick={props.onClose} aria-label="Close groups editor">
             &times;
           </button>
@@ -125,7 +125,7 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
                 disabled={draft().showAll && !draft().showUngrouped}
                 onChange={(e) => setToggle("showAll", e.currentTarget.checked)}
               />
-              <span>Mostrar Todos</span>
+              <span>Show All</span>
             </label>
             <label class="settings-checkbox-field">
               <input
@@ -134,7 +134,7 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
                 disabled={draft().showUngrouped && !draft().showAll}
                 onChange={(e) => setToggle("showUngrouped", e.currentTarget.checked)}
               />
-              <span>Mostrar Sin Grupo</span>
+              <span>Show Ungrouped</span>
             </label>
           </div>
 

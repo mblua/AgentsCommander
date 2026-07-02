@@ -164,7 +164,7 @@ describe("workgroup group validation helpers", () => {
         { validateRegexSyntax: true }
       )
     ).toEqual([
-      "At least one of Todos or Sin Grupo must be visible.",
+      "At least one of All or Ungrouped must be visible.",
       "Duplicate group name.",
       "Group 2: regex is invalid.",
     ]);

@@ -97,6 +97,13 @@ async function openCoordinatorMenu(root: ParentNode): Promise<void> {
   await waitFor(() => expect(document.querySelector(".session-context-menu")).not.toBeNull());
 }
 
+async function openGroupFlyout(): Promise<void> {
+  click(target("replica.wg-1-dev-team.groups.trigger"));
+  await waitFor(() =>
+    expect(target("replica.wg-1-dev-team.groups.flyout")).not.toBeNull()
+  );
+}
+
 describe("ProjectPanel workgroup groups", () => {
   let cleanupDom: (() => void) | null = null;
 
@@ -172,6 +179,9 @@ describe("ProjectPanel workgroup groups", () => {
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
 
       await openCoordinatorMenu(rendered.root);
+      expect(document.querySelector(".session-context-menu")?.textContent).toContain("Add to Group");
+      expect(document.querySelector(".session-context-menu")?.textContent).not.toContain("Create new group");
+      await openGroupFlyout();
       click(target(`replica.wg-1-dev-team.groups.frontend`));
 
       await waitFor(() =>
@@ -202,6 +212,9 @@ describe("ProjectPanel workgroup groups", () => {
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
 
       await openCoordinatorMenu(rendered.root);
+      await openGroupFlyout();
+      expect(target("replica.wg-1-dev-team.groups.flyout").textContent).toContain("No groups yet");
+      expect(target("replica.wg-1-dev-team.groups.flyout").textContent).toContain("Create new group");
       click(target("replica.wg-1-dev-team.groups.create"));
       input(target<HTMLInputElement>("replica.groups.create.input"), "Frontend");
       click(target("replica.groups.create.save"));
@@ -211,6 +224,66 @@ describe("ProjectPanel workgroup groups", () => {
         expect(target("replica.groups.error").textContent).toContain("groups.toml changed on disk");
       });
     } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("clamps the Add to Group flyout inside the viewport near the right and bottom edges", async () => {
+    const fake = new FakeTransport();
+    setupProjectTransport(fake);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    const originalWidth = window.innerWidth;
+    const originalHeight = window.innerHeight;
+    try {
+      await workgroupGroupsStore.save(projectPath, groupsConfig([]));
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+
+      await openCoordinatorMenu(rendered.root);
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 220 });
+      const trigger = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.trigger");
+      trigger.getBoundingClientRect = () =>
+        ({
+          left: 295,
+          right: 315,
+          top: 185,
+          bottom: 205,
+          width: 20,
+          height: 20,
+          x: 295,
+          y: 185,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      click(trigger);
+      const flyout = target<HTMLDivElement>("replica.wg-1-dev-team.groups.flyout");
+      flyout.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          right: 220,
+          top: 0,
+          bottom: 180,
+          width: 220,
+          height: 180,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect;
+      click(trigger);
+
+      await waitFor(() => {
+        const left = Number.parseFloat(flyout.style.left);
+        const top = Number.parseFloat(flyout.style.top);
+        expect(left).toBeGreaterThanOrEqual(8);
+        expect(left + 220).toBeLessThanOrEqual(312);
+        expect(top).toBeGreaterThanOrEqual(8);
+        expect(top + 180).toBeLessThanOrEqual(212);
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: originalHeight });
       rendered.cleanup();
     }
   });

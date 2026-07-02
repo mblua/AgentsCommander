@@ -143,7 +143,7 @@ export function validateGroupsConfig(
 ): string[] {
   const errors: string[] = [];
   if (!config.showAll && !config.showUngrouped) {
-    errors.push("At least one of Todos or Sin Grupo must be visible.");
+    errors.push("At least one of All or Ungrouped must be visible.");
   }
   if (config.groups.length > MAX_WORKGROUP_GROUPS) {
     errors.push(`At most ${MAX_WORKGROUP_GROUPS} groups are allowed.`);

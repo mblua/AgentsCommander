@@ -2474,11 +2474,6 @@ html.light-theme .root-agent-avatar {
   background: rgba(0, 212, 255, 0.08);
 }
 
-.session-context-submenu {
-  padding: 2px 0;
-}
-
-.session-context-submenu-title,
 .session-context-note,
 .session-context-error {
   padding: 5px var(--spacing-md);
@@ -2486,14 +2481,33 @@ html.light-theme .root-agent-avatar {
   font-size: 10px;
 }
 
-.session-context-submenu-title {
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
 .session-context-error {
   color: var(--danger, #ff6b6b);
   white-space: normal;
+}
+
+.session-context-submenu-trigger {
+  justify-content: space-between;
+}
+
+.session-context-submenu-arrow {
+  margin-left: auto;
+  color: var(--sidebar-fg-dim);
+  font-size: 13px;
+}
+
+.session-context-flyout {
+  position: fixed;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: var(--spacing-xs) 0;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  background: var(--sidebar-surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  z-index: 10000;
 }
 
 .session-context-option-check {
@@ -2782,11 +2796,12 @@ html.light-theme .settings-hint-warning {
   background: transparent;
   color: var(--sidebar-fg-dim);
   font-family: var(--font-ui);
-  font-size: 10px;
+  font-size: 8.5px;
   line-height: 1.15;
   text-align: center;
+  white-space: pre-line;
   cursor: pointer;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
