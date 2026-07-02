@@ -21,6 +21,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
+import { replicaVolatileStore } from "../stores/replica-volatile";
 import { sessionsStore } from "../stores/sessions";
 import { automationIdPart } from "./replica-repo-badges";
 
@@ -113,7 +114,7 @@ function applyResult(): ApplyCodingAgentProfileSelectionResult {
   };
 }
 
-function discoveryResult() {
+function discoveryResult(taskTitle = "Restart prompt") {
   return discovery({
     teams: [{ name: "dev-team", agents: [replicaName], coordinator: replicaName }],
     workgroups: [
@@ -121,7 +122,7 @@ function discoveryResult() {
         name: workgroupName,
         path: workgroupPath,
         task: null,
-        taskTitle: "Restart prompt",
+        taskTitle,
         teamName: "dev-team",
         agents: [
           {
@@ -232,17 +233,20 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
     try {
       await driveToRestartPrompt(rendered.root);
 
-      // A discovery poll re-discovers the project and replaces its object
-      // reference (projectStore.reloadProject), re-creating the projects <For>
-      // row. Before the fix this disposed the per-row signal and the modal
-      // vanished; hoisted to the stable root, it must survive.
+      // A discovery poll re-discovers the project WITH changed data and
+      // replaces its object reference (projectStore.reloadProject), re-creating
+      // the projects <For> row. (#748 made an identical snapshot a no-op, so
+      // the poll must carry a real change to exercise re-creation.) Before the
+      // fix this disposed the per-row signal and the modal vanished; hoisted to
+      // the stable root, it must survive.
+      fake.resolve("discover_project", discoveryResult("Restart prompt v2"));
       await projectStore.reloadProject(projectPath);
       await waitFor(() => expect(fake.callsFor("discover_project").length).toBeGreaterThanOrEqual(2));
       expect(q("restartPrompt.modal")).toBeTruthy();
 
-      // The same resilience must hold for a replica-branch update, which rebuilds
-      // every project object in the store.
-      projectStore.updateReplicaBranch(replicaPath, "feature/x");
+      // The same resilience must hold for a replica-branch event, which now
+      // lands in the volatile store (#748) without touching row identity.
+      replicaVolatileStore.setRepoBranch(replicaPath, "feature/x");
       expect(q("restartPrompt.modal")).toBeTruthy();
 
       // Later dismisses without restarting the live session.

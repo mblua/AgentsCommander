@@ -15,6 +15,13 @@ import { stripFrontmatter } from "../../shared/markdown";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
 import { projectStore } from "../stores/project";
+import {
+  effectiveAutoClosedAt,
+  effectiveLastUserMessageAt,
+  effectiveManuallyClosedAt,
+  effectiveRepoBranch,
+  replicaVolatileStore,
+} from "../stores/replica-volatile";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
@@ -206,12 +213,24 @@ function workgroupCollapseId(wg: AcWorkgroup, rowContext: string): string {
  */
 export const RESTART_TIMEOUT_MS = 30_000;
 
+/** #748 — resolve the repo badges' branch through the volatile live layer so a
+ *  branch event updates badge text without touching row identity. */
+function configuredReplicaRepoBadgesLive(
+  replica: AcAgentReplica,
+  workgroup: Pick<AcWorkgroup, "repoPath">
+): SessionRepo[] {
+  return configuredReplicaRepoBadges(
+    { repoPaths: replica.repoPaths, repoBranch: effectiveRepoBranch(replica) },
+    workgroup
+  );
+}
+
 function replicaRepoMenuEntries(wg: AcWorkgroup, replica: AcAgentReplica): SessionRepo[] {
   if (!replica.isCoordinator) return [];
   const session = replicaSession(wg, replica);
   const repos = session && session.gitRepos.length > 0
     ? session.gitRepos
-    : configuredReplicaRepoBadges(replica, wg);
+    : configuredReplicaRepoBadgesLive(replica, wg);
   return repos.filter(hasValidRepoSourcePath);
 }
 
@@ -327,6 +346,13 @@ const ProjectPanel: Component = () => {
   // updates are wired in sidebar/App.tsx (it owns the listener for the
   // canonical `workgroup_task_updated` event); ProjectPanel reads the
   // resulting state through projectStore.
+  //
+  // #748 — these four events write to replicaVolatileStore, NOT projectStore.
+  // The old in-place patches rebuilt every project/workgroup reference, and the
+  // reference-keyed <For>s below then re-created the whole panel DOM per event
+  // — losing any click whose press straddled the swap. The volatile store is
+  // fine-grained (keyed by normalized replica path), so only the badge/pill
+  // reading the changed field re-runs; row identity is stable.
   let unlistenBranch: (() => void) | null = null;
   let unlistenClock: (() => void) | null = null;
   let unlistenAutoClose: (() => void) | null = null;
@@ -337,19 +363,19 @@ const ProjectPanel: Component = () => {
   onCleanup(registerCoordinatorCloseModalHost());
   onMount(async () => {
     unlistenBranch = await onDiscoveryBranchUpdated((data) => {
-      projectStore.updateReplicaBranch(data.replicaPath, data.branch);
+      replicaVolatileStore.setRepoBranch(data.replicaPath, data.branch);
     });
-    // #552 coordinator idle badge + auto-closed pill: patch the replica in place
-    // (mirrors the branch watcher). Discovery reload self-heals on any path miss.
+    // #552 coordinator idle badge + auto-closed pill. Discovery reload
+    // supersedes these overrides on any path miss (clearForPaths).
     unlistenClock = await onCoordinatorClockUpdated((data) => {
-      projectStore.updateCoordinatorClock(data.replicaPath, data.lastUserMessageAt);
+      replicaVolatileStore.setLastUserMessageAt(data.replicaPath, data.lastUserMessageAt);
     });
     unlistenAutoClose = await onCoordinatorAutoCloseChanged((data) => {
-      projectStore.updateCoordinatorAutoClosed(data.replicaPath, data.autoClosedAt);
+      replicaVolatileStore.setAutoClosedAt(data.replicaPath, data.autoClosedAt);
     });
-    // #588 manually-closed pill: patch in place, same as the auto-close marker.
+    // #588 manually-closed pill: same live layer as the auto-close marker.
     unlistenManualClose = await onCoordinatorManualCloseChanged((data) => {
-      projectStore.updateCoordinatorManuallyClosed(data.replicaPath, data.manuallyClosedAt);
+      replicaVolatileStore.setManuallyClosedAt(data.replicaPath, data.manuallyClosedAt);
     });
   });
   onCleanup(() => {
@@ -591,8 +617,12 @@ const ProjectPanel: Component = () => {
     // presence is the discriminator "reopen of an already-run replica" vs
     // "genuinely fresh first launch". Carry a resume intent so the eventual
     // create injects --continue (Claude still disk-gates it via claude_project_exists).
+    // #748: read through the volatile layer — a close event that has not been
+    // through a discovery reload yet lives only there.
     const gitRepos = buildGitRepos(replica);
-    const resumeOnLaunch = !!(replica.autoClosedAt || replica.manuallyClosedAt);
+    const resumeOnLaunch = !!(
+      effectiveAutoClosedAt(replica) || effectiveManuallyClosedAt(replica)
+    );
 
     setPendingLaunch({
       path: replica.path,
@@ -959,7 +989,7 @@ const ProjectPanel: Component = () => {
           const session = replicaSession(wg, replica);
           const repos = session && session.gitRepos.length > 0
             ? session.gitRepos
-            : configuredReplicaRepoBadges(replica, wg);
+            : configuredReplicaRepoBadgesLive(replica, wg);
           return joinSearchText(
             taskTitle,
             stripFrontmatter(taskTitle ?? ""),
@@ -1526,12 +1556,28 @@ const ProjectPanel: Component = () => {
         const teamsCollapsedKey = projectPanelCollapseKey(proj.path, "teams");
         const hasLoopTargets = () =>
           proj.workgroups.some((wg) => wg.agents.some((agent) => agent.isCoordinator));
+        // #748 — pair objects are the <For> keys of the coordinator list, so
+        // they must keep identity across memo re-runs (with coordSortByActivity
+        // on, every session busy→idle markActivity re-runs this memo; fresh
+        // pairs would dispose and re-create every coordinator row — the exact
+        // lost-click mechanism this fix removes). Reuse the cached pair while
+        // its replica+wg objects are unchanged; <For> then MOVES rows on
+        // reorder instead of re-creating them.
+        const coordinatorPairCache = new Map<string, { replica: AcAgentReplica; wg: AcWorkgroup }>();
         const naturalCoordinatorItems = createMemo(() => {
           const result: { replica: AcAgentReplica; wg: AcWorkgroup }[] = [];
           for (const wg of groupVisibleWorkgroups()) {
             for (const replica of wg.agents) {
               if (replica.isCoordinator) {
-                result.push({ replica, wg });
+                const key = coordinatorItemKey({ replica, wg });
+                const cached = coordinatorPairCache.get(key);
+                if (cached && cached.replica === replica && cached.wg === wg) {
+                  result.push(cached);
+                } else {
+                  const pair = { replica, wg };
+                  coordinatorPairCache.set(key, pair);
+                  result.push(pair);
+                }
               }
             }
           }
@@ -1801,9 +1847,12 @@ const ProjectPanel: Component = () => {
           const isCoord = () => replica.isCoordinator;
           const session = () => replicaSession(wg, replica);
           const communication = createMemo(() => session()?.communication ?? null);
+          // #747: no liveness gate. A dormant restored coordinator keeps its
+          // persisted raised hand; every real-exit path clears communication
+          // and emits session_communication_changed, so exited-with-hand can
+          // only be the restored state.
           const showRaiseHand = createMemo(() =>
             isCoord() &&
-            isSessionLive(session()) &&
             !!taskTitle &&
             communication()?.kind === "raiseHand" &&
             communication()?.visible === true
@@ -1812,7 +1861,7 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s && s.gitRepos.length > 0
               ? s.gitRepos
-              : configuredReplicaRepoBadges(replica, wg);
+              : configuredReplicaRepoBadgesLive(replica, wg);
           });
           // #552/#580 coordinator idle badge. The value is now the unified
           // team-idle anchor (#580): minutes since the whole team was last truly
@@ -1822,36 +1871,39 @@ const ProjectPanel: Component = () => {
           // the FE derivation is unchanged. A createMemo (NOT an IIFE — the IIFE
           // froze; confirmed blocker) so it subscribes to clockStore.nowMs (the
           // live 30s tick) and settingsStore.current (threshold edits apply
-          // instantly). replica.lastUserMessageAt is a plain prop read; a reset
-          // event recreates this row via the keyed <For>, re-running the memo.
+          // instantly). #748: the anchor reads through the volatile live layer
+          // (effectiveLastUserMessageAt), which the memo subscribes to — a clock
+          // event updates this badge in place instead of re-creating the row.
           const idleBadge = createMemo(() =>
             isCoord()
               ? coordinatorIdleBadge(
-                  replica.lastUserMessageAt,
+                  effectiveLastUserMessageAt(replica),
                   clockStore.nowMs,
                   settingsStore.current
                 )
               : null
           );
           // #552 auto-closed pill. Driven by the persisted autoClosedAt marker,
-          // patched in place. #580: MUTUALLY EXCLUSIVE with the minutes badge —
-          // when autoClosed() is true the counter is gated off (XOR below), so a
-          // closed team shows ONLY the gray AUTO-CLOSED pill; clearing the marker
-          // on reopen makes autoClosed() false and the counter returns.
+          // read through the volatile live layer (#748). #580: MUTUALLY
+          // EXCLUSIVE with the minutes badge — when autoClosed() is true the
+          // counter is gated off (XOR below), so a closed team shows ONLY the
+          // gray AUTO-CLOSED pill; clearing the marker on reopen makes
+          // autoClosed() false and the counter returns.
           // #589: ALSO gate on liveness. On raise the dot turns green from the
-          // sessionsStore (live session), but a discovery reload can clobber the
-          // event-cleared autoClosedAt back to its stale value (reloadProject's
-          // wholesale `workgroups` replace, project.ts:311-323), leaving the pill
-          // stuck while the dot is green. An auto-closed team is DESTROYED, so it is
-          // never live — there is no legitimate "live + auto-closed" state. Gating
-          // on `!live` hides the pill the moment the session goes live, reusing the
-          // exact signal the status dot reads, so it self-heals regardless of the
-          // stale marker; the XOR'd idle counter returns automatically. Inlined
-          // isSessionLive(session()) (=== isLive() below) because createMemo runs
-          // EAGERLY and `isLive` is declared further down — calling it here would
-          // hit its temporal dead zone for a coordinator already auto-closed at mount.
+          // sessionsStore (live session), but a discovery reload can still
+          // surface a stale marker (reloadProject supersedes the event-cleared
+          // override with a snapshot that may predate the clear), leaving the
+          // pill stuck while the dot is green. An auto-closed team is DESTROYED,
+          // so it is never live — there is no legitimate "live + auto-closed"
+          // state. Gating on `!live` hides the pill the moment the session goes
+          // live, reusing the exact signal the status dot reads, so it
+          // self-heals regardless of the stale marker; the XOR'd idle counter
+          // returns automatically. Inlined isSessionLive(session()) (===
+          // isLive() below) because createMemo runs EAGERLY and `isLive` is
+          // declared further down — calling it here would hit its temporal dead
+          // zone for a coordinator already auto-closed at mount.
           const autoClosed = createMemo(
-            () => isCoord() && !!replica.autoClosedAt && !isSessionLive(session())
+            () => isCoord() && !!effectiveAutoClosedAt(replica) && !isSessionLive(session())
           );
           // #588 manually-closed pill. Mirrors autoClosed, but ALSO gated on
           // !isSessionLive(session()): a dormant coordinator has no live session
@@ -1861,7 +1913,7 @@ const ProjectPanel: Component = () => {
           // isSessionLive(session()), NOT isLive() — isLive is declared later and
           // this memo is eager (TDZ).
           const manuallyClosed = createMemo(
-            () => isCoord() && !!replica.manuallyClosedAt && !isSessionLive(session())
+            () => isCoord() && !!effectiveManuallyClosedAt(replica) && !isSessionLive(session())
           );
           // #580 idle-badge tooltip. The auto-close clause is appended ONLY when
           // the setting is enabled: Decision 3 keeps the badge (and its red >=60

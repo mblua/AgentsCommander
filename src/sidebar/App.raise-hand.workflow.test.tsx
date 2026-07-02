@@ -147,4 +147,78 @@ describe("SidebarApp raise-hand communication workflow (#676)", () => {
       rendered.cleanup();
     }
   });
+
+  it("renders a hydrated raise-hand slot for a dormant (exited) restored coordinator (#747)", async () => {
+    const fake = new FakeTransport();
+    setupRaiseHandTransport(fake, [
+      coordSession({
+        status: { exited: 0 },
+        communication: {
+          kind: "raiseHand",
+          visible: true,
+          updatedAt,
+        },
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      await waitFor(() => expect(rendered.root.querySelector(slotSelector)).not.toBeNull());
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("carries the raise-hand slot across the reopen event sequence (#747)", async () => {
+    const newSessionId = "coord-session-reopened";
+    const fake = new FakeTransport();
+    setupRaiseHandTransport(fake, [
+      coordSession({
+        status: { exited: 0 },
+        communication: {
+          kind: "raiseHand",
+          visible: true,
+          updatedAt,
+        },
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+    try {
+      // Dormant restored coordinator shows the hand before the reopen.
+      await waitFor(() => expect(rendered.root.querySelector(slotSelector)).not.toBeNull());
+
+      // Reopen destroys the dormant record, recreates it (session_created
+      // carries communication: null), then the carry lands as a follow-up
+      // session_communication_changed (#747 change 4c). The order is
+      // load-bearing: emitted before session_created, the communication
+      // event would hit a store without the new id and setCommunication
+      // would silently no-op, losing the hand.
+      fake.emitFromBackend("session_destroyed", { id: sessionId });
+      await waitFor(() => expect(rendered.root.querySelector(slotSelector)).toBeNull());
+
+      fake.emitFromBackend(
+        "session_created",
+        coordSession({ id: newSessionId, communication: null })
+      );
+      await waitFor(() => {
+        expect(sessionsStore.sessions.find((s) => s.id === newSessionId)).toBeTruthy();
+        expect(rendered.root.querySelector(slotSelector)).toBeNull();
+      });
+
+      fake.emitFromBackend("session_communication_changed", {
+        sessionId: newSessionId,
+        communication: {
+          kind: "raiseHand",
+          visible: true,
+          updatedAt,
+        },
+      });
+
+      await waitFor(() => expect(rendered.root.querySelector(slotSelector)).not.toBeNull());
+      expect(sessionsStore.sessions.find((s) => s.id === sessionId)).toBeUndefined();
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

@@ -16,7 +16,9 @@ use crate::resource_monitor::{
 };
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
-use crate::session::session::{SessionInfo, SessionRepo, SessionStatus};
+use crate::session::session::{
+    SessionCommunication, SessionCommunicationKind, SessionInfo, SessionRepo, SessionStatus,
+};
 use crate::telegram::manager::TelegramBridgeState;
 use crate::DetachedSessionsState;
 
@@ -2065,6 +2067,31 @@ fn restart_skip_auto_resume_with_intent(stored_start_fresh: bool, requested: Opt
     stored_start_fresh || effective_restart_skip_auto_resume(requested)
 }
 
+/// (#747) Decide whether a raised hand carries across the restart
+/// destroy+create boundary. Carry ONLY a visible `RaiseHand` and ONLY when the
+/// conversation resumes (`restart_start_fresh == false`, i.e. the Branch-A
+/// reopen of a dormant session). A fresh restart starts a new conversation;
+/// the raise belonged to the old one and is dropped, consistent with
+/// "destroyed sessions leave no stale raised-hand state" (#747 AC 4).
+///
+/// Seam map: the explicit "Restart Session" command and the bulk
+/// profile-assignment restart (commands/config.rs:627-637) pass fresh and drop
+/// (user-initiated resets); the sidebar dormant reopen passes `Some(false)`
+/// and carries; the startup wake arm reuses this helper with the persisted
+/// intent (#747 plan change 3); the agent-initiated self-clear-and-handoff
+/// restart carries via its own capture/re-apply (#747 plan change 10) because
+/// it is not user input. `pub(crate)` so lib.rs's wake arm shares the exact
+/// same decision.
+pub(crate) fn carry_communication_for_restart(
+    stored: Option<SessionCommunication>,
+    restart_start_fresh: bool,
+) -> Option<SessionCommunication> {
+    if restart_start_fresh {
+        return None;
+    }
+    stored.filter(|c| c.kind == SessionCommunicationKind::RaiseHand && c.visible)
+}
+
 /// (#599) Resolves the effective `skip_auto_resume` for the `create_session`
 /// command. Defaults to `true` (fresh conversation) so every existing
 /// create-in-place / new-agent / open-agent / CLI / web call site keeps its
@@ -2185,6 +2212,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         telegram_bot_id,
         stored_requested_profile,
         stored_start_fresh,
+        stored_communication,
     ) = {
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
@@ -2201,6 +2229,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
             session.telegram_bot_id.clone(),
             session.requested_profile.clone(),
             session.start_fresh_on_restore, // (#630/#631) honor an unconsumed durable fresh intent
+            session.communication.clone(),  // (#747) candidate raised-hand carry across the reopen
         )
     };
 
@@ -2299,6 +2328,29 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         let mgr = session_mgr.read().await;
         mgr.set_start_fresh_on_restore(new_uuid, restart_start_fresh)
             .await;
+    }
+
+    // (#747) Carry a visible raised hand across the destroy+create reopen when
+    // the conversation resumes (Branch-A wake of a dormant session). Explicit
+    // fresh restarts drop it. Emitted so the sidebar syncs (the session_created
+    // from create_session_inner carried communication: None). The
+    // persist_current_state in step 7 below writes it durably.
+    if let Some(communication) =
+        carry_communication_for_restart(stored_communication, restart_start_fresh)
+    {
+        let mgr = session_mgr.read().await;
+        if mgr
+            .restore_communication(new_uuid, communication.clone())
+            .await
+        {
+            let _ = app.emit(
+                "session_communication_changed",
+                serde_json::json!({
+                    "sessionId": new_uuid.to_string(),
+                    "communication": communication,
+                }),
+            );
+        }
     }
 
     if activate_after {
@@ -3767,6 +3819,46 @@ mod tests {
     fn restart_intent_stored_fresh_with_restart_button_is_fresh() {
         // Stored fresh AND an explicit restart => still fresh (no regression).
         assert!(super::restart_skip_auto_resume_with_intent(true, None));
+    }
+
+    // ── (#747) carry_communication_for_restart: shared decision for the
+    //    Branch-A reopen (restart_session_inner_with_activation) AND the
+    //    startup wake arm (lib.rs restore loop), which reuses this helper with
+    //    the persisted intent. This matrix pins the fresh gate for BOTH. ──
+
+    #[test]
+    fn carry_communication_for_restart_matrix() {
+        let visible_hand = || {
+            Some(crate::session::session::SessionCommunication {
+                kind: crate::session::session::SessionCommunicationKind::RaiseHand,
+                visible: true,
+                updated_at: "2026-06-30T11:00:00+00:00".to_string(),
+            })
+        };
+        let hidden_hand = || {
+            Some(crate::session::session::SessionCommunication {
+                kind: crate::session::session::SessionCommunicationKind::RaiseHand,
+                visible: false,
+                updated_at: "2026-06-30T11:00:00+00:00".to_string(),
+            })
+        };
+
+        // (visible raise, fresh=false): the reopen resumes the conversation,
+        // so the pending user-attention marker carries.
+        let carried = super::carry_communication_for_restart(visible_hand(), false)
+            .expect("visible hand must carry on a resuming reopen");
+        assert!(carried.visible);
+        assert_eq!(carried.updated_at, "2026-06-30T11:00:00+00:00");
+
+        // (visible raise, fresh=true): a fresh restart abandons the old
+        // conversation; the raise belonged to it and drops.
+        assert!(super::carry_communication_for_restart(visible_hand(), true).is_none());
+
+        // (hidden raise, fresh=false): non-visible payloads never carry.
+        assert!(super::carry_communication_for_restart(hidden_hand(), false).is_none());
+
+        // (None, fresh=false): nothing to carry.
+        assert!(super::carry_communication_for_restart(None, false).is_none());
     }
 
     // ── #599 R1 effective_create_skip_auto_resume tests ──

@@ -17,8 +17,8 @@ use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 #[cfg(test)]
-use crate::session::session::{SessionCommunicationKind, SessionRepo};
-use crate::session::session::{SessionInfo, SessionStatus};
+use crate::session::session::{SessionCommunication, SessionRepo};
+use crate::session::session::{SessionCommunicationKind, SessionInfo, SessionStatus};
 use crate::{AppOutbox, MasterToken};
 
 fn sender_name_for_session_cwd_with_root_flag(
@@ -1392,6 +1392,12 @@ struct MailboxTestHooks {
     spawn_calls: Arc<Mutex<Vec<MailboxSpawnCall>>>,
     attach_calls: MailboxAttachCalls,
     events: Arc<Mutex<Vec<MailboxTestEvent>>>,
+    /// (#747) `is_coordinator` for sessions created by the test spawn hook
+    /// (default false, matching the historical harness). Production
+    /// `create_session_inner` recomputes the flag from teams discovery, so a
+    /// wake that respawns a coordinator target yields a coordinator record;
+    /// tests exercising the raised-hand carry set this to mirror that.
+    spawn_is_coordinator: Arc<Mutex<bool>>,
 }
 
 #[cfg(test)]
@@ -2034,6 +2040,12 @@ impl MailboxPoller {
         let mut spawn_with_resume = false;
         let mut pending_exited_destroy: Option<Uuid> = None;
         let mut pending_exited_telegram_bot_id: Option<String> = None;
+        let mut pending_exited_communication: Option<crate::session::session::SessionCommunication> =
+            None;
+        // (#747) Set only when the deferred destroy FAILS: the orphan Exited
+        // record then still holds the restored hand and must be cleared once
+        // the replacement spawn succeeds (single-carrier rule, 5d).
+        let mut pending_exited_orphan_to_clear: Option<Uuid> = None;
         // HIGH-1 (Step-7 review): symmetric AC5 protection. Tracks whether
         // every iter'd Inject candidate hit the `err_is_pty_session_missing`
         // race arm — if so, the post-loop fall-through must still promote
@@ -2103,14 +2115,20 @@ impl MailboxPoller {
                     // semantic.
                     if pending_exited_destroy.is_none() {
                         pending_exited_destroy = Some(session_id);
-                        pending_exited_telegram_bot_id = {
+                        let (bot_id, communication) = {
                             let session_mgr =
                                 app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                             let mgr = session_mgr.read().await;
                             mgr.get_session(session_id)
                                 .await
-                                .and_then(|s| s.telegram_bot_id.clone())
+                                .map(|s| (s.telegram_bot_id.clone(), s.communication.clone()))
+                                .unwrap_or((None, None))
                         };
+                        pending_exited_telegram_bot_id = bot_id;
+                        // (#747) carry a restored raised hand across the
+                        // destroy+respawn; the wake injection is not user input
+                        // and must not clear it (#676).
+                        pending_exited_communication = communication;
                         spawn_with_resume = true;
                         log::debug!(
                             "[mailbox] wake: deferring Exited destroy for {} (status={:?}) pending later Inject success",
@@ -2159,6 +2177,12 @@ impl MailboxPoller {
                     exited_id,
                     e
                 );
+                // (#747) The orphan Exited record still holds its restored
+                // raised hand. Do NOT clear it here: if the spawn below also
+                // fails, the orphan must stay the sole carrier (the hand is
+                // not lost with the failed wake). Remember it so 5d moves the
+                // hand to the new session once the spawn succeeds.
+                pending_exited_orphan_to_clear = Some(exited_id);
             }
         }
 
@@ -2295,6 +2319,56 @@ impl MailboxPoller {
             .await;
         }
 
+        // (#747) Single-carrier rule. If the deferred destroy failed, the
+        // orphan Exited record still holds the restored hand while the carry
+        // below plants it on the new session. Clear the orphan's copy now
+        // (the spawn succeeded, so the live session is the carrier) and tell
+        // the frontend; otherwise the stale orphan badge survives attending
+        // the live session, and deduplicate (name+cwd, first-kept) can
+        // persist the orphan's Exited+hand row, resurrecting an already
+        // attended hand on the next restart.
+        if let Some(orphan_id) = pending_exited_orphan_to_clear.take() {
+            let cleared = {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                mgr.clear_communication_if_kind(orphan_id, SessionCommunicationKind::RaiseHand)
+                    .await
+            };
+            if cleared {
+                let _ = tauri::Emitter::emit(
+                    app,
+                    "session_communication_changed",
+                    serde_json::json!({
+                        "sessionId": orphan_id.to_string(),
+                        "communication": null,
+                    }),
+                );
+            }
+        }
+
+        // (#747) Re-apply a raised hand carried from the destroyed dormant
+        // record. spawn_with_resume is true on this path (set in the
+        // RespawnExited arm), so the resumed conversation keeps its pending
+        // user-attention marker until real user input.
+        if let Some(communication) = pending_exited_communication.take() {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let restored = {
+                let mgr = session_mgr.read().await;
+                mgr.restore_communication(session_id, communication.clone())
+                    .await
+            };
+            if restored {
+                let _ = tauri::Emitter::emit(
+                    app,
+                    "session_communication_changed",
+                    serde_json::json!({
+                        "sessionId": session_id.to_string(),
+                        "communication": communication,
+                    }),
+                );
+            }
+        }
+
         self.wait_for_spawned_wake_idle(app, session_id).await?;
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
@@ -2427,6 +2501,7 @@ impl MailboxPoller {
                 events.push(MailboxTestEvent::Spawn(call));
             }
 
+            let spawn_is_coordinator = *hooks.spawn_is_coordinator.lock().unwrap();
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
             let session = mgr
@@ -2440,7 +2515,7 @@ impl MailboxPoller {
                         .or_else(|| resolved_command.agent_id.clone()),
                     spawn_label.clone(),
                     Vec::<SessionRepo>::new(),
-                    false,
+                    spawn_is_coordinator,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -4088,7 +4163,18 @@ impl MailboxPoller {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
                 let settings = app.state::<SettingsState>();
-                crate::commands::session::restart_session_inner_with_activation(
+                // (#747) The self-clear restart is agent-initiated, not user
+                // input: a pending raised hand must survive it (the injected
+                // handoff continues the same work). Capture before the
+                // destroy; restore_communication re-gates kind, visibility,
+                // and coordinator, so no pre-filter is needed here.
+                let carried_communication = {
+                    let mgr = session_mgr.read().await;
+                    mgr.get_session(session_id)
+                        .await
+                        .and_then(|s| s.communication.clone())
+                };
+                let result = crate::commands::session::restart_session_inner_with_activation(
                     &app,
                     session_mgr.inner(),
                     pty_mgr.inner(),
@@ -4099,8 +4185,26 @@ impl MailboxPoller {
                     Some(true),
                     true,
                 )
-                .await
-                .map(|info| info.id)
+                .await;
+                if let (Ok(info), Some(communication)) = (&result, carried_communication) {
+                    if let Ok(new_uuid) = Uuid::parse_str(&info.id) {
+                        let restored = {
+                            let mgr = session_mgr.read().await;
+                            mgr.restore_communication(new_uuid, communication.clone()).await
+                        };
+                        if restored {
+                            let _ = tauri::Emitter::emit(
+                                &app,
+                                "session_communication_changed",
+                                serde_json::json!({
+                                    "sessionId": info.id.clone(),
+                                    "communication": communication,
+                                }),
+                            );
+                        }
+                    }
+                }
+                result.map(|info| info.id)
             }
         };
 
@@ -9686,6 +9790,97 @@ mod tests {
             .position(|event| *event == MailboxTestEvent::Inject(new_session_id))
             .unwrap();
         assert!(attach_pos < inject_pos);
+        assert_inject_results_consumed(&hooks);
+    }
+
+    /// (#747) A dormant coordinator restored with a raised hand (Exited(0) +
+    /// visible communication, exactly what the startup defer arm produces)
+    /// receives a peer wake: the RespawnExited destroy+spawn must carry the
+    /// hand onto the NEW session (the wake injection is not user input) and
+    /// emit one `session_communication_changed` for it. The spawn hook is told
+    /// to create a coordinator record, mirroring production where
+    /// `create_session_inner` recomputes `is_coordinator` from teams discovery
+    /// for the same cwd.
+    #[tokio::test]
+    async fn deliver_wake_respawn_carries_restored_raise_hand_to_new_session() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let (exited_id, _token) =
+            seed_raise_hand_session(&app, &fixture.target_cwd, true, SessionStatus::Exited(0))
+                .await;
+        let original_raise_time = "2026-07-01T10:00:00+00:00".to_string();
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            assert!(
+                mgr.restore_communication(
+                    exited_id,
+                    SessionCommunication {
+                        kind: SessionCommunicationKind::RaiseHand,
+                        visible: true,
+                        updated_at: original_raise_time.clone(),
+                    },
+                )
+                .await,
+                "seeding the dormant-restored hand must succeed"
+            );
+        }
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&events);
+        fixture
+            .app
+            .listen_any("session_communication_changed", move |event| {
+                captured.lock().unwrap().push(event.payload().to_string());
+            });
+
+        let hooks = MailboxTestHooks::default();
+        *hooks.spawn_is_coordinator.lock().unwrap() = true;
+        hooks.pty_presence.lock().unwrap().insert(exited_id, false);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let message_path = write_wake_outbox_message(&fixture.sender_cwd, "msg-respawn-hand");
+
+        run_mailbox_message(&app, &message_path, hooks.clone()).await;
+
+        assert_eq!(*hooks.destroy_calls.lock().unwrap(), vec![exited_id]);
+        let spawn_calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(spawn_calls.len(), 1);
+        assert!(!spawn_calls[0].skip_auto_resume);
+        let injected = hooks.inject_calls.lock().unwrap().clone();
+        assert_eq!(injected.len(), 1);
+        let new_session_id = injected[0];
+        assert_ne!(new_session_id, exited_id);
+
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        assert!(
+            mgr.get_session(exited_id).await.is_none(),
+            "the orphan record was destroyed; exactly one carrier remains"
+        );
+        let spawned = mgr
+            .get_session(new_session_id)
+            .await
+            .expect("spawned session record");
+        let carried = spawned
+            .communication
+            .expect("the respawned session must carry the restored hand");
+        assert_eq!(carried.kind, SessionCommunicationKind::RaiseHand);
+        assert!(carried.visible);
+        assert_eq!(
+            carried.updated_at, original_raise_time,
+            "the carry must preserve the original raise time"
+        );
+        drop(mgr);
+
+        let captured = events.lock().unwrap().clone();
+        assert_eq!(
+            captured.len(),
+            1,
+            "exactly one communication event (the carry re-apply): {captured:?}"
+        );
+        let event: serde_json::Value = serde_json::from_str(&captured[0]).unwrap();
+        assert_eq!(event["sessionId"], new_session_id.to_string());
+        assert_eq!(event["communication"]["kind"], "raiseHand");
+        assert_eq!(event["communication"]["visible"], true);
         assert_inject_results_consumed(&hooks);
     }
 

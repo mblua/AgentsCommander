@@ -236,7 +236,8 @@ pub struct PersistedSession {
     pub git_branch_prefix: Option<String>,
 
     // ── Runtime fields (populated during live snapshots; `status` consumed on
-    //    restore per issue #248, the others ignored on restore) ──
+    //    restore per issue #248 and `communication` consumed on restore per
+    //    issue #747, the others ignored on restore) ──
     /// Session UUID (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -248,7 +249,11 @@ pub struct PersistedSession {
     /// Whether the session is waiting for user input (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_for_input: Option<bool>,
-    /// Current visible session communication state (only present in live snapshots)
+    /// Current visible session communication state. Populated during live
+    /// snapshots; **consumed on restore** since issue #747 (a persisted raised
+    /// hand re-applies to the restored record), and preserved on
+    /// failed-recoverable rows by `sanitize_failed_recoverable` so the
+    /// next-startup retry can restore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub communication: Option<SessionCommunication>,
     /// ISO 8601 creation timestamp (only present in live snapshots)
@@ -1068,16 +1073,23 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
 
 /// Pure: produce a sanitized copy of a failed-recoverable PersistedSession
 /// suitable for merging into a fresh snapshot. Drops runtime fields (`id`,
-/// `status`, `waiting_for_input`, `communication`, `created_at`) since those describe the
+/// `status`, `waiting_for_input`, `created_at`) since those describe the
 /// PRIOR run's state; the session is no longer live, and persisting them
 /// would make `list-sessions` (which filters on `id.is_some()`) report the
 /// session as alive when it is not. See §224.
+///
+/// `communication` is deliberately PRESERVED (#747): a raised hand is durable
+/// intent, not prior-run runtime state, so a transiently failed restore keeps
+/// it for the next startup attempt. `list-sessions` still reports
+/// `raisedHand: false` for these rows because `id` and `status` are stripped
+/// (both the `id.is_some()` row filter and the `status.is_none()` gate exclude
+/// them). Best-effort with the SAME LIFETIME AS THE RECIPE ROW: the row (hand
+/// included) survives only until the next `persist_current_state` (§224 G5).
 pub(crate) fn sanitize_failed_recoverable(ps: &PersistedSession) -> PersistedSession {
     let mut clean = ps.clone();
     clean.id = None;
     clean.status = None;
     clean.waiting_for_input = None;
-    clean.communication = None;
     clean.created_at = None;
     clean
 }
@@ -1105,7 +1117,8 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
     let _guard = sessions_save_lock().lock().await;
     let mut snapshot = snapshot_sessions(mgr).await;
     // §224 — strip stale runtime fields (`id`, `status`, `waiting_for_input`,
-    // `communication`, `created_at`) from failed-recoverable entries. Without this, the prior
+    // `created_at`) from failed-recoverable entries (`communication` is kept,
+    // #747, see `sanitize_failed_recoverable`). Without this, the prior
     // run's runtime fields travel into the new snapshot, and `list-sessions`
     // reports a session as alive (its `s.id.is_some()` filter passes) while
     // the in-memory `SessionManager` does not contain it. `close-session`
@@ -1342,9 +1355,11 @@ mod tests {
     use std::time::Duration;
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
-    /// fields needed for the next-startup restore attempt.
+    /// fields needed for the next-startup restore attempt. Since #747 a raised
+    /// hand counts as durable intent, not runtime state: `communication`
+    /// survives the strip so the retry can restore it.
     #[test]
-    fn sanitize_failed_recoverable_drops_runtime_fields() {
+    fn sanitize_failed_recoverable_drops_runtime_fields_keeps_raise_hand() {
         let ps = PersistedSession {
             last_prompt: None,
             name: "alice".into(),
@@ -1385,13 +1400,15 @@ mod tests {
             clean.waiting_for_input.is_none(),
             "waiting_for_input must be cleared"
         );
-        assert!(
-            clean.communication.is_none(),
-            "communication must be cleared"
-        );
         assert!(clean.created_at.is_none(), "created_at must be cleared");
 
         // Recipe fields preserved (so next-run restore can retry):
+        let kept = clean
+            .communication
+            .as_ref()
+            .expect("#747: the raised hand must survive the strip");
+        assert_eq!(kept.kind, SessionCommunicationKind::RaiseHand);
+        assert!(kept.visible, "visibility must survive the strip");
         assert_eq!(clean.name, "alice");
         assert_eq!(clean.shell, "claude");
         assert_eq!(clean.shell_args, vec!["--continue".to_string()]);
@@ -1855,6 +1872,93 @@ mod tests {
         let outcome = fut.await.expect("raise-hand persist should succeed");
         assert!(matches!(outcome, RaiseHandPersistOutcome::Raised(_)));
         assert!(mgr.list_sessions().await[0].communication.is_some());
+    }
+
+    /// (#747) Acceptance criterion 5's persist-restore-persist half: a hand
+    /// raised and persisted in run A re-applies onto run B's dormant (Exited)
+    /// record via `restore_communication` and survives B's own persist, so a
+    /// SECOND restart still sees it. The user-input clear tail is already
+    /// pinned by `clear_user_input_transitions_persists_both_cleared_fields`.
+    #[tokio::test]
+    async fn dormant_restore_round_trip_preserves_visible_raise_hand() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        // Run A: live coordinator raises its hand; #698 persists it durably.
+        let mgr_a = SessionManager::new();
+        let session_a = mgr_a
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        let raise_time = chrono::DateTime::parse_from_rfc3339("2026-06-30T11:00:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let outcome =
+            raise_hand_and_persist_to_dir_result(&mgr_a, session_a.id, raise_time, temp.path(), None)
+                .await
+                .expect("raise+persist should succeed");
+        assert!(matches!(outcome, RaiseHandPersistOutcome::Raised(_)));
+
+        let rows = load_sessions_raw_from_dir_for_test(temp.path());
+        assert_eq!(rows.len(), 1);
+        let persisted_hand = rows[0]
+            .communication
+            .clone()
+            .expect("run A must persist the visible hand");
+        assert_eq!(persisted_hand.kind, SessionCommunicationKind::RaiseHand);
+        assert!(persisted_hand.visible);
+
+        // Run B (simulated relaunch, default settings): the defer arm creates
+        // the record, marks it Exited, then re-applies the persisted hand.
+        let mgr_b = SessionManager::new();
+        let session_b = mgr_b
+            .create_session(
+                rows[0].shell.clone(),
+                rows[0].shell_args.clone(),
+                rows[0].working_directory.clone(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr_b.mark_exited(session_b.id, 0).await;
+        assert!(
+            mgr_b
+                .restore_communication(session_b.id, persisted_hand.clone())
+                .await,
+            "dormant coordinator must accept the restored hand"
+        );
+
+        persist_current_state_to_dir_result(&mgr_b, temp.path())
+            .await
+            .expect("run B persist should succeed");
+
+        let rows_b = load_sessions_raw_from_dir_for_test(temp.path());
+        assert_eq!(rows_b.len(), 1);
+        assert!(
+            matches!(rows_b[0].status, Some(SessionStatus::Exited(0))),
+            "run B must persist the dormant status, got {:?}",
+            rows_b[0].status
+        );
+        let hand_b = rows_b[0]
+            .communication
+            .as_ref()
+            .expect("the restored hand must survive run B's persist");
+        assert_eq!(hand_b.kind, SessionCommunicationKind::RaiseHand);
+        assert!(hand_b.visible);
+        assert_eq!(
+            hand_b.updated_at, persisted_hand.updated_at,
+            "the original raise time must survive the round trip"
+        );
     }
 
     // ---- #698 grinch MEDIUM: single-critical-section user-input clear ----

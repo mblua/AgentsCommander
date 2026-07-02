@@ -1566,6 +1566,13 @@ pub fn run(
 
                                     mgr.mark_exited(session.id, 0).await;
                                     mgr.clear_active_if(session.id).await;
+                                    // (#747) Re-apply a persisted raised hand onto the dormant
+                                    // placeholder. Must run AFTER mark_exited (which clears
+                                    // communication) and BEFORE the get_session below, so the
+                                    // emitted session_created event carries the restored hand.
+                                    if let Some(communication) = ps.communication.clone() {
+                                        mgr.restore_communication(session.id, communication).await;
+                                    }
                                     // Read updated session so emitted event reflects Exited status
                                     if let Some(updated) = mgr.get_session(session.id).await {
                                         let info = crate::session::session::SessionInfo::from(&updated);
@@ -1666,6 +1673,41 @@ pub fn run(
                                     if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
                                         let mgr = session_mgr_clone.read().await;
                                         mgr.set_start_fresh_on_restore(uuid, true).await;
+                                    }
+                                }
+                                // (#747) Re-apply a persisted raised hand onto the woken live
+                                // session. create_session_inner already emitted session_created
+                                // with communication: None, so emit the change event after
+                                // applying. Gated like the reopen carry (change 4): a stored
+                                // unconsumed fresh intent means this wake spawned a FRESH
+                                // conversation (skip_auto_resume_for_restore(true) above), so
+                                // the hand drops with the conversation it belonged to.
+                                // Applied as early as possible in this branch: an
+                                // idle/busy persist racing in between would transiently write
+                                // communication: None to disk; the persist_merging_failed at the
+                                // end of the restore task reconciles it (accepted window, see
+                                // plan #747 §7).
+                                if let Some(communication) =
+                                    crate::commands::session::carry_communication_for_restart(
+                                        ps.communication.clone(),
+                                        ps.start_fresh_on_restore,
+                                    )
+                                {
+                                    if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                        let restored = {
+                                            let mgr = session_mgr_clone.read().await;
+                                            mgr.restore_communication(uuid, communication.clone()).await
+                                        };
+                                        if restored {
+                                            let _ = tauri::Emitter::emit(
+                                                &app_handle,
+                                                "session_communication_changed",
+                                                serde_json::json!({
+                                                    "sessionId": info.id,
+                                                    "communication": communication,
+                                                }),
+                                            );
+                                        }
                                     }
                                 }
                                 // (#630/#631) Restore-decision trace (INFO during stabilization).
