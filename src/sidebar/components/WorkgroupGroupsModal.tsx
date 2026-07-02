@@ -81,12 +81,21 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
     setSaveError(null);
   };
 
-  const setToggle = (field: "showAll" | "showUngrouped", value: boolean) => {
+  const setToggle = (
+    field: "showAll" | "showUngrouped",
+    value: boolean,
+    input: HTMLInputElement
+  ) => {
+    let accepted = false;
+    let previous = input.checked;
     setDraft((current) => {
+      previous = current[field];
       const next = { ...current, [field]: value };
       if (!next.showAll && !next.showUngrouped) return current;
+      accepted = true;
       return next;
     });
+    if (!accepted) input.checked = previous;
     setSaveError(null);
   };
 
@@ -122,8 +131,8 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
               <input
                 type="checkbox"
                 checked={draft().showAll}
-                disabled={draft().showAll && !draft().showUngrouped}
-                onChange={(e) => setToggle("showAll", e.currentTarget.checked)}
+                onChange={(e) => setToggle("showAll", e.currentTarget.checked, e.currentTarget)}
+                data-ac-testid="workgroupGroups.toggle.showAll"
               />
               <span>Show All</span>
             </label>
@@ -131,8 +140,8 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
               <input
                 type="checkbox"
                 checked={draft().showUngrouped}
-                disabled={draft().showUngrouped && !draft().showAll}
-                onChange={(e) => setToggle("showUngrouped", e.currentTarget.checked)}
+                onChange={(e) => setToggle("showUngrouped", e.currentTarget.checked, e.currentTarget)}
+                data-ac-testid="workgroupGroups.toggle.showUngrouped"
               />
               <span>Show Ungrouped</span>
             </label>
