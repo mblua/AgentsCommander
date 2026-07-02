@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 
 export type ToastKind = "error" | "success" | "info";
 
@@ -14,6 +14,7 @@ export interface Toast {
   id: number;
   kind: ToastKind;
   message: string;
+  exiting: boolean;
 }
 
 // Errors stay until dismissed (the #574 failure MUST be noticed); info/success
@@ -29,10 +30,12 @@ const DEFAULT_DURATION_MS: Record<ToastKind, number | null> = {
 // info/success can never silently bury an unread sticky error; only when every
 // visible toast is an error do we fall back to evicting the oldest error.
 const MAX_VISIBLE = 4;
+export const TOAST_EXIT_MS = 180;
 
-const [toasts, setToasts] = createSignal<Toast[]>([]);
+const [toasts, setToasts] = createStore<Toast[]>([]);
 let nextId = 1;
 const timers = new Map<number, ReturnType<typeof setTimeout>>();
+const exitTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
 function clearTimer(id: number): void {
   const t = timers.get(id);
@@ -42,52 +45,83 @@ function clearTimer(id: number): void {
   }
 }
 
+function clearExitTimer(id: number): void {
+  const t = exitTimers.get(id);
+  if (t !== undefined) {
+    clearTimeout(t);
+    exitTimers.delete(id);
+  }
+}
+
+function clearToastTimers(id: number): void {
+  clearTimer(id);
+  clearExitTimer(id);
+}
+
+function removeToastImmediately(id: number): void {
+  clearToastTimers(id);
+  setToasts(reconcile(toasts.filter((t) => t.id !== id), { key: "id" }));
+}
+
+function startToastExit(id: number): void {
+  clearTimer(id);
+
+  const index = toasts.findIndex((toast) => toast.id === id);
+  if (index === -1 || toasts[index].exiting || exitTimers.has(id)) return;
+
+  setToasts(index, "exiting", true);
+  exitTimers.set(
+    id,
+    setTimeout(() => {
+      removeToastImmediately(id);
+    }, TOAST_EXIT_MS),
+  );
+}
+
 export const toastStore = {
   /** Reactive accessor (read inside JSX / effects to subscribe). */
   get items(): Toast[] {
-    return toasts();
+    return toasts;
   },
 
   push(opts: PushToastOptions): number {
     const id = nextId++;
     const kind = opts.kind ?? "info";
-    const toast: Toast = { id, kind, message: opts.message };
+    const toast: Toast = { id, kind, message: opts.message, exiting: false };
 
     const evicted: number[] = [];
-    setToasts((prev) => {
-      const next = [...prev, toast];
-      // Kind-aware eviction (§15.3): evict the oldest NON-error first so an
-      // unread sticky error is never silently dropped by a transient toast.
-      // Fall back to the oldest overall only when all visible toasts are errors
-      // (keeps MAX_VISIBLE an honest hard cap). Pure: only mutates the local
-      // `next` copy; timer cleanup happens after via `evicted`.
-      while (next.length > MAX_VISIBLE) {
-        let victim = next.findIndex((t) => t.kind !== "error");
-        if (victim === -1) victim = 0;
-        evicted.push(next.splice(victim, 1)[0].id);
-      }
-      return next;
-    });
-    evicted.forEach(clearTimer);
+    const next = [...toasts, toast];
+    // Kind-aware eviction (§15.3): evict the oldest NON-error first so an
+    // unread sticky error is never silently dropped by a transient toast.
+    // Fall back to the oldest overall only when all visible toasts are errors
+    // (keeps MAX_VISIBLE an honest hard cap).
+    while (next.length > MAX_VISIBLE) {
+      let victim = next.findIndex((t) => t.kind !== "error");
+      if (victim === -1) victim = 0;
+      evicted.push(next.splice(victim, 1)[0].id);
+    }
+    setToasts(reconcile(next, { key: "id" }));
+    evicted.forEach(clearToastTimers);
 
     const duration =
       opts.durationMs === undefined ? DEFAULT_DURATION_MS[kind] : opts.durationMs;
-    if (duration !== null) {
+    if (duration !== null && toasts.some((t) => t.id === id)) {
       timers.set(id, setTimeout(() => toastStore.dismiss(id), duration));
     }
     return id;
   },
 
   dismiss(id: number): void {
-    clearTimer(id);
-    setToasts((prev) => prev.filter((t) => t.id !== id));
+    startToastExit(id);
   },
 
   /** Remove all toasts + cancel all timers (onCleanup + test reset). */
   clear(): void {
     timers.forEach((t) => clearTimeout(t));
     timers.clear();
-    setToasts([]);
+    exitTimers.forEach((t) => clearTimeout(t));
+    exitTimers.clear();
+    setToasts(reconcile([]));
   },
 
   // Convenience wrappers.

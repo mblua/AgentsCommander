@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AcWorkgroup, WorkgroupGroupsConfig } from "../../shared/types";
+import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
+  input,
   renderWithFakeTransport,
   resetUiStoresForTests,
+  session,
   waitFor,
 } from "../../shared/testing/ui-harness";
 import type { ProjectState } from "../stores/project";
+import { sessionsStore } from "../stores/sessions";
 import {
   defaultGroupsConfig,
   exactGroupRegexForWorkgroup,
@@ -74,6 +77,23 @@ function railButtonOrder(): string[] {
   return Array.from(
     document.querySelectorAll<HTMLElement>('[data-ac-testid^="workgroupGroups.button."]')
   ).map((button) => button.dataset.acTestid!.replace("workgroupGroups.button.", ""));
+}
+
+function railDots(): string[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>('[data-ac-testid^="workgroupGroups.dot."]')
+  ).map((dot) => dot.dataset.acTestid!.replace("workgroupGroups.dot.", ""));
+}
+
+/** A session that makes the given workgroup "working" (running dot class). */
+function replicaSession(wgName: string, overrides: Partial<Session> = {}): Session {
+  return session({
+    id: `session-${wgName}`,
+    name: `${wgName}/dev-webpage-ui`,
+    workingDirectory: `${projectPath}\\.ac\\${wgName}\\__agent_dev-webpage-ui`,
+    status: "running",
+    ...overrides,
+  });
 }
 
 describe("WorkgroupGroupRail", () => {
@@ -156,6 +176,98 @@ describe("WorkgroupGroupRail", () => {
       );
 
       await waitFor(() => expect(railButtonOrder()).toEqual(["ungrouped", "ui", "rust"]));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("shows the working dot on All and on the group whose workgroup is running (#746)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+    sessionsStore.setSessions([replicaSession("wg-1-dev-team")]);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+      await waitFor(() => expect(railDots()).toEqual(["all", "ui"]));
+
+      // Same visual language as session/replica rows: the standard blue
+      // running dot, rendered on the counter line.
+      const dot = target<HTMLElement>("workgroupGroups.dot.ui");
+      expect(dot.classList.contains("session-item-status")).toBe(true);
+      expect(dot.classList.contains("running")).toBe(true);
+      // Dot condition matches the counter's X definition.
+      expect(target("workgroupGroups.button.all").textContent).toContain("1/3");
+      expect(target("workgroupGroups.button.ui").textContent).toContain("1/1");
+      expect(target("workgroupGroups.button.rust").textContent).toContain("0/1");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("shows the working dot on Ungrouped when an ungrouped workgroup is running (#746)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+    sessionsStore.setSessions([replicaSession("wg-3-docs-team")]);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+      await waitFor(() => expect(railDots()).toEqual(["all", "ungrouped"]));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("keeps every dot off for waiting/pending agents, matching the counter (#746)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+    sessionsStore.setSessions([
+      replicaSession("wg-1-dev-team", { waitingForInput: true }),
+      replicaSession("wg-2-rust-team", { pendingReview: true }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+      expect(railDots()).toEqual([]);
+      expect(target("workgroupGroups.button.all").textContent).toContain("0/3");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("focuses and selects the new row's name input after Add group (#746)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+
+      click(target("workgroupGroups.edit"));
+      click(target("workgroupGroups.add"));
+
+      let added!: HTMLInputElement;
+      await waitFor(() => {
+        const inputs = document.querySelectorAll<HTMLInputElement>(".workgroup-group-name-input");
+        added = inputs[inputs.length - 1];
+        expect(added.value).toBe("Group 3");
+        expect(document.activeElement).toBe(added);
+        // Pre-filled name is selected so typing replaces it.
+        expect(added.selectionStart).toBe(0);
+        expect(added.selectionEnd).toBe("Group 3".length);
+      });
+
+      // Typing must not drop focus: <Index> keeps the row's DOM stable while
+      // updateGroup replaces the row object per keystroke (the #614 trap).
+      input(added, "B");
+      input(added, "Ba");
+      await waitFor(() => {
+        expect(added.isConnected).toBe(true);
+        expect(document.activeElement).toBe(added);
+        expect(added.value).toBe("Ba");
+      });
     } finally {
       rendered.cleanup();
     }

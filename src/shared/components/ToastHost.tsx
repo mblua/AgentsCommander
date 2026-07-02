@@ -31,7 +31,9 @@ const ToastHost: Component = () => {
         <For each={toastStore.items}>
           {(toast) => (
             <div
-              class={`toast-item toast-item--${toast.kind}`}
+              class={`toast-item toast-item--${toast.kind}${
+                toast.exiting ? " toast-item--exiting" : ""
+              }`}
               data-ac-testid="toast.item"
               data-ac-kind={toast.kind}
               data-ac-toast-id={toast.id}
