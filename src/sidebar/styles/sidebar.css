@@ -2821,6 +2821,16 @@ html.light-theme .settings-hint-warning {
   color: var(--sidebar-accent);
 }
 
+/* #746 — working indicator on the counter line. Reuses the session-card
+   .session-item-status.running circle; inline-block so the 8px width/height
+   apply in the button's pre-line text flow (never before the name, which
+   would re-tighten the line and regress #742's no-mid-word-split). */
+.workgroup-group-rail-button .workgroup-group-rail-dot {
+  display: inline-block;
+  margin-right: 3px;
+  vertical-align: -1px;
+}
+
 .workgroup-group-rail-error {
   margin: 4px auto;
   width: 20px;

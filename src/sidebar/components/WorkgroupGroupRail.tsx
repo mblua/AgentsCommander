@@ -21,7 +21,11 @@ interface WorkgroupGroupRailProps {
 
 interface GroupButton {
   key: string;
-  label: string;
+  name: string;
+  counter: string;
+  /** #746 — true when the button's workgroup set has >=1 working agent
+   *  (same predicate as the counter's X: running/active, not waiting/pending). */
+  working: boolean;
   selection: WorkgroupGroupSelection;
   workgroups: AcWorkgroup[];
   title: string;
@@ -60,9 +64,12 @@ function tooltipFor(workgroups: AcWorkgroup[]): string {
   return rows.length > 0 ? rows.join("\n") : "No running agents";
 }
 
-function counterLabel(name: string, workgroups: AcWorkgroup[]): string {
+function buttonContent(
+  name: string,
+  workgroups: AcWorkgroup[]
+): Pick<GroupButton, "name" | "counter" | "working"> {
   const working = workgroups.filter(workgroupIsWorking).length;
-  return `${name}\n${working}/${workgroups.length}`;
+  return { name, counter: `${working}/${workgroups.length}`, working: working > 0 };
 }
 
 const ProjectRailSection: Component<{
@@ -87,7 +94,7 @@ const ProjectRailSection: Component<{
     if (config().showAll) {
       result.push({
         key: "all",
-        label: counterLabel("All", props.project.workgroups),
+        ...buttonContent("All", props.project.workgroups),
         selection: { kind: "all" },
         workgroups: props.project.workgroups,
         title: tooltipFor(props.project.workgroups),
@@ -97,7 +104,7 @@ const ProjectRailSection: Component<{
       const workgroups = ungroupedWorkgroups();
       result.push({
         key: "ungrouped",
-        label: counterLabel("Ungrouped", workgroups),
+        ...buttonContent("Ungrouped", workgroups),
         selection: { kind: "ungrouped" },
         workgroups,
         title: tooltipFor(workgroups),
@@ -107,7 +114,7 @@ const ProjectRailSection: Component<{
       const workgroups = props.project.workgroups.filter((wg) => groupMatches(group, wg));
       result.push({
         key: group.id,
-        label: counterLabel(group.name, workgroups),
+        ...buttonContent(group.name, workgroups),
         selection: { kind: "group", id: group.id },
         workgroups,
         title: tooltipFor(workgroups),
@@ -139,7 +146,15 @@ const ProjectRailSection: Component<{
             onClick={() => workgroupGroupsStore.select(props.project.path, button.selection)}
             data-ac-testid={`workgroupGroups.button.${button.key}`}
           >
-            {button.label}
+            {button.name}
+            {"\n"}
+            <Show when={button.working}>
+              <span
+                class="session-item-status running workgroup-group-rail-dot"
+                data-ac-testid={`workgroupGroups.dot.${button.key}`}
+              />
+            </Show>
+            {button.counter}
           </button>
         )}
       </For>
