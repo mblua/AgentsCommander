@@ -24,16 +24,18 @@ fn interpret_self_clear_response_exit_code(content: &str) -> i32 {
 #[command(after_help = "\
 Hands off, then clears the CALLER'S OWN agent context and resumes from the handoff file. Two deferred phases:\n\n\
   Phase 1 (clear): waits until this session is continuously idle for 30s, then injects /clear.\n\
-  Phase 2 (handoff): after the clear, waits a FRESH 30s of sustained idle, then injects a prompt \
-telling you to read SELF-HANDOFF.md in your own root and resume.\n\n\
+  Phase 2 (handoff): after the clear, waits a FRESH 30s of sustained idle, archives \
+SELF-HANDOFF.md -> self-clear/<timestamp>_SELF-HANDOFF.md in your root, then injects a prompt naming \
+that exact archived path to resume from. If the archive rename fails, the prompt points at \
+SELF-HANDOFF.md still in your root.\n\n\
 BEFORE invoking, write SELF-HANDOFF.md in your own root with the notes you need to resume (EXCLUDING \
 anything already recorded in SELF-FORGET.md). If SELF-HANDOFF.md is missing, the command refuses (clearing \
 with nothing to resume from would wipe your context).\n\n\
 On invocation the command archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md in your root \
 (no-op if absent), so your next cycle starts with a fresh SELF-FORGET.md. Before archiving, the daemon \
 captures a sanitized compact forgotten summary from SELF-FORGET.md, max 240 chars. The later resume prompt \
-may include that summary only as closed background, not instructions and not work to resume. SELF-HANDOFF.md \
-remains the active resume source.\n\n\
+may include that summary only as closed background, not instructions and not work to resume. The handoff \
+file remains the active resume source.\n\n\
 IDENTITY: the session is resolved from --token (find_by_token). You can only clear the session that \
 owns the token you present.\n\n\
 BEST-EFFORT: neither phase is guaranteed. A perpetually busy session that never reaches 30s sustained \
@@ -202,11 +204,12 @@ pub fn execute(args: SelfClearArgs) -> i32 {
                     {
                         Some("queued") => crate::cli_println!(
                             "self-handoff-and-clear requested. Phase 1 injects /clear only after this session is \
-                             continuously idle for {0}s; Phase 2 then waits a fresh {0}s of post-clear idle and \
-                             injects a prompt to read SELF-HANDOFF.md and resume. If SELF-FORGET.md was present \
-                             at queue time, that prompt includes a compact closed-background forgotten summary. \
-                             Best-effort and NOT guaranteed (a busy session or a daemon restart drops it). If your \
-                             context is still present later, re-issue.",
+                             continuously idle for {0}s; Phase 2 then waits a fresh {0}s of post-clear idle, \
+                             archives SELF-HANDOFF.md into self-clear/ and injects a prompt naming the exact \
+                             archived file to resume from. If SELF-FORGET.md was present at queue time, that \
+                             prompt includes a compact closed-background forgotten summary. Best-effort and NOT \
+                             guaranteed (a busy session or a daemon restart drops it). If your context is still \
+                             present later, re-issue.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
                         ),
                         Some("already_queued") => crate::cli_println!(
@@ -375,6 +378,11 @@ mod tests {
         assert!(help.contains("240"), "{help}");
         assert!(help.contains("closed background"), "{help}");
         assert!(help.contains("SELF-HANDOFF.md"), "{help}");
+        // #749 - the help documents the pre-inject handoff archive and its exact destination.
+        assert!(
+            help.contains("self-clear/<timestamp>_SELF-HANDOFF.md"),
+            "{help}"
+        );
     }
 
     // ── #617 HIGH-1: Root self-clear sender derivation (the actual fix) ──
