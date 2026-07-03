@@ -1516,14 +1516,36 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       </button>
       <button
         class="settings-preset-btn"
-        onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
-        disabled={hasAgentByCommand("gemini")}
-        data-ac-testid="settings.agentPreset.gemini"
+        onClick={() => addAgent(AGENT_PRESET_MAP.hermes)}
+        disabled={hasAgentByCommand("hermes")}
+        data-ac-testid="settings.agentPreset.hermes"
         data-ac-role="button"
-        data-ac-state={hasAgentByCommand("gemini") ? "disabled" : "available"}
+        data-ac-state={hasAgentByCommand("hermes") ? "disabled" : "available"}
       >
-        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.gemini.color }} />
-        + Gemini CLI
+        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.hermes.color }} />
+        + Hermes
+      </button>
+      <button
+        class="settings-preset-btn"
+        onClick={() => addAgent(AGENT_PRESET_MAP.cursor)}
+        disabled={hasAgentByCommand("agent")}
+        data-ac-testid="settings.agentPreset.cursor"
+        data-ac-role="button"
+        data-ac-state={hasAgentByCommand("agent") ? "disabled" : "available"}
+      >
+        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.cursor.color }} />
+        + Cursor CLI
+      </button>
+      <button
+        class="settings-preset-btn"
+        onClick={() => addAgent(AGENT_PRESET_MAP.pi)}
+        disabled={hasAgentByCommand("pi")}
+        data-ac-testid="settings.agentPreset.pi"
+        data-ac-role="button"
+        data-ac-state={hasAgentByCommand("pi") ? "disabled" : "available"}
+      >
+        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.pi.color }} />
+        + Pi
       </button>
       <button
         class="settings-preset-btn"
