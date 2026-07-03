@@ -682,6 +682,48 @@ fn should_inject_continue(
     !already_has_continue
 }
 
+/// (#756) Decide whether to pass a launcher-minted `--session-id <uuid>` to a
+/// Claude spawn. Pure function; mirrors `should_inject_continue`'s token scan.
+///
+/// Returns true only when BOTH:
+///   - the session is a Claude variant, and
+///   - AC is deliberately NOT resuming (`skip_auto_resume` true: fresh create
+///     default, restart-fresh, or the #756 mirror guard),
+/// and the configured argv does not already steer session identity:
+/// `--session-id[=]`, `--resume[=]`/`-r`, `--continue[=]`/`-c`,
+/// `--fork-session` (case-insensitive token match). User args win; stacking
+/// identity flags is a HARD CLI error (Q2-verified: `--session-id` combined
+/// with `--continue`/`--resume` and no `--fork-session` errors at argv
+/// parse), so this veto scan is mandatory.
+///
+/// Purpose: belt-and-suspenders freshness (immune to future provider
+/// auto-resume surprises) and a known-AT-SPAWN transcript identity (hands the
+/// telegram claude_watcher its file identity instead of cwd+mtime heuristics).
+/// The injected id is the SPAWN id, not a stable session id: a later in-session
+/// `/clear` mints a new one.
+fn should_inject_fresh_session_id(
+    is_claude: bool,
+    skip_auto_resume: bool,
+    full_cmd: &str,
+) -> bool {
+    if !is_claude || !skip_auto_resume {
+        return false;
+    }
+    let has_identity_flag = full_cmd.split_whitespace().any(|t| {
+        let lower = t.to_lowercase();
+        lower == "--session-id"
+            || lower.starts_with("--session-id=")
+            || lower == "--resume"
+            || lower.starts_with("--resume=")
+            || lower == "-r"
+            || lower == "--continue"
+            || lower.starts_with("--continue=")
+            || lower == "-c"
+            || lower == "--fork-session"
+    });
+    !has_identity_flag
+}
+
 /// Issue #107 round 5 — build the optional title prompt, or `Ok(None)` if the
 /// auto-title preconditions do not hold.
 ///
@@ -809,6 +851,37 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         }
     }
 
+    // (#756) Durable fresh-intent mirror, consumed at the create path: the
+    // caller requested resume (#599 reopen passes skipAutoResume=false), but
+    // this cwd's coordinator carries a pending fresh boundary (restart or
+    // AC-driven /clear whose record died with an auto/manual close). Force a
+    // fresh spawn BEFORE any provider resume injection below (claude
+    // --continue, codex resume --last, gemini --resume latest);
+    // provider-agnostic by construction. The mirror is deliberately NOT cleared
+    // here: only post-boundary content (typed input or AC-injected content)
+    // drops it, so repeated close/reopen cycles with no content stay fresh.
+    let mut fresh_forced_by_mirror = false;
+    if is_coordinator && !skip_auto_resume {
+        if let Some(clocks) =
+            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+        {
+            let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+            let pending = {
+                let guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                guard.start_fresh_at(&fqn)
+            };
+            if mirror_forces_fresh(skip_auto_resume, is_coordinator, pending.is_some()) {
+                log::info!(
+                    "[session] fresh-intent mirror pending for '{}' (boundary {}): forcing skip_auto_resume (#756)",
+                    fqn,
+                    pending.map(|d| d.to_rfc3339()).unwrap_or_default()
+                );
+                skip_auto_resume = true;
+                fresh_forced_by_mirror = true;
+            }
+        }
+    }
+
     let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
     let is_agent_owned_launch = agent_id.is_some() || agent_kind.is_some() || is_root_agent;
     let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
@@ -838,6 +911,18 @@ pub async fn create_session_inner<R: tauri::Runtime>(
             return Err(e.to_string());
         }
     };
+
+    // (#756) Propagate the mirror-forced intent onto the NEW record: the
+    // startup-restore path reads ONLY the record, so without this an app close
+    // after the forced-fresh reopen would resume the pre-boundary conversation.
+    // No persist call here: the command, restart and both restore callers
+    // persist after inner returns; the wake/loop/web creates do not, which is
+    // fine because the mirror is already persisted and re-consumed by the
+    // guard above on every later create, and the record stamp reaches disk
+    // with the next persist-any.
+    if fresh_forced_by_mirror {
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+    }
 
     if is_root_agent {
         mgr.set_is_root_agent(session.id, true).await;
@@ -966,6 +1051,41 @@ pub async fn create_session_inner<R: tauri::Runtime>(
                 shell_args.push(continue_flag.to_string());
                 log::info!(
                     "Auto-injected --continue for agent '{}' (prior conversation exists)",
+                    aid
+                );
+            }
+        }
+    }
+
+    // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
+    // session's identity at spawn. Uuid::new_v4() satisfies the "unused UUID"
+    // requirement (Claude errors on a colliding --session-id; v4 collision is
+    // negligible and a fresh one is minted per spawn). Mutually exclusive with
+    // the --continue block above by construction (will_inject_continue requires
+    // skip_auto_resume=false). `full_cmd` predates both blocks' mutations, so
+    // the veto scan sees user-configured identity flags, never AC's own.
+    if should_inject_fresh_session_id(is_claude, skip_auto_resume, &full_cmd) {
+        if let Some(ref aid) = agent_id {
+            let fresh_session_id = Uuid::new_v4();
+            if executable_basename(&shell) == "cmd" {
+                if let Some(last) = shell_args.last_mut() {
+                    if executable_basename(last) == "claude"
+                        || last.to_lowercase().contains("claude")
+                    {
+                        *last = format!("{} --session-id {}", last, fresh_session_id);
+                        log::info!(
+                            "Auto-injected --session-id {} for agent '{}' (fresh spawn, cmd path, #756)",
+                            fresh_session_id,
+                            aid
+                        );
+                    }
+                }
+            } else {
+                shell_args.push("--session-id".to_string());
+                shell_args.push(fresh_session_id.to_string());
+                log::info!(
+                    "Auto-injected --session-id {} for agent '{}' (fresh spawn, #756)",
+                    fresh_session_id,
                     aid
                 );
             }
@@ -2104,6 +2224,18 @@ fn effective_create_skip_auto_resume(requested: Option<bool>) -> bool {
     requested.unwrap_or(true)
 }
 
+/// (#756) Create-path mirror consume: force a fresh spawn when the caller
+/// requested resume but the cwd's coordinator carries a pending fresh boundary.
+/// Named + unit-tested per the #630 pattern (the call site is guarded against a
+/// silent inline revert by the `dead_code` lint under CI's `-D warnings`).
+fn mirror_forces_fresh(
+    requested_skip_auto_resume: bool,
+    is_coordinator: bool,
+    mirror_pending: bool,
+) -> bool {
+    !requested_skip_auto_resume && is_coordinator && mirror_pending
+}
+
 fn effective_restart_requested_profile(
     requested: Option<String>,
     stored: Option<String>,
@@ -2328,6 +2460,16 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         let mgr = session_mgr.read().await;
         mgr.set_start_fresh_on_restore(new_uuid, restart_start_fresh)
             .await;
+    }
+
+    // (#756) C3: mirror the honored fresh intent into the coordinator clocks so
+    // it survives record destruction (idle auto-close, manual close destroy the
+    // record that carries start_fresh_on_restore). Self-gates on coordinators
+    // inside the helper; root agents are never coordinators, so this is a no-op
+    // for them. Self-handoff-and-switch (#668) respawns through this function
+    // and inherits the mirror automatically.
+    if restart_start_fresh {
+        crate::commands::pty::write_start_fresh_mirror_for_session(app, new_uuid, true).await;
     }
 
     // (#747) Carry a visible raised hand across the destroy+create reopen when
@@ -4003,6 +4145,87 @@ mod tests {
             false,
             true,
             "claude --continued-mode something"
+        ));
+    }
+
+    // ── (#756) mirror_forces_fresh truth table ──
+
+    #[test]
+    fn mirror_forces_fresh_truth_table() {
+        // Forces fresh ONLY when: resume requested + coordinator + mirror pending.
+        assert!(super::mirror_forces_fresh(false, true, true));
+        // Any other combination must not force.
+        assert!(!super::mirror_forces_fresh(false, true, false));
+        assert!(!super::mirror_forces_fresh(false, false, true));
+        assert!(!super::mirror_forces_fresh(false, false, false));
+        assert!(!super::mirror_forces_fresh(true, true, true));
+        assert!(!super::mirror_forces_fresh(true, true, false));
+        assert!(!super::mirror_forces_fresh(true, false, true));
+        assert!(!super::mirror_forces_fresh(true, false, false));
+    }
+
+    // ── (#756) should_inject_fresh_session_id decision table ──
+
+    #[test]
+    fn should_inject_fresh_session_id_true_for_claude_skip_clean_argv() {
+        assert!(super::should_inject_fresh_session_id(
+            true,
+            true,
+            "claude --dangerously-skip-permissions"
+        ));
+    }
+
+    #[test]
+    fn should_inject_fresh_session_id_false_when_not_skipping_resume() {
+        assert!(!super::should_inject_fresh_session_id(
+            true,
+            false,
+            "claude --dangerously-skip-permissions"
+        ));
+    }
+
+    #[test]
+    fn should_inject_fresh_session_id_false_when_not_claude() {
+        assert!(!super::should_inject_fresh_session_id(
+            false,
+            true,
+            "codex --dangerously-bypass-approvals-and-sandbox"
+        ));
+    }
+
+    #[test]
+    fn should_inject_fresh_session_id_false_for_each_identity_veto_token() {
+        // User-configured identity flags win; the rider must never stack onto
+        // them (stacking is a hard CLI error, Q2-verified).
+        for cmd in [
+            "claude --session-id 7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f",
+            "claude --session-id=7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f",
+            "claude --resume",
+            "claude --resume=abc",
+            "claude -r",
+            "claude --continue",
+            "claude --continue=abc",
+            "claude -c",
+            "claude --fork-session",
+            "claude --SESSION-ID x", // case-insensitive token match
+            "claude --Continue",
+        ] {
+            assert!(
+                !super::should_inject_fresh_session_id(true, true, cmd),
+                "identity flag in {:?} must veto the rider",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn should_inject_fresh_session_id_true_when_unrelated_flag_substring() {
+        // Token-equality fence: `--session-identity` is NOT `--session-id`,
+        // `--recover` is NOT `-r`.
+        assert!(super::should_inject_fresh_session_id(
+            true,
+            true,
+            "claude --session-identity thing --recover"
         ));
     }
 
