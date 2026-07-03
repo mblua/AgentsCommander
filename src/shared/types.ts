@@ -164,6 +164,32 @@ export interface CodingAgentEnv {
   enabled: boolean;
 }
 
+/**
+ * #769 — a built-in coding-agent catalog entry, returned by the backend
+ * `get_coding_agent_catalog` command (source of truth: the seeded, user-editable
+ * `<config_dir>/coding-agents/agents.json`). Replaces the old hardcoded
+ * `AGENT_PRESETS`. Maps onto `Omit<AgentConfig, "id">` plus `{ key, description,
+ * removable }`; `definitionToSeed()` performs that projection for the "+ Add"
+ * flow. `envs`, `isolatedHome`, and `removable` are always present (the backend
+ * fills serde defaults); `instructionsFilename` / `configSeed` are omitted from
+ * the JSON when unset.
+ */
+export interface CodingAgentDefinition {
+  /** Stable catalog identity, `^[a-z0-9-]+$`, unique; doubles as a testid/CSS token. */
+  key: string;
+  label: string;
+  /** "Coding Agent by …" subtitle shown on the onboarding card. */
+  description: string;
+  color: string;
+  command: string;
+  instructionsFilename?: string;
+  envs: CodingAgentEnv[];
+  isolatedHome: boolean;
+  configSeed?: ConfigSeedConfig;
+  /** Whether the user may delete this built-in (all Phase-1 built-ins are true). */
+  removable: boolean;
+}
+
 export interface CodingAgentProfilesConfig {
   schemaVersion: number;
   /** v2 (#384): renamed from `letters`. Keyed by profile slot letter A–Z. */

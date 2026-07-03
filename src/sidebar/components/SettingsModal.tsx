@@ -14,7 +14,8 @@ import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { settingsStore } from "../../shared/stores/settings";
 import { setSoundsEnabled } from "../../shared/sound";
 import { sessionsStore } from "../stores/sessions";
-import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
+import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
+import { codingAgentsStore } from "../stores/coding-agents";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
@@ -209,6 +210,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setExpandedCells(`${agentId}:${letter}`, !isCellExpanded(agentId, letter));
 
   onMount(async () => {
+    // #769 — populate the backend-owned coding-agent catalog for the quick-add
+    // row. Pre-seeded with the fallback, so the buttons render immediately.
+    void codingAgentsStore.ensureLoaded();
     const [loaded, wsRunning] = await Promise.all([
       SettingsAPI.get(),
       SettingsAPI.getWebServerStatus().catch(() => false),
@@ -1490,77 +1494,27 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     );
   };
 
+  // #769 — quick-add buttons are driven by the backend-owned catalog
+  // (`codingAgentsStore`) instead of a hand-maintained button per agent. Order,
+  // per-command `hasAgentByCommand` guards, testids, and `addAgent` are preserved
+  // verbatim; `+ Custom Agent` stays hardcoded last (it is not a catalog entry).
   const renderAgentPresets = () => (
     <div class="settings-agent-actions">
-      <button
-        class="settings-preset-btn"
-        onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
-        disabled={hasAgentByCommand("claude")}
-        data-ac-testid="settings.agentPreset.claude"
-        data-ac-role="button"
-        data-ac-state={hasAgentByCommand("claude") ? "disabled" : "available"}
-      >
-        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.claude.color }} />
-        + Claude Code
-      </button>
-      <button
-        class="settings-preset-btn"
-        onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
-        disabled={hasAgentByCommand("codex")}
-        data-ac-testid="settings.agentPreset.codex"
-        data-ac-role="button"
-        data-ac-state={hasAgentByCommand("codex") ? "disabled" : "available"}
-      >
-        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.codex.color }} />
-        + Codex
-      </button>
-      <button
-        class="settings-preset-btn"
-        onClick={() => addAgent(AGENT_PRESET_MAP.hermes)}
-        disabled={hasAgentByCommand("hermes")}
-        data-ac-testid="settings.agentPreset.hermes"
-        data-ac-role="button"
-        data-ac-state={hasAgentByCommand("hermes") ? "disabled" : "available"}
-      >
-        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.hermes.color }} />
-        + Hermes
-      </button>
-      <button
-        class="settings-preset-btn"
-        onClick={() => addAgent(AGENT_PRESET_MAP.cursor)}
-        disabled={hasAgentByCommand("agent")}
-        data-ac-testid="settings.agentPreset.cursor"
-        data-ac-role="button"
-        data-ac-state={hasAgentByCommand("agent") ? "disabled" : "available"}
-      >
-        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.cursor.color }} />
-        + Cursor CLI
-      </button>
-      <button
-        class="settings-preset-btn"
-        onClick={() => addAgent(AGENT_PRESET_MAP.pi)}
-        disabled={hasAgentByCommand("pi")}
-        data-ac-testid="settings.agentPreset.pi"
-        data-ac-role="button"
-        data-ac-state={hasAgentByCommand("pi") ? "disabled" : "available"}
-      >
-        <span class="settings-color-dot" style={{ background: AGENT_PRESET_MAP.pi.color }} />
-        + Pi
-      </button>
-      <button
-        class="settings-preset-btn"
-        onClick={() => addAgent(AGENT_PRESET_MAP.opencode)}
-        disabled={hasAgentByCommand("opencode")}
-        data-ac-testid="settings.agentPreset.opencode"
-        data-ac-role="button"
-        data-ac-state={hasAgentByCommand("opencode") ? "disabled" : "available"}
-      >
-        <span
-          class="settings-color-dot"
-          style={{ background: AGENT_PRESET_MAP.opencode.color }}
-        />
-        + OpenCode
-      </button>
+      <For each={codingAgentsStore.catalog()}>
+        {(def) => (
+          <button
+            class="settings-preset-btn"
+            onClick={() => addAgent(definitionToSeed(def))}
+            disabled={hasAgentByCommand(def.command)}
+            data-ac-testid={`settings.agentPreset.${def.key}`}
+            data-ac-role="button"
+            data-ac-state={hasAgentByCommand(def.command) ? "disabled" : "available"}
+          >
+            <span class="settings-color-dot" style={{ background: def.color }} />
+            + {def.label}
+          </button>
+        )}
+      </For>
       <button
         class="settings-add-btn"
         onClick={() => addAgent()}
