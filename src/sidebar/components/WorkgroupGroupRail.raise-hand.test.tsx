@@ -157,7 +157,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     document.body.replaceChildren();
   });
 
-  it("lights the amber badge on All and on the group whose coordinator raised a hand", async () => {
+  it("lights the amber badge on the group whose coordinator raised a hand, never on All (#775)", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
@@ -168,19 +168,47 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     );
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
-      // Aggregates up to All; lights the matching group; leaves the rest dark.
-      await waitFor(() => expect(railRaiseHands()).toEqual(["all", "ui"]));
+      // #775: lights the matching group; All never lights; the rest stay dark.
+      await waitFor(() => expect(railRaiseHands()).toEqual(["ui"]));
 
       const badge = target<HTMLElement>("workgroupGroups.raiseHand.ui");
       expect(badge.classList.contains("workgroup-group-rail-raise-hand")).toBe(true);
       expect(badge.textContent?.trim()).toBe("!");
       expect(badge.getAttribute("aria-label")).toBe("A coordinator raised its hand");
+
+      // #775 rule 3: the indicator renders before (to the left of) the title —
+      // it is the button's first element child, ahead of the name/dot/counter.
+      const button = target<HTMLElement>("workgroupGroups.button.ui");
+      expect(button.firstElementChild).toBe(badge);
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("aggregates onto All and Ungrouped when an ungrouped workgroup's coordinator raised", async () => {
+  it("never lights All even when every member workgroup has a raised hand (#775)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+    sessionsStore.setSessions([
+      raisedSession("wg-1-dev-team"),
+      raisedSession("wg-2-rust-team"),
+      raisedSession("wg-3-docs-team"),
+    ]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+      // Ungrouped + every dynamic group lights, but All stays dark regardless.
+      await waitFor(() => expect(railRaiseHands()).toEqual(["ungrouped", "ui", "rust"]));
+      expect(railRaiseHands()).not.toContain("all");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("aggregates onto Ungrouped (never All) when an ungrouped workgroup's coordinator raised (#775)", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([raisedSession("wg-3-docs-team")]);
@@ -191,7 +219,8 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     );
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
-      await waitFor(() => expect(railRaiseHands()).toEqual(["all", "ungrouped"]));
+      // #775: Ungrouped still aggregates the ungrouped raise; All never lights.
+      await waitFor(() => expect(railRaiseHands()).toEqual(["ungrouped"]));
     } finally {
       rendered.cleanup();
     }
@@ -226,9 +255,9 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       expect(railRaiseHands()).toEqual([]);
 
-      // Hand goes up -> badge appears on All + the group.
+      // Hand goes up -> badge appears on the group only (never All, #775).
       sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
-      await waitFor(() => expect(railRaiseHands()).toEqual(["all", "ui"]));
+      await waitFor(() => expect(railRaiseHands()).toEqual(["ui"]));
 
       // User attends (backend clears communication) -> badge disappears.
       sessionsStore.setCommunication("session-wg-1-dev-team", null);

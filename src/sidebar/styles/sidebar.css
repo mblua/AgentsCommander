@@ -2832,16 +2832,19 @@ html.light-theme .settings-hint-warning {
   vertical-align: -1px;
 }
 
-/* #763 — raise-hand indicator on a group-rail tab. Amber '!' pinned to the
-   top-right corner (absolute, so it stays OUT of the button's pre-line text
-   flow and never reflows the name/counter — the #742 trap the working dot's
-   comment above warns about). Reuses the amber palette of the per-coordinator
-   row indicator (.coord-communication-slot) for visual consistency.
-   pointer-events:none keeps the whole tab uniformly clickable. */
+/* #763/#775 — raise-hand indicator on a group-rail tab. Amber '!' pinned to
+   the top-LEFT corner, i.e. to the left of the group title (#775: it reads as
+   "(!) <title>" and never sits by the counter). Kept absolute so it stays OUT
+   of the button's pre-line text flow and never reflows the name/counter — the
+   #742 no-mid-word-split trap the working dot's comment above warns about;
+   an inline badge before the name would re-tighten the name line on the 68px
+   rail. Reuses the amber palette of the per-coordinator row indicator
+   (.coord-communication-slot) for visual consistency. pointer-events:none
+   keeps the whole tab uniformly clickable. */
 .workgroup-group-rail-button .workgroup-group-rail-raise-hand {
   position: absolute;
   top: 2px;
-  right: 2px;
+  left: 2px;
   width: 12px;
   height: 12px;
   display: flex;

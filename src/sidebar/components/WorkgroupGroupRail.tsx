@@ -104,6 +104,12 @@ const ProjectRailSection: Component<{
       result.push({
         key: "all",
         ...buttonContent("All", props.project.workgroups),
+        // #775 — the built-in "All" group never shows the raise-hand indicator,
+        // under any condition (even when a member workgroup's coordinator has a
+        // raised hand). Gated here on the statically-built "all" entry, not on
+        // the display name, so a user group coincidentally named "All" is
+        // unaffected. Ungrouped + dynamic groups keep their aggregation below.
+        raiseHand: false,
         selection: { kind: "all" },
         workgroups: props.project.workgroups,
         title: tooltipFor(props.project.workgroups),
