@@ -244,6 +244,11 @@ pub fn run(
     // call `get_coding_agent_catalog`.
     config::coding_agents_catalog::ensure_seeded(&config_dir);
 
+    // #769 Phase 2 - seed the dest-keyed default config-folder masters once
+    // (create-if-absent, fail-soft). They back the absent-only spawn tier and the
+    // Settings re-seed button.
+    config::coding_agents_catalog::ensure_seeded_masters(&config_dir);
+
     let instance_id = uuid::Uuid::new_v4().to_string();
     let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
@@ -1915,6 +1920,8 @@ pub fn run(
             commands::pty::get_screen_snapshot,
             commands::config::get_settings,
             commands::config::get_coding_agent_catalog,
+            commands::config::list_reseedable_agent_commands,
+            commands::config::reseed_coding_agent_default,
             commands::config::update_settings,
             commands::resource_monitor::get_resource_snapshot,
             commands::resource_monitor::kill_resource_group,

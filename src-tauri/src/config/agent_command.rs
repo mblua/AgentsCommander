@@ -863,6 +863,21 @@ pub fn build_agent_spawn_command(
                 placeholder_context.as_ref(),
             );
             if let Some(r) = resolved.as_mut() {
+                // #769 P2: append the absent-only, non-empty CatalogDefault tier
+                // LAST (lowest precedence). Pure path math here; perform_config_seed
+                // gates it on absent-dest + non-empty master, so it never overwrites
+                // an existing replica config. The master exists only for built-ins
+                // that ship one; for any other dest the candidate path is absent and
+                // the tier is inert.
+                if let Some(config_dir) = crate::config::config_dir() {
+                    r.candidates.push((
+                        crate::config::config_seed::ConfigSeedTier::CatalogDefault,
+                        crate::config::coding_agents_catalog::master_dir_for_dest(
+                            &config_dir,
+                            cfg.dest.trim(),
+                        ),
+                    ));
+                }
                 r.config_dir_warning = crate::config::config_seed::compute_config_dir_warning(
                     &r.dest,
                     &shell,
@@ -1971,24 +1986,30 @@ mod tests {
         use crate::config::config_seed::ConfigSeedTier;
         // Workspace tiers outrank matrix tiers; profile beats base in each. The
         // matrix's bare `.claude` (the agent's own live config) is never a source.
-        assert_eq!(
-            seed.candidates,
-            vec![
-                (
-                    ConfigSeedTier::WorkspaceProfile,
-                    workspace.join(format!("default_profile_{}.claude", letter))
-                ),
-                (
-                    ConfigSeedTier::WorkspaceBase,
-                    workspace.join("default.claude")
-                ),
-                (
-                    ConfigSeedTier::MatrixProfile,
-                    matrix.join(format!("default_profile_{}.claude", letter))
-                ),
-                (ConfigSeedTier::MatrixBase, matrix.join("default.claude")),
-            ]
-        );
+        // #769 P2 appends the absent-only CatalogDefault master LAST (still pure
+        // path math; perform_config_seed gates it on absent-dest + non-empty).
+        let mut expected = vec![
+            (
+                ConfigSeedTier::WorkspaceProfile,
+                workspace.join(format!("default_profile_{}.claude", letter)),
+            ),
+            (
+                ConfigSeedTier::WorkspaceBase,
+                workspace.join("default.claude"),
+            ),
+            (
+                ConfigSeedTier::MatrixProfile,
+                matrix.join(format!("default_profile_{}.claude", letter)),
+            ),
+            (ConfigSeedTier::MatrixBase, matrix.join("default.claude")),
+        ];
+        if let Some(config_dir) = crate::config::config_dir() {
+            expected.push((
+                ConfigSeedTier::CatalogDefault,
+                crate::config::coding_agents_catalog::master_dir_for_dest(&config_dir, ".claude"),
+            ));
+        }
+        assert_eq!(seed.candidates, expected);
         assert_eq!(seed.dest, expected_replica.join(".claude"));
         // Pure resolution: no template dirs were created.
         assert!(!workspace.join("default.claude").exists());

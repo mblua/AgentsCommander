@@ -107,6 +107,31 @@ pub async fn get_coding_agent_catalog(
     Ok(crate::config::coding_agents_catalog::load_catalog(&config_dir))
 }
 
+/// #769 Phase 2 - the coding-agent command executable basenames that ship a
+/// re-seedable default config-folder master (`claude`, `codex`, `opencode`). The
+/// frontend enables the "Re-seed default configuration" button only for a catalog
+/// def whose command reduces (exact basename) to one of these; the reseed command
+/// re-checks server-side.
+#[tauri::command]
+pub fn list_reseedable_agent_commands() -> Vec<String> {
+    crate::config::coding_agents_catalog::reseedable_command_basenames()
+}
+
+/// #769 Phase 2 - restore a built-in's shipped default config-folder master (the
+/// Settings "Re-seed default configuration" button). Gating is re-checked
+/// server-side (exact executable basename, never `starts_with`, so `pi`/`agent`
+/// cannot false-match): `command` must map to a built-in that ships a master, else
+/// `Err`. On success the current master is `.bak`ed first, then atomically
+/// replaced with the embedded default; it takes effect on NEW sessions via the
+/// absent-only fill. Running replicas and their live config are untouched.
+#[tauri::command]
+pub async fn reseed_coding_agent_default(
+    command: String,
+) -> Result<crate::config::coding_agents_catalog::ReseedResult, String> {
+    let config_dir = crate::config::config_dir().ok_or("No config dir")?;
+    crate::config::coding_agents_catalog::reseed_master_for_command(&config_dir, &command)
+}
+
 #[tauri::command]
 pub async fn update_settings(
     app: AppHandle,

@@ -6,6 +6,7 @@ import type { CodingAgentDefinition } from "../../shared/types";
 import { codingAgentsStore } from "./coding-agents";
 
 const CMD = "get_coding_agent_catalog";
+const LIST_CMD = "list_reseedable_agent_commands";
 
 function def(key: string): CodingAgentDefinition {
   return {
@@ -27,6 +28,9 @@ describe("codingAgentsStore (#769)", () => {
     codingAgentsStore.resetForTests();
     fake = new FakeTransport();
     __setTransportForTests(fake);
+    // Default the Phase-2 reseedable fetch so the catalog-focused cases don't hit
+    // an unhandled invoke; individual tests override it.
+    fake.resolve(LIST_CMD, []);
   });
 
   afterEach(() => {
@@ -78,5 +82,30 @@ describe("codingAgentsStore (#769)", () => {
     await codingAgentsStore.ensureLoaded();
     await codingAgentsStore.ensureLoaded();
     expect(fake.callsFor(CMD).length).toBe(1);
+  });
+
+  it("loads the reseedable command set on success", async () => {
+    fake.resolve(CMD, [def("claude")]);
+    fake.resolve(LIST_CMD, ["claude", "codex", "opencode"]);
+    await codingAgentsStore.ensureLoaded();
+    expect(codingAgentsStore.reseedableCommands()).toEqual(["claude", "codex", "opencode"]);
+  });
+
+  it("independent failure: catalog fails but the reseedable set still loads", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fake.reject(CMD, "catalog dead");
+    fake.resolve(LIST_CMD, ["claude"]);
+    await codingAgentsStore.ensureLoaded();
+    expect(codingAgentsStore.catalog()).toBe(FALLBACK_CODING_AGENTS); // fallback kept
+    expect(codingAgentsStore.reseedableCommands()).toEqual(["claude"]);
+  });
+
+  it("independent failure: reseedable fails but the catalog still loads (set stays empty = no buttons)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fake.resolve(CMD, [def("claude")]);
+    fake.reject(LIST_CMD, "reseedable dead");
+    await codingAgentsStore.ensureLoaded();
+    expect(codingAgentsStore.catalog()).toEqual([def("claude")]);
+    expect(codingAgentsStore.reseedableCommands()).toEqual([]);
   });
 });
