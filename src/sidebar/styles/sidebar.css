@@ -6796,7 +6796,12 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access {
 
 .onboarding-modal {
   width: min(420px, 94%);
-  max-height: 80vh;
+  /* #768 — fit all 7 preset cards (Claude Code, Codex, Hermes, Cursor CLI,
+     Pi, OpenCode, Custom Agent) without an inner scrollbar. The resting list
+     is ~560px tall (header + welcome + 7×~50px cards + footer); 680px clears
+     it with headroom, and the 90vh cap keeps the modal on-screen — only a
+     genuinely short viewport falls back to scrolling. */
+  max-height: min(680px, 90vh);
 }
 
 .onboarding-body {
@@ -6804,6 +6809,11 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access {
   flex-direction: column;
   padding: var(--spacing-lg) var(--spacing-md);
   gap: var(--spacing-md);
+  /* Drop the generic .wizard-body 50vh cap (which clipped the last cards
+     behind an inner scroll); the modal's own max-height now governs, and the
+     inherited `overflow-y: auto` still scrolls only when the modal is capped
+     on a small viewport. */
+  max-height: none;
 }
 
 .onboarding-welcome {

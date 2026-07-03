@@ -83,7 +83,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     key: "opencode",
     label: "OpenCode",
-    description: "Open-source terminal coding agent by SST",
+    description: "Open-source terminal coding agent by Anomaly",
     color: "#64748b",
     config: {
       label: "OpenCode",
