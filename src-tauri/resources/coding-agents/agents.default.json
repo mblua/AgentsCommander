@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "agents": [
+    {
+      "key": "claude",
+      "label": "Claude Code",
+      "description": "Coding Agent by Anthropic",
+      "color": "#d97706",
+      "command": "claude",
+      "instructionsFilename": "CLAUDE.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true
+    },
+    {
+      "key": "codex",
+      "label": "Codex",
+      "description": "Coding Agent by OpenAI",
+      "color": "#10b981",
+      "command": "codex",
+      "instructionsFilename": "AGENTS.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true
+    },
+    {
+      "key": "hermes",
+      "label": "Hermes",
+      "description": "Coding Agent by Nous Research",
+      "color": "#8b5cf6",
+      "command": "hermes",
+      "instructionsFilename": "AGENTS.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true
+    },
+    {
+      "key": "cursor",
+      "label": "Cursor CLI",
+      "description": "Coding Agent by Cursor",
+      "color": "#22d3ee",
+      "command": "agent",
+      "instructionsFilename": "AGENTS.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true
+    },
+    {
+      "key": "pi",
+      "label": "Pi",
+      "description": "Coding Agent by Earendil Inc",
+      "color": "#ec4899",
+      "command": "pi",
+      "instructionsFilename": "AGENTS.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true
+    },
+    {
+      "key": "opencode",
+      "label": "OpenCode",
+      "description": "Open-source terminal coding agent by Anomaly",
+      "color": "#64748b",
+      "command": "opencode",
+      "instructionsFilename": "AGENTS.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true
+    }
+  ]
+}
