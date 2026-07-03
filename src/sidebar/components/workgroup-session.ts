@@ -35,3 +35,26 @@ export function isWorkingReplicaDot(dot: SessionDotClass): boolean {
 export function workgroupIsWorking(wg: AcWorkgroup): boolean {
   return wg.agents.some((replica) => isWorkingReplicaDot(replicaDotClass(wg, replica)));
 }
+
+/**
+ * #763 — true when this replica is a coordinator currently showing a raised
+ * hand. Mirrors ProjectPanel's per-row `showRaiseHand` predicate exactly so the
+ * group-tab badge lights iff a coordinator row shows the hand:
+ *  - no liveness gate — #747 keeps a restored/dormant coordinator's persisted
+ *    hand visible (every real-exit path clears communication), so the tab must
+ *    light for those too;
+ *  - the `wg.taskTitle` gate matches the coordinator quick-list row, which only
+ *    renders the hand inside its task line (`renderReplicaItem(..., wg.taskTitle,
+ *    "quick")`).
+ */
+export function replicaHasRaisedHand(wg: AcWorkgroup, replica: AcAgentReplica): boolean {
+  if (!replica.isCoordinator) return false;
+  if (!wg.taskTitle) return false;
+  const communication = findReplicaSession(wg, replica)?.communication;
+  return communication?.kind === "raiseHand" && communication?.visible === true;
+}
+
+/** #763 — true when any coordinator in the workgroup has a raised hand. */
+export function workgroupHasRaisedHand(wg: AcWorkgroup): boolean {
+  return wg.agents.some((replica) => replicaHasRaisedHand(wg, replica));
+}
