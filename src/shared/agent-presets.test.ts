@@ -29,6 +29,8 @@ describe("agent presets (#529)", () => {
     const opencode = AGENT_PRESETS.find((p) => p.key === "opencode");
     expect(opencode).toBeTruthy();
     expect(opencode?.label).toBe("OpenCode");
+    // #768 — subtitle re-attributed from SST to Anomaly.
+    expect(opencode?.description).toBe("Open-source terminal coding agent by Anomaly");
     expect(opencode?.config.command).toBe("opencode");
     expect(opencode?.config.instructionsFilename).toBe("AGENTS.md");
     // Reachable via the quick-add lookup the Config Screen buttons use.
