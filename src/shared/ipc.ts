@@ -13,6 +13,7 @@ import type {
   UpdateInfo,
   CodingAgentEnv,
   CodingAgentDefinition,
+  ReseedResult,
   CodingAgentProfilesConfig,
   RepoMatch,
   BridgeInfo,
@@ -260,6 +261,22 @@ export const CodingAgentsAPI = {
    */
   getCatalog: () =>
     transport.invoke<CodingAgentDefinition[]>("get_coding_agent_catalog"),
+
+  /**
+   * #769 Phase 2 — lowercased command basenames that ship a non-empty default
+   * config-folder master (today `["claude","codex","opencode"]`). Backend-derived
+   * from the shipped masters; the re-seed button is gated on EXACT membership.
+   */
+  listReseedableCommands: () =>
+    transport.invoke<string[]>("list_reseedable_agent_commands"),
+
+  /**
+   * #769 Phase 2 — restore an agent's default config-folder master to the shipped
+   * default, backing up the prior master. Resolves `Ok(ReseedResult)`; rejects if
+   * `command` is not a reseedable built-in (gating is re-checked server-side).
+   */
+  reseedDefault: (command: string) =>
+    transport.invoke<ReseedResult>("reseed_coding_agent_default", { command }),
 };
 
 export const SettingsAPI = {
