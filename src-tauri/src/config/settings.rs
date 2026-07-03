@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -1735,10 +1736,20 @@ pub fn read_log_level_only() -> Option<String> {
     read_log_level_from_path(&settings_path()?)
 }
 
+/// #774: counter feeding the per-call unique temp filename for settings saves.
+/// Combined with the PID it makes `settings.json.<pid>.<op_id>.tmp` distinct from
+/// any concurrent cross-process save (GUI startup, CLI verbs, closing flush) and
+/// from any leftover temp written by a prior crashed run. Mirrors
+/// `sessions_persistence::SAVE_OP_ID` (sessions_persistence.rs:47); a separate
+/// counter so the two can be reasoned about independently in diagnostics.
+static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
+
 /// Save settings to the app config directory (see config_dir()).
-/// Atomic write (tmp + rename) per G.14 — mirrors `sessions_persistence::save_sessions`.
-/// Splitter-drag debouncing raises save frequency in 0.8.0; atomic writes ensure a crash
-/// mid-write cannot corrupt the existing settings.json.
+/// Atomic write via `save_settings_to_path`: a per-writer unique temp plus
+/// `sessions_persistence::rename_with_retry` (#774), matching the concurrency
+/// hardening `save_sessions` already uses (sessions_persistence.rs #291/#280).
+/// Splitter-drag debouncing raises save frequency in 0.8.0; the atomic tmp+rename
+/// ensures a crash mid-write cannot corrupt the existing settings.json.
 pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join("settings.json");
@@ -1756,11 +1767,37 @@ fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), Stri
     let json = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
 
-    let tmp_path = dir.join("settings.json.tmp");
-    std::fs::write(&tmp_path, &json)
-        .map_err(|e| format!("Failed to write temp settings file: {}", e))?;
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| format!("Failed to rename settings file: {}", e))?;
+    // #774 (A): unique temp filename per save. Combined with rename_with_retry
+    // below, this kills the shared-`settings.json.tmp` race: two cross-process
+    // writers (GUI startup, CLI verbs, closing flush) can never collide on the
+    // temp file, and any leftover `.tmp` from a prior crashed run cannot be
+    // mistaken for ours. Mirrors sessions_persistence.rs:763-765.
+    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let tmp_path = dir.join(format!("settings.json.{}.{}.tmp", pid, op_id));
+
+    if let Err(e) = std::fs::write(&tmp_path, &json) {
+        // Best-effort cleanup: the partial write may have created the file even
+        // though write returned Err (e.g. ENOSPC mid-stream).
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write temp settings file: {}", e));
+    }
+
+    // #774 (B): route the rename through the reviewed retry helper. It absorbs
+    // transient cross-process contention on the DESTINATION (a second AC
+    // instance, AV, or the Indexer briefly holding settings.json; os errors
+    // 5/32/33/1175). With the unique temp above, our source can never be
+    // consumed by another writer, so os error 2 (source absent) is no longer a
+    // concurrency symptom; if it still surfaces it is propagated (with the OS
+    // error in the message) after the bounded retry, not masked.
+    if let Err((err_msg, _diag)) =
+        crate::config::sessions_persistence::rename_with_retry(&tmp_path, path)
+    {
+        // Best-effort cleanup of our unique temp so failed saves don't litter
+        // the config dir. The unique name guarantees this removes only OUR temp.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to rename settings file: {}", err_msg));
+    }
 
     log::debug!("Saved settings to {:?}", path);
     Ok(())
