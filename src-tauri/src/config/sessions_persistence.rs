@@ -879,6 +879,28 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
                 tokens.remove(idx);
                 continue;
             }
+            // (#756) Rider belt: strip the launcher-minted identity so it can
+            // never self-perpetuate; a replayed stale --session-id hard-fails
+            // the spawn (transcript collision), unlike a stale --continue.
+            // UUID-gated: only the AC-injected `--session-id <v4>` shape is
+            // removed; user-authored non-UUID values win.
+            let lower = tokens[idx].to_lowercase();
+            if lower == "--session-id"
+                && tokens
+                    .get(idx + 1)
+                    .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+            {
+                tokens.remove(idx);
+                tokens.remove(idx); // paired UUID value
+                continue;
+            }
+            if lower
+                .strip_prefix("--session-id=")
+                .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+            {
+                tokens.remove(idx);
+                continue;
+            }
             idx += 1;
         }
     }
@@ -1020,7 +1042,12 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
         result
     } else {
         let mut result = Vec::with_capacity(args.len());
+        let mut skip_next = false;
         for (idx, a) in args.iter().enumerate() {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
             if is_codex
                 && idx == 0
                 && a.eq_ignore_ascii_case("resume")
@@ -1064,6 +1091,26 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
 
             if is_claude && a.eq_ignore_ascii_case("--continue") {
                 continue;
+            }
+            // (#756) Rider belt, direct-exec form: strip the launcher-minted
+            // `--session-id <v4>` pair / `--session-id=<v4>` joined token.
+            // UUID-gated so user-authored non-UUID values are preserved.
+            if is_claude {
+                let lower = a.to_lowercase();
+                if lower == "--session-id"
+                    && args
+                        .get(idx + 1)
+                        .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+                {
+                    skip_next = true; // consume the paired UUID value too
+                    continue;
+                }
+                if lower
+                    .strip_prefix("--session-id=")
+                    .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+                {
+                    continue;
+                }
             }
             result.push(a.clone());
         }
@@ -1337,6 +1384,71 @@ async fn clear_user_input_transitions_and_persist_to_dir_result(
     Ok(cleared)
 }
 
+/// (#756) Stamp the durable fresh intent (AC-driven clear boundary) and persist
+/// the result atomically with respect to all session persistence. Returns
+/// Ok(true) iff the field transitioned false -> true (a snapshot was saved).
+/// Same lock discipline as `clear_user_input_transitions_and_persist_result`:
+/// mutation + snapshot + save under a single `sessions_save_lock()` acquisition,
+/// so no concurrent persist can write an intermediate state.
+pub async fn set_start_fresh_and_persist_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+) -> Result<bool, String> {
+    let dir = super::config_dir();
+    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    write_start_fresh_and_persist_to_dir_result(
+        mgr,
+        session_id,
+        true,
+        dir.as_deref(),
+        Some(&project_paths),
+    )
+    .await
+}
+
+/// (#756) Drop the durable fresh intent (AC injected post-boundary CONTENT) and
+/// persist. Returns Ok(true) iff the field transitioned true -> false.
+/// DELIBERATELY NARROW: touches only `start_fresh_on_restore`; never raise-hand,
+/// silence, or badge state (this is NOT the user-input choke point).
+pub async fn clear_start_fresh_and_persist_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+) -> Result<bool, String> {
+    let dir = super::config_dir();
+    let project_paths = crate::config::settings::load_settings_for_cli().project_paths;
+    write_start_fresh_and_persist_to_dir_result(
+        mgr,
+        session_id,
+        false,
+        dir.as_deref(),
+        Some(&project_paths),
+    )
+    .await
+}
+
+/// (#756) Shared core for the fresh-intent stamp/drop persist wrappers. Like the
+/// #698 helper, the in-memory mutation stands even if the save fails (Err
+/// reports the save failure; callers log a warn, no rollback).
+async fn write_start_fresh_and_persist_to_dir_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    value: bool,
+    dir: Option<&Path>,
+    project_paths: Option<&[String]>,
+) -> Result<bool, String> {
+    let _guard = sessions_save_lock().lock().await;
+    let changed = if value {
+        mgr.set_start_fresh_on_restore_if_unset(session_id).await
+    } else {
+        mgr.clear_start_fresh_on_restore_if_set(session_id).await
+    };
+    if changed {
+        let dir = dir.ok_or("Could not determine home directory")?;
+        snapshot_and_save_locked(mgr, dir, project_paths).await?;
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1345,8 +1457,8 @@ mod tests {
         persist_current_state_to_dir_result, purge_sessions_outside_project_paths_in_dir,
         raise_hand_and_persist_to_dir_result, rename_with_retry, sanitize_failed_recoverable,
         save_sessions_to_dir, sessions_save_lock, snapshot_sessions, strip_auto_injected_args,
-        working_directory_under_any_project_path, PersistedSession, RaiseHandPersistOutcome,
-        RENAME_ATTEMPTS,
+        working_directory_under_any_project_path, write_start_fresh_and_persist_to_dir_result,
+        PersistedSession, RaiseHandPersistOutcome, RENAME_ATTEMPTS,
     };
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
@@ -2108,6 +2220,136 @@ mod tests {
         assert!(after[0].communication.is_none());
     }
 
+    // ---- (#756) fresh-intent stamp/drop persist wrappers ----
+
+    /// (#756) The stamp persists `startFreshOnRestore: true` exactly once: the
+    /// first call transitions and saves, the second returns Ok(false) (no
+    /// rewrite needed).
+    #[tokio::test]
+    async fn set_start_fresh_persists_true_transition_exactly_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let stamped = write_start_fresh_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            true,
+            Some(temp.path()),
+            None,
+        )
+        .await
+        .expect("stamp+persist should succeed");
+        assert!(stamped, "first stamp must report the false -> true transition");
+
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].start_fresh_on_restore, "stamp must reach the snapshot");
+
+        // Second stamp is a no-op: Ok(false), and the file is not rewritten.
+        std::fs::remove_file(temp.path().join("sessions.json")).expect("remove snapshot");
+        let again = write_start_fresh_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            true,
+            Some(temp.path()),
+            None,
+        )
+        .await
+        .expect("idempotent stamp should succeed");
+        assert!(!again, "second stamp must be Ok(false)");
+        assert!(
+            !temp.path().join("sessions.json").exists(),
+            "a no-op stamp must not save"
+        );
+    }
+
+    /// (#756) The drop persists the true -> false transition.
+    #[tokio::test]
+    async fn clear_start_fresh_persists_false_transition() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+        mgr.set_start_fresh_on_restore(session.id, true).await;
+
+        let dropped = write_start_fresh_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            false,
+            Some(temp.path()),
+            None,
+        )
+        .await
+        .expect("drop+persist should succeed");
+        assert!(dropped, "drop must report the true -> false transition");
+
+        let live = mgr.list_sessions().await;
+        assert!(!live[0].start_fresh_on_restore);
+        let saved =
+            std::fs::read_to_string(temp.path().join("sessions.json")).expect("read sessions.json");
+        let rows: Vec<PersistedSession> = serde_json::from_str(&saved).expect("deserialize");
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].start_fresh_on_restore, "drop must reach the snapshot");
+    }
+
+    /// (#756) Dropping an unset record is Ok(false) and does not save.
+    #[tokio::test]
+    async fn clear_start_fresh_on_unset_record_is_noop_and_does_not_save() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        let dropped = write_start_fresh_and_persist_to_dir_result(
+            &mgr,
+            session.id,
+            false,
+            Some(temp.path()),
+            None,
+        )
+        .await
+        .expect("no-op drop should succeed");
+        assert!(!dropped, "drop on an unset record must be Ok(false)");
+        assert!(
+            !temp.path().join("sessions.json").exists(),
+            "a no-op drop must not save"
+        );
+    }
+
     #[test]
     fn filter_sessions_for_project_paths_drops_coordinator_and_non_coordinator_orphans() {
         let project_paths = vec!["C:/projects/current".to_string()];
@@ -2447,6 +2689,57 @@ mod tests {
             ],
         );
         assert_eq!(stripped, vec!["/C".to_string(), "claude".to_string()]);
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_direct_claude_session_id() {
+        // (#756) Rider belt: the launcher-minted identity pair is stripped from
+        // the saved recipe (a replayed stale --session-id hard-fails the spawn).
+        let stripped = strip_auto_injected_args(
+            "claude",
+            &[
+                "--dangerously-skip-permissions".to_string(),
+                "--session-id".to_string(),
+                "7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f".to_string(),
+            ],
+        );
+        assert_eq!(stripped, vec!["--dangerously-skip-permissions".to_string()]);
+
+        // The joined form is removed too.
+        let joined = strip_auto_injected_args(
+            "claude",
+            &[
+                "--session-id=7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f".to_string(),
+                "--search".to_string(),
+            ],
+        );
+        assert_eq!(joined, vec!["--search".to_string()]);
+    }
+
+    #[test]
+    fn strip_auto_injected_args_removes_embedded_cmd_claude_session_id() {
+        // (#756) cmd-embedded tail loses BOTH injected flags (--continue and the
+        // rider pair).
+        let stripped = strip_auto_injected_args(
+            "cmd.exe",
+            &[
+                "/C".to_string(),
+                "npx claude --continue --session-id 7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f"
+                    .to_string(),
+            ],
+        );
+        assert_eq!(
+            stripped,
+            vec!["/C".to_string(), "npx claude".to_string()]
+        );
+    }
+
+    #[test]
+    fn strip_auto_injected_args_preserves_session_id_without_uuid_value() {
+        // (#756) Pins the UUID gate: a user-authored --session-id with a
+        // non-UUID value is never eaten.
+        let args = vec!["--session-id".to_string(), "not-a-uuid".to_string()];
+        assert_eq!(strip_auto_injected_args("claude", &args), args);
     }
 
     #[test]

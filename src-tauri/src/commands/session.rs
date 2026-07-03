@@ -737,7 +737,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     agent_label: Option<String>,
     skip_tooling_save: bool,
     git_repos: Vec<SessionRepo>,
-    skip_auto_resume: bool,
+    mut skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
 ) -> Result<SessionInfo, String> {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);

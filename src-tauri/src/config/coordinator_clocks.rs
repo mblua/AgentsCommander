@@ -50,6 +50,17 @@ pub struct ClockEntry {
     /// renderer treats manual as the winner if both were ever set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manually_closed_at: Option<DateTime<Utc>>,
+    /// (#756) Durable fresh-conversation intent, mirrored from the session
+    /// record's `start_fresh_on_restore` for coordinators. `Some` means: the
+    /// newest provider transcript for this cwd predates the user's last
+    /// fresh-boundary action (restart or AC-driven /clear) and no post-boundary
+    /// content exists yet, so the create path must suppress provider resume
+    /// injection (claude --continue / codex resume --last / gemini --resume
+    /// latest). Survives record destruction (idle auto-close, manual close).
+    /// Cleared by typed user input and by AC-injected message content; NOT
+    /// cleared when honored at create (repeat reopens must stay fresh).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_fresh_at: Option<DateTime<Utc>>,
 }
 
 impl ClockEntry {
@@ -108,6 +119,7 @@ impl CoordinatorClocks {
                 last_activity_at: None,
                 auto_closed_at: None,
                 manually_closed_at: None,
+                start_fresh_at: None,
             },
         );
         self.dirty = true;
@@ -205,6 +217,39 @@ impl CoordinatorClocks {
         if let Some(entry) = self.map.get_mut(fqn) {
             if entry.manually_closed_at.is_some() {
                 entry.manually_closed_at = None;
+                self.dirty = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// (#756) Fresh-intent accessor.
+    pub fn start_fresh_at(&self, fqn: &str) -> Option<DateTime<Utc>> {
+        self.map.get(fqn).and_then(|e| e.start_fresh_at)
+    }
+
+    /// (#756) Mark a fresh-conversation boundary for `fqn` at `now`. Idempotent:
+    /// returns `true` only on the None -> Some transition (the FIRST boundary
+    /// time is preserved), so the caller logs/persists once. Preserves every
+    /// other field.
+    pub fn mark_start_fresh(&mut self, fqn: &str, now: DateTime<Utc>) -> bool {
+        let entry = self.map.entry(fqn.to_string()).or_default();
+        if entry.start_fresh_at.is_some() {
+            return false;
+        }
+        entry.start_fresh_at = Some(now);
+        self.dirty = true;
+        true
+    }
+
+    /// (#756) Drop the fresh intent once a post-boundary transcript exists
+    /// (typed input or AC-injected content). Returns `true` only on the
+    /// Some -> None transition. Preserves every other field.
+    pub fn clear_start_fresh(&mut self, fqn: &str) -> bool {
+        if let Some(entry) = self.map.get_mut(fqn) {
+            if entry.start_fresh_at.is_some() {
+                entry.start_fresh_at = None;
                 self.dirty = true;
                 return true;
             }
@@ -577,6 +622,59 @@ mod tests {
     }
 
     #[test]
+    fn mark_start_fresh_is_idempotent_and_preserves_first_time() {
+        let mut clocks = CoordinatorClocks::default();
+        let fqn = "proj:wg-1-team/coord";
+
+        assert!(
+            clocks.mark_start_fresh(fqn, ts(0)),
+            "first mark transitions None -> Some"
+        );
+        assert_eq!(clocks.start_fresh_at(fqn), Some(ts(0)));
+        assert!(
+            !clocks.mark_start_fresh(fqn, ts(50)),
+            "second mark is a no-op (already Some)"
+        );
+        // The FIRST boundary time is preserved on the idempotent call.
+        assert_eq!(clocks.start_fresh_at(fqn), Some(ts(0)));
+    }
+
+    #[test]
+    fn clear_start_fresh_only_on_some_to_none_and_preserves_other_fields() {
+        let mut clocks = CoordinatorClocks::default();
+        let fqn = "proj:wg-1-team/coord";
+
+        // No entry -> nothing to clear.
+        assert!(!clocks.clear_start_fresh(fqn));
+
+        clocks.note_user_message(fqn, ts(0));
+        clocks.mark_auto_closed(fqn, ts(1));
+        clocks.mark_start_fresh(fqn, ts(2));
+        assert!(clocks.clear_start_fresh(fqn), "Some -> None returns true");
+        assert_eq!(clocks.start_fresh_at(fqn), None);
+        // The badge clock and the auto-closed marker survive the clear.
+        assert_eq!(clocks.last_user_message_at(fqn), Some(ts(0)));
+        assert_eq!(clocks.auto_closed_at(fqn), Some(ts(1)));
+        // Clearing again is a no-op.
+        assert!(!clocks.clear_start_fresh(fqn));
+    }
+
+    #[test]
+    fn start_fresh_at_defaults_none_for_legacy_json() {
+        // Legacy coordinator_clocks.json entries carry no `startFreshAt` key;
+        // the additive field must deserialize to None.
+        let raw = r#"{ "proj:wg-1-team/coord": { "lastUserMessageAt": "2023-11-14T22:13:20Z" } }"#;
+        let map: HashMap<String, ClockEntry> =
+            serde_json::from_str(raw).expect("legacy JSON must deserialize");
+        let clocks = CoordinatorClocks { map, dirty: false };
+        assert_eq!(clocks.start_fresh_at("proj:wg-1-team/coord"), None);
+        assert_eq!(
+            clocks.last_user_message_at("proj:wg-1-team/coord"),
+            Some(ts(0))
+        );
+    }
+
+    #[test]
     fn mark_manually_closed_clears_preset_auto_closed_on_transition() {
         let mut clocks = CoordinatorClocks::default();
         let fqn = "proj:wg-1-team/coord";
@@ -724,6 +822,7 @@ mod tests {
                 last_activity_at: Some(ts(0) + Duration::minutes(50)),
                 auto_closed_at: Some(ts(0) + Duration::minutes(60)),
                 manually_closed_at: Some(ts(0) + Duration::minutes(70)),
+                start_fresh_at: Some(ts(0) + Duration::minutes(80)),
             },
         );
         // A second entry exercising the skip_serializing_if absence of two fields.
@@ -734,6 +833,7 @@ mod tests {
                 last_activity_at: None,
                 auto_closed_at: None,
                 manually_closed_at: None,
+                start_fresh_at: None,
             },
         );
 
@@ -764,9 +864,15 @@ mod tests {
             Some(ts(0) + Duration::minutes(70)),
             "manually_closed_at must survive save/load (#588)"
         );
+        assert_eq!(
+            loaded.start_fresh_at("proj:wg-1-team/coord"),
+            Some(ts(0) + Duration::minutes(80)),
+            "start_fresh_at must survive save/load (#756)"
+        );
         assert_eq!(loaded.last_activity_at("proj:wg-2-team/coord"), None);
         assert_eq!(loaded.auto_closed_at("proj:wg-2-team/coord"), None);
         assert_eq!(loaded.manually_closed_at("proj:wg-2-team/coord"), None);
+        assert_eq!(loaded.start_fresh_at("proj:wg-2-team/coord"), None);
     }
 
     // ── #621 targeted-removal + startup-prune tests ──────────────────────────
