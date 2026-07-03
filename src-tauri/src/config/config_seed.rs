@@ -413,11 +413,11 @@ pub(crate) fn is_nonempty_seed_dir(path: &Path) -> bool {
             }
             match entry.file_type() {
                 Ok(ft) if ft.is_file() => return true,
-                Ok(ft) if ft.is_dir() => {
-                    if has_file(&entry.path(), depth + 1) {
-                        return true;
-                    }
-                }
+                // A directory counts only if it (recursively) contains a regular
+                // file; a dir with no files falls through to `_` (== "keep
+                // scanning"), so an empty dir and a dir-of-empty-dirs both yield
+                // false, exactly as before the collapse.
+                Ok(ft) if ft.is_dir() && has_file(&entry.path(), depth + 1) => return true,
                 _ => {}
             }
         }
