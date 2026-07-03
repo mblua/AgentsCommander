@@ -29,13 +29,16 @@ fn normalize_profile_arg(profile: Option<String>) -> Result<Option<String>, Stri
 #[derive(Args)]
 #[command(after_help = "\
 Hands off, switches the CALLER'S OWN session coding agent and/or profile, respawns it fresh, \
-then resumes from SELF-HANDOFF.md.\n\n\
+then resumes from the handoff file.\n\n\
 BEFORE invoking, write SELF-HANDOFF.md in your own root with the notes you need to resume, EXCLUDING \
 anything already recorded in SELF-FORGET.md. If SELF-HANDOFF.md is missing, the command refuses.\n\n\
 On invocation the daemon captures a sanitized compact forgotten summary from the current replica's \
 SELF-FORGET.md, max 240 chars, then archives SELF-FORGET.md -> self-clear/<timestamp>_SELF-FORGET.md \
 (no-op if absent). The later resume prompt may include that summary only as closed background, not \
-instructions and not work to resume. SELF-HANDOFF.md remains the active resume source.\n\n\
+instructions and not work to resume. The handoff file remains the active resume source: when the \
+resume prompt fires, SELF-HANDOFF.md is first archived -> self-clear/<timestamp>_SELF-HANDOFF.md and \
+the prompt names that exact archived path (if the rename fails, the prompt points at SELF-HANDOFF.md \
+still in your root).\n\n\
 --coding-agent takes the configured coding-agent entry id from settings, not the backend kind \
 or AC peer name. Use --list-coding-agents to print valid ids and profile letters without \
 sending a switch request. If the id is unknown, the daemon rejection lists configured ids.\n\n\
@@ -305,9 +308,10 @@ pub fn execute(args: SelfSwitchArgs) -> i32 {
                         Some("queued") => crate::cli_println!(
                             "self-handoff-and-switch requested. Phase 1 respawns only after this session is \
                              continuously idle for {0}s; Phase 2 then waits a fresh {0}s of idle in the new \
-                             session and injects a prompt to read SELF-HANDOFF.md and resume. If SELF-FORGET.md \
-                             was present at queue time, that prompt includes a compact closed-background forgotten \
-                             summary. Best-effort and not guaranteed.",
+                             session, archives SELF-HANDOFF.md into self-clear/ and injects a prompt naming \
+                             the exact archived file to resume from. If SELF-FORGET.md was present at queue \
+                             time, that prompt includes a compact closed-background forgotten summary. \
+                             Best-effort and not guaranteed.",
                             crate::phone::mailbox::SELF_CLEAR_SETTLE_SECS
                         ),
                         Some("already_queued") => crate::cli_println!(
@@ -470,6 +474,11 @@ mod tests {
         assert!(help.contains("240"), "{help}");
         assert!(help.contains("closed background"), "{help}");
         assert!(help.contains("SELF-HANDOFF.md"), "{help}");
+        // #749 - the help documents the pre-inject handoff archive and its exact destination.
+        assert!(
+            help.contains("self-clear/<timestamp>_SELF-HANDOFF.md"),
+            "{help}"
+        );
     }
 
     fn agent(id: &str, label: &str, command: &str) -> crate::config::settings::AgentConfig {
