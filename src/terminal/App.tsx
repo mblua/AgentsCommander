@@ -60,10 +60,10 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       const sessions = await SessionAPI.list();
       const session = sessions.find((s) => s.id === props.lockedSessionId);
       if (session) {
-        terminalStore.setActiveSession(session.id, session.name, session.shell, session.effectiveShellArgs, session.workingDirectory, session.workgroupTask ?? null);
+        terminalStore.setActiveSession(session.id, session.name, session.shell, session.effectiveShellArgs, session.workingDirectory, session.workgroupTask ?? null, session.isRootAgent);
       } else {
         // Session no longer exists, close this window
-        terminalStore.setActiveSession(null, "", "", null, "", null);
+        terminalStore.setActiveSession(null, "", "", null, "", null, false);
       }
       return;
     }
@@ -74,10 +74,10 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       const sessions = await SessionAPI.list();
       const active = sessions.find((s) => s.id === activeId);
       if (active) {
-        terminalStore.setActiveSession(active.id, active.name, active.shell, active.effectiveShellArgs, active.workingDirectory, active.workgroupTask ?? null);
+        terminalStore.setActiveSession(active.id, active.name, active.shell, active.effectiveShellArgs, active.workingDirectory, active.workgroupTask ?? null, active.isRootAgent);
       }
     } else {
-      terminalStore.setActiveSession(null, "", "", null, "", null);
+      terminalStore.setActiveSession(null, "", "", null, "", null, false);
     }
   };
 
@@ -156,7 +156,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       unlisteners.push(
         await onSessionSwitched(async ({ id }) => {
           if (!id) {
-            terminalStore.setActiveSession(null, "", "", null, "", null);
+            terminalStore.setActiveSession(null, "", "", null, "", null, false);
             return;
           }
           const sessions = await SessionAPI.list();
@@ -168,7 +168,8 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
               session.shell,
               session.effectiveShellArgs,
               session.workingDirectory,
-              session.workgroupTask ?? null
+              session.workgroupTask ?? null,
+              session.isRootAgent
             );
           }
         })
@@ -183,7 +184,8 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
               session.shell,
               session.effectiveShellArgs,
               session.workingDirectory,
-              session.workgroupTask ?? null
+              session.workgroupTask ?? null,
+              session.isRootAgent
             );
           }
         })
@@ -261,7 +263,13 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       <Show when={!props.embedded}>
         <Titlebar detached={props.detached} lockedSessionId={props.lockedSessionId} />
       </Show>
-      <WorkgroupTask />
+      {/* #771 — the TASK panel is hidden entirely for the Root Agent
+          (Agent's Commander); LAST PROMPT stays for every agent. Gated on the
+          terminalStore flag (not sessionsStore) so it works in the standalone
+          and detached terminal windows too, which don't load sidebar state. */}
+      <Show when={!terminalStore.activeIsRootAgent}>
+        <WorkgroupTask />
+      </Show>
       <LastPrompt sessionId={props.lockedSessionId} />
       <div class="terminal-content-area">
         <Show
