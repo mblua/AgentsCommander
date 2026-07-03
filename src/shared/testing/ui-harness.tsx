@@ -234,7 +234,7 @@ export function resetUiStoresForTests(): void {
   sessionsStore.clearDetached();
   workgroupGroupsStore.resetForTests();
   bridgesStore.setBridges([]);
-  terminalStore.setActiveSession(null, "", "", null, "", null);
+  terminalStore.setActiveSession(null, "", "", null, "", null, false);
   terminalStore.setActiveWorkgroupTask(null);
   toastStore.clear();
   __resetHomeStoreForTests();

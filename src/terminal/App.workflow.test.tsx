@@ -752,4 +752,95 @@ describe("TerminalApp workflow", () => {
       rendered.cleanup();
     }
   });
+
+  // #771 — the TASK panel must be hidden entirely for the Root Agent
+  // (Agent's Commander); LAST PROMPT stays for every agent.
+  it("hides the TASK panel for the Root Agent but keeps LAST PROMPT", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [
+      session({
+        id: "root-1",
+        name: "Agent's Commander",
+        workingDirectory: "C:\\Project\\.ac\\ac-root-agent",
+        isRootAgent: true,
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(rendered.root.querySelector(".workgroup-task-panel")).toBeNull()
+      );
+      expect(rendered.root.querySelector(".last-prompt-panel")).not.toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("shows the TASK panel for a non-root agent", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [
+      session({
+        id: "session-1",
+        name: "wg-1-dev-team/architect",
+        workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
+        isRootAgent: false,
+      }),
+    ]);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(rendered.root.querySelector(".workgroup-task-panel")).not.toBeNull()
+      );
+      expect(rendered.root.querySelector(".last-prompt-panel")).not.toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("hides TASK on switch to the Root Agent and restores it on switch back", async () => {
+    const sessions = [
+      session({
+        id: "session-1",
+        name: "wg-1-dev-team/architect",
+        workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
+        isRootAgent: false,
+      }),
+      session({
+        id: "root-1",
+        name: "Agent's Commander",
+        workingDirectory: "C:\\Project\\.ac\\ac-root-agent",
+        isRootAgent: true,
+      }),
+    ];
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, sessions);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      // Non-root is active on load → TASK visible.
+      expect(rendered.root.querySelector(".workgroup-task-panel")).not.toBeNull();
+
+      // Switch to the Root Agent → TASK hidden.
+      fake.emitFromBackend("session_switched", { id: "root-1" });
+      await waitFor(() =>
+        expect(rendered.root.querySelector(".workgroup-task-panel")).toBeNull()
+      );
+
+      // Switch back to the non-root agent → TASK restored.
+      fake.emitFromBackend("session_switched", { id: "session-1" });
+      await waitFor(() =>
+        expect(rendered.root.querySelector(".workgroup-task-panel")).not.toBeNull()
+      );
+
+      // LAST PROMPT is present throughout.
+      expect(rendered.root.querySelector(".last-prompt-panel")).not.toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });
