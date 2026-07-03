@@ -1,40 +1,92 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_PRESETS, AGENT_PRESET_MAP } from "./agent-presets";
+import { FALLBACK_CODING_AGENTS, definitionToSeed } from "./agent-presets";
+import type { CodingAgentDefinition } from "./types";
 
-describe("agent presets (#529)", () => {
-  it("carries the default instructions filename on each built-in preset", () => {
-    expect(AGENT_PRESET_MAP.claude.instructionsFilename).toBe("CLAUDE.md");
-    expect(AGENT_PRESET_MAP.codex.instructionsFilename).toBe("AGENTS.md");
+// #769 — FALLBACK_CODING_AGENTS is a second copy of the backend's embedded
+// default (`src-tauri/resources/coding-agents/agents.default.json`). This is the
+// FE half of the drift guard: it pins the fallback to the exact same 6 built-ins
+// the backend ships, so the two copies cannot silently diverge (the backend's
+// `embedded_default_matches_current_presets_exactly` pins the other half).
+const EXPECTED_BUILTINS: Array<
+  Pick<
+    CodingAgentDefinition,
+    "key" | "label" | "description" | "color" | "command" | "instructionsFilename"
+  >
+> = [
+  { key: "claude", label: "Claude Code", description: "Coding Agent by Anthropic", color: "#d97706", command: "claude", instructionsFilename: "CLAUDE.md" },
+  { key: "codex", label: "Codex", description: "Coding Agent by OpenAI", color: "#10b981", command: "codex", instructionsFilename: "AGENTS.md" },
+  { key: "hermes", label: "Hermes", description: "Coding Agent by Nous Research", color: "#8b5cf6", command: "hermes", instructionsFilename: "AGENTS.md" },
+  { key: "cursor", label: "Cursor CLI", description: "Coding Agent by Cursor", color: "#22d3ee", command: "agent", instructionsFilename: "AGENTS.md" },
+  { key: "pi", label: "Pi", description: "Coding Agent by Earendil Inc", color: "#ec4899", command: "pi", instructionsFilename: "AGENTS.md" },
+  { key: "opencode", label: "OpenCode", description: "Open-source terminal coding agent by Anomaly", color: "#64748b", command: "opencode", instructionsFilename: "AGENTS.md" },
+];
+
+describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
+  it("matches the backend embedded default: 6 built-ins, exact order and fields", () => {
+    expect(FALLBACK_CODING_AGENTS.map((a) => a.key)).toEqual([
+      "claude",
+      "codex",
+      "hermes",
+      "cursor",
+      "pi",
+      "opencode",
+    ]);
+    for (const expected of EXPECTED_BUILTINS) {
+      const actual = FALLBACK_CODING_AGENTS.find((a) => a.key === expected.key);
+      expect(actual).toBeTruthy();
+      expect(actual).toMatchObject(expected);
+    }
   });
 
-  it("ships Hermes / Cursor CLI / Pi and no longer ships Gemini (#766)", () => {
-    // Gemini removed from the catalog (backend gemini plumbing is untouched;
-    // existing user agents whose command is `gemini` are unaffected).
-    expect(AGENT_PRESET_MAP.gemini).toBeUndefined();
-    expect(AGENT_PRESETS.some((p) => p.key === "gemini")).toBe(false);
-
-    expect(AGENT_PRESET_MAP.hermes?.command).toBe("hermes");
-    expect(AGENT_PRESET_MAP.hermes?.instructionsFilename).toBe("AGENTS.md");
-    // Cursor CLI's executable is `agent`, not `cursor`.
-    expect(AGENT_PRESET_MAP.cursor?.command).toBe("agent");
-    expect(AGENT_PRESET_MAP.cursor?.instructionsFilename).toBe("AGENTS.md");
-    expect(AGENT_PRESET_MAP.pi?.command).toBe("pi");
-    expect(AGENT_PRESET_MAP.pi?.instructionsFilename).toBe("AGENTS.md");
-
-    // Label drives the onboarding card + settings quick-add button text.
-    expect(AGENT_PRESETS.find((p) => p.key === "cursor")?.label).toBe("Cursor CLI");
+  it("preserves the #766/#768 catalog facts: no Gemini, Cursor CLI runs `agent`, OpenCode 'by Anomaly'", () => {
+    expect(FALLBACK_CODING_AGENTS.some((a) => a.key === "gemini")).toBe(false);
+    expect(FALLBACK_CODING_AGENTS.find((a) => a.key === "cursor")?.command).toBe("agent");
+    expect(FALLBACK_CODING_AGENTS.find((a) => a.key === "opencode")?.description).toBe(
+      "Open-source terminal coding agent by Anomaly",
+    );
   });
 
-  it("ships an OpenCode preset with the bare `opencode` command and AGENTS.md", () => {
-    const opencode = AGENT_PRESETS.find((p) => p.key === "opencode");
-    expect(opencode).toBeTruthy();
-    expect(opencode?.label).toBe("OpenCode");
-    // #768 — subtitle re-attributed from SST to Anomaly.
-    expect(opencode?.description).toBe("Open-source terminal coding agent by Anomaly");
-    expect(opencode?.config.command).toBe("opencode");
-    expect(opencode?.config.instructionsFilename).toBe("AGENTS.md");
-    // Reachable via the quick-add lookup the Config Screen buttons use.
-    expect(AGENT_PRESET_MAP.opencode?.command).toBe("opencode");
-    expect(AGENT_PRESET_MAP.opencode?.instructionsFilename).toBe("AGENTS.md");
+  it("ships every built-in removable with no Phase-1 config seed", () => {
+    for (const def of FALLBACK_CODING_AGENTS) {
+      expect(def.removable).toBe(true);
+      expect(def.envs).toEqual([]);
+      expect(def.isolatedHome).toBe(false);
+      expect(def.configSeed).toBeUndefined();
+    }
+  });
+});
+
+describe("definitionToSeed (#769)", () => {
+  it("strips catalog-only fields and keeps the AgentConfig seed", () => {
+    const claude = FALLBACK_CODING_AGENTS.find((a) => a.key === "claude")!;
+    const seed = definitionToSeed(claude);
+    expect(seed).toEqual({
+      label: "Claude Code",
+      command: "claude",
+      color: "#d97706",
+      envs: [],
+      isolatedHome: false,
+      instructionsFilename: "CLAUDE.md",
+    });
+    // Catalog-only fields must not leak into the persisted agent.
+    expect("key" in seed).toBe(false);
+    expect("description" in seed).toBe(false);
+    expect("removable" in seed).toBe(false);
+  });
+
+  it("omits instructionsFilename and configSeed when the definition lacks them", () => {
+    const bare: CodingAgentDefinition = {
+      key: "bare",
+      label: "Bare",
+      description: "no extras",
+      color: "#000000",
+      command: "bare",
+      envs: [],
+      isolatedHome: false,
+      removable: true,
+    };
+    const seed = definitionToSeed(bare);
+    expect("instructionsFilename" in seed).toBe(false);
+    expect("configSeed" in seed).toBe(false);
   });
 });

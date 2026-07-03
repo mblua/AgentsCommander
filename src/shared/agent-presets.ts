@@ -1,104 +1,113 @@
-import type { AgentConfig } from "./types";
+import type { AgentConfig, CodingAgentDefinition } from "./types";
 
-export interface AgentPreset {
-  key: string;
-  label: string;
-  description: string;
-  color: string;
-  config: Omit<AgentConfig, "id">;
-}
-
-export const AGENT_PRESETS: AgentPreset[] = [
+/**
+ * #769 — the coding-agent catalog is now backend-owned (the seeded, user-editable
+ * `<config_dir>/coding-agents/agents.json`, exposed by `get_coding_agent_catalog`
+ * and consumed through `codingAgentsStore`). This module keeps only:
+ *
+ *  - `newAgentId()` — id minter for the "+ Add" flow (unchanged), and
+ *  - `FALLBACK_CODING_AGENTS` — a synchronous never-empty seed and the offline
+ *    fallback the store falls back to when the IPC transport itself fails.
+ *
+ * `FALLBACK_CODING_AGENTS` is a second copy of the backend's embedded default
+ * (`src-tauri/resources/coding-agents/agents.default.json`). The duplication is
+ * intentional (it is what makes the onboarding/settings list resilient to a dead
+ * backend), and a drift-guard test keeps the two copies in lockstep with the
+ * backend's `embedded_default_matches_current_presets_exactly` test.
+ */
+export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
   {
     key: "claude",
     label: "Claude Code",
     description: "Coding Agent by Anthropic",
     color: "#d97706",
-    config: {
-      label: "Claude Code",
-      command: "claude",
-      color: "#d97706",
-      envs: [],
-      isolatedHome: false,
-      instructionsFilename: "CLAUDE.md",
-    },
+    command: "claude",
+    instructionsFilename: "CLAUDE.md",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
   },
   {
     key: "codex",
     label: "Codex",
     description: "Coding Agent by OpenAI",
     color: "#10b981",
-    config: {
-      label: "Codex",
-      command: "codex",
-      color: "#10b981",
-      envs: [],
-      isolatedHome: false,
-      instructionsFilename: "AGENTS.md",
-    },
+    command: "codex",
+    instructionsFilename: "AGENTS.md",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
   },
   {
     key: "hermes",
     label: "Hermes",
     description: "Coding Agent by Nous Research",
     color: "#8b5cf6",
-    config: {
-      label: "Hermes",
-      command: "hermes",
-      color: "#8b5cf6",
-      envs: [],
-      isolatedHome: false,
-      instructionsFilename: "AGENTS.md",
-    },
+    command: "hermes",
+    instructionsFilename: "AGENTS.md",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
   },
   {
     key: "cursor",
     label: "Cursor CLI",
     description: "Coding Agent by Cursor",
     color: "#22d3ee",
-    config: {
-      label: "Cursor CLI",
-      // Cursor's CLI executable is `agent`, not `cursor`.
-      command: "agent",
-      color: "#22d3ee",
-      envs: [],
-      isolatedHome: false,
-      instructionsFilename: "AGENTS.md",
-    },
+    // Cursor's CLI executable is `agent`, not `cursor`.
+    command: "agent",
+    instructionsFilename: "AGENTS.md",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
   },
   {
     key: "pi",
     label: "Pi",
     description: "Coding Agent by Earendil Inc",
     color: "#ec4899",
-    config: {
-      label: "Pi",
-      command: "pi",
-      color: "#ec4899",
-      envs: [],
-      isolatedHome: false,
-      instructionsFilename: "AGENTS.md",
-    },
+    command: "pi",
+    instructionsFilename: "AGENTS.md",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
   },
   {
     key: "opencode",
     label: "OpenCode",
     description: "Open-source terminal coding agent by Anomaly",
     color: "#64748b",
-    config: {
-      label: "OpenCode",
-      command: "opencode",
-      color: "#64748b",
-      envs: [],
-      isolatedHome: false,
-      instructionsFilename: "AGENTS.md",
-    },
+    command: "opencode",
+    instructionsFilename: "AGENTS.md",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
   },
 ];
 
-/** Record-based lookup for SettingsModal quick-add buttons */
-export const AGENT_PRESET_MAP: Record<string, Omit<AgentConfig, "id">> =
-  Object.fromEntries(AGENT_PRESETS.map((p) => [p.key, p.config]));
+/**
+ * Project a catalog definition onto the persisted agent seed the onboarding and
+ * settings "+ Add" flows feed to `addAgent` — i.e. `Omit<AgentConfig, "id">`,
+ * dropping the catalog-only `{ key, description, removable }`. `instructionsFilename`
+ * and `configSeed` are carried through only when present, matching how the old
+ * `AGENT_PRESET_MAP.<key>` values were shaped.
+ */
+export function definitionToSeed(def: CodingAgentDefinition): Omit<AgentConfig, "id"> {
+  const seed: Omit<AgentConfig, "id"> = {
+    label: def.label,
+    command: def.command,
+    color: def.color,
+    envs: def.envs,
+    isolatedHome: def.isolatedHome,
+  };
+  if (def.instructionsFilename !== undefined) {
+    seed.instructionsFilename = def.instructionsFilename;
+  }
+  if (def.configSeed !== undefined) {
+    seed.configSeed = def.configSeed;
+  }
+  return seed;
+}
 
 let idCounter = 0;
 export function newAgentId(): string {

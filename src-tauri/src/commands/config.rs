@@ -91,6 +91,22 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<AppSetti
     Ok(result)
 }
 
+/// #769 Phase 1 - return the externalized coding-agent catalog for the onboarding
+/// and Settings pick lists. Contract (§14.2, dev-rust E5): resolves `Ok(Vec)` in
+/// the normal AND self-heal cases (a missing or unparseable `agents.json` yields
+/// the embedded default IN MEMORY, never a disk write); `Ok([])` is honored
+/// verbatim when the user removed every built-in; `Err` only when the config
+/// directory cannot be resolved (a genuine environment failure the compiled
+/// fallback cannot satisfy). The frontend's never-empty fallback fires only on
+/// this `Err`/transport path, so keeping the self-heal on the `Ok` side is load-
+/// bearing for that contract.
+#[tauri::command]
+pub async fn get_coding_agent_catalog(
+) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>, String> {
+    let config_dir = crate::config::config_dir().ok_or("No config dir")?;
+    Ok(crate::config::coding_agents_catalog::load_catalog(&config_dir))
+}
+
 #[tauri::command]
 pub async fn update_settings(
     app: AppHandle,

@@ -1236,7 +1236,7 @@ fn validate_env_map(env: &BTreeMap<String, String>, context: &str) -> Result<(),
     Ok(())
 }
 
-fn validate_env_rows(rows: &[CodingAgentEnv], context: &str) -> Result<(), String> {
+pub(crate) fn validate_env_rows(rows: &[CodingAgentEnv], context: &str) -> Result<(), String> {
     let mut seen = HashSet::new();
     for row in rows.iter().filter(|row| row.enabled) {
         validate_user_env_key(&row.key, context)?;
@@ -1414,7 +1414,7 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_agent_command_text(context: &str, command: &str) -> Result<(), String> {
+pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Result<(), String> {
     let normalized = crate::config::agent_command::normalize_legacy_agent_command(command)
         .map_err(|e| format!("{context}: invalid command: {e}. command={command:?}"))?;
     let mut token_strings = Vec::with_capacity(normalized.shell_args.len() + 1);

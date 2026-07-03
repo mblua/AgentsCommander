@@ -239,6 +239,11 @@ pub fn run(
         log::info!("[app-outbox] Cleaned stale instance directories");
     }
 
+    // #769 Phase 1 - seed the externalized coding-agent catalog once (whole-file
+    // seed-once, fail-soft; never aborts boot). Must run before the frontend can
+    // call `get_coding_agent_catalog`.
+    config::coding_agents_catalog::ensure_seeded(&config_dir);
+
     let instance_id = uuid::Uuid::new_v4().to_string();
     let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
@@ -1909,6 +1914,7 @@ pub fn run(
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
             commands::config::get_settings,
+            commands::config::get_coding_agent_catalog,
             commands::config::update_settings,
             commands::resource_monitor::get_resource_snapshot,
             commands::resource_monitor::kill_resource_group,

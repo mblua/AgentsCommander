@@ -1,31 +1,33 @@
 import { Component, createSignal, For, onMount, Show } from "solid-js";
-import type { AgentConfig, AppSettings } from "../../shared/types";
+import type { AgentConfig, AppSettings, CodingAgentDefinition } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
-import { AGENT_PRESETS, newAgentId } from "../../shared/agent-presets";
-import type { AgentPreset } from "../../shared/agent-presets";
+import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
+import { codingAgentsStore } from "../stores/coding-agents";
 
-const CUSTOM_PRESET: AgentPreset = {
+// Custom Agent is not a catalog entry: it triggers the inline name/command
+// fields and is always offered last, so it stays a client-side definition.
+const CUSTOM_PRESET: CodingAgentDefinition = {
   key: "custom",
   label: "Custom Agent",
   description: "Configure your own Coding Agent",
   color: "#6366f1",
-  config: {
-    label: "",
-    command: "",
-    color: "#6366f1",
-    envs: [],
-    isolatedHome: false,
-  },
+  command: "",
+  envs: [],
+  isolatedHome: false,
+  removable: false,
 };
-
-const ALL_PRESETS = [...AGENT_PRESETS, CUSTOM_PRESET];
 
 const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
   const [selectedPreset, setSelectedPreset] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
   const [done, setDone] = createSignal(false);
   const [addedLabel, setAddedLabel] = createSignal("");
+
+  // #769 — the catalog is backend-owned; the store is pre-seeded with the
+  // fallback so the card list (and the #768 no-scroll fit) renders immediately,
+  // with no wrong-length flash before the async fetch resolves.
+  const allPresets = () => [...codingAgentsStore.catalog(), CUSTOM_PRESET];
 
   const dismissAndClose = async () => {
     try {
@@ -55,7 +57,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
     const key = selectedPreset();
     if (!key) return;
 
-    const preset = ALL_PRESETS.find((p) => p.key === key);
+    const preset = allPresets().find((p) => p.key === key);
     if (!preset) return;
 
     setSaving(true);
@@ -68,12 +70,12 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
           id: newAgentId(),
           label: customLabel().trim(),
           command: customCommand().trim(),
-          color: preset.config.color,
+          color: preset.color,
           envs: [],
           isolatedHome: false,
         };
       } else {
-        agent = { id: newAgentId(), ...preset.config };
+        agent = { id: newAgentId(), ...definitionToSeed(preset) };
       }
 
       const updated: AppSettings = {
@@ -119,7 +121,10 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
 
   let overlayRef!: HTMLDivElement;
   let modalRef!: HTMLDivElement;
-  onMount(() => overlayRef.focus());
+  onMount(() => {
+    overlayRef.focus();
+    void codingAgentsStore.ensureLoaded();
+  });
 
   return (
     <div
@@ -165,7 +170,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
             </p>
 
             <div class="onboarding-cards">
-              <For each={ALL_PRESETS}>
+              <For each={allPresets()}>
                 {(preset) => (
                   <button
                     class={`onboarding-card ${selectedPreset() === preset.key ? "selected" : ""}`}

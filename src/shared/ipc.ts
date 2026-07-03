@@ -12,6 +12,7 @@ import type {
   LogLevel,
   UpdateInfo,
   CodingAgentEnv,
+  CodingAgentDefinition,
   CodingAgentProfilesConfig,
   RepoMatch,
   BridgeInfo,
@@ -247,6 +248,18 @@ export const PtyAPI = {
   /** Get current PTY dimensions (rows, cols). */
   getPtySize: (sessionId: string) =>
     transport.invoke<{ rows: number; cols: number }>("get_pty_size", { sessionId }),
+};
+
+export const CodingAgentsAPI = {
+  /**
+   * #769 — the built-in coding-agent catalog. Resolves `Ok(list)` normally and
+   * on backend self-heal (missing/malformed `agents.json` → embedded default in
+   * memory, file never overwritten); a valid `Ok([])` (user removed all
+   * built-ins) is returned verbatim. Rejects only on a genuine config-dir
+   * failure, which is the sole case the store's fallback covers.
+   */
+  getCatalog: () =>
+    transport.invoke<CodingAgentDefinition[]>("get_coding_agent_catalog"),
 };
 
 export const SettingsAPI = {

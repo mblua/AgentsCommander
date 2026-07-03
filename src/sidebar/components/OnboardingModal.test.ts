@@ -10,6 +10,26 @@ vi.mock("../../shared/ipc", () => ({
     get: vi.fn(() => Promise.resolve(settings())),
     update: vi.fn(() => Promise.resolve()),
   },
+  // #769 — OnboardingModal now drives its cards from codingAgentsStore, which
+  // fetches this. Resolve a catalog that includes Codex (the preset this suite
+  // selects); the store's synchronous fallback also carries Codex regardless.
+  CodingAgentsAPI: {
+    getCatalog: vi.fn(() =>
+      Promise.resolve([
+        {
+          key: "codex",
+          label: "Codex",
+          description: "Coding Agent by OpenAI",
+          color: "#10b981",
+          command: "codex",
+          instructionsFilename: "AGENTS.md",
+          envs: [],
+          isolatedHome: false,
+          removable: true,
+        },
+      ]),
+    ),
+  },
 }));
 
 vi.mock("../../shared/stores/settings", () => ({
