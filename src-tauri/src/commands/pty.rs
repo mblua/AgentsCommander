@@ -127,13 +127,18 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     // agent_fqn_from_path returns String (teams.rs:80), not Option.
     let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
     let now = chrono::Utc::now();
-    let (changed, cleared) = {
+    let (changed, cleared, cleared_fresh) = {
         let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
         let changed = guard.note_user_message(&fqn, now);
         // #552 a real user message reopens the coordinator -> clear any
         // "auto-closed" marker (idempotent; no-op if not marked).
         let cleared = guard.clear_auto_closed(&fqn);
-        (changed, cleared)
+        // (#756) typed input creates a post-boundary transcript: drop the
+        // fresh-intent mirror. The record half is re-armed above via
+        // clear_user_input_transitions; without this the destroyed-record
+        // reopen would force an ENGAGED coordinator fresh.
+        let cleared_fresh = guard.clear_start_fresh(&fqn);
+        (changed, cleared, cleared_fresh)
     };
     if changed {
         let _ = app.emit(
@@ -147,6 +152,160 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
             serde_json::json!({ "replicaPath": cwd, "autoClosedAt": null }),
         );
     }
+    if cleared_fresh {
+        // (#756) Persist immediately: this transition must survive an app close
+        // inside the 60s flush tick window (mirrors close_coordinator's
+        // explicit save; the exit flush in lib.rs only covers clean exits).
+        let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
+            log::warn!("[coordinator-clocks] fresh-intent clear save failed: {}", e);
+        }
+    }
+}
+
+/// (#756) Record an AC-driven fresh-conversation boundary for `session_id`:
+/// write the coordinator-clocks mirror (`start_fresh_at`, persisted
+/// immediately) and THEN stamp the durable record intent
+/// (`start_fresh_on_restore = true`, persisted under the sessions save lock).
+/// Mirror-first (section 19.3): the death-between-halves residue must fail
+/// FRESH, never resurrect. The intent survives record destruction (idle
+/// auto-close, manual close). Call ONLY after a SUCCESSFUL
+/// `/clear` injection (C1 remote command, C2 self-clear phase-1). The restart
+/// path (C3) stamps the record itself and calls only the mirror half.
+/// Root-agent sessions skip the record half (the root restore path ignores the
+/// marker, #630 scope; mirrors the restart site's exclusion in
+/// commands/session.rs); the mirror half self-gates on coordinators.
+pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) {
+    // (#756, section 19.3) MIRROR-FIRST: if the app dies between the halves,
+    // the residue (mirror=Some, record=false) forces fresh on every reopen
+    // path and self-heals (E3 re-propagates; typed input or injected content
+    // clears both). Record-first residue (record=true, mirror=None) would let
+    // a later record destroy resurrect the pre-boundary conversation: the
+    // exact #756 bug.
+    write_start_fresh_mirror_for_session(app, session_id, true).await;
+    let manager = {
+        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let guard = mgr.read().await;
+        guard.clone()
+    };
+    // Single-clone lookup; DUAL root predicate mirrors the restart path so the
+    // two exclusions never disagree.
+    let is_root = manager
+        .get_session(session_id)
+        .await
+        .map(|s| {
+            s.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+        })
+        .unwrap_or(false);
+    if !is_root {
+        match crate::config::sessions_persistence::set_start_fresh_and_persist_result(
+            &manager, session_id,
+        )
+        .await
+        {
+            Ok(true) => log::info!(
+                "[session-state] {} fresh-boundary stamped (record, #756)",
+                &session_id.to_string()[..8]
+            ),
+            Ok(false) => {} // already stamped or unknown id
+            Err(e) => log::error!(
+                "[session-state] fresh-boundary stamp persist failed for {}: {}",
+                session_id,
+                e
+            ),
+        }
+    }
+}
+
+/// (#756) Drop the durable fresh intent after AC successfully injected message
+/// CONTENT into `session_id` (standard mailbox body, follow-up after a remote
+/// command, phase-2 handoff prompts, loop prompts). The injected body creates a
+/// post-boundary transcript, so provider resume becomes safe and desirable
+/// again; a lingering stamp would wipe a live autonomous conversation on the
+/// next reopen. DELIBERATELY NARROW: must NOT reuse
+/// `note_user_message_to_session`, whose injection-exclusion protects
+/// silence/badge/auto-close semantics (see its doc comment above); this helper
+/// touches ONLY the fresh intent (mirror first, then record; section 19.3).
+/// Never call it for the bare `/clear` / `/compact` command text.
+pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) {
+    // (#756, section 19.3) MIRROR-FIRST: the drop residue (mirror=None,
+    // record=true) only mis-freshes the record-alive restore until the next
+    // heal; record-first residue (record=false, mirror=Some) would wrongly
+    // force-fresh BOTH reopen paths.
+    write_start_fresh_mirror_for_session(app, session_id, false).await;
+    let manager = {
+        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let guard = mgr.read().await;
+        guard.clone()
+    };
+    match crate::config::sessions_persistence::clear_start_fresh_and_persist_result(
+        &manager, session_id,
+    )
+    .await
+    {
+        Ok(true) => log::info!(
+            "[session-state] {} fresh intent dropped (post-boundary content, #756)",
+            &session_id.to_string()[..8]
+        ),
+        Ok(false) => {}
+        Err(e) => log::error!(
+            "[session-state] post-boundary-content drop persist failed for {}: {}",
+            session_id,
+            e
+        ),
+    }
+}
+
+/// (#756) Mirror half: write the coordinator-clocks `start_fresh_at` for the
+/// session's cwd. Returns false without touching anything for non-coordinators
+/// (`coordinator_cwd` -> None; root agents land here too) or when the value is
+/// already in the target state. Persists the clocks file immediately on a real
+/// transition: these boundaries are rare and must survive an app close inside
+/// the 60s flush tick (same discipline as close_coordinator's explicit save).
+pub(crate) async fn write_start_fresh_mirror_for_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    on: bool,
+) -> bool {
+    let cwd = {
+        let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
+        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
+        cwd
+    };
+    let Some(cwd) = cwd else { return false };
+    let Some(clocks) = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+    else {
+        return false;
+    };
+    // agent_fqn_from_path returns String (teams.rs:80), not Option.
+    let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
+    let changed = {
+        let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        if on {
+            guard.mark_start_fresh(&fqn, chrono::Utc::now())
+        } else {
+            guard.clear_start_fresh(&fqn)
+        }
+    };
+    if changed {
+        log::info!(
+            "[coordinator-clocks] start_fresh_at {} for '{}' (#756)",
+            if on { "set" } else { "cleared" },
+            fqn
+        );
+        let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
+            log::warn!("[coordinator-clocks] start_fresh_at save failed: {}", e);
+        }
+    }
+    changed
 }
 
 #[tauri::command]

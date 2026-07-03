@@ -130,6 +130,9 @@ pub async fn deliver_loop_prompt(
     .await
     {
         Ok(()) => {
+            // (#756) loop prompt = AC-injected post-boundary content: drop any
+            // pending fresh intent (record + mirror).
+            crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
             if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
                 log::warn!(
                     "[loops] Failed to update last_prompt after Loop delivery to {}: {}",
