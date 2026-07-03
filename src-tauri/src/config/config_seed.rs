@@ -39,6 +39,15 @@ pub enum ConfigSeedTier {
     WorkspaceBase,
     MatrixProfile,
     MatrixBase,
+    /// #769 Phase 2 - the shipped default config-folder master at
+    /// `<config_dir>/coding-agents/_seed/<dest>/`. Appended LAST (lowest
+    /// precedence) by the spawn caller. Unlike the four tiers above, this one is
+    /// ABSENT-ONLY and NON-EMPTY-GATED in `perform_config_seed`: it fills
+    /// `%AC_REPLICA_ROOT%/<dest>` only when the dest does not already exist AND the
+    /// master has at least one regular file, so it can never overwrite accumulated
+    /// replica config, and an empty/absent master reads as "tier not present"
+    /// (today's spawn behavior stays byte-identical).
+    CatalogDefault,
 }
 
 /// After a successful seed of `.claude`, re-stamp the AC-managed
@@ -258,7 +267,14 @@ fn segments_eq(a: &str, b: &str) -> bool {
 /// chokepoint, holds `RtkSweepLockState` across this call for all dests.
 pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> ConfigSeedReport {
     // 1. Pick the winning tier by source-folder presence (highest precedence first).
-    let Some((tier, src)) = seed.candidates.iter().find(|(_, src)| is_readable_dir(src)) else {
+    //    The four legacy tiers are unchanged (readable dir wins and overwrites).
+    //    The #769 P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
+    //    it never overwrites an existing replica config and an empty/absent master
+    //    reads as "not present".
+    let Some((tier, src)) = seed.candidates.iter().find(|(tier, src)| match tier {
+        ConfigSeedTier::CatalogDefault => !seed.dest.exists() && is_nonempty_seed_dir(src),
+        _ => is_readable_dir(src),
+    }) else {
         // #598: seeding is active but no template exists at any tier. This is a
         // benign no-op (nothing to copy), but a SILENT one confused users who
         // enabled the feature, created no template, and saw nothing happen. Log
@@ -309,7 +325,8 @@ pub fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -> Confi
     clear_stale_seed_scratch(parent, dest_name);
 
     // 3. Stage the template into temp. On any error the dest is untouched.
-    if let Err(e) = copy_tree(src, &temp, 0, &seed.context) {
+    //    master->replica copy substitutes the 3 AC tokens (substitute = true).
+    if let Err(e) = copy_tree(src, &temp, 0, Some(&seed.context), true) {
         log::warn!(
             "[config-seed] failed to stage template {} -> {}: {}",
             src.display(),
@@ -378,6 +395,37 @@ fn is_readable_dir(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
 }
 
+/// #769 P2 - true iff `path` is a readable directory containing at least one
+/// regular, non-reparse FILE (searched recursively). The CatalogDefault tier uses
+/// this so an empty master (or a dir of only subdirs/links) reads as "not present"
+/// and the tier stays inert, keeping today's spawn behavior byte-identical.
+pub(crate) fn is_nonempty_seed_dir(path: &Path) -> bool {
+    fn has_file(dir: &Path, depth: u32) -> bool {
+        if depth > MAX_SEED_DEPTH {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            if is_symlink_or_reparse(&entry) {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if has_file(&entry.path(), depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    is_readable_dir(path) && has_file(path, 0)
+}
+
 /// Remove every leftover seed-scratch sibling for `dest_name` (any session-id
 /// suffix), best-effort. Reclaims a temp/trash dir leaked by an earlier locked
 /// removal; the current spawn's `temp`/`trash` (same prefix) are cleared too.
@@ -401,11 +449,12 @@ fn clear_stale_seed_scratch(parent: &Path, dest_name: &str) {
     }
 }
 
-fn copy_tree(
+pub(crate) fn copy_tree(
     src_dir: &Path,
     dst_dir: &Path,
     depth: u32,
-    ctx: &PlaceholderContext,
+    ctx: Option<&PlaceholderContext>,
+    substitute: bool,
 ) -> Result<(), String> {
     if depth > MAX_SEED_DEPTH {
         log::warn!(
@@ -433,16 +482,31 @@ fn copy_tree(
             .map_err(|e| format!("file type of {}: {}", entry.path().display(), e))?;
         let dst = dst_dir.join(entry.file_name());
         if ft.is_dir() {
-            copy_tree(&entry.path(), &dst, depth + 1, ctx)?;
+            copy_tree(&entry.path(), &dst, depth + 1, ctx, substitute)?;
         } else if ft.is_file() {
-            copy_file_substituted(&entry.path(), &dst, ctx)?;
+            copy_file_substituted(&entry.path(), &dst, ctx, substitute)?;
         }
         // Anything else (already-filtered symlinks/reparse) is ignored.
     }
     Ok(())
 }
 
-fn copy_file_substituted(src: &Path, dst: &Path, ctx: &PlaceholderContext) -> Result<(), String> {
+fn copy_file_substituted(
+    src: &Path,
+    dst: &Path,
+    ctx: Option<&PlaceholderContext>,
+    substitute: bool,
+) -> Result<(), String> {
+    // #769 P2: verbatim stream-copy when substitution is off (embedded->master and
+    // the reseed backup keep raw %AC_% tokens intact) or when no context is given.
+    let ctx = match (substitute, ctx) {
+        (true, Some(ctx)) => ctx,
+        _ => {
+            return std::fs::copy(src, dst)
+                .map(|_| ())
+                .map_err(|e| format!("copy {} -> {}: {}", src.display(), dst.display(), e));
+        }
+    };
     let len = std::fs::metadata(src)
         .map_err(|e| format!("stat {}: {}", src.display(), e))?
         .len();
@@ -811,6 +875,124 @@ mod tests {
         assert!(!trash_a.exists(), "prefix-sweep deletes a concurrent spawn's only old copy");
     }
 
+    // ---- CatalogDefault tier (#769 P2: absent-only + non-empty) ------------
+
+    /// Append the absent-only CatalogDefault candidate LAST, exactly as the spawn
+    /// caller (`build_agent_spawn_command`) does.
+    fn with_catalog_default(mut resolved: ResolvedConfigSeed, master: &Path) -> ResolvedConfigSeed {
+        resolved
+            .candidates
+            .push((ConfigSeedTier::CatalogDefault, master.to_path_buf()));
+        resolved
+    }
+
+    #[test]
+    fn catalog_default_fills_absent_dest_from_nonempty_master() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        // No workspace/matrix templates on disk: the 4 legacy tiers are absent.
+        let master = temp.path().join("master");
+        write_file(&master.join("settings.json"), b"{\"seeded\":true}");
+
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = with_catalog_default(resolved, &master);
+
+        // dest absent + master non-empty -> CatalogDefault wins and fills.
+        assert_eq!(
+            perform_config_seed(&resolved, "sfx"),
+            ConfigSeedReport::Seeded
+        );
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("settings.json")).unwrap(),
+            b"{\"seeded\":true}"
+        );
+    }
+
+    #[test]
+    fn catalog_default_absent_only_never_overwrites_existing_dest() {
+        // The E1/G1 data-loss killer: a present dest is preserved, tier skips.
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        // Live replica config the seed must never touch.
+        write_file(&replica.join(".claude").join("creds.json"), b"SECRET");
+        let master = temp.path().join("master");
+        write_file(&master.join("settings.json"), b"{\"seeded\":true}");
+
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = with_catalog_default(resolved, &master);
+
+        // dest present -> CatalogDefault gate fails -> Skipped, dest fully intact.
+        assert_eq!(perform_config_seed(&resolved, "sfx"), ConfigSeedReport::Skipped);
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("creds.json")).unwrap(),
+            b"SECRET"
+        );
+        // The master content did NOT leak in.
+        assert!(!replica.join(".claude").join("settings.json").exists());
+    }
+
+    #[test]
+    fn catalog_default_empty_master_is_inert() {
+        // Non-empty gate: an empty master reads as "not present" -> Skipped, and
+        // (dest absent) nothing is created, so spawn behavior is byte-identical.
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        let master = temp.path().join("master");
+        std::fs::create_dir_all(&master).unwrap(); // exists but EMPTY
+
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = with_catalog_default(resolved, &master);
+
+        assert_eq!(perform_config_seed(&resolved, "sfx"), ConfigSeedReport::Skipped);
+        assert!(!replica.join(".claude").exists());
+    }
+
+    #[test]
+    fn catalog_default_yields_to_a_present_legacy_tier() {
+        // A present workspace tier still wins (unchanged behavior); CatalogDefault
+        // is only reached when all 4 legacy tiers are absent.
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("ws");
+        let replica = workspace.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&workspace.join("default.claude").join("f.txt"), b"WORKSPACE");
+        let master = temp.path().join("master");
+        write_file(&master.join("f.txt"), b"CATALOG");
+
+        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
+        let resolved = with_catalog_default(resolved, &master);
+
+        assert_eq!(perform_config_seed(&resolved, "sfx"), ConfigSeedReport::Seeded);
+        assert_eq!(
+            std::fs::read(replica.join(".claude").join("f.txt")).unwrap(),
+            b"WORKSPACE"
+        );
+    }
+
+    #[test]
+    fn copy_tree_verbatim_preserves_tokens_when_substitute_false() {
+        // The reseed backup copies the master verbatim (raw %AC_% tokens intact).
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        write_file(&src.join("a.txt"), b"path=%AC_REPLICA_ROOT%/x");
+        let dst = temp.path().join("dst");
+        copy_tree(&src, &dst, 0, None, false).unwrap();
+        assert_eq!(
+            std::fs::read(dst.join("a.txt")).unwrap(),
+            b"path=%AC_REPLICA_ROOT%/x"
+        );
+    }
+
     // ---- copy_file_substituted (size-first, binary/UTF-8) ------------------
 
     #[test]
@@ -822,7 +1004,7 @@ mod tests {
         let src = temp.path().join("a.txt");
         std::fs::write(&src, b"path=%AC_REPLICA_ROOT%/x").unwrap();
         let dst = temp.path().join("a.out");
-        copy_file_substituted(&src, &dst, &ctx).unwrap();
+        copy_file_substituted(&src, &dst, Some(&ctx), true).unwrap();
 
         let expected = replica.to_string_lossy().replace('\\', "/");
         assert_eq!(
@@ -840,7 +1022,7 @@ mod tests {
         let raw: &[u8] = b"%AC_REPLICA_ROOT%\x00binary";
         std::fs::write(&src, raw).unwrap();
         let dst = temp.path().join("b.out");
-        copy_file_substituted(&src, &dst, &ctx).unwrap();
+        copy_file_substituted(&src, &dst, Some(&ctx), true).unwrap();
         // NUL present -> verbatim, no token substitution.
         assert_eq!(std::fs::read(&dst).unwrap(), raw);
     }
@@ -854,7 +1036,7 @@ mod tests {
         let raw: &[u8] = &[0xFF, 0xFE, b'h', b'i'];
         std::fs::write(&src, raw).unwrap();
         let dst = temp.path().join("c.out");
-        copy_file_substituted(&src, &dst, &ctx).unwrap();
+        copy_file_substituted(&src, &dst, Some(&ctx), true).unwrap();
         assert_eq!(std::fs::read(&dst).unwrap(), raw);
     }
 
@@ -868,7 +1050,7 @@ mod tests {
         content[..18].copy_from_slice(b"%AC_REPLICA_ROOT%\n");
         std::fs::write(&src, &content).unwrap();
         let dst = temp.path().join("big.out");
-        copy_file_substituted(&src, &dst, &ctx).unwrap();
+        copy_file_substituted(&src, &dst, Some(&ctx), true).unwrap();
 
         let out = std::fs::read(&dst).unwrap();
         assert_eq!(out.len(), content.len());
@@ -886,7 +1068,7 @@ mod tests {
         let dst = temp.path().join("dst");
         let ctx = ctx_with(&abs(r"C:\r", "/r"), Some(&abs(r"C:\ws", "/ws")), None);
         // Start already over the bound -> immediate Ok, nothing created.
-        copy_tree(&src, &dst, MAX_SEED_DEPTH + 1, &ctx).unwrap();
+        copy_tree(&src, &dst, MAX_SEED_DEPTH + 1, Some(&ctx), true).unwrap();
         assert!(!dst.exists(), "over-depth call must not create the dst tree");
     }
 
@@ -926,7 +1108,7 @@ mod tests {
 
         let dst = temp.path().join("dst");
         let ctx = ctx_with(&abs(r"C:\r", "/r"), Some(&abs(r"C:\ws", "/ws")), None);
-        copy_tree(&src, &dst, 0, &ctx).unwrap();
+        copy_tree(&src, &dst, 0, Some(&ctx), true).unwrap();
         assert!(dst.join("real.txt").exists(), "real file must be copied");
         assert!(
             !dst.join("linked").exists(),
