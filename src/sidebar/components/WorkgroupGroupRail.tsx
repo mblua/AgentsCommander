@@ -11,6 +11,7 @@ import {
 import {
   isWorkingReplicaDot,
   replicaDotClass,
+  workgroupHasRaisedHand,
   workgroupIsWorking,
 } from "./workgroup-session";
 import WorkgroupGroupsModal from "./WorkgroupGroupsModal";
@@ -26,6 +27,9 @@ interface GroupButton {
   /** #746 — true when the button's workgroup set has >=1 working agent
    *  (same predicate as the counter's X: running/active, not waiting/pending). */
   working: boolean;
+  /** #763 — true when >=1 coordinator in the button's workgroup set has a
+   *  raised hand (mirrors ProjectPanel's per-row `showRaiseHand`). */
+  raiseHand: boolean;
   selection: WorkgroupGroupSelection;
   workgroups: AcWorkgroup[];
   title: string;
@@ -67,9 +71,14 @@ function tooltipFor(workgroups: AcWorkgroup[]): string {
 function buttonContent(
   name: string,
   workgroups: AcWorkgroup[]
-): Pick<GroupButton, "name" | "counter" | "working"> {
+): Pick<GroupButton, "name" | "counter" | "working" | "raiseHand"> {
   const working = workgroups.filter(workgroupIsWorking).length;
-  return { name, counter: `${working}/${workgroups.length}`, working: working > 0 };
+  return {
+    name,
+    counter: `${working}/${workgroups.length}`,
+    working: working > 0,
+    raiseHand: workgroups.some(workgroupHasRaisedHand),
+  };
 }
 
 const ProjectRailSection: Component<{
@@ -146,6 +155,16 @@ const ProjectRailSection: Component<{
             onClick={() => workgroupGroupsStore.select(props.project.path, button.selection)}
             data-ac-testid={`workgroupGroups.button.${button.key}`}
           >
+            <Show when={button.raiseHand}>
+              <span
+                class="workgroup-group-rail-raise-hand"
+                data-ac-testid={`workgroupGroups.raiseHand.${button.key}`}
+                title="A coordinator raised its hand"
+                aria-label="A coordinator raised its hand"
+              >
+                !
+              </span>
+            </Show>
             {button.name}
             {"\n"}
             <Show when={button.working}>

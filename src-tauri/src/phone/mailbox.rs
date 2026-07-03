@@ -953,6 +953,17 @@ pub(crate) enum SelfClearGateAction {
     Abandon(&'static str),
 }
 
+/// (#756) Fresh-boundary events surfaced by the self-clear / self-switch
+/// drivers through an injected callback, so the generic (test-injectable)
+/// drivers stay free of app state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfClearBoundary {
+    /// Phase-1 `/clear` reached the PTY: stamp the durable fresh intent (C2).
+    Cleared,
+    /// Phase-2 handoff prompt reached the PTY: post-boundary content, drop it.
+    ContentInjected,
+}
+
 /// #626 - pure two-stage gate step. Returns (next_state, action). `session_present == false` means
 /// the session vanished between polls. The Clear->Handoff transition RESETS `idle_since` to None and
 /// `phase_started` to `now`, so the Phase 2 window can NOT be satisfied by pre-clear idle. Same
@@ -1155,7 +1166,8 @@ async fn inject_handoff_prompt_with_archive<Inject, InjectFut>(
     build_prompt: fn(&str, Option<&str>) -> String,
     forgotten_summary: Option<&ForgottenSummary>,
     inject: &mut Inject,
-) where
+) -> bool
+where
     Inject: FnMut(Uuid, String) -> InjectFut + Send + 'static,
     InjectFut: std::future::Future<Output = Result<(), String>> + Send,
 {
@@ -1167,6 +1179,8 @@ async fn inject_handoff_prompt_with_archive<Inject, InjectFut>(
         &handoff_path,
         forgotten_summary.map(ForgottenSummary::as_str),
     );
+    // (#756) Returns whether the prompt reached the PTY, so the drivers fire
+    // their post-boundary-content event only on a real injection.
     if let Err(e) = inject(session_id, prompt).await {
         log::warn!(
             "[mailbox] {}: handoff prompt injection failed for session {}: {}",
@@ -1177,7 +1191,9 @@ async fn inject_handoff_prompt_with_archive<Inject, InjectFut>(
         if let Some(archived) = archived.as_deref() {
             restore_handoff_after_failed_inject(root, archived, action);
         }
+        return false;
     }
+    true
 }
 
 fn capture_self_forget_summary(root: &std::path::Path) -> Option<ForgottenSummary> {
@@ -2773,6 +2789,15 @@ impl MailboxPoller {
                 msg.from
             );
 
+            // (#756) C1: a successful /clear injection is a fresh-conversation
+            // boundary; stamp record + coordinator mirror. Placed BEFORE the
+            // follow-up spawn below so stamp-then-drop ordering is guaranteed
+            // when the message carries a body. /compact preserves the
+            // conversation: no stamp.
+            if command == "clear" {
+                crate::commands::pty::stamp_fresh_boundary_to_session(app, session_id).await;
+            }
+
             let _ = tauri::Emitter::emit(
                 app,
                 "message_delivered",
@@ -2872,6 +2897,11 @@ impl MailboxPoller {
             session_id,
             msg.id
         );
+        // (#756) AC-injected message CONTENT creates a post-boundary transcript:
+        // drop any pending fresh intent (record + mirror). The bare /clear /
+        // /compact command text never reaches this line (the command branch
+        // returned above).
+        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
         let _ = tauri::Emitter::emit(
             app,
             "message_delivered",
@@ -2926,7 +2956,10 @@ impl MailboxPoller {
         // Note: same TOCTOU race as the command path — agent could become busy
         // between the idle check above and this write. Acceptable for this use case.
         let payload = crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body);
-        crate::pty::inject::inject_text_into_session(app, session_id, &payload).await
+        crate::pty::inject::inject_text_into_session(app, session_id, &payload).await?;
+        // (#756) follow-up body delivered post-/clear: post-boundary content.
+        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
+        Ok(())
     }
 
     /// Find the best session for a given agent name (matches by working directory).
@@ -4001,6 +4034,25 @@ impl MailboxPoller {
             async move { crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await }
         };
 
+        let app_for_boundary = app.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let app = app_for_boundary.clone();
+            async move {
+                match boundary {
+                    SelfClearBoundary::Cleared => {
+                        crate::commands::pty::stamp_fresh_boundary_to_session(&app, session_id)
+                            .await
+                    }
+                    SelfClearBoundary::ContentInjected => {
+                        crate::commands::pty::note_post_boundary_content_to_session(
+                            &app, session_id,
+                        )
+                        .await
+                    }
+                }
+            }
+        };
+
         Self::drive_self_clear_after_sustained_idle(
             session_id,
             root,
@@ -4011,12 +4063,20 @@ impl MailboxPoller {
             max_defer,
             session_state,
             inject,
+            note_boundary,
         )
         .await;
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn drive_self_clear_after_sustained_idle<SessionState, SessionFut, Inject, InjectFut>(
+    async fn drive_self_clear_after_sustained_idle<
+        SessionState,
+        SessionFut,
+        Inject,
+        InjectFut,
+        NoteBoundary,
+        NoteFut,
+    >(
         session_id: Uuid,
         root: PathBuf,
         pending: Arc<crate::PendingSelfClear>,
@@ -4026,11 +4086,14 @@ impl MailboxPoller {
         max_defer: std::time::Duration,
         mut session_state: SessionState,
         mut inject: Inject,
+        mut note_boundary: NoteBoundary,
     ) where
         SessionState: FnMut(Uuid) -> SessionFut + Send + 'static,
         SessionFut: std::future::Future<Output = (bool, bool)> + Send,
         Inject: FnMut(Uuid, String) -> InjectFut + Send + 'static,
         InjectFut: std::future::Future<Output = Result<(), String>> + Send,
+        NoteBoundary: FnMut(Uuid, SelfClearBoundary) -> NoteFut + Send + 'static,
+        NoteFut: std::future::Future<Output = ()> + Send,
     {
         let mut state = SelfClearGateState::new(std::time::Instant::now());
 
@@ -4068,6 +4131,9 @@ impl MailboxPoller {
                         );
                         break; // abandon the handoff if the clear could not even be sent
                     }
+                    // (#756) C2: /clear reached the PTY; stamp before phase 2
+                    // can possibly drop (stamp-then-drop ordering).
+                    note_boundary(session_id, SelfClearBoundary::Cleared).await;
                     continue; // state is already Phase 2 with reset clocks
                 }
                 SelfClearGateAction::InjectHandoff => {
@@ -4077,7 +4143,7 @@ impl MailboxPoller {
                         settle.as_secs()
                     );
                     // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
-                    inject_handoff_prompt_with_archive(
+                    let injected = inject_handoff_prompt_with_archive(
                         &root,
                         session_id,
                         SELF_CLEAR_ACTION,
@@ -4086,6 +4152,10 @@ impl MailboxPoller {
                         &mut inject,
                     )
                     .await;
+                    if injected {
+                        // (#756) handoff prompt is post-boundary content.
+                        note_boundary(session_id, SelfClearBoundary::ContentInjected).await;
+                    }
                     break;
                 }
                 SelfClearGateAction::Abandon(reason) => {
@@ -4214,6 +4284,25 @@ impl MailboxPoller {
             async move { crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await }
         };
 
+        let app_for_boundary = app.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let app = app_for_boundary.clone();
+            async move {
+                match boundary {
+                    SelfClearBoundary::Cleared => {
+                        crate::commands::pty::stamp_fresh_boundary_to_session(&app, session_id)
+                            .await
+                    }
+                    SelfClearBoundary::ContentInjected => {
+                        crate::commands::pty::note_post_boundary_content_to_session(
+                            &app, session_id,
+                        )
+                        .await
+                    }
+                }
+            }
+        };
+
         Self::drive_self_switch_after_sustained_idle(
             original_session_id,
             cwd,
@@ -4228,6 +4317,7 @@ impl MailboxPoller {
             persist,
             restart,
             inject,
+            note_boundary,
         )
         .await;
     }
@@ -4242,6 +4332,8 @@ impl MailboxPoller {
         RestartFut,
         Inject,
         InjectFut,
+        NoteBoundary,
+        NoteFut,
     >(
         original_session_id: Uuid,
         cwd: PathBuf,
@@ -4256,6 +4348,7 @@ impl MailboxPoller {
         mut persist: Persist,
         mut restart: Restart,
         mut inject: Inject,
+        mut note_boundary: NoteBoundary,
     ) where
         SessionState: FnMut(Uuid) -> SessionFut + Send + 'static,
         SessionFut: std::future::Future<Output = (bool, bool)> + Send,
@@ -4265,6 +4358,8 @@ impl MailboxPoller {
         RestartFut: std::future::Future<Output = Result<String, String>> + Send,
         Inject: FnMut(Uuid, String) -> InjectFut + Send + 'static,
         InjectFut: std::future::Future<Output = Result<(), String>> + Send,
+        NoteBoundary: FnMut(Uuid, SelfClearBoundary) -> NoteFut + Send + 'static,
+        NoteFut: std::future::Future<Output = ()> + Send,
     {
         let mut state = SelfClearGateState::new(std::time::Instant::now());
         let mut session_id = original_session_id;
@@ -4347,7 +4442,11 @@ impl MailboxPoller {
                         settle.as_secs()
                     );
                     // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
-                    inject_handoff_prompt_with_archive(
+                    // (#756) NOTE: the switch phase 1 fires NO Cleared event; it is a
+                    // restart through restart_session_inner_with_activation (skip
+                    // Some(true)), which stamps record + mirror itself via C3. The
+                    // handoff lands on the CURRENT session_id (the post-switch id).
+                    let injected = inject_handoff_prompt_with_archive(
                         &cwd,
                         session_id,
                         SELF_SWITCH_ACTION,
@@ -4356,6 +4455,10 @@ impl MailboxPoller {
                         &mut inject,
                     )
                     .await;
+                    if injected {
+                        // (#756) switch handoff prompt is post-boundary content.
+                        note_boundary(session_id, SelfClearBoundary::ContentInjected).await;
+                    }
                     break;
                 }
                 SelfClearGateAction::Abandon(reason) => {
@@ -8414,6 +8517,16 @@ mod tests {
             }
         };
 
+        // (#756) F8: record the boundary events the driver surfaces.
+        let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let events_seen = boundary_events.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let events_seen = events_seen.clone();
+            async move {
+                events_seen.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
         MailboxPoller::drive_self_clear_after_sustained_idle(
             session_id,
             temp.path().to_path_buf(),
@@ -8424,8 +8537,20 @@ mod tests {
             std::time::Duration::from_secs(1),
             session_state,
             inject,
+            note_boundary,
         )
         .await;
+
+        // (#756) happy path: exactly [Cleared, ContentInjected] in order, both
+        // on the stable session id (the PTY and id survive /clear).
+        assert_eq!(
+            *boundary_events.lock().unwrap(),
+            vec![
+                (session_id, SelfClearBoundary::Cleared),
+                (session_id, SelfClearBoundary::ContentInjected),
+            ],
+            "self-clear must stamp on phase 1 and drop on phase 2"
+        );
 
         let injected = injected.lock().unwrap().clone();
         assert_eq!(injected.len(), 2);
@@ -8482,6 +8607,7 @@ mod tests {
             std::time::Duration::from_secs(1),
             session_state,
             inject,
+            |_session_id: Uuid, _boundary: SelfClearBoundary| async {},
         )
         .await;
 
@@ -8544,6 +8670,16 @@ mod tests {
             }
         };
 
+        // (#756) F8: a failed phase-2 inject must fire Cleared only (no drop).
+        let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let events_seen = boundary_events.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let events_seen = events_seen.clone();
+            async move {
+                events_seen.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
         MailboxPoller::drive_self_clear_after_sustained_idle(
             session_id,
             temp.path().to_path_buf(),
@@ -8554,8 +8690,15 @@ mod tests {
             std::time::Duration::from_secs(1),
             session_state,
             inject,
+            note_boundary,
         )
         .await;
+
+        assert_eq!(
+            *boundary_events.lock().unwrap(),
+            vec![(session_id, SelfClearBoundary::Cleared)],
+            "an un-injected handoff must not drop the fresh intent"
+        );
 
         assert_eq!(*inject_calls.lock().unwrap(), 2);
         assert_eq!(
@@ -8576,6 +8719,59 @@ mod tests {
             })
             .unwrap_or(0);
         assert_eq!(leftover_archives, 0, "no orphaned handoff archive remains");
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// (#756) F8: a failed phase-1 /clear inject abandons the flow and fires NO
+    /// boundary events (an un-injected /clear must not stamp).
+    #[tokio::test]
+    async fn self_clear_driver_phase1_inject_failure_fires_no_boundary_events() {
+        let session_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(session_id);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "resume notes").unwrap();
+
+        let inject_calls = Arc::new(Mutex::new(0usize));
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let calls = inject_calls.clone();
+        let inject = move |_session_id: Uuid, _prompt: String| {
+            let calls = calls.clone();
+            async move {
+                *calls.lock().unwrap() += 1;
+                Err("pty write failed".to_string())
+            }
+        };
+
+        let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let events_seen = boundary_events.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let events_seen = events_seen.clone();
+            async move {
+                events_seen.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
+        MailboxPoller::drive_self_clear_after_sustained_idle(
+            session_id,
+            temp.path().to_path_buf(),
+            pending.clone(),
+            None,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            inject,
+            note_boundary,
+        )
+        .await;
+
+        assert_eq!(*inject_calls.lock().unwrap(), 1, "abandons after phase 1");
+        assert!(
+            boundary_events.lock().unwrap().is_empty(),
+            "an un-injected /clear must not stamp the fresh intent"
+        );
         assert!(pending.0.lock().unwrap().is_empty());
     }
 
@@ -8610,6 +8806,7 @@ mod tests {
             std::time::Duration::from_secs(1),
             session_state,
             inject,
+            |_session_id: Uuid, _boundary: SelfClearBoundary| async {},
         )
         .await;
 
@@ -8701,6 +8898,17 @@ mod tests {
 
         let cwd = temp.path().to_path_buf();
 
+        // (#756) F8: the switch driver must fire ONLY ContentInjected, on the
+        // NEW session id (phase 1 is a restart; C3 stamps it, never this driver).
+        let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let events_seen = boundary_events.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let events_seen = events_seen.clone();
+            async move {
+                events_seen.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
         MailboxPoller::drive_self_switch_after_sustained_idle(
             original_id,
             cwd.clone(),
@@ -8715,8 +8923,15 @@ mod tests {
             persist,
             restart,
             inject,
+            note_boundary,
         )
         .await;
+
+        assert_eq!(
+            *boundary_events.lock().unwrap(),
+            vec![(new_id, SelfClearBoundary::ContentInjected)],
+            "switch fires exactly one ContentInjected on the post-switch id, never Cleared"
+        );
 
         assert_eq!(*seen_states.lock().unwrap(), vec![original_id, new_id]);
         assert_eq!(
@@ -8754,6 +8969,17 @@ mod tests {
             Err("pty write failed".to_string())
         };
 
+        // (#756) F8: a failed switch handoff inject fires NO boundary events
+        // (no Cleared by design, and no ContentInjected without a real inject).
+        let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let events_seen = boundary_events.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let events_seen = events_seen.clone();
+            async move {
+                events_seen.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
         MailboxPoller::drive_self_switch_after_sustained_idle(
             original_id,
             temp.path().to_path_buf(),
@@ -8768,9 +8994,14 @@ mod tests {
             persist,
             restart,
             inject,
+            note_boundary,
         )
         .await;
 
+        assert!(
+            boundary_events.lock().unwrap().is_empty(),
+            "a failed switch handoff must not drop the fresh intent"
+        );
         assert_eq!(
             std::fs::read_to_string(temp.path().join("SELF-HANDOFF.md")).unwrap(),
             "switch resume notes",
@@ -8828,6 +9059,7 @@ mod tests {
             persist,
             restart,
             inject,
+            |_session_id: Uuid, _boundary: SelfClearBoundary| async {},
         )
         .await;
 
@@ -8880,6 +9112,7 @@ mod tests {
             persist,
             restart,
             inject,
+            |_session_id: Uuid, _boundary: SelfClearBoundary| async {},
         )
         .await;
 

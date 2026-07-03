@@ -519,11 +519,31 @@ impl SessionManager {
         if let Some(s) = sessions.get_mut(&id) {
             if s.start_fresh_on_restore {
                 log::info!(
-                    "[session-state] {} '{}': start_fresh_on_restore true -> false (user message, re-armed)",
+                    "[session-state] {} '{}': start_fresh_on_restore true -> false (re-armed)",
                     &id.to_string()[..8],
                     s.name
                 );
                 s.start_fresh_on_restore = false;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// (#756) Stamp the durable fresh intent on an AC-driven clear boundary.
+    /// Returns true ONLY on the `false -> true` transition, so the caller
+    /// persists exactly once. Missing id -> false. Counterpart of
+    /// `clear_start_fresh_on_restore_if_set` (re-arm direction).
+    pub async fn set_start_fresh_on_restore_if_unset(&self, id: Uuid) -> bool {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            if !s.start_fresh_on_restore {
+                log::info!(
+                    "[session-state] {} '{}': start_fresh_on_restore false -> true (AC clear boundary, #756)",
+                    &id.to_string()[..8],
+                    s.name
+                );
+                s.start_fresh_on_restore = true;
                 return true;
             }
         }
@@ -869,6 +889,51 @@ mod tests {
             !mgr.clear_start_fresh_on_restore_if_set(Uuid::new_v4())
                 .await
         );
+    }
+
+    // (#756) Stamp on an AC-driven clear boundary: transitions exactly once
+    // (false -> true), a second call is a no-op, and a missing id reports false.
+    #[tokio::test]
+    async fn set_start_fresh_on_restore_if_unset_is_one_shot() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude-mb".to_string(),
+                Vec::new(),
+                "C:\\tmp".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .expect("create_session should succeed");
+
+        // Constructor default is the resume intent (false).
+        assert!(!session.start_fresh_on_restore);
+
+        // First stamp reports the false -> true transition.
+        assert!(
+            mgr.set_start_fresh_on_restore_if_unset(session.id).await,
+            "first stamp must report the transition so the caller persists once"
+        );
+        let stamped = mgr
+            .get_session(session.id)
+            .await
+            .expect("session should still exist");
+        assert!(stamped.start_fresh_on_restore);
+
+        // Second stamp is a no-op: no transition, so the caller does not re-persist.
+        assert!(
+            !mgr.set_start_fresh_on_restore_if_unset(session.id).await,
+            "second stamp must be a no-op (one-shot)"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_start_fresh_on_restore_if_unset_no_op_on_missing_session() {
+        let mgr = SessionManager::new();
+        assert!(!mgr.set_start_fresh_on_restore_if_unset(Uuid::new_v4()).await);
     }
 
     #[tokio::test]
