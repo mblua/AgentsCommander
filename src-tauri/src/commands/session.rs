@@ -689,6 +689,7 @@ fn should_inject_continue(
 ///   - the session is a Claude variant, and
 ///   - AC is deliberately NOT resuming (`skip_auto_resume` true: fresh create
 ///     default, restart-fresh, or the #756 mirror guard),
+///
 /// and the configured argv does not already steer session identity:
 /// `--session-id[=]`, `--resume[=]`/`-r`, `--continue[=]`/`-c`,
 /// `--fork-session` (case-insensitive token match). User args win; stacking
