@@ -14,7 +14,9 @@ use agentscommander_lib::commands::session::{
 use agentscommander_lib::config::sessions_persistence::{
     load_sessions, persist_current_state_result,
 };
-use agentscommander_lib::config::settings::{save_settings, AppSettings, SettingsState};
+use agentscommander_lib::config::settings::{
+    save_settings_with_project_paths, AppSettings, SettingsState,
+};
 use agentscommander_lib::pty::git_watcher::GitWatcher;
 use agentscommander_lib::pty::idle_detector::IdleDetector;
 use agentscommander_lib::pty::manager::PtyManager;
@@ -163,7 +165,12 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
         agentscommander_lib::config::config_dir().expect("config dir override"),
         config_dir
     );
-    save_settings(&AppSettings {
+    // #778: seeding project_paths to a fresh settings.json is a deliberate list
+    // write, so it must use the explicit verbatim writer. The default
+    // `save_settings` is now preserve-disk (it would read the not-yet-existent
+    // file as empty and write project_paths: []), which is exactly the fail-safe
+    // behavior #778 introduced.
+    save_settings_with_project_paths(&AppSettings {
         default_shell: "powershell.exe".to_string(),
         default_shell_args: vec!["-NoLogo".to_string()],
         project_paths: vec![path_to_string(&repo_root)],

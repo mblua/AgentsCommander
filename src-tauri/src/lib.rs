@@ -1989,6 +1989,7 @@ pub fn run(
             commands::ac_discovery::create_ac_project,
             commands::ac_discovery::open_project,
             commands::ac_discovery::new_project,
+            commands::ac_discovery::remove_project,
             commands::ac_discovery::discover_project,
             commands::project_settings::get_project_groups,
             commands::project_settings::update_project_groups,
