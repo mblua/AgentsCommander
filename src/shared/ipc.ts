@@ -57,7 +57,8 @@ import type {
   ScreenshotCaptureResult,
   ScreenshotCaptureFailedEvent,
   ScreenshotHotkeyStatus,
-  WorkgroupGroupsConfig
+  WorkgroupGroupsConfig,
+  NonStopReport
 } from "./types";
 
 export interface SessionRepoInput {
@@ -765,6 +766,13 @@ export const ProjectAPI = {
    */
   new: (path: string) =>
     transport.invoke<ProjectRegistration>("new_project", { path }),
+};
+
+/** #777 Non-stop watchdog: frontend pushes the full disparity snapshot; the
+ *  backend owns the tolerance timer and actuation (Win32 beep + Telegram). */
+export const NonStopAPI = {
+  report: (reports: NonStopReport[]) =>
+    transport.invoke<void>("non_stop_report", { reports }),
 };
 
 // Project Loops API
