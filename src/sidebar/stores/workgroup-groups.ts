@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store";
-import type { AcWorkgroup, WorkgroupGroup, WorkgroupGroupsConfig } from "../../shared/types";
+import type { AcWorkgroup, NonStopGroupConfig, WorkgroupGroup, WorkgroupGroupsConfig } from "../../shared/types";
 import { ProjectAPI } from "../../shared/ipc";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
@@ -12,7 +12,19 @@ export const MAX_GROUP_MATCH_ID_LENGTH = 160;
 export type WorkgroupGroupSelection =
   | { kind: "all" }
   | { kind: "ungrouped" }
+  | { kind: "nonstop" }
   | { kind: "group"; id: string };
+
+// #777 Non-stop group defaults + clamp bounds (mirror the Rust side in
+// project_settings.rs so both ends agree).
+export const DEFAULT_NON_STOP_NAME = "Non-stop";
+export const MATCH_NONE_REGEX = "(?!)";
+const MIN_TOLERANCE_SECONDS = 1;
+const MAX_TOLERANCE_SECONDS = 3600;
+const DEFAULT_TOLERANCE_SECONDS = 30;
+const MIN_BEEP_SECONDS = 1;
+const MAX_BEEP_SECONDS = 60;
+const DEFAULT_BEEP_SECONDS = 3;
 
 interface ProjectGroupsEntry {
   config: WorkgroupGroupsConfig;
@@ -40,6 +52,70 @@ export function defaultGroupsConfig(): WorkgroupGroupsConfig {
     groups: [],
     showAll: true,
     showUngrouped: true,
+    nonStop: null,
+  };
+}
+
+/** #777 default Non-stop slot (D3): hidden, matches nothing, 30s tolerance, 3s beep. */
+export function defaultNonStop(): NonStopGroupConfig {
+  return {
+    show: false,
+    name: DEFAULT_NON_STOP_NAME,
+    regex: MATCH_NONE_REGEX,
+    toleranceSeconds: DEFAULT_TOLERANCE_SECONDS,
+    telegram: { enabled: false, botId: null },
+    sound: { enabled: false, seconds: DEFAULT_BEEP_SECONDS },
+  };
+}
+
+function clampInt(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  const n = Math.round(value);
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+}
+
+/** #777 C6: repair a persisted/hand-edited `nonStop` so a bad value degrades
+ *  gracefully instead of entering the fatal validate-and-reset path (which would
+ *  wipe every user group). Clamps numerics, truncates the name, and resets an
+ *  invalid/oversize regex to match-none. Never throws. `null`/`undefined` stay absent. */
+export function normalizeNonStop(
+  nonStop: NonStopGroupConfig | null | undefined
+): NonStopGroupConfig | null | undefined {
+  if (nonStop === null) return null;
+  if (nonStop === undefined) return undefined;
+  const trimmedName = (nonStop.name ?? "").trim();
+  const name = trimmedName
+    ? Array.from(trimmedName).slice(0, MAX_GROUP_NAME_LENGTH).join("")
+    : DEFAULT_NON_STOP_NAME;
+  const regex = nonStop.regex ?? "";
+  let regexOk = charLength(regex) <= MAX_GROUP_REGEX_LENGTH;
+  if (regexOk) {
+    try {
+      new RegExp(regex);
+    } catch {
+      regexOk = false;
+    }
+  }
+  return {
+    show: !!nonStop.show,
+    name,
+    regex: regexOk ? regex : MATCH_NONE_REGEX,
+    toleranceSeconds: clampInt(
+      nonStop.toleranceSeconds,
+      MIN_TOLERANCE_SECONDS,
+      MAX_TOLERANCE_SECONDS,
+      DEFAULT_TOLERANCE_SECONDS
+    ),
+    telegram: {
+      enabled: !!nonStop.telegram?.enabled,
+      botId: nonStop.telegram?.botId ?? null,
+    },
+    sound: {
+      enabled: !!nonStop.sound?.enabled,
+      seconds: clampInt(nonStop.sound?.seconds, MIN_BEEP_SECONDS, MAX_BEEP_SECONDS, DEFAULT_BEEP_SECONDS),
+    },
   };
 }
 
@@ -48,6 +124,9 @@ function cloneConfig(config: WorkgroupGroupsConfig): WorkgroupGroupsConfig {
     groups: config.groups.map((group) => ({ ...group })),
     showAll: config.showAll,
     showUngrouped: config.showUngrouped,
+    nonStop: config.nonStop
+      ? { ...config.nonStop, telegram: { ...config.nonStop.telegram }, sound: { ...config.nonStop.sound } }
+      : (config.nonStop ?? undefined),
   };
 }
 
@@ -88,6 +167,10 @@ function normalizeSelection(
     return config.showUngrouped ? { kind: "ungrouped" } : { kind: "all" };
   }
   if (selection.kind === "ungrouped" && !config.showUngrouped) {
+    return config.showAll ? { kind: "all" } : { kind: "ungrouped" };
+  }
+  // #777: selecting Non-stop while it is hidden/absent falls back like All/Ungrouped.
+  if (selection.kind === "nonstop" && !config.nonStop?.show) {
     return config.showAll ? { kind: "all" } : { kind: "ungrouped" };
   }
   return selection;
@@ -203,6 +286,16 @@ export function compileGroupRegex(group: WorkgroupGroup): RegExp | null {
   }
 }
 
+/** #777 Non-stop membership matcher. Mirrors the rail's `groupMatches` exactly
+ *  (reuses `compileGroupRegex`), so the rail, the predicate, and the watchdog
+ *  client resolve membership identically. Oversize/invalid regex -> false (no throw). */
+export function nonStopMatchesWorkgroup(config: NonStopGroupConfig, wg: AcWorkgroup): boolean {
+  const id = groupMatchId(wg);
+  if (charLength(id) > MAX_GROUP_MATCH_ID_LENGTH) return false;
+  const regex = compileGroupRegex({ id: "nonstop", name: "nonstop", regex: config.regex });
+  return !!regex?.test(id);
+}
+
 export function validateGroupsConfig(
   config: WorkgroupGroupsConfig,
   options: { validateRegexSyntax?: boolean } = {}
@@ -247,6 +340,21 @@ export function validateGroupsConfig(
     }
   });
 
+  // #777 C6: soft regex-syntax check for Non-stop, ONLY under validateRegexSyntax
+  // (the save/modal path). Load uses validateRegexSyntax:false, so a bad nonStop
+  // never trips the fatal reset-to-defaults path; normalizeNonStop repairs it there.
+  if (config.nonStop && options.validateRegexSyntax) {
+    if (charLength(config.nonStop.regex) > MAX_GROUP_REGEX_LENGTH) {
+      errors.push(`Non-stop: regex cannot exceed ${MAX_GROUP_REGEX_LENGTH} characters.`);
+    } else {
+      try {
+        new RegExp(config.nonStop.regex);
+      } catch {
+        errors.push("Non-stop: regex is invalid.");
+      }
+    }
+  }
+
   return Array.from(new Set(errors));
 }
 
@@ -268,7 +376,9 @@ function setConfig(
 ) {
   const key = keyFor(projectPath);
   const current = ensureEntry(projectPath);
-  const nextConfig = cloneConfig(config);
+  // #777 C6: clamp/repair nonStop on every store write (covers load + post-save),
+  // so a bad persisted value degrades gracefully instead of wiping the config.
+  const nextConfig = cloneConfig({ ...config, nonStop: normalizeNonStop(config.nonStop) });
   setEntries(key, {
     ...current,
     config: nextConfig,
@@ -448,6 +558,55 @@ export const workgroupGroupsStore = {
         },
       ],
     });
+  },
+
+  // #777 C5: membership helpers for the built-in Non-stop slot. Mirror
+  // addWorkgroupToGroup/removeWorkgroupFromGroup but target `config.nonStop.regex`.
+  async addWorkgroupToNonStop(projectPath: string, wgName: string): Promise<void> {
+    if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
+      const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
+      const key = keyFor(projectPath);
+      setEntries(key, { ...ensureEntry(projectPath), error: message });
+      throw new Error(message);
+    }
+    const config = this.config(projectPath);
+    const current = config.nonStop;
+    if (!current) {
+      // Materialize the slot (shown) with an exact-match regex for this workgroup.
+      await this.save(projectPath, {
+        ...config,
+        nonStop: { ...defaultNonStop(), show: true, regex: exactGroupRegexForWorkgroup(wgName) },
+      });
+      return;
+    }
+    const nextRegex = appendExactGroupToken(current.regex, wgName);
+    if (nextRegex === null) {
+      const message = "Fix the Non-stop regex before adding a workgroup.";
+      const key = keyFor(projectPath);
+      setEntries(key, { ...ensureEntry(projectPath), error: message });
+      throw new Error(message);
+    }
+    await this.save(projectPath, { ...config, nonStop: { ...current, regex: nextRegex } });
+  },
+
+  async removeWorkgroupFromNonStop(projectPath: string, wgName: string): Promise<void> {
+    if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
+      const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
+      const key = keyFor(projectPath);
+      setEntries(key, { ...ensureEntry(projectPath), error: message });
+      throw new Error(message);
+    }
+    const config = this.config(projectPath);
+    const current = config.nonStop;
+    if (!current) return;
+    const nextRegex = removeExactGroupToken(current.regex, wgName);
+    if (nextRegex === null) {
+      const message = "This membership comes from a custom regex. Use Edit groups to change it.";
+      const key = keyFor(projectPath);
+      setEntries(key, { ...ensureEntry(projectPath), error: message });
+      throw new Error(message);
+    }
+    await this.save(projectPath, { ...config, nonStop: { ...current, regex: nextRegex } });
   },
 
   resetForTests(): void {

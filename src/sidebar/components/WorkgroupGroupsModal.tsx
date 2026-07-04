@@ -1,10 +1,13 @@
-import { Component, For, Index, Show, createMemo, createSignal } from "solid-js";
+import { Component, For, Index, Show, createMemo, createResource, createSignal } from "solid-js";
 import { focusOnMount } from "../../shared/focus-on-mount";
-import type { WorkgroupGroupsConfig } from "../../shared/types";
+import { SettingsAPI } from "../../shared/ipc";
+import { isWindows } from "../../shared/platform";
+import type { NonStopGroupConfig, WorkgroupGroupsConfig } from "../../shared/types";
 import {
   MAX_GROUP_NAME_LENGTH,
   MAX_GROUP_REGEX_LENGTH,
   createGroupId,
+  defaultNonStop,
   exactGroupRegexForWorkgroup,
   validateGroupsConfig,
   workgroupGroupsStore,
@@ -22,6 +25,12 @@ function cloneConfig(config: WorkgroupGroupsConfig): WorkgroupGroupsConfig {
     groups: config.groups.map((group) => ({ ...group })),
     showAll: config.showAll,
     showUngrouped: config.showUngrouped,
+    // #777 (dev-webpage-ui #1, BLOCKER): the modal seeds its draft with THIS local
+    // clone (not the store's), so it MUST deep-clone nonStop too, or opening the
+    // modal drops a persisted nonStop and the first Save wipes it.
+    nonStop: config.nonStop
+      ? { ...config.nonStop, telegram: { ...config.nonStop.telegram }, sound: { ...config.nonStop.sound } }
+      : (config.nonStop ?? undefined),
   };
 }
 
@@ -122,6 +131,35 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
     }
   };
 
+  // #777 Non-stop section state. An absent nonStop renders as the default for
+  // editing; the first touch materializes it in the draft (persisted by save()).
+  const ns = (): NonStopGroupConfig => draft().nonStop ?? defaultNonStop();
+  const setNonStop = (patch: Partial<NonStopGroupConfig>) => {
+    setDraft({ ...draft(), nonStop: { ...ns(), ...patch } });
+    setSaveError(null);
+  };
+  const setNonStopTelegram = (patch: Partial<NonStopGroupConfig["telegram"]>) => {
+    const current = ns();
+    setDraft({ ...draft(), nonStop: { ...current, telegram: { ...current.telegram, ...patch } } });
+    setSaveError(null);
+  };
+  const setNonStopSound = (patch: Partial<NonStopGroupConfig["sound"]>) => {
+    const current = ns();
+    setDraft({ ...draft(), nonStop: { ...current, sound: { ...current.sound, ...patch } } });
+    setSaveError(null);
+  };
+  // Bots reuse the existing settings fetch (Change L dropped). The fetch swallows
+  // any error so a failed/absent settings handler yields an empty bot list (no
+  // unhandled rejection) rather than surfacing an error in the modal.
+  const [botsResource] = createResource(async () => {
+    try {
+      return await SettingsAPI.get();
+    } catch {
+      return null;
+    }
+  });
+  const bots = () => botsResource()?.telegramBots ?? [];
+
   return (
     <div class="modal-overlay" data-ac-testid="workgroupGroups.modal">
       <div class="agent-modal workgroup-groups-modal">
@@ -154,6 +192,112 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
               />
               <span>Show Ungrouped</span>
             </label>
+          </div>
+
+          {/* #777 Non-stop watchdog section. Static JSX (NOT a keyed <For> over
+              field rows) so the text inputs keep focus (the #614 lesson). The
+              single show toggle = rail visibility AND watchdog on/off; Telegram
+              and Sound are independent measures. */}
+          <div class="workgroup-groups-nonstop">
+            <label class="settings-checkbox-field">
+              <input
+                type="checkbox"
+                checked={ns().show}
+                onChange={(e) => setNonStop({ show: e.currentTarget.checked })}
+                data-ac-testid="workgroupGroups.nonstop.show"
+              />
+              <span>Non-stop (watchdog)</span>
+            </label>
+            <div class="workgroup-group-edit-row">
+              <input
+                class="workgroup-group-name-input"
+                value={ns().name}
+                maxLength={MAX_GROUP_NAME_LENGTH}
+                onInput={(e) => setNonStop({ name: e.currentTarget.value })}
+                aria-label="Non-stop name"
+                data-ac-testid="workgroupGroups.nonstop.name"
+              />
+              <input
+                class="workgroup-group-regex-input"
+                value={ns().regex}
+                maxLength={MAX_GROUP_REGEX_LENGTH}
+                onInput={(e) => setNonStop({ regex: e.currentTarget.value })}
+                aria-label="Non-stop regex"
+                data-ac-testid="workgroupGroups.nonstop.regex"
+              />
+            </div>
+            <label class="workgroup-groups-nonstop-field">
+              <span>Tolerance (seconds)</span>
+              <input
+                type="number"
+                min="1"
+                max="3600"
+                value={ns().toleranceSeconds}
+                onInput={(e) => setNonStop({ toleranceSeconds: Number(e.currentTarget.value) })}
+                data-ac-testid="workgroupGroups.nonstop.tolerance"
+              />
+            </label>
+            <div class="workgroup-groups-nonstop-measure">
+              <label class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={ns().telegram.enabled}
+                  onChange={(e) => setNonStopTelegram({ enabled: e.currentTarget.checked })}
+                  data-ac-testid="workgroupGroups.nonstop.telegramEnabled"
+                />
+                <span>Telegram alert</span>
+              </label>
+              <select
+                class="workgroup-groups-nonstop-bot"
+                value={ns().telegram.botId ?? ""}
+                disabled={!ns().telegram.enabled}
+                onChange={(e) => setNonStopTelegram({ botId: e.currentTarget.value || null })}
+                data-ac-testid="workgroupGroups.nonstop.telegramBot"
+              >
+                <option value="">First configured bot</option>
+                <For each={bots()}>
+                  {(bot) => <option value={bot.id}>{bot.label}</option>}
+                </For>
+              </select>
+              <Show when={ns().telegram.enabled && bots().length === 0}>
+                <div
+                  class="workgroup-groups-nonstop-warning"
+                  data-ac-testid="workgroupGroups.nonstop.telegramNoBots"
+                >
+                  No Telegram bots configured; alerts will not fire.
+                </div>
+              </Show>
+            </div>
+            <div class="workgroup-groups-nonstop-measure">
+              <label class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={ns().sound.enabled}
+                  disabled={!isWindows}
+                  onChange={(e) => setNonStopSound({ enabled: e.currentTarget.checked })}
+                  data-ac-testid="workgroupGroups.nonstop.soundEnabled"
+                />
+                <span>Sound alert</span>
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="60"
+                value={ns().sound.seconds}
+                disabled={!isWindows || !ns().sound.enabled}
+                onInput={(e) => setNonStopSound({ seconds: Number(e.currentTarget.value) })}
+                aria-label="Sound alert seconds"
+                data-ac-testid="workgroupGroups.nonstop.soundSeconds"
+              />
+              <Show when={!isWindows}>
+                <div
+                  class="workgroup-groups-nonstop-hint"
+                  data-ac-testid="workgroupGroups.nonstop.soundWindowsOnly"
+                >
+                  Sound alert is Windows-only.
+                </div>
+              </Show>
+            </div>
           </div>
 
           <div class="workgroup-groups-table">

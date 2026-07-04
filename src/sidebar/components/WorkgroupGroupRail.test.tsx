@@ -14,6 +14,7 @@ import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import {
   defaultGroupsConfig,
+  defaultNonStop,
   exactGroupRegexForWorkgroup,
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
@@ -268,6 +269,44 @@ describe("WorkgroupGroupRail", () => {
         expect(document.activeElement).toBe(added);
         expect(added.value).toBe("Ba");
       });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("#777 pins the Non-stop button after Ungrouped with the live counter + running dot", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        nonStop: { ...defaultNonStop(), show: true, regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+      })
+    );
+    fake.onInvoke("update_project_groups", (args) => args.config);
+    // wg-1 is working (running session) -> counter 1/1 + dot.
+    sessionsStore.setSessions([replicaSession("wg-1-dev-team")]);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() =>
+        expect(railButtonOrder()).toEqual(["all", "ungrouped", "nonstop", "ui", "rust"])
+      );
+      expect(target("workgroupGroups.button.nonstop").textContent).toContain("1/1");
+      expect(railDots()).toContain("nonstop");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("#777 hides the Non-stop button when show=false", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig({ nonStop: { ...defaultNonStop(), show: false } }));
+    fake.onInvoke("update_project_groups", (args) => args.config);
+
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+      expect(document.querySelector('[data-ac-testid="workgroupGroups.button.nonstop"]')).toBeNull();
     } finally {
       rendered.cleanup();
     }
