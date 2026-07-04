@@ -103,6 +103,10 @@ pub struct CodingAgentRequest {
 pub struct CodingAgentResult {
     pub request_id: String,
     pub ok: bool,
+    /// #786: `"add"|"update"|"remove"` on success. Mirrored into the daemon-path
+    /// stdout so the JSON shape matches the direct (GUI-closed) path exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -488,6 +492,7 @@ fn process_claimed(
                 &CodingAgentResult {
                     request_id: request_id.to_string(),
                     ok: true,
+                    op: Some(outcome.op.to_string()),
                     error: None,
                     agent: outcome.agent,
                     removed_id: outcome.removed_id,
@@ -511,6 +516,7 @@ fn write_reject(results_dir: &Path, request_id: &str, error: String) {
         &CodingAgentResult {
             request_id: request_id.to_string(),
             ok: false,
+            op: None,
             error: Some(error),
             agent: None,
             removed_id: None,
@@ -667,6 +673,21 @@ mod tests {
             dest: String::new(),
         });
         assert!(apply_coding_agent_op(&mut s, &add(a)).is_err());
+    }
+
+    #[test]
+    fn add_accepts_catalog_seeded_non_hex_color() {
+        // §14.4 R6 carve-out: the op layer NEVER validates color (only the
+        // explicit `--color` CLI flag does, in cmd_add). A catalog-seeded agent
+        // whose color is a shorthand like "#fff" must be accepted as-is so that
+        // `add --from-catalog <key>` never rejects a trusted catalog color.
+        // Guards against a future regression that adds a color check here.
+        let mut s = AppSettings::default();
+        let mut a = agent("cat", "Catalog Agent", "claude");
+        a.color = "#fff".to_string();
+        let out = apply_coding_agent_op(&mut s, &add(a)).unwrap();
+        assert_eq!(out.op, "add");
+        assert_eq!(s.agents[0].color, "#fff", "catalog color persisted as-is");
     }
 
     // ---- update ------------------------------------------------------------
@@ -866,6 +887,7 @@ mod tests {
             &CodingAgentResult {
                 request_id: "req1".into(),
                 ok: true,
+                op: Some("add".into()),
                 error: None,
                 agent: None,
                 removed_id: None,
@@ -874,6 +896,7 @@ mod tests {
         .unwrap();
         let read = read_coding_agent_result(&results, "req1").unwrap();
         assert!(read.ok);
+        assert_eq!(read.op.as_deref(), Some("add"), "op round-trips");
     }
 
     #[test]
@@ -891,6 +914,7 @@ mod tests {
             &CodingAgentResult {
                 request_id: "x".into(),
                 ok: true,
+                op: None,
                 error: None,
                 agent: None,
                 removed_id: None,

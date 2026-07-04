@@ -421,7 +421,7 @@ Subcommands:
 
 | Flag | Description |
 |---|---|
-| `--from-catalog <key>` | (add) Seed label/command/color/envs/isolatedHome (and optional instructions/seed) from a catalog entry; explicit flags below override. Without it, `--label` and `--command` are required. |
+| `--from-catalog <key>` | (add) Seed label/command/color/envs/isolatedHome (and optional instructions/seed) from a catalog entry; explicit flags below override. Without it, `--label` and `--command` are required. The final label must still be non-empty: a catalog entry with an empty label requires `--label`. |
 | `--id <id>` | (add) Custom id, `^[a-z0-9][a-z0-9_-]{0,63}$`. Default: a minted `agent_<ms>_<hex>` id. Ids are unique case-insensitively. |
 | `--label <s>` | Display label (non-empty, trimmed). |
 | `--command <s>` | Launch command. Banned: Claude `--continue`/`-c`, Codex `resume`/`--last`, Gemini `--resume` (AC injects resume automatically). |

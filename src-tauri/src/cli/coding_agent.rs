@@ -90,7 +90,7 @@ pub struct AddArgs {
     /// Custom agent id (default: a minted `agent_<ms>_<hex>` id)
     #[arg(long)]
     pub id: Option<String>,
-    /// Display label (required unless --from-catalog supplies it)
+    /// Display label (required unless --from-catalog supplies a non-empty one)
     #[arg(long)]
     pub label: Option<String>,
     /// Launch command (required unless --from-catalog supplies it)
@@ -439,7 +439,7 @@ fn finish_daemon_result(result: CodingAgentResult) -> Result<(), String> {
         let json = if let Some(id) = result.removed_id {
             serde_json::json!({ "ok": true, "op": "remove", "id": id })
         } else {
-            serde_json::json!({ "ok": true, "agent": result.agent })
+            serde_json::json!({ "ok": true, "op": result.op, "agent": result.agent })
         };
         print_json(&json)
     } else {
