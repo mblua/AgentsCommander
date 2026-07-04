@@ -1,5 +1,6 @@
 pub mod agency_templates;
 pub mod close_session;
+pub mod coding_agent;
 pub mod create_agent;
 pub mod create_agent_matrix;
 pub mod harness;
@@ -166,6 +167,8 @@ pub enum Commands {
     Loop(loop_cmd::LoopArgs),
     /// Execute commands through the policy harness
     Harness(harness::HarnessArgs),
+    /// Manage Coding Agent configurations (settings.agents)
+    CodingAgent(coding_agent::CodingAgentArgs),
     /// Delete only the disposable testable app state
     #[command(hide = true)]
     TestReset(crate::testability::reset::TestResetArgs),
@@ -319,6 +322,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::Team(args) => team::execute(args),
         Commands::Loop(args) => loop_cmd::execute(args),
         Commands::Harness(args) => harness::execute(args),
+        Commands::CodingAgent(args) => coding_agent::execute(args),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
         Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),
