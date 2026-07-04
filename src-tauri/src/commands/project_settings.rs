@@ -37,6 +37,7 @@ mod tests {
             }],
             show_all: true,
             show_ungrouped: true,
+            non_stop: None,
         }
     }
 

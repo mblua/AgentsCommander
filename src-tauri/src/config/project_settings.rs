@@ -30,6 +30,9 @@ pub struct WorkgroupGroupsConfig {
     pub show_all: bool,
     #[serde(default = "default_true")]
     pub show_ungrouped: bool,
+    /// (#777) Built-in optional Non-stop watchdog group. Absent on legacy configs.
+    #[serde(default)]
+    pub non_stop: Option<NonStopGroupConfig>,
 }
 
 impl Default for WorkgroupGroupsConfig {
@@ -38,8 +41,81 @@ impl Default for WorkgroupGroupsConfig {
             groups: Vec::new(),
             show_all: true,
             show_ungrouped: true,
+            non_stop: None,
         }
     }
+}
+
+// (#777) Non-stop watchdog config, mirrored to `NonStopGroupConfig` in
+// `src/shared/types.ts`. All numeric ranges are repaired (clamped) on load by
+// `normalize_groups_config`, never fatally rejected, so a bad/hand-edited value
+// can never nuke the user's real groups.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NonStopTelegramConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub bot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NonStopSoundConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_beep_seconds")]
+    pub seconds: u32,
+}
+impl Default for NonStopSoundConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            seconds: default_beep_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NonStopGroupConfig {
+    #[serde(default)]
+    pub show: bool,
+    #[serde(default = "default_non_stop_name")]
+    pub name: String,
+    #[serde(default = "default_match_none_regex")]
+    pub regex: String,
+    #[serde(default = "default_tolerance_seconds")]
+    pub tolerance_seconds: u32,
+    #[serde(default)]
+    pub telegram: NonStopTelegramConfig,
+    #[serde(default)]
+    pub sound: NonStopSoundConfig,
+}
+impl Default for NonStopGroupConfig {
+    fn default() -> Self {
+        Self {
+            show: false,
+            name: default_non_stop_name(),
+            regex: default_match_none_regex(),
+            tolerance_seconds: default_tolerance_seconds(),
+            telegram: NonStopTelegramConfig::default(),
+            sound: NonStopSoundConfig::default(),
+        }
+    }
+}
+
+fn default_beep_seconds() -> u32 {
+    3
+}
+fn default_tolerance_seconds() -> u32 {
+    30
+}
+fn default_non_stop_name() -> String {
+    "Non-stop".to_string()
+}
+fn default_match_none_regex() -> String {
+    "(?!)".to_string()
 }
 
 fn project_settings_path(project_path: &Path) -> Result<PathBuf, String> {
@@ -51,6 +127,21 @@ fn project_settings_path(project_path: &Path) -> Result<PathBuf, String> {
 fn normalize_groups_config(mut config: WorkgroupGroupsConfig) -> WorkgroupGroupsConfig {
     if !config.show_all && !config.show_ungrouped {
         config.show_all = true;
+    }
+    // (#777 B3) Repair an out-of-range Non-stop config in place instead of failing
+    // validation. A bad `nonStop` must never nuke the user's real groups, so these
+    // are lossless-to-the-user fixes: they only touch already-invalid data.
+    if let Some(ns) = config.non_stop.as_mut() {
+        ns.tolerance_seconds = ns.tolerance_seconds.clamp(1, 3600);
+        ns.sound.seconds = ns.sound.seconds.clamp(1, 60);
+        if ns.name.trim().is_empty() {
+            ns.name = default_non_stop_name();
+        } else if ns.name.chars().count() > MAX_GROUP_NAME_LEN {
+            ns.name = ns.name.chars().take(MAX_GROUP_NAME_LEN).collect();
+        }
+        if ns.regex.chars().count() > MAX_GROUP_REGEX_LEN {
+            ns.regex = default_match_none_regex();
+        }
     }
     config
 }
@@ -150,6 +241,23 @@ pub fn save_workgroup_groups(
             "showUngrouped".to_string(),
             Value::Bool(config.show_ungrouped),
         );
+        // (#777 G2) Persist the built-in Non-stop group. Some -> write it; None ->
+        // REMOVE the on-disk key so it is truly absent on reload. The merge helper
+        // would otherwise preserve a stale `nonStop` and resurrect it as `Some`.
+        // `remove` is a no-op when the key was never present, so legacy configs
+        // stay clean. (Product model: `show: false` is the only off-switch; `None`
+        // only arises from legacy/manual JSON, but this arm keeps that path correct.)
+        match &config.non_stop {
+            Some(ns) => {
+                obj.insert(
+                    "nonStop".to_string(),
+                    serde_json::to_value(ns).map_err(|e| e.to_string())?,
+                );
+            }
+            None => {
+                obj.remove("nonStop");
+            }
+        }
         Ok(())
     })?;
 
@@ -184,6 +292,24 @@ mod tests {
             groups,
             show_all: true,
             show_ungrouped: true,
+            non_stop: None,
+        }
+    }
+
+    fn populated_non_stop() -> NonStopGroupConfig {
+        NonStopGroupConfig {
+            show: true,
+            name: "Watchers".to_string(),
+            regex: "^(wg-1)$".to_string(),
+            tolerance_seconds: 45,
+            telegram: NonStopTelegramConfig {
+                enabled: true,
+                bot_id: Some("bot-7".to_string()),
+            },
+            sound: NonStopSoundConfig {
+                enabled: true,
+                seconds: 5,
+            },
         }
     }
 
@@ -247,6 +373,7 @@ mod tests {
             groups: Vec::new(),
             show_all: false,
             show_ungrouped: false,
+            non_stop: None,
         };
 
         let err = save_workgroup_groups(project.path(), config).expect_err("reject config");
@@ -447,5 +574,126 @@ mod tests {
         let err = load_workgroup_groups(project.path()).expect_err("reject non-object root");
 
         assert!(err.contains("must be a JSON object"), "{err}");
+    }
+
+    // ---- #777 Non-stop config (Change B) ----
+
+    #[test]
+    fn non_stop_defaults_none_for_legacy_json() {
+        let legacy = r#"{"groups":[{"id":"bots","name":"BOTS","regex":"^(wg-9)$"}],"showAll":true,"showUngrouped":true}"#;
+        let config: WorkgroupGroupsConfig = serde_json::from_str(legacy).expect("parse legacy");
+        assert_eq!(config.non_stop, None);
+    }
+
+    #[test]
+    fn save_persists_non_stop_and_preserves_unknown_keys() {
+        let project = project_with_workspace();
+        let path = settings_path(project.path());
+        std::fs::write(&path, r#"{"agents":[{"id":"a1"}],"tooling":{"custom":true}}"#)
+            .expect("write settings");
+        let config = WorkgroupGroupsConfig {
+            groups: vec![group("bots", "BOTS", "^(wg-9)$")],
+            show_all: true,
+            show_ungrouped: true,
+            non_stop: Some(populated_non_stop()),
+        };
+
+        save_workgroup_groups(project.path(), config).expect("save groups");
+        let reloaded = load_workgroup_groups(project.path()).expect("reload groups");
+
+        assert_eq!(reloaded.non_stop, Some(populated_non_stop()));
+        let persisted: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("read settings"))
+                .expect("parse settings");
+        assert_eq!(persisted["agents"][0]["id"], "a1");
+        assert_eq!(persisted["tooling"]["custom"], true);
+        assert_eq!(persisted["nonStop"]["name"], "Watchers");
+        assert_eq!(persisted["nonStop"]["toleranceSeconds"], 45);
+        assert_eq!(persisted["nonStop"]["telegram"]["botId"], "bot-7");
+        assert_eq!(persisted["nonStop"]["sound"]["seconds"], 5);
+    }
+
+    #[test]
+    fn save_none_removes_stale_non_stop_key() {
+        let project = project_with_workspace();
+        let path = settings_path(project.path());
+        let with_ns = WorkgroupGroupsConfig {
+            groups: Vec::new(),
+            show_all: true,
+            show_ungrouped: true,
+            non_stop: Some(populated_non_stop()),
+        };
+        save_workgroup_groups(project.path(), with_ns).expect("save with nonStop");
+        // Sanity: the key is on disk before removal.
+        let before: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("parse");
+        assert!(before.get("nonStop").is_some());
+
+        let without_ns = WorkgroupGroupsConfig {
+            groups: Vec::new(),
+            show_all: true,
+            show_ungrouped: true,
+            non_stop: None,
+        };
+        save_workgroup_groups(project.path(), without_ns).expect("save without nonStop");
+
+        let after: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("parse");
+        assert!(
+            after.get("nonStop").is_none(),
+            "stale nonStop key must be removed, got {after}"
+        );
+        let reloaded = load_workgroup_groups(project.path()).expect("reload");
+        assert_eq!(reloaded.non_stop, None);
+    }
+
+    #[test]
+    fn non_stop_round_trips() {
+        let project = project_with_workspace();
+        let config = WorkgroupGroupsConfig {
+            groups: vec![group("dev", "Dev", "wg-.*")],
+            show_all: true,
+            show_ungrouped: false,
+            non_stop: Some(populated_non_stop()),
+        };
+
+        save_workgroup_groups(project.path(), config.clone()).expect("save");
+        let reloaded = load_workgroup_groups(project.path()).expect("reload");
+
+        assert_eq!(reloaded, config);
+    }
+
+    #[test]
+    fn normalize_clamps_out_of_range_non_stop_and_keeps_groups() {
+        let project = project_with_workspace();
+        // 2 valid groups + a nonStop with tolerance 0 and sound.seconds 999.
+        let raw = json!({
+            "groups": [
+                {"id":"a","name":"Alpha","regex":"^(wg-1)$"},
+                {"id":"b","name":"Beta","regex":"^(wg-2)$"}
+            ],
+            "showAll": true,
+            "showUngrouped": true,
+            "nonStop": {
+                "show": true,
+                "name": "Watch",
+                "regex": "^(wg-1)$",
+                "toleranceSeconds": 0,
+                "telegram": {"enabled": false},
+                "sound": {"enabled": true, "seconds": 999}
+            }
+        });
+        std::fs::write(
+            settings_path(project.path()),
+            serde_json::to_string(&raw).expect("json"),
+        )
+        .expect("write settings");
+
+        let loaded = load_workgroup_groups(project.path()).expect("load must not error");
+
+        assert_eq!(loaded.groups.len(), 2, "groups must survive a bad nonStop");
+        let ns = loaded.non_stop.expect("nonStop present");
+        assert_eq!(ns.tolerance_seconds, 1, "tolerance clamped up to 1");
+        assert_eq!(ns.sound.seconds, 60, "sound seconds clamped down to 60");
     }
 }
