@@ -202,16 +202,16 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const toggleAgentEditor = (agentId: string) =>
     setActiveAgentId((prev) => (prev === agentId ? null : agentId));
 
-  // Per profile-cell expand state on the Config rails. Cells collapse to a summary
-  // row (letter + label + status badge); the "A" slot is expanded by default,
-  // matching the prototype. Keyed by `${agentId}:${letter}`.
+  // Per profile-cell expand state on the Config rails. Cells can collapse to a
+  // summary row (letter + label + status badge), but start expanded by default.
+  // Keyed by `${agentId}:${letter}`.
   const [expandedCells, setExpandedCells] = createStore<Record<string, boolean | undefined>>({});
   const isCellExpanded = (agentId: string, letter: string): boolean => {
     // Read the key directly so the store tracks it even while still unset — a
     // hasOwnProperty short-circuit would skip the subscription and the card
-    // would never react to a later toggle. `undefined` → default (A expanded).
+    // would never react to a later toggle. `undefined` → default expanded.
     const value = expandedCells[`${agentId}:${letter}`];
-    return value === undefined ? letter === "A" : value;
+    return value === undefined ? true : value;
   };
   const toggleCell = (agentId: string, letter: string) =>
     setExpandedCells(`${agentId}:${letter}`, !isCellExpanded(agentId, letter));

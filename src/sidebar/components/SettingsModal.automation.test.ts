@@ -494,10 +494,8 @@ describe("SettingsModal automation hooks", () => {
     expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B.missing"]')).toBeNull();
     expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B.add"]')).toBeNull();
     // Instead it exposes the same expand/edit affordance as every cell: a chevron
-    // toggle that reveals an (empty) command input the user can fill in.
+    // toggle plus an expanded-by-default empty command input the user can fill in.
     expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle")).toBeTruthy();
-    byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
-    await settle();
     expect(byTestId<HTMLInputElement>("settings.profileCard.0.B.command").value).toBe("");
     // Claude rail: B has its own enabled cell (non-A, direct match) → CONFIGURED,
     // NOT MATCH. MATCH is reserved for the A baseline (#526).
@@ -566,7 +564,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("collapses non-A profile cards by default and expands them on toggle", async () => {
+  it("expands non-A profile cards by default and toggles them closed and open", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       agents: [
         {
@@ -599,10 +597,15 @@ describe("SettingsModal automation hooks", () => {
     );
     await settle();
 
-    // The "A" slot is expanded by default → its command input is present.
+    // All profile slots are expanded by default, including non-A slots.
     expect(byTestId("settings.profileCard.0.A.command")).toBeTruthy();
-    // A non-A configured slot is collapsed → command hidden until expanded.
+    expect(byTestId<HTMLInputElement>("settings.profileCard.0.B.command").value).toBe("claude --model opus");
+    expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").getAttribute("aria-expanded")).toBe("true");
+
+    byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
+    await settle();
     expect(document.querySelector('[data-ac-testid="settings.profileCard.0.B.command"]')).toBeNull();
+    expect(byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").getAttribute("aria-expanded")).toBe("false");
 
     byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
     await settle();
@@ -989,9 +992,7 @@ describe("SettingsModal automation hooks", () => {
     expect(byTestId("settings.profileCard.0.B")).toBeTruthy();
     expect(byTestId("settings.profileCard.1.B")).toBeTruthy();
 
-    // Expand codex's B card to reach the slot-level "Delete Profile" affordance.
-    byTestId<HTMLButtonElement>("settings.profileCard.0.B.toggle").click();
-    await settle();
+    // B starts expanded, so the slot-level "Delete Profile" affordance is visible.
     byTestId<HTMLButtonElement>("settings.profileCard.0.B.deleteProfile").click();
     await settle();
 
