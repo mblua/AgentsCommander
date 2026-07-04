@@ -262,11 +262,23 @@ async fn fire(app: &AppHandle, state: &NonStopWatchdogState, r: &NonStopReport) 
 
 // Serialized, cancellable pulsed alarm (G3). Only one plays at a time; a recovery
 // (ingest) cancels the token so an in-progress long beep stops within one pulse
-// (<= ~550ms). Removes its own alarm-map entry when done.
+// (<= ~550ms).
+//
+// (F1) This function does NOT touch the alarm map. `ingest`'s recovery/drop path
+// owns removal + cancellation EXCLUSIVELY, and `fire`'s insert overwrites any
+// stale (already-cancelled) entry cleanly. A trailing self-remove here would be
+// wrong: under `beep_serialize` contention a queued-then-cancelled spawn can run
+// LONG after a recovery + re-fire replaced its map entry with a newer token, so
+// removing "its own" project key would actually delete the NEWER token, orphaning
+// it (a later recovery would find nothing to cancel and the beep would play its
+// full clamped duration unsilenceable). Leaving removal to `ingest` keeps the
+// cancellation invariant intact; a fired-but-never-recovered project leaves at
+// most one stale entry, bounded by project count and reclaimed on its next
+// recovery/drop.
 #[cfg(target_os = "windows")]
 fn play_alarm_beep(
     state: NonStopWatchdogState,
-    project_path: String,
+    _project_path: String,
     seconds: u32,
     token: CancellationToken,
 ) {
@@ -291,21 +303,19 @@ fn play_alarm_beep(
             })
             .await;
         }
-        state.alarms.lock().await.remove(&project_path);
     });
 }
 
 #[cfg(not(target_os = "windows"))]
 fn play_alarm_beep(
-    state: NonStopWatchdogState,
-    project_path: String,
+    _state: NonStopWatchdogState,
+    _project_path: String,
     _seconds: u32,
     _token: CancellationToken,
 ) {
-    tauri::async_runtime::spawn(async move {
-        log::info!("[non-stop] sound alert requested (no-op on non-Windows)");
-        state.alarms.lock().await.remove(&project_path);
-    });
+    // No backend audio off Windows; the modal disables the Sound measure there.
+    // (F1) Does not touch the alarm map: `ingest` owns removal exclusively.
+    log::info!("[non-stop] sound alert requested (no-op on non-Windows)");
 }
 
 async fn send_telegram(app: &AppHandle, r: &NonStopReport) {
@@ -519,6 +529,56 @@ mod tests {
             state.alarms.lock().await.get("p").is_none(),
             "the cancelled token is removed"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_queued_beep_completion_does_not_orphan_a_refired_token() {
+        // F1 regression: under beep_serialize contention, a queued-then-cancelled
+        // first spawn must NOT remove a newer token's alarm-map entry when it later
+        // completes, or a subsequent recovery cannot cancel the second beep.
+        let state = NonStopWatchdogState::new();
+
+        // Fire #1 for "p" produced token_p1, which a recovery already cancelled.
+        let token_p1 = CancellationToken::new();
+        token_p1.cancel();
+
+        // Re-arm + Fire #2 inserted a fresh token_p2 (as `fire` does on re-fire).
+        let token_p2 = CancellationToken::new();
+        state
+            .alarms
+            .lock()
+            .await
+            .insert("p".to_string(), token_p2.clone());
+
+        // Simulate project A holding the serialize lock (a long beep in flight), so
+        // the stale Spawn_p1 queues behind it instead of running immediately.
+        let a_guard = state.beep_serialize.lock().await;
+        play_alarm_beep(state.clone(), "p".to_string(), 3, token_p1);
+        // Give the stale spawn time to reach its `beep_serialize.lock().await`.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            state.alarms.lock().await.contains_key("p"),
+            "token_p2 present while the stale spawn is still queued"
+        );
+
+        // A finishes. tokio's Mutex is FIFO, so the stale spawn (queued before this
+        // re-lock) runs to completion before the test re-acquires the lock.
+        drop(a_guard);
+        drop(state.beep_serialize.lock().await);
+
+        // With the F1 fix, the stale spawn left the alarm map untouched.
+        assert!(
+            state.alarms.lock().await.contains_key("p"),
+            "a stale, cancelled spawn must not orphan the re-fired token"
+        );
+
+        // The invariant grinch's trace breaks: a later recovery must cancel token_p2.
+        state.ingest(vec![report("p", false, 30)]).await;
+        assert!(
+            token_p2.is_cancelled(),
+            "recovery must find and cancel the re-fired beep token"
+        );
+        assert!(!state.alarms.lock().await.contains_key("p"));
     }
 
     #[tokio::test]
