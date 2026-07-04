@@ -16,6 +16,7 @@ import {
   workgroupIsWorking,
 } from "./workgroup-session";
 import WorkgroupGroupsModal from "./WorkgroupGroupsModal";
+import RaiseHandIcon from "./RaiseHandIcon";
 
 interface WorkgroupGroupRailProps {
   projects: ProjectState[];
@@ -105,6 +106,12 @@ const ProjectRailSection: Component<{
       result.push({
         key: "all",
         ...buttonContent("All", props.project.workgroups),
+        // #775 — the built-in "All" group never shows the raise-hand indicator,
+        // under any condition (even when a member workgroup's coordinator has a
+        // raised hand). Gated here on the statically-built "all" entry, not on
+        // the display name, so a user group coincidentally named "All" is
+        // unaffected. Ungrouped + dynamic groups keep their aggregation below.
+        raiseHand: false,
         selection: { kind: "all" },
         workgroups: props.project.workgroups,
         title: tooltipFor(props.project.workgroups),
@@ -173,25 +180,39 @@ const ProjectRailSection: Component<{
             onClick={() => workgroupGroupsStore.select(props.project.path, button.selection)}
             data-ac-testid={`workgroupGroups.button.${button.key}`}
           >
-            <Show when={button.raiseHand}>
+            <span class="workgroup-group-rail-title-line">
+              <Show when={button.raiseHand}>
+                <span
+                  class="workgroup-group-rail-raise-hand"
+                  data-ac-testid={`workgroupGroups.raiseHand.${button.key}`}
+                  title="A coordinator raised its hand"
+                  aria-label="A coordinator raised its hand"
+                >
+                  <RaiseHandIcon class="workgroup-group-rail-raise-hand-icon" />
+                </span>
+              </Show>
               <span
-                class="workgroup-group-rail-raise-hand"
-                data-ac-testid={`workgroupGroups.raiseHand.${button.key}`}
-                title="A coordinator raised its hand"
-                aria-label="A coordinator raised its hand"
+                class="workgroup-group-rail-title"
+                classList={{
+                  // #775 — built-in/system groups (All, Ungrouped, …) render bold
+                  // to stand out from user-created groups. Gated on the selection
+                  // kind, not the display name, so a user group named "All" stays
+                  // normal weight.
+                  "workgroup-group-rail-title-system": button.selection.kind !== "group",
+                }}
               >
-                !
+                {button.name}
               </span>
-            </Show>
-            {button.name}
-            {"\n"}
-            <Show when={button.working}>
-              <span
-                class="session-item-status running workgroup-group-rail-dot"
-                data-ac-testid={`workgroupGroups.dot.${button.key}`}
-              />
-            </Show>
-            {button.counter}
+            </span>
+            <span class="workgroup-group-rail-counter-line">
+              <Show when={button.working}>
+                <span
+                  class="session-item-status running workgroup-group-rail-dot"
+                  data-ac-testid={`workgroupGroups.dot.${button.key}`}
+                />
+              </Show>
+              {button.counter}
+            </span>
           </button>
         )}
       </For>

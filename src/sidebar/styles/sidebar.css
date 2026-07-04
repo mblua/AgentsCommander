@@ -2759,7 +2759,7 @@ html.light-theme .settings-hint-warning {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 6px 5px;
+  padding: 6px 4px;
   background: rgba(255, 255, 255, 0.025);
   border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
@@ -2786,24 +2786,54 @@ html.light-theme .settings-hint-warning {
 }
 
 .workgroup-group-rail-button {
-  position: relative; /* #763 — anchor for the raise-hand corner badge */
-  display: block;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
   width: 100%;
   min-height: 28px;
   margin-bottom: 4px;
-  padding: 4px 5px;
+  padding: 4px 3px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--sidebar-fg-dim);
   font-family: var(--font-ui);
-  font-size: 8.5px;
+  font-size: 7.5px;
   line-height: 1.15;
   text-align: center;
-  white-space: pre-line;
   cursor: pointer;
-  overflow-wrap: break-word;
   transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+/* #775 (Option B) — first line = optional raise-hand symbol + the group title,
+   laid out inline so the symbol sits to the LEFT of the title and NEVER
+   overlaps it. The title truncates with an ellipsis (nowrap) rather than
+   wrapping or splitting mid-word — that is how the #742 no-mid-word-split
+   guarantee is now kept once a symbol shares the line on the 68px rail. */
+.workgroup-group-rail-title-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.workgroup-group-rail-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* #775 — built-in/system group labels (All, Ungrouped, …) render bold so they
+   stand out from user-created groups. Applied via a class gated on the
+   selection kind (never the display string), so a user group literally named
+   "All" stays normal weight. */
+.workgroup-group-rail-title-system {
+  font-weight: 700;
 }
 
 .workgroup-group-rail-button:hover,
@@ -2832,28 +2862,28 @@ html.light-theme .settings-hint-warning {
   vertical-align: -1px;
 }
 
-/* #763 — raise-hand indicator on a group-rail tab. Amber '!' pinned to the
-   top-right corner (absolute, so it stays OUT of the button's pre-line text
-   flow and never reflows the name/counter — the #742 trap the working dot's
-   comment above warns about). Reuses the amber palette of the per-coordinator
-   row indicator (.coord-communication-slot) for visual consistency.
+/* #763/#775 — raise-hand indicator on a group-rail tab: an amber raised-hand
+   glyph rendered INLINE just to the left of the group title (#775 Option B, so
+   it reads as "(hand) <title>" and never overlaps — the title ellipsizes to
+   make room). Uses an SVG glyph (not an emoji) so it stays crisp and
+   theme-amber in the Tauri webview regardless of emoji-font availability, and
+   so `color` actually tints it. Amber keeps the "needs attention" reading of
+   the per-coordinator row indicator (.coord-communication-slot).
    pointer-events:none keeps the whole tab uniformly clickable. */
 .workgroup-group-rail-button .workgroup-group-rail-raise-hand {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 12px;
-  height: 12px;
-  display: flex;
+  flex: 0 0 auto;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
-  background: rgba(234, 179, 8, 0.18);
   color: #eab308;
-  font-size: 9px;
-  font-weight: 800;
-  line-height: 1;
   pointer-events: none;
+}
+
+.workgroup-group-rail-button .workgroup-group-rail-raise-hand-icon {
+  width: 8px;
+  height: 8px;
+  display: block;
+  fill: currentColor;
 }
 
 .workgroup-group-rail-error {
@@ -4674,13 +4704,17 @@ html.light-theme .settings-hint-warning {
   border-radius: 3px;
   background: rgba(234, 179, 8, 0.18);
   color: #eab308;
-  font-size: 10px;
-  font-weight: 800;
   line-height: 1;
 }
 
+/* #775 — the raise-hand glyph inside the amber coordinator-row slot is now the
+   shared SVG hand (RaiseHandIcon), sized to sit in the 15px amber chip and
+   tinted by the slot's amber `color` via fill: currentColor. */
 .coord-communication-icon {
-  transform: translateY(-0.5px);
+  width: 11px;
+  height: 11px;
+  display: block;
+  fill: currentColor;
 }
 
 .coord-quick-access .replica-item-info .coord-task-title {
