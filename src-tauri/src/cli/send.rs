@@ -20,7 +20,14 @@ For the Root Agent the file is resolved from <root-agent-dir>/messaging/<filenam
 verified WG coordinator replica names returned by list-peers-lean. \
 Coordinator --to targets may include the Root Agent canonical name \
 `agentscommander://root-agent`; only identity-verified WG coordinator \
-replicas may use it.")]
+replicas may use it.\n\n\
+DELIVERY CONFIRMATION: After queuing, send blocks up to --confirm-timeout seconds (default 90) \
+waiting for the app's poller to confirm delivery. This bounds ONLY the synchronous confirmation \
+handshake, not delivery itself: on confirmation timeout the CLI exits 1, but the message remains \
+durably queued in the outbox and is typically still delivered afterwards (e.g. when wake must \
+cold-spawn an idle peer). Exit 1 on confirmation timeout does NOT mean the message was lost; \
+verify the outbox instead of re-sending. --confirm-timeout is distinct from --timeout, which \
+bounds only the --get-output response wait.")]
 pub struct SendArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
@@ -56,9 +63,19 @@ pub struct SendArgs {
     #[arg(long, default_value = "auto")]
     pub agent: String,
 
-    /// Timeout in seconds for --get-output
+    /// Timeout in seconds for the --get-output response wait (the
+    /// delivery-confirmation wait is bounded separately by --confirm-timeout)
     #[arg(long, default_value = "300")]
     pub timeout: u64,
+
+    /// Timeout in seconds for the delivery-confirmation wait, distinct from
+    /// --timeout (which bounds the --get-output response wait). Bounds only the
+    /// synchronous confirmation handshake: on timeout the CLI exits 1 but the
+    /// message remains durably queued in the outbox and is typically still
+    /// delivered. Exit 1 on confirmation timeout does NOT mean the message was
+    /// lost; verify the outbox instead of re-sending
+    #[arg(long, default_value = "90")]
+    pub confirm_timeout: u64,
 
     /// Agent root directory (required). Your working directory — used to derive your agent name
     #[arg(long)]
@@ -103,6 +120,14 @@ fn validate_root_agent_delivery_kind(
     } else {
         Ok(())
     }
+}
+
+/// Delivery-confirmation ceiling for this invocation: `--confirm-timeout`
+/// seconds, default 90 (#782). Single mapping point from the parsed flag to
+/// the `Duration` that `execute` hands to `wait_for_delivery_confirmation`,
+/// so tests can lock that an override actually reaches the helper.
+fn confirm_timeout_from_args(args: &SendArgs) -> std::time::Duration {
+    std::time::Duration::from_secs(args.confirm_timeout)
 }
 
 fn wait_for_delivery_confirmation(
@@ -473,6 +498,9 @@ pub fn execute(args: SendArgs) -> i32 {
 
     let mode_for_ack = args.mode.clone();
     let to_for_ack = resolved_to.clone();
+    // Resolve before `args` fields move into OutboxMessage below; the whole-struct
+    // borrow would be rejected after the partial moves.
+    let confirm_timeout = confirm_timeout_from_args(&args);
 
     let message = OutboxMessage {
         id: msg_id.clone(),
@@ -545,7 +573,7 @@ pub fn execute(args: SendArgs) -> i32 {
         &msg_id,
         &mode_for_ack,
         &to_for_ack,
-        std::time::Duration::from_secs(30),
+        confirm_timeout,
         std::time::Duration::from_millis(250),
     ) {
         log::warn!("[send] {}", e);
@@ -905,5 +933,87 @@ mod tests {
         assert!(derive_root_project_dir(wg_dir.to_str().unwrap())
             .unwrap()
             .is_none());
+    }
+
+    // ── clap parse smoke: #782 --confirm-timeout ──
+
+    fn parse_send_args(extra: &[&str]) -> SendArgs {
+        use clap::Parser;
+        let mut argv = vec![
+            "agentscommander",
+            "send",
+            "--token",
+            "11111111-1111-1111-1111-111111111111",
+            "--to",
+            "proj-a/agent",
+            "--send",
+            "20260704-000000-wg1-a-to-wg1-b-x.md",
+            "--root",
+            "anything",
+        ];
+        argv.extend_from_slice(extra);
+        let parsed = crate::cli::Cli::try_parse_from(argv).expect("clap should accept send args");
+        match parsed.command.expect("subcommand present") {
+            crate::cli::Commands::Send(args) => args,
+            _ => panic!("expected Send subcommand"),
+        }
+    }
+
+    #[test]
+    fn send_args_confirm_timeout_defaults_to_90() {
+        let args = parse_send_args(&[]);
+        assert_eq!(
+            args.confirm_timeout, 90,
+            "--confirm-timeout must default to 90"
+        );
+        assert_eq!(
+            confirm_timeout_from_args(&args),
+            std::time::Duration::from_secs(90),
+            "default must map to the 90s ceiling handed to wait_for_delivery_confirmation"
+        );
+        // The --get-output response wait keeps its own independent default.
+        assert_eq!(args.timeout, 300);
+    }
+
+    #[test]
+    fn send_args_confirm_timeout_override_reaches_confirmation_wait() {
+        let args = parse_send_args(&["--confirm-timeout", "7"]);
+        assert_eq!(args.confirm_timeout, 7);
+        assert_eq!(
+            confirm_timeout_from_args(&args),
+            std::time::Duration::from_secs(7),
+            "override must be the exact Duration execute() hands to wait_for_delivery_confirmation"
+        );
+        // Overriding the confirmation wait must not touch the --get-output wait.
+        assert_eq!(args.timeout, 300);
+    }
+
+    #[test]
+    fn send_args_timeout_flag_does_not_affect_confirm_timeout() {
+        let args = parse_send_args(&["--timeout", "45"]);
+        assert_eq!(args.timeout, 45);
+        assert_eq!(
+            args.confirm_timeout, 90,
+            "--timeout bounds the --get-output wait only; it must not override --confirm-timeout"
+        );
+    }
+
+    #[test]
+    fn send_help_documents_confirm_timeout_semantics() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let mut subcommand = cmd
+            .get_subcommands()
+            .find(|cmd| cmd.get_name() == "send")
+            .expect("send subcommand")
+            .clone();
+        let help = subcommand.render_long_help().to_string();
+
+        assert!(help.contains("--confirm-timeout"), "{help}");
+        // Queued-vs-confirmed semantics: timeout does not mean the message was lost.
+        assert!(help.contains("durably queued"), "{help}");
+        assert!(help.contains("does NOT mean the message was lost"), "{help}");
+        // The two timeout flags must be distinguished from each other.
+        assert!(help.contains("--get-output response wait"), "{help}");
     }
 }
