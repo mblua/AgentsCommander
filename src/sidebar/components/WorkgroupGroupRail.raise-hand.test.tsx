@@ -360,6 +360,9 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
         ".workgroup-group-rail-title"
       );
       expect(nonstopTitle?.classList.contains("workgroup-group-rail-title-system")).toBe(true);
+      // #775 — Non-stop is a real member group, so wg-1's raised hand DOES light
+      // it (locks in Maria's "Non-stop keeps the hand" decision).
+      expect(railRaiseHands()).toContain("nonstop");
       // Rule 1 survives the merge: All never shows the hand, even with Non-stop present.
       expect(railRaiseHands()).not.toContain("all");
     } finally {
