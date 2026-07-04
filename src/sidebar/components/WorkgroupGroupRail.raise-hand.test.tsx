@@ -12,6 +12,7 @@ import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import {
   defaultGroupsConfig,
+  defaultNonStop,
   exactGroupRegexForWorkgroup,
 } from "../stores/workgroup-groups";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
@@ -327,6 +328,40 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
         ".workgroup-group-rail-title"
       );
       expect(builtinAll?.classList.contains("workgroup-group-rail-title-system")).toBe(true);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("bolds the built-in Non-stop group; All still never shows the hand (#775 + #777 merge)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        nonStop: {
+          ...defaultNonStop(),
+          show: true,
+          regex: exactGroupRegexForWorkgroup("wg-1-dev-team"),
+        },
+      })
+    );
+    // wg-1 (a Non-stop + "UI"-group member) raises a hand.
+    sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("nonstop"));
+      // Non-stop is a built-in/system rail group (selection.kind "nonstop") -> the
+      // structural bold gate (kind !== "group") already covers it, no string match.
+      const nonstopTitle = target<HTMLElement>("workgroupGroups.button.nonstop").querySelector(
+        ".workgroup-group-rail-title"
+      );
+      expect(nonstopTitle?.classList.contains("workgroup-group-rail-title-system")).toBe(true);
+      // Rule 1 survives the merge: All never shows the hand, even with Non-stop present.
+      expect(railRaiseHands()).not.toContain("all");
     } finally {
       rendered.cleanup();
     }
