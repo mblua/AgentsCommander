@@ -3383,7 +3383,7 @@ html.light-theme .settings-hint-warning {
 
 .agent-profile-declared-env-row {
   display: grid;
-  grid-template-columns: minmax(82px, 0.45fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 0.42fr) minmax(0, 1fr) auto;
   gap: 7px;
   min-width: 0;
   padding: 6px 8px;
@@ -3395,16 +3395,21 @@ html.light-theme .settings-hint-warning {
 }
 
 .agent-profile-declared-env-key {
+  min-width: 0;
   color: var(--sidebar-fg-dim);
   text-transform: uppercase;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .agent-profile-declared-env-value {
+  min-width: 0;
   color: var(--sidebar-fg);
   overflow-wrap: anywhere;
 }
 
 .agent-profile-declared-env-origin {
+  min-width: 0;
   justify-self: end;
   color: var(--status-active, #35f2a6);
   font-size: 8px;
