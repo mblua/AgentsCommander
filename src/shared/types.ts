@@ -190,6 +190,17 @@ export interface CodingAgentDefinition {
   removable: boolean;
 }
 
+/**
+ * #769 Phase 2 — result of `reseed_coding_agent_default`: the config-folder
+ * `dest` that was restored to the shipped default, plus the absolute path of the
+ * timestamped `.bak` of the prior master (empty string when the master was absent
+ * so nothing needed backing up).
+ */
+export interface ReseedResult {
+  dest: string;
+  backupPath: string;
+}
+
 export interface CodingAgentProfilesConfig {
   schemaVersion: number;
   /** v2 (#384): renamed from `letters`. Keyed by profile slot letter A–Z. */

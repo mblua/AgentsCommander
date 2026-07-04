@@ -13,6 +13,7 @@ import type {
   UpdateInfo,
   CodingAgentEnv,
   CodingAgentDefinition,
+  ReseedResult,
   CodingAgentProfilesConfig,
   RepoMatch,
   BridgeInfo,
@@ -261,6 +262,22 @@ export const CodingAgentsAPI = {
    */
   getCatalog: () =>
     transport.invoke<CodingAgentDefinition[]>("get_coding_agent_catalog"),
+
+  /**
+   * #769 Phase 2 — lowercased command basenames that ship a non-empty default
+   * config-folder master (today `["claude","codex","opencode"]`). Backend-derived
+   * from the shipped masters; the re-seed button is gated on EXACT membership.
+   */
+  listReseedableCommands: () =>
+    transport.invoke<string[]>("list_reseedable_agent_commands"),
+
+  /**
+   * #769 Phase 2 — restore an agent's default config-folder master to the shipped
+   * default, backing up the prior master. Resolves `Ok(ReseedResult)`; rejects if
+   * `command` is not a reseedable built-in (gating is re-checked server-side).
+   */
+  reseedDefault: (command: string) =>
+    transport.invoke<ReseedResult>("reseed_coding_agent_default", { command }),
 };
 
 export const SettingsAPI = {
@@ -766,6 +783,16 @@ export const ProjectAPI = {
    */
   new: (path: string) =>
     transport.invoke<ProjectRegistration>("new_project", { path }),
+  /**
+   * Remove the project registered at `path` from settings.projectPaths via the
+   * dedicated `remove_project` Tauri command (#778 Design S). Removal is
+   * disk-authoritative: the backend reconciles the list from disk before
+   * dropping `path`, so it never clobbers a CLI-registered project the way the
+   * retired whole-object settings save did. Removing a path not present is a
+   * successful no-op; the promise rejects with the backend error string on a
+   * hard failure (e.g. a G2 read abort when the settings file is locked).
+   */
+  remove: (path: string) => transport.invoke<void>("remove_project", { path }),
 };
 
 /** #777 Non-stop watchdog: frontend pushes the full disparity snapshot; the
