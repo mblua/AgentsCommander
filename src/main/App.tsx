@@ -5,6 +5,7 @@ import { SettingsAPI } from "../shared/ipc";
 import { isTauri } from "../shared/platform";
 import { initZoom } from "../shared/zoom";
 import { initWindowGeometry } from "../shared/window-geometry";
+import { startNonStopWatchdogClient } from "../sidebar/watchdog/non-stop-watchdog-client";
 import SidebarApp from "../sidebar/App";
 import TerminalApp from "../terminal/App";
 import ResourceMonitorApp from "../resource-monitor/App";
@@ -146,6 +147,13 @@ const MainApp: Component = () => {
       setSidebarSide(side);
     }
   };
+
+  // #777: start the Non-stop watchdog client ONCE for the main window. Called
+  // SYNCHRONOUSLY in MainApp's body (dev-webpage-ui #2) so its createEffect /
+  // onCleanup bind to MainApp's reactive owner and are torn down with the app.
+  // Must NOT move inside the async onMount below: after an await, createEffect /
+  // onCleanup would run outside the owner and leak the keepalive interval.
+  startNonStopWatchdogClient();
 
   onMount(async () => {
     // #289 / dark-default — dark is the base CSS, so the first frame is dark
