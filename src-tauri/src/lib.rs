@@ -387,6 +387,11 @@ pub fn run(
     let loop_scheduler = Arc::new(loops::scheduler::LoopScheduler::new());
     let loop_scheduler_for_setup = Arc::clone(&loop_scheduler);
 
+    // (#777) Non-stop watchdog: timing + actuation state. Managed for the
+    // `non_stop_report` command; the background loop is started in setup.
+    let non_stop_state = crate::loops::non_stop_watchdog::NonStopWatchdogState::new();
+    let non_stop_state_for_setup = non_stop_state.clone();
+
     // Issue #120 — RTK sweep mutex. Acquired by every in-process writer of
     // `.claude/settings.local.json`. See plan §7.5 for the design.
     let rtk_sweep_lock: RtkSweepLockState = Arc::new(tokio::sync::Mutex::new(()));
@@ -444,6 +449,7 @@ pub fn run(
         .manage(detached_sessions.clone())
         .manage(spec_board_state.clone())
         .manage(loop_scheduler.clone())
+        .manage(non_stop_state)
         .manage(web_access_token.clone())
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
@@ -736,6 +742,15 @@ pub fn run(
             // #552 auto-close watcher: terminates teams idle past the configured
             // timeout (reads SettingsState each tick) and flushes the badge store.
             crate::session::auto_close::start(app.handle().clone(), shutdown_for_setup.clone());
+
+            // #777 Non-stop watchdog: times reported working-vs-total disparities
+            // and fires the enabled measures (Win32 beep + Telegram) after the
+            // per-group tolerance window.
+            crate::loops::non_stop_watchdog::start(
+                app.handle().clone(),
+                non_stop_state_for_setup.clone(),
+                shutdown_for_setup.clone(),
+            );
 
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .expect("Failed to load app icon");
@@ -1992,6 +2007,7 @@ pub fn run(
             commands::ac_discovery::discover_project,
             commands::project_settings::get_project_groups,
             commands::project_settings::update_project_groups,
+            commands::non_stop::non_stop_report,
             commands::ac_discovery::keep_custom_context_template,
             commands::ac_discovery::overwrite_context_template_with_default,
             commands::ac_discovery::get_replica_context_files,
