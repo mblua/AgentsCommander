@@ -1009,6 +1009,21 @@ export function onCodingAgentProfilesUpdated(
   return transport.listen<unknown>("coding_agent_profiles_updated", () => callback());
 }
 
+/**
+ * #786 — a `coding-agent` CLI mutation applied through the running GUI's
+ * MailboxPoller emits this. Payload carries the op ("add"|"update"|"remove") and
+ * the affected agent id (null is possible if the poller could not resolve one).
+ * Mirrors the fire-and-refetch shape of onCodingAgentProfilesUpdated.
+ */
+export function onCodingAgentSettingsUpdated(
+  callback: (payload: { op: string; agentId: string | null }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ op: string; agentId: string | null }>(
+    "coding_agent_settings_updated",
+    (payload) => callback(payload)
+  );
+}
+
 // #714 Screenshot capture result/failure events. Both emitted from the Rust
 // capture path; the sidebar renders them as toasts (the overlay window is
 // temporary and may be destroyed before the user reads anything).

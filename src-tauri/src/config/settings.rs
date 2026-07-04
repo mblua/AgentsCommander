@@ -1687,6 +1687,60 @@ pub fn load_settings_for_cli() -> AppSettings {
     settings
 }
 
+/// #786 R1: strict CLI loader for MUTATING paths and `list`/`show`. Identical to
+/// `load_settings_for_cli` EXCEPT it distinguishes an ABSENT settings.json (fine:
+/// start from default) from a PRESENT-but-unparseable one (Err: refuse to touch
+/// it). This closes the silent-wipe hole: `load_settings_for_cli` returns a
+/// default on a strict parse error, and a subsequent `save_settings` (which
+/// preserves only `project_paths`, via a LENIENT `Value` read) would rewrite
+/// settings.json to defaults, destroying every agent/profile/hotkey. NEVER call
+/// the silent-default `load_settings_for_cli` for a write.
+///
+/// Keep the in-memory migration tail in lockstep with `load_settings_for_cli`
+/// (see the note above that function).
+pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
+    let mut settings = match settings_path() {
+        // No home dir to locate settings.json: nothing to protect, and a later
+        // save would fail to resolve the dir anyway. Start from default.
+        None => AppSettings::default(),
+        Some(path) if !path.exists() => AppSettings::default(),
+        Some(path) => {
+            let contents = std::fs::read_to_string(&path).map_err(|e| {
+                format!(
+                    "settings.json exists at {} but could not be read ({e}); refusing to modify it - fix or remove the file first",
+                    path.display()
+                )
+            })?;
+            let (s, _migrated) =
+                parse_settings_json(&contents, &path.to_string_lossy()).map_err(|e| {
+                    format!(
+                        "settings.json exists but could not be parsed ({e}); refusing to modify it - fix or remove the file first"
+                    )
+                })?;
+            s
+        }
+    };
+
+    // Mirror `load_settings_for_cli`'s in-memory migrations (no disk write).
+    if settings.main_geometry.is_none() {
+        if let Some(ref g) = settings.terminal_geometry {
+            settings.main_geometry = Some(g.clone());
+        }
+    }
+    if (settings.main_zoom - default_zoom()).abs() < f64::EPSILON
+        && (settings.sidebar_zoom - default_zoom()).abs() > f64::EPSILON
+    {
+        settings.main_zoom = settings.sidebar_zoom;
+    }
+    if !settings.main_always_on_top && settings.sidebar_always_on_top {
+        settings.main_always_on_top = true;
+    }
+    apply_issue_248_migration(&mut settings);
+    repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
+
+    Ok(settings)
+}
+
 /// One-shot migration for issue #248: translate the legacy
 /// `startOnlyCoordinators` field into the new state-sensitive
 /// `restore_coordinator_wake_state`. Idempotent — once the legacy carrier is

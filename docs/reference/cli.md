@@ -392,6 +392,60 @@ Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchAgent 
 
 ---
 
+## `coding-agent`
+
+Scriptable create/inspect/update/remove of Coding Agent configurations (`settings.agents[]`) without the GUI. Agents created here are consumed by [`create-agent`](#create-agent) / [`create-agent-matrix`](#create-agent-matrix) `--launch`. No `--token`: this mutates the user-local `settings.json`, which any local process can already write (same boundary as [`open-project`](#open-project)).
+
+```bash
+agentscommander coding-agent list
+agentscommander coding-agent show --id claude
+agentscommander coding-agent catalog
+agentscommander coding-agent add --from-catalog claude
+agentscommander coding-agent add --label "My Claude" --command "claude" --color "#6366f1" --env FOO=bar
+agentscommander coding-agent update --id agent_123_abc --command "claude --model opus" --clear-envs
+agentscommander coding-agent remove --id agent_123_abc
+```
+
+Subcommands:
+
+| Subcommand | Reads/Writes | Output (stdout JSON) |
+|---|---|---|
+| `list` | reads disk | array of `AgentConfig` |
+| `show --id <id>` | reads disk | one `AgentConfig` (exact id) |
+| `catalog` | reads disk | array of `CodingAgentDefinition` (read-only catalog) |
+| `add` | writes | `{ "ok": true, "op": "add", "agent": { ... } }` |
+| `update --id <id>` | writes | `{ "ok": true, "op": "update", "agent": { ... } }` |
+| `remove --id <id>` | writes | `{ "ok": true, "op": "remove", "id": "<id>" }` |
+
+`add` / `update` flags:
+
+| Flag | Description |
+|---|---|
+| `--from-catalog <key>` | (add) Seed label/command/color/envs/isolatedHome (and optional instructions/seed) from a catalog entry; explicit flags below override. Without it, `--label` and `--command` are required. |
+| `--id <id>` | (add) Custom id, `^[a-z0-9][a-z0-9_-]{0,63}$`. Default: a minted `agent_<ms>_<hex>` id. Ids are unique case-insensitively. |
+| `--label <s>` | Display label (non-empty, trimmed). |
+| `--command <s>` | Launch command. Banned: Claude `--continue`/`-c`, Codex `resume`/`--last`, Gemini `--resume` (AC injects resume automatically). |
+| `--color <#rrggbb>` | Strict 6-digit hex (only enforced for the explicit flag; catalog-seeded colors are accepted as-is). Default `#6366f1` for custom agents. |
+| `--env KEY=VALUE` | Repeatable. Split on the first `=` (`FOO=a=b` -> value `a=b`). All CLI envs are `source=user`, `enabled=true`. On `update`, any `--env` REPLACES the whole env list (including `source=system` rows). |
+| `--clear-envs` | (update) Empty the env list. Conflicts with `--env`. |
+| `--isolated-home <true\|false>` | Provide an isolated CODEX_HOME at spawn (Codex). |
+| `--instructions-filename <name.md>` | Bare `.md` filename AC writes into the agent root at launch. |
+| `--clear-instructions-filename` | (update) Clear it. Conflicts with `--instructions-filename`. |
+| `--config-seed-dest <folder>` | Config-folder seed destination NAME under the replica root. Implies enabled unless `--config-seed-enabled false`. |
+| `--config-seed-enabled <true\|false>` | Toggle the seed. Enabling with no destination is an error. |
+| `--clear-config-seed` | (update) Remove the seed. Conflicts with the other seed flags. |
+| `--confirm-timeout <secs>` | Seconds to wait for the GUI to process the request (daemon path only). Default 30. |
+
+`remove` leaves any `profilesByAgent[id]` / `profileLabelsByAgent[id]` entries in place (matching the GUI and settings repair), so a same-id re-add resurrects the old profile cells.
+
+**GUI-running routing.** While an AgentsCommander GUI for this binary identity is running (detected via the single-instance mutex), mutations are NOT written to `settings.json` directly. They are queued and applied by the running GUI against its authoritative in-memory state, then a result is returned to the CLI. While the GUI is closed, mutations load `settings.json` strictly (a present-but-unparseable file is refused, not silently defaulted) then apply and save. GUI detection is Windows-only; off-Windows a running GUI is not detected and the direct write path is always used.
+
+**Known limitation (documented for scripts).** The CLI does not clobber the GUI, but the reverse remains possible: a Settings dialog that is already open with an unsaved draft can, on its next Save, revert a concurrent CLI mutation (it writes a full snapshot). Run `--launch` (or re-`show`) right after `add` so consumption happens before a Settings Save can revert.
+
+**Exit codes.** 0 on success, 1 on error. Both terminal (validation) and retryable (GUI busy) failures exit 1; the stderr message carries the distinction. Only a `cancelled (safe to retry)` message is blind-retry-safe. A `may or may not have applied` message is NOT: run `coding-agent show --id <id>` before retrying.
+
+---
+
 ## `close-session`
 
 Close all sessions for a target agent. Coordinator-only.

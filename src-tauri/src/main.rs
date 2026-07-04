@@ -42,6 +42,7 @@ fn main() {
                                 | agentscommander_lib::cli::Commands::UiBackend(_)
                                 | agentscommander_lib::cli::Commands::UiWait(_)
                                 | agentscommander_lib::cli::Commands::TaskSetTitle(_)
+                                | agentscommander_lib::cli::Commands::CodingAgent(_)
                         ) {
                             std::env::set_var("AC_MACHINE_OUTPUT", "1");
                         }

@@ -1641,6 +1641,9 @@ impl MailboxPoller {
         // Poll session-requests directory (from create-agent CLI)
         self.poll_session_requests(app).await;
 
+        // #786: poll coding-agent-requests (from `coding-agent` CLI mutations).
+        self.poll_coding_agent_requests(app).await;
+
         Ok(())
     }
 
@@ -5204,6 +5207,81 @@ impl MailboxPoller {
 
             // Delete processed request file regardless of success/failure
             let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// #786: poll `<config_dir>/coding-agent-requests/` for CLI mutation requests
+    /// while the GUI runs. Scans bare `.json` files only (so `.processing`,
+    /// `.tmp`, and the `results/` subdir are excluded). For each request, R8:
+    /// write-lock SettingsState, clone a candidate, run the pure per-request
+    /// handler (claim -> parse -> expiry -> apply -> write result -> delete
+    /// `.processing`) against it, and on Applied swap the in-memory state and emit
+    /// `coding_agent_settings_updated` AFTER the guard drops. `save_settings` is
+    /// synchronous, so the write guard is never held across an await.
+    async fn poll_coding_agent_requests(&self, app: &tauri::AppHandle) {
+        use crate::config::coding_agent_mutations as ca;
+        let config_dir = match crate::config::config_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let requests_dir = config_dir.join(ca::CODING_AGENT_REQUESTS_DIR);
+        if !requests_dir.is_dir() {
+            return;
+        }
+        let results_dir = requests_dir.join(ca::RESULTS_SUBDIR);
+
+        let entries: Vec<PathBuf> = match std::fs::read_dir(&requests_dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+                .collect(),
+            Err(_) => return,
+        };
+        if entries.is_empty() {
+            return;
+        }
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let state = app.state::<SettingsState>();
+        for path in entries {
+            let applied = {
+                let mut s = state.write().await;
+                let mut candidate = s.clone();
+                let mut save = |st: &crate::config::settings::AppSettings| {
+                    crate::config::settings::save_settings(st)
+                };
+                let disposition = ca::process_coding_agent_request(
+                    &path,
+                    &results_dir,
+                    now_ms,
+                    &mut candidate,
+                    &mut save,
+                );
+                if let ca::RequestDisposition::Applied { op, agent_id } = disposition {
+                    *s = candidate;
+                    Some((op, agent_id))
+                } else {
+                    None
+                }
+            }; // write guard dropped here, before the emit
+
+            if let Some((op, agent_id)) = applied {
+                let _ = tauri::Emitter::emit(
+                    app,
+                    "coding_agent_settings_updated",
+                    serde_json::json!({ "op": op, "agentId": agent_id }),
+                );
+                log::info!(
+                    "[coding-agent-requests] applied op={} agentId={:?}",
+                    op,
+                    agent_id
+                );
+            }
         }
     }
 }

@@ -76,6 +76,8 @@ A minimal `settings.json`:
 |---|---|---|---|
 | `agents` | `AgentConfig[]` | See example | The dropdown of available coding agents. |
 
+Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writer: the [`coding-agent`](cli.md#coding-agent) CLI verb (`list`/`show`/`catalog`/`add`/`update`/`remove`). It writes safely whether or not the GUI is running.
+
 `AgentConfig`:
 
 | Field | Type | Default | Description |
