@@ -14,6 +14,7 @@ import { isTauri } from "../../shared/platform";
 import { stripFrontmatter } from "../../shared/markdown";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
+import RaiseHandIcon from "./RaiseHandIcon";
 import { projectStore } from "../stores/project";
 import {
   effectiveAutoClosedAt,
@@ -2097,7 +2098,7 @@ const ProjectPanel: Component = () => {
                         title="Raised hand"
                         aria-label="Raised hand"
                       >
-                        <span class="coord-communication-icon" aria-hidden="true">!</span>
+                        <RaiseHandIcon class="coord-communication-icon" />
                       </span>
                     </Show>
                   </div>

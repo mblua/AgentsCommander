@@ -12,6 +12,7 @@ import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import {
   defaultGroupsConfig,
+  defaultNonStop,
   exactGroupRegexForWorkgroup,
 } from "../stores/workgroup-groups";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
@@ -157,7 +158,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     document.body.replaceChildren();
   });
 
-  it("lights the amber badge on All and on the group whose coordinator raised a hand", async () => {
+  it("lights the amber badge on the group whose coordinator raised a hand, never on All (#775)", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
@@ -168,19 +169,57 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     );
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
-      // Aggregates up to All; lights the matching group; leaves the rest dark.
-      await waitFor(() => expect(railRaiseHands()).toEqual(["all", "ui"]));
+      // #775: lights the matching group; All never lights; the rest stay dark.
+      await waitFor(() => expect(railRaiseHands()).toEqual(["ui"]));
 
       const badge = target<HTMLElement>("workgroupGroups.raiseHand.ui");
       expect(badge.classList.contains("workgroup-group-rail-raise-hand")).toBe(true);
-      expect(badge.textContent?.trim()).toBe("!");
+      // #775 round 2: a raised-hand SVG glyph, not the old amber "!".
+      expect(
+        badge.querySelector("svg.workgroup-group-rail-raise-hand-icon")
+      ).not.toBeNull();
+      expect(badge.textContent ?? "").not.toContain("!");
       expect(badge.getAttribute("aria-label")).toBe("A coordinator raised its hand");
+
+      // #775 rule 3 (Option B): the hand renders inline, to the LEFT of the
+      // title — first child of the title line, ahead of the title text.
+      const button = target<HTMLElement>("workgroupGroups.button.ui");
+      const titleLine = button.querySelector(".workgroup-group-rail-title-line");
+      const title = button.querySelector<HTMLElement>(".workgroup-group-rail-title");
+      expect(titleLine?.firstElementChild).toBe(badge);
+      expect(title?.textContent).toBe("UI");
+      expect(
+        Boolean(badge.compareDocumentPosition(title!) & Node.DOCUMENT_POSITION_FOLLOWING)
+      ).toBe(true);
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("aggregates onto All and Ungrouped when an ungrouped workgroup's coordinator raised", async () => {
+  it("never lights All even when every member workgroup has a raised hand (#775)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+    sessionsStore.setSessions([
+      raisedSession("wg-1-dev-team"),
+      raisedSession("wg-2-rust-team"),
+      raisedSession("wg-3-docs-team"),
+    ]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+      // Ungrouped + every dynamic group lights, but All stays dark regardless.
+      await waitFor(() => expect(railRaiseHands()).toEqual(["ungrouped", "ui", "rust"]));
+      expect(railRaiseHands()).not.toContain("all");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("aggregates onto Ungrouped (never All) when an ungrouped workgroup's coordinator raised (#775)", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([raisedSession("wg-3-docs-team")]);
@@ -191,7 +230,8 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     );
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
-      await waitFor(() => expect(railRaiseHands()).toEqual(["all", "ungrouped"]));
+      // #775: Ungrouped still aggregates the ungrouped raise; All never lights.
+      await waitFor(() => expect(railRaiseHands()).toEqual(["ungrouped"]));
     } finally {
       rendered.cleanup();
     }
@@ -226,13 +266,105 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       expect(railRaiseHands()).toEqual([]);
 
-      // Hand goes up -> badge appears on All + the group.
+      // Hand goes up -> badge appears on the group only (never All, #775).
       sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
-      await waitFor(() => expect(railRaiseHands()).toEqual(["all", "ui"]));
+      await waitFor(() => expect(railRaiseHands()).toEqual(["ui"]));
 
       // User attends (backend clears communication) -> badge disappears.
       sessionsStore.setCommunication("session-wg-1-dev-team", null);
       await waitFor(() => expect(railRaiseHands()).toEqual([]));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("bolds built-in group labels (All, Ungrouped) and leaves user groups normal (#775)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+      const isBold = (key: string) =>
+        target<HTMLElement>(`workgroupGroups.button.${key}`)
+          .querySelector(".workgroup-group-rail-title")
+          ?.classList.contains("workgroup-group-rail-title-system") ?? false;
+      expect(isBold("all")).toBe(true);
+      expect(isBold("ungrouped")).toBe(true);
+      expect(isBold("ui")).toBe(false);
+      expect(isBold("rust")).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("never bolds a user group merely named like a built-in (#775 structural gate)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        groups: [
+          { id: "myall", name: "All", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+        ],
+      })
+    );
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("myall"));
+      const userAll = target<HTMLElement>("workgroupGroups.button.myall").querySelector(
+        ".workgroup-group-rail-title"
+      );
+      expect(userAll?.textContent).toBe("All");
+      expect(userAll?.classList.contains("workgroup-group-rail-title-system")).toBe(false);
+      // The built-in All (key "all") stays bold.
+      const builtinAll = target<HTMLElement>("workgroupGroups.button.all").querySelector(
+        ".workgroup-group-rail-title"
+      );
+      expect(builtinAll?.classList.contains("workgroup-group-rail-title-system")).toBe(true);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("bolds the built-in Non-stop group; All still never shows the hand (#775 + #777 merge)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        nonStop: {
+          ...defaultNonStop(),
+          show: true,
+          regex: exactGroupRegexForWorkgroup("wg-1-dev-team"),
+        },
+      })
+    );
+    // wg-1 (a Non-stop + "UI"-group member) raises a hand.
+    sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("nonstop"));
+      // Non-stop is a built-in/system rail group (selection.kind "nonstop") -> the
+      // structural bold gate (kind !== "group") already covers it, no string match.
+      const nonstopTitle = target<HTMLElement>("workgroupGroups.button.nonstop").querySelector(
+        ".workgroup-group-rail-title"
+      );
+      expect(nonstopTitle?.classList.contains("workgroup-group-rail-title-system")).toBe(true);
+      // #775 — Non-stop is a real member group, so wg-1's raised hand DOES light
+      // it (locks in Maria's "Non-stop keeps the hand" decision).
+      expect(railRaiseHands()).toContain("nonstop");
+      // Rule 1 survives the merge: All never shows the hand, even with Non-stop present.
+      expect(railRaiseHands()).not.toContain("all");
     } finally {
       rendered.cleanup();
     }

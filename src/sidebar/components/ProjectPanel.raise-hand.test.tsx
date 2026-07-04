@@ -130,6 +130,9 @@ describe("ProjectPanel raise-hand communication slot (#676)", () => {
       const slot = rendered.root.querySelector(
         `[data-ac-testid="${rowSlotTestId("wg-2-dev-team", "dev-webpage-ui")}"]`
       );
+      // #775: the raise-hand slot now renders the shared SVG hand, not "!".
+      expect(slot?.querySelector("svg")).not.toBeNull();
+      expect(slot?.textContent ?? "").not.toContain("!");
       const line = slot?.closest(".coord-task-line");
       expect(line?.querySelector(".coord-task-title")?.textContent).toBe("Second task");
     } finally {
