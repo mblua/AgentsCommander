@@ -2759,7 +2759,7 @@ html.light-theme .settings-hint-warning {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 6px 5px;
+  padding: 6px 4px;
   background: rgba(255, 255, 255, 0.025);
   border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
@@ -2794,13 +2794,13 @@ html.light-theme .settings-hint-warning {
   width: 100%;
   min-height: 28px;
   margin-bottom: 4px;
-  padding: 4px 5px;
+  padding: 4px 3px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--sidebar-fg-dim);
   font-family: var(--font-ui);
-  font-size: 8.5px;
+  font-size: 7.5px;
   line-height: 1.15;
   text-align: center;
   cursor: pointer;
@@ -2816,7 +2816,7 @@ html.light-theme .settings-hint-warning {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
   max-width: 100%;
   min-width: 0;
 }
@@ -2826,6 +2826,14 @@ html.light-theme .settings-hint-warning {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* #775 — built-in/system group labels (All, Ungrouped, …) render bold so they
+   stand out from user-created groups. Applied via a class gated on the
+   selection kind (never the display string), so a user group literally named
+   "All" stays normal weight. */
+.workgroup-group-rail-title-system {
+  font-weight: 700;
 }
 
 .workgroup-group-rail-button:hover,
@@ -2872,8 +2880,8 @@ html.light-theme .settings-hint-warning {
 }
 
 .workgroup-group-rail-button .workgroup-group-rail-raise-hand-icon {
-  width: 11px;
-  height: 11px;
+  width: 8px;
+  height: 8px;
   display: block;
   fill: currentColor;
 }
@@ -4624,8 +4632,14 @@ html.light-theme .settings-hint-warning {
   line-height: 1;
 }
 
+/* #775 — the raise-hand glyph inside the amber coordinator-row slot is now the
+   shared SVG hand (RaiseHandIcon), sized to sit in the 15px amber chip and
+   tinted by the slot's amber `color` via fill: currentColor. */
 .coord-communication-icon {
-  transform: translateY(-0.5px);
+  width: 11px;
+  height: 11px;
+  display: block;
+  fill: currentColor;
 }
 
 .coord-quick-access .replica-item-info .coord-task-title {

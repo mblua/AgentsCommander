@@ -276,4 +276,59 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
       rendered.cleanup();
     }
   });
+
+  it("bolds built-in group labels (All, Ungrouped) and leaves user groups normal (#775)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig());
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
+      const isBold = (key: string) =>
+        target<HTMLElement>(`workgroupGroups.button.${key}`)
+          .querySelector(".workgroup-group-rail-title")
+          ?.classList.contains("workgroup-group-rail-title-system") ?? false;
+      expect(isBold("all")).toBe(true);
+      expect(isBold("ungrouped")).toBe(true);
+      expect(isBold("ui")).toBe(false);
+      expect(isBold("rust")).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("never bolds a user group merely named like a built-in (#775 structural gate)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve(
+      "get_project_groups",
+      groupsConfig({
+        groups: [
+          { id: "myall", name: "All", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+        ],
+      })
+    );
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("myall"));
+      const userAll = target<HTMLElement>("workgroupGroups.button.myall").querySelector(
+        ".workgroup-group-rail-title"
+      );
+      expect(userAll?.textContent).toBe("All");
+      expect(userAll?.classList.contains("workgroup-group-rail-title-system")).toBe(false);
+      // The built-in All (key "all") stays bold.
+      const builtinAll = target<HTMLElement>("workgroupGroups.button.all").querySelector(
+        ".workgroup-group-rail-title"
+      );
+      expect(builtinAll?.classList.contains("workgroup-group-rail-title-system")).toBe(true);
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });
