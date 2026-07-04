@@ -5,6 +5,7 @@ import {
   MAX_GROUP_MATCH_ID_LENGTH,
   compileGroupRegex,
   groupMatchId,
+  nonStopMatchesWorkgroup,
   workgroupGroupsStore,
   type WorkgroupGroupSelection,
 } from "../stores/workgroup-groups";
@@ -122,6 +123,23 @@ const ProjectRailSection: Component<{
         key: "ungrouped",
         ...buttonContent("Ungrouped", workgroups),
         selection: { kind: "ungrouped" },
+        workgroups,
+        title: tooltipFor(workgroups),
+      });
+    }
+    // #777: the built-in Non-stop group pins directly after Ungrouped (or after
+    // All when Ungrouped is hidden, or first when both are hidden), before the
+    // user groups. Reuses buttonContent/tooltipFor so its counter + running dot
+    // render identically to every other button.
+    const nonStop = config().nonStop;
+    if (nonStop?.show) {
+      const workgroups = props.project.workgroups.filter((wg) =>
+        nonStopMatchesWorkgroup(nonStop, wg)
+      );
+      result.push({
+        key: "nonstop",
+        ...buttonContent(nonStop.name || "Non-stop", workgroups),
+        selection: { kind: "nonstop" },
         workgroups,
         title: tooltipFor(workgroups),
       });

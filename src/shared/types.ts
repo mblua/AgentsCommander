@@ -190,6 +190,17 @@ export interface CodingAgentDefinition {
   removable: boolean;
 }
 
+/**
+ * #769 Phase 2 — result of `reseed_coding_agent_default`: the config-folder
+ * `dest` that was restored to the shipped default, plus the absolute path of the
+ * timestamped `.bak` of the prior master (empty string when the master was absent
+ * so nothing needed backing up).
+ */
+export interface ReseedResult {
+  dest: string;
+  backupPath: string;
+}
+
 export interface CodingAgentProfilesConfig {
   schemaVersion: number;
   /** v2 (#384): renamed from `letters`. Keyed by profile slot letter A–Z. */
@@ -758,10 +769,52 @@ export interface WorkgroupGroup {
   regex: string;
 }
 
+export interface NonStopTelegramConfig {
+  enabled: boolean;
+  /** Resolves against AppSettings.telegramBots by id; null/absent => first configured bot. */
+  botId?: string | null;
+}
+
+export interface NonStopSoundConfig {
+  enabled: boolean;
+  /** Beep duration in seconds. Default 3. Clamped 1..=60. */
+  seconds: number;
+}
+
+export interface NonStopGroupConfig {
+  /** Rail visibility AND watchdog-active. Single toggle (#777 D3/D4). Default false. */
+  show: boolean;
+  /** Display name. Default "Non-stop". */
+  name: string;
+  /** Membership regex, dynamic like user groups. Default "(?!)" (matches nothing). */
+  regex: string;
+  /** Grace window before firing. Default 30. Clamped 1..=3600. */
+  toleranceSeconds: number;
+  telegram: NonStopTelegramConfig;
+  sound: NonStopSoundConfig;
+}
+
 export interface WorkgroupGroupsConfig {
   groups: WorkgroupGroup[];
   showAll: boolean;
   showUngrouped: boolean;
+  /** #777 built-in optional Non-stop group. Absent on legacy configs. */
+  nonStop?: NonStopGroupConfig | null;
+}
+
+/** #777 frontend -> backend watchdog signal; one entry per project with an ACTIVE Non-stop group. */
+export interface NonStopReport {
+  projectPath: string;
+  groupName: string;
+  disparity: boolean;
+  working: number;
+  total: number;
+  notWorkingWorkgroups: string[];
+  toleranceSeconds: number;
+  telegramEnabled: boolean;
+  telegramBotId?: string | null;
+  soundEnabled: boolean;
+  soundSeconds: number;
 }
 
 export type LoopTriggerKind = "cron";

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -698,7 +699,7 @@ pub fn compute_rtk_startup_mode(
     }
 }
 
-fn command_token_basename(token: &str) -> String {
+pub(crate) fn command_token_basename(token: &str) -> String {
     std::path::Path::new(token)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1735,14 +1736,153 @@ pub fn read_log_level_only() -> Option<String> {
     read_log_level_from_path(&settings_path()?)
 }
 
+/// #774: counter feeding the per-call unique temp filename for settings saves.
+/// Combined with the PID it makes `settings.json.<pid>.<op_id>.tmp` distinct from
+/// any concurrent cross-process save (GUI startup, CLI verbs, closing flush) and
+/// from any leftover temp written by a prior crashed run. Mirrors
+/// `sessions_persistence::SAVE_OP_ID` (sessions_persistence.rs:47); a separate
+/// counter so the two can be reasoned about independently in diagnostics.
+static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
+
+/// #778: side-effect-free reader of ONLY `project_paths`/`project_path` from
+/// `settings.json` on disk. Under Design S `project_paths` is disk-authoritative,
+/// so the default `save_settings` uses this to preserve whatever another process
+/// (a CLI verb, a second instance) wrote, and the add/remove commands use it to
+/// reconcile before a deliberate mutation.
+///
+/// Error policy (grinch G2): a genuine `NotFound` yields empty (fresh install:
+/// nothing on disk to preserve). ANY other error (a transient os 5/32/33/1175
+/// lock, a permission failure, or unparseable JSON) returns `Err` so the caller
+/// ABORTS the save. The read runs BEFORE the #774 temp write, so disk is
+/// untouched and #774 is unaffected. For #778's threat model, aborting a
+/// geometry/theme save (retried later) beats silently dropping a project. A few
+/// tight retries absorb a transient lock without stacking latency onto
+/// `rename_with_retry`. This deliberately does NOT swallow-to-empty like
+/// `read_log_level_from_path`, whose transient-default is harmless.
+///
+/// G4a: `read_to_string` opens, reads, and CLOSES the handle before any write,
+/// so the later `MoveFileEx` rename cannot hit a sharing violation (os 32).
+/// MUST NOT call `load_settings` (it migrates, generates root_token, and
+/// re-saves: infinite recursion + side effects).
+fn read_project_paths_from_disk(path: &Path) -> Result<(Vec<String>, Option<String>), String> {
+    // 1 initial attempt + up to 2 retries on a transient (non-NotFound) read error.
+    const READ_RETRY_BACKOFFS_MS: [u64; 2] = [10, 40];
+    let mut attempt = 0usize;
+    let contents = loop {
+        match std::fs::read_to_string(path) {
+            Ok(c) => break c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Fresh install / never-saved: nothing on disk to preserve.
+                return Ok((Vec::new(), None));
+            }
+            Err(e) => {
+                if attempt < READ_RETRY_BACKOFFS_MS.len() {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        READ_RETRY_BACKOFFS_MS[attempt],
+                    ));
+                    attempt += 1;
+                    continue;
+                }
+                return Err(format!(
+                    "Failed to read {} to preserve project_paths (aborting save to avoid dropping a project): {}",
+                    path.display(),
+                    e
+                ));
+            }
+        }
+    };
+    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|e| {
+        format!(
+            "Failed to parse {} to preserve project_paths (aborting save to avoid dropping a project): {}",
+            path.display(),
+            e
+        )
+    })?;
+    let project_paths = value
+        .get("projectPaths")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let project_path = value
+        .get("projectPath")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Ok((project_paths, project_path))
+}
+
+/// #778: overwrite `settings`' in-memory project list with the disk-authoritative
+/// one. The deliberate list mutators (`open_project`/`new_project`/`remove_project`)
+/// call this under the `SettingsState` write lock BEFORE they add/remove, so a
+/// concurrent CLI append is reconciled into the list rather than clobbered by the
+/// following verbatim write. Aborts (propagates `Err`) on a non-`NotFound` read
+/// error per G2; a missing home dir is a no-op (the following save surfaces it).
+pub fn refresh_project_paths_from_disk(settings: &mut AppSettings) -> Result<(), String> {
+    let Some(path) = settings_path() else {
+        return Ok(());
+    };
+    let (project_paths, project_path) = read_project_paths_from_disk(&path)?;
+    settings.project_paths = project_paths;
+    settings.project_path = project_path;
+    Ok(())
+}
+
 /// Save settings to the app config directory (see config_dir()).
-/// Atomic write (tmp + rename) per G.14 — mirrors `sessions_persistence::save_sessions`.
-/// Splitter-drag debouncing raises save frequency in 0.8.0; atomic writes ensure a crash
-/// mid-write cannot corrupt the existing settings.json.
+///
+/// #778: this is the DEFAULT writer and treats `project_paths` as
+/// disk-authoritative (Design S). It preserves whatever `project_paths`/
+/// `project_path` is currently on disk and discards this (possibly stale)
+/// in-memory candidate's copy, so ANY whole-object GUI save is fail-safe for the
+/// project list: a project a CLI verb registered while the GUI ran is never
+/// clobbered. Deliberate list changes (the add/remove commands, the CLI verbs,
+/// the startup root_token/migration write) go through
+/// `save_settings_with_project_paths` instead.
+///
+/// The underlying write is the #774-hardened atomic tmp+rename
+/// (`save_settings_to_path`): a per-writer unique temp plus
+/// `sessions_persistence::rename_with_retry`. The disk read that preserves
+/// `project_paths` runs first and closes its handle before that write (G4a).
+///
+/// G4b (accepted, documented): a remove/add racing another writer within the
+/// sub-millisecond window between this preserve-read and the rename could
+/// momentarily resurrect an entry; orders of magnitude smaller than the prior
+/// snapshot-age window. Airtight cross-process safety would need an advisory
+/// file lock (tracked separately), deliberately not added here.
 pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join("settings.json");
+    save_settings_to_path_preserving_project_paths(settings, &path)
+}
+
+/// #778: EXPLICIT writer. Persists `project_paths`/`project_path` VERBATIM (the
+/// pre-#778 `save_settings` behavior, still #774-hardened). ONLY for deliberate
+/// list mutators that have already reconciled the list against disk: the add
+/// commands (`open_project`/`new_project`), the `remove_project` command, the two
+/// CLI verbs (which load fresh disk via `load_settings_for_cli`), and the startup
+/// root_token/migration save (whose `project_paths` was just loaded from disk).
+pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), String> {
+    let dir = super::config_dir().ok_or("Could not determine home directory")?;
+    let path = dir.join("settings.json");
     save_settings_to_path(settings, &path)
+}
+
+/// #778: the preserve-disk wrapper behind the default `save_settings`. Reads the
+/// current on-disk `project_paths`/`project_path` (G2 abort policy), substitutes
+/// them into a clone of `settings`, then hands off to the verbatim
+/// #774-hardened writer. Split out with an explicit `path` so tests can drive it
+/// against a `tempfile::tempdir()`.
+fn save_settings_to_path_preserving_project_paths(
+    settings: &AppSettings,
+    path: &Path,
+) -> Result<(), String> {
+    let (disk_paths, disk_head) = read_project_paths_from_disk(path)?;
+    let mut to_write = settings.clone();
+    to_write.project_paths = disk_paths;
+    to_write.project_path = disk_head;
+    save_settings_to_path(&to_write, path)
 }
 
 fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), String> {
@@ -1756,11 +1896,37 @@ fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), Stri
     let json = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
 
-    let tmp_path = dir.join("settings.json.tmp");
-    std::fs::write(&tmp_path, &json)
-        .map_err(|e| format!("Failed to write temp settings file: {}", e))?;
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| format!("Failed to rename settings file: {}", e))?;
+    // #774 (A): unique temp filename per save. Combined with rename_with_retry
+    // below, this kills the shared-`settings.json.tmp` race: two cross-process
+    // writers (GUI startup, CLI verbs, closing flush) can never collide on the
+    // temp file, and any leftover `.tmp` from a prior crashed run cannot be
+    // mistaken for ours. Mirrors sessions_persistence.rs:763-765.
+    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let tmp_path = dir.join(format!("settings.json.{}.{}.tmp", pid, op_id));
+
+    if let Err(e) = std::fs::write(&tmp_path, &json) {
+        // Best-effort cleanup: the partial write may have created the file even
+        // though write returned Err (e.g. ENOSPC mid-stream).
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write temp settings file: {}", e));
+    }
+
+    // #774 (B): route the rename through the reviewed retry helper. It absorbs
+    // transient cross-process contention on the DESTINATION (a second AC
+    // instance, AV, or the Indexer briefly holding settings.json; os errors
+    // 5/32/33/1175). With the unique temp above, our source can never be
+    // consumed by another writer, so os error 2 (source absent) is no longer a
+    // concurrency symptom; if it still surfaces it is propagated (with the OS
+    // error in the message) after the bounded retry, not masked.
+    if let Err((err_msg, _diag)) =
+        crate::config::sessions_persistence::rename_with_retry(&tmp_path, path)
+    {
+        // Best-effort cleanup of our unique temp so failed saves don't litter
+        // the config dir. The unique name guarantees this removes only OUR temp.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to rename settings file: {}", err_msg));
+    }
 
     log::debug!("Saved settings to {:?}", path);
     Ok(())
@@ -2982,6 +3148,156 @@ mod tests {
         std::fs::write(&path, r#"{"logLevel":"","other":"value"}"#).unwrap();
         assert_eq!(super::read_log_level_from_path(&path), Some(String::new()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── #778: disk-authoritative project_paths (Design S) ────────────────────
+
+    fn settings_with_project_paths(paths: &[&str]) -> AppSettings {
+        AppSettings {
+            project_paths: paths.iter().map(|p| p.to_string()).collect(),
+            project_path: paths.first().map(|p| p.to_string()),
+            ..AppSettings::default()
+        }
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_returns_list_and_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_to_path(&settings_with_project_paths(&["C:/a", "C:/b"]), &path)
+            .unwrap();
+        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap();
+        assert_eq!(paths, vec!["C:/a".to_string(), "C:/b".to_string()]);
+        assert_eq!(head.as_deref(), Some("C:/a"));
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_empty_when_file_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("does-not-exist.json");
+        // NotFound is the ONLY error that degrades to empty (fresh install).
+        assert_eq!(
+            super::read_project_paths_from_disk(&path).unwrap(),
+            (Vec::new(), None)
+        );
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_aborts_on_unparseable_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        // G2: unparseable is NOT NotFound, so the reader aborts (Err), never disk=[].
+        assert!(super::read_project_paths_from_disk(&path).is_err());
+    }
+
+    #[test]
+    fn read_project_paths_from_disk_aborts_on_non_notfound_read_error() {
+        // G2: a directory at the path yields a non-NotFound read error; the reader
+        // must abort (Err), not degrade to empty (which would silently drop a project).
+        let temp = tempfile::tempdir().unwrap();
+        let dir_as_path = temp.path().join("iam-a-dir");
+        std::fs::create_dir_all(&dir_as_path).unwrap();
+        assert!(super::read_project_paths_from_disk(&dir_as_path).is_err());
+    }
+
+    #[test]
+    fn save_settings_preserve_keeps_disk_project_paths_on_passthrough() {
+        // Marquee preserve: disk has [A, X] (X = an append this in-memory candidate
+        // never saw); a whole-object save that changed only an unrelated field must
+        // leave project_paths = [A, X] on disk (fail-safe) AND persist the field.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_to_path(&settings_with_project_paths(&["A", "X"]), &path).unwrap();
+
+        let mut candidate = settings_with_project_paths(&["A"]); // stale, missing X
+        candidate.sidebar_style = "deep-space".to_string(); // unrelated GUI field
+        super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let reloaded: AppSettings = serde_json::from_str(&contents).unwrap();
+        assert_eq!(
+            reloaded.project_paths,
+            vec!["A".to_string(), "X".to_string()]
+        ); // X preserved, not clobbered
+        assert_eq!(reloaded.project_path.as_deref(), Some("A"));
+        assert_eq!(reloaded.sidebar_style, "deep-space"); // unrelated field persisted
+    }
+
+    #[test]
+    fn save_settings_with_project_paths_writes_verbatim() {
+        // The explicit writer persists the in-memory list as-is (deliberate mutation).
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_to_path(&settings_with_project_paths(&["A"]), &path).unwrap();
+        super::save_settings_to_path(&settings_with_project_paths(&["A", "Y"]), &path).unwrap();
+        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap();
+        assert_eq!(paths, vec!["A".to_string(), "Y".to_string()]);
+    }
+
+    #[test]
+    fn save_settings_preserve_twice_succeeds_no_sharing_violation() {
+        // G4a: the preserve-read closes its handle before the #774 rename, so two
+        // preserve-saves in a row both succeed on Windows (a lingering read handle
+        // would trip MoveFileEx with os 32).
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_to_path(&settings_with_project_paths(&["A"]), &path).unwrap();
+        super::save_settings_to_path_preserving_project_paths(
+            &settings_with_project_paths(&["A"]),
+            &path,
+        )
+        .unwrap();
+        super::save_settings_to_path_preserving_project_paths(
+            &settings_with_project_paths(&["A"]),
+            &path,
+        )
+        .unwrap();
+        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap();
+        assert_eq!(paths, vec!["A".to_string()]);
+    }
+
+    #[test]
+    fn remove_project_disk_composition_preserves_unseen_entry() {
+        // remove_project command body against a tempdir: disk [A, X] (X unseen by the
+        // sidebar), reconcile from disk, remove A, write verbatim => disk ends [X].
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_to_path(&settings_with_project_paths(&["A", "X"]), &path).unwrap();
+
+        let mut s = settings_with_project_paths(&["A"]); // stale in-memory
+        let (disk_paths, disk_head) = super::read_project_paths_from_disk(&path).unwrap();
+        s.project_paths = disk_paths;
+        s.project_path = disk_head; // reconciled to [A, X]
+        assert!(crate::config::projects::remove_project_path(&mut s, "A"));
+        super::save_settings_to_path(&s, &path).unwrap(); // verbatim
+
+        let (paths, head) = super::read_project_paths_from_disk(&path).unwrap();
+        assert_eq!(paths, vec!["X".to_string()]); // A gone, X preserved
+        assert_eq!(head.as_deref(), Some("X"));
+    }
+
+    #[test]
+    fn add_reconciles_from_disk_before_upsert() {
+        // Add command body: in-memory stale [A], disk [A, X]; reconcile then append Y
+        // and write verbatim => disk ends [A, X, Y] (the CLI append X is not lost).
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        super::save_settings_to_path(&settings_with_project_paths(&["A", "X"]), &path).unwrap();
+
+        let mut s = settings_with_project_paths(&["A"]); // stale
+        let (disk_paths, disk_head) = super::read_project_paths_from_disk(&path).unwrap();
+        s.project_paths = disk_paths;
+        s.project_path = disk_head; // [A, X]
+        s.project_paths.push("Y".to_string()); // stand-in for register upsert
+        s.project_path = s.project_paths.first().cloned();
+        super::save_settings_to_path(&s, &path).unwrap();
+
+        let (paths, _) = super::read_project_paths_from_disk(&path).unwrap();
+        assert_eq!(
+            paths,
+            vec!["A".to_string(), "X".to_string(), "Y".to_string()]
+        );
     }
 
     #[test]

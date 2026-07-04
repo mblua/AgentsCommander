@@ -5,6 +5,7 @@ pub mod config;
 pub mod entity_creation;
 pub mod gemini_resolver;
 pub mod loops;
+pub mod non_stop;
 pub mod phone;
 pub mod project_settings;
 pub mod pty;

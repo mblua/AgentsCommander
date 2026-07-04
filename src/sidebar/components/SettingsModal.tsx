@@ -5,11 +5,13 @@ import type {
   AppSettings,
   AgentConfig,
   CodingAgentEnv,
+  CodingAgentDefinition,
   LogLevel,
   TelegramBotConfig,
   ProfileCellConfig,
 } from "../../shared/types";
-import { SettingsAPI, TelegramAPI, ReposAPI } from "../../shared/ipc";
+import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI } from "../../shared/ipc";
+import { toastStore } from "../../shared/stores/toasts";
 import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { settingsStore } from "../../shared/stores/settings";
 import { setSoundsEnabled } from "../../shared/sound";
@@ -159,6 +161,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [leftRailId, setLeftRailId] = createSignal<string | null>(null);
   const [rightRailId, setRightRailId] = createSignal<string | null>(null);
   const [activeAgentId, setActiveAgentId] = createSignal<string | null>(null);
+
+  // #769 Phase 2 — "Re-seed default configuration" confirm flow. `reseedTarget`
+  // holds the catalog def being re-seeded (null = modal closed).
+  const [reseedTarget, setReseedTarget] = createSignal<CodingAgentDefinition | null>(null);
+  const [reseeding, setReseeding] = createSignal(false);
 
   const agentList = () => settings.data?.agents ?? [];
   const agentById = (id: string | null) =>
@@ -560,6 +567,48 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const hasAgentByCommand = (command: string): boolean => {
     if (!settings.data) return false;
     return settings.data.agents.some((a) => a.command.startsWith(command));
+  };
+
+  // #769 Phase 2 — the catalog def a configured agent's command maps to IFF that
+  // command ships a re-seedable default config folder. Gating is EXACT
+  // executable-basename equality against the backend-derived reseedable set —
+  // deliberately NOT `hasAgentByCommand`'s `.startsWith` (so `pi` matches only
+  // `pi` not `pip`, and Cursor CLI `agent`/Hermes/Pi/custom get no button). The
+  // set is empty until loaded and stays empty on fetch failure, so a failure is
+  // fail-safe (no destructive button we cannot validate). Returns null → no button.
+  const reseedableDefForCommand = (command: string): CodingAgentDefinition | null => {
+    const basename = commandExecutableBasename(command).toLowerCase();
+    if (!basename) return null;
+    const inReseedableSet = codingAgentsStore
+      .reseedableCommands()
+      .some((c) => c.toLowerCase() === basename);
+    if (!inReseedableSet) return null;
+    const def = codingAgentsStore
+      .catalog()
+      .find((d) => commandExecutableBasename(d.command).toLowerCase() === basename);
+    // A dest is required to name the affected folder in the confirm copy.
+    return def && def.configSeed?.dest ? def : null;
+  };
+
+  const confirmReseed = async () => {
+    const def = reseedTarget();
+    if (!def) return;
+    setReseeding(true);
+    try {
+      const result = await CodingAgentsAPI.reseedDefault(def.command);
+      toastStore.success(
+        result.backupPath
+          ? `Default configuration restored (backup at ${result.backupPath})`
+          : "Default configuration restored",
+      );
+      setReseedTarget(null);
+    } catch (e) {
+      // Non-destructive: the server-side re-check refused or the swap failed; the
+      // prior master is intact.
+      toastStore.error(`Could not re-seed ${def.label} default configuration: ${String(e)}`);
+    } finally {
+      setReseeding(false);
+    }
   };
 
   const tokenHasUnclosedQuote = (token: string, quote: string): boolean =>
@@ -1488,6 +1537,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </div>
             </label>
             {renderAgentEnvEditor(agent, i())}
+            {/* #769 Phase 2 — re-seed this tool's default config folder to the
+                shipped default. Only for built-ins that ship a re-seedable
+                master (claude/codex/opencode today); gate is exact-basename. */}
+            <Show when={reseedableDefForCommand(agent.command)}>
+              {(def) => (
+                <div class="settings-field">
+                  <button
+                    class="settings-row-btn"
+                    onClick={() => setReseedTarget(def())}
+                    data-ac-testid={`settings.agent.reseedDefault.${def().key}`}
+                    data-ac-role="button"
+                    title={`Restore the shipped default ${def().configSeed?.dest} config folder for new ${def().label} sessions`}
+                  >
+                    Re-seed default configuration
+                  </button>
+                </div>
+              )}
+            </Show>
           </div>
         </Show>
       </div>
@@ -2354,6 +2421,63 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </button>
         </div>
       </div>
+
+      {/* #769 Phase 2 — destructive-action confirm for re-seeding a default
+          config folder (§14.7.5). Stacks over Settings via its own fixed overlay. */}
+      <Show when={reseedTarget()}>
+        {(def) => (
+          <div
+            class="modal-overlay"
+            data-ac-testid="settings.reseedConfirm.overlay"
+            data-ac-role="overlay"
+          >
+            <div
+              class="agent-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Re-seed default configuration"
+              data-ac-testid="settings.reseedConfirm.modal"
+              data-ac-role="dialog"
+            >
+              <div class="agent-modal-header">
+                <span class="agent-modal-title">Re-seed default configuration</span>
+              </div>
+              <div class="wizard-body">
+                <p class="settings-hint" data-ac-testid="settings.reseedConfirm.message">
+                  Re-seed {def().label} default configuration? This replaces the default{" "}
+                  <code>{def().configSeed?.dest}</code> config folder that AgentsCommander seeds for
+                  new {def().label} sessions with the shipped default. Your current edits to that
+                  default folder will be backed up to{" "}
+                  <code>{def().configSeed?.dest}.bak-&lt;timestamp&gt;</code>. Running sessions and
+                  their live config are not changed; new sessions will use the restored default.
+                  Continue?
+                </p>
+              </div>
+              <div class="new-agent-footer">
+                <button
+                  class="new-agent-cancel-btn"
+                  onClick={() => setReseedTarget(null)}
+                  disabled={reseeding()}
+                  data-ac-testid="settings.reseedConfirm.cancel"
+                  data-ac-role="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  class="new-agent-create-btn"
+                  onClick={() => void confirmReseed()}
+                  disabled={reseeding()}
+                  data-ac-testid="settings.reseedConfirm.confirm"
+                  data-ac-role="button"
+                  data-ac-state={reseeding() ? "reseeding" : "ready"}
+                >
+                  {reseeding() ? "Re-seeding..." : "Re-seed"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
     </div>
   );
 };

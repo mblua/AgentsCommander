@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::register_new_project;
-use crate::config::settings::{load_settings_for_cli, save_settings};
+use crate::config::settings::{load_settings_for_cli, save_settings_with_project_paths};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -42,7 +42,10 @@ pub fn execute(args: NewProjectArgs) -> i32 {
     // Save when we either created `.ac` or appended a new path entry.
     // (A pure no-op call still prints the status lines.)
     if result.created || result.registered {
-        if let Err(e) = save_settings(&settings) {
+        // #778: CLI verbs load fresh disk (load_settings_for_cli) then upsert, so
+        // the deliberate list is written verbatim via the explicit writer, not the
+        // preserve-disk default (which would discard this append).
+        if let Err(e) = save_settings_with_project_paths(&settings) {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;
         }

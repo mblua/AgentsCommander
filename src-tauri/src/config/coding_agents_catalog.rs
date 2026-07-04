@@ -313,6 +313,290 @@ fn write_manifest_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// #769 Phase 2 - dest-keyed config-folder masters + the re-seed button.
+//
+// A "master" is the shipped default config folder for a built-in, stored at
+// `<config_dir>/coding-agents/_seed/<dest>/` (e.g. `_seed/.claude/`). It is
+// seeded once at boot (create-if-absent, from the compiled-in embedded default),
+// user-editable thereafter, and used two ways:
+//   - the absent-only #598 `CatalogDefault` tier fills a NEW replica's `<dest>`
+//     from it (never overwriting existing config), and
+//   - the Settings re-seed button restores it to the embedded default (`.bak`
+//     first, then a trash-first atomic swap).
+// Masters are stored VERBATIM (raw `%AC_...%` tokens); substitution happens only
+// when the master is copied into a replica. Only Claude/Codex/OpenCode ship a
+// master (D5): agents with no verified config-folder convention get none.
+// ---------------------------------------------------------------------------
+
+/// Subdirectory of `coding-agents/` holding the dest-keyed masters.
+const SEED_MASTERS_DIR_NAME: &str = "_seed";
+
+/// One embedded default file within a master: a forward-slash relative path plus
+/// its raw bytes (compiled in via `include_bytes!`).
+struct EmbeddedMasterFile {
+    rel_path: &'static str,
+    bytes: &'static [u8],
+}
+
+/// A dest-keyed embedded master: the shipped default config folder for a built-in.
+struct EmbeddedSeedMaster {
+    /// The command executable basename (lowercase) this master belongs to. Used
+    /// for the re-seed button's exact-basename gating.
+    command_basename: &'static str,
+    /// The dest folder NAME (e.g. `.claude`): both the `_seed/<dest>/` master dir
+    /// and the replica fill destination.
+    dest: &'static str,
+    files: &'static [EmbeddedMasterFile],
+}
+
+/// The built-in default config-folder masters. Only agents with a real, minimal,
+/// non-intrusive default ship one; Hermes/Pi/Cursor CLI ship none (no verified
+/// convention) and therefore get no re-seed button. Content is provisional
+/// (Maria approves before land); swapping it is a resource-file-only change.
+const EMBEDDED_SEED_MASTERS: &[EmbeddedSeedMaster] = &[
+    EmbeddedSeedMaster {
+        command_basename: "claude",
+        dest: ".claude",
+        files: &[EmbeddedMasterFile {
+            rel_path: "settings.json",
+            bytes: include_bytes!("../../resources/coding-agents/_seed/.claude/settings.json"),
+        }],
+    },
+    EmbeddedSeedMaster {
+        command_basename: "codex",
+        dest: ".codex",
+        files: &[EmbeddedMasterFile {
+            rel_path: "config.toml",
+            bytes: include_bytes!("../../resources/coding-agents/_seed/.codex/config.toml"),
+        }],
+    },
+    EmbeddedSeedMaster {
+        command_basename: "opencode",
+        dest: ".opencode",
+        files: &[EmbeddedMasterFile {
+            rel_path: "opencode.json",
+            bytes: include_bytes!("../../resources/coding-agents/_seed/.opencode/opencode.json"),
+        }],
+    },
+];
+
+/// Result of a re-seed, returned to the frontend for the success toast.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReseedResult {
+    pub dest: String,
+    pub backup_path: String,
+}
+
+/// Serialize all re-seeds (rare, user-initiated) so two never race on a master
+/// mid-swap. Stricter than strictly per-dest, which is safe (never a partial or
+/// racy state).
+static RESEED_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Absolute path to the dest-keyed master: `<config>/coding-agents/_seed/<dest>/`.
+pub fn master_dir_for_dest(config_dir: &Path, dest: &str) -> PathBuf {
+    catalog_dir(config_dir)
+        .join(SEED_MASTERS_DIR_NAME)
+        .join(dest)
+}
+
+fn embedded_master_for_command_basename(basename: &str) -> Option<&'static EmbeddedSeedMaster> {
+    EMBEDDED_SEED_MASTERS
+        .iter()
+        .find(|m| m.command_basename == basename)
+}
+
+/// Lowercased command executable basenames that ship a non-empty embedded default
+/// config-folder master. The frontend enables the re-seed button only for a
+/// catalog def whose command reduces to one of these; the reseed command
+/// re-checks server-side. Derived from the shipped masters, so it stays in sync.
+pub fn reseedable_command_basenames() -> Vec<String> {
+    EMBEDDED_SEED_MASTERS
+        .iter()
+        .map(|m| m.command_basename.to_string())
+        .collect()
+}
+
+/// Reduce a coding-agent command to its executable basename (lowercase), mirroring
+/// the settings save path. `None` if the command does not tokenize.
+fn command_executable_basename(command: &str) -> Option<String> {
+    let normalized =
+        crate::config::agent_command::normalize_legacy_agent_command(command).ok()?;
+    Some(crate::config::settings::command_token_basename(
+        &normalized.shell,
+    ))
+}
+
+/// Write a master's embedded files verbatim into `dir` (creating it and any
+/// parents). Rejects a rel_path with empty/`.`/`..` segments.
+fn write_embedded_files_into(dir: &Path, master: &EmbeddedSeedMaster) -> Result<(), String> {
+    for f in master.files {
+        let mut path = dir.to_path_buf();
+        for seg in f.rel_path.split('/') {
+            if seg.is_empty() || seg == "." || seg == ".." {
+                return Err(format!("invalid embedded master rel_path '{}'", f.rel_path));
+            }
+            path.push(seg);
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&path, f.bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Seed the dest-keyed masters ONCE at boot: for each built-in master, if
+/// `_seed/<dest>/` is absent, stage the embedded default into a sibling temp dir
+/// and atomically rename it into place (first-writer-wins across a first-run
+/// race). Present masters are user-owned and never touched. Fail-soft: logs and
+/// continues; never panics or aborts boot.
+pub fn ensure_seeded_masters(config_dir: &Path) {
+    for master in EMBEDDED_SEED_MASTERS {
+        let dir = master_dir_for_dest(config_dir, master.dest);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(_) => continue, // present (any form) -> user-owned, leave alone
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                log::warn!(
+                    "[coding-agents] cannot stat master {} ({e}); skipping seed",
+                    dir.display()
+                );
+                continue;
+            }
+        }
+        let sfx = unique_suffix();
+        let staging = staging_sibling(&dir, "seedtmp", &sfx);
+        let _ = std::fs::remove_dir_all(&staging);
+        let result = write_embedded_files_into(&staging, master)
+            .and_then(|()| rename_into_place(&staging, &dir));
+        match result {
+            Ok(()) => log::info!(
+                "[coding-agents] seeded default config master at {}",
+                dir.display()
+            ),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                log::warn!("[coding-agents] failed to seed master {} ({e})", dir.display());
+            }
+        }
+    }
+}
+
+/// Re-seed the master for `command` back to AC's embedded default (the Settings
+/// button). Gating is re-checked server-side: `command`'s executable basename must
+/// EXACTLY equal a built-in that ships a master (never `starts_with`, so `pi` and
+/// `agent` cannot false-match). On success: a timestamped `.bak` of the current
+/// master is made FIRST, then a trash-first atomic swap installs the embedded
+/// default. On failure the prior master is restored; never a partial state.
+pub fn reseed_master_for_command(config_dir: &Path, command: &str) -> Result<ReseedResult, String> {
+    let basename = command_executable_basename(command)
+        .ok_or_else(|| format!("'{command}' is not a valid coding-agent command"))?;
+    let master = embedded_master_for_command_basename(&basename).ok_or_else(|| {
+        format!("'{command}' is not a recognized built-in with a shipped default config folder")
+    })?;
+    let dir = master_dir_for_dest(config_dir, master.dest);
+
+    let _guard = RESEED_LOCK
+        .lock()
+        .map_err(|_| "re-seed lock poisoned".to_string())?;
+
+    // 1. `.bak` the current master (verbatim), BEFORE any swap.
+    let backup_path = if dir.exists() {
+        Some(backup_master_dir(&dir)?)
+    } else {
+        None
+    };
+
+    // 2. Trash-first atomic swap of the embedded default into the master.
+    let sfx = unique_suffix();
+    let staging = staging_sibling(&dir, "reseedtmp", &sfx);
+    let trash = staging_sibling(&dir, "reseedold", &sfx);
+    let _ = std::fs::remove_dir_all(&staging);
+    let _ = std::fs::remove_dir_all(&trash);
+
+    write_embedded_files_into(&staging, master)?;
+
+    if dir.exists() {
+        if let Err(e) = std::fs::rename(&dir, &trash) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(format!(
+                "master {} is in use ({e}); re-seed aborted, master unchanged",
+                dir.display()
+            ));
+        }
+    }
+    if let Err(e) = std::fs::rename(&staging, &dir) {
+        // Restore the prior master so we never leave a hole.
+        if !dir.exists() && trash.exists() {
+            let _ = std::fs::rename(&trash, &dir);
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(format!(
+            "failed to install re-seeded master {} ({e}); prior config restored",
+            dir.display()
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&trash);
+
+    Ok(ReseedResult {
+        dest: master.dest.to_string(),
+        backup_path: backup_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    })
+}
+
+/// Verbatim, timestamped `.bak` copy of a master dir (unique-suffix loop, mirrors
+/// `seeded_context_templates::create_backup`). Copies with substitution OFF so the
+/// raw `%AC_...%` tokens in the master are preserved in the backup.
+fn backup_master_dir(dir: &Path) -> Result<PathBuf, String> {
+    let parent = dir
+        .parent()
+        .ok_or_else(|| format!("master {} has no parent", dir.display()))?;
+    let name = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("master {} has no name", dir.display()))?;
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%SZ").to_string();
+    for index in 0..1000u32 {
+        let bak_name = match index {
+            0 => format!("{name}.bak-{ts}"),
+            n => format!("{name}.bak-{ts}.{n}"),
+        };
+        let bak = parent.join(&bak_name);
+        if bak.exists() {
+            continue;
+        }
+        crate::config::config_seed::copy_tree(dir, &bak, 0, None, false)
+            .map_err(|e| format!("backup {} -> {}: {e}", dir.display(), bak.display()))?;
+        return Ok(bak);
+    }
+    Err(format!("could not find a unique .bak path for {}", dir.display()))
+}
+
+fn unique_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        SEED_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn staging_sibling(dir: &Path, tag: &str, sfx: &str) -> PathBuf {
+    let parent = dir.parent().unwrap_or_else(|| Path::new("."));
+    let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("_seed");
+    parent.join(format!("{name}.{tag}-{sfx}"))
+}
+
+/// Publish a staged dir into `dest` (dest expected absent). Cleans staging on
+/// failure. `std::fs::rename` is first-writer-wins if `dest` appeared concurrently.
+fn rename_into_place(staging: &Path, dest: &Path) -> Result<(), String> {
+    std::fs::rename(staging, dest).map_err(|e| format!("install {} ({e})", dest.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,12 +605,13 @@ mod tests {
     /// current presets. Drift guard: the embedded default must equal these exact
     /// values so the externalized catalog is byte-for-byte the pre-#769 list. The
     /// frontend keeps a parallel `FALLBACK_CODING_AGENTS` test (E7).
-    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, &str); 6] = [
-        ("claude", "Claude Code", "Coding Agent by Anthropic", "#d97706", "claude", "CLAUDE.md"),
-        ("codex", "Codex", "Coding Agent by OpenAI", "#10b981", "codex", "AGENTS.md"),
-        ("hermes", "Hermes", "Coding Agent by Nous Research", "#8b5cf6", "hermes", "AGENTS.md"),
-        ("cursor", "Cursor CLI", "Coding Agent by Cursor", "#22d3ee", "agent", "AGENTS.md"),
-        ("pi", "Pi", "Coding Agent by Earendil Inc", "#ec4899", "pi", "AGENTS.md"),
+    #[allow(clippy::type_complexity)]
+    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, &str, Option<&str>); 6] = [
+        ("claude", "Claude Code", "Coding Agent by Anthropic", "#d97706", "claude", "CLAUDE.md", Some(".claude")),
+        ("codex", "Codex", "Coding Agent by OpenAI", "#10b981", "codex", "AGENTS.md", Some(".codex")),
+        ("hermes", "Hermes", "Coding Agent by Nous Research", "#8b5cf6", "hermes", "AGENTS.md", None),
+        ("cursor", "Cursor CLI", "Coding Agent by Cursor", "#22d3ee", "agent", "AGENTS.md", None),
+        ("pi", "Pi", "Coding Agent by Earendil Inc", "#ec4899", "pi", "AGENTS.md", None),
         (
             "opencode",
             "OpenCode",
@@ -334,6 +619,7 @@ mod tests {
             "#64748b",
             "opencode",
             "AGENTS.md",
+            Some(".opencode"),
         ),
     ];
 
@@ -362,7 +648,7 @@ mod tests {
         // Drift guard vs the pre-#769 AGENT_PRESETS field values.
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.agents.len(), EXPECTED_PRESETS.len());
-        for (def, (key, label, desc, color, command, filename)) in
+        for (def, (key, label, desc, color, command, filename, seed_dest)) in
             catalog.agents.iter().zip(EXPECTED_PRESETS)
         {
             assert_eq!(def.key, key);
@@ -371,9 +657,19 @@ mod tests {
             assert_eq!(def.color, color);
             assert_eq!(def.command, command);
             assert_eq!(def.instructions_filename.as_deref(), Some(filename));
-            // Phase-1 invariants: no folder seed ships; every built-in removable;
-            // no base env rows; not isolated.
-            assert!(def.config_seed.is_none(), "{key} must ship configSeed UNSET");
+            // #769 P2: Claude/Codex/OpenCode ship an active configSeed; the other
+            // three ship none (no master, no re-seed button).
+            match seed_dest {
+                Some(dest) => {
+                    let cs = def
+                        .config_seed
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{key} must ship configSeed"));
+                    assert!(cs.enabled, "{key} configSeed must be enabled");
+                    assert_eq!(cs.dest, dest, "{key} configSeed dest");
+                }
+                None => assert!(def.config_seed.is_none(), "{key} must ship configSeed UNSET"),
+            }
             assert!(def.removable, "{key} must be removable");
             assert!(def.envs.is_empty());
             assert!(!def.isolated_home);
@@ -512,5 +808,131 @@ mod tests {
             })
             .collect();
         assert!(residue.is_empty(), "no leftover temp files after seed");
+    }
+
+    // ---- #769 Phase 2: masters + re-seed --------------------------------
+
+    fn master(cmd: &str) -> &'static EmbeddedSeedMaster {
+        EMBEDDED_SEED_MASTERS
+            .iter()
+            .find(|m| m.command_basename == cmd)
+            .unwrap()
+    }
+
+    #[test]
+    fn reseedable_commands_are_claude_codex_opencode() {
+        let mut got = reseedable_command_basenames();
+        got.sort();
+        assert_eq!(got, vec!["claude", "codex", "opencode"]);
+    }
+
+    #[test]
+    fn every_embedded_master_maps_to_a_catalog_def_with_matching_configseed() {
+        let catalog = embedded_default_catalog();
+        for m in EMBEDDED_SEED_MASTERS {
+            let def = catalog
+                .agents
+                .iter()
+                .find(|d| {
+                    command_executable_basename(&d.command).as_deref() == Some(m.command_basename)
+                })
+                .unwrap_or_else(|| panic!("no catalog def for master {}", m.command_basename));
+            let cs = def
+                .config_seed
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} def missing configSeed", m.command_basename));
+            assert!(cs.enabled);
+            assert_eq!(cs.dest, m.dest, "master dest must match the def configSeed dest");
+            assert!(!m.files.is_empty(), "master {} must ship >=1 file", m.command_basename);
+        }
+    }
+
+    #[test]
+    fn ensure_seeded_masters_creates_nonempty_masters_and_preserves_edits() {
+        let dir = seed_dir();
+        ensure_seeded_masters(dir.path());
+        for cmd in ["claude", "codex", "opencode"] {
+            let m = master(cmd);
+            let md = master_dir_for_dest(dir.path(), m.dest);
+            assert!(
+                crate::config::config_seed::is_nonempty_seed_dir(&md),
+                "{cmd} master should be non-empty"
+            );
+            assert_eq!(
+                std::fs::read(md.join(m.files[0].rel_path)).unwrap(),
+                m.files[0].bytes
+            );
+        }
+        // Idempotent + never clobbers a user edit.
+        let m = master("claude");
+        let file = master_dir_for_dest(dir.path(), m.dest).join(m.files[0].rel_path);
+        std::fs::write(&file, b"USER EDIT").unwrap();
+        ensure_seeded_masters(dir.path());
+        assert_eq!(std::fs::read(&file).unwrap(), b"USER EDIT");
+    }
+
+    #[test]
+    fn reseed_installs_embedded_default_and_backs_up_current() {
+        let dir = seed_dir();
+        ensure_seeded_masters(dir.path());
+        let m = master("claude");
+        let master_dir = master_dir_for_dest(dir.path(), m.dest);
+        let file = master_dir.join(m.files[0].rel_path);
+        std::fs::write(&file, b"USER EDITED").unwrap();
+
+        let result = reseed_master_for_command(dir.path(), "claude").unwrap();
+        assert_eq!(result.dest, ".claude");
+        assert!(!result.backup_path.is_empty());
+        // Master restored to the embedded default.
+        assert_eq!(std::fs::read(&file).unwrap(), m.files[0].bytes);
+        // The `.bak` holds the user's prior edit (verbatim).
+        let bak_file = Path::new(&result.backup_path).join(m.files[0].rel_path);
+        assert_eq!(std::fs::read(&bak_file).unwrap(), b"USER EDITED");
+    }
+
+    #[test]
+    fn reseed_when_master_absent_installs_without_backup() {
+        let dir = seed_dir();
+        // Masters not seeded: the _seed dir is absent.
+        let m = master("codex");
+        let master_dir = master_dir_for_dest(dir.path(), m.dest);
+        assert!(!master_dir.exists());
+
+        let result = reseed_master_for_command(dir.path(), "codex").unwrap();
+        assert_eq!(result.dest, ".codex");
+        assert!(result.backup_path.is_empty(), "no backup when master was absent");
+        assert_eq!(
+            std::fs::read(master_dir.join(m.files[0].rel_path)).unwrap(),
+            m.files[0].bytes
+        );
+    }
+
+    #[test]
+    fn reseed_gating_is_exact_basename_never_startswith() {
+        let dir = seed_dir();
+        ensure_seeded_masters(dir.path());
+        // `pi` and `agent` are real built-in commands but ship NO master; `pip`
+        // and `clau` must not match `pi`/`claude` via any prefix rule; empty and
+        // unknown are rejected.
+        for bad in ["pi", "agent", "pip", "clau", "claudex", "notacommand", ""] {
+            assert!(
+                reseed_master_for_command(dir.path(), bad).is_err(),
+                "should reject {bad:?}"
+            );
+        }
+        // Path/extension forms of a real master command still resolve by basename.
+        for good in ["claude", "codex", "opencode", "claude.exe", "codex --model x"] {
+            assert!(
+                reseed_master_for_command(dir.path(), good).is_ok(),
+                "should accept {good:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn master_dir_for_dest_is_under_seed_subdir() {
+        let dir = seed_dir();
+        let p = master_dir_for_dest(dir.path(), ".claude");
+        assert_eq!(p, dir.path().join("coding-agents").join("_seed").join(".claude"));
     }
 }

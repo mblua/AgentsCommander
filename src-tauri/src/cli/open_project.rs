@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::{register_existing_project, ProjectError};
-use crate::config::settings::{load_settings_for_cli, save_settings};
+use crate::config::settings::{load_settings_for_cli, save_settings_with_project_paths};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -54,7 +54,9 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
         }
     };
     if result.registered {
-        if let Err(e) = save_settings(&settings) {
+        // #778: verbatim explicit writer (fresh disk already loaded above); the
+        // preserve-disk default would discard this deliberate append.
+        if let Err(e) = save_settings_with_project_paths(&settings) {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;
         }

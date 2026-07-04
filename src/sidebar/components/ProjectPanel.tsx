@@ -60,6 +60,7 @@ import {
   MAX_GROUP_MATCH_ID_LENGTH,
   compileGroupRegex,
   groupMatchId,
+  nonStopMatchesWorkgroup,
   removeExactGroupToken,
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
@@ -1089,6 +1090,10 @@ const ProjectPanel: Component = () => {
           const selected = selectedGroup();
           if (selected.kind === "all") return true;
           if (selected.kind === "ungrouped") return !workgroupMatchesAnyGroup(wg);
+          if (selected.kind === "nonstop") {
+            const ns = groupsConfig().nonStop;
+            return !!ns && nonStopMatchesWorkgroup(ns, wg);
+          }
           return groupMatchesWorkgroup(wg, selected.id);
         };
         const groupVisibleWorkgroups = createMemo(() => proj.workgroups.filter(groupPredicate));
@@ -1310,6 +1315,27 @@ const ProjectPanel: Component = () => {
           }
         };
 
+        // #777 F2: the built-in Non-stop slot as a flyout checkbox row. Mirrors
+        // toggleExistingGroup but targets the slot; if absent, adding materializes it.
+        const nonStopChecked = (wg: AcWorkgroup) => {
+          const ns = groupsConfig().nonStop;
+          return !!ns && nonStopMatchesWorkgroup(ns, wg);
+        };
+        const toggleNonStop = async (wg: AcWorkgroup) => {
+          setGroupMenuError("");
+          try {
+            if (nonStopChecked(wg)) {
+              await workgroupGroupsStore.removeWorkgroupFromNonStop(proj.path, wg.name);
+            } else {
+              await workgroupGroupsStore.addWorkgroupToNonStop(proj.path, wg.name);
+            }
+          } catch (error) {
+            setGroupMenuError(error instanceof Error ? error.message : String(error));
+            reclampGroupFlyout();
+            reclampReplicaCtxMenu();
+          }
+        };
+
         const createGroupFromMenu = async (wg: AcWorkgroup) => {
           const name = groupCreateName().trim();
           if (!name) {
@@ -1344,6 +1370,18 @@ const ProjectPanel: Component = () => {
                 onContextMenu={(e) => e.stopPropagation()}
                 data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.flyout`}
               >
+                {/* #777: built-in Non-stop slot, pinned above the user groups. */}
+                <button
+                  class="session-context-option session-context-group-option"
+                  title="Watch this workgroup in the Non-stop group"
+                  onClick={() => void toggleNonStop(wg)}
+                  data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.nonstop`}
+                >
+                  <span class="session-context-option-check">
+                    {nonStopChecked(wg) ? "✓" : ""}
+                  </span>
+                  <span>Non-stop</span>
+                </button>
                 <For each={groupsConfig().groups}>
                   {(group) => {
                     const valid = () => !!compileGroupRegex(group);

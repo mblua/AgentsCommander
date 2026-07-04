@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { WorkgroupGroupsConfig } from "../../shared/types";
+import type { AcWorkgroup, WorkgroupGroupsConfig } from "../../shared/types";
 import { __setTransportForTests } from "../../shared/ipc";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   appendExactGroupToken,
   defaultGroupsConfig,
+  defaultNonStop,
   exactGroupRegexForWorkgroup,
+  nonStopMatchesWorkgroup,
+  normalizeNonStop,
   removeExactGroupToken,
   validateGroupsConfig,
   workgroupGroupsStore,
@@ -190,5 +193,116 @@ describe("workgroup group validation helpers", () => {
 
   it("does not report a token as removable when another regex branch would still match", () => {
     expect(removeExactGroupToken("^(wg-1-.*|wg-1-dev-team)$", "wg-1-dev-team")).toBeNull();
+  });
+});
+
+describe("#777 Non-stop group", () => {
+  let restoreTransport: (() => void) | null = null;
+
+  beforeEach(() => {
+    restoreTransport = __setTransportForTests(new FakeTransport());
+    workgroupGroupsStore.resetForTests();
+  });
+
+  afterEach(() => {
+    workgroupGroupsStore.resetForTests();
+    restoreTransport?.();
+    restoreTransport = null;
+  });
+
+  const wg = (name: string): AcWorkgroup => ({
+    name,
+    path: `C:\\Project\\.ac\\${name}`,
+    task: null,
+    agents: [],
+  });
+
+  it("nonStopMatchesWorkgroup matches by regex; no-match / invalid / oversize -> false (no throw)", () => {
+    const cfg = { ...defaultNonStop(), regex: "^wg-1-" };
+    expect(nonStopMatchesWorkgroup(cfg, wg("wg-1-dev-team"))).toBe(true);
+    expect(nonStopMatchesWorkgroup(cfg, wg("wg-2-dev-team"))).toBe(false);
+    expect(nonStopMatchesWorkgroup({ ...defaultNonStop(), regex: "(" }, wg("wg-1-dev-team"))).toBe(false);
+    expect(nonStopMatchesWorkgroup(cfg, wg("w".repeat(200)))).toBe(false);
+  });
+
+  it("normalizeNonStop clamps numerics, trims the name, repairs a bad regex, and keeps null/undefined absent", () => {
+    const clamped = normalizeNonStop({
+      show: true,
+      name: "  Watcher  ",
+      regex: "(",
+      toleranceSeconds: 0,
+      telegram: { enabled: true, botId: "bot-1" },
+      sound: { enabled: true, seconds: 999 },
+    });
+    expect(clamped).toMatchObject({
+      show: true,
+      name: "Watcher",
+      regex: "(?!)",
+      toleranceSeconds: 1,
+      telegram: { enabled: true, botId: "bot-1" },
+      sound: { enabled: true, seconds: 60 },
+    });
+    expect(normalizeNonStop(null)).toBeNull();
+    expect(normalizeNonStop(undefined)).toBeUndefined();
+  });
+
+  it("clamps a bad persisted nonStop on load and NEVER wipes the user's groups (dev-webpage-ui #4)", async () => {
+    const fake = new FakeTransport();
+    restoreTransport?.();
+    restoreTransport = __setTransportForTests(fake);
+    fake.resolve(
+      "get_project_groups",
+      config({
+        groups: [
+          { id: "a", name: "Alpha", regex: "^wg-1-" },
+          { id: "b", name: "Beta", regex: "^wg-2-" },
+        ],
+        nonStop: { ...defaultNonStop(), show: true, toleranceSeconds: 0, sound: { enabled: false, seconds: 999 } },
+      })
+    );
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+    const loaded = workgroupGroupsStore.config(projectPath);
+    expect(loaded.groups).toHaveLength(2);
+    expect(loaded.nonStop).toMatchObject({ toleranceSeconds: 1, sound: { seconds: 60 } });
+  });
+
+  it("selecting Non-stop falls back to All when hidden/absent, and sticks when shown", async () => {
+    const fake = new FakeTransport();
+    restoreTransport?.();
+    restoreTransport = __setTransportForTests(fake);
+    fake.resolve("get_project_groups", config({ nonStop: { ...defaultNonStop(), show: false } }));
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+    workgroupGroupsStore.select(projectPath, { kind: "nonstop" });
+    expect(workgroupGroupsStore.selection(projectPath)).toEqual({ kind: "all" });
+
+    workgroupGroupsStore.resetForTests();
+    fake.resolve("get_project_groups", config({ nonStop: { ...defaultNonStop(), show: true } }));
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+    workgroupGroupsStore.select(projectPath, { kind: "nonstop" });
+    expect(workgroupGroupsStore.selection(projectPath)).toEqual({ kind: "nonstop" });
+  });
+
+  it("addWorkgroupToNonStop materializes the shown slot then appends; removeWorkgroupFromNonStop strips", async () => {
+    const fake = new FakeTransport();
+    restoreTransport?.();
+    restoreTransport = __setTransportForTests(fake);
+    fake.resolve("get_project_groups", config({}));
+    fake.onInvoke("update_project_groups", (args) => args.config);
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+
+    await workgroupGroupsStore.addWorkgroupToNonStop(projectPath, "wg-1-dev-team");
+    expect(fake.lastCall("update_project_groups")?.args.config).toMatchObject({
+      nonStop: { show: true, regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+    });
+
+    await workgroupGroupsStore.addWorkgroupToNonStop(projectPath, "wg-2-dev-team");
+    expect((fake.lastCall("update_project_groups")?.args.config as WorkgroupGroupsConfig).nonStop?.regex).toBe(
+      "^(wg-1-dev-team|wg-2-dev-team)$"
+    );
+
+    await workgroupGroupsStore.removeWorkgroupFromNonStop(projectPath, "wg-1-dev-team");
+    expect((fake.lastCall("update_project_groups")?.args.config as WorkgroupGroupsConfig).nonStop?.regex).toBe(
+      exactGroupRegexForWorkgroup("wg-2-dev-team")
+    );
   });
 });
