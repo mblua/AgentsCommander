@@ -765,6 +765,16 @@ export const ProjectAPI = {
    */
   new: (path: string) =>
     transport.invoke<ProjectRegistration>("new_project", { path }),
+  /**
+   * Remove the project registered at `path` from settings.projectPaths via the
+   * dedicated `remove_project` Tauri command (#778 Design S). Removal is
+   * disk-authoritative: the backend reconciles the list from disk before
+   * dropping `path`, so it never clobbers a CLI-registered project the way the
+   * retired whole-object settings save did. Removing a path not present is a
+   * successful no-op; the promise rejects with the backend error string on a
+   * hard failure (e.g. a G2 read abort when the settings file is locked).
+   */
+  remove: (path: string) => transport.invoke<void>("remove_project", { path }),
 };
 
 // Project Loops API
