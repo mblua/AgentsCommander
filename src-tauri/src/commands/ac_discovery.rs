@@ -1944,10 +1944,15 @@ pub async fn open_project(
     path: String,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
     let mut s = settings.write().await;
+    // #778: reconcile project_paths from disk BEFORE the upsert so a concurrent
+    // CLI append is folded in, not clobbered, then write the deliberate list
+    // verbatim (project_paths is disk-authoritative under Design S). Aborts on a
+    // non-NotFound read error (G2) rather than registering against a stale list.
+    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
     let result = crate::config::projects::register_existing_project(&mut s, &path)
         .map_err(|e| e.to_string())?;
     let snapshot = s.clone();
-    crate::config::settings::save_settings(&snapshot)?;
+    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
     drop(s); // explicit; lock released AFTER the disk write completes
     Ok(result)
 }
@@ -1961,12 +1966,39 @@ pub async fn new_project(
     path: String,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
     let mut s = settings.write().await;
+    // #778: reconcile project_paths from disk BEFORE the upsert (see open_project),
+    // then write the deliberate list verbatim. Aborts on a non-NotFound read
+    // error (G2).
+    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
     let result =
         crate::config::projects::register_new_project(&mut s, &path).map_err(|e| e.to_string())?;
     let snapshot = s.clone();
-    crate::config::settings::save_settings(&snapshot)?;
+    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
     drop(s); // explicit; lock released AFTER the disk write completes
     Ok(result)
+}
+
+/// #778 Part 3: targeted project removal. `project_paths` is disk-authoritative
+/// under Design S, so a removal cannot ride a whole-object settings save (the
+/// default `save_settings` preserves the on-disk list and would ignore the
+/// removal, and without a baseline the backend cannot tell a removal from a stale
+/// passthrough). So removal is its own command: reconcile the list from disk
+/// (G2: abort on a non-NotFound read error), drop the one entry whose
+/// `normalize_for_compare` key matches `path`, re-derive the head, and write the
+/// deliberate list verbatim. Removing against the FRESH disk list means a
+/// CLI-appended entry the sidebar never showed is preserved, not dropped.
+#[tauri::command]
+pub async fn remove_project(
+    settings: State<'_, SettingsState>,
+    path: String,
+) -> Result<(), String> {
+    let mut s = settings.write().await;
+    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
+    crate::config::projects::remove_project_path(&mut s, &path);
+    let snapshot = s.clone();
+    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
+    drop(s); // explicit; lock released AFTER the disk write completes
+    Ok(())
 }
 
 type TaskFields = (Option<String>, Option<String>);

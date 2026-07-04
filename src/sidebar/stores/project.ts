@@ -7,7 +7,7 @@ import type {
   AcLoopSummary,
   ContextTemplateUpdate,
 } from "../../shared/types";
-import { ProjectAPI, SettingsAPI, AgentCreatorAPI } from "../../shared/ipc";
+import { ProjectAPI, AgentCreatorAPI } from "../../shared/ipc";
 import {
   findLoadedProjectPathForRefresh,
   normalizeProjectPathForCompare,
@@ -354,7 +354,11 @@ export const projectStore = {
         replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
       }
     });
-    await persistProjectPaths();
+    // #778 — persist the removal through the dedicated disk-authoritative
+    // command. A whole-object settings save no longer removes anything under
+    // Design S (it preserves the on-disk project_paths so it can't clobber
+    // CLI-registered projects), so removal must go through remove_project.
+    await ProjectAPI.remove(path);
   },
 
   /** #695 — drop exactly one resolved pending context-template update. The key
@@ -402,14 +406,3 @@ export const projectStore = {
     replicaVolatileStore.clearAll();
   },
 };
-
-/** Persist current project paths to settings */
-async function persistProjectPaths() {
-  const fresh = await SettingsAPI.get();
-  const paths = projects().map((p) => p.path);
-  await SettingsAPI.update({
-    ...fresh,
-    projectPaths: paths,
-    projectPath: paths[0] ?? null, // backward compat
-  });
-}

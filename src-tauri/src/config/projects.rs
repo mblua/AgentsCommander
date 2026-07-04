@@ -300,6 +300,24 @@ fn upsert_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
     appended
 }
 
+/// #778: remove the entry whose `normalize_for_compare` key matches `abs_path`,
+/// then re-derive the legacy `project_path` head. The inverse of
+/// `upsert_project_path`; used by the `remove_project` command AFTER it has
+/// reconciled `project_paths` from disk, so removing against the fresh list
+/// cannot drop a CLI-appended entry the sidebar never showed. Returns `true` if
+/// an entry was removed. Byte-form of surviving entries is untouched.
+pub fn remove_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
+    let key = normalize_for_compare(abs_path);
+    let before = settings.project_paths.len();
+    settings
+        .project_paths
+        .retain(|p| normalize_for_compare(p) != key);
+    let removed = settings.project_paths.len() != before;
+    // Keep legacy `projectPath` in lockstep with the head (matches upsert).
+    settings.project_path = settings.project_paths.first().cloned();
+    removed
+}
+
 pub fn enumerate_registered_project_candidates(project_paths: &[String]) -> Vec<ProjectResolution> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
@@ -716,6 +734,58 @@ mod tests {
         // project_path tracks the HEAD of the list (same as FE persistProjectPaths).
         assert_eq!(s.project_path.as_deref(), Some(r1.path.as_str()));
         assert_eq!(s.project_paths, vec![r1.path.clone(), r2.path.clone()]);
+    }
+
+    // ── #778 remove_project_path (inverse of upsert) ──────────────────────
+
+    #[test]
+    fn remove_project_path_removes_matching_entry_and_rederives_head() {
+        let mut s = AppSettings {
+            project_paths: vec!["C:/a".to_string(), "C:/b".to_string()],
+            project_path: Some("C:/a".to_string()),
+            ..AppSettings::default()
+        };
+        assert!(remove_project_path(&mut s, "C:/a"));
+        assert_eq!(s.project_paths, vec!["C:/b".to_string()]);
+        assert_eq!(s.project_path.as_deref(), Some("C:/b"));
+    }
+
+    #[test]
+    fn remove_project_path_last_entry_clears_head_to_none() {
+        let mut s = AppSettings {
+            project_paths: vec!["C:/only".to_string()],
+            project_path: Some("C:/only".to_string()),
+            ..AppSettings::default()
+        };
+        assert!(remove_project_path(&mut s, "C:/only"));
+        assert!(s.project_paths.is_empty());
+        assert_eq!(s.project_path, None);
+    }
+
+    #[test]
+    fn remove_project_path_is_case_slash_insensitive_and_preserves_byte_form() {
+        // Stored byte-form uses backslashes + mixed case; remove via a normalized variant.
+        let mut s = AppSettings {
+            project_paths: vec![r"C:\Foo\".to_string(), "C:/keep".to_string()],
+            project_path: Some(r"C:\Foo\".to_string()),
+            ..AppSettings::default()
+        };
+        assert!(remove_project_path(&mut s, "c:/foo"));
+        // Only C:\Foo\ removed; the surviving entry keeps its original byte-form.
+        assert_eq!(s.project_paths, vec!["C:/keep".to_string()]);
+        assert_eq!(s.project_path.as_deref(), Some("C:/keep"));
+    }
+
+    #[test]
+    fn remove_project_path_no_match_returns_false_and_keeps_list() {
+        let mut s = AppSettings {
+            project_paths: vec!["C:/a".to_string()],
+            project_path: Some("C:/a".to_string()),
+            ..AppSettings::default()
+        };
+        assert!(!remove_project_path(&mut s, "C:/nope"));
+        assert_eq!(s.project_paths, vec!["C:/a".to_string()]);
+        assert_eq!(s.project_path.as_deref(), Some("C:/a"));
     }
 
     // ── absolutise: relative + dot-dot collapse (Round-1 G4 + G13) ────────

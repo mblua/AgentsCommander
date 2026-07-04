@@ -5,6 +5,7 @@ const m = vi.hoisted(() => ({
   open: vi.fn(),
   newProject: vi.fn(),
   discover: vi.fn(),
+  removeProject: vi.fn(),
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
 }));
@@ -14,6 +15,7 @@ vi.mock("../../shared/ipc", () => ({
     open: m.open,
     new: m.newProject,
     discover: m.discover,
+    remove: m.removeProject,
   },
   SettingsAPI: {
     get: m.getSettings,
@@ -320,6 +322,36 @@ describe("projectStore", () => {
 
       projectStore.removeLoop(PROJECT_PATH, "standup");
       expect(projectStore.projects[0].loops).toHaveLength(0);
+    });
+  });
+
+  // #778 — project removal routes through the dedicated disk-authoritative
+  // remove_project command, NOT a whole-object settings save (which under
+  // Design S preserves the on-disk list and would no longer remove anything).
+  describe("removeProject (#778)", () => {
+    it("routes removal through remove_project and never whole-object saves", async () => {
+      await loadProjectWith([]);
+      expect(projectStore.projects).toHaveLength(1);
+      m.removeProject.mockResolvedValueOnce(undefined);
+
+      await projectStore.removeProject(PROJECT_PATH);
+
+      // In-memory row is gone...
+      expect(projectStore.projects).toHaveLength(0);
+      // ...persisted via the dedicated command with the raw absolute path...
+      expect(m.removeProject).toHaveBeenCalledTimes(1);
+      expect(m.removeProject).toHaveBeenCalledWith(PROJECT_PATH);
+      // ...and NEVER via a whole-object settings save (the retired clobber path).
+      expect(m.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("still calls remove_project for a path not in the store (backend no-op)", async () => {
+      m.removeProject.mockResolvedValueOnce(undefined);
+
+      await projectStore.removeProject("C:\\not\\loaded");
+
+      expect(m.removeProject).toHaveBeenCalledWith("C:\\not\\loaded");
+      expect(m.updateSettings).not.toHaveBeenCalled();
     });
   });
 });
