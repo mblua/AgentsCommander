@@ -173,13 +173,23 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
 
       const badge = target<HTMLElement>("workgroupGroups.raiseHand.ui");
       expect(badge.classList.contains("workgroup-group-rail-raise-hand")).toBe(true);
-      expect(badge.textContent?.trim()).toBe("!");
+      // #775 round 2: a raised-hand SVG glyph, not the old amber "!".
+      expect(
+        badge.querySelector("svg.workgroup-group-rail-raise-hand-icon")
+      ).not.toBeNull();
+      expect(badge.textContent ?? "").not.toContain("!");
       expect(badge.getAttribute("aria-label")).toBe("A coordinator raised its hand");
 
-      // #775 rule 3: the indicator renders before (to the left of) the title —
-      // it is the button's first element child, ahead of the name/dot/counter.
+      // #775 rule 3 (Option B): the hand renders inline, to the LEFT of the
+      // title — first child of the title line, ahead of the title text.
       const button = target<HTMLElement>("workgroupGroups.button.ui");
-      expect(button.firstElementChild).toBe(badge);
+      const titleLine = button.querySelector(".workgroup-group-rail-title-line");
+      const title = button.querySelector<HTMLElement>(".workgroup-group-rail-title");
+      expect(titleLine?.firstElementChild).toBe(badge);
+      expect(title?.textContent).toBe("UI");
+      expect(
+        Boolean(badge.compareDocumentPosition(title!) & Node.DOCUMENT_POSITION_FOLLOWING)
+      ).toBe(true);
     } finally {
       rendered.cleanup();
     }
