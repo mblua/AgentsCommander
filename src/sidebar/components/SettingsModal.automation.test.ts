@@ -10,26 +10,40 @@ import {
   AC_WORKSPACE_ROOT_PLACEHOLDER,
 } from "../../shared/profile-utils";
 
-vi.mock("../../shared/ipc", () => ({
-  SettingsAPI: {
-    get: vi.fn(() => Promise.resolve(settings())),
-    update: vi.fn(() => Promise.resolve()),
-    saveDraft: vi.fn(() => Promise.resolve()),
-    updateCodingAgentProfiles: vi.fn(() => Promise.resolve()),
-    updateCodingAgentEnvSettings: vi.fn(() => Promise.resolve()),
-    getWebServerStatus: vi.fn(() => Promise.resolve(false)),
-    openWebRemote: vi.fn(() => Promise.resolve()),
-    startWebServer: vi.fn(() => Promise.resolve(false)),
-    stopWebServer: vi.fn(() => Promise.resolve(false)),
-    sweepRtkHook: vi.fn(() => Promise.resolve({ total: 0, updated: 0, errors: [] })),
-  },
-  TelegramAPI: {
-    sendTest: vi.fn(() => Promise.resolve(0)),
-  },
-  ReposAPI: {
-    search: vi.fn(() => Promise.resolve([])),
-  },
-}));
+vi.mock("../../shared/ipc", async () => {
+  // #769 — SettingsModal mounts codingAgentsStore.ensureLoaded(), so the ipc mock
+  // must expose CodingAgentsAPI or the store hits an undefined export. Resolve the
+  // catalog with the real built-in list so the preset quick-add buttons these
+  // automation tests address (codex/opencode) still render; no reseed set.
+  const { FALLBACK_CODING_AGENTS } = await vi.importActual<
+    typeof import("../../shared/agent-presets")
+  >("../../shared/agent-presets");
+  return {
+    SettingsAPI: {
+      get: vi.fn(() => Promise.resolve(settings())),
+      update: vi.fn(() => Promise.resolve()),
+      saveDraft: vi.fn(() => Promise.resolve()),
+      updateCodingAgentProfiles: vi.fn(() => Promise.resolve()),
+      updateCodingAgentEnvSettings: vi.fn(() => Promise.resolve()),
+      getWebServerStatus: vi.fn(() => Promise.resolve(false)),
+      openWebRemote: vi.fn(() => Promise.resolve()),
+      startWebServer: vi.fn(() => Promise.resolve(false)),
+      stopWebServer: vi.fn(() => Promise.resolve(false)),
+      sweepRtkHook: vi.fn(() => Promise.resolve({ total: 0, updated: 0, errors: [] })),
+    },
+    TelegramAPI: {
+      sendTest: vi.fn(() => Promise.resolve(0)),
+    },
+    ReposAPI: {
+      search: vi.fn(() => Promise.resolve([])),
+    },
+    CodingAgentsAPI: {
+      getCatalog: vi.fn(() => Promise.resolve(FALLBACK_CODING_AGENTS)),
+      listReseedableCommands: vi.fn(() => Promise.resolve([])),
+      reseedDefault: vi.fn(() => Promise.resolve({ dest: "", backupPath: "" })),
+    },
+  };
+});
 
 vi.mock("../../shared/stores/settings", () => ({
   settingsStore: {

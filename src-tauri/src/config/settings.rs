@@ -699,7 +699,7 @@ pub fn compute_rtk_startup_mode(
     }
 }
 
-fn command_token_basename(token: &str) -> String {
+pub(crate) fn command_token_basename(token: &str) -> String {
     std::path::Path::new(token)
         .file_stem()
         .and_then(|s| s.to_str())
