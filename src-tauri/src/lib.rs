@@ -40,13 +40,38 @@ use web::broadcast::WsBroadcaster;
 /// Tracks which sessions are currently detached into their own windows.
 pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
-/// Handle to the running web server task, allowing stop control.
-pub type WebServerHandle = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>;
+#[derive(Default)]
+pub struct WebServerHandle {
+    inner: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+}
 
-/// #791 - handle to the running control-plane API server task, for stop control.
-/// Mirrors `WebServerHandle`; stored so a future `stop_api_server` command can
-/// abort the task.
-pub type ApiServerHandle = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>;
+impl WebServerHandle {
+    /// Handle to the running web server task, allowing stop control.
+    pub fn store(&self, handle: tauri::async_runtime::JoinHandle<()>) {
+        *self.inner.lock().unwrap() = Some(handle);
+    }
+
+    pub fn abort_running(&self) -> bool {
+        if let Some(handle) = self.inner.lock().unwrap().take() {
+            handle.abort();
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct ApiServerHandle {
+    inner: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+}
+
+impl ApiServerHandle {
+    /// #791 - handle to the running control-plane API server task.
+    pub fn store(&self, handle: tauri::async_runtime::JoinHandle<()>) {
+        *self.inner.lock().unwrap() = Some(handle);
+    }
+}
 
 /// Issue #120 — serializes in-process writers of `.claude/settings.local.json`.
 ///
@@ -566,7 +591,7 @@ pub fn run(
                     );
 
                     let ws_handle = app.state::<WebServerHandle>();
-                    *ws_handle.lock().unwrap() = Some(join_handle);
+                    ws_handle.store(join_handle);
                 }
             }
 
@@ -586,7 +611,7 @@ pub fn run(
                         shutdown_for_setup.clone(),
                     );
                     let api_handle = app.state::<ApiServerHandle>();
-                    *api_handle.lock().unwrap() = Some(join_handle);
+                    api_handle.store(join_handle);
                 }
             }
 
@@ -2264,6 +2289,7 @@ mod tests {
     use super::{
         resolve_is_coord_for_restore, should_auto_create_root_agent_on_first_restore,
         should_wake_on_restore, should_wake_root_agent_on_restore, skip_auto_resume_for_restore,
+        ApiServerHandle, WebServerHandle,
     };
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
@@ -2282,6 +2308,16 @@ mod tests {
             }],
             ..AppSettings::default()
         }
+    }
+
+    #[test]
+    fn web_and_api_server_handles_can_be_managed_together() {
+        let _app = tauri::Builder::default()
+            .any_thread()
+            .manage(WebServerHandle::default())
+            .manage(ApiServerHandle::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("web and api server handles must be distinct managed types");
     }
 
     #[test]
