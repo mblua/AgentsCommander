@@ -212,6 +212,30 @@ describe("ProjectPanel workgroup groups", () => {
     }
   });
 
+  it("marks only the built-in Non-stop group option as bold in the group flyout", async () => {
+    const fake = new FakeTransport();
+    setupProjectTransport(fake);
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await workgroupGroupsStore.save(projectPath, groupsConfig());
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+
+      await openCoordinatorMenu(rendered.root);
+      await openGroupFlyout();
+
+      const nonStopOption = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.nonstop");
+      const userGroupOption = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.frontend");
+
+      expect(nonStopOption.textContent).toContain("Non-stop");
+      expect(nonStopOption.classList.contains("session-context-group-option-nonstop")).toBe(true);
+      expect(userGroupOption.classList.contains("session-context-group-option-nonstop")).toBe(false);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("removes a coordinator workgroup from an exact generated group from the context menu", async () => {
     const fake = new FakeTransport();
     setupProjectTransport(fake);

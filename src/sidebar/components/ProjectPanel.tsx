@@ -1372,7 +1372,7 @@ const ProjectPanel: Component = () => {
               >
                 {/* #777: built-in Non-stop slot, pinned above the user groups. */}
                 <button
-                  class="session-context-option session-context-group-option"
+                  class="session-context-option session-context-group-option session-context-group-option-nonstop"
                   title="Watch this workgroup in the Non-stop group"
                   onClick={() => void toggleNonStop(wg)}
                   data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.nonstop`}

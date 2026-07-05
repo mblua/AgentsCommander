@@ -2521,6 +2521,10 @@ html.light-theme .root-agent-avatar {
   text-overflow: ellipsis;
 }
 
+.session-context-group-option-nonstop span:last-child {
+  font-weight: 700;
+}
+
 .session-context-inline-create {
   display: flex;
   gap: 6px;
