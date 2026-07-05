@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod broadcast;
 pub mod commands;
+mod embedded;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -31,7 +32,7 @@ struct AppState {
 }
 
 /// Start the embedded HTTP/WebSocket server.
-/// Called from Tauri's setup() — runs on the same tokio runtime.
+/// Called from Tauri's setup(), runs on the same tokio runtime.
 // Wired by a single setup() call with all shared state already in scope; an
 // args struct would just rename the same fields.
 #[allow(clippy::too_many_arguments)]
@@ -67,12 +68,27 @@ pub fn start_server(
         .route("/api/sessions", get(api_sessions_handler))
         .with_state(state);
 
-    // Serve static files if dist/ exists
-    if let Some(path) = dist_path {
-        log::info!("[web-server] Serving static files from {:?}", path);
-        app = app.fallback_service(ServeDir::new(path).append_index_html_on_directories(true));
-    } else {
-        log::warn!("[web-server] No dist/ directory found — static file serving disabled");
+    #[cfg(has_embedded_dist)]
+    {
+        if prefer_embedded_dist() {
+            log::info!("[web-server] Serving static files from embedded dist");
+            app = app.fallback(embedded::embedded_static_handler);
+        } else if let Some(path) = dist_path {
+            log::info!("[web-server] Serving static files from {:?}", path);
+            app = app.fallback_service(ServeDir::new(path).append_index_html_on_directories(true));
+        } else {
+            log::warn!("[web-server] No dist/ directory found; static file serving disabled");
+        }
+    }
+
+    #[cfg(not(has_embedded_dist))]
+    {
+        if let Some(path) = dist_path {
+            log::info!("[web-server] Serving static files from {:?}", path);
+            app = app.fallback_service(ServeDir::new(path).append_index_html_on_directories(true));
+        } else {
+            log::warn!("[web-server] No dist/ directory found; static file serving disabled");
+        }
     }
 
     let handle = tauri::async_runtime::spawn(async move {
@@ -116,7 +132,7 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_ws_connection(socket, state.ws_state))
 }
 
-/// Public session view for the HTTP API — omits sensitive fields like `token`.
+/// Public session view for the HTTP API, omits sensitive fields like `token`.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiSessionView {
@@ -131,7 +147,7 @@ struct ApiSessionView {
     last_prompt: Option<String>,
 }
 
-/// HTTP GET /api/sessions — returns JSON array of all sessions.
+/// HTTP GET /api/sessions, returns JSON array of all sessions.
 async fn api_sessions_handler(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<AppState>,
@@ -173,7 +189,7 @@ async fn api_sessions_handler(
             created_at: s.created_at,
             shell: s.shell,
             // Back-compat: present each repo as "<label>/<branch>" (or bare label when
-            // branch unknown), joined with ", ". Comma — not newline — so single-line
+            // branch unknown), joined with ", ". Comma, not newline, so single-line
             // JSON clients don't truncate.
             git_branch: if s.git_repos.is_empty() {
                 None
@@ -327,6 +343,11 @@ fn binary_pty_write_succeeded(
     }
 }
 
+#[cfg(has_embedded_dist)]
+fn prefer_embedded_dist() -> bool {
+    crate::config::profile::BUILD_PROFILE != "dev"
+}
+
 /// Resolve the dist/ directory for static file serving.
 fn resolve_dist_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     // 1. Tauri resource dir (production NSIS bundle)
@@ -346,7 +367,7 @@ fn resolve_dist_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf
                 log::info!("[web-server] Found dist next to exe: {:?}", dist);
                 return Some(dist);
             }
-            // Dev mode: target/debug/exe → project root/dist
+            // Dev mode: target/debug/exe to project root/dist.
             if let Some(grandparent) = parent.parent() {
                 let dist = grandparent.join("dist");
                 if dist.exists() && dist.is_dir() {
