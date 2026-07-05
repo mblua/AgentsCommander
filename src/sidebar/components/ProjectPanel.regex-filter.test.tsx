@@ -202,6 +202,50 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
+  it("keeps the regex search controls in the project header and clears them when closed", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", {
+      path: projectPath,
+      registered: true,
+      created: false,
+    });
+    fake.resolve("discover_project", projectDiscovery());
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
+
+      const header = rendered.root.querySelector<HTMLElement>(".project-header");
+      expect(header).toBeTruthy();
+
+      const title = header!.querySelector<HTMLElement>(".project-title");
+      const row = findByTestId<HTMLDivElement>(rendered.root, "project.regexFilter.row");
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+
+      expect(title?.textContent).toBe("Project: Project");
+      expect(header!.contains(row)).toBe(true);
+      expect(header!.contains(toggle)).toBe(true);
+      expect(header!.contains(filterInput)).toBe(true);
+
+      click(toggle);
+      await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
+
+      input(filterInput, "dev-rust");
+      await waitFor(() => expect(filterInput.value).toBe("dev-rust"));
+
+      click(toggle);
+      await waitFor(() => {
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        expect(filterInput.value).toBe("");
+        expect(row.classList.contains("open")).toBe(false);
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("matches visible team project labels and quick-access running-peer badges", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", {

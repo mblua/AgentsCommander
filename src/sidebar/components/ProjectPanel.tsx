@@ -2272,61 +2272,69 @@ const ProjectPanel: Component = () => {
 
         return (
           <div class="project-panel">
-            <button
+            <div
               class="project-header"
+              classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
               title={proj.path}
-              onClick={() => togglePanelCollapsed(projectCollapsedKey)}
               onContextMenu={handleProjectContextMenu}
             >
-              <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(projectCollapsedKey) }}>
-                &#x25BE;
-              </span>
-              <span class="project-title">Project: {proj.folderName}</span>
-            </button>
-            <div
-              class="project-filter-row"
-              classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
-              data-ac-testid="project.regexFilter.row"
-            >
-              <div class="project-filter-field" classList={{ open: filterOpen() }}>
-                <input
-                  ref={filterInputEl}
-                  class="project-filter-input"
-                  value={filterPattern()}
-                  placeholder="wg-2.*"
-                  aria-label="Sidebar regex filter"
-                  aria-invalid={!!filterError()}
-                  data-ac-testid="project.regexFilter.input"
-                  onInput={(e) => setFilterPattern(e.currentTarget.value)}
-                  onKeyDown={handleFilterKeyDown}
-                />
-                <Show when={filterPattern()}>
-                  <button
-                    type="button"
-                    class="project-filter-clear"
-                    title="Clear regex filter"
-                    aria-label="Clear regex filter"
-                    data-ac-testid="project.regexFilter.clear"
-                    onClick={clearFilter}
-                  >
-                    &#x2715;
-                  </button>
-                </Show>
-              </div>
               <button
                 type="button"
-                class="project-filter-toggle"
-                title={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
-                aria-label={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
-                aria-expanded={filterOpen()}
-                data-ac-testid="project.regexFilter.toggle"
-                onClick={toggleFilter}
+                class="project-header-main"
+                title={proj.path}
+                aria-expanded={!isPanelCollapsed(projectCollapsedKey)}
+                onClick={() => togglePanelCollapsed(projectCollapsedKey)}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <circle cx="11" cy="11" r="7" />
-                  <path d="m20 20-4.2-4.2" />
-                </svg>
+                <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(projectCollapsedKey) }}>
+                  &#x25BE;
+                </span>
+                <span class="project-title">Project: {proj.folderName}</span>
               </button>
+              <div
+                class="project-filter-row"
+                classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
+                data-ac-testid="project.regexFilter.row"
+              >
+                <div class="project-filter-field" classList={{ open: filterOpen() }}>
+                  <input
+                    ref={filterInputEl}
+                    class="project-filter-input"
+                    value={filterPattern()}
+                    placeholder="wg-2.*"
+                    aria-label="Sidebar regex filter"
+                    aria-invalid={!!filterError()}
+                    data-ac-testid="project.regexFilter.input"
+                    onInput={(e) => setFilterPattern(e.currentTarget.value)}
+                    onKeyDown={handleFilterKeyDown}
+                  />
+                  <Show when={filterPattern()}>
+                    <button
+                      type="button"
+                      class="project-filter-clear"
+                      title="Clear regex filter"
+                      aria-label="Clear regex filter"
+                      data-ac-testid="project.regexFilter.clear"
+                      onClick={clearFilter}
+                    >
+                      &#x2715;
+                    </button>
+                  </Show>
+                </div>
+                <button
+                  type="button"
+                  class="project-filter-toggle"
+                  title={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
+                  aria-label={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
+                  aria-expanded={filterOpen()}
+                  data-ac-testid="project.regexFilter.toggle"
+                  onClick={toggleFilter}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-4.2-4.2" />
+                  </svg>
+                </button>
+              </div>
             </div>
             <Show when={filterError()}>
               {(error) => (
