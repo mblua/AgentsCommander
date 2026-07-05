@@ -41,9 +41,60 @@ function blankPreserveNewlines(text) {
   return text.replace(/[^\n\r]/g, ' ');
 }
 
-function maskComments(source) {
+function rustRawStringBounds(source, index) {
+  const prefixLength = source[index] === 'b' && source[index + 1] === 'r'
+    ? 2
+    : source[index] === 'r'
+      ? 1
+      : 0;
+  if (prefixLength === 0) return null;
+
+  let marker = index + prefixLength;
+  while (source[marker] === '#') marker += 1;
+  if (source[marker] !== '"') return null;
+
+  const hashes = source.slice(index + prefixLength, marker);
+  const terminator = `"${hashes}`;
+  const contentStart = marker + 1;
+  const end = source.indexOf(terminator, contentStart);
+  const stop = end === -1 ? source.length : end + terminator.length;
+  return { contentStart, stop };
+}
+
+function maskQuotedLiteral(source, index) {
+  const quote = source[index];
+  let stop = index + 1;
+  while (stop < source.length) {
+    const c = source[stop];
+    stop += 1;
+    if (c === '\\') {
+      if (stop < source.length) stop += 1;
+      continue;
+    }
+    if (c === quote) break;
+  }
+  return stop;
+}
+
+function maskComments(source, options = {}) {
+  const singleQuote = options.singleQuote ?? true;
   let out = '';
   for (let i = 0; i < source.length;) {
+    const rawString = rustRawStringBounds(source, i);
+    if (rawString) {
+      out += source.slice(i, rawString.stop);
+      i = rawString.stop;
+      continue;
+    }
+
+    const ch = source[i];
+    if (ch === '"' || ch === '`' || (singleQuote && ch === '\'')) {
+      const stop = maskQuotedLiteral(source, i);
+      out += source.slice(i, stop);
+      i = stop;
+      continue;
+    }
+
     if (source.startsWith('//', i)) {
       const end = source.indexOf('\n', i);
       if (end === -1) {
@@ -69,25 +120,16 @@ function maskComments(source) {
 
 function maskCommentsAndStrings(source, options = {}) {
   const singleQuote = options.singleQuote ?? true;
-  const noComments = maskComments(source);
+  const noComments = maskComments(source, { singleQuote });
   let out = '';
   for (let i = 0; i < noComments.length;) {
     const ch = noComments[i];
-    if ((ch === 'r' || (ch === 'b' && noComments[i + 1] === 'r')) && /[br#"]/.test(noComments[i + 1] ?? '')) {
-      const start = ch === 'b' ? i + 2 : i + 1;
-      let j = start;
-      while (noComments[j] === '#') j += 1;
-      if (noComments[j] === '"') {
-        const hashes = noComments.slice(start, j);
-        const terminator = `"${hashes}`;
-        const contentStart = j + 1;
-        const end = noComments.indexOf(terminator, contentStart);
-        const stop = end === -1 ? noComments.length : end + terminator.length;
-        out += noComments.slice(i, contentStart).replace(/[^\n\r]/g, ' ');
-        out += blankPreserveNewlines(noComments.slice(contentStart, stop));
-        i = stop;
-        continue;
-      }
+    const rawString = rustRawStringBounds(noComments, i);
+    if (rawString) {
+      out += noComments.slice(i, rawString.contentStart).replace(/[^\n\r]/g, ' ');
+      out += blankPreserveNewlines(noComments.slice(rawString.contentStart, rawString.stop));
+      i = rawString.stop;
+      continue;
     }
     if (ch === 'b' && noComments[i + 1] === '"') {
       out += '  ';
@@ -220,7 +262,7 @@ function rustTestId(rel, modules, fnName) {
 function hasExecutableRustBody(originalBody, strippedBody) {
   const withoutComments = strippedBody.trim().replace(/;/g, '').trim();
   if (withoutComments.length === 0) return false;
-  const compact = maskComments(originalBody).trim();
+  const compact = maskComments(originalBody, { singleQuote: false }).trim();
   if (/^(todo!\s*\(\s*\)|unimplemented!\s*\(\s*\)|panic!\s*\(\s*["'`]TODO[\s\S]*["'`]\s*\))\s*;?$/.test(compact)) {
     return false;
   }
@@ -236,7 +278,7 @@ function hasExecutableRustBody(originalBody, strippedBody) {
 function scanRustFile(root, filePath) {
   const source = fs.readFileSync(filePath, 'utf8');
   const rel = relPath(root, filePath);
-  const maskedComments = maskComments(source);
+  const maskedComments = maskComments(source, { singleQuote: false });
   const masked = maskCommentsAndStrings(source, { singleQuote: false });
   const modules = moduleRanges(masked);
   const findings = [];
@@ -645,6 +687,13 @@ fn clean_rust() {
     assert_eq!(1, 1);
 }
 `);
+    writeFile(path.join(root, 'src-tauri/tests/url_string.rs'), `
+#[test]
+fn url_string_is_executable() {
+    let url = "https://example.com/path";
+    assert_eq!(url, "https://example.com/path");
+}
+`);
     writeFile(path.join(root, 'src/clean.test.ts'), `
 import { describe, expect, it } from "vitest";
 describe("clean suite", () => {
@@ -655,6 +704,10 @@ describe("clean suite", () => {
 `);
     let result = runFixture(root);
     assertSelf(result.code === 0, 'clean fixture should pass');
+    assertSelf(
+      !result.findings.some((f) => f.id.endsWith('url_string.rs::url_string_is_executable')),
+      'URL string Rust test false positive detected',
+    );
 
     writeFile(path.join(root, 'src-tauri/tests/ignored.rs'), `
 #[test]
