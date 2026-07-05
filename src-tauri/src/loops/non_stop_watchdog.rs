@@ -338,7 +338,7 @@ async fn send_telegram(app: &AppHandle, r: &NonStopReport) {
         .inner()
         .clone();
     let text = format!(
-        "\u{26A0} Non-stop [{}]: {} {}/{} workgroups working. Not working: {}. Persisted >{}s.",
+        "\u{26A0} Alert me! [{}]: {} {}/{} workgroups working. Not working: {}. Persisted >{}s.",
         project_folder_name(&r.project_path),
         r.group_name,
         r.working,
@@ -372,7 +372,7 @@ mod tests {
     fn report(project: &str, disparity: bool, tolerance_seconds: u32) -> NonStopReport {
         NonStopReport {
             project_path: project.to_string(),
-            group_name: "Non-stop".to_string(),
+            group_name: "Alert me!".to_string(),
             disparity,
             working: if disparity { 1 } else { 2 },
             total: 2,
