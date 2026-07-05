@@ -1115,16 +1115,14 @@ pub async fn start_web_server(
         shutdown.inner().clone(),
     );
 
-    *ws_handle.lock().unwrap() = Some(join_handle);
+    ws_handle.store(join_handle);
     log::info!("[web-server] Started via command");
     Ok(true)
 }
 
 #[tauri::command]
 pub async fn stop_web_server(ws_handle: State<'_, WebServerHandle>) -> Result<bool, String> {
-    let mut guard = ws_handle.lock().unwrap();
-    if let Some(handle) = guard.take() {
-        handle.abort();
+    if ws_handle.abort_running() {
         log::info!("[web-server] Stopped via command");
         Ok(true)
     } else {
