@@ -150,23 +150,26 @@ pub struct ListPeersLeanArgs {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LeanPeerInfo {
+/// Lean peer projection emitted by `list-peers-lean`. Made `pub` (#791 §8.2)
+/// so the in-daemon API can reuse the exact projection via `lean_peers`; only
+/// this lean view crosses the module boundary, `PeerInfo` stays private.
+pub struct LeanPeerInfo {
     /// Canonical FQN. Same value as `PeerInfo.name`.
-    name: String,
+    pub name: String,
     /// Same predicate as `PeerInfo.working`.
-    working: bool,
+    pub working: bool,
     /// Same domain as `PeerInfo.session_status`.
-    session_status: String,
+    pub session_status: String,
     /// Same value as `PeerInfo.waiting_for_input`.
-    waiting_for_input: bool,
+    pub waiting_for_input: bool,
     /// Same value as `PeerInfo.reachable`.
-    reachable: bool,
+    pub reachable: bool,
     /// Same value as `PeerInfo.teams`.
-    teams: Vec<String>,
+    pub teams: Vec<String>,
     /// Short single-line summary derived from `PeerInfo.role`, ≤80 chars
     /// total (including any trailing `…`). Omitted when empty.
     #[serde(skip_serializing_if = "String::is_empty")]
-    role_summary: String,
+    pub role_summary: String,
 }
 
 /// Maximum length (in Unicode chars) of `roleSummary`, **including any
@@ -1105,6 +1108,19 @@ fn discover_peers(root: &str) -> Result<Vec<PeerInfo>, String> {
     } else {
         Ok(discover_origin_peers(root))
     }
+}
+
+/// #791 §8.2 - public in-process `list-peers-lean` for the in-daemon API.
+///
+/// Runs the SAME discovery as `execute_lean` (WG-replica / origin / root
+/// dispatch) and the SAME `reachable` computation (via `can_communicate`),
+/// returning the lean projection directly instead of printing to stdout. The
+/// API handler calls this with the caller's bound replica root, so an API
+/// `peers` response is byte-identical to the CLI's for the same fixture. Keeps
+/// `PeerInfo` and `discover_peers` private; only `LeanPeerInfo` is exposed.
+pub fn lean_peers(root: &str) -> Result<Vec<LeanPeerInfo>, String> {
+    let peers = discover_peers(root)?;
+    Ok(peers.iter().map(LeanPeerInfo::from).collect())
 }
 
 fn serialize_full_peers(peers: &[PeerInfo]) -> i32 {

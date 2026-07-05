@@ -189,6 +189,28 @@ pub fn web_server_port() -> u16 {
     }
 }
 
+/// Default control-plane API server port (#791). Distinct from the web server
+/// port so a dev and a prod build on one host do not collide. Mirrors
+/// `web_server_port`'s profile-awareness (dev/stage hardcoded, unknown suffix
+/// hashed, prod fallback), offset into the 98xx range above the web ports.
+pub fn api_server_port() -> u16 {
+    match binary_suffix() {
+        Some("dev") => 9886,
+        Some("stage") => 9888,
+        Some(suffix) => {
+            let hash = suffix
+                .bytes()
+                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            9900 + (hash % 20) as u16
+        }
+        None => match BUILD_PROFILE {
+            "dev" => 9886,
+            "stage" => 9888,
+            _ => 9887, // prod
+        },
+    }
+}
+
 /// Whether this is the STAGE profile (via suffix or BUILD_PROFILE fallback).
 pub fn is_stage() -> bool {
     binary_suffix() == Some("stage") || (binary_suffix().is_none() && BUILD_PROFILE == "stage")

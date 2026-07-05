@@ -1,4 +1,5 @@
 pub mod agency_templates;
+pub mod api_client;
 pub mod close_session;
 pub mod coding_agent;
 pub mod create_agent;
@@ -169,6 +170,8 @@ pub enum Commands {
     Harness(harness::HarnessArgs),
     /// Manage Coding Agent configurations (settings.agents)
     CodingAgent(coding_agent::CodingAgentArgs),
+    /// Manage control-plane API client tokens (mint / revoke / list; host authority required)
+    ApiClient(api_client::ApiClientArgs),
     /// Delete only the disposable testable app state
     #[command(hide = true)]
     TestReset(crate::testability::reset::TestResetArgs),
@@ -323,6 +326,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::Loop(args) => loop_cmd::execute(args),
         Commands::Harness(args) => harness::execute(args),
         Commands::CodingAgent(args) => coding_agent::execute(args),
+        Commands::ApiClient(args) => api_client::execute(args),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
         Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),

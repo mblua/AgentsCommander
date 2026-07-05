@@ -2039,7 +2039,12 @@ impl MailboxPoller {
     /// session; destroy and respawn if Exited; spawn persistent if none. Always
     /// delivers (no busy-gate — stdin buffer absorbs input while the agent is
     /// mid-turn).
-    async fn deliver_wake<R: tauri::Runtime>(
+    // #791: `pub(crate)` so the in-daemon control-plane API can funnel through
+    // the SAME actuation the poller uses (no fork). The API calls this on a
+    // throwaway `MailboxPoller::new()` (delivery-stateless: this method and its
+    // whole `&self` callee chain read only `app.state::<...>()`, never the
+    // poller's `poll_interval` / `retry_tracker` fields). See plan #791 §0.5 HIGH-1.
+    pub(crate) async fn deliver_wake<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         msg: &OutboxMessage,
