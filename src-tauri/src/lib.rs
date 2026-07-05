@@ -1,3 +1,4 @@
+pub mod api;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -41,6 +42,11 @@ pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
 /// Handle to the running web server task, allowing stop control.
 pub type WebServerHandle = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>;
+
+/// #791 - handle to the running control-plane API server task, for stop control.
+/// Mirrors `WebServerHandle`; stored so a future `stop_api_server` command can
+/// abort the task.
+pub type ApiServerHandle = Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>;
 
 /// Issue #120 — serializes in-process writers of `.claude/settings.local.json`.
 ///
@@ -458,6 +464,7 @@ pub fn run(
         .manage(web_access_token.clone())
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
+        .manage(ApiServerHandle::default())
         .manage(rtk_sweep_lock)
         .manage(rtk_startup_mode)
         .manage(update_check_state)
@@ -560,6 +567,26 @@ pub fn run(
 
                     let ws_handle = app.state::<WebServerHandle>();
                     *ws_handle.lock().unwrap() = Some(join_handle);
+                }
+            }
+
+            // #791 - start the control-plane API server if enabled in settings.
+            // Opt-in (default false), mirroring the web server block above. On
+            // any startup failure `api::start_server`'s task logs and returns
+            // (no panic); a listening server is stored in the managed handle.
+            {
+                let api_settings = config::settings::load_settings();
+                if api_settings.api_server_enabled {
+                    let bind = api_settings.api_server_bind.clone();
+                    let port = api_settings.api_server_port;
+                    let join_handle = api::start_server(
+                        bind,
+                        port,
+                        app.handle().clone(),
+                        shutdown_for_setup.clone(),
+                    );
+                    let api_handle = app.state::<ApiServerHandle>();
+                    *api_handle.lock().unwrap() = Some(join_handle);
                 }
             }
 

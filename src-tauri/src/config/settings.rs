@@ -340,6 +340,19 @@ pub struct AppSettings {
     /// Bind address: "127.0.0.1" (local only) or "0.0.0.0" (all interfaces)
     #[serde(default = "default_web_bind")]
     pub web_server_bind: String,
+    /// #791 - enable the in-daemon control-plane API server (Docker/distributed
+    /// agents). Default false: no new listening socket unless the operator opts in.
+    #[serde(default)]
+    pub api_server_enabled: bool,
+    /// #791 - control-plane API port. Profile-aware default so dev/prod builds
+    /// do not collide on one host.
+    #[serde(default = "default_api_port")]
+    pub api_server_port: u16,
+    /// #791 - control-plane API bind address. Default "127.0.0.1" (safe, loopback).
+    /// Reaching a Linux container requires a deliberate operator widening; any
+    /// non-loopback bind logs a loud startup warning.
+    #[serde(default = "default_api_bind")]
+    pub api_server_bind: String,
     /// Currently loaded project path (legacy single-project, kept for backward compat)
     #[serde(default)]
     pub project_path: Option<String>,
@@ -533,6 +546,18 @@ fn default_web_bind() -> String {
     "127.0.0.1".to_string()
 }
 
+/// #791 - profile-aware default control-plane API port (delegates to
+/// `profile::api_server_port`, mirroring `default_web_port`).
+fn default_api_port() -> u16 {
+    super::profile::api_server_port()
+}
+
+/// #791 - default control-plane API bind: loopback, safe-by-default. Mirrors
+/// `default_web_bind`. Widening for Docker is a deliberate operator action.
+fn default_api_bind() -> String {
+    "127.0.0.1".to_string()
+}
+
 fn default_sidebar_style() -> String {
     "noir-minimal".to_string()
 }
@@ -627,6 +652,9 @@ impl Default for AppSettings {
             web_server_enabled: false,
             web_server_port: default_web_port(),
             web_server_bind: default_web_bind(),
+            api_server_enabled: false,
+            api_server_port: default_api_port(),
+            api_server_bind: default_api_bind(),
             project_path: None,
             project_paths: vec![],
             sidebar_style: default_sidebar_style(),
