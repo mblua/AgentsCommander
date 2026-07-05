@@ -554,6 +554,11 @@ describe("AgentPickerModal", () => {
     expect(target("agentPicker.scope.replica")).toBeTruthy();
     expect(target("agentPicker.scope.kind")).toBeTruthy();
     expect(target("agentPicker.scope.workgroup")).toBeTruthy();
+    // #800: all three broad-scope previews are fetched up front, so each
+    // radio button shows its true targetCount (not 0 for the unselected ones).
+    expect(text("agentPicker.scope.replica")).toContain("1 replica");
+    expect(text("agentPicker.scope.kind")).toContain("3 replicas");
+    expect(text("agentPicker.scope.workgroup")).toContain("4 replicas");
     // Replica scope is safe → apply enabled immediately.
     expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
 
@@ -673,7 +678,7 @@ describe("AgentPickerModal", () => {
     target<HTMLInputElement>("agentPicker.restartToggle").click();
     await settle();
 
-    expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenLastCalledWith(
+    expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledWith(
       expect.objectContaining({ scope: "kind", restartSessions: true }),
     );
 

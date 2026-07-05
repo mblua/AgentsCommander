@@ -119,9 +119,31 @@ const AgentPickerModal: Component<{
   const [selectedScope, setSelectedScope] = createSignal<ProfileAssignmentScope>("replica");
   const [restartSessions, setRestartSessions] = createSignal(false);
   const [dangerArmed, setDangerArmed] = createSignal(false);
-  const [scopePreview, setScopePreview] = createSignal<PreviewCodingAgentProfileSelectionResult | null>(null);
-  const [scopePreviewBusy, setScopePreviewBusy] = createSignal(false);
-  const [scopePreviewError, setScopePreviewError] = createSignal("");
+  // #800: previews are kept per-scope so every radio button can display its
+  // true targetCount, not just the currently selected scope. The selected
+  // scope's slot is exposed via the `scopePreview` memo below so existing
+  // readers (apply, fingerprint, target review, warnings) are unchanged.
+  const emptyScopePreviews: Record<ProfileAssignmentScope, PreviewCodingAgentProfileSelectionResult | null> = {
+    replica: null,
+    kind: null,
+    workgroup: null,
+  };
+  const emptyScopeBusy: Record<ProfileAssignmentScope, boolean> = {
+    replica: false,
+    kind: false,
+    workgroup: false,
+  };
+  const emptyScopeErrors: Record<ProfileAssignmentScope, string> = {
+    replica: "",
+    kind: "",
+    workgroup: "",
+  };
+  const [scopePreviews, setScopePreviews] = createSignal<Record<ProfileAssignmentScope, PreviewCodingAgentProfileSelectionResult | null>>({ ...emptyScopePreviews });
+  const [scopePreviewBusyMap, setScopePreviewBusyMap] = createSignal<Record<ProfileAssignmentScope, boolean>>({ ...emptyScopeBusy });
+  const [scopePreviewErrorMap, setScopePreviewErrorMap] = createSignal<Record<ProfileAssignmentScope, string>>({ ...emptyScopeErrors });
+  const scopePreview = createMemo(() => scopePreviews()[selectedScope()]);
+  const scopePreviewBusy = createMemo(() => scopePreviewBusyMap()[selectedScope()]);
+  const scopePreviewError = createMemo(() => scopePreviewErrorMap()[selectedScope()]);
   const [applyErrors, setApplyErrors] = createSignal<ProfileAssignmentError[]>([]);
   // #537: transient toast so an assign failure is loud and unmissable (the
   // persistent banner below keeps the actionable detail once the toast fades).
@@ -129,7 +151,10 @@ const AgentPickerModal: Component<{
 
   let overlayRef!: HTMLDivElement;
   let profileResolveSeq = 0;
-  let previewSeq = 0;
+  // #800: per-scope race guard so a slow preview for one scope can't overwrite
+  // another scope's slot. Bumped in the createEffect (all three) and in
+  // runScopePreview (the scope being fetched).
+  let previewSeqByScope: Record<ProfileAssignmentScope, number> = { replica: 0, kind: 0, workgroup: 0 };
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
   // #537: mirror the SidebarApp/SettingsModal toast pattern (.toast-error,
@@ -366,9 +391,9 @@ const AgentPickerModal: Component<{
   const runScopePreview = (scope: ProfileAssignmentScope, agentId: string, profile: string) => {
     const target = targetReplicaPath();
     if (!target || !isWgReplica()) return;
-    const seq = ++previewSeq;
-    setScopePreviewBusy(true);
-    setScopePreviewError("");
+    const seq = ++previewSeqByScope[scope];
+    setScopePreviewBusyMap((prev) => ({ ...prev, [scope]: true }));
+    setScopePreviewErrorMap((prev) => ({ ...prev, [scope]: "" }));
     SettingsAPI.previewCodingAgentProfileSelection({
       targetReplicaPath: target,
       codingAgentId: agentId,
@@ -377,16 +402,16 @@ const AgentPickerModal: Component<{
       restartSessions: restartSessions(),
     })
       .then((result) => {
-        if (seq !== previewSeq) return;
-        setScopePreview(result);
+        if (seq !== previewSeqByScope[scope]) return;
+        setScopePreviews((prev) => ({ ...prev, [scope]: result }));
       })
       .catch((err: unknown) => {
-        if (seq !== previewSeq) return;
-        setScopePreview(null);
-        setScopePreviewError(err instanceof Error ? err.message : String(err));
+        if (seq !== previewSeqByScope[scope]) return;
+        setScopePreviews((prev) => ({ ...prev, [scope]: null }));
+        setScopePreviewErrorMap((prev) => ({ ...prev, [scope]: err instanceof Error ? err.message : String(err) }));
       })
       .finally(() => {
-        if (seq === previewSeq) setScopePreviewBusy(false);
+        if (seq === previewSeqByScope[scope]) setScopePreviewBusyMap((prev) => ({ ...prev, [scope]: false }));
       });
   };
 
@@ -398,16 +423,23 @@ const AgentPickerModal: Component<{
     restartSessions();
     targetReplicaPath();
 
-    // Reset every transient confirmation/preview artifact on any input change.
-    previewSeq += 1;
+    // #800: invalidate all in-flight previews and reset transient artifacts.
+    previewSeqByScope.replica += 1;
+    previewSeqByScope.kind += 1;
+    previewSeqByScope.workgroup += 1;
     setDangerArmed(false);
-    setScopePreview(null);
-    setScopePreviewError("");
+    setScopePreviews({ ...emptyScopePreviews });
+    setScopePreviewErrorMap({ ...emptyScopeErrors });
     setApplyErrors([]);
-    setScopePreviewBusy(false);
+    setScopePreviewBusyMap({ ...emptyScopeBusy });
 
     if (!agent || !isWgReplica()) return;
-    runScopePreview(scope, agent.id, profile);
+    // Fetch all three broad-scope previews up front so each radio button
+    // displays its true targetCount (#800). The selected scope's slot drives
+    // apply, fingerprint, and the target review list (via `scopePreview`).
+    runScopePreview("replica", agent.id, profile);
+    runScopePreview("kind", agent.id, profile);
+    runScopePreview("workgroup", agent.id, profile);
   });
 
   const moveProfile = (delta: number) => {
@@ -429,9 +461,11 @@ const AgentPickerModal: Component<{
   };
 
   const scopeCount = (scope: ProfileAssignmentScope): number => {
-    const preview = scopePreview();
-    if (preview && selectedScope() === scope) return preview.targetCount;
-    return scope === "replica" ? 1 : 0;
+    // #800: replica scope is always exactly 1 (the target itself). For kind
+    // and workgroup, read the per-scope preview slot so the count is correct
+    // even before the user selects that scope.
+    if (scope === "replica") return 1;
+    return scopePreviews()[scope]?.targetCount ?? 0;
   };
 
   const scopeReplicaNoun = (count: number) => count === 1 ? "replica" : "replicas";
@@ -564,7 +598,7 @@ const AgentPickerModal: Component<{
           const extra = result.errors.length - 1;
           showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
           setDangerArmed(false);
-          if (scope !== "replica") setScopePreview(null);
+          if (scope !== "replica") setScopePreviews((prev) => ({ ...prev, [scope]: null }));
           setBusy(false);
           runScopePreview(scope, agent.id, selectedProfile());
           return;
@@ -591,7 +625,7 @@ const AgentPickerModal: Component<{
       showToast(message);
       if (scope !== "replica" && target && isWgReplica()) {
         setDangerArmed(false);
-        setScopePreview(null);
+        setScopePreviews((prev) => ({ ...prev, [scope]: null }));
         runScopePreview(scope, agent.id, selectedProfile());
       }
       setBusy(false);
