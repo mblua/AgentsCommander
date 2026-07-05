@@ -8,6 +8,8 @@ pub const MAX_WORKGROUP_GROUPS: usize = 80;
 pub const MAX_GROUP_ID_LEN: usize = 128;
 pub const MAX_GROUP_NAME_LEN: usize = 80;
 pub const MAX_GROUP_REGEX_LEN: usize = 1024;
+const DEFAULT_NON_STOP_NAME: &str = "Alert me!";
+const LEGACY_NON_STOP_NAME: &str = "Non-stop";
 
 fn default_true() -> bool {
     true
@@ -112,7 +114,7 @@ fn default_tolerance_seconds() -> u32 {
     30
 }
 fn default_non_stop_name() -> String {
-    "Non-stop".to_string()
+    DEFAULT_NON_STOP_NAME.to_string()
 }
 fn default_match_none_regex() -> String {
     "(?!)".to_string()
@@ -134,7 +136,7 @@ fn normalize_groups_config(mut config: WorkgroupGroupsConfig) -> WorkgroupGroups
     if let Some(ns) = config.non_stop.as_mut() {
         ns.tolerance_seconds = ns.tolerance_seconds.clamp(1, 3600);
         ns.sound.seconds = ns.sound.seconds.clamp(1, 60);
-        if ns.name.trim().is_empty() {
+        if ns.name.trim().is_empty() || ns.name.trim() == LEGACY_NON_STOP_NAME {
             ns.name = default_non_stop_name();
         } else if ns.name.chars().count() > MAX_GROUP_NAME_LEN {
             ns.name = ns.name.chars().take(MAX_GROUP_NAME_LEN).collect();
@@ -583,6 +585,34 @@ mod tests {
         let legacy = r#"{"groups":[{"id":"bots","name":"BOTS","regex":"^(wg-9)$"}],"showAll":true,"showUngrouped":true}"#;
         let config: WorkgroupGroupsConfig = serde_json::from_str(legacy).expect("parse legacy");
         assert_eq!(config.non_stop, None);
+    }
+
+    #[test]
+    fn normalize_migrates_legacy_non_stop_default_name() {
+        let project = project_with_workspace();
+        let raw = json!({
+            "groups": [],
+            "showAll": true,
+            "showUngrouped": true,
+            "nonStop": {
+                "show": true,
+                "name": LEGACY_NON_STOP_NAME,
+                "regex": "(?!)",
+                "toleranceSeconds": 30,
+                "telegram": {"enabled": false},
+                "sound": {"enabled": false, "seconds": 3}
+            }
+        });
+        std::fs::write(
+            settings_path(project.path()),
+            serde_json::to_string(&raw).expect("json"),
+        )
+        .expect("write settings");
+
+        let loaded = load_workgroup_groups(project.path()).expect("load groups");
+        let ns = loaded.non_stop.expect("nonStop present");
+
+        assert_eq!(ns.name, DEFAULT_NON_STOP_NAME);
     }
 
     #[test]

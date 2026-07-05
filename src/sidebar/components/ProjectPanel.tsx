@@ -58,6 +58,7 @@ import {
 } from "./workgroup-session";
 import {
   MAX_GROUP_MATCH_ID_LENGTH,
+  DEFAULT_NON_STOP_NAME,
   compileGroupRegex,
   groupMatchId,
   nonStopMatchesWorkgroup,
@@ -1372,15 +1373,15 @@ const ProjectPanel: Component = () => {
               >
                 {/* #777: built-in Non-stop slot, pinned above the user groups. */}
                 <button
-                  class="session-context-option session-context-group-option"
-                  title="Watch this workgroup in the Non-stop group"
+                  class="session-context-option session-context-group-option session-context-group-option-nonstop"
+                  title={`Watch this workgroup in the ${DEFAULT_NON_STOP_NAME} group`}
                   onClick={() => void toggleNonStop(wg)}
                   data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.nonstop`}
                 >
                   <span class="session-context-option-check">
                     {nonStopChecked(wg) ? "✓" : ""}
                   </span>
-                  <span>Non-stop</span>
+                  <span>{DEFAULT_NON_STOP_NAME}</span>
                 </button>
                 <For each={groupsConfig().groups}>
                   {(group) => {

@@ -5,6 +5,7 @@ import {
   MAX_GROUP_MATCH_ID_LENGTH,
   compileGroupRegex,
   groupMatchId,
+  nonStopDisplayName,
   nonStopMatchesWorkgroup,
   workgroupGroupsStore,
   type WorkgroupGroupSelection,
@@ -138,7 +139,7 @@ const ProjectRailSection: Component<{
       );
       result.push({
         key: "nonstop",
-        ...buttonContent(nonStop.name || "Non-stop", workgroups),
+        ...buttonContent(nonStopDisplayName(nonStop.name), workgroups),
         selection: { kind: "nonstop" },
         workgroups,
         title: tooltipFor(workgroups),

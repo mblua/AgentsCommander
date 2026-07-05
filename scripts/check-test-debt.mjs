@@ -722,6 +722,13 @@ fn string_with_block_comment_marker_is_not_placeholder() {
     assert_eq!(raw.len() > 0, true);
 }
 `);
+    writeFile(path.join(root, 'src-tauri/tests/url_string.rs'), `
+#[test]
+fn url_string_is_executable() {
+    let url = "https://example.com/path";
+    assert_eq!(url, "https://example.com/path");
+}
+`);
     writeFile(path.join(root, 'src/clean.test.ts'), `
 import { describe, expect, it } from "vitest";
 describe("clean suite", () => {
@@ -739,6 +746,10 @@ describe("clean suite", () => {
     assertSelf(
       !result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('clean.rs::string_with_block_comment_marker_is_not_placeholder')),
       'block comment marker in Rust string false positive detected',
+    );
+    assertSelf(
+      !result.findings.some((f) => f.id.endsWith('url_string.rs::url_string_is_executable')),
+      'URL string Rust test false positive detected',
     );
 
     writeFile(path.join(root, 'src-tauri/tests/ignored.rs'), `
