@@ -20,6 +20,42 @@ pub struct WsState {
     pub app_handle: tauri::AppHandle,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BrowserProjectCommand {
+    CheckProjectPath,
+    DiscoverProject,
+    GetProjectGroups,
+    UpdateProjectGroups,
+    OpenProject,
+    RemoveProject,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebCommandRoute {
+    BrowserProject(BrowserProjectCommand),
+    Other,
+}
+
+fn route_web_command(cmd: &str) -> WebCommandRoute {
+    match cmd {
+        "check_project_path" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::CheckProjectPath)
+        }
+        "discover_project" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::DiscoverProject)
+        }
+        "get_project_groups" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::GetProjectGroups)
+        }
+        "update_project_groups" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::UpdateProjectGroups)
+        }
+        "open_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::OpenProject),
+        "remove_project" => WebCommandRoute::BrowserProject(BrowserProjectCommand::RemoveProject),
+        _ => WebCommandRoute::Other,
+    }
+}
+
 /// Dispatch a WebSocket JSON command and return the result as JSON.
 /// Format: { "id": N, "cmd": "command_name", "args": { ... } }
 /// Returns: { "id": N, "result": ... } or { "id": N, "error": "..." }
@@ -31,6 +67,10 @@ pub async fn dispatch(state: &WsState, id: u64, cmd: &str, args: &Value) -> Valu
 }
 
 async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Value, String> {
+    if let WebCommandRoute::BrowserProject(project_cmd) = route_web_command(cmd) {
+        return dispatch_browser_project_command(state, project_cmd, args).await;
+    }
+
     match cmd {
         // --- Session commands ---
         "list_sessions" => {
@@ -495,6 +535,72 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
     }
 }
 
+async fn dispatch_browser_project_command(
+    state: &WsState,
+    cmd: BrowserProjectCommand,
+    args: &Value,
+) -> Result<Value, String> {
+    match cmd {
+        BrowserProjectCommand::CheckProjectPath => {
+            let path = require_str(args, "path")?;
+            Ok(json!(
+                crate::commands::ac_discovery::check_project_path_inner(&path)
+            ))
+        }
+
+        BrowserProjectCommand::DiscoverProject => {
+            let path = require_str(args, "path")?;
+            let branch_watcher = state
+                .app_handle
+                .state::<Arc<crate::commands::ac_discovery::DiscoveryBranchWatcher>>();
+            let coordinator_clocks = state
+                .app_handle
+                .state::<crate::config::coordinator_clocks::CoordinatorClocksState>(
+            );
+
+            let result = crate::commands::ac_discovery::discover_project_inner(
+                &state.app_handle,
+                &state.session_mgr,
+                &path,
+                &state.settings,
+                branch_watcher.inner(),
+                coordinator_clocks.inner(),
+            )
+            .await?;
+
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        BrowserProjectCommand::GetProjectGroups => {
+            let path = require_str(args, "path")?;
+            let result = crate::commands::project_settings::get_project_groups_inner(&path)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        BrowserProjectCommand::UpdateProjectGroups => {
+            let path = require_str(args, "path")?;
+            let config: crate::config::project_settings::WorkgroupGroupsConfig =
+                require_json(args, "config")?;
+            let result =
+                crate::commands::project_settings::update_project_groups_inner(&path, config)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        BrowserProjectCommand::OpenProject => {
+            let path = require_str(args, "path")?;
+            let result =
+                crate::commands::ac_discovery::open_project_inner(&state.settings, &path).await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        BrowserProjectCommand::RemoveProject => {
+            let path = require_str(args, "path")?;
+            crate::commands::ac_discovery::remove_project_inner(&state.settings, &path).await?;
+            Ok(json!(null))
+        }
+    }
+}
+
 /// Emit event to both Tauri windows and WebSocket clients.
 pub fn broadcast_all(
     app: &tauri::AppHandle,
@@ -515,6 +621,17 @@ fn require_str(args: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Missing required field: {}", key))
 }
 
+fn require_json<T>(args: &Value, key: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let value = args
+        .get(key)
+        .cloned()
+        .ok_or_else(|| format!("Missing required field: {}", key))?;
+    serde_json::from_value(value).map_err(|e| format!("Invalid field {}: {}", key, e))
+}
+
 fn str_or(args: &Value, key: &str, default: &str) -> String {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -531,4 +648,49 @@ fn str_vec_or(args: &Value, key: &str, default: &[String]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_else(|| default.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_project_commands_route_before_unknown_fallback() {
+        let expected = [
+            ("open_project", BrowserProjectCommand::OpenProject),
+            ("discover_project", BrowserProjectCommand::DiscoverProject),
+            (
+                "check_project_path",
+                BrowserProjectCommand::CheckProjectPath,
+            ),
+            ("remove_project", BrowserProjectCommand::RemoveProject),
+            (
+                "get_project_groups",
+                BrowserProjectCommand::GetProjectGroups,
+            ),
+            (
+                "update_project_groups",
+                BrowserProjectCommand::UpdateProjectGroups,
+            ),
+        ];
+
+        for (command, route) in expected {
+            assert_eq!(
+                route_web_command(command),
+                WebCommandRoute::BrowserProject(route),
+                "{command} should be routed before Unknown command"
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_and_cli_project_commands_are_not_web_commands() {
+        assert_eq!(
+            route_web_command("create_ac_project"),
+            WebCommandRoute::Other
+        );
+        assert_eq!(route_web_command("new_project"), WebCommandRoute::Other);
+        assert_eq!(route_web_command("open-project"), WebCommandRoute::Other);
+        assert_eq!(route_web_command("new-project"), WebCommandRoute::Other);
+    }
 }

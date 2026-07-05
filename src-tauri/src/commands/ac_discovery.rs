@@ -1332,9 +1332,14 @@ pub async fn discover_ac_agents(
 }
 
 /// Check if a folder has a Project AC Root subdirectory.
+pub(crate) fn check_project_path_inner(path: &str) -> bool {
+    existing_workspace_dir(Path::new(path)).is_some()
+}
+
+/// Check if a folder has a Project AC Root subdirectory.
 #[tauri::command]
 pub async fn check_project_path(path: String) -> Result<bool, String> {
-    Ok(existing_workspace_dir(Path::new(&path)).is_some())
+    Ok(check_project_path_inner(&path))
 }
 
 /// Ensure the Project AC Root .gitignore exists and contains all required exclusion patterns.
@@ -1461,7 +1466,26 @@ pub async fn discover_project(
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
     coordinator_clocks: State<'_, crate::config::coordinator_clocks::CoordinatorClocksState>,
 ) -> Result<AcDiscoveryResult, String> {
-    let base = Path::new(&path);
+    discover_project_inner(
+        &app,
+        session_mgr.inner(),
+        &path,
+        settings.inner(),
+        branch_watcher.inner(),
+        coordinator_clocks.inner(),
+    )
+    .await
+}
+
+pub(crate) async fn discover_project_inner(
+    app: &AppHandle,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    path: &str,
+    settings: &SettingsState,
+    branch_watcher: &Arc<DiscoveryBranchWatcher>,
+    coordinator_clocks: &crate::config::coordinator_clocks::CoordinatorClocksState,
+) -> Result<AcDiscoveryResult, String> {
+    let base = Path::new(path);
     if !base.is_dir() {
         return Err(format!("Path is not a directory: {}", path));
     }
@@ -1790,7 +1814,7 @@ pub async fn discover_project(
 
     drop(cfg);
     // Update the branch watcher for THIS project only.
-    branch_watcher.update_replicas_for_project(&path, &workgroups);
+    branch_watcher.update_replicas_for_project(path, &workgroups);
 
     // Recompute coordinator flags on every live session against the hoisted team
     // snapshot. Spawned (not awaited) so populating the project tree NEVER blocks on
@@ -1802,7 +1826,7 @@ pub async fn discover_project(
     // the coordinator-flag events flowing.
     {
         let coordinator_app = app.clone();
-        let coordinator_session_mgr = Arc::clone(session_mgr.inner());
+        let coordinator_session_mgr = Arc::clone(session_mgr);
         tokio::spawn(async move {
             let changes = {
                 let mgr = coordinator_session_mgr.read().await;
@@ -1938,10 +1962,9 @@ pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Resu
 /// Holds the SettingsState write lock through `save_settings` — same pattern
 /// as `set_inject_rtk_hook` (`src-tauri/src/commands/config.rs:184-194`) — so
 /// concurrent `update_settings` calls cannot race.
-#[tauri::command]
-pub async fn open_project(
-    settings: State<'_, SettingsState>,
-    path: String,
+pub(crate) async fn open_project_inner(
+    settings: &SettingsState,
+    path: &str,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
     let mut s = settings.write().await;
     // #778: reconcile project_paths from disk BEFORE the upsert so a concurrent
@@ -1949,12 +1972,20 @@ pub async fn open_project(
     // verbatim (project_paths is disk-authoritative under Design S). Aborts on a
     // non-NotFound read error (G2) rather than registering against a stale list.
     crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
-    let result = crate::config::projects::register_existing_project(&mut s, &path)
+    let result = crate::config::projects::register_existing_project(&mut s, path)
         .map_err(|e| e.to_string())?;
     let snapshot = s.clone();
     crate::config::settings::save_settings_with_project_paths(&snapshot)?;
     drop(s); // explicit; lock released AFTER the disk write completes
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn open_project(
+    settings: State<'_, SettingsState>,
+    path: String,
+) -> Result<crate::config::projects::ProjectRegistration, String> {
+    open_project_inner(settings.inner(), &path).await
 }
 
 /// Ensure an AC project at `path` (creating `.ac/` if missing) and
@@ -1987,18 +2018,25 @@ pub async fn new_project(
 /// `normalize_for_compare` key matches `path`, re-derive the head, and write the
 /// deliberate list verbatim. Removing against the FRESH disk list means a
 /// CLI-appended entry the sidebar never showed is preserved, not dropped.
+pub(crate) async fn remove_project_inner(
+    settings: &SettingsState,
+    path: &str,
+) -> Result<(), String> {
+    let mut s = settings.write().await;
+    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
+    crate::config::projects::remove_project_path(&mut s, path);
+    let snapshot = s.clone();
+    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
+    drop(s); // explicit; lock released AFTER the disk write completes
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn remove_project(
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<(), String> {
-    let mut s = settings.write().await;
-    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
-    crate::config::projects::remove_project_path(&mut s, &path);
-    let snapshot = s.clone();
-    crate::config::settings::save_settings_with_project_paths(&snapshot)?;
-    drop(s); // explicit; lock released AFTER the disk write completes
-    Ok(())
+    remove_project_inner(settings.inner(), &path).await
 }
 
 type TaskFields = (Option<String>, Option<String>);

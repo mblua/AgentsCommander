@@ -7,6 +7,7 @@ import { ProjectAPI, GuideAPI, SettingsAPI, SpecBoardAPI, emitThemeChanged, onOp
 import { settingsStore } from "../../shared/stores/settings";
 import { resourceMonitorStore } from "../../shared/stores/resourceMonitor";
 import { setSoundsEnabled } from "../../shared/sound";
+import { isBrowser } from "../../shared/platform";
 import { homeStore } from "../../main/stores/home";
 import { centralViewStore } from "../../main/stores/centralView";
 import SettingsModal from "./SettingsModal";
@@ -32,6 +33,7 @@ const ActionBar: Component = () => {
   const [confirmPath, setConfirmPath] = createSignal<string | null>(null);
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
   const [isPendingDialog, setIsPendingDialog] = createSignal(false);
+  const [showBrowserCreateProjectNotice, setShowBrowserCreateProjectNotice] = createSignal(false);
   // #289 — local synchronous mirror of the persisted theme. Drives the button
   // glyph directly so rapid double-clicks each see the freshly-toggled value
   // (a getter that reads settingsStore.current?.themeLight would see the
@@ -108,6 +110,11 @@ const ActionBar: Component = () => {
   });
 
   const handleNewProject = async () => {
+    if (isBrowser) {
+      setShowDropdown(false);
+      setShowBrowserCreateProjectNotice(true);
+      return;
+    }
     if (isPendingDialog()) return;
     setShowDropdown(false);
     setIsPendingDialog(true);
@@ -416,6 +423,46 @@ const ActionBar: Component = () => {
           section={pendingSection()}
         />
       )}
+      <Show when={showBrowserCreateProjectNotice()}>
+        <div
+          class="modal-overlay"
+          data-ac-testid="project.browserCreateNotice.overlay"
+          data-ac-role="overlay"
+        >
+          <div
+            class="agent-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="projectBrowserCreateNoticeTitle"
+            style={{ "max-width": "380px" }}
+            onClick={(e) => e.stopPropagation()}
+            data-ac-testid="project.browserCreateNotice.dialog"
+            data-ac-role="dialog"
+          >
+            <div class="agent-modal-header">
+              <span id="projectBrowserCreateNoticeTitle" class="agent-modal-title">
+                Create a project from the desktop app
+              </span>
+            </div>
+            <div class="new-agent-form">
+              <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
+                Creating a new project isn't available in the browser view. Open the
+                AgentsCommander desktop app to create a project — it will then appear here.
+              </p>
+              <div class="new-agent-footer">
+                <button
+                  class="new-agent-create-btn"
+                  onClick={() => setShowBrowserCreateProjectNotice(false)}
+                  data-ac-testid="project.browserCreateNotice.dismiss"
+                  data-ac-role="button"
+                >
+                  Got it
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Show>
       <Show when={confirmPath()}>
         <div
           class="confirm-overlay"
