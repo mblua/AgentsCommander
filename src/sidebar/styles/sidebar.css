@@ -2790,6 +2790,8 @@ html.light-theme .settings-hint-warning {
 }
 
 .workgroup-group-rail-button {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2849,6 +2851,53 @@ html.light-theme .settings-hint-warning {
 
 .workgroup-group-rail-button.selected {
   box-shadow: inset 3px 0 0 var(--sidebar-accent);
+}
+
+.workgroup-group-rail-project.reorder-active {
+  cursor: grabbing;
+}
+
+.workgroup-group-rail-button.reorderable {
+  cursor: grab;
+  user-select: none;
+}
+
+.workgroup-group-rail-button.reorder-arming,
+.workgroup-group-rail-button.reorder-dragging {
+  border-color: rgba(0, 212, 255, 0.42);
+  color: var(--sidebar-fg);
+}
+
+.workgroup-group-rail-button.reorder-arming::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--sidebar-accent);
+  transform-origin: left center;
+  animation: workgroup-group-reorder-hold 2s linear forwards; /* Keep in sync with REORDER_HOLD_MS. */
+}
+
+.workgroup-group-rail-button.reorder-dragging {
+  cursor: grabbing;
+  background: rgba(0, 212, 255, 0.16);
+  box-shadow: inset 3px 0 0 var(--sidebar-accent), 0 0 0 1px rgba(0, 212, 255, 0.24);
+}
+
+.workgroup-group-rail-button.reorder-invalid {
+  border-color: rgba(255, 107, 107, 0.48);
+  box-shadow: inset 3px 0 0 var(--danger, #ff6b6b);
+}
+
+@keyframes workgroup-group-reorder-hold {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
 }
 
 .workgroup-group-rail-button.edit {
