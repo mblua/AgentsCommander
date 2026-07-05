@@ -235,6 +235,34 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menu.textContent).not.toContain("Open in new window");
   });
 
+  it("preserves the native context menu inside the project regex filter row", async () => {
+    await setupPanel([coordSession()]);
+
+    const header = rendered!.root.querySelector<HTMLElement>(".project-header");
+    const filterInput = header?.querySelector<HTMLInputElement>(".project-filter-input");
+    expect(header).not.toBeNull();
+    expect(filterInput).not.toBeNull();
+
+    const inputContextMenu = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 80,
+      clientY: 96,
+    });
+
+    expect(filterInput!.dispatchEvent(inputContextMenu)).toBe(true);
+    expect(inputContextMenu.defaultPrevented).toBe(false);
+    expect(replicaMenu()).toBeNull();
+
+    contextMenu(header!);
+
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(menu!.textContent).toContain("New Agent");
+    });
+  });
+
   it("opens the canonical Matrix folder from a gray workgroup replica", async () => {
     const fake = await setupPanel([coordSession()]);
 

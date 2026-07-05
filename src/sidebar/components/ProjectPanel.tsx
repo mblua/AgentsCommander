@@ -1559,6 +1559,7 @@ const ProjectPanel: Component = () => {
         };
 
         const handleProjectContextMenu = (e: MouseEvent) => {
+          if (e.target instanceof Element && e.target.closest(".project-filter-row")) return;
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
