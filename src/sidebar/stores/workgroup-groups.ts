@@ -17,7 +17,8 @@ export type WorkgroupGroupSelection =
 
 // #777 Non-stop group defaults + clamp bounds (mirror the Rust side in
 // project_settings.rs so both ends agree).
-export const DEFAULT_NON_STOP_NAME = "Non-stop";
+export const DEFAULT_NON_STOP_NAME = "Alert me!";
+const LEGACY_NON_STOP_NAME = "Non-stop";
 export const MATCH_NONE_REGEX = "(?!)";
 const MIN_TOLERANCE_SECONDS = 1;
 const MAX_TOLERANCE_SECONDS = 3600;
@@ -41,6 +42,16 @@ const saveVersions = new Map<string, number>();
 
 function charLength(value: string): number {
   return Array.from(value).length;
+}
+
+function normalizeNonStopName(name: string | null | undefined): string {
+  const trimmedName = (name ?? "").trim();
+  if (!trimmedName || trimmedName === LEGACY_NON_STOP_NAME) return DEFAULT_NON_STOP_NAME;
+  return Array.from(trimmedName).slice(0, MAX_GROUP_NAME_LENGTH).join("");
+}
+
+export function nonStopDisplayName(name: string | null | undefined): string {
+  return normalizeNonStopName(name);
 }
 
 function keyFor(projectPath: string): string {
@@ -85,10 +96,7 @@ export function normalizeNonStop(
 ): NonStopGroupConfig | null | undefined {
   if (nonStop === null) return null;
   if (nonStop === undefined) return undefined;
-  const trimmedName = (nonStop.name ?? "").trim();
-  const name = trimmedName
-    ? Array.from(trimmedName).slice(0, MAX_GROUP_NAME_LENGTH).join("")
-    : DEFAULT_NON_STOP_NAME;
+  const name = normalizeNonStopName(nonStop.name);
   const regex = nonStop.regex ?? "";
   let regexOk = charLength(regex) <= MAX_GROUP_REGEX_LENGTH;
   if (regexOk) {
@@ -345,12 +353,12 @@ export function validateGroupsConfig(
   // never trips the fatal reset-to-defaults path; normalizeNonStop repairs it there.
   if (config.nonStop && options.validateRegexSyntax) {
     if (charLength(config.nonStop.regex) > MAX_GROUP_REGEX_LENGTH) {
-      errors.push(`Non-stop: regex cannot exceed ${MAX_GROUP_REGEX_LENGTH} characters.`);
+      errors.push(`Alert me!: regex cannot exceed ${MAX_GROUP_REGEX_LENGTH} characters.`);
     } else {
       try {
         new RegExp(config.nonStop.regex);
       } catch {
-        errors.push("Non-stop: regex is invalid.");
+        errors.push("Alert me!: regex is invalid.");
       }
     }
   }
@@ -581,7 +589,7 @@ export const workgroupGroupsStore = {
     }
     const nextRegex = appendExactGroupToken(current.regex, wgName);
     if (nextRegex === null) {
-      const message = "Fix the Non-stop regex before adding a workgroup.";
+      const message = "Fix the Alert me! regex before adding a workgroup.";
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);

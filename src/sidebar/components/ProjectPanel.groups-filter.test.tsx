@@ -212,7 +212,7 @@ describe("ProjectPanel workgroup groups", () => {
     }
   });
 
-  it("marks only the built-in Non-stop group option as bold in the group flyout", async () => {
+  it("marks only the built-in Alert me! group option as bold in the group flyout", async () => {
     const fake = new FakeTransport();
     setupProjectTransport(fake);
 
@@ -228,7 +228,7 @@ describe("ProjectPanel workgroup groups", () => {
       const nonStopOption = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.nonstop");
       const userGroupOption = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.frontend");
 
-      expect(nonStopOption.textContent).toContain("Non-stop");
+      expect(nonStopOption.textContent).toContain("Alert me!");
       expect(nonStopOption.classList.contains("session-context-group-option-nonstop")).toBe(true);
       expect(userGroupOption.classList.contains("session-context-group-option-nonstop")).toBe(false);
     } finally {

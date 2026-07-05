@@ -1,7 +1,7 @@
 import { createEffect, onCleanup } from "solid-js";
 import { NonStopAPI } from "../../shared/ipc";
 import type { NonStopReport } from "../../shared/types";
-import { workgroupGroupsStore, nonStopMatchesWorkgroup } from "../stores/workgroup-groups";
+import { workgroupGroupsStore, nonStopDisplayName, nonStopMatchesWorkgroup } from "../stores/workgroup-groups";
 import { workgroupIsWorking } from "../components/workgroup-session";
 import { projectStore } from "../stores/project";
 
@@ -36,7 +36,7 @@ export function buildSnapshot(): NonStopReport[] {
     const working = total - notWorking.length;
     reports.push({
       projectPath: project.path,
-      groupName: ns.name || "Non-stop",
+      groupName: nonStopDisplayName(ns.name),
       disparity: working < total,
       working,
       total,

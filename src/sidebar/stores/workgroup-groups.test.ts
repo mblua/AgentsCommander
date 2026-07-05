@@ -234,6 +234,7 @@ describe("#777 Non-stop group", () => {
       telegram: { enabled: true, botId: "bot-1" },
       sound: { enabled: true, seconds: 999 },
     });
+    const legacyDefaultName = normalizeNonStop({ ...defaultNonStop(), name: " Non-stop " });
     expect(clamped).toMatchObject({
       show: true,
       name: "Watcher",
@@ -242,6 +243,8 @@ describe("#777 Non-stop group", () => {
       telegram: { enabled: true, botId: "bot-1" },
       sound: { enabled: true, seconds: 60 },
     });
+    expect(defaultNonStop().name).toBe("Alert me!");
+    expect(legacyDefaultName?.name).toBe("Alert me!");
     expect(normalizeNonStop(null)).toBeNull();
     expect(normalizeNonStop(undefined)).toBeUndefined();
   });

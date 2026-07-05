@@ -784,7 +784,7 @@ export interface NonStopSoundConfig {
 export interface NonStopGroupConfig {
   /** Rail visibility AND watchdog-active. Single toggle (#777 D3/D4). Default false. */
   show: boolean;
-  /** Display name. Default "Non-stop". */
+  /** Display name. Default "Alert me!". */
   name: string;
   /** Membership regex, dynamic like user groups. Default "(?!)" (matches nothing). */
   regex: string;

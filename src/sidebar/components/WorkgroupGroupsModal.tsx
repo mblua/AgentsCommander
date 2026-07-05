@@ -6,6 +6,7 @@ import type { NonStopGroupConfig, WorkgroupGroupsConfig } from "../../shared/typ
 import {
   MAX_GROUP_NAME_LENGTH,
   MAX_GROUP_REGEX_LENGTH,
+  DEFAULT_NON_STOP_NAME,
   createGroupId,
   defaultNonStop,
   exactGroupRegexForWorkgroup,
@@ -206,7 +207,7 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
                 onChange={(e) => setNonStop({ show: e.currentTarget.checked })}
                 data-ac-testid="workgroupGroups.nonstop.show"
               />
-              <span>Non-stop (watchdog)</span>
+              <span>{DEFAULT_NON_STOP_NAME} (watchdog)</span>
             </label>
             <div class="workgroup-group-edit-row">
               <input
@@ -214,7 +215,7 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
                 value={ns().name}
                 maxLength={MAX_GROUP_NAME_LENGTH}
                 onInput={(e) => setNonStop({ name: e.currentTarget.value })}
-                aria-label="Non-stop name"
+                aria-label={`${DEFAULT_NON_STOP_NAME} name`}
                 data-ac-testid="workgroupGroups.nonstop.name"
               />
               <input
@@ -222,7 +223,7 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
                 value={ns().regex}
                 maxLength={MAX_GROUP_REGEX_LENGTH}
                 onInput={(e) => setNonStop({ regex: e.currentTarget.value })}
-                aria-label="Non-stop regex"
+                aria-label={`${DEFAULT_NON_STOP_NAME} regex`}
                 data-ac-testid="workgroupGroups.nonstop.regex"
               />
             </div>
