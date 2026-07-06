@@ -22,7 +22,7 @@ The script writes the same version to every checked location:
 | `package.json` | `version` |
 | `package-lock.json` | root `version` and `packages[""].version` |
 | `src-tauri/Cargo.toml` | `[package]` version |
-| `src-tauri/Cargo.lock` | internal Cargo crate entry (`agentscommander-new`) version |
+| `Cargo.lock` | internal Cargo crate entry (`agentscommander-new`) version |
 | `src-tauri/tauri.conf.json` | `version` |
 
 The frontend titlebar reads its version from `tauri.conf.json` at build time, so bumping that one file is enough to update what users see — no source files need manual edits.
@@ -42,7 +42,7 @@ npm run version:check
 Stage every file the script touched and commit in one shot so CI sees them together:
 
 ```bash
-git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+git add package.json package-lock.json src-tauri/Cargo.toml Cargo.lock src-tauri/tauri.conf.json
 git commit -m "chore: bump version to X.Y.Z"
 ```
 
@@ -62,8 +62,8 @@ This creates a **draft release** with:
 - Auto-generated changelog (from commits since the previous tag)
 - Windows installers (SignPath signing planned; artifacts may be unsigned until integration is complete)
 - Windows raw executables:
-  - `src-tauri/target/release/agentscommander.exe`
-  - `src-tauri/target/release/agentscommander_testeable.exe`
+  - `target/release/agentscommander.exe`
+  - `target/release/agentscommander_testeable.exe`
 - Linux `.AppImage`
 - macOS `.dmg` (Apple Silicon + Intel) — unsigned today
 
@@ -96,8 +96,8 @@ GitHub Releases is the source of truth for per-release detail, but `CHANGELOG.md
 The shipper builds a workgroup-suffixed exe alongside the canonical one:
 
 ```
-src-tauri/target/release/agentscommander.exe                # canonical
-src-tauri/target/release/agentscommander_standalone_wg-N.exe # workgroup build
+target/release/agentscommander.exe                # canonical
+target/release/agentscommander_standalone_wg-N.exe # workgroup build
 ```
 
 **Hard rule**: a workgroup build **never overwrites** the bare `agentscommander_standalone.exe`. The shipper's Step 8 enforces this. If you see the bare exe being replaced by a wg-N build, the shipper's workflow is misconfigured — stop and fix it before publishing.

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
-const releaseDir = path.join(repoRoot, "src-tauri", "target", "release");
+const releaseDir = path.join(repoRoot, "target", "release");
 const source = path.join(releaseDir, "agentscommander.exe");
 const destination = path.join(releaseDir, "agentscommander_testeable.exe");
 

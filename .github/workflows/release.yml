@@ -108,23 +108,23 @@ jobs:
           TAG="${{ github.ref_name }}"
           if [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
             node scripts/copy-testable-binary.mjs
-            cp src-tauri/target/release/agentscommander.exe agentscommander-windows-x86_64.exe
-            cp src-tauri/target/release/agentscommander_testeable.exe agentscommander-testeable-windows-x86_64.exe
+            cp target/release/agentscommander.exe agentscommander-windows-x86_64.exe
+            cp target/release/agentscommander_testeable.exe agentscommander-testeable-windows-x86_64.exe
             gh release upload "$TAG" agentscommander-windows-x86_64.exe --clobber
             gh release upload "$TAG" agentscommander-testeable-windows-x86_64.exe --clobber
           elif [[ "${{ matrix.platform }}" == "ubuntu-22.04" ]]; then
-            cp src-tauri/target/release/agentscommander agentscommander-linux-x86_64
+            cp target/release/agentscommander agentscommander-linux-x86_64
             gh release upload "$TAG" agentscommander-linux-x86_64 --clobber
           elif [[ "${{ matrix.args }}" == *aarch64* ]]; then
-            cp src-tauri/target/aarch64-apple-darwin/release/agentscommander agentscommander-mac-aarch64
+            cp target/aarch64-apple-darwin/release/agentscommander agentscommander-mac-aarch64
             gh release upload "$TAG" agentscommander-mac-aarch64 --clobber
-            APP_TAR=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
+            APP_TAR=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
             cp "$APP_TAR" agentscommander-mac-aarch64.app.tar.gz
             gh release upload "$TAG" agentscommander-mac-aarch64.app.tar.gz --clobber
           elif [[ "${{ matrix.args }}" == *x86_64* ]]; then
-            cp src-tauri/target/x86_64-apple-darwin/release/agentscommander agentscommander-mac-x86_64
+            cp target/x86_64-apple-darwin/release/agentscommander agentscommander-mac-x86_64
             gh release upload "$TAG" agentscommander-mac-x86_64 --clobber
-            APP_TAR=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
+            APP_TAR=$(find target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
             cp "$APP_TAR" agentscommander-mac-x86_64.app.tar.gz
             gh release upload "$TAG" agentscommander-mac-x86_64.app.tar.gz --clobber
           fi

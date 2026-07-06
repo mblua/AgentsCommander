@@ -31,8 +31,8 @@ This directory is the product regression map for acceptance testing. Every user-
 Production Windows builds create a raw testable executable alongside the normal production executable:
 
 ```text
-src-tauri/target/release/agentscommander.exe
-src-tauri/target/release/agentscommander_testeable.exe
+target/release/agentscommander.exe
+target/release/agentscommander_testeable.exe
 ```
 
 Launch with explicit virtual-desktop placement in physical pixels:
