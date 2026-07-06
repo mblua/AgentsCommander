@@ -13,12 +13,14 @@ use super::schema::{ErrorBody, API_VERSION};
 /// A control-plane API failure with a fixed HTTP mapping.
 #[derive(Debug, Clone)]
 pub enum ApiError {
-    /// 400 - malformed body, missing/forbidden field, unsupported `inline`.
+    /// 400 - malformed body, missing/forbidden field, or invalid one-of payload.
     BadRequest(String),
     /// 401 - missing/invalid/revoked/expired token, or bound replica gone.
     Unauthorized(String),
     /// 403 - valid token but not scoped / routing denied / root-agent excluded.
     Forbidden(String),
+    /// 413 - inline payload exceeds the semantic cap.
+    PayloadTooLarge(String),
     /// 422 - the engine refused delivery (`deliver_wake` returned `Err`).
     Rejected(String),
     /// 429 - per-source failed-auth lockout or per-client rate limit.
@@ -33,6 +35,7 @@ impl ApiError {
             ApiError::BadRequest(d) => (StatusCode::BAD_REQUEST, "bad_request", d),
             ApiError::Unauthorized(d) => (StatusCode::UNAUTHORIZED, "unauthorized", d),
             ApiError::Forbidden(d) => (StatusCode::FORBIDDEN, "forbidden", d),
+            ApiError::PayloadTooLarge(d) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", d),
             ApiError::Rejected(d) => (StatusCode::UNPROCESSABLE_ENTITY, "rejected", d),
             ApiError::TooManyRequests(d) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", d),
             ApiError::Internal(d) => (StatusCode::INTERNAL_SERVER_ERROR, "internal", d),
@@ -131,9 +134,22 @@ mod tests {
 
     #[test]
     fn error_status_mapping() {
-        assert_eq!(ApiError::BadRequest("x".into()).status(), StatusCode::BAD_REQUEST);
-        assert_eq!(ApiError::Unauthorized("x".into()).status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(ApiError::Forbidden("x".into()).status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            ApiError::BadRequest("x".into()).status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            ApiError::Unauthorized("x".into()).status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            ApiError::Forbidden("x".into()).status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            ApiError::PayloadTooLarge("x".into()).status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
         assert_eq!(
             ApiError::Rejected("x".into()).status(),
             StatusCode::UNPROCESSABLE_ENTITY

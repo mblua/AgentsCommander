@@ -112,6 +112,10 @@ impl PtyManager {
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))
     }
 
+    pub fn backend_kind(&self, id: Uuid) -> Option<SessionBackendKind> {
+        self.routes.lock().unwrap().get(&id).copied()
+    }
+
     pub async fn spawn(
         manager: &Arc<Mutex<Self>>,
         backend_kind: SessionBackendKind,

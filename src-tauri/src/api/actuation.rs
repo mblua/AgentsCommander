@@ -14,6 +14,7 @@ use std::path::Path;
 
 use tauri::Manager;
 
+use crate::api::message_store::INLINE_BODY_MAX_BYTES;
 use crate::config::settings::SettingsState;
 use crate::phone::types::OutboxMessage;
 
@@ -47,17 +48,7 @@ pub fn reject_if_root(from: &str, to: &str) -> Result<(), ApiError> {
 /// parent confinement), and format the pointer notification. The container path
 /// is never embedded because the CLI helper canonicalizes host-side.
 pub fn build_send_body(bound_root: &str, basename: &str, from: &str) -> Result<String, ApiError> {
-    crate::phone::messaging::validate_filename_only(basename)
-        .map_err(|e| ApiError::BadRequest(format!("invalid filename: {}", e)))?;
-
-    let agent_root = Path::new(bound_root);
-    let wg_root = crate::phone::messaging::workgroup_root(agent_root).map_err(|e| {
-        ApiError::BadRequest(format!("bound replica is not under a workgroup: {}", e))
-    })?;
-    let msg_dir = crate::phone::messaging::messaging_dir(&wg_root)
-        .map_err(|e| ApiError::Internal(format!("cannot resolve messaging dir: {}", e)))?;
-    let abs = crate::phone::messaging::resolve_existing_message(&msg_dir, basename)
-        .map_err(|e| ApiError::BadRequest(format!("message file not found: {}", e)))?;
+    let abs = resolve_send_file_path(bound_root, basename)?;
 
     // UNC-strip at the single emission site, mirroring cli/send.rs.
     let abs_str = abs.to_string_lossy();
@@ -75,18 +66,57 @@ pub fn build_send_body(bound_root: &str, basename: &str, from: &str) -> Result<S
     Ok(body)
 }
 
-/// Resolve + route + actuate a `send` through the shared engine.
-///
-/// Errors returned as `Err(ApiError)` are pre-actuation failures (400 resolve,
-/// 403 root/routing). A successful resolution+route yields `Ok(DeliveryOutcome)`
-/// carrying the engine's delivered/rejected result (200 / 422).
-pub async fn deliver_wake_via_api<R: tauri::Runtime>(
+#[derive(Debug)]
+pub struct SendFileContent {
+    pub body: String,
+    pub source_ref: String,
+}
+
+pub fn read_send_file_content(
+    bound_root: &str,
+    basename: &str,
+) -> Result<SendFileContent, ApiError> {
+    let abs = resolve_send_file_path(bound_root, basename)?;
+    let bytes = std::fs::read(&abs)
+        .map_err(|e| ApiError::BadRequest(format!("message file not readable: {}", e)))?;
+    if bytes.len() > INLINE_BODY_MAX_BYTES {
+        return Err(ApiError::PayloadTooLarge(format!(
+            "message file exceeds inline cap ({} bytes)",
+            INLINE_BODY_MAX_BYTES
+        )));
+    }
+    let body = String::from_utf8(bytes)
+        .map_err(|e| ApiError::BadRequest(format!("message file is not UTF-8: {}", e)))?;
+    Ok(SendFileContent {
+        body,
+        source_ref: basename.to_string(),
+    })
+}
+
+fn resolve_send_file_path(
+    bound_root: &str,
+    basename: &str,
+) -> Result<std::path::PathBuf, ApiError> {
+    crate::phone::messaging::validate_filename_only(basename)
+        .map_err(|e| ApiError::BadRequest(format!("invalid filename: {}", e)))?;
+
+    let agent_root = Path::new(bound_root);
+    let wg_root = crate::phone::messaging::workgroup_root(agent_root).map_err(|e| {
+        ApiError::BadRequest(format!("bound replica is not under a workgroup: {}", e))
+    })?;
+    let msg_dir = crate::phone::messaging::messaging_dir(&wg_root)
+        .map_err(|e| ApiError::Internal(format!("cannot resolve messaging dir: {}", e)))?;
+    let abs = crate::phone::messaging::resolve_existing_message(&msg_dir, basename)
+        .map_err(|e| ApiError::BadRequest(format!("message file not found: {}", e)))?;
+    Ok(abs)
+}
+
+/// Resolve and authorize the API send target without delivering.
+pub async fn resolve_api_send_target<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     from: &str,
     to: &str,
-    body: String,
-    op_id: &str,
-) -> Result<DeliveryOutcome, ApiError> {
+) -> Result<String, ApiError> {
     reject_if_root(from, to)?;
 
     // Project paths: the same source `process_message` reads (SettingsState).
@@ -114,16 +144,19 @@ pub async fn deliver_wake_via_api<R: tauri::Runtime>(
             from, resolved_to
         )));
     }
+    Ok(resolved_to)
+}
 
-    // (3) construct the in-memory OutboxMessage. token = None (§0.5 open-item 4):
+pub fn build_inline_wake_message(id: &str, from: &str, to: &str, body: String) -> OutboxMessage {
+    // token = None (§0.5 open-item 4):
     // the API bypasses process_message and deliver_wake never reads the sender
     // token; the invariant is never a master/root token, never a token not owned
     // by `from`.
-    let msg = OutboxMessage {
-        id: op_id.to_string(),
+    OutboxMessage {
+        id: id.to_string(),
         token: None,
         from: from.to_string(),
-        to: resolved_to.clone(),
+        to: to.to_string(),
         body,
         mode: "wake".to_string(),
         get_output: false,
@@ -139,12 +172,32 @@ pub async fn deliver_wake_via_api<R: tauri::Runtime>(
         timeout_secs: None,
         switch_coding_agent: None,
         switch_profile: None,
-    };
+    }
+}
+
+/// Resolve + route + actuate a `send` through the shared engine.
+///
+/// Errors returned as `Err(ApiError)` are pre-actuation failures (400 resolve,
+/// 403 root/routing). A successful resolution+route yields `Ok(DeliveryOutcome)`
+/// carrying the engine's delivered/rejected result (200 / 422).
+pub async fn deliver_wake_via_api<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    from: &str,
+    to: &str,
+    body: String,
+    op_id: &str,
+) -> Result<DeliveryOutcome, ApiError> {
+    let resolved_to = resolve_api_send_target(app, from, to).await?;
+    let msg = build_inline_wake_message(op_id, from, &resolved_to, body);
 
     // (4) actuate through the SAME engine the poller uses. A throwaway
     // MailboxPoller is delivery-stateless (§0.5 HIGH-1).
     match crate::phone::mailbox::MailboxPoller::new()
-        .deliver_wake(app, &msg)
+        .deliver_wake_with_origin(
+            app,
+            &msg,
+            crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
+        )
         .await
     {
         Ok(()) => Ok(DeliveryOutcome::Delivered { to: resolved_to }),
@@ -207,10 +260,15 @@ mod tests {
     #[test]
     fn build_send_body_rejects_path_traversal_basename() {
         let temp = tempfile::TempDir::new().unwrap();
-        let replica = temp.path().join("proj").join(".ac").join("wg-1").join("__agent_x");
+        let replica = temp
+            .path()
+            .join("proj")
+            .join(".ac")
+            .join("wg-1")
+            .join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        let err = build_send_body(replica.to_str().unwrap(), "..\\secret.md", "proj:wg-1/x")
-            .unwrap_err();
+        let err =
+            build_send_body(replica.to_str().unwrap(), "..\\secret.md", "proj:wg-1/x").unwrap_err();
         assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
     }
 
@@ -221,8 +279,41 @@ mod tests {
         let replica = wg_root.join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         std::fs::create_dir_all(wg_root.join("messaging")).unwrap();
-        let err = build_send_body(replica.to_str().unwrap(), "nope.md", "proj:wg-1/x")
-            .unwrap_err();
+        let err = build_send_body(replica.to_str().unwrap(), "nope.md", "proj:wg-1/x").unwrap_err();
         assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn read_send_file_content_ingests_utf8_body_without_host_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let wg_root = temp.path().join("proj-x").join(".ac").join("wg-1-team");
+        let replica = wg_root.join("__agent_dev-rust");
+        let messaging = wg_root.join("messaging");
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::create_dir_all(&messaging).unwrap();
+        let fname = "20260704-000000-wg1-a-to-wg1-b-hello.md";
+        std::fs::write(messaging.join(fname), "hello body").unwrap();
+
+        let got = read_send_file_content(replica.to_str().unwrap(), fname).unwrap();
+
+        assert_eq!(got.body, "hello body");
+        assert_eq!(got.source_ref, fname);
+        assert!(!got.body.contains("Process this inter-agent message:"));
+    }
+
+    #[test]
+    fn read_send_file_content_rejects_oversize_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let wg_root = temp.path().join("proj-x").join(".ac").join("wg-1-team");
+        let replica = wg_root.join("__agent_dev-rust");
+        let messaging = wg_root.join("messaging");
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::create_dir_all(&messaging).unwrap();
+        let fname = "20260704-000000-wg1-a-to-wg1-b-large.md";
+        std::fs::write(messaging.join(fname), vec![b'x'; INLINE_BODY_MAX_BYTES + 1]).unwrap();
+
+        let err = read_send_file_content(replica.to_str().unwrap(), fname).unwrap_err();
+
+        assert_eq!(err.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     }
 }

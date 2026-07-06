@@ -14,6 +14,7 @@ use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
+use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 #[cfg(test)]
@@ -35,6 +36,84 @@ fn sender_name_for_session_cwd_with_root_flag(
 fn sender_name_for_session_cwd(working_directory: &str) -> String {
     let is_root_agent = crate::config::root_agent::is_root_agent_path(working_directory);
     sender_name_for_session_cwd_with_root_flag(working_directory, is_root_agent)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WakeDeliveryOrigin {
+    FilesystemPoller,
+    DbQueue,
+}
+
+fn container_body_override_for_delivery(
+    origin: WakeDeliveryOrigin,
+    body: &str,
+    sender_root: Option<&Path>,
+) -> Result<Option<String>, String> {
+    if origin != WakeDeliveryOrigin::FilesystemPoller {
+        return Ok(None);
+    }
+    if crate::phone::messaging::parse_file_notification(body).is_none() {
+        return Ok(None);
+    }
+    let sender_root = sender_root
+        .ok_or_else(|| "file notification sender path could not be resolved".to_string())?;
+    inline_body_from_file_notification(body, sender_root)
+}
+
+fn inline_body_from_file_notification(
+    body: &str,
+    sender_root: &Path,
+) -> Result<Option<String>, String> {
+    let Some(notification_path) = crate::phone::messaging::parse_file_notification(body) else {
+        return Ok(None);
+    };
+    let filename = crate::phone::messaging::notification_filename(notification_path)
+        .ok_or_else(|| "file notification does not include a message filename".to_string())?;
+    let parent = Path::new(notification_path)
+        .parent()
+        .ok_or_else(|| "file notification does not include a parent directory".to_string())?;
+    if parent.file_name().and_then(|n| n.to_str())
+        != Some(crate::phone::messaging::MESSAGING_DIR_NAME)
+    {
+        return Err("file notification parent is not a messaging directory".to_string());
+    }
+
+    let wg_root = crate::phone::messaging::workgroup_root(sender_root)
+        .map_err(|e| format!("sender workgroup could not be resolved: {}", e))?;
+    let allowed_messaging_dir = crate::phone::messaging::messaging_dir(&wg_root)
+        .map_err(|e| format!("sender messaging directory could not be resolved: {}", e))?;
+    let canon_allowed = std::fs::canonicalize(&allowed_messaging_dir)
+        .map_err(|e| format!("sender messaging directory not readable: {}", e))?;
+    let canon_parent = std::fs::canonicalize(parent)
+        .map_err(|e| format!("file notification parent not readable: {}", e))?;
+    if canon_parent != canon_allowed {
+        return Err("file notification parent is outside sender messaging directory".to_string());
+    }
+
+    let abs = crate::phone::messaging::resolve_existing_message(&allowed_messaging_dir, filename)
+        .map_err(|e| format!("message file not readable for container delivery: {}", e))?;
+    let bytes = std::fs::read(&abs)
+        .map_err(|e| format!("message file not readable for container delivery: {}", e))?;
+    if bytes.len() > crate::api::message_store::INLINE_BODY_MAX_BYTES {
+        return Err(format!(
+            "message file exceeds inline cap ({} bytes)",
+            crate::api::message_store::INLINE_BODY_MAX_BYTES
+        ));
+    }
+    let body = String::from_utf8(bytes)
+        .map_err(|e| format!("message file is not UTF-8 for container delivery: {}", e))?;
+    Ok(Some(body))
+}
+
+fn is_container_backend_session<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+) -> Result<bool, String> {
+    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+    let mgr = pty_mgr
+        .lock()
+        .map_err(|e| format!("PTY lock failed: {}", e))?;
+    Ok(mgr.backend_kind(session_id) == Some(SessionBackendKind::ContainerTransport))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2049,6 +2128,16 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         msg: &OutboxMessage,
     ) -> Result<(), String> {
+        self.deliver_wake_with_origin(app, msg, WakeDeliveryOrigin::FilesystemPoller)
+            .await
+    }
+
+    pub(crate) async fn deliver_wake_with_origin<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        origin: WakeDeliveryOrigin,
+    ) -> Result<(), String> {
         // Whether the spawn-fallback should allow provider auto-resume.
         // Default false: cold wake — no SessionManager record at this CWD.
         // Promoted to true in two paths below: (a) RespawnExited deferred-
@@ -2064,8 +2153,9 @@ impl MailboxPoller {
         let mut spawn_with_resume = false;
         let mut pending_exited_destroy: Option<Uuid> = None;
         let mut pending_exited_telegram_bot_id: Option<String> = None;
-        let mut pending_exited_communication: Option<crate::session::session::SessionCommunication> =
-            None;
+        let mut pending_exited_communication: Option<
+            crate::session::session::SessionCommunication,
+        > = None;
         // (#747) Set only when the deferred destroy FAILS: the orphan Exited
         // record then still holds the restored hand and must be cleared once
         // the replacement spawn succeeds (single-carrier rule, 5d).
@@ -2109,7 +2199,10 @@ impl MailboxPoller {
 
             match wake_action_for(status) {
                 WakeAction::Inject => {
-                    match self.inject_wake_into_pty(app, session_id, msg).await {
+                    match self
+                        .inject_wake_into_pty(app, session_id, msg, origin)
+                        .await
+                    {
                         Ok(()) => return Ok(()),
                         Err(e) if err_is_pty_session_missing(&e) => {
                             // Race: PTY died between `find_live_candidates`
@@ -2396,7 +2489,8 @@ impl MailboxPoller {
         self.wait_for_spawned_wake_idle(app, session_id).await?;
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
-        self.inject_wake_into_pty(app, session_id, msg).await
+        self.inject_wake_into_pty(app, session_id, msg, origin)
+            .await
     }
 
     async fn has_pty_session_for_wake<R: tauri::Runtime>(
@@ -2425,6 +2519,7 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         session_id: Uuid,
         msg: &OutboxMessage,
+        origin: WakeDeliveryOrigin,
     ) -> Result<(), String> {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
@@ -2443,7 +2538,9 @@ impl MailboxPoller {
             return result.unwrap_or(Ok(()));
         }
 
-        let result = self.inject_into_pty(app, session_id, msg, true).await;
+        let result = self
+            .inject_into_pty(app, session_id, msg, true, origin)
+            .await;
         // #552 auto-close: a successful inter-agent wake is activity for the
         // recipient team's silence clock (NOT the badge; inter-agent is not a
         // user message). This single site covers both wake paths (deliver_wake
@@ -2702,6 +2799,7 @@ impl MailboxPoller {
         session_id: Uuid,
         msg: &OutboxMessage,
         interactive: bool,
+        origin: WakeDeliveryOrigin,
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
@@ -2850,6 +2948,32 @@ impl MailboxPoller {
         // ── Standard message path ──
         // Only use response markers for non-interactive sessions
         let use_markers = msg.get_output && !interactive;
+        let body_override = if is_container_backend_session(app, session_id)? {
+            let sender_root = if origin == WakeDeliveryOrigin::FilesystemPoller
+                && crate::phone::messaging::parse_file_notification(&msg.body).is_some()
+            {
+                Some(
+                    self.resolve_repo_path(&msg.from, app)
+                        .await
+                        .ok_or_else(|| {
+                            format!(
+                        "Cannot resolve sender path for '{}' during container file delivery",
+                        msg.from
+                    )
+                        })?,
+                )
+            } else {
+                None
+            };
+            container_body_override_for_delivery(
+                origin,
+                &msg.body,
+                sender_root.as_deref().map(Path::new),
+            )?
+        } else {
+            None
+        };
+        let body = body_override.as_deref().unwrap_or(&msg.body);
 
         // Interactive and marker-less paths share the minimal PTY wrap via
         // `format_pty_wrap` (single source with `PTY_WRAP_FIXED` used by the
@@ -2857,9 +2981,9 @@ impl MailboxPoller {
         // payload with response markers.
         let payload = match (use_markers, msg.request_id.as_ref()) {
             (true, Some(rid)) => {
-                crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, &msg.body, rid)
+                crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, body, rid)
             }
-            _ => crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body),
+            _ => crate::phone::messaging::format_pty_wrap(&msg.from, body),
         };
 
         // Register response watcher only for non-interactive sessions
@@ -4269,7 +4393,8 @@ impl MailboxPoller {
                     if let Ok(new_uuid) = Uuid::parse_str(&info.id) {
                         let restored = {
                             let mgr = session_mgr.read().await;
-                            mgr.restore_communication(new_uuid, communication.clone()).await
+                            mgr.restore_communication(new_uuid, communication.clone())
+                                .await
                         };
                         if restored {
                             let _ = tauri::Emitter::emit(
@@ -5340,6 +5465,107 @@ mod tests {
     use tauri::Listener;
 
     // ── §224 D.5a — wait_for_restore_or_session unit tests ──
+
+    #[test]
+    fn container_file_notification_adapter_reads_inline_content() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let wg_root = temp.path().join("proj").join(".ac").join("wg-1-team");
+        let sender_root = wg_root.join("__agent_sender");
+        let messaging = wg_root.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&sender_root).unwrap();
+        std::fs::create_dir_all(&messaging).unwrap();
+        let filename = "20260704-000000-wg1-a-to-wg1-b-hello.md";
+        let path = messaging.join(filename);
+        std::fs::write(&path, "inline body").unwrap();
+        let notification =
+            crate::phone::messaging::format_file_notification(&path.to_string_lossy());
+
+        let got = inline_body_from_file_notification(&notification, &sender_root).unwrap();
+
+        assert_eq!(got.as_deref(), Some("inline body"));
+    }
+
+    #[test]
+    fn container_file_notification_adapter_rejects_oversize_content() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let wg_root = temp.path().join("proj").join(".ac").join("wg-1-team");
+        let sender_root = wg_root.join("__agent_sender");
+        let messaging = wg_root.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&sender_root).unwrap();
+        std::fs::create_dir_all(&messaging).unwrap();
+        let filename = "20260704-000000-wg1-a-to-wg1-b-large.md";
+        let path = messaging.join(filename);
+        std::fs::write(
+            &path,
+            vec![b'x'; crate::api::message_store::INLINE_BODY_MAX_BYTES + 1],
+        )
+        .unwrap();
+        let notification =
+            crate::phone::messaging::format_file_notification(&path.to_string_lossy());
+
+        let err = inline_body_from_file_notification(&notification, &sender_root).unwrap_err();
+
+        assert!(err.contains("inline cap"));
+    }
+
+    #[test]
+    fn container_file_notification_adapter_ignores_plain_body() {
+        assert_eq!(
+            inline_body_from_file_notification("plain body", Path::new("unused")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn db_origin_container_adapter_does_not_read_crafted_file_notification() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sender_wg = temp.path().join("proj").join(".ac").join("wg-1-team");
+        let sender_root = sender_wg.join("__agent_sender");
+        let victim_wg = temp.path().join("proj").join(".ac").join("wg-2-team");
+        let victim_messaging = victim_wg.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&sender_root).unwrap();
+        std::fs::create_dir_all(&victim_messaging).unwrap();
+        let filename = "20260704-000000-wg2-a-to-wg2-b-secret.md";
+        let victim_file = victim_messaging.join(filename);
+        std::fs::write(&victim_file, "victim secret").unwrap();
+        let crafted =
+            crate::phone::messaging::format_file_notification(&victim_file.to_string_lossy());
+
+        let got = container_body_override_for_delivery(
+            WakeDeliveryOrigin::DbQueue,
+            &crafted,
+            Some(&sender_root),
+        )
+        .unwrap();
+
+        assert_eq!(got, None);
+        assert!(!crafted.contains("victim secret"));
+    }
+
+    #[test]
+    fn filesystem_origin_container_adapter_rejects_cross_workgroup_notification() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sender_wg = temp.path().join("proj").join(".ac").join("wg-1-team");
+        let sender_root = sender_wg.join("__agent_sender");
+        let victim_wg = temp.path().join("proj").join(".ac").join("wg-2-team");
+        let victim_messaging = victim_wg.join(crate::phone::messaging::MESSAGING_DIR_NAME);
+        std::fs::create_dir_all(&sender_root).unwrap();
+        std::fs::create_dir_all(&victim_messaging).unwrap();
+        let filename = "20260704-000000-wg2-a-to-wg2-b-secret.md";
+        let victim_file = victim_messaging.join(filename);
+        std::fs::write(&victim_file, "victim secret").unwrap();
+        let crafted =
+            crate::phone::messaging::format_file_notification(&victim_file.to_string_lossy());
+
+        let err = container_body_override_for_delivery(
+            WakeDeliveryOrigin::FilesystemPoller,
+            &crafted,
+            Some(&sender_root),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("outside sender messaging directory"));
+    }
 
     // ── §224 D.3 — filter_sessions_by_fqn pure-predicate tests ──
 

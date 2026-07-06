@@ -1,7 +1,7 @@
 //! In-daemon control-plane API (#791). A sibling of `web/`: same axum stack and
 //! lifecycle, but a distinct trust model (per-client scoped tokens, not the
-//! single web token) and its own router. Increment 1 serves exactly two verbs
-//! (`send`, `list-peers-lean`) over a locally-bound TCP transport, funnelling
+//! single web token) and its own router. It exposes locally-bound send,
+//! list-peers, and container session-transport endpoints, funnelling sends
 //! through the SAME actuation the filesystem poller uses (`actuation.rs`).
 //!
 //! Auth is UNCONDITIONAL in every build profile (no `web/`-style debug bypass):
@@ -11,10 +11,12 @@
 pub mod actuation;
 pub mod audit;
 pub mod auth;
+pub mod dispatcher;
 pub mod error;
 pub mod handlers;
-pub mod identity;
 pub mod idempotency;
+pub mod identity;
+pub mod message_store;
 pub mod schema;
 
 use std::net::SocketAddr;
@@ -27,17 +29,17 @@ use axum::Router;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 
-/// Hard ceiling on a buffered request body (defense in depth above the send
-/// handler's 16 KB semantic cap).
-const MAX_BODY_LIMIT_BYTES: usize = 64 * 1024;
+/// Hard ceiling on a buffered request body. Inline sends allow a 256 KiB
+/// semantic body plus JSON envelope overhead.
+const MAX_BODY_LIMIT_BYTES: usize = message_store::INLINE_BODY_MAX_BYTES + (16 * 1024);
 
 /// Shared state injected into every handler.
 #[derive(Clone)]
 pub struct ApiState {
     /// Read-through client-token registry (mtime-gated).
     pub store: Arc<auth::ApiClientStore>,
-    /// Disk-persisted `send` idempotency ledger.
-    pub ledger: Arc<idempotency::IdempotencyLedger>,
+    /// Durable inline send queue and idempotency store.
+    pub message_store: Arc<message_store::MessageStore>,
     /// Per-source failed-auth lockout.
     pub lockout: Arc<auth::FailedAuthLockout>,
     /// Reach to the live daemon (SessionManager / PtyManager / SettingsState)
@@ -55,7 +57,10 @@ pub fn build_router(state: ApiState) -> Router {
     Router::new()
         .route("/api/v1/send", post(handlers::send::handle))
         .route("/api/v1/peers", get(handlers::list_peers::handle))
-        .route("/api/v1/session-transport", get(handlers::session_transport::handle))
+        .route(
+            "/api/v1/session-transport",
+            get(handlers::session_transport::handle),
+        )
         // Unauthenticated liveness; body pinned to {"ok":true} (§0.5 G9).
         .route("/api/v1/healthz", get(handlers::health))
         .layer(DefaultBodyLimit::max(MAX_BODY_LIMIT_BYTES))
@@ -82,29 +87,39 @@ pub fn start_server(
             return tauri::async_runtime::spawn(async {});
         }
     };
-    let ledger = match idempotency::IdempotencyLedger::at_config_dir() {
-        Some(l) => Arc::new(l),
-        None => {
-            log::error!("[api-server] cannot resolve config_dir for idempotency ledger; API server not started");
+    let message_store = match message_store::MessageStore::at_config_dir() {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            log::error!(
+                "[api-server] cannot initialize DB message store; API server not started: {}",
+                e
+            );
             return tauri::async_runtime::spawn(async {});
         }
     };
 
     let state = ApiState {
         store,
-        ledger,
+        message_store: message_store.clone(),
         lockout: Arc::new(auth::FailedAuthLockout::default()),
-        app_handle,
+        app_handle: app_handle.clone(),
         session_mgr,
         pty_mgr,
     };
     let router = build_router(state);
 
     tauri::async_runtime::spawn(async move {
+        let dispatcher_handle = dispatcher::start_dispatcher(
+            message_store,
+            app_handle.clone(),
+            shutdown.clone(),
+            dispatcher::DispatcherConfig::default(),
+        );
         let addr: SocketAddr = match format!("{}:{}", bind, port).parse() {
             Ok(a) => a,
             Err(e) => {
                 log::error!("[api-server] invalid bind address {}:{}: {}", bind, port, e);
+                dispatcher_handle.abort();
                 return;
             }
         };
@@ -128,6 +143,7 @@ pub fn start_server(
                     addr,
                     e
                 );
+                dispatcher_handle.abort();
                 return;
             }
         };
